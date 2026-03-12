@@ -39,11 +39,11 @@ Claude is always present and always does synthesis. External providers participa
 
 ### Provider Availability
 
-Check if multi_mcp tools are available by attempting to list MCP tools. If `multi_mcp` tools (`debate`, `chat`) are NOT available, enter **degraded mode**.
+Check which provider MCP tools are available:
+- **Codex**: Check if `mcp__codex__codex` tool exists → full mode
+- **Gemini**: Check if `gemini` CLI is on PATH (`which gemini`) → full mode
 
-For each provider in `--providers`:
-- If multi_mcp is available → full mode with that provider
-- If multi_mcp is NOT available → degraded mode (Claude subagents only)
+If NO external providers are available, enter **degraded mode** (Claude subagents only).
 
 ### Invocation Context
 
@@ -74,20 +74,16 @@ Agent(
 )
 ```
 
-2. **Codex position** — call multi_mcp debate:
+2. **Codex position** — call Codex MCP tool:
 ```
-multi_mcp debate(
-  provider: "codex",
-  prompt: "Topic: {topic}. Context: {context}. Argue from an implementation depth perspective: code patterns, technical feasibility, performance implications. Produce a position paper."
+mcp__codex__codex(
+  prompt: "You are arguing from an implementation depth perspective: code patterns, technical feasibility, performance implications. Topic: {topic}. Context: {context}. Produce a position paper."
 )
 ```
 
-3. **Gemini position** — call multi_mcp debate:
-```
-multi_mcp debate(
-  provider: "gemini",
-  prompt: "Topic: {topic}. Context: {context}. Argue from an ecosystem breadth perspective: alternatives, prior art, industry patterns. Produce a position paper."
-)
+3. **Gemini position** — call Gemini CLI via Bash:
+```bash
+gemini -o json --approval-mode auto_edit "You are arguing from an ecosystem breadth perspective: alternatives, prior art, industry patterns. Topic: {topic}. Context: {context}. Produce a position paper."
 ```
 
 Collect all results before proceeding.
@@ -120,8 +116,8 @@ Send ALL positions to each participant. Each critiques the others: agreements, d
 
 **Full mode:** Send to each in parallel:
 - Claude subagent: receives Codex + Gemini positions, critiques both
-- Codex via multi_mcp debate: receives Claude + Gemini positions, critiques both
-- Gemini via multi_mcp debate: receives Claude + Codex positions, critiques both
+- Codex via `mcp__codex__codex`: receives Claude + Gemini positions, critiques both
+- Gemini via `gemini` CLI: receives Claude + Codex positions, critiques both
 
 **Degraded mode:**
 - Agent A: receives Agent B's position, critiques it
@@ -178,7 +174,7 @@ Before outputting your synthesis, verify each of these. If any check fails, go b
 
 2. **Did I dump raw output instead of synthesizing?** The synthesis must be in YOUR voice, not copy-pasted provider responses. Rewrite if needed.
 
-3. **Did I skip degraded mode when providers were unavailable?** If multi_mcp tools were not available, you MUST have spawned 2 Claude subagents. If you just wrote a pros/cons list yourself, go back and spawn the agents.
+3. **Did I skip degraded mode when providers were unavailable?** If neither Codex MCP nor Gemini CLI were available, you MUST have spawned 2 Claude subagents. If you just wrote a pros/cons list yourself, go back and spawn the agents.
 
 4. **Does the output have all four sections?** Consensus, Majority, No consensus, Recommendation — all four MUST be present. Use "None" for empty sections.
 

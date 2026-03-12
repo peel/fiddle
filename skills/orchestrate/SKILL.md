@@ -153,19 +153,25 @@ Gather context about the topic from the current project:
 
 Compile findings into a structured summary: what exists, what's relevant, what gaps remain.
 
-### Step 2: External Research (multi_mcp)
+### Step 2: External Research
 
 If DISCOVER providers are configured (default: codex):
 
-For each provider, call multi_mcp `chat`:
+For each provider, call its MCP tool directly:
+
+**Codex:**
 ```
-multi_mcp chat(
-  provider: "<provider>",
+mcp__codex__codex(
   prompt: "Topic: <topic>. Project context: <summary from Step 1>. Research: ecosystem patterns, prior art, implementation approaches, potential pitfalls. Be specific and cite concrete examples."
 )
 ```
 
-If multi_mcp is not available, skip this step. Claude proceeds with internal knowledge only.
+**Gemini:** Spawn via Bash:
+```bash
+gemini -o json --approval-mode auto_edit "Topic: <topic>. Project context: <summary from Step 1>. Research: ecosystem patterns, prior art, implementation approaches, potential pitfalls. Be specific and cite concrete examples."
+```
+
+If a provider's MCP server or CLI is not available, skip it. Claude proceeds with internal knowledge only.
 
 ### Step 3: Socratic Dialogue
 
@@ -253,7 +259,7 @@ Skill(skill: "ralph-subs-implement", args: "--epic <epic-id> --workers <workers>
 
 Ralph handles the full implement → review cycle for each bean. Let it run.
 
-For `critical` and `high` priority beans: instruct the review coordinator to additionally call multi_mcp `code_review` with configured DEVELOP providers, if any are set.
+For `critical` and `high` priority beans: instruct the review coordinator to additionally request a code review from configured DEVELOP providers via their MCP tools (codex: `mcp__codex__codex`, gemini: via CLI).
 
 ### Step 2: Reaction Engine
 
@@ -340,13 +346,16 @@ Wait for the user to address the parked beans. When they remove `needs-attention
 When all epic beans are `completed` or `needs-attention` (none in `todo` or `in-progress`):
 
 1. Ralph's epic holistic review runs automatically (opus model) — it reviews the full diff across all beans
-2. If DEVELOP holistic providers are configured, call multi_mcp `compare`:
+2. If DEVELOP holistic providers are configured, request comparison via their MCP tools:
+
+   **Codex:**
    ```
-   multi_mcp compare(
-     provider: "<develop_holistic_provider>",
+   mcp__codex__codex(
      prompt: "Design doc: <design doc content>. Full diff: <git diff main...epic/<epic-id>>. Did the implementation match the design? Flag: inconsistencies, missed requirements, naming conflicts, dead code."
    )
    ```
+
+   **Gemini:** Spawn via Bash with the same prompt.
 3. If holistic review creates fix beans → log "back to DEVELOP", loop to Step 1
 4. If clean → transition to DELIVER
 
@@ -363,16 +372,18 @@ Fall through to DELIVER.
 
 ### Step 1: Drift Analysis
 
-If DELIVER providers are configured (default: codex), call multi_mcp `compare`:
+If DELIVER providers are configured (default: codex), request drift analysis via their MCP tools:
 
+**Codex:**
 ```
-multi_mcp compare(
-  provider: "<deliver_provider>",
+mcp__codex__codex(
   prompt: "Design doc: <read the design doc referenced in the epic bean body>. Full diff: <git diff main...epic/<epic-id> or git diff main...HEAD>. Analyze: did the implementation match the design? Flag any drift, missing features, scope creep, or unintended changes."
 )
 ```
 
-If multi_mcp is not available, perform the drift analysis yourself: read the design doc, review the full diff, and compare.
+**Gemini:** Spawn via Bash with the same prompt.
+
+If no provider is available, perform the drift analysis yourself: read the design doc, review the full diff, and compare.
 
 Present the drift analysis to the user:
 ```
