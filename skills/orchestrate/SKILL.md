@@ -359,4 +359,85 @@ echo "PHASE:DELIVER" >> .claude/orchestrate-events.log
 
 Fall through to DELIVER.
 
-<!-- PHASE: DELIVER appended by subsequent task -->
+## DELIVER
+
+### Step 1: Drift Analysis
+
+If DELIVER providers are configured (default: codex), call multi_mcp `compare`:
+
+```
+multi_mcp compare(
+  provider: "<deliver_provider>",
+  prompt: "Design doc: <read the design doc referenced in the epic bean body>. Full diff: <git diff main...epic/<epic-id> or git diff main...HEAD>. Analyze: did the implementation match the design? Flag any drift, missing features, scope creep, or unintended changes."
+)
+```
+
+If multi_mcp is not available, perform the drift analysis yourself: read the design doc, review the full diff, and compare.
+
+Present the drift analysis to the user:
+```
+"Drift analysis complete:
+- Implemented as designed: [list]
+- Drift detected: [list with explanations]
+- Missing from design: [list]
+- Added beyond design: [list]
+
+Proceed with documentation update?"
+```
+
+Wait for user confirmation before proceeding.
+
+### Step 2: Documentation Update
+
+Invoke docs-evolve automatically:
+```
+Skill(skill: "docs-evolve", args: "--epic <epic-id>")
+```
+
+This updates SYSTEM.md, creates ADRs for architectural decisions, and appends to BACKLOG.md.
+
+Present the docs-evolve results to the user for confirmation. Wait for approval.
+
+### Step 3: Close Epic
+
+After user confirms documentation:
+```bash
+beans update <epic-id> --status completed
+echo "$(date +%H:%M) DELIVER complete — epic closed" >> .claude/orchestrate-events.log
+```
+
+Fall through to CLEANUP.
+
+## CLEANUP
+
+### Step 1: Kill Status Pane
+
+```bash
+# Find and kill the status pane (it's running orchestrate-status.sh)
+tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep orchestrate-status | awk '{print $1}' | xargs -I{} tmux kill-pane -t {}
+```
+
+If the pane doesn't exist, skip silently.
+
+### Step 2: Remove Event Log
+
+```bash
+rm -f .claude/orchestrate-events.log
+```
+
+### Step 3: Summary
+
+Count final bean states:
+```bash
+beans list --parent <epic-id> --json
+```
+
+Report to user:
+```
+"Epic <epic-id> complete.
+- <N> beans completed
+- <M> beans needs-attention (unresolved)
+- Total duration: <first event timestamp> to now"
+```
+
+Remind the user: "Run `/docs-evolve --epic <epic-id>` to update project docs." (if docs-evolve was not already run in DELIVER).
