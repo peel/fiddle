@@ -146,7 +146,7 @@ Skip this phase if `--skip-discover` was set OR if `--epic` was provided and chi
 
 Invoke docs-discover to gather project context and identify gaps:
 ```
-Skill(skill: "peel:docs-discover", args: "<topic>")
+Skill(skill: "fiddle:docs-discover", args: "<topic>")
 ```
 
 This reads existing docs, CLAUDE.md, beans, and relevant source files. It produces a structured summary of what exists, what's relevant, and what gaps remain.
@@ -205,7 +205,7 @@ This explores the user's intent, asks questions, and produces 2-3 candidate appr
 
 Invoke the panel skill on the proposed approaches:
 ```
-Skill(skill: "peel:panel", args: "<approaches from brainstorming> --providers <define_providers>")
+Skill(skill: "fiddle:panel", args: "<approaches from brainstorming> --providers <define_providers>")
 ```
 
 The panel runs structured adversarial analysis across configured providers. Wait for the panel's verdict.
@@ -252,7 +252,7 @@ Fall through to DEVELOP.
 Invoke ralph-subs-implement with the epic and ralph configuration:
 
 ```
-Skill(skill: "peel:ralph-subs-implement", args: "--epic <epic-id> --workers <workers> --max-review-cycles <max_review_cycles>")
+Skill(skill: "fiddle:ralph-subs-implement", args: "--epic <epic-id> --workers <workers> --max-review-cycles <max_review_cycles>")
 ```
 
 Ralph handles the full implement → review cycle for each bean. Let it run.
@@ -400,7 +400,7 @@ Wait for user confirmation before proceeding.
 
 Invoke docs-evolve automatically:
 ```
-Skill(skill: "peel:docs-evolve", args: "--epic <epic-id>")
+Skill(skill: "fiddle:docs-evolve", args: "--epic <epic-id>")
 ```
 
 This updates SYSTEM.md, creates ADRs for architectural decisions, and appends to BACKLOG.md.
@@ -449,4 +449,4 @@ Report to user:
 - Total duration: <first event timestamp> to now"
 ```
 
-Remind the user: "Run `/peel:docs-evolve --epic <epic-id>` to update project docs." (if docs-evolve was not already run in DELIVER).
+Remind the user: "Run `/fiddle:docs-evolve --epic <epic-id>` to update project docs." (if docs-evolve was not already run in DELIVER).

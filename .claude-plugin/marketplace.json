@@ -1,9 +1,9 @@
 {
-  "name": "peel-dev",
-  "description": "Development marketplace for peel plugin",
+  "name": "fiddle-dev",
+  "description": "Development marketplace for fiddle plugin",
   "plugins": [
     {
-      "name": "peel",
+      "name": "fiddle",
       "description": "Orchestration skills for automated development lifecycle with multi-model support",
       "version": "0.1.0",
       "source": "./"

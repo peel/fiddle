@@ -1,25 +1,25 @@
-# Peel Orchestrator
+# Fiddle
 
 Claude Code plugin for automated development lifecycle. Chains discover, define, develop, deliver phases with multi-model support and a reaction engine.
 
 ## Orchestrate
 
-`/peel:orchestrate <topic>` runs the full lifecycle. Each phase invokes other skills:
+`/fiddle:orchestrate <topic>` runs the full lifecycle. Each phase invokes other skills:
 
 ```
 DISCOVER
-  └─ peel:docs-discover        — scan project docs, code, beans
+  └─ fiddle:docs-discover        — scan project docs, code, beans
   └─ Codex MCP / Gemini CLI    — external research (optional)
   └─ Socratic dialogue          — confirm scope with user
 
 DEFINE
   └─ superpowers:brainstorming  — explore intent, produce 2-3 approaches
-  └─ peel:panel                 — adversarial debate across models
+  └─ fiddle:panel                 — adversarial debate across models
   └─ superpowers:writing-plans  — implementation plan + bean decomposition
-     └─ peel:bean-decomposition — task sizing rules
+     └─ fiddle:bean-decomposition — task sizing rules
 
 DEVELOP
-  └─ peel:ralph-subs-implement  — parallel bean implementation
+  └─ fiddle:ralph-subs-implement  — parallel bean implementation
      └─ implementers (sonnet)   — write code in worktrees
      └─ review coordinators     — tiered review (haiku → sonnet)
   └─ reaction engine            — CI failure, stall, review overflow detection
@@ -27,7 +27,7 @@ DEVELOP
 
 DELIVER
   └─ Codex MCP / Gemini CLI    — drift analysis vs design doc (optional)
-  └─ peel:docs-evolve           — update SYSTEM.md, ADRs, BACKLOG
+  └─ fiddle:docs-evolve           — update SYSTEM.md, ADRs, BACKLOG
   └─ close epic
 ```
 
@@ -35,17 +35,46 @@ DELIVER
 
 | Skill | Purpose |
 |-------|---------|
-| `peel:orchestrate` | Full lifecycle orchestrator (DISCOVER → DEFINE → DEVELOP → DELIVER) |
-| `peel:panel` | Multi-model adversarial analysis with cross-review and synthesis |
-| `peel:ralph-subs-implement` | Parallel bean implementation with subagents and tiered review |
-| `peel:ralph-beans-implement` | Team-based bean implementation variant |
-| `peel:docs-discover` | Socratic dialogue to bootstrap or review project docs |
-| `peel:docs-evolve` | Post-ship update of technical docs, ADRs, backlog |
-| `peel:bean-decomposition` | Task sizing rules for implementation plans |
-| `peel:adr` | Create architecture decision record |
-| `peel:feedback` | Append user feedback signal |
-| `peel:backlog` | Append idea or debt item |
-| `peel:patch-superpowers` | Re-apply beans integration patches to superpowers skills |
+| `fiddle:orchestrate` | Full lifecycle orchestrator (DISCOVER → DEFINE → DEVELOP → DELIVER) |
+| `fiddle:panel` | Multi-model adversarial analysis with cross-review and synthesis |
+| `fiddle:ralph-subs-implement` | Parallel bean implementation with subagents and tiered review |
+| `fiddle:ralph-beans-implement` | Team-based bean implementation variant |
+| `fiddle:docs-discover` | Socratic dialogue to bootstrap or review project docs |
+| `fiddle:docs-evolve` | Post-ship update of technical docs, ADRs, backlog |
+| `fiddle:bean-decomposition` | Task sizing rules for implementation plans |
+| `fiddle:adr` | Create architecture decision record |
+| `fiddle:feedback` | Append user feedback signal |
+| `fiddle:backlog` | Append idea or debt item |
+| `fiddle:patch-superpowers` | Re-apply beans integration patches to superpowers skills |
+
+## Configuration
+
+Orchestrate reads `.claude/orchestrate.conf` (HCL) from your project root. All blocks are optional — defaults apply when omitted.
+
+```hcl
+providers {
+  discover         = ["codex"]
+  define           = ["codex", "gemini"]
+  develop          = []
+  develop_holistic = ["codex"]
+  deliver          = ["codex"]
+}
+
+ralph {
+  workers           = 2
+  max_review_cycles = 3
+  max_impl_turns    = 50
+  max_review_turns  = 30
+}
+
+reaction {
+  ci_max_retries      = 3
+  stall_timeout_min   = 15
+  stall_max_respawns  = 2
+}
+```
+
+Merge order: defaults → config file → CLI flags. `--providers` sets all phases; per-phase flags override.
 
 ## External Providers
 
@@ -64,9 +93,15 @@ Both optional — skills fall back to Claude-only subagents without them.
 
 ## Install
 
-Add the peel marketplace, then install:
+Development:
+
+```bash
+claude --plugin-dir /path/to/fiddle
+```
+
+Via marketplace:
 
 ```
-# In Claude Code settings, add marketplace:
-github:peel/peel-marketplace
+/plugin marketplace add github:peel/peel-marketplace
+/plugin install fiddle
 ```

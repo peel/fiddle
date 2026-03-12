@@ -47,7 +47,7 @@ If NO external providers are available, enter **degraded mode** (Claude subagent
 
 ### Invocation Context
 
-**Standalone** (user typed `/peel:panel <topic>`):
+**Standalone** (user typed `/fiddle:panel <topic>`):
 - The topic is the user's question or decision
 - Before Phase 1: generate 2-3 candidate approaches from the topic. These become the positions to debate.
 

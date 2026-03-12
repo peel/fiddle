@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# SessionStart hook for peel plugin
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+exit 0
