@@ -64,7 +64,7 @@ For each ready leaf bean (up to available_slots):
 
 **If active_count == 0 AND ready_beans == 0:**
 Read `roles/lead-procedures.md` → check for "Epic Holistic Review". If none → follow "Cleanup".
-After epic holistic review completes, remind the user: "Epic complete. Run `/docs-evolve --epic <id>` to update project docs."
+After epic holistic review completes, remind the user: "Epic complete. Run `/peel:docs-evolve --epic <id>` to update project docs."
 
 ## When a Background Task Completes
 

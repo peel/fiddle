@@ -451,4 +451,4 @@ Report to user:
 - Total duration: <first event timestamp> to now"
 ```
 
-Remind the user: "Run `/docs-evolve --epic <epic-id>` to update project docs." (if docs-evolve was not already run in DELIVER).
+Remind the user: "Run `/peel:docs-evolve --epic <epic-id>` to update project docs." (if docs-evolve was not already run in DELIVER).
