@@ -138,4 +138,107 @@ echo "PHASE:<phase>" >> .claude/orchestrate-events.log
 
 Jump to the determined phase section below.
 
-<!-- PHASES: DISCOVER, DEFINE, DEVELOP, DELIVER appended by subsequent tasks -->
+## DISCOVER
+
+Skip this phase if `--skip-discover` was set OR if `--epic` was provided and child beans already exist.
+
+### Step 1: Read Project Context
+
+Gather context about the topic from the current project:
+
+1. Read `docs/` directory — scan for design docs, ADRs, SYSTEM.md, BACKLOG.md
+2. Read `CLAUDE.md` — understand project conventions and architecture
+3. Check existing beans: `beans list --json` — understand what work already exists
+4. Read relevant source files based on the topic (use Glob and Grep to find them)
+
+Compile findings into a structured summary: what exists, what's relevant, what gaps remain.
+
+### Step 2: External Research (multi_mcp)
+
+If DISCOVER providers are configured (default: codex):
+
+For each provider, call multi_mcp `chat`:
+```
+multi_mcp chat(
+  provider: "<provider>",
+  prompt: "Topic: <topic>. Project context: <summary from Step 1>. Research: ecosystem patterns, prior art, implementation approaches, potential pitfalls. Be specific and cite concrete examples."
+)
+```
+
+If multi_mcp is not available, skip this step. Claude proceeds with internal knowledge only.
+
+### Step 3: Socratic Dialogue
+
+Present findings to the user as a Socratic dialogue — Claude synthesizes the evidence and asks clarifying questions:
+
+1. Summarize what you found (project context + external research)
+2. Identify key decisions that need to be made
+3. Ask the user to confirm the scope: "Based on this research, the scope appears to be: [X]. Does this match your intent? Any adjustments?"
+
+Wait for user confirmation before proceeding.
+
+### Step 4: Transition
+
+```bash
+echo "$(date +%H:%M) DISCOVER complete" >> .claude/orchestrate-events.log
+echo "PHASE:DEFINE" >> .claude/orchestrate-events.log
+```
+
+Fall through to DEFINE.
+
+## DEFINE
+
+### Step 1: Brainstorming
+
+Invoke the brainstorming skill:
+```
+Skill(skill: "superpowers:brainstorming")
+```
+
+This explores the user's intent, asks questions, and produces 2-3 candidate approaches. Follow the skill's instructions completely.
+
+### Step 2: Panel Discussion
+
+Invoke the panel skill on the proposed approaches:
+```
+Skill(skill: "peel:panel", args: "<approaches from brainstorming> --providers <define_providers>")
+```
+
+The panel runs structured adversarial analysis across configured providers. Wait for the panel's verdict.
+
+**If full consensus:** Proceed automatically with the recommended approach. Report to user: "Panel reached consensus on [approach]. Proceeding."
+
+**If disagreement:** Present the panel's output to the user. Ask them to pick an approach. Wait for their decision.
+
+### Step 3: Implementation Planning
+
+Invoke the writing-plans skill with the chosen approach:
+```
+Skill(skill: "superpowers:writing-plans")
+```
+
+This creates a detailed implementation plan and decomposes it into beans via `bean-decomposition`. Follow the skill's instructions completely.
+
+After the plan is written and approved, beans should exist under an epic.
+
+### Step 4: Capture Epic ID
+
+If `--epic` was not provided at invocation:
+
+```bash
+# Find the newly created epic from the plan
+beans list --json -t epic -s todo
+```
+
+Take the most recently created epic ID. Store it for the remaining phases.
+
+### Step 5: Transition
+
+```bash
+echo "$(date +%H:%M) DEFINE complete — $(beans list --parent <epic-id> --json | jq 'length') beans created" >> .claude/orchestrate-events.log
+echo "PHASE:DEVELOP" >> .claude/orchestrate-events.log
+```
+
+Fall through to DEVELOP.
+
+<!-- PHASES: DEVELOP, DELIVER appended by subsequent tasks -->
