@@ -241,4 +241,122 @@ echo "PHASE:DEVELOP" >> .claude/orchestrate-events.log
 
 Fall through to DEVELOP.
 
-<!-- PHASES: DEVELOP, DELIVER appended by subsequent tasks -->
+## DEVELOP
+
+### Step 1: Invoke Ralph
+
+Invoke ralph-subs-implement with the epic and ralph configuration:
+
+```
+Skill(skill: "ralph-subs-implement", args: "--epic <epic-id> --workers <workers> --max-review-cycles <max_review_cycles>")
+```
+
+Ralph handles the full implement → review cycle for each bean. Let it run.
+
+For `critical` and `high` priority beans: instruct the review coordinator to additionally call multi_mcp `code_review` with configured DEVELOP providers, if any are set.
+
+### Step 2: Reaction Engine
+
+The reaction engine monitors between ralph's turns. After each ralph turn completes (you regain control), run these checks before handing back to ralph:
+
+#### CI Failure Detection
+
+For each `in-progress` bean, check its tags:
+```bash
+beans show <bean-id> --json
+```
+
+If the bean has a `ci-retries:N` tag:
+- If `N < ci_max_retries`: ralph will handle the retry. No action needed.
+- If `N >= ci_max_retries`: escalate.
+  ```bash
+  beans update <bean-id> --tag needs-attention
+  echo "$(date +%H:%M) impl-<bean-id> failed ${N}x → needs attention" >> .claude/orchestrate-events.log
+  ```
+
+#### Stall Detection
+
+For each `in-progress` bean, check the `## Progress` section in its body:
+```bash
+beans show <bean-id> --json
+```
+
+Parse the last timestamp from `## Progress` entries (format: `- HH:MM ...`). If the last entry is older than `stall_timeout_min` minutes:
+
+Check the `stall-respawns:N` tag:
+- If `N < stall_max_respawns` (or tag doesn't exist):
+  ```bash
+  beans update <bean-id> --tag stall-respawns:$((N+1))
+  echo "$(date +%H:%M) impl-<bean-id> stalled → respawned ($((N+1))/${stall_max_respawns})" >> .claude/orchestrate-events.log
+  ```
+  Ralph's next cycle will spawn a fresh implementer that reads `## Progress` and continues.
+
+- If `N >= stall_max_respawns`: escalate.
+  ```bash
+  beans update <bean-id> --tag needs-attention
+  echo "$(date +%H:%M) impl-<bean-id> stalled ${N}x → needs attention" >> .claude/orchestrate-events.log
+  ```
+
+#### Review Overflow
+
+If a bean's review cycle count (from tags) reaches `max_review_cycles`:
+```bash
+beans update <bean-id> --tag needs-attention
+echo "$(date +%H:%M) review-<bean-id> overflow → needs attention" >> .claude/orchestrate-events.log
+```
+
+#### Tag Reset
+
+When a bean advances from implement to review phase, reset retry tags:
+```bash
+beans update <bean-id> --remove-tag ci-retries:* --remove-tag stall-respawns:*
+```
+
+#### All Beans Parked
+
+After running checks, if:
+- No unblocked `todo` beans remain
+- No `in-progress` beans remain
+- Some beans are tagged `needs-attention`
+
+Then notify the user:
+```
+"Waiting on your input for N beans:
+- <bean-id>: <title> — <reason from event log>
+- ...
+
+You can: fix the issue and remove needs-attention tag, scrub the bean, or rework the scope."
+```
+
+Log:
+```bash
+echo "$(date +%H:%M) all beans parked — waiting on user for ${N} needs-attention" >> .claude/orchestrate-events.log
+```
+
+Wait for the user to address the parked beans. When they remove `needs-attention` tags or scrub beans, resume ralph.
+
+### Step 3: Holistic Review
+
+When all epic beans are `completed` or `needs-attention` (none in `todo` or `in-progress`):
+
+1. Ralph's epic holistic review runs automatically (opus model) — it reviews the full diff across all beans
+2. If DEVELOP holistic providers are configured, call multi_mcp `compare`:
+   ```
+   multi_mcp compare(
+     provider: "<develop_holistic_provider>",
+     prompt: "Design doc: <design doc content>. Full diff: <git diff main...epic/<epic-id>>. Did the implementation match the design? Flag: inconsistencies, missed requirements, naming conflicts, dead code."
+   )
+   ```
+3. If holistic review creates fix beans → log "back to DEVELOP", loop to Step 1
+4. If clean → transition to DELIVER
+
+### Step 4: Transition
+
+```bash
+echo "$(date +%H:%M) DEVELOP complete" >> .claude/orchestrate-events.log
+echo "PHASE:DELIVER" >> .claude/orchestrate-events.log
+```
+
+Fall through to DELIVER.
+
+<!-- PHASE: DELIVER appended by subsequent task -->
