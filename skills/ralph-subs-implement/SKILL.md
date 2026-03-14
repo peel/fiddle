@@ -33,9 +33,10 @@ Flags (all optional, order-independent):
 ## Setup (first turn only)
 
 1. `BEANS_LIST` — if no incomplete beans, stop
-2. Discover available agents: list `.claude/agents/*.md`, `~/.claude/agents/*.md`, and `.claude/skills/ralph-subs-implement/roles/*.md`. Read each file's opening lines to understand capabilities.
-3. **Worktree setup** (when `--workers > 1`): Read `roles/lead-procedures.md` → follow "Worktree Setup".
-4. Fall through to "Assess and Act"
+2. Compute `MAIN_BEANS_PATH`: the absolute path to `.beans/` in the main checkout. Store this value — it will be substituted into all agent prompts as `{MAIN_BEANS_PATH}`. Example: if main checkout is `/Users/peel/wrk/board`, then `MAIN_BEANS_PATH=/Users/peel/wrk/board/.beans`.
+3. Discover available agents: list `.claude/agents/*.md`, `~/.claude/agents/*.md`, and `.claude/skills/ralph-subs-implement/roles/*.md`. Read each file's opening lines to understand capabilities.
+4. **Worktree setup** (when `--workers > 1`): Read `roles/lead-procedures.md` → follow "Worktree Setup".
+5. Fall through to "Assess and Act"
 
 ## Every Turn: Assess and Act
 
@@ -147,7 +148,7 @@ All agents are subagents (no `team_name`). The coordinator internally spawns rev
 
 ### Implementer Spawn
 
-1. Read `.claude/skills/ralph-subs-implement/roles/implementer.md`, replace placeholders (`{BEAN_ID}`, `{BEAN_TITLE}`, `{BEAN_BODY}`, `{WORKTREE_PATH}`)
+1. Read `.claude/skills/ralph-subs-implement/roles/implementer.md`, replace placeholders (`{BEAN_ID}`, `{BEAN_TITLE}`, `{BEAN_BODY}`, `{WORKTREE_PATH}`, `{MAIN_BEANS_PATH}`)
 2. If worktree assigned: omit the `## Git Coordination` section (between `<!-- CONDITIONAL -->` markers)
 3. For fix cycles, append issues under `## Review Issues to Address`
 4. Spawn and tag bean:
@@ -169,7 +170,7 @@ beans update {id} --tag role:implement --tag bg-task:{task_id}
 **Cycle 1:** Auto-select ALL domain agents relevant to the bean. Always include `baseline`.
 **Cycle 2+:** Use only the reviewers from the bean's `flagged-by:*` tag (set by previous verdict).
 
-1. Read `.claude/skills/ralph-subs-implement/roles/review-coordinator.md`, replace placeholders (`{BEAN_ID}`, `{BEAN_TITLE}`, `{BEAN_BODY}`, `{WORKTREE_PATH}`, `{REVIEW_CYCLE}`, `{PREVIOUS_ISSUES}`, `{REVIEWER_LIST}`)
+1. Read `.claude/skills/ralph-subs-implement/roles/review-coordinator.md`, replace placeholders (`{BEAN_ID}`, `{BEAN_TITLE}`, `{BEAN_BODY}`, `{WORKTREE_PATH}`, `{MAIN_BEANS_PATH}`, `{REVIEW_CYCLE}`, `{PREVIOUS_ISSUES}`, `{REVIEWER_LIST}`)
 2. Spawn and tag bean:
 ```
 task = Task(
@@ -192,3 +193,4 @@ beans update {id} --remove-tag bg-task:{old_task_id} --tag bg-task:{task_id}
 - Fresh context per cycle — never resume agents
 - Never implement beans yourself — delegate only
 - Safe to kill and restart — beans CLI holds all state
+- **Bean commands from worktree context:** After any `cd {worktree_path}`, use `beans --beans-path $MAIN_BEANS_PATH` for all subsequent `beans` commands until you return to the main checkout. Alternatively, always use `--beans-path $MAIN_BEANS_PATH` for safety — it is harmless when already in main.

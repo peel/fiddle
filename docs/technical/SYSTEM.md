@@ -10,7 +10,7 @@ Fiddle is a Claude Code plugin that orchestrates a four-phase development lifecy
 
 **Panel** (`skills/panel/SKILL.md`) — Structured multi-model adversarial analysis. Claude, Codex (MCP), and Gemini (CLI) argue independent positions, cross-review, then Claude synthesizes a verdict. Degrades to 2 Claude subagents when no external providers are available.
 
-**Ralph** (`skills/ralph-subs-implement/SKILL.md`, `skills/ralph-beans-implement/SKILL.md`) — Parallel bean implementation. Dispatches implementer subagents (sonnet) in worktrees with tiered review (haiku then sonnet). Two variants: subagent-driven and team-based. Includes reaction checks (CI failure escalation, stall detection, review overflow) in its "Assess and Act" loop. When invoked with `--caller orchestrate`, outputs `RALPH_STATUS: COMPLETE` or `RALPH_STATUS: PARKED` on exit.
+**Ralph** (`skills/ralph-subs-implement/SKILL.md`, `skills/ralph-beans-implement/SKILL.md`) — Parallel bean implementation. Dispatches implementer subagents (sonnet) in worktrees with tiered review (haiku then sonnet). Two variants: subagent-driven and team-based. The lead computes `MAIN_BEANS_PATH` (absolute path to main checkout's `.beans/`) at startup and substitutes it into all agent prompts; worktree agents use `beans --beans-path {MAIN_BEANS_PATH}` so bean updates are always visible to the TUI and lead. Implementers are prohibited from changing bean status — only the lead manages status transitions. Includes reaction checks (CI failure escalation, stall detection, review overflow) in its "Assess and Act" loop. When invoked with `--caller orchestrate`, outputs `RALPH_STATUS: COMPLETE` or `RALPH_STATUS: PARKED` on exit.
 
 **Init** (`skills/init/SKILL.md`) — Provider setup skill. Detects installed binaries (codex, gemini) on PATH, checks existing MCP configuration, asks where to write config (project `.mcp.json` or global `~/.claude.json`), merges codex MCP entry non-destructively.
 
@@ -39,6 +39,7 @@ Runs entirely locally as a Claude Code plugin. No server, no cloud, no CI. Insta
 - `/fiddle:init` must never overwrite existing MCP server entries — merge only.
 - Append-only docs (FEEDBACK, BACKLOG, research logs) are never edited or deleted.
 - Bean bodies must be self-contained — implementer agents work from the bean body alone without reading plan files.
+- Worktree agents must route all bean CLI operations through `--beans-path` to the main checkout's `.beans/`. Only the lead manages bean status transitions.
 
 ## Known issues
 

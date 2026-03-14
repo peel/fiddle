@@ -1,12 +1,15 @@
 ---
 # fiddle-4qug
 title: 'Task 4: Update lead-procedures.md for --beans-path after verification'
-status: todo
+status: completed
 type: task
+priority: normal
 tags:
     - branch
+    - agent:implementer
+    - reviewers:baseline
 created_at: 2026-03-14T19:39:14Z
-updated_at: 2026-03-14T19:39:14Z
+updated_at: 2026-03-14T20:01:05Z
 parent: fiddle-vfl9
 ---
 

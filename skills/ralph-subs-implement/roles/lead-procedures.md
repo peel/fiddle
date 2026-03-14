@@ -44,6 +44,8 @@ Runs **once** per review transition, before spawning the review coordinator. The
 - Check review cycle. If >= max_review_cycles → "Abandon Bean"
 - Otherwise: spawn fix implementer. Tell it to read `{WORKTREE_PATH}/.verification-output.txt` for failure details.
 
+**After verification:** If you ran `cd {worktree_path}`, your cwd is now inside the worktree. All subsequent `beans` commands MUST use `beans --beans-path $MAIN_BEANS_PATH` to target the main directory. This applies to the `beans update` calls that follow verification (e.g., `--tag role:review`, `--status completed`).
+
 ## Epic Holistic Review
 
 When all child beans of an epic are completed and only the epic bean remains.

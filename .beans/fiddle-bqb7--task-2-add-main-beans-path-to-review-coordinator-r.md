@@ -1,12 +1,15 @@
 ---
 # fiddle-bqb7
 title: 'Task 2: Add {MAIN_BEANS_PATH} to review coordinator role'
-status: todo
+status: completed
 type: task
+priority: normal
 tags:
+    - reviewers:baseline
     - branch
+    - agent:implementer
 created_at: 2026-03-14T19:38:52Z
-updated_at: 2026-03-14T19:38:52Z
+updated_at: 2026-03-14T19:59:10Z
 parent: fiddle-vfl9
 ---
 

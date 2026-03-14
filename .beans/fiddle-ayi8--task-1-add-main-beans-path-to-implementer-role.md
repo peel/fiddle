@@ -1,12 +1,15 @@
 ---
 # fiddle-ayi8
 title: 'Task 1: Add {MAIN_BEANS_PATH} to implementer role'
-status: todo
+status: completed
 type: task
+priority: normal
 tags:
     - branch
+    - agent:implementer
+    - reviewers:baseline
 created_at: 2026-03-14T19:38:37Z
-updated_at: 2026-03-14T19:38:37Z
+updated_at: 2026-03-14T19:58:24Z
 parent: fiddle-vfl9
 ---
 

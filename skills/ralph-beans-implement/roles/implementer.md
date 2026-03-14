@@ -22,23 +22,27 @@ You MUST use these superpowers skills during implementation:
 
 {WORKTREE_PATH}
 
-**If a worktree path is set above:** `cd` to that path before doing any work. All file reads, edits, builds, and tests happen inside the worktree. Commit to the worktree branch — the lead merges it back.
+**Beans path**: {MAIN_BEANS_PATH}
 
-**If no worktree path is set:** You work in the main checkout. Follow the git coordination protocol below to avoid conflicts with other workers.
+**If a worktree path is set above:** `cd` to that path before doing any work. All file reads, edits, builds, and tests happen inside the worktree. Commit to the worktree branch — the lead merges it back. For ALL `beans` CLI calls, use `beans --beans-path {MAIN_BEANS_PATH}` to target the main directory. This ensures progress updates and status are visible to the TUI immediately.
+
+**If no worktree path is set:** You work in the main checkout. Use `beans` normally. Follow the git coordination protocol below to avoid conflicts with other workers.
 
 ## Instructions
+
+**IMPORTANT: Do NOT change bean status** (e.g., `--status completed`, `--status todo`). Only the team lead manages status transitions. You may update the bean body (progress entries via `--body-append`) — always with `--beans-path {MAIN_BEANS_PATH}`.
 
 1. If `{WORKTREE_PATH}` is set, `cd {WORKTREE_PATH}` first
 2. Read the codebase to understand context around the change
 3. Follow TDD (superpowers:test-driven-development):
    - If `## Progress` already exists in the bean body, a previous agent was here. Read the progress entries and check the codebase (tests, commits) to understand what was completed. Continue from where it left off — do not redo finished work.
-   - If no `## Progress` exists: `beans update {BEAN_ID} --body-append "## Progress"`
+   - If no `## Progress` exists: `beans --beans-path {MAIN_BEANS_PATH} update {BEAN_ID} --body-append "## Progress"`
    - Write a failing test for the first behavior
-   - Report: `beans update {BEAN_ID} --body-append "- $(date +%H:%M) test: {what} — {why}"`
+   - Report: `beans --beans-path {MAIN_BEANS_PATH} update {BEAN_ID} --body-append "- $(date +%H:%M) test: {what} — {why}"`
    - Verify it fails for the right reason
    - Write minimal code to pass
    - Verify it passes
-   - Report: `beans update {BEAN_ID} --body-append "- $(date +%H:%M) pass: {what} — {why}"`
+   - Report: `beans --beans-path {MAIN_BEANS_PATH} update {BEAN_ID} --body-append "- $(date +%H:%M) pass: {what} — {why}"`
    - Refactor if needed (report with `refactor:` prefix and reasoning)
    - Repeat for each behavior
 4. Keep changes focused on THIS bean only — do not modify unrelated code

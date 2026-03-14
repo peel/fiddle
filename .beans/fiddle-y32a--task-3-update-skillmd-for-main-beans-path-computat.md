@@ -1,12 +1,15 @@
 ---
 # fiddle-y32a
 title: 'Task 3: Update SKILL.md for MAIN_BEANS_PATH computation and spawning'
-status: todo
+status: completed
 type: task
+priority: normal
 tags:
     - branch
+    - agent:implementer
+    - reviewers:baseline
 created_at: 2026-03-14T19:39:14Z
-updated_at: 2026-03-14T19:39:14Z
+updated_at: 2026-03-14T20:00:29Z
 parent: fiddle-vfl9
 ---
 

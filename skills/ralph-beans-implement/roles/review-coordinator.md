@@ -8,6 +8,7 @@ You are a review coordinator teammate. Your job is to manage the full review pip
 **Title**: {BEAN_TITLE}
 **Review Cycle**: {REVIEW_CYCLE}
 **Worktree Path**: {WORKTREE_PATH}
+**Beans Path**: {MAIN_BEANS_PATH}
 
 **Acceptance Criteria**:
 {BEAN_BODY}
@@ -86,8 +87,8 @@ Task(
 **CRITICAL: You MUST always send a verdict.** Even if all reviewers returned errors, send APPROVED. Never go idle without sending one of these messages.
 
 **Before reporting:** If verdict is APPROVED_WITH_COMMENTS or ISSUES, persist the review feedback in the bean:
-- If `## Progress` does not already exist in the bean body: `beans update {BEAN_ID} --body-append "## Progress"`
-- Append each review finding: `beans update {BEAN_ID} --body-append "- $(date +%H:%M) review-c{REVIEW_CYCLE}: {verdict} by {reviewers} — {finding}"`
+- If `## Progress` does not already exist in the bean body: `beans --beans-path {MAIN_BEANS_PATH} update {BEAN_ID} --body-append "## Progress"`
+- Append each review finding: `beans --beans-path {MAIN_BEANS_PATH} update {BEAN_ID} --body-append "- $(date +%H:%M) review-c{REVIEW_CYCLE}: {verdict} by {reviewers} — {finding}"`
 
 Send ONE message. The first line MUST be the verdict header (the lead parses this):
 

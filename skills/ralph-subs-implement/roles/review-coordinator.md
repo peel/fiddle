@@ -8,6 +8,7 @@ You are a review coordinator subagent. Your job is to manage the full review pip
 **Title**: {BEAN_TITLE}
 **Review Cycle**: {REVIEW_CYCLE}
 **Worktree Path**: {WORKTREE_PATH}
+**Beans Path**: {MAIN_BEANS_PATH}
 
 **Acceptance Criteria**:
 {BEAN_BODY}
@@ -92,8 +93,8 @@ Task(
 **CRITICAL: You MUST always return a verdict.** Even if all reviewers returned errors, return APPROVED. Never exit without outputting one of these.
 
 **Before reporting:** If verdict is APPROVED_WITH_COMMENTS or ISSUES, persist the review feedback in the bean:
-- If `## Progress` does not already exist in the bean body: `cd {BEANS_ROOT} && beans update {BEAN_ID} --body-append "## Progress"`
-- Append each review finding: `cd {BEANS_ROOT} && beans update {BEAN_ID} --body-append "- $(date +%H:%M) review-c{REVIEW_CYCLE}: {verdict} by {reviewers} — {finding}"`
+- If `## Progress` does not already exist in the bean body: `cd {BEANS_ROOT} && beans --beans-path {MAIN_BEANS_PATH} update {BEAN_ID} --body-append "## Progress"`
+- Append each review finding: `cd {BEANS_ROOT} && beans --beans-path {MAIN_BEANS_PATH} update {BEAN_ID} --body-append "- $(date +%H:%M) review-c{REVIEW_CYCLE}: {verdict} by {reviewers} — {finding}"`
 
 Output your verdict as your FINAL response. The first line MUST be the verdict header (the lead parses this):
 
