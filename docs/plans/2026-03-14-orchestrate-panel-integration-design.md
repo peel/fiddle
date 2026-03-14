@@ -6,9 +6,11 @@ Brainstorming (`superpowers:brainstorming`) hardcodes "invoke writing-plans" as 
 
 Additionally, writing-plans presents execution handoff options that conflict with orchestrate's DEVELOP phase, which should own the execution choice.
 
+Model selections are hardcoded across skills (haiku for panel/reviews, sonnet for implementers). These should be configurable per-phase via `orchestrate.conf`.
+
 ## Solution
 
-Integrate the panel into brainstorming as an enrichment step. Make both brainstorming and writing-plans orchestrate-aware via an explicit `--from-orchestrate` flag so they return control when called from orchestrate.
+Integrate the panel into brainstorming as an enrichment step. Make both brainstorming and writing-plans orchestrate-aware via an explicit `--from-orchestrate` flag so they return control when called from orchestrate. Replace hardcoded model references with configurable per-phase model settings.
 
 ### Orchestrate Context Detection
 
@@ -18,6 +20,39 @@ Both skills accept a `--from-orchestrate` flag in their `{ARGS}`. Orchestrate pa
 - **Flag absent:** Standalone use — chain as today.
 
 The event log (`.claude/orchestrate-events.log`) remains for audit/debugging but does not drive control flow.
+
+### Model Configuration
+
+Per-phase model settings in `orchestrate.conf`. All phases default to `"default"` (inherit session model). Only overrides need to be specified. DEVELOP has a nested split for standard vs. lite roles.
+
+```hcl
+models {
+  # discover = "sonnet"
+  # define   = "sonnet"
+  # deliver  = "sonnet"
+
+  develop {
+    # standard = "sonnet"
+    lite = "sonnet"
+  }
+}
+```
+
+- `"default"` = inherit the session's model (explicit way to say "use parent model")
+- Omitted key = same as `"default"`
+- Only `develop.lite` has a non-default value out of the box
+
+**Model mapping:**
+
+| Config key | Roles | Default |
+|---|---|---|
+| `models.discover` | All DISCOVER subagents | `"default"` |
+| `models.define` | Panel advocates, brainstorming subagents | `"default"` |
+| `models.develop.standard` | Implementers, tier-2 review, ralph orchestrator | `"default"` |
+| `models.develop.lite` | Tier-1 review (quick pass) | `"sonnet"` |
+| `models.deliver` | Drift analysis, docs review | `"default"` |
+
+Skills read `orchestrate.conf` if it exists, fall back to defaults if not. Standalone use (no config file) works with defaults.
 
 ## Changes
 
@@ -75,7 +110,18 @@ develop {
 
 Execute based on choice. Remaining DEVELOP steps (holistic review, transition) unchanged.
 
-### 5. Patch-Superpowers Skill Update
+### 5. Configurable Model Settings
+
+Replace all 12 hardcoded model references across skills with config-driven values:
+
+- **Orchestrate** — ralph spawn uses `models.develop.standard`
+- **Panel** — position advocates use `models.define`
+- **Ralph-subs-implement** — implementers use `models.develop.standard`, tier-1 review uses `models.develop.lite`, tier-2 review uses `models.develop.standard`
+- **Ralph-beans-implement** — same as ralph-subs
+
+Each skill reads `orchestrate.conf` if present, falls back to defaults. The `"default"` keyword means inherit the session model.
+
+### 6. Patch-Superpowers Skill Update
 
 - Update overview: "Patches three cached skills: `writing-plans`, `executing-plans`, and `brainstorming`."
 - Add brainstorming patch step (panel enrichment + `--from-orchestrate` terminal state).
@@ -101,7 +147,7 @@ DEFINE:
 
 DEVELOP:
   execution choice (config or interactive: ralph-subs | tmux team | hands-on)
-  → execute → holistic review → transition
+  → execute (models from config) → holistic review → transition
 
 DELIVER:
   drift analysis → docs-evolve → close epic
@@ -113,4 +159,5 @@ Design reviewed via adversarial panel (2026-03-14). Key changes from debate:
 
 - **Event log → explicit flags:** Replaced `.claude/orchestrate-events.log` detection with `--from-orchestrate` flag for terminal state control. Flags are visible at call sites, eliminate stale-log and crash-state risks. Event log retained for audit only.
 - **Config-default for execution:** DEVELOP execution choice reads `orchestrate.conf` first, falls back to interactive prompt.
+- **Configurable models:** Per-phase model config replaces hardcoded model references. Only `develop.lite = "sonnet"` differs from default (session model).
 - **Backlog items:** Patch versioning/detection for cached skills, nested orchestrate guard.
