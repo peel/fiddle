@@ -99,7 +99,8 @@ New Step 0 before spawning ralph:
 
 - **Ralph Subs (background subagent)** — spawn `ralph-subs-implement` as background Agent in this session. Automated implement/review cycles.
 - **Tmux Team (conductor agent)** — launch parallel workers in tmux panes via conductor.
-- **Hands-on** — user implements beans manually. Orchestrate waits for user to signal completion.
+- **Hands-on (this session)** — use `superpowers:subagent-driven-development`. Fresh subagent per task with code review between tasks. Interactive with human checkpoints.
+- **Hands-on (parallel session)** — open new session with `superpowers:executing-plans`. Batch execution with checkpoints.
 
 Config override example in `orchestrate.conf`:
 ```hcl

@@ -67,7 +67,7 @@ models {
 }
 
 develop {
-  # execution = "ralph-subs"  // or "tmux-team" or "hands-on"
+  # execution = "ralph-subs"  // or "tmux-team", "hands-on", "hands-on-parallel"
 }
 ```
 
@@ -269,14 +269,17 @@ Check `orchestrate.conf` for a `develop.execution` setting. If set, use that val
 
 2. **Tmux Team (automated, parallel)** — Launch ralph with parallel workers in tmux panes via conductor agent.
 
-3. **Hands-on (manual)** — You implement the beans yourself. Tell me when you're done and I'll continue with holistic review."
+3. **Hands-on (this session)** — Use superpowers:subagent-driven-development. Fresh subagent per task with code review between tasks. Interactive with human checkpoints.
+
+4. **Hands-on (parallel session)** — Open a new session and use superpowers:executing-plans. Batch execution with checkpoints in a separate session."
 ```
 
 Wait for the user's choice (or use config value).
 
 - **If Ralph Subs:** proceed to Step 1 (Spawn Ralph Subagent) as normal.
 - **If Tmux Team:** proceed to Step 1 but use `ralph-beans-implement` (team variant) instead of `ralph-subs-implement`.
-- **If Hands-on:** log the choice, then wait for the user to signal completion. When they do, skip to Step 3 (Holistic Review).
+- **If Hands-on (this session):** invoke `Skill(skill: "superpowers:subagent-driven-development")`. When execution completes, proceed to Step 3 (Holistic Review).
+- **If Hands-on (parallel session):** guide the user to open a new session and run `superpowers:executing-plans`. Wait for the user to signal completion, then proceed to Step 3 (Holistic Review).
 
 Log:
 ```bash
