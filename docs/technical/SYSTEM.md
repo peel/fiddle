@@ -1,46 +1,48 @@
 # System
 
-<!-- How the system actually works RIGHT NOW. Not aspirational — ground truth.
-     Update after significant work ships. This is the first thing an agent
-     should read before making technical suggestions or plans.
-     Keep it honest. If something is a mess, say so. -->
-
 ## Overview
 
-<!-- One paragraph. What are the main components and how do they connect?
-     A sentence per component is fine. Diagram if it helps (mermaid). -->
+Fiddle is a Claude Code plugin that orchestrates a four-phase development lifecycle (DISCOVER, DEFINE, DEVELOP, DELIVER) with optional multi-model support. It ships as a collection of skills (markdown instruction files), hooks (bash scripts on Claude Code events), and configuration (HCL). External providers (Codex via MCP, Gemini via CLI) participate in debate and review phases but are optional — all skills degrade to Claude-only subagents when providers are unavailable.
 
 ## Components
 
-<!-- For each major component/service/module:
-     - What it does (one line)
-     - Key technology choices
-     - Where it runs
-     - What it depends on
-     Keep entries short. Link to code if helpful. -->
+**Orchestrate** (`skills/orchestrate/SKILL.md`) — Top-level lifecycle coordinator. Reads config, chains phases, runs the reaction engine (CI failure, stall, review overflow detection). Delegates to other skills per phase.
+
+**Panel** (`skills/panel/SKILL.md`) — Structured multi-model adversarial analysis. Claude, Codex (MCP), and Gemini (CLI) argue independent positions, cross-review, then Claude synthesizes a verdict. Degrades to 2 Claude subagents when no external providers are available.
+
+**Ralph** (`skills/ralph-subs-implement/SKILL.md`, `skills/ralph-beans-implement/SKILL.md`) — Parallel bean implementation. Dispatches implementer subagents (sonnet) in worktrees with tiered review (haiku then sonnet). Two variants: subagent-driven and team-based.
+
+**Init** (`skills/init/SKILL.md`) — Provider setup skill. Detects installed binaries (codex, gemini) on PATH, checks existing MCP configuration, asks where to write config (project `.mcp.json` or global `~/.claude.json`), merges codex MCP entry non-destructively.
+
+**Hooks** (`hooks/`) — `session-start-check-providers.sh` detects unconfigured providers on session start and nudges `/fiddle:init`. `task-completed-verify.sh` gates task completion with build/test verification (go build, go test, flutter test). Dispatched via `run-hook.cmd` (cross-platform polyglot wrapper).
+
+**Supporting skills** — `docs-discover` (project context scan), `docs-evolve` (post-ship doc updates), `bean-decomposition` (task sizing), `adr`/`feedback`/`backlog` (append-only records).
 
 ## Data
 
-<!-- How data flows and where it lives.
-     Databases, queues, caches, external APIs, file storage.
-     Key schemas or models if they're central to understanding the system. -->
+**`orchestrate.conf`** (HCL) — Declares which external providers are used per phase, ralph worker counts, review cycle limits, and reaction engine thresholds. Merge order: defaults, config file, CLI flags.
+
+**`.mcp.json`** (JSON) — Claude Code MCP server configuration. Written by `/fiddle:init`. Contains server entries like `{"codex": {"command": "codex", "args": ["mcp"]}}`. Can live at project level or `~/.claude.json` globally.
+
+**`.claude/orchestrate-events.log`** — Ephemeral event log created during orchestrate runs. Tracks phase transitions, failures, escalations. Deleted on cleanup.
+
+**Bean state** — Managed by external `beans` CLI. Epics, tasks, tags (worktree slots, CI retries, stall respawns, needs-attention). Beans are the unit of work for ralph.
 
 ## Infrastructure
 
-<!-- Where this runs. Cloud provider, clusters, CI/CD, monitoring.
-     Enough to orient someone (or an agent) unfamiliar with the setup. -->
+Runs entirely locally as a Claude Code plugin. No server, no cloud, no CI. Installed via `claude --plugin-dir` or the plugin marketplace. Requires bash and jq for hooks. External providers (codex, gemini) are optional local CLIs.
 
 ## Invariants
 
-<!-- Things that MUST be true for the system to work correctly.
-     Concurrency constraints, ordering guarantees, security boundaries.
-     These are the things agents should never accidentally violate. -->
+- Skills must degrade gracefully when external providers are unavailable. Never fail — fall back to Claude-only subagents.
+- Hooks must exit 0 on success or non-applicable scenarios. Exit 2 to reject with feedback (task-completed-verify pattern).
+- `/fiddle:init` must never overwrite existing MCP server entries — merge only.
+- Append-only docs (FEEDBACK, BACKLOG, research logs) are never edited or deleted.
+- Bean bodies must be self-contained — implementer agents work from the bean body alone without reading plan files.
 
 ## Known issues
 
-<!-- Technical debt, fragile areas, things that will bite you.
-     Be specific. "The auth middleware is fragile" is less useful than
-     "Auth middleware silently swallows token refresh errors — see auth/refresh.go:47" -->
+None currently identified.
 
 ---
-Last reviewed: YYYY-MM-DD
+Last reviewed: 2026-03-14
