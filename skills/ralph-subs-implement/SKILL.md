@@ -155,7 +155,7 @@ All agents are subagents (no `team_name`). The coordinator internally spawns rev
 task = Task(
   name: "impl-{bean-slug}[-fix{cycle}]",
   subagent_type: "general-purpose",
-  model: "sonnet",
+  model: <models.develop.standard>,  # from orchestrate.conf; if "default", omit to inherit session model
   mode: "bypassPermissions",
   run_in_background: true,
   max_turns: <max-impl-turns>,
@@ -175,7 +175,7 @@ beans update {id} --tag role:implement --tag bg-task:{task_id}
 task = Task(
   name: "review-{bean-slug}-c{cycle}",
   subagent_type: "general-purpose",
-  model: "sonnet",
+  model: <models.develop.standard>,  # from orchestrate.conf; if "default", omit to inherit session model
   mode: "bypassPermissions",
   run_in_background: true,
   max_turns: <max-review-turns>,
@@ -188,7 +188,7 @@ beans update {id} --remove-tag bg-task:{old_task_id} --tag bg-task:{task_id}
 
 - Always `run_in_background: true` — never block on Task calls
 - No `team_name` — all agents are subagents returning results directly
-- Models: implementers=sonnet, coordinators=sonnet (tier-1 reviewers=haiku, tier-2=sonnet internally), epic holistic review=opus
+- Models: implementers=models.develop.standard, coordinators=models.develop.standard (tier-1 reviewers=models.develop.lite, tier-2=models.develop.standard internally), epic holistic review=opus. Read model config from orchestrate.conf; "default" means omit model parameter to inherit session model.
 - Fresh context per cycle — never resume agents
 - Never implement beans yourself — delegate only
 - Safe to kill and restart — beans CLI holds all state

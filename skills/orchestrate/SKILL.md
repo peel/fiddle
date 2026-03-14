@@ -55,10 +55,33 @@ ralph {
   stall_max_respawns = 2
 }
 
+models {
+  # discover = "sonnet"
+  # define   = "sonnet"
+  # deliver  = "sonnet"
+
+  develop {
+    # standard = "sonnet"
+    lite = "sonnet"
+  }
+}
+
 develop {
   # execution = "ralph-subs"  // or "tmux-team" or "hands-on"
 }
 ```
+
+### Model Defaults
+
+| Config key | Roles | Default |
+|---|---|---|
+| models.discover | All DISCOVER subagents | "default" (session model) |
+| models.define | Panel advocates, brainstorming subagents | "default" |
+| models.develop.standard | Implementers, tier-2 review, ralph orchestrator | "default" |
+| models.develop.lite | Tier-1 review (quick pass) | "sonnet" |
+| models.deliver | Drift analysis, docs review | "default" |
+
+"default" means inherit the session model — the agent omits the `model:` parameter so the parent's model is used. Omitted keys are treated as "default".
 
 ### Provider Defaults
 
@@ -82,10 +105,11 @@ Run this section immediately on invocation, before any phase.
 
 ### Step 1: Parse Configuration
 
-1. Set provider defaults from the table above
+1. Set provider defaults from the table above. Set model defaults from the Model Defaults table.
 2. If `.claude/orchestrate.conf` exists: read it with the Read tool. Parse each HCL block:
    - `providers {}` — override provider defaults for each phase
    - `ralph {}` — set workers, max_review_cycles, max_impl_turns, max_review_turns, max_total_turns, ci_max_retries, stall_timeout_min, stall_max_respawns
+   - `models {}` — override model defaults for each phase. Nested `develop {}` block contains `standard` and `lite` keys. "default" means omit the `model:` parameter to inherit the session model.
 3. Parse CLI flags from `{ARGS}`. Override any config file values.
 4. Store final config values for use throughout the session.
 
@@ -272,7 +296,7 @@ Spawn ralph as a background subagent with fresh context:
 ralph_task = Agent(
   name: "ralph-develop-<epic-id>",
   subagent_type: "general-purpose",
-  model: "sonnet",
+  model: <models.develop.standard>,  # if "default", omit model parameter to inherit session model
   mode: "bypassPermissions",
   run_in_background: true,
   max_turns: <max_total_turns>,

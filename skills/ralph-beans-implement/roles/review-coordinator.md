@@ -36,7 +36,7 @@ Spawn ALL tier-1 reviewers in parallel in ONE message:
 Task(
   name: "t1-{agent-name}-{BEAN_ID}-c{REVIEW_CYCLE}",
   subagent_type: "general-purpose",
-  model: "haiku",
+  model: <models.develop.lite>,  # from orchestrate.conf; default: "sonnet". If "default", omit to inherit session model.
   mode: "bypassPermissions",
   run_in_background: true,
   max_turns: 30,
@@ -71,7 +71,7 @@ Spawn a single tier-2 reviewer:
 Task(
   name: "t2-review-{BEAN_ID}-c{REVIEW_CYCLE}",
   subagent_type: "general-purpose",
-  model: "sonnet",
+  model: <models.develop.standard>,  # from orchestrate.conf; if "default", omit to inherit session model
   mode: "bypassPermissions",
   run_in_background: true,
   max_turns: 30,

@@ -116,7 +116,7 @@ Both implementers and review coordinators are teammates (spawned with `team_name
 Task(
   name: "impl-{bean-slug}[-fix{cycle}]",
   subagent_type: "general-purpose",
-  model: "sonnet",
+  model: <models.develop.standard>,  # from orchestrate.conf; if "default", omit to inherit session model
   mode: "bypassPermissions",
   team_name: <team>,
   run_in_background: true,
@@ -136,7 +136,7 @@ Task(
 Task(
   name: "review-{bean-slug}-c{cycle}",
   subagent_type: "general-purpose",
-  model: "sonnet",
+  model: <models.develop.standard>,  # from orchestrate.conf; if "default", omit to inherit session model
   mode: "bypassPermissions",
   team_name: <team>,
   run_in_background: true,
@@ -149,7 +149,7 @@ Task(
 
 - Always `run_in_background: true` — never block on Task calls
 - The lead spawns only two kinds of agents: **implementers** and **review coordinators**. Both are teammates (`team_name` present). The lead never spawns reviewers directly — the coordinator handles that.
-- Models: implementers=sonnet, coordinators=sonnet (tier-1 reviewers=haiku, tier-2=sonnet internally), epic holistic review=opus
+- Models: implementers=models.develop.standard, coordinators=models.develop.standard (tier-1 reviewers=models.develop.lite, tier-2=models.develop.standard internally), epic holistic review=opus. Read model config from orchestrate.conf; "default" means omit model parameter to inherit session model.
 - Fresh context: one coordinator per bean per review cycle — never resume coordinators
 - Fresh implementer context per cycle — never resume implementers
 - Never implement beans yourself — delegate only

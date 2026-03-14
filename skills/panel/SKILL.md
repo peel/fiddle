@@ -63,10 +63,13 @@ Each participant receives: the topic, context files, and their assigned perspect
 **Full mode:** Spawn all in parallel in ONE message:
 
 1. **Claude position** — spawn via Agent tool:
+
+Read `models.define` from `.claude/orchestrate.conf` if it exists. If the value is "default" or not set, omit the `model:` parameter to inherit the session model. Otherwise use the configured model.
+
 ```
 Agent(
   subagent_type: "general-purpose",
-  model: "haiku",
+  model: <models.define>,  # omit if "default" to inherit session model
   mode: "bypassPermissions",
   run_in_background: true,
   prompt: "You are arguing from a codebase/domain perspective. Topic: {topic}. Context: {context}. Produce a position paper: what you recommend, why, key tradeoffs, risks. Be specific and cite concrete patterns from the codebase context."
@@ -94,7 +97,7 @@ Spawn exactly 2 Claude subagents as assigned advocates:
 ```
 Agent A(
   subagent_type: "general-purpose",
-  model: "haiku",
+  model: <models.define>,  # omit if "default" to inherit session model
   mode: "bypassPermissions",
   run_in_background: true,
   prompt: "You are an assigned advocate for Approach 1: {approach_1}. Argue FOR this approach with full conviction. Topic: {topic}. Context: {context}. Produce a position paper."
@@ -102,7 +105,7 @@ Agent A(
 
 Agent B(
   subagent_type: "general-purpose",
-  model: "haiku",
+  model: <models.define>,  # omit if "default" to inherit session model
   mode: "bypassPermissions",
   run_in_background: true,
   prompt: "You are an assigned advocate for Approach 2: {approach_2}. Argue FOR this approach with full conviction. Topic: {topic}. Context: {context}. Produce a position paper."
