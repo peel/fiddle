@@ -1,5 +1,5 @@
 ---
-name: orchestrate
+name: fiddle:orchestrate
 description: Use when starting a full development lifecycle for a feature or epic — chains discover, define, develop, deliver phases with multi-model support and reaction engine
 disable-model-invocation: true
 argument-hint: <topic> [--epic <id>] [--skip-discover] [--providers codex,gemini]
@@ -29,6 +29,7 @@ Parse from `{ARGS}`:
 | `--deliver-providers <list>` | codex | Override DELIVER phase providers |
 | `--workers <N>` | 2 | Parallel worker count for ralph |
 | `--max-review-cycles <N>` | 3 | Max review cycles before escalating |
+| `--max-total-turns <N>` | 200 | Max agent turns for ralph subagent |
 
 ### Config File
 
@@ -44,16 +45,14 @@ providers {
 }
 
 ralph {
-  workers           = 2
-  max_review_cycles = 3
-  max_impl_turns    = 50
-  max_review_turns  = 30
-}
-
-reaction {
-  ci_max_retries      = 3
-  stall_timeout_min   = 15
-  stall_max_respawns  = 2
+  workers            = 2
+  max_review_cycles  = 3
+  max_impl_turns     = 50
+  max_review_turns   = 30
+  max_total_turns    = 200
+  ci_max_retries     = 3
+  stall_timeout_min  = 15
+  stall_max_respawns = 2
 }
 ```
 
@@ -82,8 +81,7 @@ Run this section immediately on invocation, before any phase.
 1. Set provider defaults from the table above
 2. If `.claude/orchestrate.conf` exists: read it with the Read tool. Parse each HCL block:
    - `providers {}` — override provider defaults for each phase
-   - `ralph {}` — set workers, max_review_cycles, max_impl_turns, max_review_turns
-   - `reaction {}` — set ci_max_retries, stall_timeout_min, stall_max_respawns
+   - `ralph {}` — set workers, max_review_cycles, max_impl_turns, max_review_turns, max_total_turns, ci_max_retries, stall_timeout_min, stall_max_respawns
 3. Parse CLI flags from `{ARGS}`. Override any config file values.
 4. Store final config values for use throughout the session.
 
@@ -247,86 +245,57 @@ Fall through to DEVELOP.
 
 ## DEVELOP
 
-### Step 1: Invoke Ralph
+### Step 1: Spawn Ralph Subagent
 
-Invoke ralph-subs-implement with the epic and ralph configuration:
-
-```
-Skill(skill: "fiddle:ralph-subs-implement", args: "--epic <epic-id> --workers <workers> --max-review-cycles <max_review_cycles>")
-```
-
-Ralph handles the full implement → review cycle for each bean. Let it run.
-
-For `critical` and `high` priority beans: instruct the review coordinator to additionally request a code review from configured DEVELOP providers via their MCP tools (codex: `mcp__codex__codex`, gemini: via CLI).
-
-### Step 2: Reaction Engine
-
-The reaction engine monitors between ralph's turns. After each ralph turn completes (you regain control), run these checks before handing back to ralph:
-
-#### CI Failure Detection
-
-For each `in-progress` bean, check its tags:
+Read the ralph skill file to build the prompt:
 ```bash
-beans show <bean-id> --json
+cat .claude/skills/ralph-subs-implement/SKILL.md
 ```
 
-If the bean has a `ci-retries:N` tag:
-- If `N < ci_max_retries`: ralph will handle the retry. No action needed.
-- If `N >= ci_max_retries`: escalate.
-  ```bash
-  beans update <bean-id> --tag needs-attention
-  echo "$(date +%H:%M) impl-<bean-id> failed ${N}x → needs attention" >> .claude/orchestrate-events.log
-  ```
+Spawn ralph as a background subagent with fresh context:
 
-#### Stall Detection
+```
+ralph_task = Agent(
+  name: "ralph-develop-<epic-id>",
+  subagent_type: "general-purpose",
+  model: "sonnet",
+  mode: "bypassPermissions",
+  run_in_background: true,
+  max_turns: <max_total_turns>,
+  prompt: "<contents of ralph SKILL.md, with the following args substituted:>
+    --epic <epic-id> --workers <workers> --max-review-cycles <max_review_cycles>
+    --max-impl-turns <max_impl_turns> --max-review-turns <max_review_turns>
+    --ci-max-retries <ci_max_retries> --stall-timeout-min <stall_timeout_min>
+    --stall-max-respawns <stall_max_respawns> --caller orchestrate"
+)
+```
 
-For each `in-progress` bean, check the `## Progress` section in its body:
+For `critical` and `high` priority beans: include in the prompt an instruction for the review coordinator to additionally request a code review from configured DEVELOP providers via their MCP tools (codex: `mcp__codex__codex`, gemini: via CLI).
+
+Wait for the result:
+```
+result = TaskOutput(task_id: ralph_task.id, block: true, timeout: 3600000)
+```
+
+Log:
 ```bash
-beans show <bean-id> --json
+echo "$(date +%H:%M) ralph subagent returned" >> .claude/orchestrate-events.log
 ```
 
-Parse the last timestamp from `## Progress` entries (format: `- HH:MM ...`). If the last entry is older than `stall_timeout_min` minutes:
+### Step 2: Handle Ralph Result
 
-Check the `stall-respawns:N` tag:
-- If `N < stall_max_respawns` (or tag doesn't exist):
-  ```bash
-  beans update <bean-id> --tag stall-respawns:$((N+1))
-  echo "$(date +%H:%M) impl-<bean-id> stalled → respawned ($((N+1))/${stall_max_respawns})" >> .claude/orchestrate-events.log
-  ```
-  Ralph's next cycle will spawn a fresh implementer that reads `## Progress` and continues.
+Parse the `result` from Step 1:
 
-- If `N >= stall_max_respawns`: escalate.
-  ```bash
-  beans update <bean-id> --tag needs-attention
-  echo "$(date +%H:%M) impl-<bean-id> stalled ${N}x → needs attention" >> .claude/orchestrate-events.log
-  ```
+**Case 1 — `RALPH_STATUS: COMPLETE`:**
+Ralph finished all beans successfully. Proceed to Step 3 (Holistic Review).
 
-#### Review Overflow
+**Case 2 — `RALPH_STATUS: PARKED`:**
+Some beans need attention. Parse the needs-attention bean list from the result.
 
-If a bean's review cycle count (from tags) reaches `max_review_cycles`:
-```bash
-beans update <bean-id> --tag needs-attention
-echo "$(date +%H:%M) review-<bean-id> overflow → needs attention" >> .claude/orchestrate-events.log
-```
-
-#### Tag Reset
-
-When a bean advances from implement to review phase, reset retry tags:
-```bash
-beans update <bean-id> --remove-tag ci-retries:* --remove-tag stall-respawns:*
-```
-
-#### All Beans Parked
-
-After running checks, if:
-- No unblocked `todo` beans remain
-- No `in-progress` beans remain
-- Some beans are tagged `needs-attention`
-
-Then notify the user:
+Present to user:
 ```
 "Waiting on your input for N beans:
-- <bean-id>: <title> — <reason from event log>
+- <bean-id>: <title> — <reason>
 - ...
 
 You can: fix the issue and remove needs-attention tag, scrub the bean, or rework the scope."
@@ -334,17 +303,27 @@ You can: fix the issue and remove needs-attention tag, scrub the bean, or rework
 
 Log:
 ```bash
-echo "$(date +%H:%M) all beans parked — waiting on user for ${N} needs-attention" >> .claude/orchestrate-events.log
+echo "$(date +%H:%M) ralph parked — waiting on user for ${N} needs-attention" >> .claude/orchestrate-events.log
 ```
 
-Wait for the user to address the parked beans. When they remove `needs-attention` tags or scrub beans, resume ralph.
+Wait for the user to address the parked beans. When they respond, respawn ralph — loop back to Step 1.
+
+**Case 3 — Empty result, error, or max_turns exhausted:**
+Check bean state:
+```bash
+beans list --parent <epic-id> --json
+```
+
+Present bean summary to user (completed, in-progress, todo, needs-attention counts). Ask: "Ralph's context was exhausted. Respawn to continue, or proceed to holistic review with current state?"
+
+- If user says respawn → loop to Step 1
+- If user says proceed → Step 3
 
 ### Step 3: Holistic Review
 
 When all epic beans are `completed` or `needs-attention` (none in `todo` or `in-progress`):
 
-1. Ralph's epic holistic review runs automatically (opus model) — it reviews the full diff across all beans
-2. If DEVELOP holistic providers are configured, request comparison via their MCP tools:
+1. Run the external holistic review. If DEVELOP holistic providers are configured, request comparison via their MCP tools:
 
    **Codex:**
    ```
@@ -354,6 +333,8 @@ When all epic beans are `completed` or `needs-attention` (none in `todo` or `in-
    ```
 
    **Gemini:** Spawn via Bash with the same prompt.
+
+2. If no provider is available, perform the holistic review yourself: read the design doc, review the full diff, and compare.
 3. If holistic review creates fix beans → log "back to DEVELOP", loop to Step 1
 4. If clean → transition to DELIVER
 

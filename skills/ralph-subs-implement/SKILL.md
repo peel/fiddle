@@ -1,8 +1,8 @@
 ---
-name: ralph-subs-implement
+name: fiddle:ralph-subs-implement
 description: Execute beans tasks using subagents with ralph loop pattern. Implementers and review coordinators are background subagents; coordinators encapsulate the full tier-1/tier-2 review pipeline and return a verdict. Supports configurable parallelism.
 disable-model-invocation: true
-argument-hint: [--epic <id>] [--workers 2] [--max-review-cycles 3] [--max-impl-turns 50] [--max-review-turns 30]
+argument-hint: [--epic <id>] [--workers 2] [--max-review-cycles 3] [--max-impl-turns 50] [--max-review-turns 30] [--ci-max-retries 3] [--stall-timeout-min 15] [--stall-max-respawns 2] [--caller <name>]
 ---
 
 # Ralph Beans Implementation (Subagent Variant)
@@ -17,6 +17,10 @@ Flags (all optional, order-independent):
 - `--max-review-cycles N` (default: 3) — max cycles before abandoning
 - `--max-impl-turns N` (default: 50) — max agent turns per implementer spawn
 - `--max-review-turns N` (default: 30) — max agent turns per review coordinator
+- `--ci-max-retries N` (default: 3) — CI failures before tagging `needs-attention`
+- `--stall-timeout-min N` (default: 15) — minutes of inactivity before respawn/escalation
+- `--stall-max-respawns N` (default: 2) — stall respawns before tagging `needs-attention`
+- `--caller <name>` (default: none) — when set, output machine-readable `RALPH_STATUS` on exit
 
 **`BEANS_LIST` command:** When `--epic <id>` is set, every `beans list` invocation MUST include `--parent <id>`.
 - With `--epic cv0e`: `beans list --parent cv0e --json`
@@ -38,6 +42,34 @@ Flags (all optional, order-independent):
 Every bean goes through: **implement** → **review** (coordinator handles tier-1 + tier-2 internally).
 
 Run `BEANS_LIST`. Then:
+
+**Pre-step — Reaction checks:** For each `in-progress` leaf bean, run `beans show {id} --json` and check:
+
+1. **CI failure escalation:** If the bean has a `ci-retries:N` tag and `N >= ci_max_retries`:
+   ```bash
+   beans update {id} --tag needs-attention
+   echo "$(date +%H:%M) impl-{id} failed ${N}x → needs attention" >> .claude/orchestrate-events.log
+   ```
+
+2. **Stall detection:** Parse the last timestamp from `## Progress` entries (format: `- HH:MM ...`). If the last entry is older than `stall_timeout_min` minutes:
+   - Check the `stall-respawns:N` tag:
+     - If `N < stall_max_respawns` (or tag doesn't exist):
+       ```bash
+       beans update {id} --tag stall-respawns:$((N+1))
+       echo "$(date +%H:%M) impl-{id} stalled → respawned ($((N+1))/${stall_max_respawns})" >> .claude/orchestrate-events.log
+       ```
+       Ralph's next cycle will spawn a fresh implementer that reads `## Progress` and continues.
+     - If `N >= stall_max_respawns`:
+       ```bash
+       beans update {id} --tag needs-attention
+       echo "$(date +%H:%M) impl-{id} stalled ${N}x → needs attention" >> .claude/orchestrate-events.log
+       ```
+
+3. **Review overflow:** If a bean's review cycle count (from tags) reaches `max_review_cycles`:
+   ```bash
+   beans update {id} --tag needs-attention
+   echo "$(date +%H:%M) review-{id} overflow → needs attention" >> .claude/orchestrate-events.log
+   ```
 
 **Step 0 — Expand features:** For each **feature** bean in the list:
 - If `todo` with no blockers → `beans update {id} --status in-progress`
@@ -63,8 +95,26 @@ For each ready leaf bean (up to available_slots):
 **If active_count > 0 AND ready_beans == 0:** STOP.
 
 **If active_count == 0 AND ready_beans == 0:**
-Read `roles/lead-procedures.md` → check for "Epic Holistic Review". If none → follow "Cleanup".
-After epic holistic review completes, remind the user: "Epic complete. Run `/fiddle:docs-evolve --epic <id>` to update project docs."
+
+Check for `needs-attention` beans: `beans list --parent <epic-id> --json` and filter for `needs-attention` tag.
+
+- **If needs-attention beans exist:** Output the following and STOP:
+  ```
+  RALPH_STATUS: PARKED
+  Needs-attention beans:
+  - <bean-id>: <title> — <reason from tags/event log>
+  - ...
+  ```
+
+- **If all beans completed (no needs-attention):**
+  Read `roles/lead-procedures.md` → run "Epic Holistic Review". If none → follow "Cleanup".
+  After epic holistic review completes, output completion message:
+  - If `--caller orchestrate` was set:
+    ```
+    RALPH_STATUS: COMPLETE
+    Completed: <N> beans, Needs-attention: <M> beans
+    ```
+  - If no `--caller` flag: remind the user: "Epic complete. Run `/fiddle:docs-evolve --epic <id>` to update project docs."
 
 ## When a Background Task Completes
 
@@ -77,7 +127,7 @@ You are notified when background tasks finish. The notification includes the tas
 **Implementer result (non-empty):**
 - Present the diff from the result to the user.
 - Read `roles/lead-procedures.md` → run "Lead Verification". If fails → spawn fix implementer, skip review. STOP.
-- `beans update {id} --remove-tag role:implement --remove-tag bg-task:{old_task_id} --tag role:review`
+- `beans update {id} --remove-tag role:implement --remove-tag bg-task:{old_task_id} --remove-tag ci-retries --remove-tag stall-respawns --tag role:review`
 - Spawn review coordinator (see "Review Coordinator Spawn"). STOP.
 
 **Implementer result (empty/error):** Stale — read `roles/lead-procedures.md` → "Abandon Bean". STOP.
