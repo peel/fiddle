@@ -54,6 +54,10 @@ ralph {
   stall_timeout_min  = 15
   stall_max_respawns = 2
 }
+
+develop {
+  # execution = "ralph-subs"  // or "tmux-team" or "hands-on"
+}
 ```
 
 ### Provider Defaults
@@ -192,38 +196,23 @@ Fall through to DEFINE.
 
 ### Step 1: Brainstorming
 
-Invoke the brainstorming skill:
+Invoke the brainstorming skill with the orchestrate flag:
 ```
-Skill(skill: "superpowers:brainstorming")
-```
-
-This explores the user's intent, asks questions, and produces 2-3 candidate approaches. Follow the skill's instructions completely.
-
-### Step 2: Panel Discussion
-
-Invoke the panel skill on the proposed approaches:
-```
-Skill(skill: "fiddle:panel", args: "<approaches from brainstorming> --providers <define_providers>")
+Skill(skill: "superpowers:brainstorming", args: "--from-orchestrate")
 ```
 
-The panel runs structured adversarial analysis across configured providers. Wait for the panel's verdict.
+This explores the user's intent, asks questions, proposes 2-3 approaches, runs panel enrichment (if providers are available), and produces a design doc. The `--from-orchestrate` flag causes the skill to return control here after writing the design doc instead of chaining to writing-plans. Follow the skill's instructions completely.
 
-**If full consensus:** Proceed automatically with the recommended approach. Report to user: "Panel reached consensus on [approach]. Proceeding."
+### Step 2: Implementation Planning
 
-**If disagreement:** Present the panel's output to the user. Ask them to pick an approach. Wait for their decision.
-
-### Step 3: Implementation Planning
-
-Invoke the writing-plans skill with the chosen approach:
+Invoke the writing-plans skill with the orchestrate flag:
 ```
-Skill(skill: "superpowers:writing-plans")
+Skill(skill: "superpowers:writing-plans", args: "--from-orchestrate")
 ```
 
-This creates a detailed implementation plan and decomposes it into beans via `bean-decomposition`. Follow the skill's instructions completely.
+This creates a detailed implementation plan and decomposes it into beans. The `--from-orchestrate` flag causes the skill to return control here after bean creation instead of presenting execution handoff options.
 
-After the plan is written and approved, beans should exist under an epic.
-
-### Step 4: Capture Epic ID
+### Step 3: Capture Epic ID
 
 If `--epic` was not provided at invocation:
 
@@ -234,7 +223,7 @@ beans list --json -t epic -s todo
 
 Take the most recently created epic ID. Store it for the remaining phases.
 
-### Step 5: Transition
+### Step 4: Transition
 
 ```bash
 echo "$(date +%H:%M) DEFINE complete — $(beans list --parent <epic-id> --json | jq 'length') beans created" >> .claude/orchestrate-events.log
@@ -244,6 +233,31 @@ echo "PHASE:DEVELOP" >> .claude/orchestrate-events.log
 Fall through to DEVELOP.
 
 ## DEVELOP
+
+### Step 0: Execution Choice
+
+Check `orchestrate.conf` for a `develop.execution` setting. If set, use that value. If not set, present options to the user:
+
+```
+"Beans are ready. How would you like to execute?
+
+1. **Ralph Subs (automated, this session)** — I spawn ralph as a background subagent. Automated implement/review cycles. I'll wait and handle the result.
+
+2. **Tmux Team (automated, parallel)** — Launch ralph with parallel workers in tmux panes via conductor agent.
+
+3. **Hands-on (manual)** — You implement the beans yourself. Tell me when you're done and I'll continue with holistic review."
+```
+
+Wait for the user's choice (or use config value).
+
+- **If Ralph Subs:** proceed to Step 1 (Spawn Ralph Subagent) as normal.
+- **If Tmux Team:** proceed to Step 1 but use `ralph-beans-implement` (team variant) instead of `ralph-subs-implement`.
+- **If Hands-on:** log the choice, then wait for the user to signal completion. When they do, skip to Step 3 (Holistic Review).
+
+Log:
+```bash
+echo "$(date +%H:%M) execution choice: <choice>" >> .claude/orchestrate-events.log
+```
 
 ### Step 1: Spawn Ralph Subagent
 
