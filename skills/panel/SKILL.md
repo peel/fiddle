@@ -61,7 +61,7 @@ Claude is always present and always does synthesis. External providers participa
 
 Each participant receives: the topic, context files, and their assigned perspective. Each produces an independent position arguing for their assigned approach.
 
-**Full mode:** Read `skills/ralph-subs-implement/roles/provider-dispatch.md`. Follow **Read Config** and **Build Prompt** for each available provider. Spawn ALL in one message — true parallelism.
+**Full mode:** Read `skills/ralph-subs-implement/roles/provider-dispatch.md`. Also read `skills/ralph-subs-implement/roles/provider-context.md` for prompt construction. Follow **Read Config** and **Build Prompt** for each available provider. Spawn ALL in one message — true parallelism.
 
 1. **Claude position** — spawn via Agent tool:
 
@@ -116,7 +116,7 @@ Agent B(
 
 Send ALL positions to each participant. Each critiques the others: agreements, disagreements, new concerns raised.
 
-**Full mode:** Read `skills/ralph-subs-implement/roles/provider-dispatch.md`. Follow **Read Config** and **Build Prompt** for each available provider. Spawn ALL in one message.
+**Full mode:** Read `skills/ralph-subs-implement/roles/provider-dispatch.md`. Also read `skills/ralph-subs-implement/roles/provider-context.md` for prompt construction. Follow **Read Config** and **Build Prompt** for each available provider. Spawn ALL in one message.
 
 - **Claude subagent**: receives all other positions via `Agent(run_in_background: true)`, critiques them
 - **External providers**: for each, follow provider-dispatch **Build Prompt** then **Dispatch (Background)**:
