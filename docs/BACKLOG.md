@@ -13,11 +13,6 @@
      Tags: #idea #debt #optimization #feature #experiment #infrastructure
 -->
 
-### 2026-03-15 — Document AGENTS.md symlink setup in README
-SYSTEM.md notes the AGENTS.md symlink for shared provider context, but README is more discoverable for new users. Add setup instructions there.
-Origin: code review of async provider coordination epic
-Tags: #docs
-
 ### 2026-03-15 — Clarify provider-context.md path resolution in panel/SKILL.md
 The dispatch procedure references `roles/provider-context.md` by relative path. orchestrate/SKILL.md resolves both paths explicitly, but panel/SKILL.md only references the dispatch procedure without explicitly mentioning the template. Adding the explicit reference would improve clarity.
 Origin: code review of async provider coordination epic

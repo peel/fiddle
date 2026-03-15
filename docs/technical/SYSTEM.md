@@ -30,7 +30,6 @@ Fiddle is a Claude Code plugin that orchestrates a four-phase development lifecy
 
 Runs entirely locally as a Claude Code plugin. No server, no cloud, no CI. Installed via `claude --plugin-dir` or the plugin marketplace. Requires bash and jq for hooks. External providers (codex, gemini) are optional local CLIs.
 
-Shared agent context: symlink `CLAUDE.md` to `AGENTS.md` so provider CLIs (codex, gemini) share the same project baseline when invoked from the project directory.
 
 ## Invariants
 
