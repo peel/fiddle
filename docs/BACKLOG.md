@@ -13,11 +13,6 @@
      Tags: #idea #debt #optimization #feature #experiment #infrastructure
 -->
 
-### 2026-03-15 — Update orchestrate/SKILL.md config example to show full provider structure
-The config example in orchestrate/SKILL.md only shows phase arrays and ralph block — it omits the codex/gemini CLI definitions and timeout block added in the async provider coordination epic. Agents reading only the example won't see the full config shape.
-Origin: code review of async provider coordination epic
-Tags: #debt #docs
-
 ### 2026-03-15 — Document AGENTS.md symlink setup in README
 SYSTEM.md notes the AGENTS.md symlink for shared provider context, but README is more discoverable for new users. Add setup instructions there.
 Origin: code review of async provider coordination epic
