@@ -33,26 +33,57 @@ When a plan task needs 3+ cycles:
    <overall goal from the plan task>"
    ```
 
-2. Create a **task** bean per behavior under the feature:
+2. Create a **task** bean per behavior under the feature. The body must pass the completeness gate:
    ```bash
    beans create "Task Na: <specific behavior>" --json -t task -s todo --parent <feature-id> --tag branch -d "Plan: <plan-path> Task N, step group a
 
-   Files:
-   - <relevant files for this behavior only>
+   ## Context
 
-   Steps:
-   1. Write failing test for <behavior>
-   2. Run test, verify it fails
-   3. Implement minimal code to pass
-   4. Run tests, verify they pass
-   5. Commit
+   Repo: <absolute path to repo>
+   <1-2 sentences explaining what this is and why, enough for an agent with no prior context>
 
-   <code snippets from plan relevant to this behavior>"
+   ## Files
+
+   - Create/Modify: <exact paths relative to repo root>
+   - Test: <exact test file path>
+
+   ## Steps
+
+   - [ ] Write failing test for <behavior> — <what the test asserts, expected failure message>
+   - [ ] Run test, verify it fails: <exact command>
+   - [ ] Implement: <what to add/change, key logic, code snippets from plan>
+   - [ ] Run tests, verify pass: <exact command>
+   - [ ] Commit
+
+   ## Acceptance Criteria
+
+   - <observable, verifiable criterion 1>
+   - <observable, verifiable criterion 2>"
    ```
 
 3. Chain children with `--blocked-by` where one behavior builds on another. Independent behaviors need no ordering.
 
 4. Set the feature's own `--blocked-by` to external dependencies (other tasks/features from the plan that must complete first).
+
+## Bean Body Completeness Gate
+
+After creating each task bean, verify its body passes this gate before moving on. If it fails, fix the body inline — do not proceed to the next bean.
+
+**Gate: An agent with zero context can implement this bean by reading only its body.**
+
+Check each requirement. All must pass:
+
+| # | Check | Fail if |
+|---|---|---|
+| 1 | **Steps exist** | Body has no `## Steps` section or no `- [ ]` checkboxes |
+| 2 | **Steps are actionable** | Any step says "see plan", "as above", "similar to Task N", or lacks concrete instructions |
+| 3 | **Acceptance criteria exist** | Body has no `## Acceptance Criteria` section |
+| 4 | **Acceptance criteria are verifiable** | Any criterion is vague ("works correctly") rather than observable ("returns 200 on /health/db") |
+| 5 | **Files are specified** | Body references code changes but has no `## Files` section listing exact paths |
+| 6 | **Repo is specified** | Work spans multiple repos and the body doesn't say which repo to work in |
+| 7 | **Context is sufficient** | Body references concepts, modules, or patterns the implementing agent won't know without explanation |
+
+The bean body should reference the plan path for additional context (`Plan: <path> Task N`), but must not **depend** on the plan to be implementable. The plan is supplementary — the bean is the contract.
 
 ## Shared Contracts (for parallel beans)
 
