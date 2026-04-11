@@ -52,7 +52,7 @@ Read and internalize: `skills/develop/iron-laws.md`
 
 ## 1a. Restart Check
 
-If bean is `in-progress`, follow: `skills/develop/develop-loop/restart-recovery.md`
+If bean is `in-progress`, follow: `skills/develop-loop/restart-recovery.md`
 
 ## 1b. Initialize Evaluation Log
 
@@ -160,7 +160,7 @@ The external provider receives the same context as the claude evaluator: evaluat
 
 **Each provider dispatch counts as 1 toward the dispatch budget**, regardless of provider type. For example, 2 providers x 2 domains = 4 dispatches per iteration.
 
-Load evaluator context in order specified by: `skills/develop/develop-loop/context-loading-order.md`
+Load evaluator context in order specified by: `skills/develop-loop/context-loading-order.md`
 
 Each evaluator (regardless of provider) returns a single scorecard JSON containing both per-dimension scores (under `.domains`) and pass/fail criteria (under `.criteria`). The scorecard MUST include a `"provider"` field identifying which provider produced it. Save each provider's scorecard per domain separately:
 
@@ -182,13 +182,13 @@ Do NOT leave processes running after evaluation.
 
 ## 1g–1h. Merge Scorecards
 
-Merge provider and cross-domain scorecards following: `skills/develop/develop-loop/scorecard-merge.md`
+Merge provider and cross-domain scorecards following: `skills/develop-loop/scorecard-merge.md`
 
 <GATE>Proceed to threshold checks (1j). Do not skip to next task.</GATE>
 
 ## 1i. Attended Scorecard Gate
 
-If `evaluators.attended` is true in orchestrate.json, follow: `skills/develop/develop-loop/attended-gate.md`
+If `evaluators.attended` is true in orchestrate.json, follow: `skills/develop-loop/attended-gate.md`
 
 When `evaluators.attended` is false, skip directly to threshold checks (step 1j).
 

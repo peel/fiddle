@@ -36,6 +36,6 @@ When the human corrects a score during attended review, append a calibration anc
 **Anchor:** For this project, score Y means: [human's description of what that score level looks like]
 ```
 
-Ask the human for their reason and description when they correct a score. The anchor becomes part of the evaluator's context on future dispatches (loaded at position 3 in the context loading order — see `skills/develop/develop-loop/context-loading-order.md`).
+Ask the human for their reason and description when they correct a score. The anchor becomes part of the evaluator's context on future dispatches (loaded at position 3 in the context loading order — see `skills/develop-loop/context-loading-order.md`).
 
 When `evaluators.attended` is false, skip the attended gate entirely — proceed directly to threshold checks.
