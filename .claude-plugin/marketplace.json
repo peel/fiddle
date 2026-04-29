@@ -1,6 +1,9 @@
 {
   "name": "fiddle-dev",
   "description": "Development marketplace for fiddle plugin",
+  "owner": {
+    "name": "Piotr Limanowski"
+  },
   "plugins": [
     {
       "name": "fiddle",
