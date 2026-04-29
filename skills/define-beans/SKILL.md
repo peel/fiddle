@@ -34,7 +34,7 @@ When a plan task needs 3+ cycles:
    ```
 
 2. Create a **task** bean per behavior under the feature. The body must pass the completeness gate:
-   ```bash
+   ````bash
    beans create "Task Na: <specific behavior>" --json -t task -s todo --parent <feature-id> --tag branch -d "Plan: <plan-path> Task N, step group a
 
    ## Context
@@ -55,11 +55,21 @@ When a plan task needs 3+ cycles:
    - [ ] Run tests, verify pass: <exact command>
    - [ ] Commit
 
-   ## Acceptance Criteria
+   ## Evaluation
 
-   - <observable, verifiable criterion 1>
-   - <observable, verifiable criterion 2>"
-   ```
+   \`\`\`eval
+   domains: [general]
+   criteria:
+     general:
+       - id: <stable-kebab-case-id>
+         check: \"<observable, verifiable criterion>\"
+       - id: <another-id>
+         check: \"<another criterion>\"
+   thresholds: {}
+   \`\`\`"
+   ````
+
+   **The eval block must be copied verbatim from the corresponding plan task** (`write-plan` produces eval blocks for every task). Do not reformat it as a flat bullet list — the `develop` skill's hard-gate validates the fenced ` ```eval ` block with `domains:` and `criteria:` keys, and the evaluator dispatches against the structured criteria. If the plan task is missing an eval block, stop and fix the plan first.
 
 3. Chain children with `--blocked-by` where one behavior builds on another. Independent behaviors need no ordering.
 
@@ -77,8 +87,8 @@ Check each requirement. All must pass:
 |---|---|---|
 | 1 | **Steps exist** | Body has no `## Steps` section or no `- [ ]` checkboxes |
 | 2 | **Steps are actionable** | Any step says "see plan", "as above", "similar to Task N", or lacks concrete instructions |
-| 3 | **Acceptance criteria exist** | Body has no `## Acceptance Criteria` section |
-| 4 | **Acceptance criteria are verifiable** | Any criterion is vague ("works correctly") rather than observable ("returns 200 on /health/db") |
+| 3 | **Eval block exists** | Body has no fenced ` ```eval ` block with `domains:` and `criteria:` keys (this is a hard requirement of the `develop` skill) |
+| 4 | **Eval criteria are verifiable** | Any criterion's `check:` is vague ("works correctly") rather than observable ("returns 200 on /health/db") |
 | 5 | **Files are specified** | Body references code changes but has no `## Files` section listing exact paths |
 | 6 | **Repo is specified** | Work spans multiple repos and the body doesn't say which repo to work in |
 | 7 | **Context is sufficient** | Body references concepts, modules, or patterns the implementing agent won't know without explanation |
