@@ -100,11 +100,26 @@ Dispatch a subagent using the template at `skills/develop/implementer-prompt.md`
 - `{ITERATION}` — iteration number (1 on first dispatch)
 - `{TASK_TEXT}` — full bean body (title, description, acceptance criteria)
 - `{CONTEXT}` — relevant file paths, architecture notes, codebase context
-- `{EVAL_BLOCK}` — the task's Evaluation block criteria
+- `{EVAL_BLOCK}` — the task's Evaluation block criteria, EXCLUDING any criterion marked `holdout: true` (see Hold-Out Criteria below)
 - `{ANTIPATTERNS}` — known antipatterns to avoid (see antipattern loading below; empty if none configured)
-- `{PRIOR_SCORECARD}` — previous evaluator scorecard (empty on first dispatch)
-- `{PRIOR_GUIDANCE}` — specific fix instructions from evaluator (empty on first dispatch)
+- `{PRIOR_SCORECARD}` — previous evaluator scorecard (empty on first dispatch), with hold-out criterion results removed (see Hold-Out Criteria below)
+- `{PRIOR_GUIDANCE}` — specific fix instructions from evaluator (empty on first dispatch), with any guidance derived from hold-out criteria removed
 - `{WORK_DIR}` — worktree directory path
+
+### Hold-Out Criteria
+
+A task's eval block may mark a criterion `holdout: true`. Hold-out criteria are
+evaluator-only: they are scored like any other criterion but are NEVER shown to
+the implementer. When filling `{EVAL_BLOCK}`, exclude every criterion with
+`holdout: true`. When filling `{PRIOR_SCORECARD}` and `{PRIOR_GUIDANCE}` for a
+re-dispatch (from step 1m FAIL / PASS_REGRESSED), also strip the `criteria[]`
+entries for hold-out IDs and any guidance sentence derived from them.
+
+Why: convergence must come from the implementer generalizing to the spec, not
+from rubric-matching a criterion it can read. A criterion held out of the prompt
+can only be satisfied by getting the underlying quality right.
+
+Default: no criteria are held out unless a bean's eval block marks them.
 
 ### Antipattern Loading
 
@@ -254,6 +269,8 @@ Do NOT skip logging. Do NOT write the log entry manually.
 | **PASS_PENDING** | Re-evaluate without re-implementing — scorecard may stabilize. → Back to 1f. |
 | **PASS_REGRESSED** | Dispatch fresh implementer with regression details (which dimensions in which domains regressed and by how much). → Back to 1d. |
 | **DISPATCHES_EXCEEDED** | Mark bean `needs-attention`. Escalate to human. Return to orchestrator. |
+
+> FAIL and PASS_REGRESSED re-dispatch through step 1d, so their `{PRIOR_SCORECARD}` and `{PRIOR_GUIDANCE}` feedback MUST omit hold-out criterion results and any guidance derived from them (see Hold-Out Criteria in step 1d).
 
 > SPEC_DEFECT never reaches this table: the implementer-reported path exits at step 1e, and the evaluator-flagged path exits via the spec-defect HARD-GATE at the end of 1g–1h — it runs 1l logging with the merged scorecard, then routes to `needs-attention` and skips 1i/1j/1k/1m. Both route the bean to `needs-attention` before convergence is checked.
 
