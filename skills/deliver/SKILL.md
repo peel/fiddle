@@ -203,6 +203,38 @@ If the evaluator was consistently too strict or too lenient across multiple task
 
 High iteration counts (>5 develop-evaluate cycles on a single task) suggest calibration gaps. Identify dimensions that caused the most iterations and focus calibration updates (4b) on those dimensions.
 
+#### 5f. Review Longitudinal Decay Trends
+
+Drift analysis (Step 2) and per-task evaluators only see one epic at a time. Architectural decay shows up across epics: the codebase getting harder to work in, evaluators quietly disagreeing more. Rising dispatches-to-convergence for similar-sized epics is the earliest slop signal available.
+
+<HARD-GATE>
+Do NOT aggregate eval-log history by hand or eyeball the beans. You MUST run the trend script, which reads the "## Evaluation Log" sections from every task bean's body across all epics and computes the aggregates and cross-epic direction verdicts:
+
+```bash
+scripts/trend-eval-history.sh --beans-path <beans-path>
+```
+
+(Omit `--beans-path` only when running from the repo root where `.beans` is discoverable; always pass it from a worktree.)
+
+Read the JSON it emits. Do not reconstruct any number the script already reports.
+</HARD-GATE>
+
+The output carries per-epic aggregates ordered oldest to newest (mean/max dispatches-to-convergence, mean iterations, per-dimension mean scores, disagreement count), a `trends` array comparing consecutive epics, and a top-level `alarm` flag with `alarm_reasons`.
+
+Present the trend to the user:
+
+```
+"Longitudinal decay trends (oldest → newest epic):
+- Dispatches-to-convergence: [from → to] ([direction])
+- Iterations: [from → to] ([direction])
+- Per-dimension scores: [dimension: from → to (direction), ...]
+- Provider disagreements: [from → to] ([direction])
+
+Decay alarm: [RAISED — <alarm_reasons> | none]"
+```
+
+If `alarm` is `true`, a metric declined across the two most recent consecutive epics (dispatches up, a dimension score down, or disagreements up). Treat it as a signal that calibration, thresholds, or scope discipline need attention before the next epic; fold the affected dimensions into the calibration updates from 5b. If `trends` is `null` (fewer than two epics have eval data yet), report that there is not enough history to trend and continue.
+
 Present a summary:
 ```
 "Evaluator evolve complete:
@@ -211,6 +243,7 @@ Present a summary:
 - Antipatterns recorded: [count]
 - Threshold adjustments: [list or 'none']
 - High-iteration tasks: [list or 'none']
+- Longitudinal decay: [alarm RAISED — <reasons> | no alarm | not enough history]
 
 Proceed to close epic?"
 ```
