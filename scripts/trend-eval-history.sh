@@ -62,7 +62,7 @@ parse_eval_body() {
   disp=$(echo "$body" | sed -n 's/^total_dispatches: \([0-9][0-9]*\).*/\1/p' | tail -1)
   disp="${disp:-0}"
   disagree=$(echo "$body" | grep -cE '^- .*: spread [0-9]' || true)
-  lastsec=$(echo "$body" | awk '/^### Iteration /{buf=$0"\n";next} {buf=buf $0"\n"} END{printf "%s", buf}')
+  lastsec=$(echo "$body" | awk '/^### Iteration /{buf=$0"\n";cap=1;next} /^### /{cap=0;next} cap{buf=buf $0"\n"} END{printf "%s", buf}')
   dims=$(echo "$lastsec" | sed -n 's/^- \([A-Za-z_][A-Za-z0-9_]*\): \([0-9][0-9]*\)\/10.*/{"\1":\2}/p' | jq -s 'add // {}')
   [[ -n "$dims" ]] || dims='{}'
   jq -n \

@@ -140,7 +140,60 @@ BODY=$(beans show "$BEAN_ID" --json 2>/dev/null | jq -r '.body')
 echo "$BODY" | grep -q "ap-dead-code" && assert_eq "antipattern id present alongside corrections" "yes" "yes" || assert_eq "antipattern id present alongside corrections" "yes" "no"
 echo "$BODY" | grep -q "Human Corrections:" && assert_eq "corrections section present alongside antipatterns" "yes" "yes" || assert_eq "corrections section present alongside antipatterns" "yes" "no"
 
+echo "Test 13: Spot-check entry uses Spot-Check heading with Human Corrections"
+DISPATCHES_BEFORE=$("$SCRIPT_DIR/parse-eval-log.sh" --bean-id "$BEAN_ID" | jq -r '.total_dispatches')
+ITER_BEFORE=$("$SCRIPT_DIR/parse-eval-log.sh" --bean-id "$BEAN_ID" | jq -r '.iteration_count')
+cat > /tmp/test-spotcheck-corrections.json << 'EOF'
+[{"domain": "general", "dimension": "correctness", "evaluator_score": 8, "human_score": 5, "reason": "blind spot-check: missed error path"}]
+EOF
+cat > /tmp/test-scorecard-sc.json << 'EOF'
+{"domains":{"general":{"dimensions":{"correctness":{"score":8,"threshold":7}}}},"criteria":[]}
+EOF
+"$SCRIPT_DIR/append-eval-log.sh" --bean-id "$BEAN_ID" --spot-check --scorecard /tmp/test-scorecard-sc.json --guidance "blind spot-check" --corrections /tmp/test-spotcheck-corrections.json
+BODY=$(beans show "$BEAN_ID" --json 2>/dev/null | jq -r '.body')
+echo "$BODY" | grep -q "### Spot-Check (" && assert_eq "spot-check heading present" "yes" "yes" || assert_eq "spot-check heading present" "yes" "no"
+echo "$BODY" | grep -q "Human Corrections:" && assert_eq "spot-check human corrections present" "yes" "yes" || assert_eq "spot-check human corrections present" "yes" "no"
+
+echo "Test 14: Spot-check does not add an iteration and requires no --iteration"
+OUTPUT=$("$SCRIPT_DIR/parse-eval-log.sh" --bean-id "$BEAN_ID")
+assert_eq "iteration_count unchanged after spot-check" "$ITER_BEFORE" "$(echo "$OUTPUT" | jq -r '.iteration_count')"
+assert_eq "total_dispatches uncorrupted by spot-check (default 0)" "$DISPATCHES_BEFORE" "$(echo "$OUTPUT" | jq -r '.total_dispatches')"
+
+echo "Test 15: Regular mode still requires --iteration"
+EXIT_CODE=0
+"$SCRIPT_DIR/append-eval-log.sh" --bean-id "$BEAN_ID" --scorecard /tmp/test-scorecard-sc.json --dispatches 1 2>/dev/null || EXIT_CODE=$?
+assert_eq "regular mode missing --iteration → exit 2" "2" "$EXIT_CODE"
+
+echo "Test 16: Spot-check preserves trend iteration count and final-iteration dimensions"
+FIXT=$(mktemp -d)
+beans init --beans-path "$FIXT" >/dev/null 2>&1
+FE=$(beans create "Fixture Epic" --beans-path "$FIXT" -t epic -s completed --json 2>/dev/null | jq -r '.bean.id // .id')
+FT=$(beans create "Fixture Task" --beans-path "$FIXT" -t task -s completed --parent "$FE" --json 2>/dev/null | jq -r '.bean.id // .id')
+FEF=$(ls "$FIXT"/${FE}*.md); sed -i.bak "s/^created_at: .*/created_at: 2026-01-01T00:00:00Z/" "$FEF" && rm -f "$FEF.bak"
+cat > /tmp/test-fixt-i1.json << 'EOF'
+{"domains":{"general":{"dimensions":{"correctness":{"score":9,"threshold":7}}}},"criteria":[]}
+EOF
+cat > /tmp/test-fixt-i2.json << 'EOF'
+{"domains":{"general":{"dimensions":{"correctness":{"score":6,"threshold":7}}}},"criteria":[]}
+EOF
+cat > /tmp/test-fixt-sc.json << 'EOF'
+{"domains":{"general":{"dimensions":{"correctness":{"score":2,"threshold":7}}}},"criteria":[]}
+EOF
+cat > /tmp/test-fixt-corr.json << 'EOF'
+[{"domain": "general", "dimension": "correctness", "evaluator_score": 6, "human_score": 2, "reason": "blind spot-check"}]
+EOF
+BEANS_PATH="$FIXT" "$SCRIPT_DIR/append-eval-log.sh" --bean-id "$FT" --init --base-sha fsha
+BEANS_PATH="$FIXT" "$SCRIPT_DIR/append-eval-log.sh" --bean-id "$FT" --iteration 1 --scorecard /tmp/test-fixt-i1.json --dispatches 2 --guidance ""
+BEANS_PATH="$FIXT" "$SCRIPT_DIR/append-eval-log.sh" --bean-id "$FT" --iteration 2 --scorecard /tmp/test-fixt-i2.json --dispatches 2 --guidance ""
+BEANS_PATH="$FIXT" "$SCRIPT_DIR/append-eval-log.sh" --bean-id "$FT" --spot-check --scorecard /tmp/test-fixt-sc.json --guidance "blind spot-check" --corrections /tmp/test-fixt-corr.json
+FIXT_PARSE=$(BEANS_PATH="$FIXT" "$SCRIPT_DIR/parse-eval-log.sh" --bean-id "$FT")
+assert_eq "fixture parse iteration_count stays 2" "2" "$(echo "$FIXT_PARSE" | jq -r '.iteration_count')"
+FIXT_TREND=$("$SCRIPT_DIR/trend-eval-history.sh" --beans-path "$FIXT")
+assert_eq "fixture trend iterations mean is 2" "2" "$(echo "$FIXT_TREND" | jq -r '.epics[0].iterations.mean')"
+assert_eq "fixture trend correctness from iter 2 not spot-check" "6" "$(echo "$FIXT_TREND" | jq -r '.epics[0].dimensions.correctness')"
+rm -rf "$FIXT"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
-rm -f /tmp/test-scorecard.json /tmp/test-scorecard2.json /tmp/test-scorecard3.json /tmp/test-scorecard4.json /tmp/test-scorecard5.json /tmp/test-scorecard6.json /tmp/test-scorecard7.json /tmp/test-scorecard8.json /tmp/test-scorecard9.json /tmp/test-disagreements.json /tmp/test-disagreements-empty.json /tmp/test-antipatterns.json /tmp/test-antipatterns-empty.json /tmp/test-antipatterns2.json /tmp/test-corrections.json
+rm -f /tmp/test-scorecard.json /tmp/test-scorecard2.json /tmp/test-scorecard3.json /tmp/test-scorecard4.json /tmp/test-scorecard5.json /tmp/test-scorecard6.json /tmp/test-scorecard7.json /tmp/test-scorecard8.json /tmp/test-scorecard9.json /tmp/test-disagreements.json /tmp/test-disagreements-empty.json /tmp/test-antipatterns.json /tmp/test-antipatterns-empty.json /tmp/test-antipatterns2.json /tmp/test-corrections.json /tmp/test-spotcheck-corrections.json /tmp/test-scorecard-sc.json /tmp/test-fixt-i1.json /tmp/test-fixt-i2.json /tmp/test-fixt-sc.json /tmp/test-fixt-corr.json
 [ "$FAIL" -eq 0 ] || exit 1
