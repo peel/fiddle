@@ -63,6 +63,10 @@ Is the code clean, maintainable, and idiomatic?
 
 **Default threshold: 6**
 
+The per-task threshold stays at 6 by design; drift over time is caught by the
+longitudinal decay alarm (DELIVER 5f, `scripts/trend-eval-history.sh`) rather
+than by raising the bar. See `docs/technical/decisions/006-code-quality-threshold-equilibrium.md`.
+
 ```
  1  Broken: Syntax errors, doesn't parse.
  2  Garbage: Runs but incomprehensible. No structure, no naming,
@@ -74,7 +78,9 @@ Is the code clean, maintainable, and idiomatic?
  5  Adequate: Reasonable structure. Functions mostly do one thing.
     Some duplication. Naming is okay but not great.
  6  Clean: Clear structure, good naming, minimal duplication.
-    Follows existing codebase patterns.
+    Consistent with documented conventions and justifiable on its
+    own merits; a reviewer new to the codebase could follow it
+    without archaeology.
  7  Good: Well-organized with clear interfaces. Easy to read.
     Follows language idioms. Tests are clear.
  8  Strong: Clean abstractions, good separation of concerns.

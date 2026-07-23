@@ -44,6 +44,18 @@ The task's Evaluation block contains criteria with IDs. For each criterion:
 3. Return `pass: true` or `pass: false` with concrete evidence
 4. The `id` in your output must match the criterion's `id` exactly
 
+### Hold-Out Criteria
+
+A criterion may be marked `holdout: true` in the eval block. Score it exactly
+like any other criterion and include it in your `criteria[]` output — the
+scorecard covers ALL criteria, hold-out or not, and the output schema is
+unchanged. What differs is that hold-out criteria are NEVER shown to the
+implementer (develop-loop excludes them from the implementer prompt and from
+re-implementation feedback). Your evidence for a hold-out criterion must
+therefore judge the result on its own merits and must NOT assume the implementer
+saw the criterion text, was told to satisfy it, or was given prior feedback
+about it.
+
 ## Antipattern Checking
 
 {ANTIPATTERNS}
