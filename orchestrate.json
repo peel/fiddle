@@ -26,11 +26,11 @@
     "domains": {
       "general": {
         "template": "evaluator-general",
-        "providers": ["claude"]
+        "providers": ["claude", "codex"]
       },
       "infrastructure": {
         "template": "evaluator-infrastructure",
-        "providers": ["claude"]
+        "providers": ["claude", "codex"]
       }
     }
   },
