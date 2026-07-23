@@ -70,6 +70,13 @@ Bad work is worse than no work. You will not be penalized for escalating.
 
 **How to escalate:** Report with BLOCKED or NEEDS_CONTEXT. Describe what you are stuck on, what you tried, and what help you need.
 
+**STOP and report SPEC_DEFECT when the spec itself is wrong** — not when the work is hard, but when the work as specified should not be done:
+- The spec contradicts itself, or contradicts another spec/criterion you must also satisfy
+- The spec is based on a false premise about the codebase (e.g., references a function, field, or behavior that does not exist or works differently than assumed)
+- Implementing the spec faithfully would break existing behavior or violate an invariant the spec did not account for
+
+SPEC_DEFECT is distinct from BLOCKED and NEEDS_CONTEXT: BLOCKED means you cannot complete the work; NEEDS_CONTEXT means you lack information to proceed; SPEC_DEFECT means you could implement the spec but doing so would be wrong because the spec is defective. State precisely WHAT about the spec is defective and the evidence from the codebase, so the DEFINE phase can correct it.
+
 ## Before Reporting Back: Self-Review
 
 Review your work against the evaluation criteria. Ask yourself:
@@ -87,7 +94,7 @@ If you find issues during self-review, fix them now before reporting.
 ## Report Format
 
 When done, report:
-- **Status:** DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
+- **Status:** DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT | SPEC_DEFECT
 - What you implemented (or what you attempted, if blocked)
 - What you tested and test results
 - Files changed
@@ -96,4 +103,6 @@ When done, report:
 
 Use DONE_WITH_CONCERNS if you completed the work but have doubts about correctness.
 Use BLOCKED if you cannot complete the task. Use NEEDS_CONTEXT if you need
-information that was not provided. Never silently produce work you are unsure about.
+information that was not provided. Use SPEC_DEFECT if the spec itself is wrong,
+contradictory, or based on a false premise about the codebase — state WHAT is
+defective and the codebase evidence. Never silently produce work you are unsure about.

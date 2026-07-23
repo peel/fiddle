@@ -45,6 +45,16 @@ Pass the combined `disagreements.json` to `append-eval-log.sh` in the logging st
 
 If a domain has only one provider, `merge-scorecards.sh` still runs (single-element array) to ensure consistent scorecard format.
 
+### Spec-Defect Check (before merging)
+
+`merge-scorecards.sh` does NOT carry the optional `spec_defect` field through — the merged scorecard drops it. So BEFORE merging, scan the per-provider scorecards for a flagged spec defect:
+
+```bash
+jq -s '[.[] | select(.spec_defect.detected == true) | {provider, reason: .spec_defect.reason}]' scorecard-{domain}-*.json
+```
+
+If any provider flagged `spec_defect.detected == true`, do not treat this as an ordinary threshold failure to re-implement. Route it the same way as an implementer SPEC_DEFECT (develop-loop step 1e): mark the bean `needs-attention`, record WHAT about the spec is defective (the provider's `reason`) plus a `fiddle:define` re-entry pointer, escalate to human, and skip re-dispatching implementation. A faithful implementation of a defective spec will not converge no matter how many iterations run.
+
 ## Cross-Domain Merge (Step 1h)
 
 After all domain evaluators return, merge their scorecards:
