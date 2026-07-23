@@ -92,7 +92,55 @@ EXIT_CODE=0
 "$SCRIPT_DIR/parse-eval-log.sh" 2>/dev/null || EXIT_CODE=$?
 assert_eq "parse missing bean-id → exit 2" "2" "$EXIT_CODE"
 
+echo "Test 9: Iteration with antipatterns file"
+cat > /tmp/test-antipatterns.json << 'EOF'
+[{"id": "ap-interface-any", "evidence": "used interface{} instead of any"}]
+EOF
+cat > /tmp/test-scorecard6.json << 'EOF'
+{"domains":{"general":{"dimensions":{"correctness":{"score":6,"threshold":7}}}},"criteria":[]}
+EOF
+"$SCRIPT_DIR/append-eval-log.sh" --bean-id "$BEAN_ID" --iteration 6 --scorecard /tmp/test-scorecard6.json --dispatches 1 --guidance "" --antipatterns /tmp/test-antipatterns.json
+BODY=$(beans show "$BEAN_ID" --json 2>/dev/null | jq -r '.body')
+echo "$BODY" | grep -q "Antipatterns detected:" && assert_eq "antipatterns section present" "yes" "yes" || assert_eq "antipatterns section present" "yes" "no"
+echo "$BODY" | grep -q "ap-interface-any" && assert_eq "antipattern id present" "yes" "yes" || assert_eq "antipattern id present" "yes" "no"
+
+echo "Test 10: Iteration without antipatterns (backward compatible)"
+cat > /tmp/test-scorecard7.json << 'EOF'
+{"domains":{"general":{"dimensions":{"correctness":{"score":8,"threshold":7}}}},"criteria":[]}
+EOF
+"$SCRIPT_DIR/append-eval-log.sh" --bean-id "$BEAN_ID" --iteration 7 --scorecard /tmp/test-scorecard7.json --dispatches 1 --guidance ""
+BODY=$(beans show "$BEAN_ID" --json 2>/dev/null | jq -r '.body')
+ANTIPATTERN_COUNT=$(echo "$BODY" | grep -c "Antipatterns detected:" || true)
+assert_eq "only one antipatterns section (from iter 6)" "1" "$ANTIPATTERN_COUNT"
+
+echo "Test 11: Iteration with empty antipatterns array"
+cat > /tmp/test-antipatterns-empty.json << 'EOF'
+[]
+EOF
+cat > /tmp/test-scorecard8.json << 'EOF'
+{"domains":{"general":{"dimensions":{"correctness":{"score":9,"threshold":7}}}},"criteria":[]}
+EOF
+"$SCRIPT_DIR/append-eval-log.sh" --bean-id "$BEAN_ID" --iteration 8 --scorecard /tmp/test-scorecard8.json --dispatches 1 --guidance "" --antipatterns /tmp/test-antipatterns-empty.json
+BODY=$(beans show "$BEAN_ID" --json 2>/dev/null | jq -r '.body')
+ANTIPATTERN_COUNT=$(echo "$BODY" | grep -c "Antipatterns detected:" || true)
+assert_eq "still only one antipatterns section (empty array ignored)" "1" "$ANTIPATTERN_COUNT"
+
+echo "Test 12: Iteration with antipatterns alongside corrections"
+cat > /tmp/test-antipatterns2.json << 'EOF'
+[{"id": "ap-dead-code", "evidence": "unused helper retained"}]
+EOF
+cat > /tmp/test-corrections.json << 'EOF'
+[{"domain": "general", "dimension": "correctness", "evaluator_score": 5, "human_score": 8, "reason": "false positive"}]
+EOF
+cat > /tmp/test-scorecard9.json << 'EOF'
+{"domains":{"general":{"dimensions":{"correctness":{"score":5,"threshold":7}}}},"criteria":[]}
+EOF
+"$SCRIPT_DIR/append-eval-log.sh" --bean-id "$BEAN_ID" --iteration 9 --scorecard /tmp/test-scorecard9.json --dispatches 1 --guidance "" --corrections /tmp/test-corrections.json --antipatterns /tmp/test-antipatterns2.json
+BODY=$(beans show "$BEAN_ID" --json 2>/dev/null | jq -r '.body')
+echo "$BODY" | grep -q "ap-dead-code" && assert_eq "antipattern id present alongside corrections" "yes" "yes" || assert_eq "antipattern id present alongside corrections" "yes" "no"
+echo "$BODY" | grep -q "Human Corrections:" && assert_eq "corrections section present alongside antipatterns" "yes" "yes" || assert_eq "corrections section present alongside antipatterns" "yes" "no"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
-rm -f /tmp/test-scorecard.json /tmp/test-scorecard2.json /tmp/test-scorecard3.json /tmp/test-scorecard4.json /tmp/test-scorecard5.json /tmp/test-disagreements.json /tmp/test-disagreements-empty.json
+rm -f /tmp/test-scorecard.json /tmp/test-scorecard2.json /tmp/test-scorecard3.json /tmp/test-scorecard4.json /tmp/test-scorecard5.json /tmp/test-scorecard6.json /tmp/test-scorecard7.json /tmp/test-scorecard8.json /tmp/test-scorecard9.json /tmp/test-disagreements.json /tmp/test-disagreements-empty.json /tmp/test-antipatterns.json /tmp/test-antipatterns-empty.json /tmp/test-antipatterns2.json /tmp/test-corrections.json
 [ "$FAIL" -eq 0 ] || exit 1
