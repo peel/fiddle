@@ -3,12 +3,13 @@
 # Exit 0 = success, 1 = bean not found, 2 = invalid input.
 set -euo pipefail
 
-BEAN_ID="" INIT=false BASE_SHA="" ITERATION="" SCORECARD="" DISPATCHES="" GUIDANCE="" DISAGREEMENTS="" CORRECTIONS="" ANTIPATTERNS=""
+BEAN_ID="" INIT=false SPOT_CHECK=false BASE_SHA="" ITERATION="" SCORECARD="" DISPATCHES="" GUIDANCE="" DISAGREEMENTS="" CORRECTIONS="" ANTIPATTERNS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --bean-id) BEAN_ID="$2"; shift 2;;
     --init) INIT=true; shift;;
+    --spot-check) SPOT_CHECK=true; shift;;
     --base-sha) BASE_SHA="$2"; shift 2;;
     --iteration) ITERATION="$2"; shift 2;;
     --scorecard) SCORECARD="$2"; shift 2;;
@@ -35,16 +36,26 @@ EOF
   exit 0
 fi
 
-# Append iteration
-[[ -n "$ITERATION" ]] || { echo "Missing --iteration" >&2; exit 2; }
+# Append iteration (or a spot-check entry)
+if $SPOT_CHECK; then
+  DISPATCHES="${DISPATCHES:-0}"
+else
+  [[ -n "$ITERATION" ]] || { echo "Missing --iteration" >&2; exit 2; }
+  [[ -n "$DISPATCHES" ]] || { echo "Missing --dispatches" >&2; exit 2; }
+fi
 [[ -n "$SCORECARD" && -f "$SCORECARD" ]] || { echo "Missing --scorecard file" >&2; exit 2; }
-[[ -n "$DISPATCHES" ]] || { echo "Missing --dispatches" >&2; exit 2; }
 
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-# Build the iteration entry from scorecard JSON
-ENTRY=$(jq -r --arg iter "$ITERATION" --arg ts "$TIMESTAMP" --arg disp "$DISPATCHES" --arg guide "$GUIDANCE" '
-  "### Iteration \($iter) (\($ts))\ndispatches: \($disp)" +
+if $SPOT_CHECK; then
+  HEADING="### Spot-Check ($TIMESTAMP)"
+else
+  HEADING="### Iteration $ITERATION ($TIMESTAMP)"
+fi
+
+# Build the entry from scorecard JSON
+ENTRY=$(jq -r --arg heading "$HEADING" --arg disp "$DISPATCHES" --arg guide "$GUIDANCE" '
+  "\($heading)\ndispatches: \($disp)" +
   (.domains | to_entries | map(
     "\n**\(.key):**" +
     (.value.dimensions | to_entries | map(

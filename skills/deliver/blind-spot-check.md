@@ -40,18 +40,17 @@ Build a divergences JSON array, one object per diverging dimension, using the sa
 
 ### Record in the eval log
 
-Append the divergences to the sampled bean's Evaluation Log via `append-eval-log.sh`, reusing the existing `--corrections` mechanism:
+Append the divergences to the sampled bean's Evaluation Log via `append-eval-log.sh` in `--spot-check` mode, reusing the existing `--corrections` mechanism:
 
 ```bash
 scripts/append-eval-log.sh --bean-id {bean-id} \
-  --iteration {next-iteration-number} \
+  --spot-check \
   --scorecard {bean's final merged scorecard file} \
-  --dispatches 0 \
   --guidance "blind spot-check" \
   --corrections divergences.json
 ```
 
-`--dispatches 0` records the spot-check without inflating the dispatch budget. The divergences appear under a **Human Corrections** section of the iteration entry.
+`--spot-check` writes the entry under a `### Spot-Check ({timestamp})` heading instead of a `### Iteration N` heading, so the post-convergence review does not inflate the bean's iteration count or overwrite its final-iteration dimension scores. Dispatches default to 0, recording the spot-check without inflating the dispatch budget. The divergences appear under a **Human Corrections** section of the spot-check entry.
 
 ## Calibration Anchors
 
