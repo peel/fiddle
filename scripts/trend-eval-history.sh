@@ -31,24 +31,24 @@ BEANS_ARGS=()
 command -v beans >/dev/null 2>&1 || { echo "beans CLI not found" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || { echo "jq not found" >&2; exit 2; }
 
-ALL=$(beans list "${BEANS_ARGS[@]}" --json --full 2>/dev/null || echo '[]')
+ALL=$(beans list ${BEANS_ARGS[@]+"${BEANS_ARGS[@]}"} --json --full 2>/dev/null || echo '[]')
 
-# Build parent/type maps for epic resolution.
-declare -A TYPE PARENT
-while IFS=$'\t' read -r id typ parent; do
-  [[ -n "$id" ]] || continue
-  TYPE["$id"]="$typ"
-  PARENT["$id"]="$parent"
-done < <(echo "$ALL" | jq -r '.[] | [.id, .type, (.parent // "")] | @tsv')
+# Resolve each bean's ancestor epic by walking the parent chain in jq (bash 3.2
+# has no associative arrays). Produces a "<id>\t<epic-id>" TSV looked up below.
+EPICMAP=$(echo "$ALL" | jq -r '
+  (reduce .[] as $b ({}; . + {($b.id): {type: $b.type, parent: ($b.parent // "")}})) as $m
+  | def resolve($id):
+      {cur: $id, depth: 0, epic: ""}
+      | until(.epic != "" or .cur == "" or .depth >= 32;
+          ($m[.cur]) as $n
+          | if $n == null then .cur = ""
+            elif $n.type == "epic" then .epic = .cur
+            else .cur = $n.parent | .depth += 1 end)
+      | .epic;
+  .[] | [.id, resolve(.id)] | @tsv')
 
 resolve_epic() {
-  local cur="$1" depth=0
-  while [[ -n "$cur" && $depth -lt 32 ]]; do
-    [[ "${TYPE[$cur]:-}" == "epic" ]] && { echo "$cur"; return; }
-    cur="${PARENT[$cur]:-}"
-    depth=$((depth + 1))
-  done
-  echo ""
+  printf '%s\n' "$EPICMAP" | awk -F'\t' -v id="$1" '$1 == id {print $2; exit}'
 }
 
 # Parse a single bean body (stdin) into a per-task eval JSON object, or emit
