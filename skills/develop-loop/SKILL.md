@@ -118,7 +118,10 @@ The implementer returns one of:
 - **DONE** or **DONE_WITH_CONCERNS** → proceed to evaluation (step 1f)
 - **BLOCKED** → mark bean `needs-attention` with reason, escalate to human, move to next bean
 - **NEEDS_CONTEXT** → provide the requested context and re-dispatch (back to step 1d)
-- **SPEC_DEFECT** → mark bean `needs-attention`, record on the bean WHAT about the spec is defective (the implementer's evidence) and a `fiddle:define` re-entry pointer, escalate to human, move to next bean. Do NOT re-dispatch implementation — re-implementing a defective spec cannot converge. A spec defect is DEFINE's failure, not the implementer's budget, so decrement `dispatch_count` by 1 before proceeding (undoing the increment from step 1d) so this dispatch does not count against `max_dispatches_per_task`. The dispatch still happened, so log it via the existing escalation/eval-log path with the SPEC_DEFECT outcome — the eval-log `--dispatches` count reflects actual provider dispatches, only the convergence budget is exempt.
+- **SPEC_DEFECT** → mark bean `needs-attention`, escalate to human, move to next bean. Do NOT re-dispatch — re-implementing a defective spec cannot converge.
+  - **Record on the bean body:** WHAT about the spec is defective (the implementer's evidence), a `fiddle:define` re-entry pointer, and a line noting the SPEC_DEFECT exit, the current iteration number, and that one implementer dispatch occurred.
+  - **Budget:** a spec defect is DEFINE's failure, not the implementer's budget, so decrement `dispatch_count` by 1 (undoing the increment from step 1d) so this dispatch does not count against `max_dispatches_per_task`.
+  - **No eval-log entry:** this path short-circuits before any evaluator runs, so no scorecard exists and `append-eval-log.sh` (which hard-requires a `--scorecard` file) cannot run. The bean-body note above is the record of the dispatch; do not call the eval-log script for this path.
 
 <GATE>Proceed to evaluator dispatch (1f). Implementer DONE is not evaluation.</GATE>
 
@@ -241,6 +244,8 @@ Do NOT skip logging. Do NOT write the log entry manually.
 | **PASS_PENDING** | Re-evaluate without re-implementing — scorecard may stabilize. → Back to 1f. |
 | **PASS_REGRESSED** | Dispatch fresh implementer with regression details (which dimensions in which domains regressed and by how much). → Back to 1d. |
 | **DISPATCHES_EXCEEDED** | Mark bean `needs-attention`. Escalate to human. Return to orchestrator. |
+
+> SPEC_DEFECT never reaches this table: the implementer-reported path exits at step 1e and the evaluator-flagged path exits at the scorecard-merge pre-merge check (after step 1l logging) — both route the bean to `needs-attention` before convergence is checked.
 
 ## Red Flags
 

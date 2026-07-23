@@ -47,13 +47,17 @@ If a domain has only one provider, `merge-scorecards.sh` still runs (single-elem
 
 ### Spec-Defect Check (before merging)
 
-`merge-scorecards.sh` does NOT carry the optional `spec_defect` field through — the merged scorecard drops it. So BEFORE merging, scan the per-provider scorecards for a flagged spec defect:
+`merge-scorecards.sh` does NOT carry the optional `spec_defect` field through — the merged scorecard drops it. So detection MUST happen BEFORE merging: scan the per-provider scorecards for a flagged spec defect:
 
 ```bash
 jq -s '[.[] | select(.spec_defect.detected == true) | {provider, reason: .spec_defect.reason}]' scorecard-{domain}-*.json
 ```
 
-If any provider flagged `spec_defect.detected == true`, do not treat this as an ordinary threshold failure to re-implement. Route it the same way as an implementer SPEC_DEFECT (develop-loop step 1e): mark the bean `needs-attention`, record WHAT about the spec is defective (the provider's `reason`) plus a `fiddle:define` re-entry pointer, escalate to human, and skip re-dispatching implementation. A faithful implementation of a defective spec will not converge no matter how many iterations run.
+If any provider flagged `spec_defect.detected == true`, do not treat this as an ordinary threshold failure to re-implement. Handle it as follows:
+
+- **Log first:** unlike the implementer path, the per-provider scorecards here are real evaluations that exist on disk, so complete the normal merge (step 1g/1h) and eval-log (step 1l) before routing. The merged scorecard drops `spec_defect` but retains the dimension scores, so `append-eval-log.sh` runs with its required `--scorecard` file and records the iteration normally.
+- **Then route** the same way as an implementer SPEC_DEFECT (develop-loop step 1e): mark the bean `needs-attention`, record WHAT about the spec is defective (the provider's `reason`) plus a `fiddle:define` re-entry pointer, escalate to human, and skip re-dispatching implementation. A faithful implementation of a defective spec will not converge no matter how many iterations run.
+- **Budget:** the evaluator dispatches that produced this discovery DO count against `max_dispatches_per_task` — they performed real evaluation work and produced scorecards, so do NOT decrement `dispatch_count`. Only re-implementation is prevented. (This is the deliberate asymmetry with the implementer path, where the single implementer dispatch IS decremented because it produced no evaluation.)
 
 ## Cross-Domain Merge (Step 1h)
 
