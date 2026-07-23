@@ -188,7 +188,17 @@ Do NOT leave processes running after evaluation.
 
 Merge provider and cross-domain scorecards following: `skills/develop-loop/scorecard-merge.md`
 
-<GATE>Proceed to threshold checks (1j). Do not skip to next task.</GATE>
+The scorecard-merge protocol includes a pre-merge Spec-Defect Check. Once the merge (1g/1h) completes, the result of that check is known.
+
+<HARD-GATE>
+If the pre-merge Spec-Defect Check detected `spec_defect.detected == true` on ANY per-provider scorecard, this bean takes the spec-defect exit and does NOT flow through the normal threshold/convergence path:
+  1. Run the eval-log step (1l) NOW with the merged scorecard, so `append-eval-log.sh` records the iteration (its `--scorecard` requirement is satisfied by the merged scorecard).
+  2. Route the bean to `needs-attention` per the scorecard-merge Spec-Defect Check (mark `needs-attention`, record the defect reason and `fiddle:define` re-entry pointer, escalate to human, do NOT re-dispatch).
+  3. SKIP 1i (attended gate), 1j (thresholds), 1k (convergence), and 1m entirely for this bean.
+  4. Return to the orchestrator for the next bean.
+</HARD-GATE>
+
+<GATE>If no spec defect was detected, proceed to threshold checks (1j). If a spec defect was detected, take the spec-defect exit above instead. Do not skip to next task.</GATE>
 
 ## 1i. Attended Scorecard Gate
 
@@ -245,7 +255,7 @@ Do NOT skip logging. Do NOT write the log entry manually.
 | **PASS_REGRESSED** | Dispatch fresh implementer with regression details (which dimensions in which domains regressed and by how much). → Back to 1d. |
 | **DISPATCHES_EXCEEDED** | Mark bean `needs-attention`. Escalate to human. Return to orchestrator. |
 
-> SPEC_DEFECT never reaches this table: the implementer-reported path exits at step 1e and the evaluator-flagged path exits at the scorecard-merge pre-merge check (after step 1l logging) — both route the bean to `needs-attention` before convergence is checked.
+> SPEC_DEFECT never reaches this table: the implementer-reported path exits at step 1e, and the evaluator-flagged path exits via the spec-defect HARD-GATE at the end of 1g–1h — it runs 1l logging with the merged scorecard, then routes to `needs-attention` and skips 1i/1j/1k/1m. Both route the bean to `needs-attention` before convergence is checked.
 
 ## Red Flags
 
