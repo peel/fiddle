@@ -118,6 +118,7 @@ The implementer returns one of:
 - **DONE** or **DONE_WITH_CONCERNS** → proceed to evaluation (step 1f)
 - **BLOCKED** → mark bean `needs-attention` with reason, escalate to human, move to next bean
 - **NEEDS_CONTEXT** → provide the requested context and re-dispatch (back to step 1d)
+- **SPEC_DEFECT** → mark bean `needs-attention`, record on the bean WHAT about the spec is defective (the implementer's evidence) and a `fiddle:define` re-entry pointer, escalate to human, move to next bean. Do NOT re-dispatch implementation — re-implementing a defective spec cannot converge. A spec defect is DEFINE's failure, not the implementer's budget, so decrement `dispatch_count` by 1 before proceeding (undoing the increment from step 1d) so this dispatch does not count against `max_dispatches_per_task`. The dispatch still happened, so log it via the existing escalation/eval-log path with the SPEC_DEFECT outcome — the eval-log `--dispatches` count reflects actual provider dispatches, only the convergence budget is exempt.
 
 <GATE>Proceed to evaluator dispatch (1f). Implementer DONE is not evaluation.</GATE>
 

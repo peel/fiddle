@@ -99,9 +99,16 @@ Return EXACTLY this JSON structure to stdout. No markdown fences, no commentary 
     { "id": "criterion-id", "pass": true, "evidence": "Evidence text" }
   ],
   "antipatterns_detected": [],
+  "spec_defect": null,
   "guidance": "Fix X: reason. Improve Y: reason.",
   "dispatch_count": 1
 }
+```
+
+`spec_defect` is OPTIONAL. Omit it or set it to `null` when the spec is sound. Set it only when the implementation faithfully matches the spec but the SPEC ITSELF is wrong — contradictory, or based on a false premise about the codebase:
+
+```json
+"spec_defect": { "detected": true, "reason": "Spec requires calling resolveIdentity() with a batch arg, but that function is single-record only; the batch path is a different API. Faithful implementation would break resolution." }
 ```
 
 ### Schema Rules
@@ -113,6 +120,7 @@ Return EXACTLY this JSON structure to stdout. No markdown fences, no commentary 
 - `criteria[].id`: must match the task's Evaluation block criterion `id` exactly
 - `criteria[].pass`: boolean, not a string
 - `antipatterns_detected`: array (empty if none found)
+- `spec_defect`: OPTIONAL object `{"detected": true, "reason": "..."}`, or `null`/absent when the spec is sound. This is NOT a low `domain_spec_fidelity` score: fidelity measures implementation-vs-spec (did the implementer build what the spec asked), while `spec_defect` flags spec-vs-reality (is what the spec asked for correct at all). Score fidelity honestly on its own scale — a faithful implementation of a defective spec still scores high fidelity AND carries a `spec_defect` flag. Reason must cite concrete codebase evidence for why the spec is wrong.
 - `guidance`: actionable fix instructions when any dimension is below threshold; empty string if all pass
 - `dispatch_count`: always 1 (the orchestrator tracks cumulative dispatches)
 
