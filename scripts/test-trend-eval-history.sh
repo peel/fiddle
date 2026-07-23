@@ -45,7 +45,7 @@ mkbean() { # <beans-path> <title> <type> [parent] -> id
   local bp="$1" title="$2" typ="$3" parent="${4:-}"
   local pargs=()
   [[ -n "$parent" ]] && pargs=(--parent "$parent")
-  beans create "$title" --beans-path "$bp" -t "$typ" -s completed "${pargs[@]}" --json 2>/dev/null | jq -r '.bean.id // .id'
+  beans create "$title" --beans-path "$bp" -t "$typ" -s completed ${pargs[@]+"${pargs[@]}"} --json 2>/dev/null | jq -r '.bean.id // .id'
 }
 
 # =============================================================================
