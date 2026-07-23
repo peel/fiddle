@@ -252,10 +252,11 @@ Do NOT continue iterating. Do NOT lower thresholds. Do NOT rationalize.
 
 <HARD-GATE>
 After every evaluation cycle, you MUST run:
-  scripts/append-eval-log.sh --bean-id {id} --iteration {N} --scorecard {scorecard_file} --dispatches {count} --guidance {text} --disagreements disagreements.json
+  scripts/append-eval-log.sh --bean-id {id} --iteration {N} --scorecard {scorecard_file} --dispatches {count} --guidance {text} --disagreements disagreements.json --antipatterns antipatterns.json
 The --dispatches {count} MUST reflect actual provider dispatches (each provider dispatch = 1), not just iterations.
 For example, 2 providers x 2 domains = 4 dispatches per iteration.
 The --disagreements parameter is optional. Pass the combined disagreements file from step 1g. If the file contains a non-empty array, disagreement details are appended to the iteration entry.
+The --antipatterns parameter is optional. Write the merged scorecard's `.antipatterns_detected` array to `antipatterns.json` (`jq -c '.antipatterns_detected // []' {scorecard_file} > antipatterns.json`) and pass it. If the file contains a non-empty array, an **Antipatterns detected:** section is appended to the iteration entry, giving deliver 5g the durable per-epic detection record it ages against.
 If the attended gate (step 1i) produced human corrections, include them in the log entry by passing --corrections {corrections_json} with the array of {domain, dimension, evaluator_score, human_score, reason} objects.
 Do NOT skip logging. Do NOT write the log entry manually.
 </HARD-GATE>

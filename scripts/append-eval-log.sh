@@ -3,7 +3,7 @@
 # Exit 0 = success, 1 = bean not found, 2 = invalid input.
 set -euo pipefail
 
-BEAN_ID="" INIT=false BASE_SHA="" ITERATION="" SCORECARD="" DISPATCHES="" GUIDANCE="" DISAGREEMENTS="" CORRECTIONS=""
+BEAN_ID="" INIT=false BASE_SHA="" ITERATION="" SCORECARD="" DISPATCHES="" GUIDANCE="" DISAGREEMENTS="" CORRECTIONS="" ANTIPATTERNS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -16,6 +16,7 @@ while [[ $# -gt 0 ]]; do
     --guidance) GUIDANCE="$2"; shift 2;;
     --disagreements) DISAGREEMENTS="$2"; shift 2;;
     --corrections) CORRECTIONS="$2"; shift 2;;
+    --antipatterns) ANTIPATTERNS="$2"; shift 2;;
     *) echo "Unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -81,6 +82,23 @@ if [[ -n "$CORRECTIONS" && -f "$CORRECTIONS" ]]; then
   ' "$CORRECTIONS" 2>/dev/null || true)
   if [[ -n "$CORRECT_SECTION" ]]; then
     ENTRY="${ENTRY}${CORRECT_SECTION}"
+  fi
+fi
+
+# Append antipatterns if provided and non-empty
+if [[ -n "$ANTIPATTERNS" && -f "$ANTIPATTERNS" ]]; then
+  ANTIPATTERN_SECTION=$(jq -r '
+    if length == 0 then "" else
+      "\n**Antipatterns detected:**" +
+      (map(
+        "\n- " +
+        (if type == "string" then . else (.id // .antipattern // .antipattern_id // "unknown") end) +
+        (if type == "object" and (.evidence // "") != "" then ": \(.evidence)" else "" end)
+      ) | join(""))
+    end
+  ' "$ANTIPATTERNS" 2>/dev/null || true)
+  if [[ -n "$ANTIPATTERN_SECTION" ]]; then
+    ENTRY="${ENTRY}${ANTIPATTERN_SECTION}"
   fi
 fi
 
