@@ -26,6 +26,8 @@ Read `orchestrate.json` (project root) if it exists. Extract:
 - `providers.timeout` — attended/unattended timeouts
 - `models.deliver` — model override for drift analysis
 - `evaluators.spot_check.rate` — blind spot-check sampling rate (integer N; absent defaults to 5, 0 or less disables)
+- `evaluators.aging.window_days` — age threshold for flagging calibration anchors (integer days; absent defaults to 90)
+- `evaluators.aging.quiet_epics` — number of recent epics an anchor must go without a correction (or an antipattern without a detection) to be retired/collapsed (integer; absent defaults to 3)
 
 ## Steps
 
@@ -235,6 +237,37 @@ Decay alarm: [RAISED — <alarm_reasons> | none]"
 
 If `alarm` is `true`, a metric declined across the two most recent consecutive epics (dispatches up, a dimension score down, or disagreements up). Treat it as a signal that calibration, thresholds, or scope discipline need attention before the next epic; fold the affected dimensions into the calibration updates from 5b. If `trends` is `null` (fewer than two epics have eval data yet), report that there is not enough history to trend and continue.
 
+#### 5g. Age and Prune Anchors and Antipatterns
+
+Calibration and antipattern files are append-only, so they grow without bound and old entries mis-calibrate current evaluators: an anchor encodes human judgment against the evaluator and model version at a specific time, and models change underneath it. Run this pass after the 5b/5c writes so newly added anchors and antipatterns are considered too.
+
+Read `evaluators.aging.window_days` (default 90) and `evaluators.aging.quiet_epics` (default 3) from `orchestrate.json`.
+
+**Flag stale anchors.** For each domain, locate its calibration file (`evaluators.domains.<domain>.calibration`, else the default `docs/evaluator-calibration-<domain>.md`). Scan only the anchor blocks above the `## Retired` section (never re-process already-retired content). For each `## [dimension] — Correction (YYYY-MM-DD)` block, parse the heading date; flag the anchor when it is older than `window_days` from today.
+
+**Decide retire vs. re-anchor.** For each flagged anchor, check whether the evaluator has been correcting on that anchor's dimension recently. Read the Human Corrections recorded in eval logs (task-bean `## Evaluation Log` sections) and attended-gate corrections from the last `quiet_epics` epics:
+- No corrections against that dimension across the last `quiet_epics` epics → the evaluator agrees consistently; **retire** the anchor.
+- One or more corrections against that dimension → keep it, but note it as a **stale reference still correcting** so it can be re-anchored against current evaluator behavior (fold into 5b).
+
+**Collapse quiet antipatterns.** For each domain, locate its antipattern file (`evaluators.domains.<domain>.antipatterns`, else `docs/antipatterns-<domain>.md`). Scan the `## [antipattern-id] (YYYY-MM-DD)` blocks above the `## Retired` section. Using the `antipatterns_detected[]` occurrences recorded in eval logs, an antipattern with no detection across the last `quiet_epics` epics is **collapsed** (moved to the archive).
+
+**Auditability.** Retired anchors and collapsed antipatterns are never deleted: MOVE each block, verbatim, to a `## Retired` section at the bottom of the same file (create the heading if absent), appending a line `**Retired YYYY-MM-DD:** [reason]`. Keeping retired content in the same file (rather than a separate `docs/…-archive.md`) preserves the single path already wired into `orchestrate.json`, so no new configuration is needed; the `## Retired` heading is the boundary that keeps retired content out of evaluator context.
+
+Retired content MUST NOT be loaded into evaluator context: the calibration load (context-loading-order position 3) and the `{ANTIPATTERNS}` injection stop reading at the `## Retired` heading.
+
+**Present and confirm.** Like the other step-5 sub-steps, present the proposed changes and wait for confirmation before writing:
+```
+"Aging pass (window: <window_days>d, quiet: <quiet_epics> epics):
+- Anchors flagged stale: [dimension (date), ...]
+- Anchors to retire (evaluator agrees): [dimension (date), ...]
+- Anchors to keep for re-anchoring (still correcting): [dimension (date), ...]
+- Antipatterns to collapse (undetected): [antipattern-id (date), ...]
+
+Apply these retirements?"
+```
+
+Wait for user confirmation before moving or writing anything.
+
 Present a summary:
 ```
 "Evaluator evolve complete:
@@ -244,6 +277,7 @@ Present a summary:
 - Threshold adjustments: [list or 'none']
 - High-iteration tasks: [list or 'none']
 - Longitudinal decay: [alarm RAISED — <reasons> | no alarm | not enough history]
+- Aging: [count] anchors flagged, [count] retired, [count] antipatterns collapsed
 
 Proceed to close epic?"
 ```

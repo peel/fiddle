@@ -123,7 +123,7 @@ Default: no criteria are held out unless a bean's eval block marks them.
 
 ### Antipattern Loading
 
-For each resolved domain from step 1c, check `evaluators.domains.<domain>.antipatterns` in `orchestrate.json`. If the key exists, read the file at that path (relative to project root). Concatenate antipattern content from all resolved domains into a single block and inject into the `{ANTIPATTERNS}` placeholder. If no domain has an `antipatterns` key configured, leave `{ANTIPATTERNS}` empty (the section header still appears but with no content).
+For each resolved domain from step 1c, check `evaluators.domains.<domain>.antipatterns` in `orchestrate.json`. If the key exists, read the file at that path (relative to project root), stopping at the `## Retired` heading if present (collapsed antipatterns from deliver 5g are audit-only and must not be injected). Concatenate antipattern content from all resolved domains into a single block and inject into the `{ANTIPATTERNS}` placeholder. If no domain has an `antipatterns` key configured, leave `{ANTIPATTERNS}` empty (the section header still appears but with no content).
 
 Increment `dispatch_count` after each dispatch.
 
