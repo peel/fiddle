@@ -25,6 +25,7 @@ Read `orchestrate.json` (project root) if it exists. Extract:
 - Provider declarations (`providers.<name>.command`, `.flags`)
 - `providers.timeout` — attended/unattended timeouts
 - `models.deliver` — model override for drift analysis
+- `evaluators.spot_check.rate` — blind spot-check sampling rate (integer N; absent defaults to 5, 0 or less disables)
 
 ## Steps
 
@@ -133,6 +134,20 @@ Wait for user confirmation. Apply any edits the user requests before proceeding.
 
 After documentation is confirmed, review the evaluation artifacts from this run.
 
+#### 5.0 Blind Spot-Check
+
+<HARD-GATE>
+This step runs BEFORE 5a. Step 5a presents the evaluator scorecards, which would anchor the human's judgment on the evaluator's own evidence. The blind spot-check MUST complete first so the human scores a sample of converged beans cold.
+
+Run the blind spot-check following: `skills/deliver/blind-spot-check.md`
+
+Read the sampling rate from `evaluators.spot_check.rate` in `orchestrate.json` (integer N — review every Nth converged bean). If the key is absent, default to 5. If the value is 0 or less, skip this step and proceed to 5a.
+
+Do NOT reveal any evaluator scorecard (in this step or by starting 5a) before the human has committed blind scores for the sampled beans.
+</HARD-GATE>
+
+Per-dimension divergence between the human's blind scores and the evaluator scores is recorded in each sampled bean's Evaluation Log (via `append-eval-log.sh --corrections`) and encoded as calibration anchors in the same format as attended-gate corrections. Carry the divergence summary into the 5e summary.
+
 #### 5a. Review Scorecards
 
 Collect all evaluator scorecards produced during the epic (stored in `.beans/` eval-log beans).
@@ -191,6 +206,7 @@ High iteration counts (>5 develop-evaluate cycles on a single task) suggest cali
 Present a summary:
 ```
 "Evaluator evolve complete:
+- Blind spot-check: [beans sampled] sampled, [count] dimensions diverged
 - Calibration anchors added: [count]
 - Antipatterns recorded: [count]
 - Threshold adjustments: [list or 'none']
