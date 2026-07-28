@@ -24,6 +24,12 @@ Replaces per-domain x per-provider dispatch. The bean eval block's `domains:` li
 
 `evaluators.domains.<d>.providers` is reinterpreted in place as an ordered preference list (no config migration, no new keys). Selection rule: the first available provider (per the session-start detection hook) that differs from the provider that ran the implementer. Fallback: the implementer's provider in a fresh context. Rationale: cross-provider protects against self-review leniency and gives a different failure trajectory; fresh context matters at least as much as a different provider, so the fallback loses little.
 
+Because implementers are always Claude subagents, the rule reduces in practice to: prefer an external provider for evaluation whenever one is available. PASS_PENDING re-evaluation reuses the provider that produced the pass being confirmed, for comparability.
+
+### 3a. Evidence pack
+
+External providers run read-only (e.g. `codex exec -s read-only`) and cannot execute tests or probe runtimes. Evidence is therefore gathered before evaluator dispatch and materialized as an artifact: test output, invariant results, and runtime probe transcript per domain. Every evaluator, Claude or external, receives the evidence pack as files (`dispatch-provider.sh` gains `--evidence-file`). The evaluator interprets evidence; it does not gather it.
+
 ### 4. Merge simplification
 
 Removed from the per-task path: provider merge, min-across-providers scoring, disagreement tracking. The spec-defect check runs directly on the single per-domain scorecard. Cross-domain union merge stays. merge-scorecards.sh is retained for holistic review and as a single-input format normalizer so scorecard shape stays uniform downstream.
@@ -32,18 +38,15 @@ Removed from the per-task path: provider merge, min-across-providers scoring, di
 
 Multi-provider dispatch per `evaluators.holistic.providers`, coverage-matrix min-merge, remediation-bean union, own budget (`max_iterations`, default 3). Rationale: bounded cost per epic and requirement-grounded recall — a second reader catches missed requirements, which is a different mechanism than second opinions on code quality.
 
-### 6. Convergence relaxation
+### 6. Convergence relaxation (evidence-first templates)
 
-Verdict entries carry a `kind`:
+No new fields: the existing check-thresholds.sh split is the evidence/judgment split. Criteria (pass/fail, each backed by a cited evidence-pack artifact) are evidence; scored dimensions are judgment.
 
-- `evidence` — criteria backed by a cited artifact (test output, invariant result, runtime probe). Converge on first pass.
-- `judgment` — scored dimensions. Keep the two-consecutive-passes rule.
-
-A bean whose gating set is entirely evidence-backed converges in a single passing iteration. check-convergence.sh reads `kind` per entry; missing `kind` defaults to `judgment` (backward compatible with old logs). PASS_PENDING therefore only occurs when judgment entries are present.
+Domain templates are reworked so scored dimensions become optional per domain. A domain configured evidence-only converges on a single passing iteration; the two-consecutive-passes rule applies only to domains that keep judgment dimensions. check-convergence.sh distinguishes the cases from the verdict content (empty `dimensions` map means evidence-only). PASS_PENDING therefore only occurs for domains with judgment dimensions.
 
 ### 7. Plan cross-review (reinvesting the freed budget)
 
-After write-plan produces the plan document, each define-phase external provider (from `providers.phases.define`) receives one critique dispatch with the plan and the design doc: coverage gaps, unverifiable steps, missing files, sizing problems. Claude folds accepted findings into the plan before bean creation. Single round, no debate, no scores. Lives in the define flow between plan writing and bean creation.
+After write-plan produces the plan document, each define-phase external provider (from `providers.phases.define`) receives one critique dispatch with the plan and the design doc: coverage gaps, unverifiable steps, missing files, sizing problems. Claude folds accepted findings into the plan before bean creation. Single round, no debate, no scores. Seam: between write-plan's plan self-review and its "Create Beans from Plan" step; write-plan's existing `--epic` flag reuses the epic.
 
 ### 8. Harness enforcement (Claude Code; skill loop is the cross-harness fallback)
 
@@ -64,7 +67,8 @@ Codex/Pi keep the skill-encoded loop via the using-fiddle harness mapping.
 
 - test-multi-provider.sh reworked: preference-order selection, differs-from-implementer rule, availability fallback.
 - merge-scorecards tests: single-input normalization path; holistic multi-provider path unchanged.
-- test-check-convergence.sh: evidence vs judgment kinds, missing-kind default, all-evidence single-pass convergence.
+- test-check-convergence.sh: evidence-only domains (empty dimensions map, single-pass), mixed domains (double-pass retained), regression detection unchanged.
+- Evidence pack: assembly per domain, and dispatch-provider.sh --evidence-file passing.
 - New test for the Stop-hook verdict gate (terminal vs non-terminal states, fail-open case).
 - Portability check (check-portability.sh) still passes for skills referencing the new flow.
 
