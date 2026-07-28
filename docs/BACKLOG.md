@@ -18,3 +18,13 @@ Design spec predicted 12KB for develop-loop; actual was 20.5KB (71% over). JSON 
 Origin: implementation (develop modularization epic fiddle-wdg0)
 Tags: #debt #optimization
 
+
+### 2026-07-28 — PR-review feedback channel into calibration/antipattern memory
+Harvest human review comments from finish-branch PRs back into calibration and antipattern files, /iterate-style, closing the reviewer-to-memory loop that only the attended gate feeds today. Deferred from epic fiddle-sip9 (one loop at a time).
+Origin: brainstorm (fiddle-sip9), research: humanlayer/skills design-control-loop
+Tags: #idea #feature
+
+### 2026-07-28 — Scheduled antipattern-eradication maintenance loop
+Scheduled CI workflow that consumes deliver's antipattern files: a script scans the codebase for occurrences, one is picked per run, a coding agent fixes it and opens a PR, at most one PR open at a time, human merges. Continuous cleanup between epics, complementary to develop-loop. Deferred from epic fiddle-sip9.
+Origin: brainstorm (fiddle-sip9), research: humanlayer/skills design-control-loop
+Tags: #idea #infrastructure #experiment
