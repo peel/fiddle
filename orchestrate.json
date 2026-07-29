@@ -9,11 +9,20 @@
       "flags": "-o json --approval-mode auto_edit"
     },
     "phases": {
-      "discover": ["codex"],
-      "define": ["codex", "gemini"],
+      "discover": [
+        "codex"
+      ],
+      "define": [
+        "codex",
+        "gemini"
+      ],
       "develop": [],
-      "develop_holistic": ["codex"],
-      "deliver": ["codex"]
+      "develop_holistic": [
+        "codex"
+      ],
+      "deliver": [
+        "codex"
+      ]
     },
     "timeout": {
       "attended": 120,
@@ -22,15 +31,21 @@
   },
   "evaluators": {
     "attended": false,
-    "max_dispatches_per_task": 10,
+    "max_dispatches_per_task": 16,
     "domains": {
       "general": {
         "template": "evaluator-general",
-        "providers": ["claude", "codex"]
+        "providers": [
+          "claude",
+          "codex"
+        ]
       },
       "infrastructure": {
         "template": "evaluator-infrastructure",
-        "providers": ["claude", "codex"]
+        "providers": [
+          "claude",
+          "codex"
+        ]
       }
     }
   },
