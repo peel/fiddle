@@ -23,6 +23,10 @@ command -v python3 >/dev/null 2>&1 || { echo '{"error":"python3 not found"}' >&2
 command -v curl >/dev/null 2>&1 || { echo '{"error":"curl not found"}' >&2; exit 3; }
 command -v bc >/dev/null 2>&1 || { echo '{"error":"bc not found"}' >&2; exit 3; }
 
+now_ms() {
+  python3 -c 'import time; print(int(time.time() * 1000))'
+}
+
 # Validate JSON
 if ! jq empty "$DOMAINS_FILE" 2>/dev/null; then
   echo '{"error":"invalid JSON in domains file"}' >&2
@@ -49,13 +53,13 @@ cleanup_on_failure() {
 
 poll_tcp() {
   local port="$1" timeout_ms="$2" retry_ms="${3:-1000}"
-  local deadline=$(( $(date +%s%3N) + timeout_ms ))
+  local deadline=$(( $(now_ms) + timeout_ms ))
   while true; do
     if python3 -c "import socket; s=socket.socket(); s.settimeout(1); s.connect(('localhost', $port)); s.close()" 2>/dev/null; then
       return 0
     fi
     local now
-    now=$(date +%s%3N)
+    now=$(now_ms)
     if [[ $now -ge $deadline ]]; then
       return 1
     fi
@@ -70,7 +74,7 @@ poll_tcp() {
 
 poll_http() {
   local url="$1" timeout_ms="$2" retry_ms="${3:-1000}" expect_status="${4:-200}"
-  local deadline=$(( $(date +%s%3N) + timeout_ms ))
+  local deadline=$(( $(now_ms) + timeout_ms ))
   while true; do
     local status
     status=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 --max-time 2 "$url" 2>/dev/null || echo "0")
@@ -78,7 +82,7 @@ poll_http() {
       return 0
     fi
     local now
-    now=$(date +%s%3N)
+    now=$(now_ms)
     if [[ $now -ge $deadline ]]; then
       return 1
     fi
@@ -93,13 +97,13 @@ poll_http() {
 
 poll_command() {
   local cmd="$1" timeout_ms="$2" retry_ms="${3:-1000}"
-  local deadline=$(( $(date +%s%3N) + timeout_ms ))
+  local deadline=$(( $(now_ms) + timeout_ms ))
   while true; do
     if bash -c "$cmd" 2>/dev/null; then
       return 0
     fi
     local now
-    now=$(date +%s%3N)
+    now=$(now_ms)
     if [[ $now -ge $deadline ]]; then
       return 1
     fi
