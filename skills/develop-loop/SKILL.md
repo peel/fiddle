@@ -63,7 +63,12 @@ For a fresh task bean (not a restart), record the starting point:
 BASE_SHA=$(git rev-parse HEAD)
 scripts/append-eval-log.sh --bean-id {id} --init --base-sha "$BASE_SHA"
 beans update {id} --status in-progress
+mkdir -p .fiddle && echo "{id}" > .fiddle/active-bean
 ```
+
+The `.fiddle/active-bean` marker arms the Stop-hook verdict gate: while it is
+non-empty, turn-end is blocked until the bean reaches a terminal verdict. Every
+terminal exit below clears it with `rm -f .fiddle/active-bean`.
 
 Set `dispatch_count=0` and `iteration=0`.
 
@@ -132,9 +137,9 @@ Increment `dispatch_count` after each dispatch.
 
 The implementer returns one of:
 - **DONE** or **DONE_WITH_CONCERNS** → proceed to evidence gathering (step 1e-2), then evaluation (step 1f)
-- **BLOCKED** → mark bean `needs-attention` with reason, escalate to human, move to next bean
+- **BLOCKED** → mark bean `needs-attention` with reason, clear the verdict-gate marker (`rm -f .fiddle/active-bean`), escalate to human, move to next bean
 - **NEEDS_CONTEXT** → provide the requested context and re-dispatch (back to step 1d)
-- **SPEC_DEFECT** → mark bean `needs-attention`, escalate to human, move to next bean. Do NOT re-dispatch — re-implementing a defective spec cannot converge.
+- **SPEC_DEFECT** → mark bean `needs-attention`, clear the verdict-gate marker (`rm -f .fiddle/active-bean`), escalate to human, move to next bean. Do NOT re-dispatch — re-implementing a defective spec cannot converge.
   - **Record on the bean body:** WHAT about the spec is defective (the implementer's evidence), a `fiddle:define` re-entry pointer, and a line noting the SPEC_DEFECT exit, the current iteration number, and that one implementer dispatch occurred.
   - **Budget:** a spec defect is DEFINE's failure, not the implementer's budget, so decrement `dispatch_count` by 1 (undoing the increment from step 1d) so this dispatch does not count against `max_dispatches_per_task`.
   - **No eval-log entry:** this path short-circuits before any evaluator runs, so no scorecard exists and `append-eval-log.sh` (which hard-requires a `--scorecard` file) cannot run. The bean-body note above is the record of the dispatch; do not call the eval-log script for this path.
@@ -239,8 +244,9 @@ The scorecard-merge protocol includes a pre-merge Spec-Defect Check. Once the me
 If the pre-merge Spec-Defect Check detected `spec_defect.detected == true` on ANY domain's evaluator scorecard, this bean takes the spec-defect exit and does NOT flow through the normal threshold/convergence path:
   1. Run the eval-log step (1l) NOW with the merged scorecard, so `append-eval-log.sh` records the iteration (its `--scorecard` requirement is satisfied by the merged scorecard).
   2. Route the bean to `needs-attention` per the scorecard-merge Spec-Defect Check (mark `needs-attention`, record the defect reason and `fiddle:define` re-entry pointer, escalate to human, do NOT re-dispatch).
-  3. SKIP 1i (attended gate), 1j (thresholds), 1k (convergence), and 1m entirely for this bean.
-  4. Return to the orchestrator for the next bean.
+  3. Clear the verdict-gate marker: `rm -f .fiddle/active-bean`
+  4. SKIP 1i (attended gate), 1j (thresholds), 1k (convergence), and 1m entirely for this bean.
+  5. Return to the orchestrator for the next bean.
 </HARD-GATE>
 
 <GATE>If no spec defect was detected, proceed to threshold checks (1j). If a spec defect was detected, take the spec-defect exit above instead. Do not skip to next task.</GATE>
@@ -296,11 +302,11 @@ Do NOT skip logging. Do NOT write the log entry manually.
 
 | Result | Action |
 |---|---|
-| **CONVERGED** | Mark bean `completed`. Return to orchestrator. |
+| **CONVERGED** | Mark bean `completed`. Clear the verdict-gate marker: `rm -f .fiddle/active-bean`. Return to orchestrator. |
 | **FAIL** | Dispatch fresh implementer with scorecard feedback showing failing dimensions (including which domain(s) failed) and fix guidance. → Back to 1d. |
 | **PASS_PENDING** | Re-evaluate without re-implementing — scorecard may stabilize. Reuse the provider recorded in selected-provider.json. → Back to 1e-2 (re-gather evidence, then re-evaluate). |
 | **PASS_REGRESSED** | Dispatch fresh implementer with regression details (which dimensions in which domains regressed and by how much). → Back to 1d. |
-| **DISPATCHES_EXCEEDED** | Mark bean `needs-attention`. Escalate to human. Return to orchestrator. |
+| **DISPATCHES_EXCEEDED** | Mark bean `needs-attention`. Clear the verdict-gate marker: `rm -f .fiddle/active-bean`. Escalate to human. Return to orchestrator. |
 
 > FAIL and PASS_REGRESSED re-dispatch through step 1d, so their `{PRIOR_SCORECARD}` and `{PRIOR_GUIDANCE}` feedback MUST omit hold-out criterion results and any guidance derived from them (see Hold-Out Criteria in step 1d).
 

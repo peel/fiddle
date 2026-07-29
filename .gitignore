@@ -11,3 +11,6 @@ history*.json
 convergence.json
 criteria.json
 disagreements*.json
+
+# Develop-loop verdict-gate marker
+.fiddle/

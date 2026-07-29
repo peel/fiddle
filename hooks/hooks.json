@@ -60,6 +60,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/develop-verdict-gate.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }
