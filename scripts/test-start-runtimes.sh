@@ -53,8 +53,12 @@ print(port)
 echo "=== Test 0: Missing dependencies (jq hidden) → exit 3 ==="
 # Create a minimal valid domains file; the script checks deps after the file-exists check
 echo '{"domains":{}}' > "$TEST_TMPDIR/deps-test.json"
+# A PATH of system dirs no longer hides jq (macOS ships /usr/bin/jq); use a
+# stub dir holding only bash so the shebang resolves but jq is absent.
+mkdir -p "$TEST_TMPDIR/nojq-bin"
+ln -s "$(command -v bash)" "$TEST_TMPDIR/nojq-bin/bash"
 EXIT_CODE=0
-PATH=/usr/bin:/bin "$SCRIPT_DIR/start-runtimes.sh" --domains "$TEST_TMPDIR/deps-test.json" 2>/dev/null || EXIT_CODE=$?
+PATH="$TEST_TMPDIR/nojq-bin" "$SCRIPT_DIR/start-runtimes.sh" --domains "$TEST_TMPDIR/deps-test.json" 2>/dev/null || EXIT_CODE=$?
 assert_exit "no jq in PATH → exit 3" 3 "$EXIT_CODE"
 
 echo ""
