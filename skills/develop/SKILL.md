@@ -132,3 +132,13 @@ On session restart, develop re-derives state entirely from beans:
 6. After all task beans are processed, check if holistic review already ran by looking for `scorecard-holistic.json` and holistic history file. If in progress or not started, invoke `Skill("fiddle:develop-holistic", args: "--epic <epic-id>")`
 
 No session-scoped state to lose. All evaluation history lives on bean bodies.
+
+## Harness Enforcement (Claude Code)
+
+The skill-encoded loop above is the cross-harness baseline. On Claude Code, harness mechanisms additionally enforce it:
+
+- **Stop hook (preferred, automatic).** Ships in `hooks/hooks.json` (`develop-verdict-gate.sh`). While the `.fiddle/active-bean` marker names a bean without a recorded terminal verdict, the hook blocks turn-end so the loop continues. Terminal states: CONVERGED, or needs-attention via SPEC_DEFECT / BLOCKED / DISPATCHES_EXCEEDED. Deterministic, no judge model; fails open when no marker exists. The marker lifecycle (arming and clearing) is owned by develop-loop; see `skills/develop-loop/SKILL.md`.
+- **/goal (manual equivalent).** When the Stop hook is unavailable, set a goal whose condition is phrased against recorded verdicts and includes the escalation exits: "the active bean has a recorded terminal verdict: CONVERGED, or needs-attention via SPEC_DEFECT / BLOCKED / DISPATCHES_EXCEEDED". A goal phrased only as "converged" fights the dispatch budget: it keeps pushing iterations after the loop has legitimately escalated.
+- **/loop (optional outer watchdog).** `/loop` re-firing `Skill("fiddle:develop", args: "--epic <epic-id>")` on an interval guards against a stalled or dead session. It is idempotent via Restart Resilience above: each firing re-derives state from beans, skips completed work, and resumes in-progress work. It is NOT a driver for the inner cycle. The watchdog is time-based and session-scoped, while the per-bean cycle is verdict-driven and enforced by the Stop hook or /goal.
+
+Codex and Pi harnesses have none of these mechanisms; they keep the skill-encoded loop via the `fiddle:using-fiddle` harness mapping.
