@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Dispatch a prompt to an external provider CLI.
 # Usage: dispatch-provider.sh <provider-name> [--check] --role <role> --topic <topic> --instructions <text>
-#   [--approaches <text>] [--design-doc-file <path>] [--diff-file <path>] [--previous-feedback-file <path>]
+#   [--approaches <text>] [--design-doc-file <path>] [--diff-file <path>] [--evidence-file <path>] [--previous-feedback-file <path>]
 #
 # --check: Validate provider is configured and CLI is on PATH, then exit 0/1.
 #          Outputs JSON: {"provider":"<name>","available":true/false,"command":"..."}
@@ -23,6 +23,7 @@ INSTRUCTIONS=""
 APPROACHES=""
 DESIGN_DOC=""
 DIFF=""
+EVIDENCE=""
 PREVIOUS_FEEDBACK=""
 
 PROVIDER="${1:?Usage: dispatch-provider.sh <provider> [--check] --role ... --topic ... --instructions ...}"
@@ -38,6 +39,7 @@ while [[ $# -gt 0 ]]; do
     --approaches) APPROACHES="$2"; shift 2 ;;
     --design-doc-file) DESIGN_DOC="$(cat "$2")"; shift 2 ;;
     --diff-file) DIFF="$(cat "$2")"; shift 2 ;;
+    --evidence-file) EVIDENCE="$(cat "$2")"; shift 2 ;;
     --previous-feedback-file) PREVIOUS_FEEDBACK="$(cat "$2")"; shift 2 ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
   esac
@@ -77,6 +79,7 @@ PROMPT="${PROMPT//\{INSTRUCTIONS\}/$INSTRUCTIONS}"
 PROMPT="${PROMPT//\{APPROACHES\}/$APPROACHES}"
 PROMPT="${PROMPT//\{DESIGN_DOC\}/$DESIGN_DOC}"
 PROMPT="${PROMPT//\{DIFF\}/$DIFF}"
+PROMPT="${PROMPT//\{EVIDENCE\}/$EVIDENCE}"
 PROMPT="${PROMPT//\{PREVIOUS_FEEDBACK\}/$PREVIOUS_FEEDBACK}"
 
 # Strip sections where the value is empty (header + empty line)
