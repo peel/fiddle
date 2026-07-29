@@ -152,9 +152,32 @@ After writing the complete plan, look at the spec with fresh eyes and check the 
 
 If you find issues, fix them inline. No need to re-review — just fix and move on. If you find a spec requirement with no task, add the task.
 
+## Plan Critique (external providers)
+
+After self-review and before bean creation, give external providers one
+critique pass. Read `providers.phases.define` from `orchestrate.json`; skip
+this section when the list is empty or no listed provider is installed.
+
+For each available external provider:
+
+    hooks/dispatch-provider.sh <provider> \
+      --role plan-critic \
+      --topic "Critique implementation plan: <feature name>" \
+      --instructions "Review this implementation plan against the design
+        doc. Report only: spec requirements with no covering task, steps
+        that cannot be verified as written, files referenced but never
+        created or modified, and tasks too large for 1-2 TDD cycles.
+        Be terse; one finding per line; no rewrites." \
+      --design-doc-file <spec-path> \
+      --diff-file <plan-path>
+
+Fold accepted findings into the plan inline. Reject findings that conflict
+with the spec or the user's recorded decisions, and note why. One round
+only; do not re-dispatch after folding.
+
 ## Execution Handoff
 
-After saving the plan, offer execution:
+After the plan is saved, self-reviewed, and critiqued, offer execution:
 
 **"Plan complete and saved to `docs/plans/<filename>.md`. Ready to execute?"**
 
