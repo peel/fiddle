@@ -61,6 +61,8 @@ Read `orchestrate.json` (project root) if it exists. Format is JSON:
 }
 ```
 
+In `evaluators.domains.<domain>.providers`, the array is an ordered preference list for selecting the single evaluator for that domain: the first available provider that differs from the implementer wins (implementers are always claude). It is not a dispatch fan-out. `evaluators.holistic.providers` behaves differently: holistic review dispatches to all listed providers.
+
 ### Model Defaults
 
 | Config key | Roles | Default |
@@ -99,7 +101,7 @@ Run this section immediately on invocation, before any phase.
 1. Set provider defaults from the table above. Set model defaults from the Model Defaults table.
 2. If `orchestrate.json` exists (project root): read it with the Read tool. Parse each JSON key:
    - `providers` — provider definitions and phase assignments
-   - `evaluators` — evaluator configuration: `attended`, `max_dispatches_per_task`, and domain definitions
+   - `evaluators` — evaluator configuration: `attended`, `max_dispatches_per_task`, and domain definitions (each domain's `providers` is an ordered preference list for the single evaluator, not a fan-out; `holistic.providers` is dispatch-all)
    - `models` — override model defaults for each phase. `develop` is a string key. "default" means omit the `model:` parameter to inherit the session model.
 3. Parse CLI flags from `{ARGS}`. Override any config file values.
 4. Store final config values for use throughout the session.

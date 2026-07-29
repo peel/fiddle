@@ -63,7 +63,7 @@ Read `orchestrate.json` from project root. Extract the `evaluators` block:
 }
 ```
 
-Store `max_dispatches_per_task` for the convergence budget. Store `domains` for evaluator dispatch. Store `evaluators.holistic.providers` for holistic review dispatch (default: `["claude"]`).
+Store `max_dispatches_per_task` for the convergence budget. Store `domains` for evaluator dispatch: each domain's `providers` array is an ordered preference list for selecting the single evaluator for that domain (the first available provider differing from the implementer wins; implementers are always claude), not a dispatch fan-out. Store `evaluators.holistic.providers` for holistic review dispatch (default: `["claude"]`); holistic review dispatches to all listed providers.
 
 ## Step 1: Bean Body Validation
 

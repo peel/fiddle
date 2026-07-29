@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# test-multi-provider.sh — Integration test: multi-provider evaluation
-# Tests merge-scorecards.sh, dual dispatch, disagreement surfacing, budget accounting
+# test-multi-provider.sh — Integration test: provider selection and holistic
+# multi-provider merge. Tests select-evaluator-provider.sh preference order,
+# merge-scorecards.sh min-merge (holistic path), single-element normalization,
+# disagreement surfacing, budget accounting
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -48,7 +50,43 @@ TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
 # ═══════════════════════════════════════════════════════════════════════════════
-echo "=== Test 1: Two-provider merge — min scores, provider_scores, disagreements ==="
+echo "=== Test 1: Per-task selection honors provider preference order ==="
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Selection needs only bash and jq on PATH; fake provider binaries control
+# which providers look available (same technique as test-select-evaluator-provider.sh).
+STUB_BIN="$TMPDIR/stub-bin"
+mkdir -p "$STUB_BIN"
+ln -s "$(command -v bash)" "$STUB_BIN/bash"
+ln -s "$(command -v jq)" "$STUB_BIN/jq"
+
+FAKE_BIN="$TMPDIR/fake-bin"
+mkdir -p "$FAKE_BIN"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE_BIN/codex"; chmod +x "$FAKE_BIN/codex"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE_BIN/gemini"; chmod +x "$FAKE_BIN/gemini"
+
+EXIT_CODE=0
+SEL_OUT=$(PATH="$FAKE_BIN:$STUB_BIN" "$SCRIPT_DIR/select-evaluator-provider.sh" \
+  --preference "codex,gemini" --implementer claude) || EXIT_CODE=$?
+assert_exit "selection exits 0" 0 "$EXIT_CODE"
+assert_json "first preferred provider wins" ".provider" "codex" "$SEL_OUT"
+
+SEL_OUT=$(PATH="$FAKE_BIN:$STUB_BIN" "$SCRIPT_DIR/select-evaluator-provider.sh" \
+  --preference "gemini,codex" --implementer claude)
+assert_json "reversed preference flips the selection" ".provider" "gemini" "$SEL_OUT"
+
+SEL_OUT=$(PATH="$FAKE_BIN:$STUB_BIN" "$SCRIPT_DIR/select-evaluator-provider.sh" \
+  --preference "claude,codex" --implementer claude)
+assert_json "implementer provider is skipped for a differing one" ".provider" "codex" "$SEL_OUT"
+
+SEL_OUT=$(PATH="$STUB_BIN" "$SCRIPT_DIR/select-evaluator-provider.sh" \
+  --preference "codex,gemini" --implementer claude)
+assert_json "no external available falls back to implementer" ".provider" "claude" "$SEL_OUT"
+assert_json "fallback reason recorded" '.reason | test("fallback")' "true" "$SEL_OUT"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "=== Test 2: Two-provider merge (holistic path) — min scores, provider_scores, disagreements ==="
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Create mock provider scorecards for domain "general"
@@ -163,7 +201,7 @@ assert_json "failing score is 6" ".failing_dimensions[0].score" "6" "$THRESH_1"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "=== Test 2: Single-provider passthrough ==="
+echo "=== Test 3: Single-element normalization preserves scores (per-task path) ==="
 # ═══════════════════════════════════════════════════════════════════════════════
 
 cat > "$TMPDIR/scorecard-single.json" << 'EOF'
@@ -220,7 +258,7 @@ assert_json "single provider verdict is PASS" ".verdict" "PASS" "$THRESH_SINGLE"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "=== Test 3: Multi-provider + multi-domain merge ==="
+echo "=== Test 4: Multi-provider + multi-domain merge (generic merge behavior) ==="
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Two providers, two domains (frontend and backend)
@@ -333,7 +371,7 @@ assert_json "multi-domain: backend.domain_spec_fidelity in dimensions map" '.dim
 
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "=== Test 4: Disagreement logging via append-eval-log.sh ==="
+echo "=== Test 5: Disagreement logging via append-eval-log.sh (holistic) ==="
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Create a disagreement file
@@ -388,17 +426,14 @@ fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "=== Test 5: Dispatch budget accounting ==="
+echo "=== Test 6: Holistic dispatch budget accounting ==="
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# 2 providers × 2 domains = 4 dispatches per iteration
-# The dispatch_count in each provider scorecard is 1, so merged = 2 per merge.
-# For multi-domain, we do 2 merges (one per domain) but the cross-domain merge
-# happens at domain level. With the actual pipeline: each provider evaluates
-# all domains in one call, so dispatch_count = 1 per provider.
-# 2 providers = dispatch_count 2 per iteration.
+# Holistic review dispatches every configured provider each iteration; each
+# provider dispatch counts 1 toward the budget, so 2 providers means
+# 2 dispatches per holistic iteration.
 
-# Simulate: iteration 1 with 2 provider dispatches
+# Simulate: holistic iteration 1 with 2 provider dispatches
 echo "$THRESH_1" > "$TMPDIR/convergence-current-1.json"
 echo "[]" > "$TMPDIR/convergence-history.json"
 EXIT_CODE=0
@@ -410,7 +445,7 @@ CONV_1=$("$SCRIPT_DIR/check-convergence.sh" \
 assert_exit "iteration 1 FAIL → exit 1" 1 "$EXIT_CODE"
 assert_json "convergence status is FAIL" ".status" "FAIL" "$CONV_1"
 
-# Simulate: iteration 2 with cumulative 4 dispatches (2 per iteration)
+# Simulate: holistic iteration 2 with cumulative 4 dispatches (2 per iteration)
 echo "$THRESH_SINGLE" > "$TMPDIR/convergence-current-2.json"
 jq -n --argjson t1 "$(cat "$TMPDIR/convergence-current-1.json")" '[$t1]' > "$TMPDIR/convergence-history-2.json"
 EXIT_CODE=0
@@ -447,7 +482,7 @@ assert_json "under budget: status is not DISPATCHES_EXCEEDED" ".status" "PASS_PE
 
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "=== Test 6: Full convergence with multi-provider — FAIL → PASS_PENDING → CONVERGED ==="
+echo "=== Test 7: Holistic convergence with multi-provider — FAIL → PASS_PENDING → CONVERGED ==="
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Iteration 1: FAIL (correctness below threshold after merge)

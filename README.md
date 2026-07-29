@@ -10,7 +10,7 @@ Claude Code plugin for orchestrating a four-phase development lifecycle with a c
 
 **DEFINE** [`/fiddle:define`](skills/define/SKILL.md) — Brainstorm approaches, run a multi-model adversarial panel (Claude + Codex + Gemini), challenge the chosen design, then produce an implementation plan with sized beans.
 
-**DEVELOP** [`/fiddle:develop`](skills/develop/SKILL.md) — Execute beans via the evaluator loop: dispatch implementer → dispatch per-domain, per-provider evaluators → check thresholds → converge or iterate. Multi-domain evaluation with holistic cross-domain review when all tasks complete.
+**DEVELOP** [`/fiddle:develop`](skills/develop/SKILL.md) — Execute beans via the evaluator loop: dispatch implementer → dispatch one evaluator per domain → check thresholds → converge or iterate. Multi-domain evaluation with holistic cross-domain review when all tasks complete.
 
 **DELIVER** [`/fiddle:deliver`](skills/deliver/SKILL.md) — Drift analysis via external providers (Claude + Codex), evaluator evolve step (calibration updates, antipattern capture, threshold tuning), update technical docs, close the epic.
 
@@ -25,7 +25,12 @@ The develop phase uses a calibrated evaluator loop: dispatch implementer → dis
 
 **Runtime verification.** Evaluators launch and interact with the running app via project-configured MCP tools (marionette, curl, go-dev-mcp) to gather evidence beyond static code review.
 
-**Multi-provider scoring.** Multiple LLM providers evaluate each task for diversity of judgment. Conservative scoring (min across providers per dimension). Disagreements (spread >= 3) surfaced in eval logs.
+**Provider selection.** Each domain's `providers` list is an ordered
+preference; the evaluator runs on the first available provider that differs
+from the implementer's, falling back to the implementer's provider in a
+fresh context. Evidence (tests, invariant checks, runtime probes) is
+gathered before dispatch and handed to the evaluator as an artifact.
+Holistic review still scores across all configured providers.
 
 **Holistic review.** After all tasks complete, a cross-domain integration review produces a spec coverage matrix and remediation loop for any gaps.
 
