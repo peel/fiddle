@@ -47,6 +47,12 @@
           "codex"
         ]
       }
+    },
+    "holistic": {
+      "providers": [
+        "claude"
+      ],
+      "max_iterations": 4
     }
   },
   "models": {},
