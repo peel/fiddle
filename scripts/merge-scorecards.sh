@@ -28,6 +28,12 @@ if [ "$INPUT_LEN" -eq 0 ]; then
   exit 2
 fi
 
+# Validate: every scorecard must carry a criteria array
+if ! echo "$INPUT" | jq -e 'all(.[]; type == "object" and (.criteria | type == "array"))' >/dev/null 2>&1; then
+  echo '{"error": "every scorecard must contain a criteria array"}' >&2
+  exit 2
+fi
+
 # Perform the merge entirely in jq
 echo "$INPUT" | jq -c '
   # Collect all unique domains and dimensions across all scorecards

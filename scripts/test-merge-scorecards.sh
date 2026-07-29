@@ -375,6 +375,29 @@ assert_exit "single-element pin → exit 0" 0 "$EXIT_CODE"
 assert_json "score preserved" ".domains.general.dimensions.correctness.score" "8" "$OUT"
 assert_json "criteria preserved" ".criteria[0].pass" "true" "$OUT"
 
+# ── Test 11: Missing criteria key — invalid input ─────────────────────────────
+echo ""
+echo "=== Test 11: scorecard without criteria key → exit 2 ==="
+cat > "$TMPDIR/no-criteria.json" << 'EOF'
+[{"provider":"codex","domains":{"general":{"dimensions":{"correctness":{"score":8,"threshold":7}}}}}]
+EOF
+EXIT_CODE=0
+STDERR_FILE="$TMPDIR/stderr11.txt"
+"$SCRIPT_DIR/merge-scorecards.sh" < "$TMPDIR/no-criteria.json" >/dev/null 2>"$STDERR_FILE" || EXIT_CODE=$?
+assert_exit "missing criteria key → exit 2" 2 "$EXIT_CODE"
+assert_json "stderr carries JSON error" '.error | length > 0' "true" "$(cat "$STDERR_FILE")"
+
+# ── Test 12: Present-but-empty criteria array — still accepted ────────────────
+echo ""
+echo "=== Test 12: present-but-empty criteria [] normalizes with exit 0 ==="
+cat > "$TMPDIR/empty-criteria.json" << 'EOF'
+[{"provider":"codex","domains":{"general":{"dimensions":{"correctness":{"score":8,"threshold":7}}}},"criteria":[]}]
+EOF
+EXIT_CODE=0
+OUT=$("$SCRIPT_DIR/merge-scorecards.sh" < "$TMPDIR/empty-criteria.json" 2>/dev/null) || EXIT_CODE=$?
+assert_exit "empty criteria array → exit 0" 0 "$EXIT_CODE"
+assert_json "criteria normalizes to empty array" '.criteria | length' "0" "$OUT"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
