@@ -74,7 +74,7 @@ echo "$INPUT" | jq -c '
   ) | add // {}) as $merged_domains |
 
   # Merge criteria: collect all criteria IDs, any fail = fail
-  ([$cards[].criteria[]] | group_by(.id) | map(
+  ([$cards[].criteria[]?] | group_by(.id) | map(
     {
       "id": .[0].id,
       "pass": (all(.pass)),
@@ -89,9 +89,9 @@ echo "$INPUT" | jq -c '
     "timestamp": $cards[0].timestamp,
     "domains": $merged_domains,
     "criteria": $merged_criteria,
-    "antipatterns_detected": ([$cards[].antipatterns_detected[]] | unique),
-    "guidance": ([$cards[].guidance] | join("\n---\n")),
-    "dispatch_count": ([$cards[].dispatch_count] | add)
+    "antipatterns_detected": ([$cards[].antipatterns_detected[]?] | unique),
+    "guidance": ([$cards[].guidance // empty] | join("\n---\n")),
+    "dispatch_count": ([$cards[].dispatch_count // 0] | add)
   }
 ' 2>/dev/null
 

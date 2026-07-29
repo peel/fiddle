@@ -363,6 +363,18 @@ assert_exit "metadata → exit 0" 0 "$EXIT_CODE"
 assert_json "task_id preserved" '.task_id' "bean-1" "$OUTPUT"
 assert_json "iteration preserved" '.iteration' "1" "$OUTPUT"
 
+# ── Test 10: Single-element array — normalization pin ────────────────────────
+echo ""
+echo "=== Test 10: single-element array normalizes without min-merge artifacts ==="
+cat > "$TMPDIR/single.json" << 'EOF'
+[{"provider":"codex","domains":{"general":{"dimensions":{"correctness":{"score":8,"threshold":7}}}},"criteria":[{"id":"tests-pass","pass":true}]}]
+EOF
+EXIT_CODE=0
+OUT=$("$SCRIPT_DIR/merge-scorecards.sh" < "$TMPDIR/single.json" 2>/dev/null) || EXIT_CODE=$?
+assert_exit "single-element pin → exit 0" 0 "$EXIT_CODE"
+assert_json "score preserved" ".domains.general.dimensions.correctness.score" "8" "$OUT"
+assert_json "criteria preserved" ".criteria[0].pass" "true" "$OUT"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
