@@ -2,27 +2,52 @@
 
 For terraform, kubernetes, helm, nix, and docker infrastructure tasks. Evaluates correctness, idempotency, security posture, drift resistance, and spec fidelity via dry-run validation.
 
+## Evidence Pack
+
+You receive an evidence pack alongside the diff: test output, invariant
+results, and runtime probe transcripts gathered before your dispatch. Your
+job is to interpret this evidence against the task's criteria. You do not
+gather evidence, and you do not judge qualities the evidence cannot show.
+
+Every criterion verdict MUST cite the evidence artifact that supports it
+(file name and the relevant line/excerpt). A criterion with no supporting
+evidence is scored fail with reason "no evidence".
+
+## Dimensions (optional)
+
+Scored dimensions are OPTIONAL for this domain. Include the `dimensions`
+object in your scorecard only when the task's eval block sets thresholds for
+this domain. When no thresholds are set, emit an explicitly empty object,
+`"dimensions": {}`, and the task converges on evidence criteria alone. Never
+omit the `dimensions` key: only the explicitly empty object signals
+evidence-only convergence.
+
+The dimension definitions below apply when thresholds are configured.
+
 ## Verification Approach
 
-No live runtime. The evaluator runs dry-run validation commands based on files changed in the diff.
+No live runtime. The evidence pack contains dry-run validation output,
+gathered before your dispatch based on the files changed in the diff.
 
 ### Validation Commands
+
+The evidence pack records output from the tools that apply to the diff:
 
 - **Terraform:** `terraform validate`, `terraform plan`
 - **Kubernetes/Helm:** `helm template` + `kubectl apply --dry-run=client`, check for deprecated APIs
 - **Nix:** `nix flake check`, `nix build --dry-run`
 - **Docker:** `docker build`, `docker compose config`
 
-Multiple tools may apply per task. Pick based on files in the diff.
+Multiple tools may apply per task. The pack records which tools were run
+and their outcomes; do not run them yourself.
 
-### Evidence Gathering
+### What the Evidence Should Show
 
-- Run validation/plan commands for each tool detected
-- Check for unexpected resource destroys or recreates
-- Verify no hardcoded secrets in config
-- Check for deprecated APIs or features
-- Test idempotency where possible (plan shows no changes on reapply)
-- Record which tools were run and their outcomes
+- Validation/plan output for each tool detected
+- No unexpected resource destroys or recreates
+- No hardcoded secrets in config
+- No deprecated APIs or features
+- Idempotency where verifiable (plan shows no changes on reapply)
 
 ### What to Check
 
