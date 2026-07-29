@@ -7,7 +7,7 @@ priority: normal
 tags:
     - orchestrate-phase:DEFINE
 created_at: 2026-07-28T12:39:50Z
-updated_at: 2026-07-28T12:52:01Z
+updated_at: 2026-07-28T19:43:59Z
 parent: fiddle-rwyx
 ---
 
@@ -61,3 +61,17 @@ The iterate-until-pass guarantee should move from prompt discipline to the harne
 Codex/Pi harnesses keep the skill-encoded loop as fallback via the using-fiddle harness mapping.
 
 - [ ] Add Stop-hook verdict gate for develop-loop (Claude harness)
+
+## Plan
+
+Plan: docs/plans/2026-07-28-evidence-driven-develop-loop.md
+Spec: docs/specs/2026-07-28-evidence-driven-develop-loop-design.md
+
+## Contracts
+
+Shared shapes for parallel task beans:
+- select-evaluator-provider.sh output: {"provider": "<name>", "reason": "<text>"}; exit 0 selected, 2 invalid input
+- Evidence pack files: evidence-{domain}-tests.txt, evidence-{domain}-checks.txt, evidence-{domain}-runtime.txt, concatenated to evidence-{domain}.txt with "### <source>" headers
+- Stop-hook marker: .fiddle/active-bean containing the bean id, written at develop-loop 1b, cleared on every terminal exit
+- dispatch-provider.sh gains --evidence-file <path>, appended to the payload as an "## Evidence" section (mirrors --diff-file handling)
+- Evaluator scorecards: dimensions may be {} (evidence-only); criteria entries gain required "evidence" citation field; provider field stays required
