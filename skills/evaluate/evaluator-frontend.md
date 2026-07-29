@@ -1,48 +1,65 @@
 # Frontend Domain Evaluator Template
 
-For Flutter and web frontend tasks. Evaluates visual output, craft, interactivity, and spec fidelity against a running app.
+For Flutter and web frontend tasks. Evaluates visual output, craft, interactivity, and spec fidelity from runtime evidence recorded against a running app.
 
-## Runtime Interaction
+## Evidence Pack
 
-The evaluator works against a running frontend application. All evidence must come
-from observing the live app, not from reading source code alone.
+You receive an evidence pack alongside the diff: test output, invariant
+results, and runtime probe transcripts gathered before your dispatch. Your
+job is to interpret this evidence against the task's criteria. You do not
+gather evidence, and you do not judge qualities the evidence cannot show.
 
-### Launch
+Every criterion verdict MUST cite the evidence artifact that supports it
+(file name and the relevant line/excerpt). A criterion with no supporting
+evidence is scored fail with reason "no evidence".
 
-The app is started by `start-runtimes.sh` before evaluation begins. The evaluator
-receives runtime state including:
+## Dimensions (optional)
 
-- **port** — the local port the app is served on
-- **domain** — which domain evaluator to use (in this case, `frontend`)
+Scored dimensions are OPTIONAL for this domain. Include the `dimensions`
+object in your scorecard only when the task's eval block sets thresholds for
+this domain. When no thresholds are set, emit an explicitly empty object,
+`"dimensions": {}`, and the task converges on evidence criteria alone. Never
+omit the `dimensions` key: only the explicitly empty object signals
+evidence-only convergence.
 
-Do not attempt to start or restart the app. If the app is not running, score
-Visual Quality as 1 and note the failure.
+The dimension definitions below apply when thresholds are configured.
 
-### MCP Tools
+## Verification Approach
 
-Use whichever tools are available for the runtime:
+Live runtime. The app is started by `start-runtimes.sh` before evidence
+gathering and stays running through your dispatch. The evidence pack contains
+probe transcripts recorded against that live app, not judgments made from
+reading source code alone. Do not launch, restart, or re-probe the app
+yourself; interpret what the pack records.
 
-- **Flutter apps:** `marionette` — navigate between screens, tap buttons, scroll
-  lists, enter text, and take screenshots of current state.
-- **Web apps:** `curl` — make HTTP requests, fetch rendered pages, check status
-  codes and response bodies.
+### Runtime Evidence
+
+The pack records transcripts from the tools that apply to the runtime:
+
+- **Flutter apps:** `marionette` — screen navigation, button taps, list
+  scrolls, text entry, and screenshots of resulting state.
+- **Web apps:** `curl` — HTTP requests, rendered page fetches, status
+  codes, and response bodies.
 
 Prefer screenshot-based evidence for visual dimensions (Visual Quality, Craft).
-Prefer interaction-based evidence for behavioral dimensions (Functionality).
+Prefer interaction transcripts for behavioral dimensions (Functionality).
 
-### Evidence Gathering
+If the pack shows the app was not running or failed to start, score
+Visual Quality as 1 and note the failure.
 
-- Take screenshots of key screens and states
-- Exercise primary interactions (navigation, forms, buttons)
-- Check visual consistency across multiple states and screens
-- Verify responsive behavior if applicable (resize, orientation)
-- Test error states (offline, invalid input, empty data)
-- Record which interactions were tested and their outcomes
+### What the Evidence Should Show
+
+- Screenshots of key screens and states
+- Primary interactions exercised (navigation, forms, buttons)
+- Visual consistency across multiple states and screens
+- Responsive behavior if applicable (resize, orientation)
+- Error states (offline, invalid input, empty data)
+- Which interactions were tested and their outcomes
 
 ### What to Check
 
 - Does the app render correctly on launch?
-- Do interactions produce expected results?
+- Do recorded interactions produce expected results?
 - Are transitions and animations smooth?
 - Is the design system applied consistently across screens?
 - Do error states show appropriate feedback?
