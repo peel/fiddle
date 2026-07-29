@@ -69,6 +69,53 @@ OUT=$(PATH="$STUB_BIN" "$SCRIPT_DIR/select-evaluator-provider.sh" \
   --preference " " --implementer claude)
 assert_json "defaults to claude" ".provider" "claude" "$OUT"
 
+echo "Test 6: implementer not in preference list is still the fallback"
+CODEX_ONLY_BIN="$TEST_TMPDIR/codex-only-bin"
+mkdir -p "$CODEX_ONLY_BIN"
+printf '#!/bin/sh\nexit 0\n' > "$CODEX_ONLY_BIN/codex"; chmod +x "$CODEX_ONLY_BIN/codex"
+EXIT_CODE=0
+OUT=$(PATH="$CODEX_ONLY_BIN:$STUB_BIN" "$SCRIPT_DIR/select-evaluator-provider.sh" \
+  --preference "gemini" --implementer codex) || EXIT_CODE=$?
+assert_exit "unlisted implementer fallback exits 0" 0 "$EXIT_CODE"
+assert_json "falls back to unlisted implementer" ".provider" "codex" "$OUT"
+assert_json "reason names the implementer fallback" '.reason | test("implementer")' "true" "$OUT"
+
+echo "Test 7: nothing available and implementer is claude returns claude"
+OUT=$(PATH="$STUB_BIN" "$SCRIPT_DIR/select-evaluator-provider.sh" \
+  --preference "gemini" --implementer claude)
+assert_json "returns claude" ".provider" "claude" "$OUT"
+assert_json "reason names the implementer fallback" '.reason | test("implementer")' "true" "$OUT"
+
+echo "Test 8: nothing available and implementer unavailable returns claude"
+OUT=$(PATH="$STUB_BIN" "$SCRIPT_DIR/select-evaluator-provider.sh" \
+  --preference "gemini" --implementer codex)
+assert_json "returns claude as last resort" ".provider" "claude" "$OUT"
+assert_json "reason distinguishes the last resort" '.reason | test("implementer")' "false" "$OUT"
+
+echo "Test 9: dangling --preference is invalid input"
+EXIT_CODE=0
+ERR=$("$SCRIPT_DIR/select-evaluator-provider.sh" --preference 2>&1 >/dev/null) || EXIT_CODE=$?
+assert_exit "dangling --preference exits 2" 2 "$EXIT_CODE"
+JSON_OK=0
+echo "$ERR" | jq -e . >/dev/null 2>&1 || JSON_OK=$?
+assert_exit "dangling --preference stderr is JSON" 0 "$JSON_OK"
+
+echo "Test 10: dangling --implementer is invalid input"
+EXIT_CODE=0
+ERR=$("$SCRIPT_DIR/select-evaluator-provider.sh" --preference "claude" --implementer 2>&1 >/dev/null) || EXIT_CODE=$?
+assert_exit "dangling --implementer exits 2" 2 "$EXIT_CODE"
+JSON_OK=0
+echo "$ERR" | jq -e . >/dev/null 2>&1 || JSON_OK=$?
+assert_exit "dangling --implementer stderr is JSON" 0 "$JSON_OK"
+
+echo "Test 11: unknown argument containing a double quote emits valid JSON"
+EXIT_CODE=0
+ERR=$("$SCRIPT_DIR/select-evaluator-provider.sh" --preference "claude" '--bad"arg' 2>&1 >/dev/null) || EXIT_CODE=$?
+assert_exit "quoted unknown argument exits 2" 2 "$EXIT_CODE"
+JSON_OK=0
+echo "$ERR" | jq -e . >/dev/null 2>&1 || JSON_OK=$?
+assert_exit "quoted unknown argument stderr is JSON" 0 "$JSON_OK"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

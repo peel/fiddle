@@ -31,16 +31,21 @@ USAGE
 PREFERENCE=""
 IMPLEMENTER="claude"
 
+invalid() {
+  jq -n --arg error "$1" '{"error":$error}' >&2
+  exit 2
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h) usage; exit 0;;
-    --preference) PREFERENCE="$2"; shift 2;;
-    --implementer) IMPLEMENTER="$2"; shift 2;;
-    *) echo '{"error":"unknown argument: '"$1"'"}' >&2; exit 2;;
+    --preference) [[ $# -ge 2 ]] || invalid "missing value for --preference"; PREFERENCE="$2"; shift 2;;
+    --implementer) [[ $# -ge 2 ]] || invalid "missing value for --implementer"; IMPLEMENTER="$2"; shift 2;;
+    *) invalid "unknown argument: $1";;
   esac
 done
 
-[[ -n "$PREFERENCE" ]] || { echo '{"error":"missing --preference"}' >&2; exit 2; }
+[[ -n "$PREFERENCE" ]] || invalid "missing --preference"
 
 available() {
   local p="$1"
@@ -60,7 +65,6 @@ trim() {
 }
 
 IFS=',' read -ra PROVIDERS <<< "$PREFERENCE"
-FALLBACK=""
 for p in "${PROVIDERS[@]}"; do
   p="$(trim "$p")"
   [[ -z "$p" ]] && continue
@@ -69,11 +73,10 @@ for p in "${PROVIDERS[@]}"; do
     emit "$p" "first available provider differing from implementer"
     exit 0
   fi
-  [[ -z "$FALLBACK" ]] && FALLBACK="$p"
 done
 
-if [[ -n "$FALLBACK" ]]; then
-  emit "$FALLBACK" "fallback: implementer provider in a fresh context"
+if available "$IMPLEMENTER"; then
+  emit "$IMPLEMENTER" "fallback: implementer provider in a fresh context"
   exit 0
 fi
 emit "claude" "fallback: no configured provider available"
