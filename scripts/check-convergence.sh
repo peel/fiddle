@@ -34,6 +34,16 @@ if [[ "$VERDICT" != "PASS" ]]; then
   exit 1
 fi
 
+# Evidence-only verdicts (no scored dimensions) converge on the first pass:
+# re-running the same checks on unchanged code re-measures the same facts.
+# Only an explicitly empty dimensions object qualifies; a missing key means
+# a judgment verdict without scores and keeps the double-pass rule.
+DIM_COUNT=$(jq 'if (.dimensions | type) == "object" then (.dimensions | length) else -1 end' "$CURRENT")
+if [[ "$DIM_COUNT" -eq 0 ]]; then
+  echo '{"status":"CONVERGED","mode":"evidence-only"}'
+  exit 0
+fi
+
 # Current passed — check history for prior pass
 HISTORY_LEN=$(jq 'length' "$HISTORY")
 if [[ "$HISTORY_LEN" -eq 0 ]]; then
