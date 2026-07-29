@@ -7,7 +7,7 @@ priority: normal
 tags:
     - branch
 created_at: 2026-07-28T19:48:33Z
-updated_at: 2026-07-29T10:40:50Z
+updated_at: 2026-07-29T14:50:51Z
 parent: fiddle-sip9
 ---
 
@@ -69,3 +69,13 @@ dispatches: 5
 ## Summary of Changes
 
 Evidence-first rework of evaluator-general.md, evaluator-infrastructure.md, and evaluate/SKILL.md (commit a314ad6): Evidence Pack + Dimensions (optional) sections, HARD-GATE conditional on thresholds, explicit dimensions:{} never-omit contract (matches check-convergence.sh single-pass), per-criterion artifact citation with no-evidence fail rule, infrastructure Verification Approach reframed interpret-only. Converged in 2 iterations, 5 dispatches. During evaluation both providers spontaneously followed the new contract (each emitted dimensions:{} in one iteration since the bean sets no thresholds) — live validation of the evidence-only shape. Out of scope, noted for later: evaluator-frontend.md/backend.md still carry gather-style framing; main checkout has uncommitted WIP on evaluate/SKILL.md (merge-conflict risk at finish-branch).
+
+### Spot-Check (2026-07-29T14:50:49Z)
+dispatches: 0
+**general:**
+- code_quality: 8/10
+- correctness: 9/10
+- domain_spec_fidelity: 9/10
+**Guidance:** "blind spot-check"
+**Human Corrections:**
+- general.all: evaluator 9 → human 0 (blind spot-check: human judges dimension scoring inapplicable to doc-only diffs; criteria verdicts are the gate. Evaluator dimension scores on doc-only beans are ceremony.)

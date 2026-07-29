@@ -1,13 +1,11 @@
 ---
 # fiddle-sip9
 title: Simplify develop-loop to evidence-driven single evaluator per domain
-status: todo
+status: completed
 type: epic
 priority: normal
-tags:
-    - orchestrate-phase:DEVELOP
 created_at: 2026-07-28T12:39:50Z
-updated_at: 2026-07-29T12:47:43Z
+updated_at: 2026-07-29T14:51:51Z
 parent: fiddle-rwyx
 ---
 

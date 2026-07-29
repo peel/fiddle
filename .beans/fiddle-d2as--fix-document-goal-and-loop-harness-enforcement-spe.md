@@ -8,7 +8,7 @@ tags:
     - branch
     - remediation
 created_at: 2026-07-29T12:10:24Z
-updated_at: 2026-07-29T12:21:14Z
+updated_at: 2026-07-29T14:50:51Z
 parent: fiddle-sip9
 ---
 
@@ -54,3 +54,8 @@ dispatches: 3
 ## Summary of Changes
 
 Harness Enforcement section added to skills/develop/SKILL.md after Restart Resilience (commit a60d56e): Stop hook automatic/fail-open, /goal manual equivalent with verdict-phrased condition incl. escalation exits and budget rationale, /loop outer watchdog only, Codex/Pi skill-loop fallback. Converged single-pass evidence-only, 3 dispatches.
+
+### Spot-Check (2026-07-29T14:50:51Z)
+dispatches: 0
+**general:**
+**Guidance:** "blind spot-check: human judged dimension scoring inapplicable to doc-only diff; evaluator emitted no dimensions; no divergence"

@@ -38,7 +38,8 @@
         "providers": [
           "claude",
           "codex"
-        ]
+        ],
+        "calibration": "docs/evaluator-calibration-general.md"
       },
       "infrastructure": {
         "template": "evaluator-infrastructure",
