@@ -5,9 +5,9 @@ status: todo
 type: epic
 priority: normal
 tags:
-    - orchestrate-phase:DEFINE
+    - orchestrate-phase:DEVELOP
 created_at: 2026-07-28T12:39:50Z
-updated_at: 2026-07-28T19:43:59Z
+updated_at: 2026-07-29T12:47:43Z
 parent: fiddle-rwyx
 ---
 
@@ -75,3 +75,13 @@ Shared shapes for parallel task beans:
 - Stop-hook marker: .fiddle/active-bean containing the bean id, written at develop-loop 1b, cleared on every terminal exit
 - dispatch-provider.sh gains --evidence-file <path>, appended to the payload as an "## Evidence" section (mirrors --diff-file handling)
 - Evaluator scorecards: dimensions may be {} (evidence-only); criteria entries gain required "evidence" citation field; provider field stays required
+
+## Holistic Review Record (2026-07-29)
+
+CONVERGED after 4 iterations: iteration 1 FAIL (holistic_spec_fidelity 7/8; spec section 8 docs Missing, frontend/backend templates Weak) → remediation beans fiddle-d2as + fiddle-asf2 (both converged single-pass) → iterations 2-4 PASS at 8/8/8/8/9 with zero Missing coverage and no regressions. Accepted Weak drifts recorded for deliver: budget doc examples show defaults not configured values; invalid-scorecard re-dispatch-once policy unwritten in skills; evidence-pack assembly is untested prose; check-portability.sh nonexistent in repo.
+
+Findings for deliver/evolve (loop mechanics, discovered by running the loop on itself):
+1. Budget arithmetic: default budgets cannot absorb the double-pass (per-task 10 → raised to 16 mid-epic, commit fdf9133; holistic 3 → raised to 4, commit a3d490b). A pass achieved on iteration N can never confirm within budget N+0.
+2. check-convergence.sh counting convention ambiguous at the boundary: budget check runs before verdict evaluation, so post-dispatch counts flag EXCEEDED for a completed passing run; the hard-gate text ("run N times AND STILL FAILS") supports pre-dispatch counting. Needs an explicit convention.
+3. Holistic scorecard schema example (top-level domain/dimensions, no criteria) does not match merge-scorecards.sh input expectations; rejected loudly now (exit 2) vs silently pre-epic (exit 5). Schema or a wrapping step should be specified.
+4. Codex read-only sandbox scored its own execution failures as product defects until the evidence-first contract landed (tg77 iterations 1-3) — the empirical validation of this epic's premise.
