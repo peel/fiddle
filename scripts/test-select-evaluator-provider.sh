@@ -116,6 +116,29 @@ JSON_OK=0
 echo "$ERR" | jq -e . >/dev/null 2>&1 || JSON_OK=$?
 assert_exit "quoted unknown argument stderr is JSON" 0 "$JSON_OK"
 
+echo "Test 12: selection succeeds without a writable temp directory"
+# Bash implements here-strings/heredocs via temp files (bashes >= 5.1 use
+# pipes for small documents, older ones always hit TMPDIR), and bash falls
+# back to /tmp when TMPDIR is unwritable. A read-only TMPDIR alone therefore
+# cannot catch temp-backed constructs; where sandbox-exec exists, deny all
+# file writes (except /dev/null) to simulate a fully read-only environment,
+# and run under the system bash whose here-strings are always temp-backed.
+RO_TMPDIR="$TEST_TMPDIR/ro"
+mkdir -p "$RO_TMPDIR"
+chmod 500 "$RO_TMPDIR"
+NO_WRITE=()
+if command -v sandbox-exec >/dev/null 2>&1; then
+  NO_WRITE=("$(command -v sandbox-exec)" -p '(version 1)(allow default)(deny file-write*)(allow file-write-data (literal "/dev/null"))')
+fi
+SYSTEM_BASH=/bin/bash
+[ -x "$SYSTEM_BASH" ] || SYSTEM_BASH=$(command -v bash)
+EXIT_CODE=0
+OUT=$(TMPDIR="$RO_TMPDIR" PATH="$FAKE_BIN:$STUB_BIN" "${NO_WRITE[@]}" "$SYSTEM_BASH" \
+  "$SCRIPT_DIR/select-evaluator-provider.sh" \
+  --preference "codex,claude" --implementer claude) || EXIT_CODE=$?
+assert_exit "read-only environment exits 0" 0 "$EXIT_CODE"
+assert_json "read-only environment picks codex" ".provider" "codex" "$OUT"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

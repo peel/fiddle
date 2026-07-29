@@ -64,8 +64,10 @@ trim() {
   printf '%s' "$s"
 }
 
-IFS=',' read -ra PROVIDERS <<< "$PREFERENCE"
-for p in "${PROVIDERS[@]}"; do
+rest="$PREFERENCE,"
+while [[ -n "$rest" ]]; do
+  p="${rest%%,*}"
+  rest="${rest#*,}"
   p="$(trim "$p")"
   [[ -z "$p" ]] && continue
   available "$p" || continue
