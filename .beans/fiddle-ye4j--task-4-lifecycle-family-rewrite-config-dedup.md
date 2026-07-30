@@ -1,13 +1,13 @@
 ---
 # fiddle-ye4j
 title: 'Task 4: Lifecycle family rewrite + config dedup'
-status: todo
+status: in-progress
 type: task
 priority: normal
 tags:
     - branch
 created_at: 2026-07-30T11:20:24Z
-updated_at: 2026-07-30T11:20:24Z
+updated_at: 2026-07-30T12:30:17Z
 parent: fiddle-85jh
 blocked_by:
     - fiddle-e7op
@@ -44,3 +44,8 @@ criteria:
       check: "Full test sweep passes at the family checkpoint"
 thresholds: {}
 ```
+
+
+## Evaluation Log
+BASE_SHA: 5b830c27388235c7a955f376e795016d636ae28d
+total_dispatches: 0

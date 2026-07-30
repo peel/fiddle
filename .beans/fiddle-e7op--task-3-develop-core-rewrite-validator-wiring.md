@@ -1,13 +1,13 @@
 ---
 # fiddle-e7op
 title: 'Task 3: Develop core rewrite + validator wiring'
-status: todo
+status: completed
 type: task
 priority: normal
 tags:
     - branch
 created_at: 2026-07-30T11:20:24Z
-updated_at: 2026-07-30T11:20:24Z
+updated_at: 2026-07-30T12:10:47Z
 parent: fiddle-85jh
 blocked_by:
     - fiddle-oz6z
@@ -48,3 +48,24 @@ criteria:
       check: "Full test sweep passes at the family checkpoint"
 thresholds: {}
 ```
+
+## Dogfood Finding from Task 2 (must handle in validator wiring)
+
+Codex evaluators sometimes write dimension justifications under a `comment` field instead of the schema's `evidence` field; validate-scorecard.sh then exits 2. When wiring validate-scorecard.sh into develop-loop 1f, prevent this from making every dimension-scoring codex scorecard spuriously fail: normalize codex dimension output (comment -> evidence) before validation, OR accept `comment` as an evidence alias in validate-scorecard.sh (adjust its test too), OR scope the validator to criteria+shape and not dimension-evidence. Pick one and note it; do not let the re-dispatch-once policy fire on a field-name quirk.
+
+
+## Evaluation Log
+BASE_SHA: 5798bdf46be3e6d7afba3c27b02f849235f97e5a
+total_dispatches: 2
+
+### Iteration 1 (2026-07-30T12:10:19Z)
+dispatches: 2
+**general:**
+
+## Summary of Changes
+
+Rewrote the eight develop-core files to house style and deleted iron-laws.md with both references (commit e9e7481). Zero emphasis markup and zero caps hits across the nine owned files; all 14 script invocations and cross-skill pointers preserved; frontmatter descriptions byte-identical. Both validators wired: develop Step 1 runs validate-bean-body.sh per bean (exit 2 stops), develop-loop 1f runs validate-scorecard.sh per evaluator return with the re-dispatch-once-then-needs-attention policy now written down for the first time. Word count 5829 to 4744 (-18.6%). Converged single-pass evidence-only, 2 dispatches.
+
+Dogfood fix chosen: validate-scorecard.sh accepts `comment` as an evidence alias (plus two new tests, 22 passing), because provider-context.md documents `comment` to external evaluators while evaluate/SKILL.md uses `evidence` — the validator was the piece out of step. Fixed once for all callers rather than adding a pipeline stage to a skill being slimmed.
+
+Carried forward: word reduction is 18.6% not the one-third the plan step suggested; residue is preserve-verbatim contract text (script invocations, schema, context-loading order). Task 4 config dedup removes ~120 more words from these files. Also flagged: the main checkout has an uncommitted frontmatter restructure of develop-loop/SKILL.md (name field and argument-hint) that will conflict at merge and cuts against the frontmatter-verbatim constraint.

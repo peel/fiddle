@@ -1,12 +1,13 @@
 ---
 # fiddle-ihgr
 title: 'Task 2: validate-scorecard.sh'
-status: todo
+status: completed
 type: task
+priority: normal
 tags:
     - branch
 created_at: 2026-07-30T11:20:24Z
-updated_at: 2026-07-30T11:20:24Z
+updated_at: 2026-07-30T11:37:43Z
 parent: fiddle-85jh
 ---
 
@@ -43,3 +44,34 @@ criteria:
       check: "Criteria ids arrive via --criteria-ids argument; the script parses no YAML"
 thresholds: {}
 ```
+
+
+## Evaluation Log
+BASE_SHA: 3294d9801fe882d91fc48b2d9694c6b3788aa769
+total_dispatches: 5
+
+### Iteration 1 (2026-07-30T11:35:32Z)
+dispatches: 2
+**infrastructure:**
+- correctness: 9/10
+- domain_spec_fidelity: 9/10
+- drift_resistance: 7/10
+- idempotency: 8/10
+- security_posture: 7/10
+
+### Iteration 2 (2026-07-30T11:37:22Z)
+dispatches: 3
+**infrastructure:**
+- correctness: 9/10
+- domain_spec_fidelity: 9/10
+- drift_resistance: 7/10
+- idempotency: 8/10
+- security_posture: 7/10
+
+## Summary of Changes
+
+Added scripts/validate-scorecard.sh (--scorecard FILE --criteria-ids LIST; exit 0 valid, exit 2 JSON error array; provider/criteria-id-set/evidence/dimensions-type/spec_defect checks; no YAML parsing) and scripts/test-validate-scorecard.sh (19 assertions, 8+ cases). Commit 5798bdf. Converged in 2 iterations, 3 dispatches.
+
+## Dogfood Finding (for Task 3)
+
+When validate-scorecard.sh was run on a real codex evaluator scorecard, codex had written dimension justifications under a `comment` field instead of the schema's `evidence` field, so the validator exited 2. Instructing codex to use `evidence` fixed it on re-dispatch. Task 3 wiring must handle this: either normalize codex dimension output (comment→evidence) before validation, or have validate-scorecard.sh accept `comment` as an evidence alias, or the re-dispatch-once policy will fire on every codex scorecard that scores dimensions. Recorded so the validator wiring does not make codex evaluators spuriously fail.

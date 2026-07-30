@@ -1,12 +1,13 @@
 ---
 # fiddle-oz6z
 title: 'Task 1: validate-bean-body.sh'
-status: todo
+status: completed
 type: task
+priority: normal
 tags:
     - branch
 created_at: 2026-07-30T11:20:24Z
-updated_at: 2026-07-30T11:20:24Z
+updated_at: 2026-07-30T11:28:21Z
 parent: fiddle-85jh
 ---
 
@@ -43,3 +44,16 @@ criteria:
       check: "--container exits 0 regardless of body content"
 thresholds: {}
 ```
+
+
+## Evaluation Log
+BASE_SHA: 02cfd0ac44e87886b16c440282ed949844ec0c7e
+total_dispatches: 2
+
+### Iteration 1 (2026-07-30T11:28:07Z)
+dispatches: 2
+**infrastructure:**
+
+## Summary of Changes
+
+Added scripts/validate-bean-body.sh (--body FILE [--container]; exit 0 valid, exit 2 with JSON gap array on stderr; container beans exempt) and scripts/test-validate-bean-body.sh (11 assertions across 7 cases). Commit 3294d98. Converged single-pass evidence-only, 2 dispatches. Note: emit uses printf | jq -Rn (robust) after a NUL-split first attempt was discarded.

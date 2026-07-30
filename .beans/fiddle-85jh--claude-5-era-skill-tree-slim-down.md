@@ -3,8 +3,11 @@
 title: Claude-5-era skill tree slim-down
 status: todo
 type: epic
+priority: normal
+tags:
+    - orchestrate-phase:DEVELOP
 created_at: 2026-07-30T11:19:41Z
-updated_at: 2026-07-30T11:19:41Z
+updated_at: 2026-07-30T11:20:50Z
 ---
 
 Plan: docs/plans/2026-07-30-claude5-slimdown.md
