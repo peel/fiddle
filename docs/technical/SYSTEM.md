@@ -45,6 +45,7 @@ Runs entirely locally as portable skills. Claude loads `.claude-plugin/plugin.js
 - Evaluators interpret pre-gathered evidence packs; they never gather evidence themselves. Read-only external providers receive the pack via `dispatch-provider.sh --evidence-file`.
 - Evidence-only scorecards emit an explicit `"dimensions": {}` — the key is never omitted; only the explicitly empty object signals single-pass convergence.
 - Every scorecard must carry a criteria array; `merge-scorecards.sh` rejects criteria-less input with exit 2.
+- Skills are written as judgment plus rationale. Mechanical invariants live in scripts with exit-code contracts, not in prose, and skill files carry no emphatic markup (gate blocks, capitalized emphasis, rationalization tables, red-flag lists, announcement lines). Frontmatter `description` fields, JSON schemas, and quoted external content are the exceptions, since they are interface text rather than instruction. See the authoring note in `skills/using-fiddle/SKILL.md`.
 
 ## Known issues
 
@@ -54,4 +55,4 @@ Runs entirely locally as portable skills. Claude loads `.claude-plugin/plugin.js
 - Default dispatch budgets cannot absorb the confirming double-pass (a pass on iteration N cannot confirm within budget N), and `check-convergence.sh`'s budget check is ambiguous between pre- and post-dispatch counts at the boundary.
 
 ---
-Last reviewed: 2026-07-29
+Last reviewed: 2026-07-30

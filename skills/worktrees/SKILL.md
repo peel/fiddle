@@ -127,10 +127,9 @@ Ready to implement <feature-name>
 ## Integration
 
 **Called by:**
-- **brainstorming** (Phase 4) - used when design is approved and implementation follows
-- **subagent-driven-development** - used before executing any tasks
-- **executing-plans** - used before executing any tasks
+- **brainstorm** (Phase 4) - used when design is approved and implementation follows
+- **develop** - used before executing any tasks
 - Any skill needing isolated workspace
 
 **Pairs with:**
-- **finishing-a-development-branch** - used for cleanup after work complete
+- **finish-branch** - used for cleanup after work complete

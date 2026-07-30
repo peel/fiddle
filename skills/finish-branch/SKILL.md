@@ -144,8 +144,7 @@ For Options 2 and 3, keep the worktree.
 ## Integration
 
 **Called by:**
-- **subagent-driven-development** (Step 7) - After all tasks complete
-- **executing-plans** (Step 5) - After all batches complete
+- **develop** - After all tasks complete and holistic review has run
 
 **Pairs with:**
-- **using-git-worktrees** - Cleans up worktree created by that skill
+- **worktrees** - Cleans up worktree created by that skill

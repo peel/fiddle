@@ -42,11 +42,8 @@ Create a new Architecture Decision Record.
 [Tradeoffs — what gets easier, what gets harder]
 ```
 
-5. Show the user the file content. Write after confirmation.
+5. Show the user the file content. Write after confirmation, creating `docs/technical/decisions/` if it does not exist.
 
-## Rules
+Keep it to 10-20 lines; an ADR records a decision, not a design. Filenames are kebab-case, as in `003-use-alloydb-over-cloudsql.md`.
 
-- Keep it short. An ADR is 10-20 lines, not a design doc.
-- Use kebab-case for filenames: `003-use-alloydb-over-cloudsql.md`
-- Never edit existing ADRs. To change a past decision, create a new ADR with status `supersedes NNN`.
-- If `docs/technical/decisions/` doesn't exist, create it.
+Existing ADRs are never edited. A past decision is changed by writing a new ADR with status `supersedes NNN`, because the record of what was believed at the time is the point of the file.

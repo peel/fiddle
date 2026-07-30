@@ -57,7 +57,7 @@ Complete this phase before proposing a fix.
 
    This shows which layer fails: secrets → workflow ✓, workflow → build ✗.
 
-5. **Trace data flow.** Where does the bad value originate, what called this with it, and what called that? Keep tracing up until you find the source, and fix there rather than at the symptom. For errors deep in a call stack, see `root-cause-tracing.md` in this directory for the complete backward tracing technique.
+5. **Trace data flow.** Where does the bad value originate, what called this with it, and what called that? Keep tracing up until you find the source, and fix there rather than at the symptom. For an error deep in a call stack, work backward frame by frame to the original trigger rather than stopping at the frame that raised it, which is usually the last place the bad value was merely passed along.
 
 ## Phase 2: Pattern Analysis
 
@@ -99,11 +99,7 @@ Redirections from your human partner are a signal that this happened: "is that n
 
 ## Supporting Techniques
 
-These techniques are part of systematic debugging and available in this directory:
-
-- **`root-cause-tracing.md`** - Trace bugs backward through call stack to find original trigger
-- **`defense-in-depth.md`** - Add validation at multiple layers after finding root cause
-- **`condition-based-waiting.md`** - Replace arbitrary timeouts with condition polling
+Two techniques come up often enough to name. Once the root cause is known, validation added at several layers keeps the same class of bad value from travelling that far again, which is a follow-up to the fix rather than a substitute for it. And where a test or script waits on an arbitrary timeout, polling for the condition instead removes a whole class of timing-dependent failure from the investigation.
 
 **Related skills:**
 - **fiddle:tdd** - For creating failing test case (Phase 4, Step 1)

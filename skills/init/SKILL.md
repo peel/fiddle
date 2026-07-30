@@ -33,7 +33,4 @@ Edit orchestrate.json to customize evaluator domains.
 When ready: fiddle:orchestrate <topic>"
 ```
 
-## Rules
-
-- Idempotent — re-running skips already-initialized components.
-- Never overwrite existing files.
+The script is idempotent and overwrites nothing: re-running it skips every component that is already initialized, so it is safe to run against a partially set up project.

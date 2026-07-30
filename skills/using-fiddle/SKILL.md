@@ -32,3 +32,11 @@ Treat literal Claude API examples such as `Skill(...)` or `Agent(...)` as intent
 Prefer inheriting the current session model. Only pass explicit model names when the user or local config requires one.
 
 External providers are optional. If a provider CLI is unavailable, continue with the current harness and report the reduced coverage.
+
+## Authoring Skills
+
+Write a skill as judgment plus rationale: one purpose sentence, the flow, plain script invocations, explicit cross-references to sub-skills and reference files, and a one-line reason wherever an invariant needs weight.
+
+Put mechanical invariants in scripts with exit-code contracts rather than in prose, so the skill states what the check is for and the script decides whether it passed.
+
+Leave out gate markup, capitalized emphasis, rationalization tables, red-flag lists, and announcement lines. Current models read the reason and follow it; the emphasis adds tokens without adding compliance, and stacked restatements of the same rule start to conflict.
