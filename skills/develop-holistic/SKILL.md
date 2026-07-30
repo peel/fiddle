@@ -125,15 +125,9 @@ Convergence follows the same protocol as per-task evaluation — two consecutive
 
 On FAIL, read the `remediation_beans` array in the merged scorecard and create a child bean of the epic for each entry, traced back to its source (a spec coverage gap or a failing dimension):
 
-1. Check the `remediation_beans` array in the holistic scorecard
-2. If non-empty, create remediation task beans:
-   ```bash
-   # For each remediation bean in the array:
-   beans create --parent <epic-id> --title "Fix: ..." --body "<description>" --eval "<eval block>"
-   ```
-3. Each remediation bean is a child of the epic, traced back to its source (spec coverage gap or failing dimension)
-4. For each remediation bean, use `fiddle:develop-loop` with `--bean <remediation-bean-id> --epic <epic-id>`.
-5. After all remediation beans complete, re-run holistic review (back to step 2a)
+```bash
+beans create --parent <epic-id> --title "Fix: ..." --body "<description>" --eval "<eval block>"
+```
 
 Then run each through the per-task loop: use `fiddle:develop-loop` with `--bean <remediation-bean-id> --epic <epic-id>`.
 
