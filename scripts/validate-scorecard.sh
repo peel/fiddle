@@ -6,7 +6,9 @@
 #
 # A valid scorecard: is valid JSON; has a non-empty `provider` string; every
 # `domains.<domain>.dimensions` is an object (an explicitly empty `{}` is valid
-# evidence-only) and every scored dimension carries non-empty `evidence`; its
+# evidence-only) and every scored dimension carries a non-empty justification in
+# `evidence` or in `comment` (the field name the provider-context schema shows
+# external evaluators, so both are accepted); its
 # `criteria[]` ids exactly match the --criteria-ids set (no extras, none missing)
 # and each criterion carries non-empty `evidence`; and any `spec_defect` with
 # `detected == true` carries a non-empty `reason`.
@@ -70,14 +72,14 @@ FAILURES=$(jq -n \
     # provider must be a non-empty string
     (if ($c.provider | nonempty) then empty else "provider must be a non-empty string" end),
 
-    # dimensions per domain: object type, non-empty evidence on each scored dimension
+    # dimensions per domain: object type, non-empty evidence (or comment) on each scored dimension
     ($c.domains // {} | to_entries[] |
       .key as $domain | (.value.dimensions) as $dims |
       if ($dims | type) != "object" then
         "domain \($domain): dimensions must be an object"
       else
         ($dims | to_entries[] |
-          if (.value.evidence | nonempty) then empty
+          if ((.value.evidence | nonempty) or (.value.comment | nonempty)) then empty
           else "domain \($domain) dimension \(.key): evidence must be non-empty" end)
       end),
 

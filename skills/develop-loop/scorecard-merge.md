@@ -15,17 +15,17 @@ disagreements file; pass nothing to --disagreements in the eval-log step.
 
 ### Spec-Defect Check (before normalization)
 
-`merge-scorecards.sh` does NOT carry the optional `spec_defect` field through — the normalized scorecard drops it. So detection MUST happen BEFORE normalizing: scan the evaluator scorecard for a flagged spec defect:
+`merge-scorecards.sh` does not carry the optional `spec_defect` field through — the normalized scorecard drops it, so detection happens before normalizing:
 
 ```bash
 jq 'select(.spec_defect.detected == true) | {provider, reason: .spec_defect.reason}' scorecard-{domain}-{provider}.json
 ```
 
-If the evaluator flagged `spec_defect.detected == true`, do not treat this as an ordinary threshold failure to re-implement. Handle it as follows:
+If the evaluator flagged `spec_defect.detected == true`, this is not an ordinary threshold failure to re-implement:
 
-- **Log first:** unlike the implementer path, the evaluator scorecard here is a real evaluation that exists on disk, so complete the normal normalization (step 1g), cross-domain merge (step 1h), and eval-log (step 1l) before routing. The normalized scorecard drops `spec_defect` but retains the dimension scores, so `append-eval-log.sh` runs with its required `--scorecard` file and records the iteration normally. Because 1l normally runs after 1j/1k in the loop, run it NOW (right after the merge) and SKIP 1i, 1j, 1k, and 1m for this bean — the spec-defect HARD-GATE at the end of develop-loop step 1g–1h spells out this bypass.
-- **Then route** the same way as an implementer SPEC_DEFECT (develop-loop step 1e): mark the bean `needs-attention`, record WHAT about the spec is defective (the evaluator's `reason`) plus a `fiddle:define` re-entry pointer, escalate to human, and skip re-dispatching implementation. A faithful implementation of a defective spec will not converge no matter how many iterations run.
-- **Budget:** the evaluator dispatch that produced this discovery DOES count against `max_dispatches_per_task` — it performed real evaluation work and produced a scorecard, so do NOT decrement `dispatch_count`. Only re-implementation is prevented. (This is the deliberate asymmetry with the implementer path, where the single implementer dispatch IS decremented because it produced no evaluation.)
+- **Log first:** unlike the implementer path, this scorecard is a real evaluation that exists on disk, so complete normalization (1g), cross-domain merge (1h), and the eval log (1l) before routing. The normalized scorecard drops `spec_defect` but keeps the dimension scores, satisfying `append-eval-log.sh`'s required `--scorecard`. Since 1l normally follows 1j/1k, run it now and skip 1i, 1j, 1k, and 1m for this bean.
+- **Then route** as an implementer SPEC_DEFECT does, for the same reason (develop-loop step 1e): mark the bean `needs-attention`, record what about the spec is defective (the evaluator's `reason`) plus a `fiddle:define` re-entry pointer, escalate to human, and do not re-dispatch implementation.
+- **Budget:** this evaluator dispatch does count against `max_dispatches_per_task` — it performed real evaluation work and produced a scorecard, so do not decrement `dispatch_count`. Only re-implementation is prevented. The implementer path decrements precisely because it produced no evaluation.
 
 ## Cross-Domain Merge (Step 1h)
 
@@ -48,7 +48,7 @@ jq -s '
 jq '.criteria' scorecard.json > criteria.json
 ```
 
-List only the per-domain merged scorecards (one per resolved domain). Do NOT include raw per-provider scorecards (`scorecard-{domain}-{provider}.json`) in this merge.
+List only the per-domain merged scorecards (one per resolved domain), not the raw per-provider scorecards (`scorecard-{domain}-{provider}.json`).
 
 On failure, the merged scorecard identifies which domain(s) failed. Pass the merged scorecard to `check-thresholds.sh` — it already handles multi-domain scorecards.
 

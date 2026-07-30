@@ -135,6 +135,47 @@ run "a,b"
 assert_exit "empty dimension evidence → exit 2" 2 "$EXIT_CODE"
 assert_contains "names correctness dimension" "correctness" "$ERR"
 
+echo "Test 4c: dimension justification under comment only → exit 0"
+cat > "$SC" << 'EOF'
+{
+  "provider": "codex",
+  "domains": {
+    "general": {
+      "dimensions": {
+        "correctness": { "score": 8, "comment": "read validate-scorecard.sh, exit paths agree", "threshold": 7 }
+      }
+    }
+  },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" },
+    { "id": "b", "pass": true, "evidence": "e2" }
+  ]
+}
+EOF
+run "a,b"
+assert_exit "comment accepted as evidence alias → exit 0" 0 "$EXIT_CODE"
+
+echo "Test 4d: dimension with both evidence and comment empty → exit 2"
+cat > "$SC" << 'EOF'
+{
+  "provider": "codex",
+  "domains": {
+    "general": {
+      "dimensions": {
+        "correctness": { "score": 8, "evidence": "", "comment": "  ", "threshold": 7 }
+      }
+    }
+  },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" },
+    { "id": "b", "pass": true, "evidence": "e2" }
+  ]
+}
+EOF
+run "a,b"
+assert_exit "empty evidence and comment → exit 2" 2 "$EXIT_CODE"
+assert_contains "names correctness dimension" "correctness" "$ERR"
+
 echo "Test 5: dimensions present but not an object → exit 2"
 cat > "$SC" << 'EOF'
 {
