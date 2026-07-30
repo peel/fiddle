@@ -38,7 +38,7 @@ Then collect every unique domain from all task beans' eval blocks and start thei
 scripts/start-runtimes.sh --domains <all-domains-resolved.json>
 ```
 
-ALL domain runtimes must be running before holistic review begins: a reviewer that cannot exercise a domain cannot see the seams between it and the others, which is the only thing this review adds.
+Every domain runtime must be running before holistic review begins: a reviewer that cannot exercise a domain cannot see the seams between it and the others, which is the only thing this review adds.
 
 - Exit 3 (harness failure): retry once; if the retry fails, escalate to human.
 - Exit 1 or 2 (app/config issue): include the error in the holistic reviewer's context and proceed — Runtime Health will reflect the failure.

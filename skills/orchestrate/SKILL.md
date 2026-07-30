@@ -158,11 +158,11 @@ Jump to the determined phase section below.
 
 ## TRIAGE
 
-Skip this phase if ANY of: `--epic` was provided, `--no-triage` was set, `--skip-discover` was set.
+Skip this phase if any of these hold: `--epic` was provided, `--no-triage` was set, `--skip-discover` was set.
 
 Assess the prompt against quick-path criteria to decide: quickfix or full flow.
 
-### Quick Path Criteria (ALL must be true)
+### Quick Path Criteria (all must hold)
 
 1. **Single-focus**: The prompt describes one change, not a set of changes or an initiative
 2. **Clear approach**: The implementation path is obvious — no architectural decisions or design trade-offs needed
@@ -172,7 +172,7 @@ Assess the prompt against quick-path criteria to decide: quickfix or full flow.
 
 ### Assessment
 
-Evaluate the prompt against each criterion. If ALL criteria are met:
+Evaluate the prompt against each criterion. If every criterion is met:
 
 Use the `fiddle:quickfix` skill with the original prompt.
 
@@ -180,7 +180,7 @@ If quickfix completes successfully (returns a PR URL) → orchestrate is **done*
 
 If quickfix returns **TOO_COMPLEX** → continue with DISCOVER below. The quickfix skill handles its own cleanup (bean scrapping, worktree removal).
 
-If ANY criterion is NOT met → skip quickfix, fall through to DISCOVER.
+If any criterion fails, skip quickfix and fall through to DISCOVER.
 
 ## DISCOVER
 

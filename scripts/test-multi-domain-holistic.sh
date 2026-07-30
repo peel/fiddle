@@ -454,7 +454,7 @@ assert_contains "SKILL.md documents holistic convergence" "check-convergence.sh"
 assert_contains "SKILL.md documents holistic dispatch budget" "max_iterations" "$SKILL_CONTENT"
 
 # HARD-GATE for runtime start before holistic
-assert_contains "SKILL.md has HARD-GATE for holistic runtime" "ALL domain runtimes must be running before holistic review" "$SKILL_CONTENT"
+assert_contains "SKILL.md states runtimes-before-holistic" "Every domain runtime must be running before holistic review" "$SKILL_CONTENT"
 
 # Stop runtimes after holistic
 assert_contains "SKILL.md documents runtime stop after holistic" "## 2e. Stop Runtimes" "$SKILL_CONTENT"
