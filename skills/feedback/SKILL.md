@@ -1,11 +1,14 @@
 ---
-name: fiddle:feedback
+name: feedback
 description: Append a structured user feedback entry to docs/product/FEEDBACK.md. Captures who, context, observation, implication, and confidence for each signal.
-disable-model-invocation: true
-argument-hint: <feedback> — what the user said or experienced
 ---
 
 # Feedback
+
+
+## Usage
+
+Invoke as `fiddle:feedback <feedback> — what the user said or experienced`.
 
 Append a structured user feedback entry.
 

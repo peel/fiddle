@@ -1,10 +1,14 @@
 ---
-name: fiddle:deliver-docs
+name: deliver-docs
 description: Post-ship update of project docs. Reads completed beans and recent diffs to update SYSTEM.md, create ADRs for significant decisions, flag product docs that may need attention, and append discovered debt/ideas to BACKLOG.md. Run after completing an epic or significant feature.
-argument-hint: [--epic <id>] [--diff] [--dry-run]
 ---
 
 # Deliver Docs
+
+
+## Usage
+
+Invoke as `fiddle:deliver-docs [--epic <id>] [--diff] [--dry-run]`.
 
 Post-ship documentation update. Reads what changed, updates curated docs, creates ADRs, appends to BACKLOG.
 

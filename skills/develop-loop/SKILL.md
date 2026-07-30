@@ -1,10 +1,14 @@
 ---
-name: fiddle:develop-loop
+name: develop-loop
 description: Use when a single task bean needs implementation and evaluation — called by fiddle:develop, not directly
-argument-hint: --bean <id> --epic <id>
 ---
 
 # Develop Loop — Single Bean Evaluation
+
+
+## Usage
+
+Invoke as `fiddle:develop-loop --bean <id> --epic <id>`.
 
 Implement and evaluate a single task bean through the full evaluation chain: dispatch implementer, gather evidence pack per domain, dispatch one evaluator per domain, merge scorecards, check convergence. Repeat until converged or budget exceeded.
 

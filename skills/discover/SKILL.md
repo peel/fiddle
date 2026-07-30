@@ -1,10 +1,14 @@
 ---
-name: fiddle:discover
+name: discover
 description: Run the DISCOVER phase — gather project context via discover-docs, research ecosystem with external providers, and challenge scope assumptions. Use standalone or as part of orchestrate.
-argument-hint: <topic> [--skip-docs] [--skip-challenge]
 ---
 
 # Discover
+
+
+## Usage
+
+Invoke as `fiddle:discover <topic> [--skip-docs] [--skip-challenge]`.
 
 Gather project context, research the ecosystem, and challenge scope assumptions before defining a solution.
 
@@ -33,9 +37,7 @@ Read `orchestrate.json` (project root) if it exists. Extract:
 Skip if `--skip-docs` was set.
 
 Invoke discover-docs to gather project context and identify gaps:
-```
-Skill(skill: "fiddle:discover-docs", args: "<topic>")
-```
+Use the `fiddle:discover-docs` skill with `<topic>`.
 
 This reads existing docs, CLAUDE.md, beans, and relevant source files. It produces a structured summary of what exists, what's relevant, and what gaps remain.
 
@@ -60,17 +62,15 @@ hooks/dispatch-provider.sh <provider> \
   --instructions "Research: ecosystem patterns, prior art, implementation approaches, potential pitfalls. Be specific and cite concrete examples."
 ```
 
-Fire all providers in parallel (`run_in_background: true`). Collect results in **attended** mode.
+Run provider dispatches in parallel when the harness supports it; otherwise run them sequentially. Collect results in **attended** mode.
 
-If no provider CLI is available, skip and proceed with Claude's internal knowledge only.
+If no provider CLI is available, skip and proceed with the current harness's internal knowledge only.
 
 ### Step 3: Challenge Scope
 
 Skip if `--skip-challenge` was set.
 
 Invoke the challenge skill to confirm scope and stress-test assumptions:
-```
-Skill(skill: "fiddle:challenge", args: "--phase discover")
-```
+Use the `fiddle:challenge` skill with `--phase discover`.
 
 This opens by synthesizing findings and confirming scope with the user, then walks the decision tree on assumptions and constraints — resolving every branch before moving forward. It self-serves answers from the codebase and only asks the user about genuine ambiguity.

@@ -1,10 +1,14 @@
 ---
-name: fiddle:develop
+name: develop
 description: Use when implementing an epic's task beans through the evaluator loop — after plan and beans exist
-argument-hint: --epic <id>
 ---
 
 # Develop — Evaluator Loop
+
+
+## Usage
+
+Invoke as `fiddle:develop --epic <id>`.
 
 Execute an implementation plan by iterating: validate → implement per-task → holistic review → finish.
 
@@ -33,13 +37,11 @@ Read and internalize: `skills/develop/iron-laws.md`
 beans show <epic-id> --json
 ```
 
-Confirm the epic exists and has child task beans. If no child beans → stop: "No task beans found for this epic. Run `/fiddle:define` first."
+Confirm the epic exists and has child task beans. If no child beans → stop: "No task beans found for this epic. Run `fiddle:define` first."
 
 ### 0b. Worktree Setup
 
-```
-Skill("fiddle:worktrees")
-```
+Use the `fiddle:worktrees` skill.
 
 Creates an isolated worktree for the epic. All subsequent work happens in this worktree.
 
@@ -89,9 +91,7 @@ Feature beans that are purely containers for child task beans are exempt.
 
 Process each task bean sequentially. For each bean:
 
-```
-Skill("fiddle:develop-loop", args: "--bean <bean-id> --epic <epic-id>")
-```
+Use the `fiddle:develop-loop` skill with `--bean <bean-id> --epic <epic-id>`.
 
 The develop-loop sub-skill handles the full evaluation cycle for one bean: dispatch implementer, dispatch evaluators, merge scorecards, check convergence, iterate until converged or budget exceeded.
 
@@ -101,9 +101,7 @@ Each bean returns as either `completed` or `needs-attention` (escalated). Skip b
 
 After all task beans are processed (completed or escalated):
 
-```
-Skill("fiddle:develop-holistic", args: "--epic <epic-id>")
-```
+Use the `fiddle:develop-holistic` skill with `--epic <epic-id>`.
 
 The develop-holistic sub-skill assesses the full system as an integrated whole, creates remediation beans if needed, and iterates until the holistic review converges or is escalated.
 
@@ -114,9 +112,7 @@ Do NOT invoke finish-branch before holistic review has CONVERGED or been escalat
 
 ## Step 4: Completion
 
-```
-Skill("fiddle:finish-branch")
-```
+Use the `fiddle:finish-branch` skill.
 
 User picks: merge, PR, keep, or discard. Worktree cleanup happens here.
 
@@ -126,10 +122,10 @@ On session restart, develop re-derives state entirely from beans:
 
 1. List epic's task beans via `beans list --parent <epic-id> --json`
 2. Find any bean with `in-progress` status
-3. For in-progress beans: invoke `Skill("fiddle:develop-loop", args: "--bean <id> --epic <epic-id>")` — the loop handles its own restart detection via parse-eval-log.sh + assess-git-state.sh
+3. For in-progress beans: use `fiddle:develop-loop` with `--bean <id> --epic <epic-id>` — the loop handles its own restart detection via parse-eval-log.sh + assess-git-state.sh
 4. Skip already-`completed` beans
 5. Process remaining `todo` beans normally
-6. After all task beans are processed, check if holistic review already ran by looking for `scorecard-holistic.json` and holistic history file. If in progress or not started, invoke `Skill("fiddle:develop-holistic", args: "--epic <epic-id>")`
+6. After all task beans are processed, check if holistic review already ran by looking for `scorecard-holistic.json` and holistic history file. If in progress or not started, use `fiddle:develop-holistic` with `--epic <epic-id>`
 
 No session-scoped state to lose. All evaluation history lives on bean bodies.
 

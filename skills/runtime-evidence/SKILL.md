@@ -1,5 +1,5 @@
 ---
-name: fiddle:runtime-evidence
+name: runtime-evidence
 description: Use when an evaluator needs to interact with a running application before scoring dimensions
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: fiddle:evaluate
+name: evaluate
 description: Use when scoring an implementation against its task spec — dispatched by develop-loop, not directly
 ---
 

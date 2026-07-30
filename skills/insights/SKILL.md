@@ -1,11 +1,14 @@
 ---
-name: fiddle:insights
+name: insights
 description: Use when preparing for a planning cycle or when feedback has accumulated — synthesizes structured feedback entries into persona files and insight summaries that discover and brainstorm phases consume.
-disable-model-invocation: true
-argument-hint: [--personas-only] [--insights-only]
 ---
 
 # Insights
+
+
+## Usage
+
+Invoke as `fiddle:insights [--personas-only] [--insights-only]`.
 
 Synthesize structured feedback into reusable personas and insight summaries.
 

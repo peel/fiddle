@@ -1,9 +1,25 @@
 ---
-name: fiddle:write-plan
+name: write-plan
 description: Use when you have a spec or requirements for a multi-step task, before touching code
 ---
 
 # Writing Plans
+
+
+## Usage
+
+Invoke as `fiddle:write-plan [--from-orchestrate] [--epic <id>]`.
+
+ARGUMENTS: {ARGS}
+
+## Configuration
+
+Parse from `{ARGS}`:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--from-orchestrate` | false | Suppress the interactive execution handoff and return control to the caller after bean creation |
+| `--epic <id>` | none | Reuse an existing epic bean as the parent for child beans. If omitted, this skill creates a new epic from the plan |
 
 ## Overview
 
@@ -175,11 +191,81 @@ Fold accepted findings into the plan inline. Reject findings that conflict
 with the spec or the user's recorded decisions, and note why. One round
 only; do not re-dispatch after folding.
 
+## Create Beans from Plan
+
+After the plan is saved and self-reviewed, materialize it as beans. **Do not skip this step** — `fiddle:develop` enforces a hard-gate on bean body shape (eval block, files section, steps checklist) and beans created any other way will fail validation.
+
+### Step 1: Load the Bean Sizing Rules
+
+Use the `fiddle:define-beans` skill.
+
+This loads the sizing heuristic (1–2 TDD cycles → task bean; 3+ cycles → feature bean with child task beans), the mandatory bean body template (Files / Steps / Evaluation sections), and the Bean Body Completeness Gate. Apply these rules to every plan task.
+
+### Step 2: Resolve the Epic
+
+If `--epic <id>` was provided, reuse that epic. Verify it exists and is type `epic`:
+
+```bash
+beans show <id> --json
+```
+
+Otherwise, create a new epic from the plan's header (Goal, Architecture) and any `## Contracts` / hard-constraints sections from the design doc:
+
+```bash
+beans create --json "<feature-name from plan title>" -t epic -s todo -d "$(cat <<'EOF'
+Plan: <plan-path>
+
+<Goal sentence from plan header>
+
+## Architecture
+<Architecture paragraph from plan header>
+
+## Contracts
+<contracts captured from design doc, if any>
+
+## Hard constraints
+<constraints captured from spec, if any>
+EOF
+)"
+```
+
+Capture the epic ID for the next step.
+
+### Step 3: Materialize Each `### Task N:` as Beans
+
+Iterate through every `### Task N:` heading in the plan in document order. For each:
+
+1. Count the TDD cycles in the task's checklist (each "Write the failing test" step is one cycle). Apply the sizing rule from `fiddle:define-beans` to choose **task** vs. **feature + children**.
+2. Create the bean(s) under the epic with `--parent <epic-id>`. The body MUST include, in this exact shape:
+   - `## Context` — repo path + a sentence on what/why
+   - `## Files` — the `Files:` block from the plan task copied verbatim (paths only, one per line, prefixed `- Create:` / `- Modify:` / `- Test:`)
+   - `## Steps` — the plan task's `- [ ]` checklist copied verbatim, including code blocks
+   - `## Evaluation` — the fenced ` ```eval ` block copied verbatim from the plan task
+3. Wire `--blocked-by` for any sequential dependencies between behaviors of a feature, and feature-level `--blocked-by` for cross-task dependencies (per `fiddle:define-beans` rules).
+
+**The eval block is a hard requirement.** If a plan task has no fenced ` ```eval ` block, stop and add one to the plan first — do not invent eval criteria during bean creation.
+
+### Step 4: Run the Completeness Gate
+
+After all beans are created, list children of the epic and verify each task bean body passes the Bean Body Completeness Gate from `fiddle:define-beans` (steps exist + actionable; eval block present; files specified; sufficient context). Feature beans that are pure containers are exempt.
+
+If any bean fails, fix the body inline. Do not exit Step 4 until every task bean passes.
+
+### Step 5: Report
+
+Print a summary line:
+
+```
+Epic <epic-id> ready: <N> task beans, <M> feature beans, all gate-checked.
+```
+
 ## Execution Handoff
 
-After the plan is saved, self-reviewed, and critiqued, offer execution:
+If `--from-orchestrate` was set, return control to the caller. Do not prompt the user.
 
-**"Plan complete and saved to `docs/plans/<filename>.md`. Ready to execute?"**
+Otherwise, once the plan is saved, self-reviewed, and critiqued, offer execution:
+
+**"Plan complete and saved to `docs/plans/<filename>.md`. Epic `<epic-id>` ready with `<N>` beans. Ready to execute?"**
 
 **When execution begins:**
 - **REQUIRED SUB-SKILL:** Use fiddle:develop

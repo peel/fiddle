@@ -1,5 +1,5 @@
 ---
-name: fiddle:tdd
+name: tdd
 description: Use when implementing any feature or bugfix, before writing implementation code
 ---
 

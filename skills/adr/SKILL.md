@@ -1,11 +1,14 @@
 ---
-name: fiddle:adr
+name: adr
 description: Create a new Architecture Decision Record in docs/technical/decisions/. Asks what was decided and why, writes the ADR file.
-disable-model-invocation: true
-argument-hint: <title> — short description of the decision
 ---
 
 # ADR
+
+
+## Usage
+
+Invoke as `fiddle:adr <title> — short description of the decision`.
 
 Create a new Architecture Decision Record.
 

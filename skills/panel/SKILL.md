@@ -1,12 +1,16 @@
 ---
-name: fiddle:panel
+name: panel
 description: Use when evaluating architectural approaches or design decisions — runs structured multi-model adversarial analysis with cross-review and synthesis
-argument-hint: <topic> [--rounds 2] [--context file1 file2]
 ---
 
 # Panel
 
-Structured multi-model adversarial analysis. Participants argue independent positions, cross-review the others, and Claude synthesizes into a verdict.
+
+## Usage
+
+Invoke as `fiddle:panel <topic> [--rounds 2] [--context file1 file2]`.
+
+Structured multi-model adversarial analysis. Participants argue independent positions, cross-review the others, and the lead synthesizes into a verdict.
 
 ARGUMENTS: {ARGS}
 
@@ -19,13 +23,13 @@ Parse from `{ARGS}`:
 | `--rounds <N>` | 2 | Number of cross-review rounds |
 | `--context <files>` | none | Space-separated file paths to read for context |
 
-If `--context` files are provided, read each with the Read tool. Include their contents as context for all participants.
+If `--context` files are provided, read each file. Include their contents as context for all participants.
 
 ## Participants — Provider Gate (MUST execute before Phase 1)
 
 You MUST perform these steps in order. Do NOT skip to degraded mode without completing them.
 
-**Step 1.** Run the dispatch script in check mode for each provider. You MUST run this via the Bash tool:
+**Step 1.** Run the dispatch script in check mode for each provider:
 ```bash
 hooks/dispatch-provider.sh codex --check; hooks/dispatch-provider.sh gemini --check
 ```
@@ -37,24 +41,24 @@ Each outputs JSON: `{"provider":"<name>","available":true/false,"command":"..."}
 
 | Participant | Perspective | Dispatch |
 |---|---|---|
-| **Claude** | Codebase/domain context | `Agent(run_in_background: true)` |
+| **Lead harness** | Codebase/domain context | harness subagent or inline analysis |
 | **Codex** | Implementation depth: code patterns, feasibility, performance | `hooks/dispatch-provider.sh codex ...` |
 | **Gemini** | Ecosystem breadth: alternatives, prior art, industry patterns | `hooks/dispatch-provider.sh gemini ...` |
 
-Only include providers that returned `"available":true`. Claude is always present.
+Only include providers that returned `"available":true`. The current harness is always present.
 
 **Degraded mode** (all providers returned `"available":false` or dispatch script not found):
 
 | Participant | Perspective | Dispatch |
 |---|---|---|
-| **Advocate A** | Assigned advocate for Approach 1 | `Agent(run_in_background: true)` |
-| **Advocate B** | Assigned advocate for Approach 2 | `Agent(run_in_background: true)` |
+| **Advocate A** | Assigned advocate for Approach 1 | harness subagent, or inline sequential pass |
+| **Advocate B** | Assigned advocate for Approach 2 | harness subagent, or inline sequential pass |
 
 Read `models.define` from `orchestrate.json` (project root). If "default" or not set, omit the `model:` parameter to inherit session model.
 
 ## Invocation Context
 
-**Standalone** (user typed `/fiddle:panel <topic>`):
+**Standalone** (user typed `fiddle:panel <topic>`):
 - Generate 2-3 candidate approaches from the topic before Phase 1
 
 **From orchestrate** (called after brainstorming):
@@ -66,16 +70,7 @@ Read `models.define` from `orchestrate.json` (project root). If "default" or not
 
 Spawn ALL participants in one message. Each receives the topic, context, and their assigned perspective. Each produces a position paper: what they recommend, why, key tradeoffs, risks.
 
-**Claude/Agent participants:**
-```
-Agent(
-  subagent_type: "general-purpose",
-  model: <models.define>,
-  mode: "bypassPermissions",
-  run_in_background: true,
-  prompt: "You are arguing from <perspective>. Topic: <topic>. Context: <context>. Produce a position paper: what you recommend, why, key tradeoffs, risks."
-)
-```
+**Harness participants:** start a subagent if the current harness supports one and the session permits it; otherwise run the position inline as a separate labeled pass. Prompt: "You are arguing from <perspective>. Topic: <topic>. Context: <context>. Produce a position paper: what you recommend, why, key tradeoffs, risks."
 
 **External providers:**
 ```bash
@@ -86,19 +81,13 @@ hooks/dispatch-provider.sh <provider> \
   --instructions "Produce a position paper: what you recommend, why, key tradeoffs, risks."
 ```
 
-Fire all as `run_in_background: true` in one message. Read `hooks/dispatch-provider.sh` for collection rules. Collect in **attended** mode. Wait for all results before proceeding.
+Run independent participants in parallel when the harness supports it; otherwise run them sequentially. Read `hooks/dispatch-provider.sh` for collection rules. Collect in **attended** mode. Wait for all results before proceeding.
 
 ### Phase 2 — Cross-Review (parallel)
 
 Each participant receives ALL positions from Phase 1 and critiques them: agreements, disagreements, new concerns.
 
-**Claude/Agent participants:**
-```
-Agent(
-  run_in_background: true,
-  prompt: "Review these positions on <topic>:\n\n<all positions>\n\nCritique: agreements, disagreements, new concerns raised."
-)
-```
+**Harness participants:** start a subagent if available, or run the review inline as a labeled pass. Prompt: "Review these positions on <topic>:\n\n<all positions>\n\nCritique: agreements, disagreements, new concerns raised."
 
 **External providers:**
 ```bash
