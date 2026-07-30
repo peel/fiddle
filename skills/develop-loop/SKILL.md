@@ -18,21 +18,7 @@ ARGUMENTS: {ARGS}
 
 Parse from `{ARGS}`: `--bean <id>` (required, the bean to implement and evaluate) and `--epic <id>` (required, the parent epic for context and config).
 
-Read `orchestrate.json` from project root and extract the `evaluators` block:
-
-```json
-{
-  "evaluators": {
-    "attended": false,
-    "max_dispatches_per_task": 60,
-    "domains": {
-      "general": { "template": "evaluator-general", "providers": ["claude"] }
-    }
-  }
-}
-```
-
-`max_dispatches_per_task` is the convergence budget; `domains` drives evaluator dispatch.
+Config: see `skills/orchestrate/SKILL.md` for the schema. This skill reads `evaluators.attended`, `evaluators.max_dispatches_per_task`, and `evaluators.domains` (including each domain's `template`, `providers`, `calibration`, `antipatterns`, and `thresholds`). `max_dispatches_per_task` is the convergence budget; `domains` drives evaluator dispatch.
 
 Every bean runs the whole chain whatever its domain, size, or apparent simplicity: the chain is what turns an implementer's claim into evidence, so a shortened chain returns no signal.
 

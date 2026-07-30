@@ -32,25 +32,9 @@ Creates an isolated worktree for the epic. All subsequent work happens in this w
 
 ### 0c. Read Evaluator Config
 
-Read `orchestrate.json` from project root. Extract the `evaluators` block:
+Config: see `skills/orchestrate/SKILL.md` for the schema. This skill reads `evaluators.max_dispatches_per_task`, `evaluators.domains`, and `evaluators.holistic`.
 
-```json
-{
-  "evaluators": {
-    "attended": false,
-    "max_dispatches_per_task": 60,
-    "domains": {
-      "general": { "template": "evaluator-general", "providers": ["claude"] }
-    },
-    "holistic": {
-      "providers": ["claude"],
-      "max_iterations": 3
-    }
-  }
-}
-```
-
-Store `max_dispatches_per_task` for the convergence budget. Each domain's `providers` array is an ordered preference list for selecting that domain's single evaluator (the first available provider differing from the implementer wins; implementers are always claude), not a dispatch fan-out. `evaluators.holistic.providers` (default `["claude"]`) behaves differently: holistic review dispatches to all listed providers.
+Store `max_dispatches_per_task` for the convergence budget. Each domain's `providers` array is an ordered preference list for selecting that domain's single evaluator (the first available provider differing from the implementer wins; implementers are always claude), not a dispatch fan-out. `evaluators.holistic.providers` behaves differently: holistic review dispatches to all listed providers.
 
 ## Step 1: Bean Body Validation
 

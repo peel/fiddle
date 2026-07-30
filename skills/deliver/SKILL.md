@@ -24,14 +24,7 @@ Parse from `{ARGS}`:
 
 ### Config File
 
-Read `orchestrate.json` (project root) if it exists. Extract:
-- `providers.phases.deliver` — provider list (default: `["codex"]`)
-- Provider declarations (`providers.<name>.command`, `.flags`)
-- `providers.timeout` — attended/unattended timeouts
-- `models.deliver` — model override for drift analysis
-- `evaluators.spot_check.rate` — blind spot-check sampling rate (integer N; absent defaults to 5, 0 or less disables)
-- `evaluators.aging.window_days` — age threshold for flagging calibration anchors (integer days; absent defaults to 90)
-- `evaluators.aging.quiet_epics` — number of recent epics an anchor must go without a correction (or an antipattern without a detection) to be retired/collapsed (integer; absent defaults to 3)
+Config: see `skills/orchestrate/SKILL.md` for the schema. This skill reads `providers.phases.deliver`, the `providers.<name>.command` and `.flags` declarations for each provider named there, `providers.timeout`, `models.deliver`, `deliver.product_artifacts`, `evaluators.spot_check.rate`, `evaluators.aging.window_days`, and `evaluators.aging.quiet_epics`.
 
 ## Steps
 
@@ -93,20 +86,11 @@ Skip this step if `deliver.product_artifacts` is not configured in `orchestrate.
 
 #### Configuration
 
-Read from `orchestrate.json`:
-```json
-"deliver": {
-  "product_artifacts": {
-    "templates_path": "docs/product/templates",
-    "output_path": "docs/releases",
-    "artifacts": ["release-notes", "social"]
-  }
-}
-```
+Read `deliver.product_artifacts` from `orchestrate.json` (schema in `skills/orchestrate/SKILL.md`):
 
-- `templates_path` — directory containing one markdown file per artifact type (e.g., `release-notes.md`, `social.md`). Each file is **instructions** for generating that artifact — voice, format, audience, examples. The project supplies these.
+- `templates_path` — directory containing one markdown file per artifact type (e.g., `release-notes.md`, `social.md`). Each file is a set of instructions for generating that artifact — voice, format, audience, examples. The project supplies these.
 - `output_path` — where generated artifacts are written
-- `artifacts` — which artifact types to generate (must match template filenames without extension)
+- `artifacts` — which artifact types to generate, matching template filenames without extension
 
 #### Process
 
@@ -140,15 +124,11 @@ After documentation is confirmed, review the evaluation artifacts from this run.
 
 #### 5.0 Blind Spot-Check
 
-<HARD-GATE>
-This step runs BEFORE 5a. Step 5a presents the evaluator scorecards, which would anchor the human's judgment on the evaluator's own evidence. The blind spot-check MUST complete first so the human scores a sample of converged beans cold.
-
 Run the blind spot-check following: `skills/deliver/blind-spot-check.md`
 
-Read the sampling rate from `evaluators.spot_check.rate` in `orchestrate.json` (integer N — review every Nth converged bean). If the key is absent, default to 5. If the value is 0 or less, skip this step and proceed to 5a.
+This step completes before 5a, and no evaluator scorecard is revealed — here or by starting 5a — until the human has committed blind scores for the sampled beans. Step 5a presents the scorecards, which would anchor the human's judgment on the evaluator's own evidence, and an anchored human measures nothing.
 
-Do NOT reveal any evaluator scorecard (in this step or by starting 5a) before the human has committed blind scores for the sampled beans.
-</HARD-GATE>
+Read the sampling rate from `evaluators.spot_check.rate` in `orchestrate.json` (integer N — review every Nth converged bean). If the key is absent, default to 5. If the value is 0 or less, skip this step and proceed to 5a.
 
 Per-dimension divergence between the human's blind scores and the evaluator scores is recorded in each sampled bean's Evaluation Log (via `append-eval-log.sh --corrections`) and encoded as calibration anchors in the same format as attended-gate corrections. Carry the divergence summary into the 5e summary.
 
@@ -211,8 +191,7 @@ High iteration counts (>5 develop-evaluate cycles on a single task) suggest cali
 
 Drift analysis (Step 2) and per-task evaluators only see one epic at a time. Architectural decay shows up across epics: the codebase getting harder to work in, evaluators quietly disagreeing more. Rising dispatches-to-convergence for similar-sized epics is the earliest slop signal available.
 
-<HARD-GATE>
-Do NOT aggregate eval-log history by hand or eyeball the beans. You MUST run the trend script, which reads the "## Evaluation Log" sections from every task bean's body across all epics and computes the aggregates and cross-epic direction verdicts:
+Run the trend script rather than aggregating eval-log history by hand; it reads the "## Evaluation Log" sections from every task bean's body across all epics and computes the aggregates and cross-epic direction verdicts:
 
 ```bash
 scripts/trend-eval-history.sh --beans-path <beans-path>
@@ -220,8 +199,7 @@ scripts/trend-eval-history.sh --beans-path <beans-path>
 
 (Omit `--beans-path` only when running from the repo root where `.beans` is discoverable; always pass it from a worktree.)
 
-Read the JSON it emits. Do not reconstruct any number the script already reports.
-</HARD-GATE>
+Read the JSON it emits and do not reconstruct any number it already reports — a hand-tallied trend is the one input here that cannot be checked against anything.
 
 The output carries per-epic aggregates ordered oldest to newest (mean/max dispatches-to-convergence, mean iterations, per-dimension mean scores, disagreement count), a `trends` array comparing consecutive epics, and a top-level `alarm` flag with `alarm_reasons`.
 
@@ -253,9 +231,9 @@ Read `evaluators.aging.window_days` (default 90) and `evaluators.aging.quiet_epi
 
 **Collapse quiet antipatterns.** For each domain, locate its antipattern file (`evaluators.domains.<domain>.antipatterns`, else `docs/antipatterns-<domain>.md`). Scan the `## [antipattern-id] (YYYY-MM-DD)` blocks above the `## Retired` section. Read the **Antipatterns detected:** sections recorded in eval logs (task-bean `## Evaluation Log` sections, written by `append-eval-log.sh --antipatterns` at develop-loop step 1l) from the last `quiet_epics` epics. An antipattern whose ID appears in no such section across those epics is **collapsed** (moved to the archive).
 
-**Auditability.** Retired anchors and collapsed antipatterns are never deleted: MOVE each block, verbatim, to a `## Retired` section at the bottom of the same file (create the heading if absent), appending a line `**Retired YYYY-MM-DD:** [reason]`. Keeping retired content in the same file (rather than a separate `docs/…-archive.md`) preserves the single path already wired into `orchestrate.json`, so no new configuration is needed; the `## Retired` heading is the boundary that keeps retired content out of evaluator context.
+**Auditability.** Retired anchors and collapsed antipatterns are never deleted: move each block, verbatim, to a `## Retired` section at the bottom of the same file (create the heading if absent), appending a line `**Retired YYYY-MM-DD:** [reason]`. Keeping retired content in the same file (rather than a separate `docs/…-archive.md`) preserves the single path already wired into `orchestrate.json`, so no new configuration is needed; the `## Retired` heading is the boundary that keeps retired content out of evaluator context.
 
-Retired content MUST NOT be loaded into evaluator context: the calibration load (context-loading-order position 3) and the `{ANTIPATTERNS}` injection stop reading at the `## Retired` heading.
+Retired content stays out of evaluator context: the calibration load (context-loading-order position 3) and the `{ANTIPATTERNS}` injection both stop reading at the `## Retired` heading.
 
 **Present and confirm.** Like the other step-5 sub-steps, present the proposed changes and wait for confirmation before writing:
 ```

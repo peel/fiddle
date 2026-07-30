@@ -23,7 +23,7 @@ Flags (all optional):
 
 The evolve skill is the authority on doc structure. Apply these constraints to every update.
 
-**VISION.md** — Under 1 page. Sections: What (1 para), Who (1 para), Success (2-5 signals), Non-goals (bullets), Open questions (bullets). Evolve should almost NEVER touch this doc. Only flag if completed work contradicts it.
+**VISION.md** — Under 1 page. Sections: What (1 para), Who (1 para), Success (2-5 signals), Non-goals (bullets), Open questions (bullets). Evolve rarely touches this doc; only flag it if completed work contradicts it.
 
 **MARKET.md** — Main sections fit one screen. Research log grows unbounded. Only update main sections if work revealed new competitive information. Append to research log if applicable.
 
@@ -31,7 +31,7 @@ The evolve skill is the authority on doc structure. Apply these constraints to e
 
 **GTM.md** — Short. Only update Traction log if a notable event occurred.
 
-**SYSTEM.md** — 1-2 pages max. Sections: Overview (1 para), Components (entry per component), Data (flows/storage), Infrastructure (where it runs), Invariants (must-be-true), Known issues (specific). THIS IS THE PRIMARY TARGET of evolve. Update after any architectural change.
+**SYSTEM.md** — 1-2 pages max. Sections: Overview (1 para), Components (entry per component), Data (flows/storage), Infrastructure (where it runs), Invariants (must-be-true), Known issues (specific). This is the primary target of evolve; update it after any architectural change.
 
 **RUNBOOKS.md** — Commands not prose. Update if deploy process, rollback steps, or common issues changed.
 
@@ -65,7 +65,7 @@ For each completed bean and its associated changes, classify:
 
 ### 3. Propose changes
 
-Present ALL proposed changes to the user before writing. Group by doc:
+Present every proposed change to the user before writing. Group by doc:
 
 ```
 ## SYSTEM.md
@@ -96,7 +96,7 @@ After user confirmation:
 
 **RUNBOOKS.md** — Update if deploy/rollback/common-issues changed. Commands not prose.
 
-**Product docs** — Do NOT auto-update VISION, MARKET, PRICING, GTM. Only flag for manual review. These require deliberate human thinking, not mechanical updates.
+**Product docs** — Flag VISION, MARKET, PRICING, and GTM for manual review instead of auto-updating them. These require deliberate human thinking, not mechanical updates.
 
 ### 5. Verify
 

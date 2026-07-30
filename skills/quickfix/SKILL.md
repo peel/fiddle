@@ -5,14 +5,9 @@ description: Use when the user wants a quick one-shot implementation of a small,
 
 # Quickfix
 
-
-## Usage
+One-shot implementation for small, unambiguous tasks: clarify → implement → PR → done. No evaluator loop.
 
 Invoke as `fiddle:quickfix <prompt>`.
-
-One-shot implementation for small, unambiguous tasks. Clarify -> Implement -> PR -> Done.
-
-**Announce:** "Using quickfix for one-shot implementation."
 
 ARGUMENTS: {ARGS}
 
@@ -27,17 +22,17 @@ Quickfix handles tasks where the full DISCOVER -> DEFINE -> DEVELOP -> DELIVER c
 
 ## Escape Hatch
 
-At ANY point, if the task proves more complex than expected:
+At any point, if the task proves more complex than expected:
 1. Report: "This is more complex than a quickfix. Falling back to full orchestrate."
 2. Clean up partial work (revert commits in worktree if any, remove worktree)
 3. Scrap the bean: `beans update <bean-id> -s scrapped --body-append "## Reasons for Scrapping\n\nTask exceeded quickfix scope. Falling back to full orchestrate."`
-4. Return status: **TOO_COMPLEX**
+4. Return status: TOO_COMPLEX
 
-Do NOT push through a quickfix that has become complex. The full flow exists for a reason.
+Take the escape hatch rather than pushing through — a quickfix that has grown complex has skipped the design and evaluation steps that a task of that size needs.
 
 ### Complexity Tripwires
 
-Bail immediately if you encounter any of these during implementation:
+Bail if you encounter any of these during implementation:
 - Need to create more than 5 files
 - Need to modify more than 3 existing modules with interconnected changes
 - Discover an architectural decision with multiple valid approaches
@@ -51,9 +46,9 @@ Read the prompt. Explore the codebase to understand what needs changing:
 - Understand the current behavior
 - Understand the desired behavior
 
-**Self-serve first.** Use `tilth` when available, `rg` for search, and normal file reads to answer your own questions from the codebase before asking the user anything.
+Self-serve first: use `tilth` when available, `rg` for search, and normal file reads to answer your own questions from the codebase before asking the user anything.
 
-If anything remains genuinely ambiguous after codebase exploration, ask up to 3 focused questions in a **single batch**. Wait for answers.
+If anything remains genuinely ambiguous after codebase exploration, ask up to 3 focused questions in a single batch. Wait for answers.
 
 If everything is clear, state what you'll do in one sentence and proceed.
 
@@ -94,12 +89,12 @@ Run the project's test suite:
 rtk cargo test / rtk npm test / rtk pytest / rtk go test ./...
 ```
 
-**If tests pass** -> proceed to Step 6.
+If tests pass, proceed to Step 6.
 
-**If tests fail:**
+If tests fail:
 1. Fix the failures (one attempt)
 2. Re-run tests
-3. If still failing -> trigger escape hatch (TOO_COMPLEX)
+3. If still failing, trigger the escape hatch (TOO_COMPLEX)
 
 ## Step 6: PR
 

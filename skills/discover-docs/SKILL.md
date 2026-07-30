@@ -14,7 +14,7 @@ Socratic dialogue to populate or review curated project docs. You question, chal
 
 ## Docs schema
 
-Each doc has a defined purpose, sections, and size constraint. NEVER exceed these. The docs are for future-you and future-agents — concise, high-signal, no filler.
+Each doc has a defined purpose, sections, and size constraint. Stay within them. The docs are for future-you and future-agents — concise, high-signal, no filler.
 
 ### docs/product/VISION.md
 Purpose: what this is, who it's for, why it exists.
@@ -37,7 +37,7 @@ Sections: Channels (where you promote), Messaging (one-sentence descriptions and
 Constraint: Keep it short. Solo dev GTM is often one paragraph. That's fine.
 
 ### docs/technical/SYSTEM.md
-Purpose: how the system actually works RIGHT NOW. Ground truth, not aspirational.
+Purpose: how the system actually works today. Ground truth, not aspirational.
 Sections: Overview (1 paragraph), Components (one entry per component — what, tech, where, dependencies), Data (flows, storage, key schemas), Infrastructure (where it runs), Invariants (must-be-true constraints), Known issues (specific, with file references where possible).
 Constraint: 1-2 pages max. If longer, the system is complex enough to warrant splitting into sub-docs.
 
@@ -65,9 +65,7 @@ Skip docs the user says aren't relevant (e.g., PRICING for a free tool, RUNBOOKS
 
 ### 3. For each doc in scope — Socratic dialogue
 
-**Do NOT just ask the user to fill in sections.** That's a form, not a dialogue.
-
-Instead:
+Draw the content out through questions rather than asking the user to fill in sections — a section-by-section prompt is a form, and a form surfaces only what the user already knew to write down.
 
 **If the doc is empty:**
 - Start with an open question about the topic area. For VISION: "Tell me what you're building and why." For MARKET: "Who would use this instead of what?"

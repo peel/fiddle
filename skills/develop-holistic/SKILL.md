@@ -18,20 +18,9 @@ ARGUMENTS: {ARGS}
 
 Parse from `{ARGS}`: `--epic <id>` (required, the epic to review holistically).
 
-Read `orchestrate.json` from project root and extract the `evaluators.holistic` block:
+Config: see `skills/orchestrate/SKILL.md` for the schema. This skill reads `evaluators.holistic.providers`, `evaluators.holistic.max_iterations`, and `evaluators.holistic.thresholds`.
 
-```json
-{
-  "evaluators": {
-    "holistic": {
-      "providers": ["claude"],
-      "max_iterations": 3
-    }
-  }
-}
-```
-
-`providers` (default `["claude"]`) is a dispatch fan-out here, not the ordered preference list a per-task domain uses: holistic review dispatches to every listed provider. `max_iterations` (default 3) is the holistic dispatch budget.
+`providers` (default `["claude"]` when absent) is a dispatch fan-out here, not the ordered preference list a per-task domain uses: holistic review dispatches to every listed provider. `max_iterations` is the holistic dispatch budget, falling back to 3 when the key is absent; read the live value from `orchestrate.json`.
 
 ## 2a. Pre-flight
 

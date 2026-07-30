@@ -25,10 +25,7 @@ Parse from `{ARGS}`:
 
 ### Config File
 
-Read `orchestrate.json` (project root) if it exists. Extract:
-- `providers.phases.discover` — provider list for this phase (default: `["codex"]`)
-- Provider declarations (`providers.<name>.command`, `.flags`) for each provider
-- `providers.timeout` — attended/unattended timeouts
+Config: see `skills/orchestrate/SKILL.md` for the schema. This skill reads `providers.phases.discover` (the provider list for this phase), the `providers.<name>.command` and `.flags` declarations for each provider named there, and `providers.timeout`.
 
 ## Steps
 
