@@ -7,7 +7,7 @@ description: Use when about to claim work is complete, fixed, or passing, before
 
 Run the verification, read its output, and only then state the result.
 
-Verification output precedes any claim of success. A claim made without it is a statement about what you expect rather than what happened, and the reader cannot tell the difference — which makes it a false report rather than an efficient one. Confidence, a previous run, a passing linter, and an agent's success message are all not the output of the command that proves the claim.
+Verification output precedes any claim of success. A claim made without it is a statement about what you expect rather than what happened, and the reader cannot tell the difference, which makes it a false report rather than an efficient one. Confidence, a previous run, a passing linter, and an agent's success message are all not the output of the command that proves the claim.
 
 ## The Gate
 
@@ -18,7 +18,7 @@ Before claiming any status or expressing satisfaction with the work:
 3. **Read** the whole output: exit code, failure count, warnings.
 4. **Check** whether the output confirms the claim. If it does, state the claim with the evidence. If it does not, state the actual status with the evidence.
 
-This applies to exact phrases, paraphrases, and anything that implies success — including "great", "perfect", and "done" — and it applies immediately before committing, opening a PR, marking a task complete, moving on, or delegating.
+This applies to exact phrases, paraphrases, and anything that implies success (including "great", "perfect", and "done"), and it applies immediately before committing, opening a PR, marking a task complete, moving on, or delegating.
 
 ## What Each Claim Requires
 
@@ -36,7 +36,7 @@ A partial check extrapolated to the whole is the most common failure here: it pr
 
 ## Patterns
 
-**Tests:** run the test command, see 34/34 pass, then say "all tests pass" — not "should pass now" or "looks correct".
+**Tests:** run the test command, see 34/34 pass, then say "all tests pass", not "should pass now" or "looks correct".
 
 **Regression tests:** write the test, run it (passes), revert the fix, run it again and see it fail, restore the fix, run it once more. Without the red step, "I've written a regression test" is unproven.
 

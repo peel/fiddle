@@ -7,9 +7,9 @@ description: Use when encountering any bug, test failure, or unexpected behavior
 
 Establish the root cause of a bug, then fix that cause.
 
-The root cause is established before any fix is proposed or applied. A fix chosen before the cause is known is a guess: it patches whichever symptom was visible, leaves the real defect in place, and usually adds a new one. Guessing feels faster under pressure and is not — the thrashing it produces costs more than the investigation would have.
+The root cause is established before any fix is proposed or applied. A fix chosen before the cause is known is a guess: it patches whichever symptom was visible, leaves the real defect in place, and usually adds a new one. Guessing feels faster under pressure and is not: the thrashing it produces costs more than the investigation would have.
 
-Use this for any technical issue: test failures, production bugs, unexpected behavior, performance problems, build failures, integration issues. Simple-looking issues have root causes too, and the moments where skipping is most tempting — an emergency, an obvious one-line fix, a fix that just failed — are the moments where guessing is most expensive.
+Use this for any technical issue: test failures, production bugs, unexpected behavior, performance problems, build failures, integration issues. Simple-looking issues have root causes too, and the moments where skipping is most tempting (an emergency, an obvious one-line fix, a fix that just failed) are the moments where guessing is most expensive.
 
 ## Phase 1: Root Cause Investigation
 
@@ -19,7 +19,7 @@ Complete this phase before proposing a fix.
 
 2. **Reproduce consistently.** Can you trigger it reliably? What are the exact steps? Does it happen every time? If it is not reproducible, gather more data rather than guessing.
 
-3. **Check recent changes.** What changed that could cause this — git diff, recent commits, new dependencies, config changes, environmental differences?
+3. **Check recent changes.** What changed that could cause this: git diff, recent commits, new dependencies, config changes, environmental differences?
 
 4. **Gather evidence in multi-component systems.** When the system spans components (CI → build → signing, API → service → database), add diagnostic instrumentation at each boundary before proposing fixes:
 
@@ -81,7 +81,7 @@ Complete this phase before proposing a fix.
 
 ## Phase 4: Implementation
 
-1. **Create a failing test case** — the simplest reproduction, automated if a framework exists, a one-off script otherwise. Write it before the fix, so the fix has something to prove. Use the `fiddle:tdd` skill for writing proper failing tests.
+1. **Create a failing test case:** the simplest reproduction, automated if a framework exists, a one-off script otherwise. Write it before the fix, so the fix has something to prove. Use the `fiddle:tdd` skill for writing proper failing tests.
 
 2. **Implement a single fix** addressing the identified root cause. One change, no "while I'm here" improvements, no bundled refactoring.
 
@@ -93,7 +93,7 @@ Complete this phase before proposing a fix.
 
 ## When Investigation Finds No Root Cause
 
-If systematic investigation shows the issue is genuinely environmental, timing-dependent, or external: you have completed the process. Document what you investigated, implement appropriate handling (retry, timeout, error message), and add monitoring or logging for future investigation. Treat the conclusion with suspicion first, though — most "no root cause" findings are incomplete investigations.
+If systematic investigation shows the issue is genuinely environmental, timing-dependent, or external: you have completed the process. Document what you investigated, implement appropriate handling (retry, timeout, error message), and add monitoring or logging for future investigation. Treat the conclusion with suspicion first, though: most "no root cause" findings are incomplete investigations.
 
 Redirections from your human partner are a signal that this happened: "is that not happening?", "will it show us...?", "stop guessing", "ultrathink this", "we're stuck?" all mean an assumption went unverified. Return to Phase 1.
 

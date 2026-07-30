@@ -55,7 +55,7 @@ git check-ignore -q .worktrees 2>/dev/null || git check-ignore -q worktrees 2>/d
 
 If it is not ignored, fix it before proceeding: add the line to `.gitignore`, commit that change, then create the worktree.
 
-The global directory (`~/.config/fiddle/worktrees`) needs no such check — it is outside the project entirely.
+The global directory (`~/.config/fiddle/worktrees`) needs no such check, being outside the project entirely.
 
 ## Creation Steps
 

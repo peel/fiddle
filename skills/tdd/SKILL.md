@@ -13,11 +13,11 @@ The test is written and seen failing before the implementation exists. A test ne
 
 New features, bug fixes, refactoring, and behavior changes all go through the cycle. Throwaway prototypes, generated code, and configuration files are the standing exceptions, and taking one is a decision to raise with your human partner rather than make alone.
 
-If production code was written before its test, delete it and implement fresh from the tests. Keeping it as reference and adapting it while writing the tests is testing after with extra steps. Deleting hours of work feels wasteful, but that time is spent either way — what remains is a choice between code you can trust and code you cannot.
+If production code was written before its test, delete it and implement fresh from the tests. Keeping it as reference and adapting it while writing the tests is testing after with extra steps. Deleting hours of work feels wasteful, but that time is spent either way; what remains is a choice between code you can trust and code you cannot.
 
 ## Red-Green-Refactor
 
-### RED — Write Failing Test
+### RED: Write Failing Test
 
 Write one minimal test showing what should happen: one behavior, a name describing that behavior, real code rather than mocks unless mocking is unavoidable.
 
@@ -39,7 +39,7 @@ test('retries failed operations 3 times', async () => {
 });
 ```
 
-Bad — vague name, and it asserts on the mock rather than on the code under test:
+Bad (vague name, and it asserts on the mock rather than on the code under test):
 
 ```typescript
 test('retry works', async () => {
@@ -52,7 +52,7 @@ test('retry works', async () => {
 });
 ```
 
-### Verify RED — Watch It Fail
+### Verify RED: Watch It Fail
 
 ```bash
 npm test path/to/test.test.ts
@@ -60,13 +60,13 @@ npm test path/to/test.test.ts
 
 Confirm the test fails rather than errors, that the failure message is the one you expected, and that it fails because the feature is missing rather than because of a typo.
 
-If it passes, it is testing behavior that already exists — fix the test. If it errors, fix the error and re-run until it fails correctly.
+If it passes, it is testing behavior that already exists, so fix the test. If it errors, fix the error and re-run until it fails correctly.
 
-### GREEN — Minimal Code
+### GREEN: Minimal Code
 
 Write the simplest code that passes the test. No extra features, no refactoring of neighboring code, no improvements beyond what the test demands.
 
-Good — just enough to pass:
+Good (just enough to pass):
 
 ```typescript
 async function retryOperation<T>(fn: () => Promise<T>): Promise<T> {
@@ -81,7 +81,7 @@ async function retryOperation<T>(fn: () => Promise<T>): Promise<T> {
 }
 ```
 
-Bad — options nothing asked for:
+Bad (options nothing asked for):
 
 ```typescript
 async function retryOperation<T>(
@@ -96,15 +96,15 @@ async function retryOperation<T>(
 }
 ```
 
-### Verify GREEN — Watch It Pass
+### Verify GREEN: Watch It Pass
 
 ```bash
 npm test path/to/test.test.ts
 ```
 
-Confirm the test passes, the other tests still pass, and the output is pristine — no errors, no warnings. If the new test fails, fix the code, not the test. If other tests fail, fix them now.
+Confirm the test passes, the other tests still pass, and the output is pristine, with no errors and no warnings. If the new test fails, fix the code, not the test. If other tests fail, fix them now.
 
-### REFACTOR — Clean Up
+### REFACTOR: Clean Up
 
 Only after green: remove duplication, improve names, extract helpers. Tests stay green and behavior stays unchanged.
 
