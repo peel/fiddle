@@ -113,7 +113,7 @@ echo "=== Test 2: Runtime-evidence skill exists and has required sections ==="
 EVIDENCE_SKILL="$PROJECT_DIR/skills/runtime-evidence/SKILL.md"
 
 assert_true "runtime-evidence/SKILL.md exists" "$([ -f "$EVIDENCE_SKILL" ] && echo "true" || echo "false")"
-assert_contains "contains HARD-GATE" "$EVIDENCE_SKILL" "HARD-GATE"
+assert_contains "states record-before-scoring" "$EVIDENCE_SKILL" "before scoring any dimension"
 assert_contains "contains Evidence Gathering" "$EVIDENCE_SKILL" "Evidence Gathering"
 assert_contains "contains Failure Classification" "$EVIDENCE_SKILL" "Failure Classification"
 
