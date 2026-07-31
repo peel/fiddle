@@ -38,16 +38,26 @@ Then collect every unique domain from all task beans' eval blocks and start thei
 scripts/start-runtimes.sh --domains <all-domains-resolved.json>
 ```
 
-Every domain runtime must be running before holistic review begins: a reviewer that cannot exercise a domain cannot see the seams between it and the others, which is the only thing this review adds.
+Every domain runtime must be running before holistic review begins: the seams between domains are the only thing this review adds, and they are invisible without exercising the running system.
 
 - Exit 3 (harness failure): retry once; if the retry fails, escalate to human.
 - Exit 1 or 2 (app/config issue): include the error in the holistic reviewer's context and proceed — Runtime Health will reflect the failure.
+
+## 2a-2. Gather the Holistic Evidence Pack
+
+With the runtimes up, capture the evidence the reviewers will score from, into `evidence-holistic.txt` with a `### <source>` header per section:
+
+1. The project's test-suite output for the epic as a whole.
+2. Output from any invariant or validation scripts the epic's beans name.
+3. A probe transcript per runtime-configured domain: each runtime answering on its port, the primary cross-domain flows exercised end to end, screenshots or response bodies for the states reached, and console output including warnings.
+
+The reviewers interpret this pack rather than driving the runtimes themselves, which is what lets a provider running read-only score runtime dimensions at all. A reviewer left to gather its own evidence either cannot (no writable temp dir, no tool access) or gathers something different from its peers, and neither outcome is comparable across providers.
 
 ## 2b. Dispatch Holistic Reviewer (Per-Provider)
 
 For each provider in `evaluators.holistic.providers`, dispatch a holistic reviewer.
 
-**Provider `claude`:** dispatch a subagent on `skills/develop/holistic-review.md`.
+**Provider `claude`:** dispatch a subagent on `skills/develop/holistic-review.md`, passing `evidence-holistic.txt` in context.
 
 **External provider:** dispatch via the provider hook:
 
@@ -57,11 +67,13 @@ hooks/dispatch-provider.sh <provider> \
   --topic "Holistic review: cross-domain integration assessment" \
   --instructions "$(cat skills/develop/holistic-review.md)" \
   --diff-file <diff-file> \
-  --design-doc-file <design-doc-file>
+  --design-doc-file <design-doc-file> \
+  --evidence-file evidence-holistic.txt
 ```
 
 Every holistic reviewer, claude or external, gets the same context:
 
+- The evidence pack from 2a-2: `evidence-holistic.txt`
 - The full diff since the epic's base SHA, before any task started: `git diff {epic-base-sha}...HEAD`
 - The design spec / plan document
 - All task bean bodies for their spec requirements: `beans list --parent <epic-id> --json`
