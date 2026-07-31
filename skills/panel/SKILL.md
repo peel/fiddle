@@ -54,8 +54,6 @@ Only include providers that returned `"available":true`. The current harness is 
 | **Advocate A** | Assigned advocate for Approach 1 | harness subagent, or inline sequential pass |
 | **Advocate B** | Assigned advocate for Approach 2 | harness subagent, or inline sequential pass |
 
-Read `models.define` from `orchestrate.json` (project root). If "default" or not set, omit the `model:` parameter to inherit session model.
-
 ## Invocation Context
 
 **Standalone** (user typed `fiddle:panel <topic>`):

@@ -24,7 +24,7 @@ Parse from `{ARGS}`:
 
 ### Config File
 
-Config: see `skills/orchestrate/SKILL.md` for the schema. This skill reads `providers.phases.deliver`, the `providers.<name>.command` and `.flags` declarations for each provider named there, `providers.timeout`, `models.deliver`, `deliver.product_artifacts`, `evaluators.spot_check.rate`, `evaluators.aging.window_days`, and `evaluators.aging.quiet_epics`.
+Config: see `skills/orchestrate/SKILL.md` for the schema. This skill reads `providers.phases.deliver`, the `providers.<name>.command` and `.flags` declarations for each provider named there, `providers.timeout`, `deliver.product_artifacts`, `evaluators.spot_check.rate`, `evaluators.aging.window_days`, and `evaluators.aging.quiet_epics`.
 
 ## Steps
 

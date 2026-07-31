@@ -25,7 +25,7 @@ Parse from `{ARGS}`:
 
 ### Config File
 
-Config: see `skills/orchestrate/SKILL.md` for the schema. This skill reads `providers.phases.define` (the provider list for this phase), the `providers.<name>.command` and `.flags` declarations for each provider named there, and `models.define`.
+Config: see `skills/orchestrate/SKILL.md` for the schema. This skill reads `providers.phases.define` (the provider list for this phase), the `providers.<name>.command` and `.flags` declarations for each provider named there.
 
 CLI flags override config file values.
 

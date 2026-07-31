@@ -74,7 +74,6 @@ Provider configuration lives in `orchestrate.json` only — no CLI overrides. Ea
       "artifacts": ["release-notes", "social"]
     }
   },
-  "models": {},
   "plans": {}
 }
 ```
@@ -82,17 +81,6 @@ Provider configuration lives in `orchestrate.json` only — no CLI overrides. Ea
 The values above are the committed ones. Fallbacks apply only when a key is absent: `max_dispatches_per_task` 16, `holistic.max_iterations` 3, `holistic.providers` `["claude"]`, `spot_check.rate` 5 (0 or less disables the spot-check), `aging.window_days` 90, `aging.quiet_epics` 3. Read the file rather than relying on these numbers — a fallback only tells you what happens when the key is missing, not what the project currently runs.
 
 In `evaluators.domains.<domain>.providers`, the array is an ordered preference list for selecting the single evaluator for that domain: the first available provider that differs from the implementer wins (implementers are always claude). It is not a dispatch fan-out. `evaluators.holistic.providers` behaves differently: holistic review dispatches to all listed providers.
-
-### Model Defaults
-
-| Config key | Roles | Default |
-|---|---|---|
-| models.discover | All DISCOVER subagents | "default" (session model) |
-| models.define | Panel advocates, brainstorming subagents | "default" |
-| models.develop | Implementers, reviewers, develop orchestrator | "default" |
-| models.deliver | Drift analysis, docs review | "default" |
-
-"default" means inherit the session model — the agent omits the `model:` parameter so the parent's model is used. Omitted keys are treated as "default".
 
 ### Provider Defaults
 
@@ -118,11 +106,10 @@ Run this section immediately on invocation, before any phase.
 
 ### Step 1: Parse Configuration
 
-1. Set provider defaults from the table above. Set model defaults from the Model Defaults table.
+1. Set provider defaults from the table above.
 2. If `orchestrate.json` exists (project root): read it and parse each JSON key:
    - `providers` — provider definitions and phase assignments
    - `evaluators` — evaluator configuration: `attended`, `max_dispatches_per_task`, and domain definitions (each domain's `providers` is an ordered preference list for the single evaluator, not a fan-out; `holistic.providers` is dispatch-all)
-   - `models` — override model defaults for each phase. `develop` is a string key. "default" means omit the `model:` parameter to inherit the session model.
 3. Parse CLI flags from `{ARGS}`. Override any config file values.
 4. Store final config values for use throughout the session.
 
