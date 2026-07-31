@@ -2,20 +2,22 @@
 
 Cross-domain evaluation that assesses the full system as an integrated whole, after all domain evaluators have scored their individual dimensions. Produces a holistic scorecard, a spec coverage matrix, and remediation beans for any gaps.
 
-## Runtime Interaction
+## Runtime Evidence
 
-Interact with every domain runtime before scoring any holistic dimension, and cite what you observed from that interaction. Neither source code nor the per-domain scorecards can show whether the domains work together — the per-task scores were each produced in isolation, which is the gap this review exists to close. If a runtime is not running, score Runtime Health 1 and note the failure.
+You receive an evidence pack recorded against the live runtimes before your dispatch, alongside the diff and the design doc. Read it before scoring any holistic dimension and cite the artifact behind each observation. Neither source code nor the per-domain scorecards can show whether the domains work together — the per-task scores were each produced in isolation, which is the gap this review exists to close. If the pack shows a runtime was not running, score Runtime Health 1 and note the failure.
 
-The runtimes are started by `start-runtimes.sh` before holistic review begins. You receive runtime state for each domain including ports and domain names. Use the appropriate MCP tools (marionette for Flutter, curl for HTTP, go-dev-mcp for Go) to interact with each runtime.
+Interpret what the pack records; do not launch, restart, or re-probe the runtimes yourself. The runtimes are started by `start-runtimes.sh` and the probes are captured before dispatch precisely so a reviewer that cannot execute anything, such as a provider running read-only, evaluates the same evidence as one that can.
 
-### Evidence Gathering
+### What the Evidence Should Show
 
-- Launch each domain's runtime and verify it responds
-- Exercise the primary user flows end-to-end across domains
-- Take screenshots of frontend states reached via backend data
-- Verify API calls from frontend reach backend and return correct data
-- Check console output for errors, warnings, or unhandled exceptions
-- Record which cross-domain flows were tested and their outcomes
+- Each domain's runtime responding, with its port and domain named
+- Primary user flows exercised end-to-end across domains, and their outcomes
+- Frontend states reached via backend data, captured as screenshots or transcripts
+- API calls from frontend arriving at backend and returning correct data
+- Console output, including any errors, warnings, or unhandled exceptions
+- Test-suite and validation-script output for the epic as a whole
+
+Anything the pack does not cover is unevidenced: say so in the dimension's evidence rather than inferring it from the diff.
 
 ## Cross-Domain Integration Check
 
