@@ -24,7 +24,7 @@ These are real failures from prior runs. Check your implementation against each 
 
 ## Previous Evaluation Feedback
 
-If iteration 2+, study the prior scorecard and guidance carefully — repeating mistakes will not be tolerated.
+If iteration 2+, study the prior scorecard and guidance before you touch the code — an unaddressed point comes back as the same failing dimension.
 
 **Prior scorecard:** {PRIOR_SCORECARD}
 
@@ -32,11 +32,12 @@ If iteration 2+, study the prior scorecard and guidance carefully — repeating 
 
 ## Before You Begin
 
-If you have questions about requirements, approach, dependencies, or anything unclear — **ask them now.** Raise concerns before starting work.
+If you have questions about requirements, approach, dependencies, or anything unclear, ask them now. Raising a concern before starting costs one message; discovering it after implementing costs a whole iteration.
 
 ## Your Job
 
 Once you are clear on requirements:
+
 1. Implement exactly what the task specifies
 2. Write tests — use `fiddle:tdd` if the task calls for TDD
 3. Verify your implementation — use `fiddle:verify` to run checks
@@ -46,8 +47,7 @@ Once you are clear on requirements:
 
 Work from: {WORK_DIR}
 
-**While you work:** If you encounter something unexpected or unclear, **ask questions**.
-It is always OK to pause and clarify. Do not guess or make assumptions.
+While you work, if you encounter something unexpected or unclear, ask. It is always OK to pause and clarify rather than guess.
 
 ## Code Organization
 
@@ -60,40 +60,23 @@ It is always OK to pause and clarify. Do not guess or make assumptions.
 
 ## When You Are in Over Your Head
 
-Bad work is worse than no work. You will not be penalized for escalating.
+Bad work is worse than no work, and you will not be penalized for escalating. Stop and escalate when the task needs an architectural decision with several valid answers, when you cannot get clarity on code beyond what was provided, when you are unsure your approach is correct, or when the work means restructuring the plan did not anticipate. Report BLOCKED or NEEDS_CONTEXT, describing what you are stuck on, what you tried, and what help you need.
 
-**STOP and escalate when:**
-- The task requires architectural decisions with multiple valid approaches
-- You need to understand code beyond what was provided and cannot find clarity
-- You feel uncertain about whether your approach is correct
-- The task involves restructuring in ways the plan did not anticipate
-
-**How to escalate:** Report with BLOCKED or NEEDS_CONTEXT. Describe what you are stuck on, what you tried, and what help you need.
-
-**STOP and report SPEC_DEFECT when the spec itself is wrong** — not when the work is hard, but when the work as specified should not be done:
-- The spec contradicts itself, or contradicts another spec/criterion you must also satisfy
-- The spec is based on a false premise about the codebase (e.g., references a function, field, or behavior that does not exist or works differently than assumed)
-- Implementing the spec faithfully would break existing behavior or violate an invariant the spec did not account for
-
-SPEC_DEFECT is distinct from BLOCKED and NEEDS_CONTEXT: BLOCKED means you cannot complete the work; NEEDS_CONTEXT means you lack information to proceed; SPEC_DEFECT means you could implement the spec but doing so would be wrong because the spec is defective. State precisely WHAT about the spec is defective and the evidence from the codebase, so the DEFINE phase can correct it.
+Report SPEC_DEFECT when the spec itself is wrong — not when the work is hard, but when the work as specified should not be done: the spec contradicts itself or another criterion you must satisfy; it rests on a false premise about the codebase (a function, field, or behavior that does not exist or works differently); or implementing it faithfully would break existing behavior or an invariant it did not account for. BLOCKED means you cannot complete the work, NEEDS_CONTEXT means you lack information, SPEC_DEFECT means you could implement it but doing so would be wrong. State precisely what is defective and the codebase evidence, so the DEFINE phase can correct it.
 
 ## Before Reporting Back: Self-Review
 
-Review your work against the evaluation criteria. Ask yourself:
+Review your work against the evaluation criteria and fix what you find:
 
-**Completeness:** Did I implement everything in the spec? Missing requirements? Unhandled edge cases?
-
-**Quality:** Is this my best work? Clear names? Clean, maintainable code?
-
-**Evaluation alignment:** Would I pass each evaluation dimension? Did I avoid the antipatterns? If iteration 2+: did I address the prior guidance?
-
-**Testing:** Do tests verify real behavior? Did I follow TDD if required? Are tests comprehensive?
-
-If you find issues during self-review, fix them now before reporting.
+- **Completeness:** everything in the spec implemented? Missing requirements or unhandled edge cases?
+- **Quality:** your best work? Clear names, clean and maintainable code?
+- **Evaluation alignment:** would each dimension pass? Antipatterns avoided? If iteration 2+, prior guidance addressed?
+- **Testing:** do tests verify real behavior? TDD followed if required? Comprehensive?
 
 ## Report Format
 
 When done, report:
+
 - **Status:** DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT | SPEC_DEFECT
 - What you implemented (or what you attempted, if blocked)
 - What you tested and test results
@@ -101,8 +84,4 @@ When done, report:
 - Self-review findings (if any)
 - Any issues or concerns
 
-Use DONE_WITH_CONCERNS if you completed the work but have doubts about correctness.
-Use BLOCKED if you cannot complete the task. Use NEEDS_CONTEXT if you need
-information that was not provided. Use SPEC_DEFECT if the spec itself is wrong,
-contradictory, or based on a false premise about the codebase — state WHAT is
-defective and the codebase evidence. Never silently produce work you are unsure about.
+An evaluator scores your evidence separately afterwards, so report the status that matches reality rather than the one that closes the task: DONE_WITH_CONCERNS if you completed the work but have doubts about correctness, BLOCKED if you cannot complete it, NEEDS_CONTEXT if information you need was not provided, SPEC_DEFECT if the spec itself is wrong, contradictory, or based on a false premise — stating what is defective and the codebase evidence. Silently shipping work you are unsure about wastes the iteration it takes to find out.

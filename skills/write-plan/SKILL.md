@@ -23,49 +23,37 @@ Parse from `{ARGS}`:
 
 ## Overview
 
-Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
+Turn a spec into an implementation plan and then into beans. Write for an engineer who is skilled but has zero context for this codebase, does not know the toolset or problem domain, and does not know good test design: which files to touch for each task, the actual code, the exact commands with expected output, the docs worth checking. Bite-sized tasks, exact paths always, DRY, YAGNI, TDD, frequent commits.
 
-Assume they are a skilled developer, but know almost nothing about our toolset or problem domain. Assume they don't know good test design very well.
+Run this in a dedicated worktree (created by the `fiddle:brainstorm` skill).
 
-**Announce at start:** "I'm using the fiddle:write-plan skill to create the implementation plan."
-
-**Context:** This should be run in a dedicated worktree (created by fiddle:brainstorm skill).
-
-**Save plans to:** `docs/plans/YYYY-MM-DD-<feature-name>.md`
-- (User preferences for plan location override this default)
+Save plans to `docs/plans/YYYY-MM-DD-<feature-name>.md` (user preferences for plan location override this default).
 
 ## Scope Check
 
-If the spec covers multiple independent subsystems, it should have been broken into sub-project specs during brainstorming. If it wasn't, suggest breaking this into separate plans — one per subsystem. Each plan should produce working, testable software on its own.
+If the spec covers multiple independent subsystems, it should have been broken into sub-project specs during brainstorming. If it was not, suggest splitting it into separate plans, one per subsystem, each producing working testable software on its own.
 
 ## File Structure
 
-Before defining tasks, map out which files will be created or modified and what each one is responsible for. This is where decomposition decisions get locked in.
+Before defining tasks, map out which files will be created or modified and what each is responsible for. This is where decomposition decisions get locked in, and it informs the task breakdown: each task should produce self-contained changes that make sense independently.
 
-- Design units with clear boundaries and well-defined interfaces. Each file should have one clear responsibility.
-- You reason best about code you can hold in context at once, and your edits are more reliable when files are focused. Prefer smaller, focused files over large ones that do too much.
-- Files that change together should live together. Split by responsibility, not by technical layer.
-- In existing codebases, follow established patterns. If the codebase uses large files, don't unilaterally restructure - but if a file you're modifying has grown unwieldy, including a split in the plan is reasonable.
-
-This structure informs the task decomposition. Each task should produce self-contained changes that make sense independently.
+- Give each file one clear responsibility, with well-defined interfaces at its boundaries.
+- Prefer smaller focused files: you reason best about code you can hold in context at once, and your edits are more reliable when files are focused.
+- Files that change together live together. Split by responsibility, not by technical layer.
+- In existing codebases, follow established patterns. Don't unilaterally restructure a codebase that uses large files, but planning a split of a file you are already modifying is reasonable.
 
 ## Bite-Sized Task Granularity
 
-**Each step is one action (2-5 minutes):**
-- "Write the failing test" - step
-- "Run it to make sure it fails" - step
-- "Implement the minimal code to make the test pass" - step
-- "Run the tests and make sure they pass" - step
-- "Commit" - step
+Each step is one action taking 2-5 minutes: "Write the failing test", "Run it to make sure it fails", "Implement the minimal code to make the test pass", "Run the tests and make sure they pass", "Commit".
 
 ## Plan Document Header
 
-**Every plan MUST start with this header:**
+Every plan starts with this header:
 
 ```markdown
 # [Feature Name] Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use fiddle:develop to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Use fiddle:develop to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** [One sentence describing what this builds]
 
@@ -121,7 +109,7 @@ git commit -m "feat: add specific feature"
 
 ## Evaluation Block
 
-**Every task MUST include an Evaluation block** — a fenced YAML block with language tag `eval`:
+Every task carries an Evaluation block — a fenced YAML block with language tag `eval`. It is what tells the evaluator what to check; without it the evaluator has only generic dimension scoring and nothing task-specific to verify.
 
 ```eval
 domains: [general]
@@ -132,41 +120,33 @@ criteria:
 thresholds: {}
 ```
 
-**Schema rules:**
-- `domains`: array of domain names (use `general` for non-frontend/backend tasks)
-- `criteria`: keyed by domain, each with stable `id` (kebab-case) and `check` text
-- `thresholds`: optional overrides (empty = use domain defaults)
-- Criterion IDs must be unique within the task, stable across edits
+Schema rules:
 
-**The Evaluation block tells the evaluator what to check.** Without it, the evaluator has no task-specific criteria — only generic dimension scoring. Every plan task needs specific, verifiable criteria.
+- `domains`: array of domain names (`general` for non-frontend/backend tasks)
+- `criteria`: keyed by domain, each entry with a stable kebab-case `id` and `check` text
+- `thresholds`: optional overrides (empty means use domain defaults)
+- Criterion ids are unique within the task and stable across edits
 
 ## No Placeholders
 
-Every step must contain the actual content an engineer needs. These are **plan failures** — never write them:
+Every step contains the actual content an engineer needs. These are plan failures, not shortcuts:
+
 - "TBD", "TODO", "implement later", "fill in details"
 - "Add appropriate error handling" / "add validation" / "handle edge cases"
-- "Write tests for the above" (without actual test code)
-- "Similar to Task N" (repeat the code — the engineer may be reading tasks out of order)
-- Steps that describe what to do without showing how (code blocks required for code steps)
+- "Write tests for the above" without actual test code
+- "Similar to Task N" — repeat the code, since the engineer may read tasks out of order
+- Steps that describe what to do without showing how (code steps need code blocks)
 - References to types, functions, or methods not defined in any task
-
-## Remember
-- Exact file paths always
-- Complete code in every step — if a step changes code, show the code
-- Exact commands with expected output
-- DRY, YAGNI, TDD, frequent commits
 
 ## Self-Review
 
-After writing the complete plan, look at the spec with fresh eyes and check the plan against it. This is a checklist you run yourself — not a subagent dispatch.
+After writing the complete plan, look at the spec with fresh eyes and check the plan against it. This is a checklist you run yourself, not a subagent dispatch.
 
-**1. Spec coverage:** Skim each section/requirement in the spec. Can you point to a task that implements it? List any gaps.
+1. **Spec coverage:** skim each section and requirement in the spec. Can you point to a task that implements it? List any gaps, and add a task for any requirement that has none.
+2. **Placeholder scan:** search the plan for the patterns in "No Placeholders" above.
+3. **Type consistency:** do the types, method signatures, and property names used in later tasks match what earlier tasks defined? A function called `clearLayers()` in Task 3 and `clearFullLayers()` in Task 7 is a bug.
 
-**2. Placeholder scan:** Search your plan for red flags — any of the patterns from the "No Placeholders" section above. Fix them.
-
-**3. Type consistency:** Do the types, method signatures, and property names you used in later tasks match what you defined in earlier tasks? A function called `clearLayers()` in Task 3 but `clearFullLayers()` in Task 7 is a bug.
-
-If you find issues, fix them inline. No need to re-review — just fix and move on. If you find a spec requirement with no task, add the task.
+Fix what you find inline and move on; no re-review pass.
 
 ## Plan Critique (external providers)
 
@@ -193,13 +173,13 @@ only; do not re-dispatch after folding.
 
 ## Create Beans from Plan
 
-After the plan is saved and self-reviewed, materialize it as beans. **Do not skip this step** — `fiddle:develop` enforces a hard-gate on bean body shape (eval block, files section, steps checklist) and beans created any other way will fail validation.
+After the plan is saved and self-reviewed, materialize it as beans. `fiddle:develop` runs `scripts/validate-bean-body.sh` on every bean and stops on exit 2, so beans created outside this shape fail validation before the loop starts.
 
 ### Step 1: Load the Bean Sizing Rules
 
 Use the `fiddle:define-beans` skill.
 
-This loads the sizing heuristic (1–2 TDD cycles → task bean; 3+ cycles → feature bean with child task beans), the mandatory bean body template (Files / Steps / Evaluation sections), and the Bean Body Completeness Gate. Apply these rules to every plan task.
+This loads the sizing heuristic (1–2 TDD cycles → task bean; 3+ cycles → feature bean with child task beans), the bean body template (Files / Steps / Evaluation sections), and the Bean Body Completeness Gate. Apply these rules to every plan task.
 
 ### Step 2: Resolve the Epic
 
@@ -236,20 +216,20 @@ Capture the epic ID for the next step.
 Iterate through every `### Task N:` heading in the plan in document order. For each:
 
 1. Count the TDD cycles in the task's checklist (each "Write the failing test" step is one cycle). Apply the sizing rule from `fiddle:define-beans` to choose **task** vs. **feature + children**.
-2. Create the bean(s) under the epic with `--parent <epic-id>`. The body MUST include, in this exact shape:
+2. Create the bean(s) under the epic with `--parent <epic-id>`. The body takes this exact shape:
    - `## Context` — repo path + a sentence on what/why
    - `## Files` — the `Files:` block from the plan task copied verbatim (paths only, one per line, prefixed `- Create:` / `- Modify:` / `- Test:`)
    - `## Steps` — the plan task's `- [ ]` checklist copied verbatim, including code blocks
    - `## Evaluation` — the fenced ` ```eval ` block copied verbatim from the plan task
 3. Wire `--blocked-by` for any sequential dependencies between behaviors of a feature, and feature-level `--blocked-by` for cross-task dependencies (per `fiddle:define-beans` rules).
 
-**The eval block is a hard requirement.** If a plan task has no fenced ` ```eval ` block, stop and add one to the plan first — do not invent eval criteria during bean creation.
+If a plan task has no fenced ` ```eval ` block, stop and add one to the plan first. Eval criteria invented during bean creation are criteria the spec never agreed to.
 
 ### Step 4: Run the Completeness Gate
 
-After all beans are created, list children of the epic and verify each task bean body passes the Bean Body Completeness Gate from `fiddle:define-beans` (steps exist + actionable; eval block present; files specified; sufficient context). Feature beans that are pure containers are exempt.
+After all beans are created, list children of the epic and verify each task bean body passes the Bean Body Completeness Gate from `fiddle:define-beans` (steps exist and are actionable; eval block present; files specified; sufficient context). Feature beans that are pure containers are exempt.
 
-If any bean fails, fix the body inline. Do not exit Step 4 until every task bean passes.
+Fix any failing body inline. Do not exit Step 4 until every task bean passes.
 
 ### Step 5: Report
 
@@ -261,12 +241,13 @@ Epic <epic-id> ready: <N> task beans, <M> feature beans, all gate-checked.
 
 ## Execution Handoff
 
-If `--from-orchestrate` was set, return control to the caller. Do not prompt the user.
+If `--from-orchestrate` was set, return control to the caller without prompting the user.
 
 Otherwise, once the plan is saved, self-reviewed, and critiqued, offer execution:
 
 **"Plan complete and saved to `docs/plans/<filename>.md`. Epic `<epic-id>` ready with `<N>` beans. Ready to execute?"**
 
-**When execution begins:**
-- **REQUIRED SUB-SKILL:** Use fiddle:develop
+When execution begins:
+
+- Use fiddle:develop to implement the plan task-by-task
 - Fresh subagent per task + evaluation between tasks

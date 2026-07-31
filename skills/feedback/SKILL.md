@@ -45,19 +45,14 @@ Tags: #tag1 #tag2
 
 ### Multi-Actor Scenarios
 
-When a single report contains multiple actors (e.g., "three customers said X"):
-
-- Write **one entry per actor** with the same date and a shared observation title describing the common theme (e.g., "Evaluator domain creation is opaque").
-- Each actor gets their own Who/Context/Observation/Implication/Confidence.
-- Don't flatten distinct experiences into one entry — the differences between actors are signal.
+When one report covers several actors ("three customers said X"), write one entry per actor, sharing the date and an observation title that names the common theme (for example, "Evaluator domain creation is opaque"). Each actor gets their own Who, Context, Observation, Implication, and Confidence. Flattening distinct experiences into a single entry loses the differences between actors, which is the part `fiddle:insights` reads to distinguish a persona-specific friction from a general one.
 
 ## Tags
 
-Auto-assign 1-3 tags from: `#feature-request` `#bug` `#confusion` `#praise` `#churn-signal` `#ux` `#performance` `#onboarding` `#docs`.
+Assign 1-3 tags from: `#feature-request` `#bug` `#confusion` `#praise` `#churn-signal` `#ux` `#performance` `#onboarding` `#docs`.
 
-## Rules
+## Writing the Entry
 
-- Append only. Never edit or delete existing entries.
-- If `docs/product/FEEDBACK.md` doesn't exist, create it with the header `# User Feedback` and then append.
-- Show the entry. Append after confirmation.
-- Keep Observation to 1-3 sentences. Implication to one sentence.
+Show the entry and append after confirmation, creating `docs/product/FEEDBACK.md` with the header `# User Feedback` if it does not exist. Keep Observation to 1-3 sentences and Implication to one.
+
+The file is append-only: existing entries are never edited or deleted, because a synthesis run compares what was reported then against what is reported now.

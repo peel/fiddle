@@ -5,22 +5,15 @@ description: Use when an evaluator needs to interact with a running application 
 
 # Runtime Evidence
 
-Runtime evidence means interacting with the RUNNING application, not just reading
+Runtime evidence means interacting with the running application, not just reading
 source code. Observations of actual behavior in a live environment — screenshots,
 HTTP responses, console output, interaction results — are runtime evidence. Static
 code analysis is not.
 
-## HARD-GATE
-
-```
-If a runtime is configured for this evaluation, you MUST interact with the
-running app before scoring ANY dimension.
-
-Code-only review is INSUFFICIENT when a runtime is available.
-
-Do not score a single dimension until you have exercised the running app and
-recorded what you observed. No exceptions.
-```
+When a runtime is configured for this evaluation, exercise the running app and
+record what you observed before scoring any dimension. Source code shows what the
+implementation intends; only the live app shows what it does, so a runtime
+dimension scored from code alone is scored on nothing.
 
 ## Evidence Gathering Methods
 
@@ -95,5 +88,5 @@ Score these honestly using the domain template's scale definitions.
 The test infrastructure broke, not the app (runtime didn't start, port unreachable,
 MCP tool unavailable, environment misconfigured).
 
-Do NOT penalize the implementation for harness failures. Report the failure to
+Do not penalize the implementation for harness failures. Report the failure to
 the orchestrator and request re-evaluation with a working runtime.

@@ -28,9 +28,9 @@ Respond with your analysis only — no preamble, no meta-commentary.
 
 ## Scorecard Output Requirements
 
-When your role is `evaluator`, you MUST output a valid JSON scorecard as the **last content block** in your response. The scorecard must be a single JSON object (not wrapped in markdown fences) conforming to the schema below.
+When your role is `evaluator`, output a valid JSON scorecard as the **last content block** in your response: a single JSON object, not wrapped in markdown fences, conforming to the schema below.
 
-Any text before the scorecard is treated as analysis/reasoning and is discarded. Only the final JSON block is parsed.
+Any text before the scorecard is treated as analysis/reasoning and is discarded. Only the final JSON block is parsed, so a scorecard that is missing, fenced, or off-schema is unusable and costs a re-dispatch.
 
 ### Scorecard JSON Schema
 
@@ -66,10 +66,11 @@ Any text before the scorecard is treated as analysis/reasoning and is discarded.
 
 ### Field Requirements
 
-- **provider** (required): Your provider identifier (e.g., `"codex"`, `"gemini"`). Must match the provider name used to dispatch you.
-- **domains** (required): Object keyed by domain name. Each domain contains a `dimensions` object with scored dimensions.
+- **provider** (required): Your provider identifier (e.g. `"codex"`, `"gemini"`). Match the provider name used to dispatch you.
+- **domains** (required): Object keyed by domain name. Each domain contains a `dimensions` object with scored dimensions. An explicitly empty `dimensions: {}` is valid for an evidence-only scorecard.
 - **score** (required): Integer 1-10 for each dimension.
 - **threshold** (required): The minimum passing score for this dimension (copied from the evaluation template).
-- **criteria** (required): Array of pass/fail criteria results. Each entry has `id`, `pass` (boolean), and `evidence`.
+- **comment** (required per scored dimension): Brief justification, non-empty. `evidence` is accepted as an alias; `scripts/validate-scorecard.sh` checks either.
+- **criteria** (required): Array of pass/fail criteria results. Each entry has `id`, `pass` (boolean), and non-empty `evidence`. The ids match the task's eval-block criteria exactly.
 - **guidance** (required): Actionable instructions for the implementer. Empty string if all dimensions pass.
 - **dispatch_count** (required): Always `1` (each scorecard represents one dispatch).

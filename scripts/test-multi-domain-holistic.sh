@@ -244,8 +244,9 @@ assert_contains "Holistic Spec Fidelity threshold: 8" "Default threshold: 8" "$H
 assert_contains "Polish threshold: 6" "Default threshold: 6" "$HOLISTIC_CONTENT"
 assert_contains "Runtime Health threshold: 9" "Default threshold: 9" "$HOLISTIC_CONTENT"
 
-# Check HARD-GATE presence
-assert_contains "holistic has HARD-GATE for runtime" "<HARD-GATE>" "$HOLISTIC_CONTENT"
+# Check the runtime-interaction invariant is stated (was: HARD-GATE markup, removed in the
+# Claude-5 slim-down; the invariant it guarded is what matters)
+assert_contains "holistic states runtime-before-scoring" "before scoring any holistic dimension" "$HOLISTIC_CONTENT"
 
 # Check spec coverage matrix section
 assert_contains "holistic has spec_coverage_matrix" "spec_coverage_matrix" "$HOLISTIC_CONTENT"
@@ -453,7 +454,7 @@ assert_contains "SKILL.md documents holistic convergence" "check-convergence.sh"
 assert_contains "SKILL.md documents holistic dispatch budget" "max_iterations" "$SKILL_CONTENT"
 
 # HARD-GATE for runtime start before holistic
-assert_contains "SKILL.md has HARD-GATE for holistic runtime" "ALL domain runtimes must be running before holistic review" "$SKILL_CONTENT"
+assert_contains "SKILL.md states runtimes-before-holistic" "Every domain runtime must be running before holistic review" "$SKILL_CONTENT"
 
 # Stop runtimes after holistic
 assert_contains "SKILL.md documents runtime stop after holistic" "## 2e. Stop Runtimes" "$SKILL_CONTENT"

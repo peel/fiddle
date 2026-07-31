@@ -35,7 +35,7 @@ Provider configuration lives in `orchestrate.json` only — no CLI overrides. Ea
 
 ### Config File
 
-Read `orchestrate.json` (project root) if it exists. Format is JSON:
+`orchestrate.json` in the project root is the live configuration and the authority on every value. This is the one place the file's schema is documented; other skills name the keys they read and link here instead of repeating the block, so a single copy cannot drift out of agreement with itself.
 
 ```json
 {
@@ -53,18 +53,33 @@ Read `orchestrate.json` (project root) if it exists. Format is JSON:
   },
   "evaluators": {
     "attended": false,
-    "max_dispatches_per_task": 60,
+    "max_dispatches_per_task": 16,
     "domains": {
       "general": {
         "template": "evaluator-general",
-        "providers": ["claude"]
+        "providers": ["claude", "codex"],
+        "calibration": "docs/evaluator-calibration-general.md",
+        "antipatterns": "docs/antipatterns-general.md",
+        "thresholds": {}
       }
+    },
+    "holistic": { "providers": ["claude"], "max_iterations": 4 },
+    "spot_check": { "rate": 5 },
+    "aging": { "window_days": 90, "quiet_epics": 3 }
+  },
+  "deliver": {
+    "product_artifacts": {
+      "templates_path": "docs/product/templates",
+      "output_path": "docs/releases",
+      "artifacts": ["release-notes", "social"]
     }
   },
   "models": {},
   "plans": {}
 }
 ```
+
+The values above are the committed ones. Fallbacks apply only when a key is absent: `max_dispatches_per_task` 16, `holistic.max_iterations` 3, `holistic.providers` `["claude"]`, `spot_check.rate` 5 (0 or less disables the spot-check), `aging.window_days` 90, `aging.quiet_epics` 3. Read the file rather than relying on these numbers — a fallback only tells you what happens when the key is missing, not what the project currently runs.
 
 In `evaluators.domains.<domain>.providers`, the array is an ordered preference list for selecting the single evaluator for that domain: the first available provider that differs from the implementer wins (implementers are always claude). It is not a dispatch fan-out. `evaluators.holistic.providers` behaves differently: holistic review dispatches to all listed providers.
 
@@ -143,11 +158,11 @@ Jump to the determined phase section below.
 
 ## TRIAGE
 
-Skip this phase if ANY of: `--epic` was provided, `--no-triage` was set, `--skip-discover` was set.
+Skip this phase if any of these hold: `--epic` was provided, `--no-triage` was set, `--skip-discover` was set.
 
 Assess the prompt against quick-path criteria to decide: quickfix or full flow.
 
-### Quick Path Criteria (ALL must be true)
+### Quick Path Criteria (all must hold)
 
 1. **Single-focus**: The prompt describes one change, not a set of changes or an initiative
 2. **Clear approach**: The implementation path is obvious — no architectural decisions or design trade-offs needed
@@ -157,7 +172,7 @@ Assess the prompt against quick-path criteria to decide: quickfix or full flow.
 
 ### Assessment
 
-Evaluate the prompt against each criterion. If ALL criteria are met:
+Evaluate the prompt against each criterion. If every criterion is met:
 
 Use the `fiddle:quickfix` skill with the original prompt.
 
@@ -165,7 +180,7 @@ If quickfix completes successfully (returns a PR URL) → orchestrate is **done*
 
 If quickfix returns **TOO_COMPLEX** → continue with DISCOVER below. The quickfix skill handles its own cleanup (bean scrapping, worktree removal).
 
-If ANY criterion is NOT met → skip quickfix, fall through to DISCOVER.
+If any criterion fails, skip quickfix and fall through to DISCOVER.
 
 ## DISCOVER
 

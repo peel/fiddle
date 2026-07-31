@@ -76,10 +76,7 @@ segment: <company type or context>
 <One sentence: churn risk, satisfaction level, or engagement trajectory>
 ```
 
-**Rules:**
-- Update Last seen, Entries count, Trajectory, Needs, and Risk on each synthesis.
-- Don't remove needs that previous syntheses identified unless feedback contradicts them.
-- Keep Trajectory factual — reference specific feedback dates and observations.
+Each synthesis refreshes Last seen, Entries count, Trajectory, Needs, and Risk. Keep Trajectory factual by referencing specific feedback dates and observations, and leave needs identified by previous syntheses in place unless later feedback contradicts them: a need that stops being mentioned has usually just stopped being reported, not stopped existing.
 
 ### Step 3: Synthesize Insights
 
@@ -132,11 +129,7 @@ previous_synthesis: <path to previous summary, or "none">
 - <Questions this feedback raises but doesn't answer — useful for brainstorm sessions>
 ```
 
-**Rules:**
-- Cross-reference with product docs to check alignment. If VISION says "target enterprise teams" but all friction feedback comes from solo founders, flag the mismatch.
-- Compare with previous synthesis if one exists. Are themes growing, stable, or declining?
-- Priority actions should be concrete enough to become backlog items or bean descriptions.
-- Keep the summary under 200 lines. This will be loaded as context during planning.
+Cross-reference the themes against the product docs and flag mismatches: if VISION targets enterprise teams and every friction report comes from solo founders, that gap is the most useful thing in the summary. Compare against the previous synthesis where one exists, so each theme carries a direction rather than only a count. Write priority actions concrete enough to become backlog items or bean descriptions, and keep the whole summary under 200 lines, since planning loads it as context.
 
 ### Step 4: Present and Confirm
 

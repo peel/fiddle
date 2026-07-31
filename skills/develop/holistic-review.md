@@ -1,15 +1,10 @@
 # Holistic Review
 
-Cross-domain evaluation that assesses the full system as an integrated whole. Runs after all domain evaluators have scored their individual dimensions. Produces a holistic scorecard, spec coverage matrix, and remediation beans for any gaps.
+Cross-domain evaluation that assesses the full system as an integrated whole, after all domain evaluators have scored their individual dimensions. Produces a holistic scorecard, a spec coverage matrix, and remediation beans for any gaps.
 
-## HARD-GATE: Runtime Interaction Required
+## Runtime Interaction
 
-<HARD-GATE>
-You MUST interact with ALL domain runtimes before scoring any holistic dimension.
-Do NOT score from source code alone. Do NOT score from individual domain scorecards alone.
-Every score must cite evidence gathered from live runtime interaction.
-If any runtime is not running, score Runtime Health as 1 and note the failure.
-</HARD-GATE>
+Interact with every domain runtime before scoring any holistic dimension, and cite what you observed from that interaction. Neither source code nor the per-domain scorecards can show whether the domains work together — the per-task scores were each produced in isolation, which is the gap this review exists to close. If a runtime is not running, score Runtime Health 1 and note the failure.
 
 The runtimes are started by `start-runtimes.sh` before holistic review begins. You receive runtime state for each domain including ports and domain names. Use the appropriate MCP tools (marionette for Flutter, curl for HTTP, go-dev-mcp for Go) to interact with each runtime.
 
@@ -37,6 +32,8 @@ Note any integration gaps in the scorecard evidence. Integration failures direct
 
 Score each dimension using the scales defined in: `skills/develop/holistic-dimensions.md`
 
+Score the assembled whole rather than carrying over domain evaluator scores; a system of individually-passing parts is exactly the case these dimensions are meant to catch. Judge Holistic Spec Fidelity against the overall design document, not the individual task specs.
+
 Dimensions and default thresholds:
 - **Integration** (7) — Do the pieces work together?
 - **Coherence** (7) — Does the whole feel like one system?
@@ -49,12 +46,3 @@ Dimensions and default thresholds:
 Produce output following: `skills/develop/holistic-scorecard-schema.md`
 
 This includes the spec coverage matrix, remediation beans, and scorecard JSON.
-
-## Red Flags
-
-- **Never** score without launching and interacting with all runtimes
-- **Never** skip the spec coverage matrix — every spec requirement must be classified
-- **Never** leave a "Missing" coverage entry without generating a remediation bean
-- **Never** generate remediation beans for "Weak" entries — those are flagged for human review
-- **Never** score Holistic Spec Fidelity based on individual task specs — use the overall design document
-- **Never** copy domain evaluator scores — holistic dimensions evaluate the whole, not individual parts

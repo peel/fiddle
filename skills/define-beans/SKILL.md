@@ -5,9 +5,7 @@ description: Bean sizing rules for writing-plans. Determines when a plan task sh
 
 # Define Beans
 
-## When to Use
-
-Called by writing-plans during "Create Beans from Plan" step. Evaluates each `### Task N:` in the plan and determines whether it should be a single task bean or a feature bean with child tasks.
+Size each `### Task N:` in a plan into beans: a single task bean, or a feature bean with child tasks. Called by `fiddle:write-plan` during its "Create Beans from Plan" step.
 
 ## Sizing Rule
 
@@ -18,9 +16,7 @@ An automated implementer agent gets ~50 turns per bean. Each TDD cycle (write fa
 | 1-2 | task | Single task bean under the epic |
 | 3+ | feature | Feature bean under the epic, with child task beans (1 per behavior) |
 
-## How to Count TDD Cycles
-
-Each distinct testable behavior is one TDD cycle. Count the number of "write a failing test for X" steps in the plan task. If the task says "write tests for X, Y, and Z" — that's 3 cycles, not 1.
+Each distinct testable behavior is one TDD cycle: count the "write a failing test for X" steps in the plan task. A task saying "write tests for X, Y, and Z" is 3 cycles, not 1.
 
 ## Decomposing into Feature + Tasks
 
@@ -69,7 +65,7 @@ When a plan task needs 3+ cycles:
    \`\`\`"
    ````
 
-   **The eval block must be copied verbatim from the corresponding plan task** (`write-plan` produces eval blocks for every task). Do not reformat it as a flat bullet list — the `develop` skill's hard-gate validates the fenced ` ```eval ` block with `domains:` and `criteria:` keys, and the evaluator dispatches against the structured criteria. If the plan task is missing an eval block, stop and fix the plan first.
+   Copy the eval block verbatim from the corresponding plan task — `write-plan` produces one for every task. Keep it as the fenced ` ```eval ` block with `domains:` and `criteria:` keys rather than reformatting it as a flat bullet list: `scripts/validate-bean-body.sh` parses that structure and the evaluator dispatches against the structured criteria. If the plan task is missing an eval block, stop and fix the plan first.
 
 3. Chain children with `--blocked-by` where one behavior builds on another. Independent behaviors need no ordering.
 
@@ -77,38 +73,36 @@ When a plan task needs 3+ cycles:
 
 ## Bean Body Completeness Gate
 
-After creating each task bean, verify its body passes this gate before moving on. If it fails, fix the body inline — do not proceed to the next bean.
+After creating each task bean, verify its body passes this gate before moving on. If it fails, fix the body inline rather than proceeding to the next bean.
 
-**Gate: An agent with zero context can implement this bean by reading only its body.**
-
-Check each requirement. All must pass:
+Gate: an agent with zero context can implement this bean by reading only its body.
 
 | # | Check | Fail if |
 |---|---|---|
 | 1 | **Steps exist** | Body has no `## Steps` section or no `- [ ]` checkboxes |
 | 2 | **Steps are actionable** | Any step says "see plan", "as above", "similar to Task N", or lacks concrete instructions |
-| 3 | **Eval block exists** | Body has no fenced ` ```eval ` block with `domains:` and `criteria:` keys (this is a hard requirement of the `develop` skill) |
+| 3 | **Eval block exists** | Body has no fenced ` ```eval ` block with `domains:` and `criteria:` keys (`scripts/validate-bean-body.sh` exits 2 without it) |
 | 4 | **Eval criteria are verifiable** | Any criterion's `check:` is vague ("works correctly") rather than observable ("returns 200 on /health/db") |
 | 5 | **Files are specified** | Body references code changes but has no `## Files` section listing exact paths |
 | 6 | **Repo is specified** | Work spans multiple repos and the body doesn't say which repo to work in |
 | 7 | **Context is sufficient** | Body references concepts, modules, or patterns the implementing agent won't know without explanation |
 
-The bean body should reference the plan path for additional context (`Plan: <path> Task N`), but must not **depend** on the plan to be implementable. The plan is supplementary — the bean is the contract.
+The bean body should reference the plan path for additional context (`Plan: <path> Task N`) without depending on the plan to be implementable. The plan is supplementary; the bean is the contract.
 
 ## Shared Contracts (for parallel beans)
 
-When an epic has multiple features/tasks that will run in parallel worktrees and touch related code, define shared contracts upfront in the **epic bean body** before creating children:
+When an epic has multiple features or tasks that will run in parallel worktrees and touch related code, define shared contracts in the **epic bean body** before creating children, so parallel workers cannot make incompatible implementation choices:
 
-- **Types and interfaces:** Function signatures, struct definitions, interface contracts that multiple beans will implement or call
-- **Integration points:** Which package exports what, expected function names, shared constants
+- **Types and interfaces:** function signatures, struct definitions, interface contracts multiple beans implement or call
+- **Integration points:** which package exports what, expected function names, shared constants
 
-Include a `## Contracts` section in the epic bean body. Each child bean's description should reference it: `"See parent epic contracts for shared types."` This prevents parallel workers from making incompatible implementation choices.
+Put them in a `## Contracts` section of the epic body, and have each child bean's description point at it: `"See parent epic contracts for shared types."`
 
 ## Dependencies
 
-- **Between children of the same feature:** Use `--blocked-by` between task beans when one behavior depends on another's code.
-- **Between features:** The feature bean itself carries `--blocked-by` to external dependencies. When the feature is activated, its ready children become workable.
-- **Cross-feature child dependencies:** Avoid. If task 3a depends on task 2c, make feature 3 depend on feature 2 instead.
+- **Between children of the same feature:** `--blocked-by` between task beans when one behavior depends on another's code.
+- **Between features:** the feature bean itself carries `--blocked-by` to external dependencies. When the feature is activated, its ready children become workable.
+- **Cross-feature child dependencies:** avoid. If task 3a depends on task 2c, make feature 3 depend on feature 2 instead.
 
 ## Example
 
@@ -131,4 +125,4 @@ Feature: "Task 2: TTL, Cleanup, and Concurrency"  (parent: epic)
 Plan task with 1 TDD cycle stays as-is:
 > ### Task 1: Core Union-Find Node struct
 
-Becomes a single task bean — no feature wrapper needed.
+Becomes a single task bean, no feature wrapper needed.

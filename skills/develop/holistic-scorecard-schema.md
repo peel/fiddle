@@ -96,7 +96,7 @@ Produce remediation beans as a JSON array in the scorecard output:
 
 - Every "Missing" spec coverage entry produces exactly one remediation bean
 - Every dimension below threshold produces one remediation bean (combine related issues)
-- "Weak" entries do NOT automatically produce remediation beans — flag them for human review
+- "Weak" entries do not automatically produce remediation beans — flag them for human review
 - Each remediation bean must have an `eval` block with criteria specific to the gap
 - The `source` field traces back to the coverage matrix entry or dimension that triggered it
 - Bean titles start with "Fix:" to distinguish remediation from original tasks

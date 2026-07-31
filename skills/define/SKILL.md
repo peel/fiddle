@@ -25,10 +25,7 @@ Parse from `{ARGS}`:
 
 ### Config File
 
-Read `orchestrate.json` (project root) if it exists. Extract:
-- `providers.phases.define` — provider list for this phase (default: `["codex", "gemini"]`)
-- Provider declarations (`providers.<name>.command`, `.flags`) for each provider
-- `models.define` — model override for panel advocates and brainstorming subagents
+Config: see `skills/orchestrate/SKILL.md` for the schema. This skill reads `providers.phases.define` (the provider list for this phase), the `providers.<name>.command` and `.flags` declarations for each provider named there, and `models.define`.
 
 CLI flags override config file values.
 

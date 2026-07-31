@@ -25,9 +25,9 @@ Parse from `{ARGS}`:
 
 If `--context` files are provided, read each file. Include their contents as context for all participants.
 
-## Participants — Provider Gate (MUST execute before Phase 1)
+## Participants — Provider Gate
 
-You MUST perform these steps in order. Do NOT skip to degraded mode without completing them.
+Run this before Phase 1, in order. Degraded mode is a fallback for absent providers, not a shortcut past the check.
 
 **Step 1.** Run the dispatch script in check mode for each provider:
 ```bash
@@ -68,7 +68,7 @@ Read `models.define` from `orchestrate.json` (project root). If "default" or not
 
 ### Phase 1 — Independent Positions (parallel)
 
-Spawn ALL participants in one message. Each receives the topic, context, and their assigned perspective. Each produces a position paper: what they recommend, why, key tradeoffs, risks.
+Spawn every participant in one message. Each receives the topic, context, and their assigned perspective, and produces a position paper: what they recommend, why, key tradeoffs, risks.
 
 **Harness participants:** start a subagent if the current harness supports one and the session permits it; otherwise run the position inline as a separate labeled pass. Prompt: "You are arguing from <perspective>. Topic: <topic>. Context: <context>. Produce a position paper: what you recommend, why, key tradeoffs, risks."
 
@@ -81,11 +81,11 @@ hooks/dispatch-provider.sh <provider> \
   --instructions "Produce a position paper: what you recommend, why, key tradeoffs, risks."
 ```
 
-Run independent participants in parallel when the harness supports it; otherwise run them sequentially. Read `hooks/dispatch-provider.sh` for collection rules. Collect in **attended** mode. Wait for all results before proceeding.
+Run independent participants in parallel when the harness supports it; otherwise run them sequentially. Read `hooks/dispatch-provider.sh` for collection rules. Collect in **attended** mode. Wait for all results before proceeding — a position written after seeing another's is no longer independent.
 
 ### Phase 2 — Cross-Review (parallel)
 
-Each participant receives ALL positions from Phase 1 and critiques them: agreements, disagreements, new concerns.
+Each participant receives every Phase 1 position and critiques them: agreements, disagreements, new concerns.
 
 **Harness participants:** start a subagent if available, or run the review inline as a labeled pass. Prompt: "Review these positions on <topic>:\n\n<all positions>\n\nCritique: agreements, disagreements, new concerns raised."
 
@@ -109,9 +109,7 @@ If `--rounds > 1`, repeat cross-review: each participant receives all critiques 
 
 ### Synthesis
 
-After all rounds, Claude (the lead — you) reads ALL positions and ALL cross-review responses. Produce the output below.
-
-Do NOT delegate synthesis. You do this yourself.
+After all rounds, you (the lead) read every position and every cross-review response and produce the output below yourself. Synthesis is the one step that is not delegated: weighing dissent against codebase context is the judgment the panel exists to inform.
 
 ## Output Format
 
@@ -140,7 +138,7 @@ Based on the above, I recommend [approach] because [reasoning].
 [Note key dissents and why they don't apply / do apply here.]
 ```
 
-Use "None" for empty sections. All four sections (Approaches, Consensus, Disagreement, Recommendation) MUST be present.
+All four sections (Approaches, Consensus, Disagreement, Recommendation) are present in the output; use "None" for empty ones.
 
 ## After Synthesis
 

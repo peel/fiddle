@@ -48,3 +48,8 @@ Tags: #debt
 On bash 5.2+ with patsub_replacement, "&" in --diff-file/--evidence-file content is rewritten to the placeholder text during PROMPT substitution in dispatch-provider.sh. Quote the replacement or use a temp-free jq substitution.
 Origin: code-review (fiddle-im2e confirming evaluation; pre-existing, affects --diff-file too)
 Tags: #bug #debt
+
+### 2026-07-30 — Three debug reference files were pointed at but never written
+skills/debug/SKILL.md referenced root-cause-tracing.md, defense-in-depth.md, and condition-based-waiting.md, none of which have ever existed in skills/debug/. The pointers were dropped and their one-line substance folded into the surrounding prose; if backward call-stack tracing, layered validation, or condition-based waiting deserve full treatments, they need writing rather than referencing.
+Origin: implementation (epic fiddle-85jh, Claude-5 skill slim-down, utilities family)
+Tags: #debt #idea

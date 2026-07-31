@@ -26,12 +26,8 @@ Origin: [brainstorm | feedback | code-review | implementation | research | obser
 Tags: #tag1 #tag2
 ```
 
-5. Auto-assign tags from: `#idea` `#debt` `#optimization` `#feature` `#experiment` `#infrastructure` `#ux` `#security`. Use 1-3 tags.
-6. Show the entry. Append after confirmation.
+5. Assign 1-3 tags from: `#idea` `#debt` `#optimization` `#feature` `#experiment` `#infrastructure` `#ux` `#security`.
+6. Scan existing entries for a near-duplicate before writing. If one exists, mention it and ask whether this is the same item or a new one.
+7. Show the entry. Append after confirmation, creating `docs/BACKLOG.md` with the header `# Backlog` if it does not exist.
 
-## Rules
-
-- Append only. Never edit or delete existing entries.
-- Keep entries to 2-4 lines. Enough to remember what it was, not a full spec.
-- If `docs/BACKLOG.md` doesn't exist, create it with the header `# Backlog` and then append.
-- Don't duplicate — scan existing entries briefly. If a similar item exists, mention it and ask if this is the same thing or new.
+The file is append-only: existing entries are never edited or deleted, since the dated record is what makes a stale item recognizable later. Keep each entry to 2-4 lines, enough to remember what it was rather than a full spec.
