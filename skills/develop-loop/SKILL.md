@@ -128,7 +128,15 @@ The domain's `providers` array is an ordered preference list. Implementers
 are always claude subagents, so the first available external provider wins;
 with none available the evaluator runs on claude in a fresh context.
 
-**Provider `claude`:** dispatch an evaluator subagent on the `skills/evaluate/SKILL.md` protocol with the domain's template (the resolved domain's `template` field, e.g. `skills/evaluate/evaluator-general.md`, `evaluator-frontend.md`, `evaluator-backend.md`), passing `evidence-{domain}.txt` in context.
+Assemble the evaluator's static context with the script rather than by listing files to concatenate, so the protocol, the domain template, the project calibration anchors, and the antipatterns arrive together in the order `skills/develop-loop/context-loading-order.md` describes:
+
+```bash
+scripts/assemble-evaluator-context.sh --domain {domain} > context-{domain}.txt
+```
+
+Both provider paths use that same file. Assembling by hand is how calibration goes missing: the anchors are optional files whose absence is silent, so an evaluator scored without them looks indistinguishable from one scored with them.
+
+**Provider `claude`:** dispatch an evaluator subagent on the assembled context, passing `evidence-{domain}.txt` alongside it.
 
 **External provider:** dispatch via the provider hook:
 
@@ -136,15 +144,13 @@ with none available the evaluator runs on claude in a fresh context.
 hooks/dispatch-provider.sh <provider> \
   --role evaluator \
   --topic "Evaluate domain: {domain}" \
-  --instructions "$(cat skills/evaluate/{template}.md)" \
+  --instructions "$(cat context-{domain}.txt)" \
   --diff-file <diff-file> \
   --design-doc-file <design-doc-file> \
   --evidence-file evidence-{domain}.txt
 ```
 
-External providers get the same context as a claude evaluator (protocol, domain template, calibration, diff, criteria, evidence pack) and return their JSON scorecard as the last content block — see `skills/develop/provider-context.md` for the schema.
-
-Load evaluator context in the order specified by: `skills/develop-loop/context-loading-order.md`
+Then add the run-state sections the script cannot know about (positions 4 through 7 of the loading order): runtime state for runtime-configured domains, the bean's task criteria, and on iteration 2+ the diff since BASE_SHA with the prior scorecard and its guidance. External providers return their JSON scorecard as the last content block — see `skills/develop/provider-context.md` for the schema.
 
 Every evaluator returns one scorecard JSON with per-dimension scores under `.domains`, pass/fail criteria under `.criteria`, and a `"provider"` field naming its producer. Save it per domain and count the dispatch:
 
