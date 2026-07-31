@@ -1,7 +1,8 @@
 .worktrees/
+.fiddle/
 
-# Archived beans and plans (kept locally, excluded from repo)
-.beans/archive/
+# Bean tracker state and archived plans (kept locally, excluded from repo)
+.beans/
 .archive/
 
 # Evaluation artifacts (temporary JSON files produced during develop loop)
