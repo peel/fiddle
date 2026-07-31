@@ -1,10 +1,14 @@
 ---
-name: fiddle:discover-docs
+name: discover-docs
 description: Socratic dialogue for bootstrapping or reviewing project docs. Walks through curated docs (VISION, MARKET, PRICING, GTM, SYSTEM, RUNBOOKS), asks probing questions, challenges assumptions, identifies gaps and inconsistencies, and writes/updates the docs based on your answers. Use for initial population or periodic review.
-argument-hint: [scope] — optional: vision, market, pricing, gtm, system, runbooks, or omit for full discovery
 ---
 
 # Discover Docs
+
+
+## Usage
+
+Invoke as `fiddle:discover-docs [scope] — optional: vision, market, pricing, gtm, system, runbooks, or omit for full discovery`.
 
 Socratic dialogue to populate or review curated project docs. You question, challenge, and probe — then write the docs.
 

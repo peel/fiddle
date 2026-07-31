@@ -2,7 +2,27 @@
 
 For tasks that don't fit a specific domain (scripts, configuration, tooling).
 
-## Dimensions
+## Evidence Pack
+
+You receive an evidence pack alongside the diff: test output, invariant
+results, and runtime probe transcripts gathered before your dispatch. Your
+job is to interpret this evidence against the task's criteria. You do not
+gather evidence, and you do not judge qualities the evidence cannot show.
+
+Every criterion verdict MUST cite the evidence artifact that supports it
+(file name and the relevant line/excerpt). A criterion with no supporting
+evidence is scored fail with reason "no evidence".
+
+## Dimensions (optional)
+
+Scored dimensions are OPTIONAL for this domain. Include the `dimensions`
+object in your scorecard only when the task's eval block sets thresholds for
+this domain. When no thresholds are set, emit an explicitly empty object,
+`"dimensions": {}`, and the task converges on evidence criteria alone. Never
+omit the `dimensions` key: only the explicitly empty object signals
+evidence-only convergence.
+
+The dimension definitions below apply when thresholds are configured.
 
 ### Correctness
 

@@ -17,6 +17,9 @@ Respond with your analysis only — no preamble, no meta-commentary.
 ## Diff
 {DIFF}
 
+## Evidence
+{EVIDENCE}
+
 ## Previous Feedback
 {PREVIOUS_FEEDBACK}
 

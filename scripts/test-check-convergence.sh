@@ -90,6 +90,38 @@ OUTPUT=$(cat "$OUTFILE")
 assert_exit "dispatches exceeded → exit 2" 2 "$EXIT_CODE"
 assert_json "status DISPATCHES_EXCEEDED" ".status" "DISPATCHES_EXCEEDED" "$OUTPUT"
 
+echo "Test 6: PASS with empty dimensions map → CONVERGED on first pass"
+cat > "$TMPDIR/current.json" << 'EOF'
+{"verdict":"PASS","failing_dimensions":[],"failing_criteria":[],"dimensions":{}}
+EOF
+echo "[]" > "$TMPDIR/history.json"
+EXIT_CODE=0
+"$SCRIPT_DIR/check-convergence.sh" --current "$TMPDIR/current.json" --history "$TMPDIR/history.json" --max-dispatches 60 --current-dispatches 2 > "$OUTFILE" 2>/dev/null || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+assert_exit "evidence-only first pass → exit 0" 0 "$EXIT_CODE"
+assert_json "status CONVERGED" ".status" "CONVERGED" "$OUTPUT"
+assert_json "mode evidence-only" ".mode" "evidence-only" "$OUTPUT"
+
+echo "Test 7: PASS with populated dimensions still requires double-pass"
+cat > "$TMPDIR/current.json" << 'EOF'
+{"verdict":"PASS","failing_dimensions":[],"failing_criteria":[],"dimensions":{"general.correctness":8}}
+EOF
+echo "[]" > "$TMPDIR/history.json"
+EXIT_CODE=0
+"$SCRIPT_DIR/check-convergence.sh" --current "$TMPDIR/current.json" --history "$TMPDIR/history.json" --max-dispatches 60 --current-dispatches 2 > "$OUTFILE" 2>/dev/null || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+assert_exit "judgment first pass → exit 1" 1 "$EXIT_CODE"
+assert_json "status PASS_PENDING" ".status" "PASS_PENDING" "$OUTPUT"
+
+echo "Test 8: evidence-only FAIL still fails"
+cat > "$TMPDIR/current.json" << 'EOF'
+{"verdict":"FAIL","failing_dimensions":[],"failing_criteria":["tests-pass"],"dimensions":{}}
+EOF
+echo "[]" > "$TMPDIR/history.json"
+EXIT_CODE=0
+"$SCRIPT_DIR/check-convergence.sh" --current "$TMPDIR/current.json" --history "$TMPDIR/history.json" --max-dispatches 60 --current-dispatches 2 > "$OUTFILE" 2>/dev/null || EXIT_CODE=$?
+assert_exit "evidence-only fail → exit 1" 1 "$EXIT_CODE"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

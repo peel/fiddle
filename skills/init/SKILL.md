@@ -1,7 +1,6 @@
 ---
-name: fiddle:init
+name: init
 description: Use when starting fiddle on a new project — scaffolds docs, orchestrate.json, and beans from templates.
-disable-model-invocation: true
 ---
 
 # Init
@@ -13,7 +12,7 @@ Initialize a project for use with fiddle.
 Run the init script:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/init.sh" .
+bash scripts/init.sh .
 ```
 
 The script:
@@ -29,9 +28,9 @@ Suggest next steps:
 - docs/product/VISION.md — what you're building, who for, and why
 - docs/technical/SYSTEM.md — how the project works today
 
-Then run /fiddle:discover-docs to review gaps and fill in the rest.
+Then run fiddle:discover-docs to review gaps and fill in the rest.
 Edit orchestrate.json to customize evaluator domains.
-When ready: /fiddle:orchestrate <topic>"
+When ready: fiddle:orchestrate <topic>"
 ```
 
 ## Rules

@@ -2,27 +2,27 @@
 
 ## Overview
 
-Fiddle is a Claude Code plugin that orchestrates a four-phase development lifecycle (DISCOVER, DEFINE, DEVELOP, DELIVER) with optional multi-model support. It ships as a collection of skills (markdown instruction files), hooks (bash scripts on Claude Code events), and configuration (JSON). External providers (Codex via CLI, Gemini via CLI) participate in debate and review phases but are optional — all skills degrade to Claude-only subagents when providers are unavailable.
+Fiddle is a portable Agent Skills library that orchestrates a four-phase development lifecycle (DISCOVER, DEFINE, DEVELOP, DELIVER) with optional multi-model support. It ships one canonical `skills/` tree plus thin Claude, Codex, and Pi manifests. External providers (Codex via CLI, Gemini via CLI) participate in debate and review phases but are optional — skills degrade to the current harness when providers are unavailable.
 
 ## Components
 
-**Orchestrate** (`skills/orchestrate/SKILL.md`) — Top-level lifecycle coordinator. Reads config, chains phases. Delegates to other skills per phase. External provider calls go through the provider-dispatch procedure (`roles/provider-dispatch.md`).
+**Orchestrate** (`skills/orchestrate/SKILL.md`) — Top-level lifecycle coordinator. Reads config, chains phases. Delegates to other skills per phase. External provider calls go through `hooks/dispatch-provider.sh`.
 
-**Panel** (`skills/panel/SKILL.md`) — Structured multi-model adversarial analysis. Claude, Codex, and Gemini argue independent positions, cross-review, then Claude synthesizes a verdict. External providers are called as async parallel background Bash tasks via the dispatch procedure (`roles/provider-dispatch.md`). Degrades to 2 Claude subagents when no external providers are available.
+**Panel** (`skills/panel/SKILL.md`) — Structured multi-model adversarial analysis. The current harness, Codex, and Gemini argue independent positions, cross-review, then the lead synthesizes a verdict. External providers are called via `hooks/dispatch-provider.sh`. Degrades to current-harness analysis when no external providers are available.
 
-**Develop** (`skills/develop/SKILL.md`) — Thin orchestrator for the implementation phase. Validates bean bodies (eval block, files, steps checklist required), then delegates to sub-skills: `develop-loop` (`skills/develop-loop/SKILL.md`) handles per-task evaluation iteration (implement → evaluate → converge) for one bean at a time, `develop-holistic` (`skills/develop-holistic/SKILL.md`) handles cross-domain integration review with remediation. All evaluation state tracked via beans and eval-log scripts.
+**Develop** (`skills/develop/SKILL.md`) — Thin orchestrator for the implementation phase. Validates bean bodies (eval block, files, steps checklist required), then delegates to sub-skills: `develop-loop` (`skills/develop-loop/SKILL.md`) handles per-task iteration for one bean at a time — implement, gather a per-domain evidence pack (tests, checks, runtime probes), dispatch ONE evaluator per domain (provider chosen by `scripts/select-evaluator-provider.sh` from the domain's ordered preference list, first available provider differing from the always-claude implementer), normalize the single scorecard, and converge via scripts; evidence-only scorecards (explicit empty dimensions) converge on a single pass. `develop-holistic` (`skills/develop-holistic/SKILL.md`) handles cross-domain integration review with remediation and keeps multi-provider dispatch with min-merge. All evaluation state tracked via beans and eval-log scripts.
 
-**Swarm** (`skills/develop-swarm/SKILL.md`) — Parallel worktree-per-bean execution with incremental rebase-before-review merge. Flat subagents (no coordinator nesting). Uses an assess-and-act orchestration loop. The lead computes `MAIN_BEANS_PATH` (absolute path to main checkout's `.beans/`) at startup and substitutes it into all agent prompts; worktree agents use `beans --beans-path {MAIN_BEANS_PATH}` so bean updates are always visible to the TUI and lead. Implementers are prohibited from changing bean status — only the lead manages status transitions.
+**Using Fiddle** (`skills/using-fiddle/SKILL.md`) — Bootstrap skill for routing common requests and mapping Claude-style tool vocabulary to Claude, Codex, and Pi harnesses.
 
-**Hooks** (`hooks/`) — `session-start-check-providers.sh` checks CLI provider binaries are on PATH on session start. `task-completed-verify.sh` gates task completion with build/test verification (go build, go test, flutter test).
+**Hooks** (`hooks/`) — Claude-oriented hooks check provider binaries, add code-navigation guidance, guard archives, and report progress. `develop-verdict-gate.sh` is a Stop hook that blocks turn-end while `.fiddle/active-bean` names a develop-loop bean without a terminal verdict (fail-open when the marker is absent or jq is missing). Codex has a minimal `.codex/hooks.json`. Pi support in v1 is skill/package discovery, not hook parity.
 
 **Challenge** (`skills/challenge/SKILL.md`) — Decision-tree interrogation skill. Walks every branch of a plan or design until shared understanding is reached. Phase-aware: in DISCOVER, opens by synthesizing findings and confirming scope; in DEFINE, challenges design edge cases and panel dissent. Also usable standalone.
 
-**Supporting skills** — `discover-docs` (project context scan), `deliver-docs` (post-ship doc updates), `define-beans` (task sizing), `adr`/`feedback`/`backlog` (append-only records).
+**Supporting skills** — `fiddle:discover-docs` (project context scan), `fiddle:deliver-docs` (post-ship doc updates), `fiddle:define-beans` (task sizing), `fiddle:adr`/`fiddle:feedback`/`fiddle:backlog` (append-only records).
 
 ## Data
 
-**`orchestrate.json`** (JSON) — Declares which external providers are used per phase. The `plans {}` block controls where superpowers saves plans/specs and whether to commit them. Merge order: defaults, config file, CLI flags.
+**`orchestrate.json`** (JSON) — Declares which external providers are used per phase. The `plans {}` block controls where Fiddle saves plans/specs and whether to commit them. Merge order: defaults, config file, CLI flags.
 
 **`.claude/orchestrate-events.log`** — Ephemeral event log created during orchestrate runs. Tracks phase transitions, failures, escalations. Deleted on cleanup.
 
@@ -30,23 +30,28 @@ Fiddle is a Claude Code plugin that orchestrates a four-phase development lifecy
 
 ## Infrastructure
 
-Runs entirely locally as a Claude Code plugin. No server, no cloud, no CI. Installed via `claude --plugin-dir` or the plugin marketplace. Requires bash and jq for hooks. External providers (codex, gemini) are optional local CLIs.
+Runs entirely locally as portable skills. Claude loads `.claude-plugin/plugin.json`, Codex loads `.codex-plugin/plugin.json`, and Pi reads `package.json` with `pi.skills`. Requires bash and jq for helper scripts. External providers (codex, gemini) are optional local CLIs.
 
 
 ## Invariants
 
-- Skills must degrade gracefully when external providers are unavailable. Never fail — fall back to Claude-only subagents.
+- Skills must degrade gracefully when external providers are unavailable. Never fail solely because a provider is missing — fall back to the current harness.
 - Hooks must exit 0 on success or non-applicable scenarios. Exit 2 to reject with feedback (task-completed-verify pattern).
-- Provider calls use the dispatch procedure (`roles/provider-dispatch.md`) — never inline CLI commands in skill files.
-- All external provider calls fire as background Bash tasks — never synchronous blocking calls.
+- Provider calls use `hooks/dispatch-provider.sh` — never inline provider CLI prompts in skill files.
+- External provider calls run in parallel when the harness supports it; otherwise run sequentially and report reduced coverage.
 - Append-only docs (FEEDBACK, BACKLOG, research logs) are never edited or deleted.
 - Bean bodies must be self-contained — implementer agents work from the bean body alone without reading plan files.
 - Worktree agents must route all bean CLI operations through `--beans-path` to the main checkout's `.beans/`. Only the lead manages bean status transitions.
+- Evaluators interpret pre-gathered evidence packs; they never gather evidence themselves. Read-only external providers receive the pack via `dispatch-provider.sh --evidence-file`.
+- Evidence-only scorecards emit an explicit `"dimensions": {}` — the key is never omitted; only the explicitly empty object signals single-pass convergence.
+- Every scorecard must carry a criteria array; `merge-scorecards.sh` rejects criteria-less input with exit 2.
 
 ## Known issues
 
-None currently identified.
+- develop-loop 1f still says the evaluator "may interact with the running app," in tension with the interpret-only evaluator role (behavior governed by templates; wording cleanup pending).
+- `selected-provider.json` is one file overwritten per domain; multi-domain PASS_PENDING provider reuse reads only the last domain's selection (benign — re-selection is deterministic).
+- The holistic scorecard schema example (top-level domain/dimensions, no criteria) does not match `merge-scorecards.sh` input expectations; a wrapping step is unspecified and malformed input now fails loud (exit 2) instead of silent (exit 5).
+- Default dispatch budgets cannot absorb the confirming double-pass (a pass on iteration N cannot confirm within budget N), and `check-convergence.sh`'s budget check is ambiguous between pre- and post-dispatch counts at the boundary.
 
 ---
-Last reviewed: 2026-04-02
-
+Last reviewed: 2026-07-29

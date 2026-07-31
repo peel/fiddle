@@ -1,10 +1,14 @@
 ---
-name: fiddle:develop-holistic
+name: develop-holistic
 description: Use after all per-task evaluations complete — assesses cross-domain integration and creates remediation beans
-argument-hint: --epic <id>
 ---
 
 # Develop Holistic — Cross-Domain Integration Review
+
+
+## Usage
+
+Invoke as `fiddle:develop-holistic --epic <id>`.
 
 Assess the full system as an integrated whole. Catches cross-domain issues that per-task evaluation cannot see. Creates remediation beans and re-evaluates until converged or budget exceeded.
 
@@ -167,10 +171,7 @@ If holistic review **FAILS**:
    beans create --parent <epic-id> --title "Fix: ..." --body "<description>" --eval "<eval block>"
    ```
 3. Each remediation bean is a child of the epic, traced back to its source (spec coverage gap or failing dimension)
-4. For each remediation bean, invoke:
-   ```
-   Skill("fiddle:develop-loop", args: "--bean <remediation-bean-id> --epic <epic-id>")
-   ```
+4. For each remediation bean, use `fiddle:develop-loop` with `--bean <remediation-bean-id> --epic <epic-id>`.
 5. After all remediation beans complete, re-run holistic review (back to step 2a)
 
 Track the holistic iteration count. Increment on each holistic review cycle.
@@ -188,7 +189,7 @@ Do NOT continue iterating. Do NOT lower thresholds. Do NOT rationalize.
 | Result | Action |
 |---|---|
 | **CONVERGED** | Holistic review passed (two consecutive passes). Proceed to step 2e. |
-| **FAIL** | Generate remediation beans → invoke `Skill("fiddle:develop-loop")` for each → re-run holistic review (back to 2a). |
+| **FAIL** | Generate remediation beans → use `fiddle:develop-loop` for each → re-run holistic review (back to 2a). |
 | **PASS_PENDING** | Re-run holistic review without remediation — scorecard may stabilize. → Back to 2b. |
 | **PASS_REGRESSED** | Generate remediation beans targeting regressed dimensions → invoke develop-loop → re-run holistic review. → Back to 2a. |
 | **DISPATCHES_EXCEEDED** | Max holistic iterations reached. Escalate to human. |

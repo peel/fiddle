@@ -28,6 +28,12 @@ if [ "$INPUT_LEN" -eq 0 ]; then
   exit 2
 fi
 
+# Validate: every scorecard must carry a criteria array
+if ! echo "$INPUT" | jq -e 'all(.[]; type == "object" and (.criteria | type == "array"))' >/dev/null 2>&1; then
+  echo '{"error": "every scorecard must contain a criteria array"}' >&2
+  exit 2
+fi
+
 # Perform the merge entirely in jq
 echo "$INPUT" | jq -c '
   # Collect all unique domains and dimensions across all scorecards
@@ -74,7 +80,7 @@ echo "$INPUT" | jq -c '
   ) | add // {}) as $merged_domains |
 
   # Merge criteria: collect all criteria IDs, any fail = fail
-  ([$cards[].criteria[]] | group_by(.id) | map(
+  ([$cards[].criteria[]?] | group_by(.id) | map(
     {
       "id": .[0].id,
       "pass": (all(.pass)),
@@ -89,9 +95,9 @@ echo "$INPUT" | jq -c '
     "timestamp": $cards[0].timestamp,
     "domains": $merged_domains,
     "criteria": $merged_criteria,
-    "antipatterns_detected": ([$cards[].antipatterns_detected[]] | unique),
-    "guidance": ([$cards[].guidance] | join("\n---\n")),
-    "dispatch_count": ([$cards[].dispatch_count] | add)
+    "antipatterns_detected": ([$cards[].antipatterns_detected[]?] | unique),
+    "guidance": ([$cards[].guidance // empty] | join("\n---\n")),
+    "dispatch_count": ([$cards[].dispatch_count // 0] | add)
   }
 ' 2>/dev/null
 

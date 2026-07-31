@@ -1,10 +1,14 @@
 ---
-name: fiddle:define
+name: define
 description: Run the DEFINE phase — brainstorm approaches with optional panel enrichment, challenge chosen design, create implementation plan and beans. Use standalone or as part of orchestrate.
-argument-hint: <topic> [--skip-challenge] [--skip-panel]
 ---
 
 # Define
+
+
+## Usage
+
+Invoke as `fiddle:define <topic> [--skip-challenge] [--skip-panel]`.
 
 Turn a confirmed scope into a validated design and implementation plan with beans ready for execution.
 
@@ -37,9 +41,7 @@ Build the brainstorming args:
 - If `--skip-panel` was set, include `--skip-panel`
 
 Invoke:
-```
-Skill(skill: "fiddle:brainstorm", args: "--from-orchestrate [--skip-panel]")
-```
+Use the `fiddle:brainstorm` skill with `--from-orchestrate` and include `--skip-panel` if configured.
 
 This explores intent, asks questions, proposes 2-3 approaches, runs panel enrichment (if providers are available and panel not skipped), and produces a design doc. Follow the skill's instructions completely.
 
@@ -48,9 +50,7 @@ This explores intent, asks questions, proposes 2-3 approaches, runs panel enrich
 Skip if `--skip-challenge` was set.
 
 Invoke the challenge skill to stress-test the chosen design:
-```
-Skill(skill: "fiddle:challenge", args: "--phase define")
-```
+Use the `fiddle:challenge` skill with `--phase define`.
 
 This walks the decision tree on edge cases, integration points, failure modes, panel dissent points, and sizing assumptions. Catches design holes before they become wasted beans.
 
@@ -59,9 +59,7 @@ If challenges surface issues that require design changes, update the design doc 
 ### Step 3: Implementation Planning
 
 Invoke the writing-plans skill:
-```
-Skill(skill: "fiddle:write-plan", args: "--from-orchestrate")
-```
+Use the `fiddle:write-plan` skill with `--from-orchestrate`.
 
 This creates a detailed implementation plan and decomposes it into beans. The `--from-orchestrate` flag causes it to return control here after bean creation instead of presenting execution handoff options.
 

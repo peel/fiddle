@@ -1,10 +1,14 @@
 ---
-name: fiddle:deliver
+name: deliver
 description: Run the DELIVER phase — drift analysis comparing design to implementation, documentation update via deliver-docs, product artifact generation (if configured), evaluator evolve (calibration/antipattern updates), and epic closure. Requires a completed epic.
-argument-hint: --epic <id>
 ---
 
 # Deliver
+
+
+## Usage
+
+Invoke as `fiddle:deliver --epic <id>`.
 
 Analyze design-vs-implementation drift, update documentation, and close the epic.
 
@@ -57,7 +61,7 @@ hooks/dispatch-provider.sh <provider> \
   --instructions "Analyze: did the implementation match the design? Flag any drift, missing features, scope creep, or unintended changes."
 ```
 
-Fire all providers in parallel (`run_in_background: true`). Collect results in **attended** mode.
+Run provider dispatches in parallel when the harness supports it; otherwise run them sequentially. Collect results in **attended** mode.
 
 If no provider CLI is available, perform the drift analysis yourself: read the design doc, review the full diff, and compare.
 
@@ -77,9 +81,7 @@ Wait for user confirmation before proceeding.
 ### Step 3: Documentation Update
 
 Invoke deliver-docs:
-```
-Skill(skill: "fiddle:deliver-docs", args: "--epic <epic-id>")
-```
+Use the `fiddle:deliver-docs` skill with `--epic <epic-id>`.
 
 This updates SYSTEM.md, creates ADRs for architectural decisions, and appends to BACKLOG.md.
 
@@ -294,6 +296,4 @@ beans update <epic-id> --status completed
 ### Step 7: Archive
 
 Invoke archive to clean up stale artifacts:
-```
-Skill(skill: "fiddle:archive", args: "--epic <epic-id>")
-```
+Use the `fiddle:archive` skill with `--epic <epic-id>`.

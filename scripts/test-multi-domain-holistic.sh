@@ -223,16 +223,20 @@ echo "=== Test 5: Holistic review file — dimensions exist and have correct thr
 # ═══════════════════════════════════════════════════════════════════════════════
 
 HOLISTIC_FILE="$PROJECT_ROOT/skills/develop/holistic-review.md"
+DIMENSIONS_FILE="$PROJECT_ROOT/skills/develop/holistic-dimensions.md"
+SCHEMA_FILE="$PROJECT_ROOT/skills/develop/holistic-scorecard-schema.md"
 assert_file_exists "holistic-review.md exists" "$HOLISTIC_FILE"
+assert_file_exists "holistic-dimensions.md exists" "$DIMENSIONS_FILE"
+assert_file_exists "holistic-scorecard-schema.md exists" "$SCHEMA_FILE"
 
-HOLISTIC_CONTENT=$(cat "$HOLISTIC_FILE")
+HOLISTIC_CONTENT=$(cat "$HOLISTIC_FILE" "$DIMENSIONS_FILE" "$SCHEMA_FILE")
 
 # Check all 5 holistic dimensions are present
-assert_contains "holistic has Integration dimension" "### Integration" "$HOLISTIC_CONTENT"
-assert_contains "holistic has Coherence dimension" "### Coherence" "$HOLISTIC_CONTENT"
-assert_contains "holistic has Holistic Spec Fidelity dimension" "### Holistic Spec Fidelity" "$HOLISTIC_CONTENT"
-assert_contains "holistic has Polish dimension" "### Polish" "$HOLISTIC_CONTENT"
-assert_contains "holistic has Runtime Health dimension" "### Runtime Health" "$HOLISTIC_CONTENT"
+assert_contains "holistic has Integration dimension" "## Integration" "$HOLISTIC_CONTENT"
+assert_contains "holistic has Coherence dimension" "## Coherence" "$HOLISTIC_CONTENT"
+assert_contains "holistic has Holistic Spec Fidelity dimension" "## Holistic Spec Fidelity" "$HOLISTIC_CONTENT"
+assert_contains "holistic has Polish dimension" "## Polish" "$HOLISTIC_CONTENT"
+assert_contains "holistic has Runtime Health dimension" "## Runtime Health" "$HOLISTIC_CONTENT"
 
 # Check thresholds
 assert_contains "Integration threshold: 7" "Default threshold: 7" "$HOLISTIC_CONTENT"
@@ -413,12 +417,16 @@ echo ""
 echo "=== Test 9: SKILL.md structural verification ==="
 # ═══════════════════════════════════════════════════════════════════════════════
 
-SKILL_FILE="$PROJECT_ROOT/skills/develop/SKILL.md"
-assert_file_exists "SKILL.md exists" "$SKILL_FILE"
-SKILL_CONTENT=$(cat "$SKILL_FILE")
+DEVELOP_SKILL="$PROJECT_ROOT/skills/develop/SKILL.md"
+DEVELOP_LOOP_SKILL="$PROJECT_ROOT/skills/develop-loop/SKILL.md"
+DEVELOP_HOLISTIC_SKILL="$PROJECT_ROOT/skills/develop-holistic/SKILL.md"
+assert_file_exists "develop SKILL.md exists" "$DEVELOP_SKILL"
+assert_file_exists "develop-loop SKILL.md exists" "$DEVELOP_LOOP_SKILL"
+assert_file_exists "develop-holistic SKILL.md exists" "$DEVELOP_HOLISTIC_SKILL"
+SKILL_CONTENT=$(cat "$DEVELOP_SKILL" "$DEVELOP_LOOP_SKILL" "$DEVELOP_HOLISTIC_SKILL" "$HOLISTIC_FILE")
 
-# Step 2: Holistic Review
-assert_contains "SKILL.md has Step 2: Holistic Review" "## Step 2: Holistic Review" "$SKILL_CONTENT"
+# Step 3: Holistic Review
+assert_contains "SKILL.md has Step 3: Holistic Review" "## Step 3: Holistic Review" "$SKILL_CONTENT"
 
 # References resolve-domains.sh
 assert_contains "SKILL.md references resolve-domains.sh" "resolve-domains.sh" "$SKILL_CONTENT"
@@ -427,7 +435,7 @@ assert_contains "SKILL.md references resolve-domains.sh" "resolve-domains.sh" "$
 assert_contains "SKILL.md references holistic-review.md" "holistic-review.md" "$SKILL_CONTENT"
 
 # Remediation loop documentation (Step 2d)
-assert_contains "SKILL.md has remediation handling" "### 2d. Handle Remediation" "$SKILL_CONTENT"
+assert_contains "SKILL.md has remediation handling" "## 2d. Handle Remediation" "$SKILL_CONTENT"
 assert_contains "SKILL.md mentions remediation_beans" "remediation_beans" "$SKILL_CONTENT"
 
 # runtime_order handling
@@ -448,7 +456,7 @@ assert_contains "SKILL.md documents holistic dispatch budget" "max_iterations" "
 assert_contains "SKILL.md has HARD-GATE for holistic runtime" "ALL domain runtimes must be running before holistic review" "$SKILL_CONTENT"
 
 # Stop runtimes after holistic
-assert_contains "SKILL.md documents runtime stop after holistic" "### 2e. Stop Runtimes" "$SKILL_CONTENT"
+assert_contains "SKILL.md documents runtime stop after holistic" "## 2e. Stop Runtimes" "$SKILL_CONTENT"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
@@ -568,7 +576,7 @@ echo "=== Test 13: Holistic review docs — dimension scoring rubrics 1-10 ==="
 
 # Each dimension should have a 1-10 rubric
 for dim in "Integration" "Coherence" "Holistic Spec Fidelity" "Polish" "Runtime Health"; do
-  if echo "$HOLISTIC_CONTENT" | grep -q "### $dim"; then
+  if echo "$HOLISTIC_CONTENT" | grep -q "## $dim"; then
     PASS=$((PASS+1)); echo "  PASS: dimension '$dim' has section header"
   else
     FAIL=$((FAIL+1)); echo "  FAIL: dimension '$dim' missing section header"

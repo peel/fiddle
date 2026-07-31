@@ -1,47 +1,65 @@
 # Backend Domain Evaluator Template
 
-For Go API-focused backend tasks. Evaluates correctness, API contract fidelity, error handling, and spec fidelity against a running server.
+For Go API-focused backend tasks. Evaluates correctness, API contract fidelity, error handling, and spec fidelity from runtime evidence recorded against a running server.
 
-## Runtime Interaction
+## Evidence Pack
 
-The evaluator works against a running backend API. All evidence must come
-from observing the live server, not from reading source code alone.
+You receive an evidence pack alongside the diff: test output, invariant
+results, and runtime probe transcripts gathered before your dispatch. Your
+job is to interpret this evidence against the task's criteria. You do not
+gather evidence, and you do not judge qualities the evidence cannot show.
 
-### Launch
+Every criterion verdict MUST cite the evidence artifact that supports it
+(file name and the relevant line/excerpt). A criterion with no supporting
+evidence is scored fail with reason "no evidence".
 
-The server is started by `start-runtimes.sh` before evaluation begins. The evaluator
-receives runtime state including:
+## Dimensions (optional)
 
-- **port** — the local port the server is listening on
-- **domain** — which domain evaluator to use (in this case, `backend`)
+Scored dimensions are OPTIONAL for this domain. Include the `dimensions`
+object in your scorecard only when the task's eval block sets thresholds for
+this domain. When no thresholds are set, emit an explicitly empty object,
+`"dimensions": {}`, and the task converges on evidence criteria alone. Never
+omit the `dimensions` key: only the explicitly empty object signals
+evidence-only convergence.
 
-Do not attempt to start or restart the server. If the server is not running, score
+The dimension definitions below apply when thresholds are configured.
+
+## Verification Approach
+
+Live runtime. The server is started by `start-runtimes.sh` before evidence
+gathering and stays running through your dispatch. The evidence pack contains
+probe transcripts recorded against that live server, not judgments made from
+reading source code alone. Do not start, restart, or re-probe the server
+yourself; interpret what the pack records.
+
+### Runtime Evidence
+
+The pack records output from the tools that apply to the runtime:
+
+- **Go tooling:** test runs, build status, and Go-specific inspection
+  (`go-dev-mcp`).
+- **HTTP probes:** `curl` transcripts — requests with status codes, response
+  shapes, headers, and error responses.
+
+Prefer HTTP transcript evidence for contract and error dimensions.
+Prefer test and build output for correctness and build health.
+
+If the pack shows the server was not running or failed to start, score
 Correctness as 1 and note the failure.
 
-### MCP Tools
+### What the Evidence Should Show
 
-Use whichever tools are available for the runtime:
-
-- **Go apps:** `go-dev-mcp` — inspect Go-specific details, run tests, check build status.
-- **HTTP verification:** `curl` — make HTTP requests, verify status codes, response shapes,
-  headers, and error responses.
-
-Prefer HTTP-based evidence for contract and error dimensions.
-Prefer tool-based inspection for correctness and build health.
-
-### Evidence Gathering
-
-- Hit all API endpoints with valid and invalid inputs
-- Verify response status codes, shapes, and headers
-- Test authentication/authorization if applicable
-- Check error responses for proper format and messages
-- Verify database state changes if applicable
-- Test concurrent requests if the API claims concurrency safety
-- Record which endpoints were tested and their outcomes
+- API endpoints exercised with valid and invalid inputs
+- Response status codes, shapes, and headers
+- Authentication/authorization behavior if applicable
+- Error responses with their format and messages
+- Database state changes if applicable
+- Concurrent request behavior if the API claims concurrency safety
+- Which endpoints were tested and their outcomes
 
 ### What to Check
 
-- Does the server start and respond on the expected port?
+- Did the server start and respond on the expected port?
 - Do endpoints return correct status codes?
 - Are response shapes consistent with the API contract?
 - Do validation errors reference specific fields?

@@ -41,7 +41,8 @@ TEST_TMPDIR=$(mktemp -d)
 CLEANUP_PIDS=()
 
 cleanup() {
-  for pid in "${CLEANUP_PIDS[@]}"; do
+  for pid in "${CLEANUP_PIDS[@]:-}"; do
+    [[ -n "$pid" ]] || continue
     kill "$pid" 2>/dev/null || true
     kill -9 "$pid" 2>/dev/null || true
   done
@@ -134,14 +135,23 @@ assert_contains "backend has Error Handling" "$BACKEND_TEMPLATE" "Error Handling
 
 echo ""
 # ═══════════════════════════════════════════════════════════════════════
-echo "=== Test 4: Develop SKILL.md has runtime lifecycle ==="
+echo "=== Test 4: Develop loop and holistic skills have runtime lifecycle ==="
 # ═══════════════════════════════════════════════════════════════════════
 
-DEVELOP_SKILL="$PROJECT_DIR/skills/develop/SKILL.md"
+DEVELOP_LOOP_SKILL="$PROJECT_DIR/skills/develop-loop/SKILL.md"
+DEVELOP_LOOP_CONTEXT="$PROJECT_DIR/skills/develop-loop/context-loading-order.md"
+DEVELOP_HOLISTIC_SKILL="$PROJECT_DIR/skills/develop-holistic/SKILL.md"
+DEVELOP_LOOP_CONTENT=$(cat "$DEVELOP_LOOP_SKILL" "$DEVELOP_LOOP_CONTEXT")
 
-assert_contains "develop references start-runtimes.sh" "$DEVELOP_SKILL" "start-runtimes.sh"
-assert_contains "develop references stop-runtimes.sh" "$DEVELOP_SKILL" "stop-runtimes.sh"
-assert_contains "develop references runtime-evidence" "$DEVELOP_SKILL" "runtime-evidence"
+assert_contains "develop-loop references start-runtimes.sh" "$DEVELOP_LOOP_SKILL" "start-runtimes.sh"
+assert_contains "develop-loop references stop-runtimes.sh" "$DEVELOP_LOOP_SKILL" "stop-runtimes.sh"
+if echo "$DEVELOP_LOOP_CONTENT" | grep -q "runtime-evidence"; then
+  PASS=$((PASS+1)); echo "  PASS: develop-loop references runtime-evidence"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: develop-loop references runtime-evidence"
+fi
+assert_contains "develop-holistic references start-runtimes.sh" "$DEVELOP_HOLISTIC_SKILL" "start-runtimes.sh"
+assert_contains "develop-holistic references stop-runtimes.sh" "$DEVELOP_HOLISTIC_SKILL" "stop-runtimes.sh"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

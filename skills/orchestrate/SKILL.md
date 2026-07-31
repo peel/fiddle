@@ -1,10 +1,14 @@
 ---
-name: fiddle:orchestrate
+name: orchestrate
 description: Use when starting a full development lifecycle for a feature or epic — chains discover, define, develop, deliver phases with multi-model support and reaction engine
-argument-hint: <topic> [--epic <id>] [--skip-discover] [--skip-challenge]
 ---
 
 # Orchestrate
+
+
+## Usage
+
+Invoke as `fiddle:orchestrate <topic> [--epic <id>] [--no-triage] [--skip-discover] [--skip-challenge]`.
 
 Automated outer loop: DISCOVER → DEFINE → DEVELOP → DELIVER. Sequences phase skills with configuration, status tracking, and resumption support.
 
@@ -21,6 +25,7 @@ Parse from `{ARGS}`:
 | Flag | Default | Description |
 |---|---|---|
 | `--epic <id>` | none | Resume an existing epic. Skips DISCOVER/DEFINE if beans exist |
+| `--no-triage` | false | Skip quick-path triage, go straight to full flow |
 | `--skip-discover` | false | Jump straight to DEFINE |
 | `--skip-docs` | false | Passed through to discover phase — skip discover-docs |
 | `--skip-challenge` | false | Passed through to discover and define phases |
@@ -61,6 +66,8 @@ Read `orchestrate.json` (project root) if it exists. Format is JSON:
 }
 ```
 
+In `evaluators.domains.<domain>.providers`, the array is an ordered preference list for selecting the single evaluator for that domain: the first available provider that differs from the implementer wins (implementers are always claude). It is not a dispatch fan-out. `evaluators.holistic.providers` behaves differently: holistic review dispatches to all listed providers.
+
 ### Model Defaults
 
 | Config key | Roles | Default |
@@ -97,9 +104,9 @@ Run this section immediately on invocation, before any phase.
 ### Step 1: Parse Configuration
 
 1. Set provider defaults from the table above. Set model defaults from the Model Defaults table.
-2. If `orchestrate.json` exists (project root): read it with the Read tool. Parse each JSON key:
+2. If `orchestrate.json` exists (project root): read it and parse each JSON key:
    - `providers` — provider definitions and phase assignments
-   - `evaluators` — evaluator configuration: `attended`, `max_dispatches_per_task`, and domain definitions
+   - `evaluators` — evaluator configuration: `attended`, `max_dispatches_per_task`, and domain definitions (each domain's `providers` is an ordered preference list for the single evaluator, not a fan-out; `holistic.providers` is dispatch-all)
    - `models` — override model defaults for each phase. `develop` is a string key. "default" means omit the `model:` parameter to inherit the session model.
 3. Parse CLI flags from `{ARGS}`. Override any config file values.
 4. Store final config values for use throughout the session.
@@ -134,6 +141,32 @@ beans update <epic-id> --tag orchestrate-phase:<phase>
 
 Jump to the determined phase section below.
 
+## TRIAGE
+
+Skip this phase if ANY of: `--epic` was provided, `--no-triage` was set, `--skip-discover` was set.
+
+Assess the prompt against quick-path criteria to decide: quickfix or full flow.
+
+### Quick Path Criteria (ALL must be true)
+
+1. **Single-focus**: The prompt describes one change, not a set of changes or an initiative
+2. **Clear approach**: The implementation path is obvious — no architectural decisions or design trade-offs needed
+3. **Small scope**: Likely ≤5 files to create or modify
+4. **No new infrastructure**: No new patterns, abstractions, services, or build pipeline changes
+5. **Self-contained**: No cross-cutting concerns, no coordination across subsystems
+
+### Assessment
+
+Evaluate the prompt against each criterion. If ALL criteria are met:
+
+Use the `fiddle:quickfix` skill with the original prompt.
+
+If quickfix completes successfully (returns a PR URL) → orchestrate is **done**. Skip all remaining phases.
+
+If quickfix returns **TOO_COMPLEX** → continue with DISCOVER below. The quickfix skill handles its own cleanup (bean scrapping, worktree removal).
+
+If ANY criterion is NOT met → skip quickfix, fall through to DISCOVER.
+
 ## DISCOVER
 
 Skip this phase if `--skip-discover` was set OR if `--epic` was provided and child beans already exist.
@@ -144,9 +177,7 @@ Build args for the discover phase:
 - `--skip-challenge` (if set)
 
 Invoke:
-```
-Skill(skill: "fiddle:discover", args: "<built args>")
-```
+Use the `fiddle:discover` skill with the built args.
 
 Transition:
 ```bash
@@ -165,9 +196,7 @@ Build args for the define phase:
 - `--skip-panel` (if set)
 
 Invoke:
-```
-Skill(skill: "fiddle:define", args: "<built args>")
-```
+Use the `fiddle:define` skill with the built args.
 
 ### Capture Epic ID
 
@@ -193,9 +222,7 @@ Build args for the develop phase:
 - `--epic <epic-id>`
 
 Invoke:
-```
-Skill(skill: "fiddle:develop", args: "--epic <epic-id>")
-```
+Use the `fiddle:develop` skill with `--epic <epic-id>`.
 
 Transition:
 ```bash
@@ -210,9 +237,7 @@ Build args for the deliver phase:
 - `--epic <epic-id>`
 
 Invoke:
-```
-Skill(skill: "fiddle:deliver", args: "<built args>")
-```
+Use the `fiddle:deliver` skill with the built args.
 
 ## CLEANUP
 
@@ -236,4 +261,4 @@ Report to user:
 - <M> beans needs-attention (unresolved)"
 ```
 
-Remind the user: "Run `/fiddle:deliver-docs --epic <epic-id>` to update project docs." (if deliver-docs was not already run in DELIVER).
+Remind the user: "Run `fiddle:deliver-docs --epic <epic-id>` to update project docs." (if deliver-docs was not already run in DELIVER).

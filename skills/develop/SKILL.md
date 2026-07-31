@@ -1,10 +1,14 @@
 ---
-name: fiddle:develop
+name: develop
 description: Use when implementing an epic's task beans through the evaluator loop — after plan and beans exist
-argument-hint: --epic <id>
 ---
 
 # Develop — Evaluator Loop
+
+
+## Usage
+
+Invoke as `fiddle:develop --epic <id>`.
 
 Execute an implementation plan by iterating: validate → implement per-task → holistic review → finish.
 
@@ -33,13 +37,11 @@ Read and internalize: `skills/develop/iron-laws.md`
 beans show <epic-id> --json
 ```
 
-Confirm the epic exists and has child task beans. If no child beans → stop: "No task beans found for this epic. Run `/fiddle:define` first."
+Confirm the epic exists and has child task beans. If no child beans → stop: "No task beans found for this epic. Run `fiddle:define` first."
 
 ### 0b. Worktree Setup
 
-```
-Skill("fiddle:worktrees")
-```
+Use the `fiddle:worktrees` skill.
 
 Creates an isolated worktree for the epic. All subsequent work happens in this worktree.
 
@@ -63,7 +65,7 @@ Read `orchestrate.json` from project root. Extract the `evaluators` block:
 }
 ```
 
-Store `max_dispatches_per_task` for the convergence budget. Store `domains` for evaluator dispatch. Store `evaluators.holistic.providers` for holistic review dispatch (default: `["claude"]`).
+Store `max_dispatches_per_task` for the convergence budget. Store `domains` for evaluator dispatch: each domain's `providers` array is an ordered preference list for selecting the single evaluator for that domain (the first available provider differing from the implementer wins; implementers are always claude), not a dispatch fan-out. Store `evaluators.holistic.providers` for holistic review dispatch (default: `["claude"]`); holistic review dispatches to all listed providers.
 
 ## Step 1: Bean Body Validation
 
@@ -89,9 +91,7 @@ Feature beans that are purely containers for child task beans are exempt.
 
 Process each task bean sequentially. For each bean:
 
-```
-Skill("fiddle:develop-loop", args: "--bean <bean-id> --epic <epic-id>")
-```
+Use the `fiddle:develop-loop` skill with `--bean <bean-id> --epic <epic-id>`.
 
 The develop-loop sub-skill handles the full evaluation cycle for one bean: dispatch implementer, dispatch evaluators, merge scorecards, check convergence, iterate until converged or budget exceeded.
 
@@ -101,9 +101,7 @@ Each bean returns as either `completed` or `needs-attention` (escalated). Skip b
 
 After all task beans are processed (completed or escalated):
 
-```
-Skill("fiddle:develop-holistic", args: "--epic <epic-id>")
-```
+Use the `fiddle:develop-holistic` skill with `--epic <epic-id>`.
 
 The develop-holistic sub-skill assesses the full system as an integrated whole, creates remediation beans if needed, and iterates until the holistic review converges or is escalated.
 
@@ -114,9 +112,7 @@ Do NOT invoke finish-branch before holistic review has CONVERGED or been escalat
 
 ## Step 4: Completion
 
-```
-Skill("fiddle:finish-branch")
-```
+Use the `fiddle:finish-branch` skill.
 
 User picks: merge, PR, keep, or discard. Worktree cleanup happens here.
 
@@ -126,9 +122,19 @@ On session restart, develop re-derives state entirely from beans:
 
 1. List epic's task beans via `beans list --parent <epic-id> --json`
 2. Find any bean with `in-progress` status
-3. For in-progress beans: invoke `Skill("fiddle:develop-loop", args: "--bean <id> --epic <epic-id>")` — the loop handles its own restart detection via parse-eval-log.sh + assess-git-state.sh
+3. For in-progress beans: use `fiddle:develop-loop` with `--bean <id> --epic <epic-id>` — the loop handles its own restart detection via parse-eval-log.sh + assess-git-state.sh
 4. Skip already-`completed` beans
 5. Process remaining `todo` beans normally
-6. After all task beans are processed, check if holistic review already ran by looking for `scorecard-holistic.json` and holistic history file. If in progress or not started, invoke `Skill("fiddle:develop-holistic", args: "--epic <epic-id>")`
+6. After all task beans are processed, check if holistic review already ran by looking for `scorecard-holistic.json` and holistic history file. If in progress or not started, use `fiddle:develop-holistic` with `--epic <epic-id>`
 
 No session-scoped state to lose. All evaluation history lives on bean bodies.
+
+## Harness Enforcement (Claude Code)
+
+The skill-encoded loop above is the cross-harness baseline. On Claude Code, harness mechanisms additionally enforce it:
+
+- **Stop hook (preferred, automatic).** Ships in `hooks/hooks.json` (`develop-verdict-gate.sh`). While the `.fiddle/active-bean` marker names a bean without a recorded terminal verdict, the hook blocks turn-end so the loop continues. Terminal states: CONVERGED, or needs-attention via SPEC_DEFECT / BLOCKED / DISPATCHES_EXCEEDED. Deterministic, no judge model; fails open when no marker exists. The marker lifecycle (arming and clearing) is owned by develop-loop; see `skills/develop-loop/SKILL.md`.
+- **/goal (manual equivalent).** When the Stop hook is unavailable, set a goal whose condition is phrased against recorded verdicts and includes the escalation exits: "the active bean has a recorded terminal verdict: CONVERGED, or needs-attention via SPEC_DEFECT / BLOCKED / DISPATCHES_EXCEEDED". A goal phrased only as "converged" fights the dispatch budget: it keeps pushing iterations after the loop has legitimately escalated.
+- **/loop (optional outer watchdog).** `/loop` re-firing `Skill("fiddle:develop", args: "--epic <epic-id>")` on an interval guards against a stalled or dead session. It is idempotent via Restart Resilience above: each firing re-derives state from beans, skips completed work, and resumes in-progress work. It is NOT a driver for the inner cycle. The watchdog is time-based and session-scoped, while the per-bean cycle is verdict-driven and enforced by the Stop hook or /goal.
+
+Codex and Pi harnesses have none of these mechanisms; they keep the skill-encoded loop via the `fiddle:using-fiddle` harness mapping.
