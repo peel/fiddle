@@ -1,13 +1,13 @@
 ---
 # fiddle-ye4j
 title: 'Task 4: Lifecycle family rewrite + config dedup'
-status: in-progress
+status: completed
 type: task
 priority: normal
 tags:
     - branch
 created_at: 2026-07-30T11:20:24Z
-updated_at: 2026-07-30T12:30:17Z
+updated_at: 2026-07-30T12:52:46Z
 parent: fiddle-85jh
 blocked_by:
     - fiddle-e7op
@@ -48,4 +48,16 @@ thresholds: {}
 
 ## Evaluation Log
 BASE_SHA: 5b830c27388235c7a955f376e795016d636ae28d
-total_dispatches: 0
+total_dispatches: 2
+
+### Iteration 1 (2026-07-30T12:52:46Z)
+dispatches: 2
+**general:**
+
+## Summary of Changes
+
+Rewrote the eight lifecycle files to house style and centralized the orchestrate.json schema (commit 787b16e, rebased as part of the portability reconciliation). Zero markup and zero caps across the family; schema blocks now exist only in orchestrate/SKILL.md with seven pointer lines elsewhere naming just the keys each skill reads. Blind-before-reveal ordering survives in blind-spot-check.md with its anchoring rationale. Converged single-pass evidence-only, 2 dispatches.
+
+Contradictions resolved: dispatch budget was 60 in docs, 10 in README, 16 in config; holistic max_iterations 3 in docs, 4 in config. Docs now state fallbacks-when-absent and point at orchestrate.json as the live value, because no script implements a fallback for either key — the model reads them straight from the file, which is why they drifted freely. README's copy of 10 is out of scope; backlog it.
+
+Word count went UP for this family (6935 to 7196): orchestrate/SKILL.md absorbed schema keys that were previously undocumented anywhere, and caps directives became prose-with-rationale. Recorded rather than dressed up — tree-size reduction has to come from families with genuinely redundant prose.

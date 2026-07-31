@@ -1,13 +1,13 @@
 ---
 # fiddle-802d
 title: 'Task 5: Process family rewrite'
-status: todo
+status: completed
 type: task
 priority: normal
 tags:
     - branch
 created_at: 2026-07-30T11:20:24Z
-updated_at: 2026-07-30T11:20:24Z
+updated_at: 2026-07-30T13:13:17Z
 parent: fiddle-85jh
 blocked_by:
     - fiddle-e7op
@@ -43,3 +43,24 @@ criteria:
       check: "Every cross-skill invocation pointer present before the rewrite is still present"
 thresholds: {}
 ```
+
+
+## Evaluation Log
+BASE_SHA: 7620da6bedd16ccef71e98da377fbe539d4d5967
+total_dispatches: 4
+
+### Iteration 2 (2026-07-30T13:12:53Z)
+dispatches: 4
+**general:**
+
+## Summary of Changes
+
+Rewrote the ten process-family files to house style (commits 3436514, 79d49db, 771585c). Word count 10713 to 8327, a 22 percent cut and the epic's first substantial reduction: this family carried the redundant prose (rationalization tables, red-flag lists, Common Mistakes sections, dot-graph flows, repeated restatements) that earlier interface-heavy families did not. All six ordering invariants survive once each with rationale; no distinct handoff pointer lost (verified by token-set diff, count drops were duplicate mentions).
+
+Converged in 2 iterations, 4 dispatches. Iteration 1 failed emphasis-gone: REQUIRED SUB-SKILL and REQUIRED caps labels survived because the grep pattern only covered MUST/NEVER/ALWAYS. Iteration 2 de-capped them while keeping the handoff semantics.
+
+Also fixed: the rewrite introduced em dashes into tdd, debug, verify, and worktrees, four files that previously had none; a follow-up commit replaced them with colons, semicolons, parentheses, and conjunctions.
+
+Resolved contradiction: finish-branch said clean up the worktree for Options 1, 2, 4 in Step 5 while its Quick Reference and other sections said 1 and 4. Resolved toward keeping the worktree for Option 2 (PR review feedback lands on the branch), stated inline. Evaluator judged the direction defensible and the inline note sufficient. Behavioral change for anyone who followed the Step 5 wording.
+
+Handed to bean fiddle-54xz: stale skill names in worktrees and finish-branch Integration sections (brainstorming, subagent-driven-development, executing-plans, finishing-a-development-branch, using-git-worktrees) are not current fiddle skill names and need a rename pass. Backlog candidate: skills/debug/SKILL.md points at three reference files that do not exist and never have (root-cause-tracing.md, defense-in-depth.md, condition-based-waiting.md); the pointers were preserved because handoffs-intact required it.
