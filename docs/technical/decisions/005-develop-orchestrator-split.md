@@ -1,7 +1,13 @@
 # 005 — Split develop into orchestrator + sub-skills
 
 **Date:** 2026-04-02
-**Status:** accepted
+**Status:** accepted; partially superseded by [009]
+
+<!-- The split into orchestrator plus sub-skills stands. Two elements below are
+     superseded by 009: the bean body validation HARD-GATE is now
+     scripts/validate-bean-body.sh, and the Iron Laws that drove the duplicated
+     bytes were deleted, their content absorbed into develop-loop. -->
+
 
 ## Context
 
