@@ -1,31 +1,37 @@
 # Vision
 
-<!-- The single source of truth for what this project is and why it exists.
-     Write this for yourself in 6 months when you've forgotten the context.
-     Keep it under a page. If it's longer, you're over-specifying. -->
-
 ## What
 
-<!-- One paragraph. What does this thing do? Be concrete. -->
+Fiddle is a portable agentic software-engineering doctrine and execution system. It turns intent into verified change through DISCOVER → DEFINE → DEVELOP → DELIVER. Its next major version adds stateless, tracker-backed automation for local and remote agents while preserving its foundational reasoning: lessons from the NATO 1968/1969 software-engineering reports, compound engineering, systematic challenge, adversarial multi-provider debate, independent evidence-based evaluation, calibration, and longitudinal quality controls.
 
 ## Who
 
-<!-- Who uses this and why? What problem does it solve for them?
-     If you don't know yet, say so — that's useful information too. -->
+High-agency developers and engineering teams using Claude Code, Codex, or other agents who need the same rigorous, auditable process locally and remotely without becoming dependent on one model, tracker, runtime, or hosted platform.
 
 ## Success
 
-<!-- How do you know this is working? Not metrics theater — real signals.
-     "People use it weekly" or "replaces manual process X" or "generates $Y MRR" -->
+- Core lifecycle and quality semantics remain consistent across local and remote execution.
+- Local usage remains portable and requires no service.
+- Remote work is resumable, auditable, idempotent, and provider-neutral.
+- Decisions, evidence, feedback, calibration, and failure lessons compound across runs.
+- Critical design debates retain genuinely separate inference providers.
+- Implementation and evaluation remain independently grounded where quality risk warrants it.
+- Fiddle can safely use its own lifecycle to evolve itself.
 
 ## Non-goals
 
-<!-- What this deliberately does NOT do. Just as important as goals.
-     Saves future-you from scope creep and saves agents from suggesting irrelevant features. -->
+- Replacing Fiddle's reasoning doctrine with a scheduler or workflow service.
+- Making a hosted controller mandatory.
+- Making any tracker, code host, runtime, or agent vendor mandatory for the core.
+- Maximizing automation by removing meaningful human gates.
+- Collapsing adversarial reasoning into one model simulating multiple perspectives.
+- Running expensive multi-provider debate on every routine implementation detail.
+- Rewriting the existing skill system when an adapter or infrastructure boundary is sufficient.
 
 ## Open questions
 
-<!-- Things you haven't decided yet that matter. Remove as they get resolved. -->
+- What evidence should trigger promotion of the Linear adapter into a release?
+- Which managed agent should become the second reference supervisor after Claude?
 
 ---
-Last reviewed: YYYY-MM-DD
+Last reviewed: 2026-08-01
