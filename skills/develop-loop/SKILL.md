@@ -34,10 +34,10 @@ For a fresh bean (not a restart), record the starting point:
 BASE_SHA=$(git rev-parse HEAD)
 scripts/append-eval-log.sh --bean-id {id} --init --base-sha "$BASE_SHA"
 beans update {id} --status in-progress
-mkdir -p .fiddle && echo "{id}" > .fiddle/active-bean
+mkdir -p .fiddle && printf '%s\nsession=%s\n' "{id}" "${CLAUDE_CODE_SESSION_ID:-unknown}" > .fiddle/active-bean
 ```
 
-The `.fiddle/active-bean` marker arms the Stop-hook verdict gate: while it is
+The `.fiddle/active-bean` marker arms the Stop-hook verdict gate for THIS session only (line 2 records the owner; the gate fails open for every other session, so bystander sessions and subagents are never dragooned into a loop they do not own): while it is
 non-empty, turn-end is blocked until the bean reaches a terminal verdict. Every
 terminal exit below clears it with `rm -f .fiddle/active-bean`.
 
