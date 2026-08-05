@@ -54,7 +54,7 @@ Only include providers that returned `"available":true`. The current harness is 
 | **Advocate A** | Assigned advocate for Approach 1 | harness subagent, or inline sequential pass |
 | **Advocate B** | Assigned advocate for Approach 2 | harness subagent, or inline sequential pass |
 
-Read `models.define` from `orchestrate.json` (project root). If "default" or not set, omit the `model:` parameter to inherit session model.
+Before each harness participant dispatch, resolve `panel` for phase `define` with `scripts/resolve-subagent-model.sh`; pass a returned model to the harness subagent, or omit it for session inheritance.
 
 ## Invocation Context
 
@@ -70,7 +70,7 @@ Read `models.define` from `orchestrate.json` (project root). If "default" or not
 
 Spawn every participant in one message. Each receives the topic, context, and their assigned perspective, and produces a position paper: what they recommend, why, key tradeoffs, risks.
 
-**Harness participants:** start a subagent if the current harness supports one and the session permits it; otherwise run the position inline as a separate labeled pass. Prompt: "You are arguing from <perspective>. Topic: <topic>. Context: <context>. Produce a position paper: what you recommend, why, key tradeoffs, risks."
+**Harness participants:** resolve the `panel` model before each dispatch, then start a subagent with that explicit model only when present; otherwise run inline if the harness cannot dispatch. Prompt: "You are arguing from <perspective>. Topic: <topic>. Context: <context>. Produce a position paper: what you recommend, why, key tradeoffs, risks."
 
 **External providers:**
 ```bash
@@ -87,7 +87,7 @@ Run independent participants in parallel when the harness supports it; otherwise
 
 Each participant receives every Phase 1 position and critiques them: agreements, disagreements, new concerns.
 
-**Harness participants:** start a subagent if available, or run the review inline as a labeled pass. Prompt: "Review these positions on <topic>:\n\n<all positions>\n\nCritique: agreements, disagreements, new concerns raised."
+**Harness participants:** resolve the `panel` model before each dispatch, then start a subagent with that explicit model only when present; otherwise run the review inline as a labeled pass. Prompt: "Review these positions on <topic>:\n\n<all positions>\n\nCritique: agreements, disagreements, new concerns raised."
 
 **External providers:**
 ```bash

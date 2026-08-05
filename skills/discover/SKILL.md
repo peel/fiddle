@@ -1,6 +1,6 @@
 ---
 name: discover
-description: Run the DISCOVER phase — gather project context via discover-docs, research ecosystem with external providers, and challenge scope assumptions. Use standalone or as part of orchestrate.
+description: Use before defining a feature or epic to gather context, research options, and challenge scope assumptions.
 ---
 
 # Discover

@@ -1,6 +1,6 @@
 ---
 name: define
-description: Run the DEFINE phase — brainstorm approaches with optional panel enrichment, challenge chosen design, create implementation plan and beans. Use standalone or as part of orchestrate.
+description: Use after discovery to turn confirmed scope into an approved design, implementation plan, and ready-to-execute beans.
 ---
 
 # Define
@@ -25,7 +25,7 @@ Parse from `{ARGS}`:
 
 ### Config File
 
-Config: see `skills/orchestrate/SKILL.md` for the schema. This skill reads `providers.phases.define` (the provider list for this phase), the `providers.<name>.command` and `.flags` declarations for each provider named there, and `models.define`.
+Config: see `skills/orchestrate/SKILL.md` for the schema. This skill reads `providers.phases.define` (the provider list for this phase) plus the command and flags for each named provider. Internal subagent models resolve through `scripts/resolve-subagent-model.sh`: `models.roles.<role>` overrides `models.phases.<phase>`, and `default` inherits the current session model; this is independent of provider CLI configuration.
 
 CLI flags override config file values.
 

@@ -1,6 +1,6 @@
 ---
 name: discover-docs
-description: Socratic dialogue for bootstrapping or reviewing project docs. Walks through curated docs (VISION, MARKET, PRICING, GTM, SYSTEM, RUNBOOKS), asks probing questions, challenges assumptions, identifies gaps and inconsistencies, and writes/updates the docs based on your answers. Use for initial population or periodic review.
+description: Use when bootstrapping or reviewing project documentation through concise Socratic discovery and targeted updates.
 ---
 
 # Discover Docs
@@ -66,6 +66,8 @@ Skip docs the user says aren't relevant (e.g., PRICING for a free tool, RUNBOOKS
 ### 3. For each doc in scope — Socratic dialogue
 
 Draw the content out through questions rather than asking the user to fill in sections — a section-by-section prompt is a form, and a form surfaces only what the user already knew to write down.
+
+When uncertainty is about the available environment rather than the product, use an optional diagnostic, not a required questionnaire: “What can the available tools and context do to reduce this uncertainty?” Ask it only when repository evidence cannot answer first.
 
 **If the doc is empty:**
 - Start with an open question about the topic area. For VISION: "Tell me what you're building and why." For MARKET: "Who would use this instead of what?"

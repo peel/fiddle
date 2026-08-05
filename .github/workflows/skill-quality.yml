@@ -1,0 +1,22 @@
+name: Skill quality
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check portability and references
+        run: bash scripts/check-portability.sh
+      - name: Check trigger-first skill descriptions
+        run: bash scripts/audit-skills.sh --require-router
+      - name: Run skill audit fixtures
+        run: bash scripts/test-audit-skills.sh
+      - name: Run model resolution fixtures
+        run: bash scripts/test-resolve-subagent-model.sh

@@ -57,7 +57,7 @@ The reviewers interpret this pack rather than driving the runtimes themselves, w
 
 For each provider in `evaluators.holistic.providers`, dispatch a holistic reviewer.
 
-**Provider `claude`:** dispatch a subagent on `skills/develop/holistic-review.md`, passing `evidence-holistic.txt` in context.
+**Provider `claude`:** resolve the `holistic` model for phase `develop`; pass it only when returned, then dispatch a subagent on `skills/develop/holistic-review.md` with `evidence-holistic.txt` in context.
 
 **External provider:** dispatch via the provider hook:
 

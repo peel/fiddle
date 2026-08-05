@@ -1,6 +1,6 @@
 ---
 name: define-beans
-description: Bean sizing rules for writing-plans. Determines when a plan task should become a feature with child task beans based on TDD cycle budget.
+description: Use when sizing a planned task into task or feature beans based on its test-driven implementation complexity.
 ---
 
 # Define Beans

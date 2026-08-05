@@ -1,6 +1,6 @@
 ---
 name: brainstorm
-description: "You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation."
+description: Use before creative work or behavior changes to clarify intent, explore tradeoffs, and produce an approved design.
 ---
 
 # Brainstorming Ideas Into Designs
@@ -33,6 +33,8 @@ Check the current project state first (files, docs, recent commits). If `docs/pr
 Assess scope before asking detailed questions. If the request describes multiple independent subsystems ("build a platform with chat, file storage, billing, and analytics"), flag that immediately rather than spending questions on the details of a project that needs decomposing first. Help the user split it: what are the independent pieces, how do they relate, what order should they be built? Then brainstorm the first sub-project through the normal flow. Each sub-project gets its own spec → plan → implementation cycle.
 
 For appropriately-scoped projects, ask one question per message, preferring multiple choice where it fits. If a topic needs more exploration, break it into several questions rather than stacking them into one.
+
+When discovery stalls on an agent-side uncertainty, ask one optional diagnostic rather than guessing: “What missing context, access, or tool would make this decision reliable?” or “What did the previous run reveal that this design should improve?” Do not ask either when the answer is already available from the repository or conversation.
 
 ## Exploring Approaches
 

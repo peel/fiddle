@@ -1,6 +1,6 @@
 ---
 name: feedback
-description: Append a structured user feedback entry to docs/product/FEEDBACK.md. Captures who, context, observation, implication, and confidence for each signal.
+description: Use when recording a user signal with its context, observation, implication, and confidence for future analysis.
 ---
 
 # Feedback

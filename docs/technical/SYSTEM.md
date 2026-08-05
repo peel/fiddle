@@ -6,13 +6,13 @@ Fiddle is a portable Agent Skills library that orchestrates a four-phase develop
 
 ## Components
 
-**Orchestrate** (`skills/orchestrate/SKILL.md`) — Top-level lifecycle coordinator. Reads config, chains phases. Delegates to other skills per phase. External provider calls go through `hooks/dispatch-provider.sh`.
+**Orchestrate** (`skills/orchestrate/SKILL.md`) — Top-level lifecycle coordinator. Its primary skill is a router; configuration and resumption details load from focused references. External provider calls go through `hooks/dispatch-provider.sh`.
 
 **Panel** (`skills/panel/SKILL.md`) — Structured multi-model adversarial analysis. The current harness, Codex, and Gemini argue independent positions, cross-review, then the lead synthesizes a verdict. External providers are called via `hooks/dispatch-provider.sh`. Degrades to current-harness analysis when no external providers are available.
 
 **Develop** (`skills/develop/SKILL.md`) — Thin orchestrator for the implementation phase. Validates bean bodies (eval block, files, steps checklist required), then delegates to sub-skills: `develop-loop` (`skills/develop-loop/SKILL.md`) handles per-task iteration for one bean at a time — implement, gather a per-domain evidence pack (tests, checks, runtime probes), dispatch ONE evaluator per domain (provider chosen by `scripts/select-evaluator-provider.sh` from the domain's ordered preference list, first available provider differing from the always-claude implementer), normalize the single scorecard, and converge via scripts; evidence-only scorecards (explicit empty dimensions) converge on a single pass. `develop-holistic` (`skills/develop-holistic/SKILL.md`) handles cross-domain integration review with remediation and keeps multi-provider dispatch with min-merge. All evaluation state tracked via beans and eval-log scripts.
 
-**Using Fiddle** (`skills/using-fiddle/SKILL.md`) — Bootstrap skill for routing common requests and mapping Claude-style tool vocabulary to Claude, Codex, and Pi harnesses.
+**Using Fiddle** (`skills/using-fiddle/SKILL.md`) — Bootstrap skill for routing common requests, mapping Claude-style tool vocabulary across Claude, Codex, and Pi, and resolving internal subagent models.
 
 **Hooks** (`hooks/`) — Claude-oriented hooks check provider binaries, add code-navigation guidance, guard archives, and report progress. `develop-verdict-gate.sh` is a Stop hook that blocks turn-end while `.fiddle/active-bean` names a develop-loop bean without a terminal verdict (fail-open when the marker is absent or jq is missing). Codex has a minimal `.codex/hooks.json`. Pi support in v1 is skill/package discovery, not hook parity.
 
@@ -20,9 +20,11 @@ Fiddle is a portable Agent Skills library that orchestrates a four-phase develop
 
 **Supporting skills** — `fiddle:discover-docs` (project context scan), `fiddle:deliver-docs` (post-ship doc updates), `fiddle:define-beans` (task sizing), `fiddle:adr`/`fiddle:feedback`/`fiddle:backlog` (append-only records).
 
+**Skill quality tooling** (`scripts/audit-skills.sh`, `scripts/check-portability.sh`) — Validates portable skill metadata, reachable companion documentation, primary-skill size, and optionally trigger-first descriptions. `skill-quality.yml` runs these checks and their fixtures in CI.
+
 ## Data
 
-**`orchestrate.json`** (JSON) — Declares which external providers are used per phase. The `plans {}` block controls where Fiddle saves plans/specs and whether to commit them. Merge order: defaults, config file, CLI flags.
+**`orchestrate.json`** (JSON) — Declares external provider participation, evaluator settings, plans, and internal subagent models. `models.roles.<role>` overrides `models.phases.<phase>`; `default` inherits the current session model. External provider CLI selection is independent. Merge order is defaults, config file, then CLI flags.
 
 **`.claude/orchestrate-events.log`** — Ephemeral event log created during orchestrate runs. Tracks phase transitions, failures, escalations. Deleted on cleanup.
 
@@ -46,6 +48,8 @@ Runs entirely locally as portable skills. Claude loads `.claude-plugin/plugin.js
 - Evidence-only scorecards emit an explicit `"dimensions": {}` — the key is never omitted; only the explicitly empty object signals single-pass convergence.
 - Every scorecard must carry a criteria array; `merge-scorecards.sh` rejects criteria-less input with exit 2.
 - Skills are written as judgment plus rationale. Mechanical invariants live in scripts with exit-code contracts, not in prose, and skill files carry no emphatic markup (gate blocks, capitalized emphasis, rationalization tables, red-flag lists, announcement lines). Frontmatter `description` fields, JSON schemas, and quoted external content are the exceptions, since they are interface text rather than instruction. See the authoring note in `skills/using-fiddle/SKILL.md`.
+- Internal subagent models resolve through `scripts/resolve-subagent-model.sh`: a role override wins over a phase default, while `default` omits an explicit model and inherits the session. Provider CLI selection never flows through this resolver.
+- `scripts/audit-skills.sh` returns exit 2 with JSON errors for malformed metadata, missing references, orphaned companions, or configured primary-skill size violations.
 
 ## Known issues
 
@@ -55,4 +59,4 @@ Runs entirely locally as portable skills. Claude loads `.claude-plugin/plugin.js
 - Default dispatch budgets cannot absorb the confirming double-pass (a pass on iteration N cannot confirm within budget N), and `check-convergence.sh`'s budget check is ambiguous between pre- and post-dispatch counts at the boundary.
 
 ---
-Last reviewed: 2026-07-30
+Last reviewed: 2026-08-05

@@ -1,6 +1,6 @@
 ---
 name: deliver-docs
-description: Post-ship update of project docs. Reads completed beans and recent diffs to update SYSTEM.md, create ADRs for significant decisions, flag product docs that may need attention, and append discovered debt/ideas to BACKLOG.md. Run after completing an epic or significant feature.
+description: Use after a completed epic or significant change to update technical docs and capture resulting decisions or debt.
 ---
 
 # Deliver Docs

@@ -1,6 +1,6 @@
 ---
 name: backlog
-description: Append an idea, tech debt item, or someday/maybe to docs/BACKLOG.md. Quick capture for things that aren't beans yet.
+description: Use when capturing an idea, technical debt, or observation that is not ready for a planned bean.
 ---
 
 # Backlog

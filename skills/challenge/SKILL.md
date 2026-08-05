@@ -1,6 +1,6 @@
 ---
 name: challenge
-description: Challenge a plan or design by systematically walking the decision tree until reaching shared understanding. Use at phase transitions or standalone.
+description: Use when a plan or design needs assumptions, constraints, and decision branches resolved before progressing.
 ---
 
 Challenge every aspect of this plan or design until we reach shared understanding. Walk down each branch of the decision tree, resolving dependencies between decisions one-by-one.

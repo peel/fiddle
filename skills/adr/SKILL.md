@@ -1,6 +1,6 @@
 ---
 name: adr
-description: Create a new Architecture Decision Record in docs/technical/decisions/. Asks what was decided and why, writes the ADR file.
+description: Use when recording a consequential technical decision; captures context, the chosen option, and consequences in a new architecture decision record.
 ---
 
 # ADR
