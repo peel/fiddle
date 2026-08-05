@@ -4,6 +4,37 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+required_artifacts=(
+  .version-bump.json
+  package.json
+  .claude-plugin/plugin.json
+  .claude-plugin/marketplace.json
+  .codex-plugin/plugin.json
+  .codex/hooks.json
+  .agents/plugins/marketplace.json
+  plugins/fiddle/skills
+  plugins/fiddle/hooks
+  plugins/fiddle/.codex
+  plugins/fiddle/.codex-plugin
+)
+for artifact in "${required_artifacts[@]}"; do
+  if [[ ! -e "$artifact" ]]; then
+    echo "required portability artifact is missing: $artifact" >&2
+    exit 1
+  fi
+done
+
+for lifecycle_dir in docs/plans docs/specs; do
+  if ! git check-ignore -q "$lifecycle_dir/.fiddle-ignore-probe"; then
+    echo "local lifecycle directory is not ignored: $lifecycle_dir" >&2
+    exit 1
+  fi
+  if [[ -n "$(git ls-files "$lifecycle_dir")" ]]; then
+    echo "local lifecycle artifacts are tracked: $lifecycle_dir" >&2
+    exit 1
+  fi
+done
+
 expected="$(jq -r '.version' .version-bump.json)"
 for file in package.json .claude-plugin/plugin.json .codex-plugin/plugin.json; do
   actual="$(jq -r '.version' "$file")"

@@ -7,5 +7,6 @@
   },
   "repository": "https://github.com/peel/fiddle",
   "license": "MIT",
-  "keywords": ["orchestration", "multi-model", "lifecycle", "debate", "panel"]
+  "keywords": ["orchestration", "multi-model", "lifecycle", "debate", "panel"],
+  "skills": "./skills/"
 }

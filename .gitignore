@@ -4,6 +4,8 @@
 # Bean tracker state and archived plans (kept locally, excluded from repo)
 .beans/
 .archive/
+docs/plans/
+docs/specs/
 
 # Evaluation artifacts (temporary JSON files produced during develop loop)
 scorecard*.json

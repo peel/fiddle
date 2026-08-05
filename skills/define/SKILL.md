@@ -51,7 +51,7 @@ Use the `fiddle:challenge` skill with `--phase define`.
 
 This walks the decision tree on edge cases, integration points, failure modes, panel dissent points, and sizing assumptions. Catches design holes before they become wasted beans.
 
-If challenges surface issues that require design changes, update the design doc and commit the changes before proceeding.
+If challenges surface issues that require design changes, update the local design doc before proceeding; do not commit lifecycle specs.
 
 ### Step 3: Implementation Planning
 

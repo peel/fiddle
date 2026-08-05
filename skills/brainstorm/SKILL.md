@@ -18,7 +18,7 @@ Create a task for each item and complete them in order:
 3. **Ask clarifying questions** — one at a time, covering purpose, constraints, success criteria.
 4. **Propose 2-3 approaches** with trade-offs and your recommendation.
 5. **Present the design** in sections scaled to their complexity, getting approval after each.
-6. **Write the design doc** to `docs/specs/YYYY-MM-DD-<topic>-design.md` and commit it (user preferences for spec location override this default).
+6. **Write the design doc** to `docs/specs/YYYY-MM-DD-<topic>-design.md` as a local lifecycle artifact; do not commit it (user preferences for spec location override this default).
 7. **Extract initial calibration anchors** when the spec describes visual or behavioral output — save to `docs/evaluator-calibration-<domain>.md` and register the path in `orchestrate.json`.
 8. **Spec self-review** — inline check for placeholders, contradictions, ambiguity, scope.
 9. **Ask the user to review the written spec** before proceeding.
@@ -86,7 +86,7 @@ After writing the spec, read it with fresh eyes and fix what you find inline. No
 
 After self-review, ask the user to review the written spec:
 
-> "Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan."
+> "Spec written locally to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan."
 
 Wait for their response. If they request changes, make them and re-run the self-review. Proceed only once they approve, then invoke the `fiddle:write-plan` skill.
 

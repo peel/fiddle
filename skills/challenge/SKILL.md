@@ -13,7 +13,7 @@ ARGUMENTS: {ARGS}
 
 **`--phase discover`:** Read docs in `docs/product/` and `docs/technical/`, recent beans, and any `--context` files. Open by synthesizing what discover-docs and external research found — present the scope as you understand it, confirm the user's intent, then challenge assumptions and constraints. Done when scope has no open branches. State "Scope is solid — ready for DEFINE" and stop.
 
-**`--phase define`:** Read the design doc (most recent in `docs/plans/`), panel commentary if present, relevant source files, and any `--context` files. Challenge edge cases, integration points, panel dissent, failure modes, and sizing. Done when every decision branch is resolved. State "Design holds up — ready for implementation planning" and stop.
+**`--phase define`:** Read the design doc (most recent in `docs/specs/`), panel commentary if present, relevant source files, and any `--context` files. Challenge edge cases, integration points, panel dissent, failure modes, and sizing. Done when every decision branch is resolved. State "Design holds up — ready for implementation planning" and stop.
 
 **Standalone:** Challenge whatever the user presents. No phase-specific framing. Done when all branches are resolved — summarize the resolved decision tree and stop.
 

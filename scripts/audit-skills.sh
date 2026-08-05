@@ -59,12 +59,17 @@ add_error() {
 referenced_files=$'\n'
 validate_reference() {
   local source="$1" reference="$2" target="$3"
+  local normalized_source normalized_target
   if [[ ! -f "$target" ]]; then
     add_error "missing-reference" "$source" "$reference"
     return
   fi
 
-  referenced_files+="$(cd "$(dirname "$target")" && pwd)/$(basename "$target")"$'\n'
+  normalized_source="$(cd "$(dirname "$ROOT/$source")" && pwd)/$(basename "$source")"
+  normalized_target="$(cd "$(dirname "$target")" && pwd)/$(basename "$target")"
+  if [[ "$normalized_source" != "$normalized_target" ]]; then
+    referenced_files+="$normalized_target"$'\n'
+  fi
 }
 
 relative_to_root() {

@@ -42,6 +42,17 @@ assert_file_contains() {
   fi
 }
 
+assert_file_excludes() {
+  local description="$1" pattern="$2" file="$3"
+  if grep -F --quiet "$pattern" "$file"; then
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: $description (found $pattern)"
+  else
+    PASS=$((PASS + 1))
+    echo "  PASS: $description"
+  fi
+}
+
 make_skill() {
   local root="$1" name="$2" description="$3"
   mkdir -p "$root/skills/$name"
@@ -132,19 +143,52 @@ ERR="$TMPDIR/duplicate-basename.json"
 assert_exit "unlinked duplicate basename" 2 "$(run_audit "$DUPLICATE_BASENAME" "$ERR")"
 assert_error_code "unlinked duplicate basename code" "orphaned-companion" "$ERR"
 
-echo "Test 6: oversized primary skill fails"
+SELF_REFERENCE="$TMPDIR/self-reference"
+mkdir -p "$SELF_REFERENCE/skills/self-reference"
+cat > "$SELF_REFERENCE/skills/self-reference/SKILL.md" <<'EOF'
+---
+name: self-reference
+description: Use when checking that companion files require an entrypoint reference.
+---
+
+# Self reference
+EOF
+printf '# Companion\n\nRead [this file](companion.md).\n' > "$SELF_REFERENCE/skills/self-reference/companion.md"
+ERR="$TMPDIR/self-reference.json"
+assert_exit "self-reference is not reachability" 2 "$(run_audit "$SELF_REFERENCE" "$ERR")"
+assert_error_code "self-reference orphan code" "orphaned-companion" "$ERR"
+
+echo "Test 8: oversized primary skill fails"
 OVERSIZE="$TMPDIR/oversize"
 make_skill "$OVERSIZE" "oversize" "Use when checking primary skill size constraints before publishing."
 for _ in $(seq 1 81); do printf 'extra line\n' >> "$OVERSIZE/skills/oversize/SKILL.md"; done
 ERR="$TMPDIR/oversize.json"
-echo "Test 7: optional agent-empathy prompts are documented"
+assert_exit "oversized primary skill" 2 "$(run_audit "$OVERSIZE" "$ERR" --max-primary-lines 80)"
+assert_error_code "oversized primary skill code" "oversized-primary-skill" "$ERR"
+
+echo "Test 9: optional agent-empathy prompts are documented"
 assert_file_contains "capability prompt" "What can the available tools and context do" "$SCRIPT_DIR/../skills/discover-docs/SKILL.md"
 assert_file_contains "needed context prompt" "What missing context, access, or tool" "$SCRIPT_DIR/../skills/brainstorm/SKILL.md"
 assert_file_contains "prior-run prompt" "What did the previous run reveal" "$SCRIPT_DIR/../skills/brainstorm/SKILL.md"
 assert_file_contains "optional prompt guard" "optional diagnostic, not a required questionnaire" "$SCRIPT_DIR/../skills/discover-docs/SKILL.md"
 
-assert_exit "oversized primary skill" 2 "$(run_audit "$OVERSIZE" "$ERR" --max-primary-lines 80)"
-assert_error_code "oversized primary skill code" "oversized-primary-skill" "$ERR"
+echo "Test 10: extracted protocols retain executable contracts"
+assert_file_contains "plan header contract" "For agentic workers" "$SCRIPT_DIR/../skills/write-plan/plan-format.md"
+assert_file_contains "plan critique dispatch" "hooks/dispatch-provider.sh <provider>" "$SCRIPT_DIR/../skills/write-plan/plan-format.md"
+assert_file_contains "bean creation contract" "beans create --json" "$SCRIPT_DIR/../skills/write-plan/bean-materialization.md"
+assert_file_contains "evaluation log initialization" 'BASE_SHA=$(git rev-parse HEAD)' "$SCRIPT_DIR/../skills/develop-loop/dispatch-and-evidence.md"
+assert_file_contains "domain resolution command" "scripts/resolve-domains.sh" "$SCRIPT_DIR/../skills/develop-loop/dispatch-and-evidence.md"
+assert_file_contains "scorecard validation command" "scripts/validate-scorecard.sh" "$SCRIPT_DIR/../skills/develop-loop/dispatch-and-evidence.md"
+assert_file_contains "threshold command" "scripts/check-thresholds.sh" "$SCRIPT_DIR/../skills/develop-loop/convergence-and-recovery.md"
+assert_file_contains "evaluation log command" "scripts/append-eval-log.sh" "$SCRIPT_DIR/../skills/develop-loop/convergence-and-recovery.md"
+
+echo "Test 11: plans and specs remain local lifecycle artifacts"
+assert_file_contains "plan local policy" "Plans are local lifecycle artifacts and are not committed." "$SCRIPT_DIR/../skills/write-plan/plan-format.md"
+assert_file_contains "spec local policy" "local lifecycle artifact; do not commit it" "$SCRIPT_DIR/../skills/brainstorm/SKILL.md"
+assert_file_contains "challenge reads specs" "docs/specs/" "$SCRIPT_DIR/../skills/challenge/SKILL.md"
+assert_file_excludes "brainstorm does not commit specs" "and commit it" "$SCRIPT_DIR/../skills/brainstorm/SKILL.md"
+assert_file_excludes "define does not commit specs" "commit the changes before proceeding" "$SCRIPT_DIR/../skills/define/SKILL.md"
+
 
 echo
 printf 'Results: %d passed, %d failed\n' "$PASS" "$FAIL"

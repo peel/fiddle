@@ -43,6 +43,7 @@ Runs entirely locally as portable skills. Claude loads `.claude-plugin/plugin.js
 - External provider calls run in parallel when the harness supports it; otherwise run sequentially and report reduced coverage.
 - Append-only docs (FEEDBACK, BACKLOG, research logs) are never edited or deleted.
 - Bean bodies must be self-contained — implementer agents work from the bean body alone without reading plan files.
+- Design specs in `docs/specs/` and implementation plans in `docs/plans/` are local lifecycle artifacts and remain gitignored; bean bodies carry the durable executable contract.
 - Worktree agents must route all bean CLI operations through `--beans-path` to the main checkout's `.beans/`. Only the lead manages bean status transitions.
 - Evaluators interpret pre-gathered evidence packs; they never gather evidence themselves. Read-only external providers receive the pack via `dispatch-provider.sh --evidence-file`.
 - Evidence-only scorecards emit an explicit `"dimensions": {}` — the key is never omitted; only the explicitly empty object signals single-pass convergence.

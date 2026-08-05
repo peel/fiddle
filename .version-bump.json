@@ -1,0 +1,21 @@
+{
+  "version": "0.1.0",
+  "files": [
+    {
+      "path": "package.json",
+      "json": "version"
+    },
+    {
+      "path": ".claude-plugin/plugin.json",
+      "json": "version"
+    },
+    {
+      "path": ".codex-plugin/plugin.json",
+      "json": "version"
+    },
+    {
+      "path": ".claude-plugin/marketplace.json",
+      "json": "plugins[0].version"
+    }
+  ]
+}

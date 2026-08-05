@@ -112,7 +112,20 @@ for fixture in models-scalar models-array roles-scalar roles-array phases-scalar
   assert_json "$fixture error code" invalid-config '.error.code' "$(cat "$TMPDIR/$fixture.error.json")"
 done
 
-echo "Test 8: model configuration documentation matches the resolver contract"
+echo "Test 8: every configured model value is validated"
+for fixture in selected-null unselected-unsupported phase-array-value; do
+  case "$fixture" in
+    selected-null) jq '.models.roles.panel = null' "$CONFIG" > "$TMPDIR/$fixture.json" ;;
+    unselected-unsupported) jq '.models.roles.unused = "codex"' "$CONFIG" > "$TMPDIR/$fixture.json" ;;
+    phase-array-value) jq '.models.phases.unused = []' "$CONFIG" > "$TMPDIR/$fixture.json" ;;
+  esac
+  EXIT_CODE=0
+  "$SCRIPT_DIR/resolve-subagent-model.sh" --config "$TMPDIR/$fixture.json" --phase define --role panel >"$TMPDIR/$fixture.out.json" 2>"$TMPDIR/$fixture.error.json" || EXIT_CODE=$?
+  assert_exit "$fixture exit" 2 "$EXIT_CODE"
+  assert_json "$fixture error code" invalid-model '.error.code' "$(cat "$TMPDIR/$fixture.error.json")"
+done
+
+echo "Test 9: model configuration documentation matches the resolver contract"
 CONFIGURATION_DOC="$SCRIPT_DIR/../skills/orchestrate/configuration.md"
 DEFINE_DOC="$SCRIPT_DIR/../skills/define/SKILL.md"
 DELIVER_DOC="$SCRIPT_DIR/../skills/deliver/SKILL.md"

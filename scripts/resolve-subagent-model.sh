@@ -37,6 +37,16 @@ if ! jq -e '
   error "invalid-config" "models, models.roles, and models.phases must be objects when present"
 fi
 
+if ! jq -e '
+  [
+    ((.models.roles // {}) | to_entries[] | .value),
+    ((.models.phases // {}) | to_entries[] | .value)
+  ]
+  | all(. == "default" or . == "smol" or . == "slow")
+' "$CONFIG" >/dev/null; then
+  error "invalid-model" "models values must be default, smol, or slow"
+fi
+
 role_model=$(jq -r --arg role "$ROLE" '.models.roles[$role] // empty' "$CONFIG")
 phase_model=$(jq -r --arg phase "$PHASE" '.models.phases[$phase] // empty' "$CONFIG")
 if [[ -n "$role_model" ]]; then

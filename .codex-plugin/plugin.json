@@ -1,0 +1,37 @@
+{
+  "name": "fiddle",
+  "version": "0.1.0",
+  "description": "Portable Agent Skills for an automated development lifecycle with multi-model support.",
+  "author": {
+    "name": "peel"
+  },
+  "repository": "https://github.com/peel/fiddle",
+  "license": "MIT",
+  "keywords": [
+    "agent-skills",
+    "orchestration",
+    "multi-model",
+    "lifecycle",
+    "debate",
+    "panel"
+  ],
+  "skills": "./skills/",
+  "hooks": "./.codex/hooks.json",
+  "interface": {
+    "displayName": "Fiddle",
+    "shortDescription": "Portable development lifecycle skills",
+    "longDescription": "Fiddle provides portable Agent Skills for discovery, planning, implementation, review, delivery, and documentation workflows across Claude, Codex, and Pi.",
+    "developerName": "peel",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Use Fiddle to plan and implement this feature.",
+      "Use Fiddle to turn this idea into task beans.",
+      "Use Fiddle to finish and deliver this epic."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

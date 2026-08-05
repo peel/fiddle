@@ -1,0 +1,22 @@
+{
+  "name": "fiddle",
+  "version": "0.1.0",
+  "description": "Portable Agent Skills for an automated development lifecycle with multi-model support.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/peel/fiddle.git"
+  },
+  "keywords": [
+    "pi-package",
+    "agent-skills",
+    "orchestration",
+    "multi-model",
+    "lifecycle"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  }
+}
