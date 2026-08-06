@@ -12,6 +12,8 @@ required_artifacts=(
   .codex-plugin/plugin.json
   .codex/hooks.json
   .agents/plugins/marketplace.json
+  maki/fiddle.lua
+  scripts/install-maki.sh
   plugins/fiddle/skills
   plugins/fiddle/hooks
   plugins/fiddle/.codex
@@ -73,6 +75,11 @@ for file in skills/*/SKILL.md; do
 done
 if [[ "$found_skill" -eq 0 ]]; then
   echo "no skills found" >&2
+  exit 1
+fi
+
+if rg -n 'maki\.fs\.(read|glob|grep)' maki; then
+  echo "Maki adapter must delegate repository reads to agent tools" >&2
   exit 1
 fi
 
