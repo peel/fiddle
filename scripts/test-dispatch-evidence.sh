@@ -49,8 +49,9 @@ cat > "$TMPDIR/orchestrate.json" << 'EOF'
 {"providers":{"fake":{"command":"fake-provider"}}}
 EOF
 
-echo "TestOutput: 12 passed, 0 failed" > "$TMPDIR/evidence.txt"
-echo "diff --git a/x b/x" > "$TMPDIR/diff.txt"
+printf 'Evidence keeps A&B and C&&D intact\n' > "$TMPDIR/evidence.txt"
+printf 'Diff keeps E&F and G&&H intact\n' > "$TMPDIR/diff.txt"
+printf 'Feedback keeps I&J and K&&L intact\n' > "$TMPDIR/feedback.txt"
 
 DISPATCH="$TMPDIR/hooks/dispatch-provider.sh"
 
@@ -60,7 +61,7 @@ OUTPUT=$("$DISPATCH" fake --role evaluator --topic t --instructions i \
   --evidence-file "$TMPDIR/evidence.txt" 2>&1) || EXIT_CODE=$?
 assert_exit "dispatch with evidence → exit 0" 0 "$EXIT_CODE"
 assert_contains "payload has ## Evidence header" "## Evidence" "$OUTPUT"
-assert_contains "payload has evidence content" "TestOutput: 12 passed, 0 failed" "$OUTPUT"
+assert_contains "payload has evidence content" "Evidence keeps A&B and C&&D intact" "$OUTPUT"
 
 echo "Test 2: omitting --evidence-file produces no ## Evidence section"
 EXIT_CODE=0
@@ -74,9 +75,22 @@ OUTPUT=$("$DISPATCH" fake --role evaluator --topic t --instructions i \
   --diff-file "$TMPDIR/diff.txt" --evidence-file "$TMPDIR/evidence.txt" 2>&1) || EXIT_CODE=$?
 assert_exit "dispatch with diff and evidence → exit 0" 0 "$EXIT_CODE"
 assert_contains "payload has ## Diff header" "## Diff" "$OUTPUT"
-assert_contains "payload has diff content" "diff --git a/x b/x" "$OUTPUT"
+assert_contains "payload has diff content" "Diff keeps E&F and G&&H intact" "$OUTPUT"
 assert_contains "payload has ## Evidence header" "## Evidence" "$OUTPUT"
-assert_contains "payload has evidence content" "TestOutput: 12 passed, 0 failed" "$OUTPUT"
+assert_contains "payload has evidence content" "Evidence keeps A&B and C&&D intact" "$OUTPUT"
+
+echo "Test 4: prompt sections preserve literal ampersands"
+EXIT_CODE=0
+OUTPUT=$("$DISPATCH" fake --role evaluator --topic t \
+  --instructions "Instructions keep M&N and O&&P intact" \
+  --diff-file "$TMPDIR/diff.txt" \
+  --evidence-file "$TMPDIR/evidence.txt" \
+  --previous-feedback-file "$TMPDIR/feedback.txt" 2>&1) || EXIT_CODE=$?
+assert_exit "dispatch with literal ampersands → exit 0" 0 "$EXIT_CODE"
+assert_contains "diff ampersands preserved" "Diff keeps E&F and G&&H intact" "$OUTPUT"
+assert_contains "evidence ampersands preserved" "Evidence keeps A&B and C&&D intact" "$OUTPUT"
+assert_contains "instruction ampersands preserved" "Instructions keep M&N and O&&P intact" "$OUTPUT"
+assert_contains "feedback ampersands preserved" "Feedback keeps I&J and K&&L intact" "$OUTPUT"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

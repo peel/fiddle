@@ -73,14 +73,25 @@ fi
 [[ -f "$TEMPLATE" ]] || { echo "Template not found: $TEMPLATE" >&2; exit 1; }
 
 PROMPT=$(cat "$TEMPLATE")
-PROMPT="${PROMPT//\{PROVIDER_ROLE\}/$ROLE}"
-PROMPT="${PROMPT//\{TOPIC\}/$TOPIC}"
-PROMPT="${PROMPT//\{INSTRUCTIONS\}/$INSTRUCTIONS}"
-PROMPT="${PROMPT//\{APPROACHES\}/$APPROACHES}"
-PROMPT="${PROMPT//\{DESIGN_DOC\}/$DESIGN_DOC}"
-PROMPT="${PROMPT//\{DIFF\}/$DIFF}"
-PROMPT="${PROMPT//\{EVIDENCE\}/$EVIDENCE}"
-PROMPT="${PROMPT//\{PREVIOUS_FEEDBACK\}/$PREVIOUS_FEEDBACK}"
+
+# Bash 5.2+ treats '&' specially in parameter-substitution replacements when
+# patsub_replacement is enabled. Split around each single-use marker instead so
+# provider payloads remain literal.
+replace_prompt_marker() {
+  local marker="$1" value="$2"
+  if [[ "$PROMPT" == *"$marker"* ]]; then
+    PROMPT="${PROMPT%%"$marker"*}${value}${PROMPT#*"$marker"}"
+  fi
+}
+
+replace_prompt_marker "{PROVIDER_ROLE}" "$ROLE"
+replace_prompt_marker "{TOPIC}" "$TOPIC"
+replace_prompt_marker "{INSTRUCTIONS}" "$INSTRUCTIONS"
+replace_prompt_marker "{APPROACHES}" "$APPROACHES"
+replace_prompt_marker "{DESIGN_DOC}" "$DESIGN_DOC"
+replace_prompt_marker "{DIFF}" "$DIFF"
+replace_prompt_marker "{EVIDENCE}" "$EVIDENCE"
+replace_prompt_marker "{PREVIOUS_FEEDBACK}" "$PREVIOUS_FEEDBACK"
 
 # Strip sections where the value is empty (header + empty line)
 PROMPT=$(echo "$PROMPT" | awk '
