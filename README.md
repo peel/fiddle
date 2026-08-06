@@ -78,9 +78,27 @@ Orchestrate reads [`orchestrate.json`](orchestrate.json) from the project root. 
         "antipatterns": "docs/antipatterns-general.md"
       }
     }
+  },
+  "models": {
+    "phases": {
+      "discover": "default",
+      "define": "default",
+      "develop": "default",
+      "deliver": "default"
+    },
+    "roles": {
+      "brainstorm": "default",
+      "panel": "default",
+      "implementer": "default",
+      "evaluator": "default",
+      "holistic": "default",
+      "deliver": "default"
+    }
   }
 }
 ```
+
+Internal subagent models can be selected by phase or role. A role setting overrides its phase setting. Supported values are `default`, `smol`, and `slow`; `default` inherits the current session model. This configuration affects harness subagents only and is independent of the external provider commands under `providers`.
 
 ## Install
 

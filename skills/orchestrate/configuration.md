@@ -54,7 +54,22 @@ Provider configuration comes from `orchestrate.json`; CLI flags never override i
       "artifacts": ["release-notes", "social"]
     }
   },
-  "models": {},
+  "models": {
+    "phases": {
+      "discover": "default",
+      "define": "default",
+      "develop": "default",
+      "deliver": "default"
+    },
+    "roles": {
+      "brainstorm": "default",
+      "panel": "default",
+      "implementer": "default",
+      "evaluator": "default",
+      "holistic": "default",
+      "deliver": "default"
+    }
+  },
   "plans": {}
 }
 ```
