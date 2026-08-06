@@ -189,6 +189,11 @@ assert_file_contains "challenge reads specs" "docs/specs/" "$SCRIPT_DIR/../skill
 assert_file_excludes "brainstorm does not commit specs" "and commit it" "$SCRIPT_DIR/../skills/brainstorm/SKILL.md"
 assert_file_excludes "define does not commit specs" "commit the changes before proceeding" "$SCRIPT_DIR/../skills/define/SKILL.md"
 
+echo "Test 12: evaluator provider state and runtime roles are unambiguous"
+assert_file_contains "dispatch provider state is domain-specific" "selected-provider-{domain}.json" "$SCRIPT_DIR/../skills/develop-loop/dispatch-and-evidence.md"
+assert_file_contains "convergence provider state is domain-specific" "selected-provider-{domain}.json" "$SCRIPT_DIR/../skills/develop-loop/convergence-and-recovery.md"
+assert_file_excludes "evaluator does not interact with app" "evaluator can interact with the app" "$SCRIPT_DIR/../skills/develop-loop/dispatch-and-evidence.md"
+
 
 echo
 printf 'Results: %d passed, %d failed\n' "$PASS" "$FAIL"

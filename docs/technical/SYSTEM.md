@@ -54,8 +54,6 @@ Runs entirely locally as portable skills. Claude loads `.claude-plugin/plugin.js
 
 ## Known issues
 
-- develop-loop 1f still says the evaluator "may interact with the running app," in tension with the interpret-only evaluator role (behavior governed by templates; wording cleanup pending).
-- `selected-provider.json` is one file overwritten per domain; multi-domain PASS_PENDING provider reuse reads only the last domain's selection (benign — re-selection is deterministic).
 - The holistic scorecard schema example (top-level domain/dimensions, no criteria) does not match `merge-scorecards.sh` input expectations; a wrapping step is unspecified and malformed input now fails loud (exit 2) instead of silent (exit 5).
 - Default dispatch budgets cannot absorb the confirming double-pass (a pass on iteration N cannot confirm within budget N), and `check-convergence.sh`'s budget check is ambiguous between pre- and post-dispatch counts at the boundary.
 

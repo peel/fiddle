@@ -96,7 +96,7 @@ Start in `runtime_order`: for `[backend, frontend]`, start backend, wait for rea
 - Exit 3 (harness failure): retry once; if the retry fails, escalate to human without counting against the dispatch budget.
 - Exit 1 or 2: an app/config issue; include the error in the evidence pack and evaluator context.
 
-Runtimes stay up through 1f so the evaluator can interact with the app, and stop at Runtime Stop.
+Runtimes stay up through evidence capture and stop after all evaluators finish. Evaluators interpret the captured evidence pack; they never interact with the running app.
 
 ## 1f. Dispatch Per-Domain Evaluator
 
@@ -104,7 +104,7 @@ One evaluator per resolved domain, processed in `runtime_order` if specified, ot
 
     scripts/select-evaluator-provider.sh \
       --preference "<providers array joined with commas>" \
-      --implementer claude > selected-provider.json
+      --implementer claude > selected-provider-{domain}.json
 
 The domain's `providers` array is an ordered preference list. Implementers
 are always claude subagents, so the first available external provider wins;
@@ -141,7 +141,7 @@ cat > scorecard-{domain}-{provider}.json   # ← evaluator output for this domai
 dispatch_count=$((dispatch_count + 1))
 ```
 
-Dispatch accounting: one implementer + one evaluator per domain per iteration (2 domains = 3 dispatches). PASS_PENDING re-evaluation reuses the provider recorded in selected-provider.json.
+Dispatch accounting: one implementer + one evaluator per domain per iteration (2 domains = 3 dispatches). PASS_PENDING re-evaluation reuses the provider recorded in `selected-provider-{domain}.json`.
 
 ### Validate the Scorecard
 

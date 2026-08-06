@@ -47,7 +47,7 @@ scripts/append-eval-log.sh --bean-id {id} --iteration {N} --scorecard {scorecard
 
 - `--dispatches` counts actual dispatches, not iterations.
 - No `--disagreements` on the per-task path: one evaluator per domain produces no disagreements file, and that tracking is holistic-only.
-- Record the provider and reason from selected-provider.json, which is what captures fallback substitutions.
+- Record the provider and reason from `selected-provider-{domain}.json`, which captures fallback substitutions without one domain overwriting another.
 - `--antipatterns` is optional: `jq -c '.antipatterns_detected // []' {scorecard_file} > antipatterns.json`. A non-empty array appends an **Antipatterns detected:** section, the durable per-epic record deliver 5g ages against.
 - Pass `--corrections {corrections_json}` (array of `{domain, dimension, evaluator_score, human_score, reason}`) when the attended gate produced corrections.
 
@@ -59,7 +59,7 @@ The log is the loop's only state that survives a restart, so let the script writ
 |---|---|
 | **CONVERGED** | Mark bean `completed`. `rm -f .fiddle/active-bean`. Return to orchestrator. |
 | **FAIL** | Re-dispatch implementer with the failing dimensions, their domains, and fix guidance. → 1d |
-| **PASS_PENDING** | Re-evaluate without re-implementing; reuse the provider in selected-provider.json. → 1e-2 |
+| **PASS_PENDING** | Re-evaluate without re-implementing; reuse the provider in `selected-provider-{domain}.json`. → 1e-2 |
 | **PASS_REGRESSED** | Re-dispatch implementer with regression details (which dimensions in which domains, by how much). → 1d |
 | **DISPATCHES_EXCEEDED** | Mark bean `needs-attention`. `rm -f .fiddle/active-bean`. Escalate to human. Return to orchestrator. |
 
