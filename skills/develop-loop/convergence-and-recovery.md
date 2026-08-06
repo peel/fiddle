@@ -37,6 +37,8 @@ scripts/check-convergence.sh --current {verdict_file} --history {history_file} -
 
 On DISPATCHES_EXCEEDED, stop and ask the human. The budget is the only protection against iterating forever on a bean that is not converging, so spending past it — or lowering thresholds to fit — hides exactly the problem it just surfaced.
 
+The budget limits additional dispatches, not evaluation of work already returned. A terminal CONVERGED result from the final allowed dispatch wins; at the same count, FAIL, PASS_PENDING, or PASS_REGRESSED becomes DISPATCHES_EXCEEDED because satisfying it would require another dispatch.
+
 ## 1l. Log Evaluation
 
 After every evaluation cycle:

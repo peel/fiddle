@@ -49,13 +49,10 @@ Runs entirely locally as portable skills. Claude loads `.claude-plugin/plugin.js
 - Evidence-only scorecards emit an explicit `"dimensions": {}` — the key is never omitted; only the explicitly empty object signals single-pass convergence.
 - Every scorecard must carry a criteria array; `merge-scorecards.sh` rejects criteria-less input with exit 2.
 - Holistic reviewers use the canonical scorecard envelope. `merge-scorecards.sh` conservatively merges `spec_coverage_matrix` and deduplicates `remediation_beans` by requirement while retaining source providers.
+- Dispatch budgets govern whether another dispatch may start. `check-convergence.sh` first accepts terminal results from the final allowed dispatch, then reports DISPATCHES_EXCEEDED when a nonterminal result would require more work.
 - Skills are written as judgment plus rationale. Mechanical invariants live in scripts with exit-code contracts, not in prose, and skill files carry no emphatic markup (gate blocks, capitalized emphasis, rationalization tables, red-flag lists, announcement lines). Frontmatter `description` fields, JSON schemas, and quoted external content are the exceptions, since they are interface text rather than instruction. See the authoring note in `skills/using-fiddle/SKILL.md`.
 - Internal subagent models resolve through `scripts/resolve-subagent-model.sh`: a role override wins over a phase default, while `default` omits an explicit model and inherits the session. Provider CLI selection never flows through this resolver.
 - `scripts/audit-skills.sh` returns exit 2 with JSON errors for malformed metadata, missing references, orphaned companions, or configured primary-skill size violations.
-
-## Known issues
-
-- Default dispatch budgets cannot absorb the confirming double-pass (a pass on iteration N cannot confirm within budget N), and `check-convergence.sh`'s budget check is ambiguous between pre- and post-dispatch counts at the boundary.
 
 ---
 Last reviewed: 2026-08-05

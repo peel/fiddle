@@ -133,6 +133,8 @@ Holistic thresholds default to those in `skills/develop/holistic-dimensions.md`:
 
 Convergence follows the same protocol as per-task evaluation — two consecutive passes — but against a holistic-specific history file, keeping holistic dispatch history separate from per-task history.
 
+The final allowed holistic dispatch can still produce CONVERGED. If its result is FAIL, PASS_PENDING, or PASS_REGRESSED, return DISPATCHES_EXCEEDED instead of scheduling work beyond the budget.
+
 ## 2d. Handle Remediation
 
 On FAIL, read the `remediation_beans` array in the merged scorecard and create a child bean of the epic for each entry, traced back to its source (a spec coverage gap or a failing dimension):

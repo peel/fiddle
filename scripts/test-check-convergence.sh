@@ -122,6 +122,40 @@ EXIT_CODE=0
 "$SCRIPT_DIR/check-convergence.sh" --current "$TMPDIR/current.json" --history "$TMPDIR/history.json" --max-dispatches 60 --current-dispatches 2 > "$OUTFILE" 2>/dev/null || EXIT_CODE=$?
 assert_exit "evidence-only fail → exit 1" 1 "$EXIT_CODE"
 
+echo "Test 9: confirming PASS at exact budget still converges"
+cat > "$TMPDIR/history.json" <<'EOF'
+[{"verdict":"PASS","dimensions":{"general.correctness":8}}]
+EOF
+cat > "$TMPDIR/current.json" <<'EOF'
+{"verdict":"PASS","failing_dimensions":[],"failing_criteria":[],"dimensions":{"general.correctness":8}}
+EOF
+EXIT_CODE=0
+"$SCRIPT_DIR/check-convergence.sh" --current "$TMPDIR/current.json" --history "$TMPDIR/history.json" --max-dispatches 4 --current-dispatches 4 > "$OUTFILE" 2>/dev/null || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+assert_exit "confirming pass at budget → exit 0" 0 "$EXIT_CODE"
+assert_json "confirming pass at budget converges" ".status" "CONVERGED" "$OUTPUT"
+
+echo "Test 10: evidence-only PASS at exact budget still converges"
+echo "[]" > "$TMPDIR/history.json"
+cat > "$TMPDIR/current.json" <<'EOF'
+{"verdict":"PASS","failing_dimensions":[],"failing_criteria":[],"dimensions":{}}
+EOF
+EXIT_CODE=0
+"$SCRIPT_DIR/check-convergence.sh" --current "$TMPDIR/current.json" --history "$TMPDIR/history.json" --max-dispatches 2 --current-dispatches 2 > "$OUTFILE" 2>/dev/null || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+assert_exit "evidence-only pass at budget → exit 0" 0 "$EXIT_CODE"
+assert_json "evidence-only pass at budget converges" ".status" "CONVERGED" "$OUTPUT"
+
+echo "Test 11: non-terminal result at exact budget stops"
+cat > "$TMPDIR/current.json" <<'EOF'
+{"verdict":"FAIL","failing_dimensions":[{"dimension":"correctness"}],"failing_criteria":[]}
+EOF
+EXIT_CODE=0
+"$SCRIPT_DIR/check-convergence.sh" --current "$TMPDIR/current.json" --history "$TMPDIR/history.json" --max-dispatches 2 --current-dispatches 2 > "$OUTFILE" 2>/dev/null || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+assert_exit "non-terminal result at budget → exit 2" 2 "$EXIT_CODE"
+assert_json "non-terminal result at budget is exhausted" ".status" "DISPATCHES_EXCEEDED" "$OUTPUT"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

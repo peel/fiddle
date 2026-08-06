@@ -18,17 +18,29 @@ done
 [[ -f "$CURRENT" ]] || { echo '{"error":"current file not found"}'; exit 2; }
 [[ -f "$HISTORY" ]] || { echo '{"error":"history file not found"}'; exit 2; }
 
-# Check dispatch budget first
-if [[ "$CURRENT_DISPATCHES" -ge "$MAX_DISPATCHES" ]]; then
+# A result from the final allowed dispatch still gets evaluated. Counts beyond
+# the budget are invalid regardless of their result.
+emit_budget_exhausted() {
   jq -n --argjson dispatches "$CURRENT_DISPATCHES" --argjson budget "$MAX_DISPATCHES" \
     '{"status":"DISPATCHES_EXCEEDED","dispatches":$dispatches,"budget":$budget}'
   exit 2
+}
+
+require_next_dispatch_or_exhaust() {
+  if [[ "$CURRENT_DISPATCHES" -ge "$MAX_DISPATCHES" ]]; then
+    emit_budget_exhausted
+  fi
+}
+
+if [[ "$CURRENT_DISPATCHES" -gt "$MAX_DISPATCHES" ]]; then
+  emit_budget_exhausted
 fi
 
 VERDICT=$(jq -r '.verdict' "$CURRENT")
 
 # If current evaluation failed, return FAIL
 if [[ "$VERDICT" != "PASS" ]]; then
+  require_next_dispatch_or_exhaust
   ITERATION=$(jq 'length + 1' "$HISTORY")
   jq -n --argjson iteration "$ITERATION" '{"status":"FAIL","iteration":$iteration}'
   exit 1
@@ -47,6 +59,7 @@ fi
 # Current passed — check history for prior pass
 HISTORY_LEN=$(jq 'length' "$HISTORY")
 if [[ "$HISTORY_LEN" -eq 0 ]]; then
+  require_next_dispatch_or_exhaust
   # First pass ever — need confirmation
   echo '{"status":"PASS_PENDING"}'
   exit 1
@@ -54,6 +67,7 @@ fi
 
 LAST_VERDICT=$(jq -r '.[-1].verdict' "$HISTORY")
 if [[ "$LAST_VERDICT" != "PASS" ]]; then
+  require_next_dispatch_or_exhaust
   # Last was not a pass — this is first pass after failure
   echo '{"status":"PASS_PENDING"}'
   exit 1
@@ -73,6 +87,7 @@ REGRESSIONS=$(jq -c --slurpfile hist "$HISTORY" '
 
 REG_COUNT=$(echo "$REGRESSIONS" | jq 'length')
 if [[ "$REG_COUNT" -gt 0 ]]; then
+  require_next_dispatch_or_exhaust
   jq -n --argjson regressions "$REGRESSIONS" \
     '{"status":"PASS_REGRESSED","regressions":$regressions}'
   exit 1
