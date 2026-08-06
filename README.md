@@ -114,7 +114,12 @@ The repo must contain `.agents/plugins/marketplace.json`; that file points Codex
 ```bash
 # Pi — from source
 pi install /path/to/fiddle
+
+# Maki — from source
+bash /path/to/fiddle/scripts/install-maki.sh
 ```
+
+The Maki installer maintains one marked Fiddle block in the global `~/.config/maki/init.lua`. Re-running it updates that block and the discovered skill list without duplicating commands or replacing unrelated personal configuration. If an older unmanaged Fiddle-only init already exists, use `scripts/install-maki.sh --replace-unmanaged`; it creates an `.pre-fiddle-installer.bak` backup first. Do not also add a project-local `.maki/init.lua` that registers Fiddle commands. Run `/reload` after installation.
 
 Providers are auto-detected on session start.
 
