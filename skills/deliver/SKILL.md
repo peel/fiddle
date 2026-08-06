@@ -25,6 +25,6 @@ Follow [drift analysis, documentation, and product artifacts](drift-and-docs.md)
 
 Follow [evaluator evolution](evaluator-evolve.md). Blind spot-checking precedes scorecard disclosure, and every calibration, threshold, aging, and close decision requiring confirmation remains attended.
 
-## 4. Close and archive
+## 4. Close
 
-After the user confirms evaluator evolution, run `beans update <epic-id> --status completed`, then invoke `fiddle:archive --epic <epic-id>`.
+After the user confirms evaluator evolution, run `beans update <epic-id> --status completed`. Delivery never runs repository-wide bean maintenance implicitly; when explicitly requested, `beans archive` remains a direct maintenance command.

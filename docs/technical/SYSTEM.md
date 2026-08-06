@@ -26,8 +26,6 @@ Fiddle is a portable Agent Skills library that orchestrates a four-phase develop
 
 **`orchestrate.json`** (JSON) — Declares external provider participation, evaluator settings, plans, and internal subagent models. `models.roles.<role>` overrides `models.phases.<phase>`; `default` inherits the current session model. External provider CLI selection is independent. Merge order is defaults, config file, then CLI flags.
 
-**`.claude/orchestrate-events.log`** — Ephemeral event log created during orchestrate runs. Tracks phase transitions, failures, escalations. Deleted on cleanup.
-
 **Bean state** — Managed by external `beans` CLI. Epics, tasks, tags (worktree slots, CI retries, stall respawns, needs-attention). Beans are the unit of work for develop and swarm.
 
 ## Infrastructure

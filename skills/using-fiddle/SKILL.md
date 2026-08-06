@@ -13,7 +13,7 @@ DISCOVER -> DEFINE -> DEVELOP -> DELIVER.
 - Small, clear, one-shot implementation: use `fiddle:quickfix`.
 - Full feature, epic, ambiguous design, or multi-step work: use `fiddle:orchestrate`.
 - Existing epic with task beans ready: use `fiddle:develop`.
-- Finished implementation needing drift/docs/archive work: use `fiddle:deliver`.
+- Finished implementation needing drift analysis and documentation updates: use `fiddle:deliver`.
 - Planning from an approved spec: use `fiddle:write-plan`.
 - Debugging, verification, TDD, or worktree setup: use the matching `fiddle:debug`, `fiddle:verify`, `fiddle:tdd`, or `fiddle:worktrees` skill.
 

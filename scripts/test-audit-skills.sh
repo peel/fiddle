@@ -53,6 +53,17 @@ assert_file_excludes() {
   fi
 }
 
+assert_path_missing() {
+  local description="$1" path="$2"
+  if [[ -e "$path" ]]; then
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: $description (found $path)"
+  else
+    PASS=$((PASS + 1))
+    echo "  PASS: $description"
+  fi
+}
+
 make_skill() {
   local root="$1" name="$2" description="$3"
   mkdir -p "$root/skills/$name"
@@ -193,6 +204,15 @@ echo "Test 12: evaluator provider state and runtime roles are unambiguous"
 assert_file_contains "dispatch provider state is domain-specific" "selected-provider-{domain}.json" "$SCRIPT_DIR/../skills/develop-loop/dispatch-and-evidence.md"
 assert_file_contains "convergence provider state is domain-specific" "selected-provider-{domain}.json" "$SCRIPT_DIR/../skills/develop-loop/convergence-and-recovery.md"
 assert_file_excludes "evaluator does not interact with app" "evaluator can interact with the app" "$SCRIPT_DIR/../skills/develop-loop/dispatch-and-evidence.md"
+
+echo "Test 13: delivery closes the epic without obsolete lifecycle wrappers"
+assert_file_contains "deliver closes named epic" 'beans update <epic-id> --status completed' "$SCRIPT_DIR/../skills/deliver/SKILL.md"
+assert_file_excludes "deliver does not auto-archive" "fiddle:archive" "$SCRIPT_DIR/../skills/deliver/SKILL.md"
+assert_file_excludes "routing has no archive mode" "docs/archive" "$SCRIPT_DIR/../skills/using-fiddle/SKILL.md"
+assert_path_missing "status poller removed" "$SCRIPT_DIR/orchestrate-status.sh"
+assert_path_missing "archive wrapper removed" "$SCRIPT_DIR/archive.sh"
+assert_path_missing "archive skill removed" "$SCRIPT_DIR/../skills/archive/SKILL.md"
+assert_file_contains "archive guard retained" "archive directories contain stale artifacts" "$SCRIPT_DIR/../hooks/archive-guard.sh"
 
 
 echo
