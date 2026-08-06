@@ -56,6 +56,7 @@ Produce remediation beans as a JSON array in the scorecard output:
 {
   "remediation_beans": [
     {
+      "requirement": "Seed elements in empty districts",
       "title": "Fix: Seed elements not visible in empty districts",
       "description": "The design spec requires seed elements to appear in empty districts to guide the user. No evidence of this feature was found during holistic review.",
       "source": "spec_coverage:Missing",
@@ -70,6 +71,7 @@ Produce remediation beans as a JSON array in the scorecard output:
       }
     },
     {
+      "requirement": "dimension:runtime_health",
       "title": "Fix: Runtime Health below threshold (scored 6, needs 9)",
       "description": "Console errors present during runtime interaction. Multiple warnings on startup. Holistic reviewer observed degraded responsiveness during cross-domain flows.",
       "source": "dimension:runtime_health",
@@ -95,6 +97,7 @@ Produce remediation beans as a JSON array in the scorecard output:
 ### Rules
 
 - Every "Missing" spec coverage entry produces exactly one remediation bean
+- Every remediation bean carries a stable `requirement` key: use the exact spec requirement text for coverage gaps and `dimension:<dimension_name>` for dimension failures
 - Every dimension below threshold produces one remediation bean (combine related issues)
 - "Weak" entries do not automatically produce remediation beans — flag them for human review
 - Each remediation bean must have an `eval` block with criteria specific to the gap
@@ -103,44 +106,72 @@ Produce remediation beans as a JSON array in the scorecard output:
 
 ## Scorecard Output
 
-The holistic reviewer outputs a single JSON scorecard. The domain key is `holistic` and dimension keys are snake_case.
+The holistic reviewer uses the same canonical scorecard envelope as every other evaluator. The domain key is `holistic`, dimension keys are snake_case, and the holistic arrays are optional payload fields preserved by `scripts/merge-scorecards.sh`.
 
 ```json
 {
-  "domain": "holistic",
-  "dimensions": {
-    "integration": {
-      "score": 7,
-      "threshold": 7,
-      "evidence": "Frontend correctly calls backend API endpoints. Data flows end-to-end for primary user flow. Error propagation works — backend 422 shows validation message in frontend. Minor: loading state inconsistent between create and update flows."
-    },
-    "coherence": {
-      "score": 8,
-      "threshold": 7,
-      "evidence": "Consistent naming throughout. Navigation patterns match across domains. Visual language unified. Interaction patterns predictable."
-    },
-    "holistic_spec_fidelity": {
-      "score": 7,
-      "threshold": 8,
-      "evidence": "Primary spec requirements met. Camera zoom and radial layout working. Missing: seed elements in empty districts. Weak: district zone gradients not as soft as spec describes."
-    },
-    "polish": {
-      "score": 6,
-      "threshold": 6,
-      "evidence": "Loading states present. Error handling adequate. No console errors in normal flow. Empty states handled. Minor: hover states inconsistent on secondary buttons."
-    },
-    "runtime_health": {
-      "score": 9,
-      "threshold": 9,
-      "evidence": "All runtimes start cleanly. Zero console errors or warnings. Frontend renders in under 2 seconds. Backend responds to all endpoints within 100ms. No memory growth observed during 5-minute interaction session."
+  "provider": "codex",
+  "task_id": "epic-123",
+  "iteration": 1,
+  "timestamp": "2026-08-05T12:00:00Z",
+  "domains": {
+    "holistic": {
+      "dimensions": {
+        "integration": {
+          "score": 7,
+          "threshold": 7,
+          "evidence": "Primary frontend and backend flows work end to end."
+        },
+        "coherence": {
+          "score": 8,
+          "threshold": 7,
+          "evidence": "Naming, navigation, and interaction patterns are consistent."
+        },
+        "holistic_spec_fidelity": {
+          "score": 7,
+          "threshold": 8,
+          "evidence": "One required empty-state behavior is missing."
+        },
+        "polish": {
+          "score": 6,
+          "threshold": 6,
+          "evidence": "Loading and error states are present."
+        },
+        "runtime_health": {
+          "score": 9,
+          "threshold": 9,
+          "evidence": "All configured runtimes start cleanly."
+        }
+      }
     }
   },
-  "cross_domain_integration": {
-    "api_contract_compliance": "Frontend sends expected request shapes. Backend responds with parseable JSON. All status codes handled.",
-    "data_flow_verified": true,
-    "integration_gaps": []
-  },
-  "spec_coverage_matrix": [],
-  "remediation_beans": []
+  "criteria": [],
+  "antipatterns_detected": [],
+  "guidance": "Implement the missing seed-element behavior.",
+  "dispatch_count": 1,
+  "spec_coverage_matrix": [
+    {
+      "requirement": "Seed elements in empty districts",
+      "coverage": "Missing",
+      "evidence": "No seed elements appear in the captured empty-state evidence."
+    }
+  ],
+  "remediation_beans": [
+    {
+      "requirement": "Seed elements in empty districts",
+      "title": "Fix: Seed elements not visible in empty districts",
+      "description": "Implement and verify the required seed elements.",
+      "source": "spec_coverage:Missing",
+      "eval": {
+        "criteria": [
+          {
+            "id": "seed_elements_visible",
+            "description": "Empty districts display seed elements as specified",
+            "threshold": 8
+          }
+        ]
+      }
+    }
+  ]
 }
 ```

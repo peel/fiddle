@@ -79,7 +79,7 @@ Every holistic reviewer, claude or external, gets the same context:
 - All task bean bodies for their spec requirements: `beans list --parent <epic-id> --json`
 - Runtime state for every domain (ports, domain names, ready status)
 
-Each reviewer returns one JSON scorecard with `domain: "holistic"` and the dimensions `integration`, `coherence`, `holistic_spec_fidelity`, `polish`, `runtime_health`; a `spec_coverage_matrix` array classifying every spec requirement as Full/Weak/Missing; a `remediation_beans` array for the gaps; and a `provider` field naming its producer. Save each one separately:
+Each reviewer returns one canonical JSON scorecard envelope with `provider`, `task_id`, `iteration`, `timestamp`, `domains.holistic.dimensions`, `criteria`, and the usual evaluator metadata. The holistic dimensions are `integration`, `coherence`, `holistic_spec_fidelity`, `polish`, and `runtime_health`; `spec_coverage_matrix` classifies every requirement as Full/Weak/Missing, and `remediation_beans` carries gaps keyed by `requirement`. Save each scorecard separately:
 
 ```bash
 cat > scorecard-holistic-{provider}.json   # ← holistic reviewer output for this provider

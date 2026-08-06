@@ -398,6 +398,55 @@ OUT=$("$SCRIPT_DIR/merge-scorecards.sh" < "$TMPDIR/empty-criteria.json" 2>/dev/n
 assert_exit "empty criteria array → exit 0" 0 "$EXIT_CODE"
 assert_json "criteria normalizes to empty array" '.criteria | length' "0" "$OUT"
 
+# ── Test 13: Holistic coverage and remediation merge ──────────────────────────
+echo ""
+echo "=== Test 13: holistic scorecards preserve conservative coverage and remediation ==="
+cat > "$TMPDIR/holistic.json" <<'EOF'
+[
+  {
+    "task_id": "epic-1",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "domains": {"holistic": {"dimensions": {"integration": {"score": 8, "threshold": 7, "evidence": "claude"}}}},
+    "criteria": [],
+    "spec_coverage_matrix": [
+      {"requirement": "R1", "coverage": "Full", "evidence": "claude full"},
+      {"requirement": "R2", "coverage": "Weak", "evidence": "claude weak"}
+    ],
+    "remediation_beans": [
+      {"requirement": "R1", "title": "Fix R1", "description": "short", "source": "spec_coverage:Missing"}
+    ]
+  },
+  {
+    "task_id": "epic-1",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:01:00Z",
+    "provider": "codex",
+    "domains": {"holistic": {"dimensions": {"integration": {"score": 6, "threshold": 7, "evidence": "codex"}}}},
+    "criteria": [],
+    "spec_coverage_matrix": [
+      {"requirement": "R1", "coverage": "Missing", "evidence": "codex missing"},
+      {"requirement": "R2", "coverage": "Full", "evidence": "codex full"}
+    ],
+    "remediation_beans": [
+      {"requirement": "R1", "title": "Fix R1 thoroughly", "description": "the more specific remediation", "source": "spec_coverage:Missing"}
+    ]
+  }
+]
+EOF
+EXIT_CODE=0
+OUT=$("$SCRIPT_DIR/merge-scorecards.sh" < "$TMPDIR/holistic.json" 2>/dev/null) || EXIT_CODE=$?
+assert_exit "holistic merge → exit 0" 0 "$EXIT_CODE"
+assert_json "holistic dimension still min-merges" '.domains.holistic.dimensions.integration.score' "6" "$OUT"
+assert_json "R1 takes conservative Missing coverage" '.spec_coverage_matrix[] | select(.requirement=="R1") | .coverage' "Missing" "$OUT"
+assert_json "R2 takes conservative Weak coverage" '.spec_coverage_matrix[] | select(.requirement=="R2") | .coverage' "Weak" "$OUT"
+assert_json "R1 records claude coverage" '.spec_coverage_matrix[] | select(.requirement=="R1") | .provider_coverage.claude' "Full" "$OUT"
+assert_json "R1 records codex coverage" '.spec_coverage_matrix[] | select(.requirement=="R1") | .provider_coverage.codex' "Missing" "$OUT"
+assert_json "remediation deduplicates by requirement" '[.remediation_beans[] | select(.requirement=="R1")] | length' "1" "$OUT"
+assert_json "remediation keeps most specific description" '.remediation_beans[] | select(.requirement=="R1") | .description' "the more specific remediation" "$OUT"
+assert_json "remediation records source providers" '.remediation_beans[] | select(.requirement=="R1") | .source_providers | sort | join(",")' "claude,codex" "$OUT"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -88,7 +88,41 @@ echo "$INPUT" | jq -c '
     }
   )) as $merged_criteria |
 
-  # Build merged scorecard with metadata from first card
+  # Holistic scorecards carry two optional collections. Coverage chooses the
+  # least-complete provider verdict; remediation deduplicates by requirement.
+  ([
+    $cards[] as $card |
+    $card.spec_coverage_matrix[]? |
+    . + {"source_provider": $card.provider}
+  ] | group_by(.requirement) | map(
+    . as $entries |
+    ($entries | min_by(
+      if .coverage == "Missing" then 0
+      elif .coverage == "Weak" then 1
+      elif .coverage == "Full" then 2
+      else 3
+      end
+    )) as $conservative |
+    ($conservative + {
+      "provider_coverage": (
+        $entries | map({(.source_provider): .coverage}) | add
+      )
+    }) | del(.source_provider)
+  )) as $merged_coverage |
+
+  ([
+    $cards[] as $card |
+    $card.remediation_beans[]? |
+    . + {"source_provider": $card.provider}
+  ] | group_by(.requirement) | map(
+    . as $entries |
+    ($entries | max_by((.description // "") | length)) as $specific |
+    ($specific + {
+      "source_providers": ([$entries[].source_provider] | unique)
+    }) | del(.source_provider)
+  )) as $merged_remediation |
+
+  # Build merged scorecard with metadata from first card.
   {
     "task_id": $cards[0].task_id,
     "iteration": $cards[0].iteration,
@@ -98,7 +132,13 @@ echo "$INPUT" | jq -c '
     "antipatterns_detected": ([$cards[].antipatterns_detected[]?] | unique),
     "guidance": ([$cards[].guidance // empty] | join("\n---\n")),
     "dispatch_count": ([$cards[].dispatch_count // 0] | add)
-  }
+  } |
+  if ($cards | any(.[]; has("spec_coverage_matrix"))) then
+    .spec_coverage_matrix = $merged_coverage
+  else . end |
+  if ($cards | any(.[]; has("remediation_beans"))) then
+    .remediation_beans = $merged_remediation
+  else . end
 ' 2>/dev/null
 
 # Now compute disagreements and emit to stderr

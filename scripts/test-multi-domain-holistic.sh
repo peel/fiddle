@@ -421,10 +421,11 @@ echo "=== Test 9: SKILL.md structural verification ==="
 DEVELOP_SKILL="$PROJECT_ROOT/skills/develop/SKILL.md"
 DEVELOP_LOOP_SKILL="$PROJECT_ROOT/skills/develop-loop/SKILL.md"
 DEVELOP_HOLISTIC_SKILL="$PROJECT_ROOT/skills/develop-holistic/SKILL.md"
+DEVELOP_DISPATCH_PROTOCOL="$PROJECT_ROOT/skills/develop-loop/dispatch-and-evidence.md"
 assert_file_exists "develop SKILL.md exists" "$DEVELOP_SKILL"
 assert_file_exists "develop-loop SKILL.md exists" "$DEVELOP_LOOP_SKILL"
 assert_file_exists "develop-holistic SKILL.md exists" "$DEVELOP_HOLISTIC_SKILL"
-SKILL_CONTENT=$(cat "$DEVELOP_SKILL" "$DEVELOP_LOOP_SKILL" "$DEVELOP_HOLISTIC_SKILL" "$HOLISTIC_FILE")
+SKILL_CONTENT=$(cat "$DEVELOP_SKILL" "$DEVELOP_LOOP_SKILL" "$DEVELOP_HOLISTIC_SKILL" "$DEVELOP_DISPATCH_PROTOCOL" "$HOLISTIC_FILE")
 
 # Step 3: Holistic Review
 assert_contains "SKILL.md has Step 3: Holistic Review" "## Step 3: Holistic Review" "$SKILL_CONTENT"
