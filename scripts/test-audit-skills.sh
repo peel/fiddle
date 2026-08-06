@@ -97,7 +97,7 @@ printf '\nThe evaluator template is selected dynamically from `skills/evaluate/e
 
 echo "Test 1: valid skill tree passes"
 ERR="$TMPDIR/valid.json"
-assert_exit "valid tree" 0 "$(run_audit "$VALID" "$ERR" --require-router --max-primary-lines 80)"
+assert_exit "valid tree" 0 "$(run_audit "$VALID" "$ERR" --max-primary-lines 80)"
 
 echo "Test 2: malformed frontmatter fails"
 MALFORMED="$TMPDIR/malformed"
@@ -107,11 +107,11 @@ ERR="$TMPDIR/malformed.json"
 assert_exit "malformed frontmatter" 2 "$(run_audit "$MALFORMED" "$ERR")"
 assert_error_code "malformed frontmatter code" "malformed-frontmatter" "$ERR"
 
-echo "Test 3: non-router description fails when required"
+echo "Test 3: non-router description always fails"
 NONROUTER="$TMPDIR/nonrouter"
 make_skill "$NONROUTER" "bad" "Creates a useful artifact for the project."
 ERR="$TMPDIR/nonrouter.json"
-assert_exit "non-router description" 2 "$(run_audit "$NONROUTER" "$ERR" --require-router)"
+assert_exit "non-router description" 2 "$(run_audit "$NONROUTER" "$ERR")"
 assert_error_code "non-router code" "non-router-description" "$ERR"
 
 echo "Test 4: missing reference fails"
@@ -213,6 +213,11 @@ assert_path_missing "status poller removed" "$SCRIPT_DIR/orchestrate-status.sh"
 assert_path_missing "archive wrapper removed" "$SCRIPT_DIR/archive.sh"
 assert_path_missing "archive skill removed" "$SCRIPT_DIR/../skills/archive/SKILL.md"
 assert_file_contains "archive guard retained" "archive directories contain stale artifacts" "$SCRIPT_DIR/../hooks/archive-guard.sh"
+
+echo "Test 14: portability owns the complete CI audit path"
+assert_file_contains "portability runs complete audit" '"$ROOT/scripts/audit-skills.sh"' "$SCRIPT_DIR/check-portability.sh"
+assert_file_excludes "audit has no optional router flag" "require-router" "$SCRIPT_DIR/audit-skills.sh"
+assert_file_excludes "workflow has no duplicate direct audit" "scripts/audit-skills.sh" "$SCRIPT_DIR/../.github/workflows/skill-quality.yml"
 
 
 echo

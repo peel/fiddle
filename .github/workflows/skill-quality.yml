@@ -14,8 +14,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check portability and references
         run: bash scripts/check-portability.sh
-      - name: Check trigger-first skill descriptions
-        run: bash scripts/audit-skills.sh --require-router
       - name: Run skill audit fixtures
         run: bash scripts/test-audit-skills.sh
       - name: Run model resolution fixtures

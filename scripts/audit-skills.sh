@@ -2,12 +2,11 @@
 set -euo pipefail
 
 ROOT=""
-REQUIRE_ROUTER=false
 MAX_PRIMARY_LINES=300
 
 usage() {
   cat <<'EOF'
-Usage: audit-skills.sh [--root <path>] [--require-router] [--max-primary-lines <count>]
+Usage: audit-skills.sh [--root <path>] [--max-primary-lines <count>]
 
 Exit 0 when no violations are found. Exit 2 with {"errors":[...]} on violations
 or invalid arguments.
@@ -19,10 +18,6 @@ while [[ $# -gt 0 ]]; do
     --root)
       ROOT="${2:-}"
       shift 2
-      ;;
-    --require-router)
-      REQUIRE_ROUTER=true
-      shift
       ;;
     --max-primary-lines)
       MAX_PRIMARY_LINES="${2:-}"
@@ -102,7 +97,7 @@ for skill_file in "$ROOT"/skills/*/SKILL.md; do
     add_error "malformed-frontmatter" "$relative" "frontmatter requires name and description"
   elif [[ "$name" != "$expected_name" ]]; then
     add_error "skill-name-mismatch" "$relative" "name $name does not match directory $expected_name"
-  elif [[ "$REQUIRE_ROUTER" == true && ! "$description" =~ ^Use\ (when|to|after|before)\  ]]; then
+  elif [[ ! "$description" =~ ^Use\ (when|to|after|before)\  ]]; then
     add_error "non-router-description" "$relative" "description must begin with Use when, Use to, Use after, or Use before"
   fi
 
