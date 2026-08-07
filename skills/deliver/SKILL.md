@@ -11,7 +11,7 @@ Analyze design-versus-implementation drift, update documentation, evolve the eva
 
 ## Configuration
 
-`--epic <id>` is required. Read `providers.phases.deliver`, provider commands and flags, timeouts, product artifacts, spot-check, and aging settings from [orchestrate configuration](../orchestrate/configuration.md). Internal subagent models resolve through `scripts/resolve-subagent-model.sh`: `models.roles.<role>` overrides `models.phases.<phase>`, and `default` inherits the current session model; this is independent of provider CLI configuration.
+`--epic <id>` is required. Read `providers.phases.deliver`, provider commands and flags, timeouts, product artifacts, spot-check, and aging settings from [orchestrate configuration](../orchestrate/configuration.md). When orchestrate invokes delivery, use its canonical main-worktree Beans path for every Beans command. Internal subagent models resolve through `scripts/resolve-subagent-model.sh`: `models.roles.<role>` overrides `models.phases.<phase>`, and `default` inherits the current session model; this is independent of provider CLI configuration.
 
 ## 1. Validate the epic
 
@@ -25,6 +25,10 @@ Follow [drift analysis, documentation, and product artifacts](drift-and-docs.md)
 
 Follow [evaluator evolution](evaluator-evolve.md). Blind spot-checking precedes scorecard disclosure, and every calibration, threshold, aging, and close decision requiring confirmation remains attended.
 
-## 4. Close
+## 4. Publish milestone handoff
+
+Follow [milestone handoff](milestone-handoff.md). Seed-aware epics must publish a valid handoff before closing; legacy epics skip this step.
+
+## 5. Close
 
 After the user confirms evaluator evolution, run `beans update <epic-id> --status completed`. Delivery never runs repository-wide bean maintenance implicitly; when explicitly requested, `beans archive` remains a direct maintenance command.

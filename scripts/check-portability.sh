@@ -97,5 +97,6 @@ if rg -n "${legacy_namespace}|${legacy_root}" skills scripts .codex .codex-plugi
 fi
 
 "$ROOT/scripts/audit-skills.sh"
+"$ROOT/scripts/test-resolve-orchestrate-phase.sh"
 
 echo "portable skill metadata ok"

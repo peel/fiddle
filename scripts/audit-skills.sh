@@ -84,7 +84,7 @@ for skill_file in "$ROOT"/skills/*/SKILL.md; do
   expected_name=$(basename "$skill_dir")
 
   first_line=$(sed -n '1p' "$skill_file")
-  closing_line=$(sed -n '2,/^---$/=' "$skill_file" | tail -n 1)
+  closing_line=$(awk 'NR > 1 && $0 == "---" { print NR; exit }' "$skill_file")
   if [[ "$first_line" != '---' || -z "$closing_line" ]]; then
     add_error "malformed-frontmatter" "$relative" "frontmatter must start and end with ---"
     continue

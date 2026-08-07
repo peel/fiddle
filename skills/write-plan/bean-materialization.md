@@ -18,6 +18,12 @@ If `--epic <id>` was provided, reuse that epic. Verify it exists and is type `ep
 beans show <id> --json
 ```
 
+Use the canonical main-worktree Beans path supplied by orchestrate for every command. Inspect direct children tagged `planning`:
+
+- Exactly one planning child: this is a seed-aware materialization. Capture its ID as `SEED_ID` and upsert generated beans as described below.
+- None: retain legacy create-only behavior.
+- More than one: stop; the epic is invalid.
+
 Otherwise, create a new epic from the plan's header (Goal, Architecture) and any `## Contracts` / hard-constraints sections from the design doc:
 
 ```bash
@@ -45,18 +51,23 @@ Capture the epic ID for the next step.
 Iterate through every `### Task N:` heading in the plan in document order. For each:
 
 1. Count the TDD cycles in the task's checklist (each "Write the failing test" step is one cycle). Apply the sizing rule from `fiddle:define-beans` to choose **task** vs. **feature + children**.
-2. Create the bean(s) under the epic with `--parent <epic-id>`. The body takes this exact shape:
+2. Assign a stable plan position: `N` for a task/feature and `N.a`, `N.b`, etc. for split child tasks. In seed-aware mode, find existing descendants carrying both `generated-by:<SEED_ID>` and `plan-task:<position>`:
+   - zero matches: create the bean with both tags;
+   - one match: update that bean's title, type, priority, body, parent, and dependencies to match the plan;
+   - more than one match, a conflicting parent, or a generation tag naming another seed: stop without creating anything.
+3. Create or update the bean(s) under the epic with `--parent <epic-id>`. The body takes this exact shape:
    - `## Context` — repo path + a sentence on what/why
+   - `Source:` — link to the original RFC/design source inherited from the seed or epic, when present
    - `## Files` — the `Files:` block from the plan task copied verbatim (paths only, one per line, prefixed `- Create:` / `- Modify:` / `- Test:`)
    - `## Steps` — the plan task's `- [ ]` checklist copied verbatim, including code blocks
    - `## Evaluation` — the fenced ` ```eval ` block copied verbatim from the plan task
-3. Wire `--blocked-by` for any sequential dependencies between behaviors of a feature, and feature-level `--blocked-by` for cross-task dependencies (per `fiddle:define-beans` rules).
+4. Wire `--blocked-by` for any sequential dependencies between behaviors of a feature, and feature-level `--blocked-by` for cross-task dependencies (per `fiddle:define-beans` rules). Remove stale generated dependencies before adding the plan's current set.
 
 If a plan task has no fenced ` ```eval ` block, stop and add one to the plan first. Eval criteria invented during bean creation are criteria the spec never agreed to.
 
 ### Step 4: Run the Completeness Gate
 
-After all beans are created, list children of the epic and verify each task bean body passes the Bean Body Completeness Gate from `fiddle:define-beans` (steps exist and are actionable; eval block present; files specified; sufficient context). Feature beans that are pure containers are exempt.
+After all beans are created or updated, list children of the epic, excluding its `planning` seed, and verify each task bean body passes the Bean Body Completeness Gate from `fiddle:define-beans` (steps exist and are actionable; eval block present; files specified; sufficient context). Feature beans that are pure containers are exempt. In seed-aware mode also verify generation identities are unique and every implementation bean belongs to the current seed.
 
 Fix any failing body inline. Do not exit Step 4 until every task bean passes.
 

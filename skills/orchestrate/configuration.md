@@ -6,7 +6,7 @@
 
 | Flag | Default | Description |
 |---|---|---|
-| `--epic <id>` | none | Resume an existing epic. Skips DISCOVER/DEFINE if beans exist. |
+| `--epic <id>` | none | Resume one explicit epic. A seed-aware epic reconstructs context and executes its planning seed before development. A milestone is rejected. |
 | `--no-triage` | false | Skip quick-path triage. |
 | `--skip-discover` | false | Start at DEFINE. |
 | `--skip-docs` | false | Pass through to DISCOVER. |

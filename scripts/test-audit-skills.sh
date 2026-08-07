@@ -216,8 +216,18 @@ assert_file_contains "archive guard retained" "archive directories contain stale
 
 echo "Test 14: portability owns the complete CI audit path"
 assert_file_contains "portability runs complete audit" '"$ROOT/scripts/audit-skills.sh"' "$SCRIPT_DIR/check-portability.sh"
+assert_file_contains "portability runs phase resolver contract" '"$ROOT/scripts/test-resolve-orchestrate-phase.sh"' "$SCRIPT_DIR/check-portability.sh"
 assert_file_excludes "audit has no optional router flag" "require-router" "$SCRIPT_DIR/audit-skills.sh"
 assert_file_excludes "workflow has no duplicate direct audit" "scripts/audit-skills.sh" "$SCRIPT_DIR/../.github/workflows/skill-quality.yml"
+
+echo "Test 15: seed-aware orchestration protocols are wired end to end"
+assert_file_contains "orchestrate resolves durable phase" "resolve-orchestrate-phase.sh" "$SCRIPT_DIR/../skills/orchestrate/SKILL.md"
+assert_file_contains "orchestrate links seed planning" "seed-planning.md" "$SCRIPT_DIR/../skills/orchestrate/SKILL.md"
+assert_file_contains "seed planning invokes write-plan" 'fiddle:write-plan --from-orchestrate --epic' "$SCRIPT_DIR/../skills/orchestrate/seed-planning.md"
+assert_file_contains "materialization records seed identity" "generated-by:" "$SCRIPT_DIR/../skills/write-plan/bean-materialization.md"
+assert_file_contains "materialization records plan identity" "plan-task:" "$SCRIPT_DIR/../skills/write-plan/bean-materialization.md"
+assert_file_contains "deliver links milestone handoff" "milestone-handoff.md" "$SCRIPT_DIR/../skills/deliver/SKILL.md"
+assert_file_contains "handoff has stable marker" "milestone-handoff:start" "$SCRIPT_DIR/../skills/deliver/milestone-handoff.md"
 
 
 echo
