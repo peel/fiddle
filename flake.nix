@@ -4,6 +4,10 @@
     devenv.url = "github:cachix/devenv";
     flake-parts.url = "github:hercules-ci/flake-parts";
     ai-devtools.url = "path:/Users/peel/wrk/ai-devtools";
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   nixConfig = {
@@ -29,8 +33,18 @@
       perSystem = {
         pkgs,
         lib,
+        inputs',
         ...
-      }: {
+      }: let
+        # One toolchain definition shared by the devenv shell and every cargo
+        # invocation: Fenix reads `rust-toolchain.toml`, so the channel and the
+        # components are pinned in exactly one place. CI installs the same
+        # channel via dtolnay/rust-toolchain (see .github/workflows/rust.yml).
+        rustToolchain = inputs'.fenix.packages.fromToolchainFile {
+          file = ./rust-toolchain.toml;
+          sha256 = "sha256-tiOCzZ1sJoRauyMvrE2u8Ftrc+U+vAqcCsPI9F0nk3Y=";
+        };
+      in {
         ai-tools.enable = true;
 
         devenv.shells.default = {
@@ -49,6 +63,7 @@
             );
 
           packages = [
+            rustToolchain
             pkgs.alejandra
             pkgs.gh
             pkgs.jq
