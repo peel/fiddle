@@ -23,3 +23,7 @@ disagreements*.json
 
 # Rust build artifacts
 /target
+
+# devenv shell state
+.devenv/
+.devenv.flake.nix
