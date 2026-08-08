@@ -90,6 +90,22 @@ fn executable_from(build_log: &[u8]) -> Option<PathBuf> {
         .find_map(|message| Some(PathBuf::from(message["executable"].as_str()?)))
 }
 
+/// The credential-shaped environment variables the M0 lane must never need.
+///
+/// [`Scenario`] removes every one of these from each subprocess it launches.
+/// That is the point of this milestone's acceptance lane: it must be green on a
+/// machine that holds no secrets, so the milestone is never gated on one. Doing
+/// it by removal rather than by assuming the environment is clean means the
+/// guarantee also holds on a CI runner that happens to define `GITHUB_TOKEN`
+/// for its own reasons — there, an accidental dependency on a token would
+/// otherwise pass here and fail for the next person.
+pub const CREDENTIAL_VARS: [&str; 4] = [
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "JIRA_API_TOKEN",
+];
+
 /// The `project.name` every scenario's configuration declares.
 ///
 /// Named once because the correlation key is derived from it: a scenario that
@@ -126,9 +142,39 @@ impl Scenario {
         scenario
     }
 
+    /// The `fiddle` binary with this scenario's credential-free environment
+    /// already applied, ready for arguments.
+    ///
+    /// Every subprocess a scenario launches is built here rather than from
+    /// [`fiddle_command`] directly, so no helper can opt out of the guarantee
+    /// by accident: adding a command means inheriting the removals, and
+    /// removing them means editing this one place.
+    pub fn command(&self) -> Command {
+        let mut command = fiddle_command();
+        for name in CREDENTIAL_VARS {
+            command.env_remove(name);
+        }
+        command
+    }
+
     /// The `--config` argument every command in this scenario is given.
     pub fn config_path(&self) -> PathBuf {
         self.dir.path().join("fiddle.toml")
+    }
+
+    /// Run `fiddle config check --config <this scenario's document> --json` and
+    /// hand back the whole process result, unjudged.
+    pub fn config_check(&self) -> std::process::Output {
+        self.command()
+            .args([
+                "config",
+                "check",
+                "--config",
+                self.config_path().to_str().unwrap(),
+                "--json",
+            ])
+            .output()
+            .unwrap()
     }
 
     /// The fixture directory both stub ports read.
@@ -315,7 +361,7 @@ impl Scenario {
     /// whole process result — exit code, stdout, and stderr — unjudged, for the
     /// cases that are about the diagnostic rather than the payload.
     pub fn run_raw_with(&self, extra: &[&str], invocation_ref: &str) -> std::process::Output {
-        let mut command = fiddle_command();
+        let mut command = self.command();
         command.args([
             "run",
             invocation_ref,
@@ -323,6 +369,32 @@ impl Scenario {
             self.config_path().to_str().unwrap(),
         ]);
         command.args(extra);
+        command.output().unwrap()
+    }
+
+    /// Run `fiddle run <invocation_ref> --json` with `env` restored to the
+    /// child, overriding this scenario's removals.
+    ///
+    /// The mirror image of the credential-free default, and the half of the
+    /// guarantee removal alone cannot make: removing a variable shows fiddle
+    /// does not *need* it, while supplying one and getting the same answer
+    /// shows fiddle does not *consult* it.
+    pub fn run_raw_with_env(
+        &self,
+        env: &[(&str, &str)],
+        invocation_ref: &str,
+    ) -> std::process::Output {
+        let mut command = self.command();
+        command.args([
+            "run",
+            invocation_ref,
+            "--config",
+            self.config_path().to_str().unwrap(),
+            "--json",
+        ]);
+        for (name, value) in env {
+            command.env(name, value);
+        }
         command.output().unwrap()
     }
 
@@ -335,7 +407,8 @@ impl Scenario {
     /// Run `fiddle inspect <invocation_ref>` without `--json`, require exit 0,
     /// and return what a reader at a terminal would see on stdout.
     pub fn inspect_human(&self, invocation_ref: &str) -> String {
-        let out = fiddle_command()
+        let out = self
+            .command()
             .args([
                 "inspect",
                 invocation_ref,
@@ -356,7 +429,8 @@ impl Scenario {
     /// Run `fiddle inspect <invocation_ref> --json`, require `code`, and return
     /// the parsed payload.
     pub fn inspect_json_expect_code(&self, invocation_ref: &str, code: i32) -> serde_json::Value {
-        let out = fiddle_command()
+        let out = self
+            .command()
             .args([
                 "inspect",
                 invocation_ref,

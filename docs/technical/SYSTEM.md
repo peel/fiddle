@@ -32,6 +32,16 @@ Fiddle is a portable Agent Skills library that orchestrates a four-phase develop
 
 Runs entirely locally as portable skills. Claude loads `.claude-plugin/plugin.json`, Codex loads `.codex-plugin/plugin.json`, and Pi reads `package.json` with `pi.skills`. Requires bash and jq for helper scripts. External providers (codex, gemini) are optional local CLIs.
 
+**Rust workspace gate** (`.github/workflows/rust.yml`) — The `fiddle` binary's Cargo workspace (`crates/fiddle-core`, `fiddle-runtime`, `fiddle-cli`, `fiddle-acceptance`) is gated by `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-features`, and `cargo build --release`, run against the channel pinned by `rust-toolchain.toml`. `nix flake check` stays a local-only developer gate because `inputs.ai-devtools` is a machine-local `path:` input no runner can resolve. Locally, prefix each command with `nix develop -c`.
+
+**M0 acceptance command** — The M0 milestone's proof is one cumulative black-box scenario driven through the compiled `fiddle` binary as a subprocess — config check, inspect, run, bundle assertion, and a second fresh invocation, in that order, sharing one temporary fixture project:
+
+```
+cargo test -p fiddle-acceptance --test m0_skeleton -- --nocapture
+```
+
+`.github/workflows/rust.yml` runs exactly that command as the named step *M0 acceptance scenario (credential-free black-box)*. It needs no credentials and no external repository: the scenario removes `GITHUB_TOKEN`, `GH_TOKEN`, `ANTHROPIC_API_KEY`, and `JIRA_API_TOKEN` from every subprocess it launches, then re-supplies them once to show the behaviour is identical either way. Later milestones run this command unchanged as their regression baseline; locally, prefix it with `nix develop -c`.
+
 
 ## Invariants
 
@@ -51,6 +61,8 @@ Runs entirely locally as portable skills. Claude loads `.claude-plugin/plugin.js
 - Skills are written as judgment plus rationale. Mechanical invariants live in scripts with exit-code contracts, not in prose, and skill files carry no emphatic markup (gate blocks, capitalized emphasis, rationalization tables, red-flag lists, announcement lines). Frontmatter `description` fields, JSON schemas, and quoted external content are the exceptions, since they are interface text rather than instruction. See the authoring note in `skills/using-fiddle/SKILL.md`.
 - Internal subagent models resolve through `scripts/resolve-subagent-model.sh`: a role override wins over a phase default, while `default` omits an explicit model and inherits the session. Provider CLI selection never flows through this resolver.
 - `scripts/audit-skills.sh` returns exit 2 with JSON errors for malformed metadata, missing references, orphaned companions, or configured primary-skill size violations.
+- Acceptance tests launch the compiled `fiddle` binary as a subprocess and observe only its exit code, its `--json` payload, or a file it wrote; they never call library functions directly.
+- The M0 acceptance command (`cargo test -p fiddle-acceptance --test m0_skeleton -- --nocapture`) must stay credential-free and green. The milestone lane is never gated on a secret or an external repository, and later milestone seeds run this exact command as their baseline.
 
 ---
 Last reviewed: 2026-08-05
