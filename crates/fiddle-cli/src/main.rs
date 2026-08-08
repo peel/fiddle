@@ -135,10 +135,24 @@ fn dispatch(cli: &cli::Cli) -> Result<(), CliError> {
                 invocation_ref.parse().map_err(InvalidInvocationRef::from)?;
             let config = config::load(&cli.config)?;
             let observed = observe(&config, &reference);
+            // The CLI owns the configuration, so the CLI computes the marker
+            // this invocation expects and hands it to the core. `assess` and
+            // `derive_next` never reach for it themselves — that is what keeps
+            // them pure functions of their arguments.
+            let expected_marker =
+                fiddle_core::correlation_key(&config.project.name, &reference.as_str());
+            let assessment = fiddle_core::assess(&observed, &expected_marker);
+            let next_action = fiddle_core::derive_next(&observed, &expected_marker);
             if *json {
-                println!("{}", render::inspect_json(&reference, &observed));
+                println!(
+                    "{}",
+                    render::inspect_json(&reference, &observed, &assessment, &next_action)
+                );
             } else {
-                println!("{}", render::inspect_human(&reference, &observed));
+                println!(
+                    "{}",
+                    render::inspect_human(&reference, &observed, &assessment, &next_action)
+                );
             }
             Ok(())
         }

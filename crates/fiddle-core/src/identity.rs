@@ -56,6 +56,22 @@ impl std::fmt::Display for InvocationScheme {
     }
 }
 
+/// The identity of a capability fiddle can execute.
+///
+/// A `&'static str` rather than a `String`: capabilities are compiled into the
+/// binary, so a capability id is always a literal this build knows about and
+/// never a name assembled at runtime. Serialized transparently, so the id
+/// appears on the wire as the bare `"stub_mark"` a caller matches on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(transparent)]
+pub struct CapabilityId(pub &'static str);
+
+impl std::fmt::Display for CapabilityId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
 /// A parsed `<scheme>:<value>` invocation reference, such as
 /// `beans:fiddle-m0-demo`.
 ///

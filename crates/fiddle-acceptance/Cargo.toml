@@ -12,6 +12,10 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 assert_cmd.workspace = true
+# Used to re-derive the expected correlation key from the design's definition,
+# so the acceptance lane checks the binary against the specification rather than
+# against `fiddle-core`'s implementation of it.
+blake3.workspace = true
 regex.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

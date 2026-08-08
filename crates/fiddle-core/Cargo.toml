@@ -8,11 +8,13 @@ edition.workspace = true
 # or the process/filesystem/network/clock. `crates/fiddle-acceptance/tests/
 # crate_boundary.rs` enforces both halves of that rule mechanically.
 #
-# `serde` and `thiserror` are admitted because both are pure: they generate
-# code, they do not reach outside the process. The boundary test walks the
-# resolved closure of both, so a future transitive runtime dependency would be
-# caught rather than assumed away.
+# `serde`, `thiserror`, and `blake3` are admitted because all three are pure:
+# they generate code or compute over bytes they were handed, and none of them
+# reaches outside the process. The boundary test walks their resolved closures,
+# so a future transitive runtime dependency would be caught rather than assumed
+# away.
 [dependencies]
+blake3.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

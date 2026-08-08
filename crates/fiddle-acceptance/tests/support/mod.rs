@@ -4,9 +4,21 @@
 //! of them calls a library function, so what the tests observe is exactly what a
 //! caller at a shell would observe: an exit code, stdout, and stderr.
 
+// This file is compiled once per test binary, and no single scenario needs every
+// helper — a builder used only by the assessment tests is not dead code, it is
+// simply not used by the observation tests.
+#![allow(dead_code)]
+
 use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+
+/// The `project.name` every scenario's configuration declares.
+///
+/// Named once because the correlation key is derived from it: a scenario that
+/// wrote a marker for a different project name would be asserting the wrong
+/// thing.
+pub const PROJECT_NAME: &str = "icecube";
 
 /// A disposable project: a temporary directory holding a `fiddle.toml`, the
 /// stub fixture root it names, and the report directory it names.
@@ -57,6 +69,49 @@ impl Scenario {
         .unwrap();
     }
 
+    /// Record `<stub.root>/changes/<work_id>.json`, the change set the stub
+    /// change port observes, carrying `marker`.
+    pub fn write_change_marker(&self, work_id: &str, marker: &str) {
+        std::fs::write(
+            self.stub_root().join(format!("changes/{work_id}.json")),
+            format!("{{\"marker\":\"{marker}\"}}"),
+        )
+        .unwrap();
+    }
+
+    /// The directory `report.dir` names.
+    ///
+    /// Nothing in this harness creates it: its absence is what proves a
+    /// read-only command published no evidence bundle.
+    pub fn report_dir(&self) -> PathBuf {
+        self.dir.path().join("reports")
+    }
+
+    /// Every file under `<stub.root>` as `(relative path, bytes)`, sorted.
+    ///
+    /// Byte-level and exhaustive on purpose: comparing two snapshots catches a
+    /// command that rewrote a fixture with identical-looking content, added a
+    /// file, or removed one, which a spot check of one path would miss.
+    pub fn stub_snapshot(&self) -> Vec<(String, Vec<u8>)> {
+        let root = self.stub_root();
+        let mut files = Vec::new();
+        collect_files(&root, &root, &mut files);
+        files.sort();
+        files
+    }
+
+    /// The correlation key this scenario's project and `invocation_ref` must
+    /// produce.
+    ///
+    /// Derived here from the design's own definition — `blake3(project + NUL +
+    /// invocation_ref)`, first 16 hex characters — rather than by calling
+    /// `fiddle_core::correlation_key`, so the acceptance lane still checks the
+    /// binary against the specification instead of against itself.
+    pub fn expected_marker(&self, invocation_ref: &str) -> String {
+        blake3::hash(format!("{PROJECT_NAME}\0{invocation_ref}").as_bytes()).to_hex()[..16]
+            .to_string()
+    }
+
     /// Take the whole fixture root away, so every source the ports name becomes
     /// unobservable.
     pub fn remove_stub_root(&self) {
@@ -67,6 +122,28 @@ impl Scenario {
     /// the parsed payload.
     pub fn inspect_json(&self, invocation_ref: &str) -> serde_json::Value {
         self.inspect_json_expect_code(invocation_ref, 0)
+    }
+
+    /// Run `fiddle inspect <invocation_ref>` without `--json`, require exit 0,
+    /// and return what a reader at a terminal would see on stdout.
+    pub fn inspect_human(&self, invocation_ref: &str) -> String {
+        let out = Command::cargo_bin("fiddle")
+            .unwrap()
+            .args([
+                "inspect",
+                invocation_ref,
+                "--config",
+                self.config_path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "stderr = {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
     }
 
     /// Run `fiddle inspect <invocation_ref> --json`, require `code`, and return
@@ -95,6 +172,23 @@ impl Scenario {
                 String::from_utf8_lossy(&out.stdout)
             )
         })
+    }
+}
+
+/// Every file under `dir`, recursively, as a path relative to `root` paired
+/// with its bytes.
+fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(root, &path, out);
+        } else {
+            let relative = path.strip_prefix(root).unwrap().display().to_string();
+            out.push((relative, std::fs::read(&path).unwrap()));
+        }
     }
 }
 
