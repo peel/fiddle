@@ -18,6 +18,12 @@ toml.workspace = true
 # source line and caret that design §4.6 requires of a configuration error.
 miette = { workspace = true, features = ["fancy"] }
 thiserror.workspace = true
+# The binary owns the executor, because `fiddle_runtime::attempt` is a future:
+# a capability may wait on a model turn or a subprocess. `fiddle-core` must
+# never gain this edge — `crate_boundary` walks its resolved closure and fails
+# if `tokio` appears in it — but the CLI is the impure end of the workspace, and
+# something has to drive the runtime.
+tokio.workspace = true
 
 # Only the exit-code table's tests reach for a filesystem: they drive a real
 # attempt over a fixture root so the code they pin is the code a real conclusion

@@ -17,9 +17,14 @@ use std::process::ExitCode;
 /// half of the row visibly the same number.
 const EXIT_INVALID_INPUT: u8 = 2;
 
-fn main() -> ExitCode {
+/// The binary drives an async runtime because [`fiddle_runtime::attempt`] is a
+/// future: a capability may wait on a model turn or a subprocess. Nothing about
+/// what this process *prints* or *exits with* changes — the whole command is one
+/// `block_on`, and every command remains a single sequential path through it.
+#[tokio::main]
+async fn main() -> ExitCode {
     let cli = cli::Cli::parse();
-    let termination = match dispatch(&cli) {
+    let termination = match dispatch(&cli).await {
         Ok(outcome) => Termination::Ran(outcome),
         Err(error) => {
             eprintln!("{}", render::diagnostic(&error));
@@ -204,7 +209,7 @@ fn build_identity() -> FiddleBuild {
     FiddleBuild::new(env!("CARGO_PKG_VERSION"), env!("FIDDLE_SOURCE_REVISION"))
 }
 
-fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
+async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
     match &cli.command {
         cli::Command::Config { action } => match action {
             cli::ConfigCommand::Check { json } => {
@@ -274,10 +279,15 @@ fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             let reference: InvocationRef =
                 invocation_ref.parse().map_err(InvalidInvocationRef::from)?;
             if let Some(requested) = capability {
-                // M0 knows exactly one capability, so a valid selection can only
-                // ever name the capability the derivation would choose anyway.
-                // The flag's job here is to reject an unknown id loudly rather
-                // than to narrow a plan that cannot be narrowed.
+                // The flag's job here is to reject an unknown id loudly. It does
+                // *not* yet select: this binary builds `stub_mark` below
+                // whatever is asked for, so `--capability fixture_repair` is
+                // accepted and then ignored. That was harmless while
+                // `CAPABILITIES` held one id and a valid selection could only
+                // name the capability the derivation would choose anyway; it
+                // stops being harmless the moment a second id is registered,
+                // and it is the next task's job to make the selection real
+                // rather than advisory.
                 resolve_capability(requested)?;
             }
             let config = config::load(&cli.config)?;
@@ -298,7 +308,8 @@ fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 work_items: &work_items,
                 changes: &changes,
                 capability: &marking as &dyn Capability,
-            });
+            })
+            .await;
 
             if let Some(failure) = &record.evidence_failure {
                 eprintln!("{}", render::evidence_failure(&config.report.dir, failure));
@@ -399,8 +410,8 @@ mod tests {
     /// `"next_action":{"blocked":…}` in release, and aborted with 101 — a row of
     /// no table — in debug. Both halves are pinned shut here: one code, from the
     /// table, in either profile.
-    #[test]
-    fn a_race_after_executing_still_exits_on_the_table() {
+    #[tokio::test]
+    async fn a_race_after_executing_still_exits_on_the_table() {
         let root = tempfile::tempdir().unwrap();
         let stub_root = root.path().join("stub-state");
         std::fs::create_dir_all(stub_root.join("work")).unwrap();
@@ -428,7 +439,8 @@ mod tests {
             work_items: &work_items,
             changes: &changes,
             capability: &marking as &dyn Capability,
-        });
+        })
+        .await;
 
         assert!(
             matches!(record.bundle.next_action, NextAction::Blocked { .. }),

@@ -226,7 +226,7 @@ fn concluded(next_action: &NextAction) -> RunOutcome {
 /// Total: every path returns a report. A capability failure becomes
 /// [`RunOutcome::Retryable`] rather than an `Err`, because "try this again"
 /// is a conclusion about the run, not an error the caller has to classify.
-pub fn run(ctx: &RunContext<'_>) -> RunReport {
+pub async fn run(ctx: &RunContext<'_>) -> RunReport {
     let marker = ctx.expected_marker();
     let view = ctx.observe();
     // The capability under consideration comes from the context, not from the
@@ -282,6 +282,7 @@ pub fn run(ctx: &RunContext<'_>) -> RunReport {
     match ctx
         .capability
         .execute(authorised.grant, ctx.work_id, ctx.invocation_ref)
+        .await
     {
         Ok(evidence) => {
             // Recorded before anything else happens: until the bundle publishes,
@@ -405,7 +406,7 @@ pub struct AttemptRecord {
 /// most one of the two exists, so they cannot be read as disagreeing, and a
 /// journal record means exactly one thing: this attempt did not finish recording
 /// itself. [`crate::journal::interrupted`] is how a later reader finds those.
-pub fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
+pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
     // Minted once, here: an attempt id names this attempt, and one attempt is
     // one run. It is minted before anything is recorded because both the journal
     // and the bundle are filed under it.
@@ -429,7 +430,8 @@ pub fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
         changes: ctx.changes,
         capability: ctx.capability,
         journal: &journal,
-    });
+    })
+    .await;
 
     // `work_ref` is the invocation reference in M0, where a beans reference is
     // both the request and the identity of the work. It is a separate field
@@ -574,12 +576,13 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl Capability for Spy {
         fn id(&self) -> CapabilityId {
             STUB_MARK
         }
 
-        fn execute(
+        async fn execute(
             &self,
             _grant: ExecutionGrant,
             _work_id: &str,
@@ -601,19 +604,20 @@ mod tests {
         log: std::sync::Arc<Log>,
     }
 
+    #[async_trait::async_trait]
     impl Capability for Watched {
         fn id(&self) -> CapabilityId {
             self.inner.id()
         }
 
-        fn execute(
+        async fn execute(
             &self,
             grant: ExecutionGrant,
             work_id: &str,
             invocation_ref: &str,
         ) -> Result<EvidenceRef, CapabilityError> {
             self.log.record("execute");
-            self.inner.execute(grant, work_id, invocation_ref)
+            self.inner.execute(grant, work_id, invocation_ref).await
         }
     }
 
@@ -694,15 +698,15 @@ mod tests {
 
     /// Unstarted work executes once and then reports the state it left, not the
     /// state it found.
-    #[test]
-    fn a_first_run_executes_and_then_reports_complete() {
+    #[tokio::test]
+    async fn a_first_run_executes_and_then_reports_complete() {
         let dir = fixture_root();
         let capability = StubMark::new(dir.path(), PROJECT);
         let work_items = StubWorkItemPort::new(dir.path());
         let changes = StubChangePort::new(dir.path());
         let journal = SpyJournal::default();
 
-        let report = run(&context(&capability, &work_items, &changes, &journal));
+        let report = run(&context(&capability, &work_items, &changes, &journal)).await;
 
         assert_eq!(report.outcome, RunOutcome::Completed);
         assert_eq!(
@@ -721,8 +725,8 @@ mod tests {
 
     /// The stability property, at the orchestration level: a second run over
     /// the world the first one left finds it satisfied and does nothing.
-    #[test]
-    fn a_second_run_completes_without_executing_again() {
+    #[tokio::test]
+    async fn a_second_run_completes_without_executing_again() {
         let dir = fixture_root();
         let log = std::sync::Arc::<Log>::default();
         let spy = Spy::watching(&log);
@@ -736,8 +740,9 @@ mod tests {
             &work_items,
             &changes,
             &SpyJournal::default(),
-        ));
-        let report = run(&context(&spy, &work_items, &changes, &journal));
+        ))
+        .await;
+        let report = run(&context(&spy, &work_items, &changes, &journal)).await;
 
         assert_eq!(spy.calls(), 0, "a satisfied world must not execute");
         assert_eq!(report.outcome, RunOutcome::Completed);
@@ -753,8 +758,8 @@ mod tests {
 
     /// The fail-closed arm: an unobservable world never reaches the capability,
     /// and says so with an empty execution list rather than a discarded one.
-    #[test]
-    fn a_blocked_derivation_never_reaches_the_capability() {
+    #[tokio::test]
+    async fn a_blocked_derivation_never_reaches_the_capability() {
         let dir = tempfile::tempdir().unwrap();
         let absent = dir.path().join("no-such-root");
         let log = std::sync::Arc::<Log>::default();
@@ -763,7 +768,7 @@ mod tests {
         let changes = StubChangePort::new(&absent);
         let journal = SpyJournal::watching(&log);
 
-        let report = run(&context(&spy, &work_items, &changes, &journal));
+        let report = run(&context(&spy, &work_items, &changes, &journal)).await;
 
         assert_eq!(spy.calls(), 0, "a blocked derivation must not execute");
         assert!(matches!(report.outcome, RunOutcome::Failed { .. }));
@@ -781,8 +786,8 @@ mod tests {
     /// capability is reached, and the effect after it returns — one sequence, so
     /// no pair of independently-correct assertions can pass while the order is
     /// wrong.
-    #[test]
-    fn the_intent_is_recorded_before_the_capability_is_reached() {
+    #[tokio::test]
+    async fn the_intent_is_recorded_before_the_capability_is_reached() {
         let dir = fixture_root();
         let log = std::sync::Arc::<Log>::default();
         let capability = Watched {
@@ -793,7 +798,7 @@ mod tests {
         let changes = StubChangePort::new(dir.path());
         let journal = SpyJournal::watching(&log);
 
-        run(&context(&capability, &work_items, &changes, &journal));
+        run(&context(&capability, &work_items, &changes, &journal)).await;
 
         assert_eq!(
             log.events(),
@@ -804,8 +809,8 @@ mod tests {
 
     /// The fail-closed direction of that ordering: an intent that could not be
     /// recorded stops the run instead of letting it change the world unrecorded.
-    #[test]
-    fn an_unrecordable_intent_stops_the_run_before_the_capability() {
+    #[tokio::test]
+    async fn an_unrecordable_intent_stops_the_run_before_the_capability() {
         let dir = fixture_root();
         let log = std::sync::Arc::<Log>::default();
         let spy = Spy::watching(&log);
@@ -813,7 +818,7 @@ mod tests {
         let changes = StubChangePort::new(dir.path());
         let journal = SpyJournal::refusing(&log);
 
-        let report = run(&context(&spy, &work_items, &changes, &journal));
+        let report = run(&context(&spy, &work_items, &changes, &journal)).await;
 
         assert_eq!(spy.calls(), 0);
         assert_eq!(log.events(), ["intent"], "nothing may follow a refusal");
@@ -843,8 +848,8 @@ mod tests {
     /// directory rather than a missing one. That is a Unix permission, hence
     /// the gate; and `root` ignores the permission, hence the early return.
     #[cfg(unix)]
-    #[test]
-    fn a_capability_failure_is_retryable_and_recorded() {
+    #[tokio::test]
+    async fn a_capability_failure_is_retryable_and_recorded() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = fixture_root();
@@ -857,7 +862,7 @@ mod tests {
 
         // Readable and listable, but not writable: observation still succeeds.
         std::fs::set_permissions(&changes_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
-        let report = run(&context(&capability, &work_items, &changes, &journal));
+        let report = run(&context(&capability, &work_items, &changes, &journal)).await;
         std::fs::set_permissions(&changes_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         if report.outcome == RunOutcome::Completed {

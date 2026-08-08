@@ -119,7 +119,7 @@ fn reference() -> InvocationRef {
 /// scenario's context is visible where the scenario is written — these tests are
 /// about what the attempt does with its ports, its capability, and its report
 /// directory, and hiding any of the three would hide the setup that matters.
-fn run_attempt(
+async fn run_attempt(
     project: &Project,
     capability: &dyn Capability,
     report_dir: &Path,
@@ -130,6 +130,7 @@ fn run_attempt(
         &StubChangePort::new(project.stub_root()),
         report_dir,
     )
+    .await
 }
 
 /// The same attempt, over a caller-supplied change port.
@@ -137,7 +138,7 @@ fn run_attempt(
 /// Only the scenarios about what happens *between* the attempt's two
 /// observations need this; everything else reads the fixture directory through
 /// the ordinary stub, so the seam is opened exactly where it is used.
-fn run_attempt_observing(
+async fn run_attempt_observing(
     project: &Project,
     capability: &dyn Capability,
     changes: &dyn ChangePort,
@@ -155,6 +156,7 @@ fn run_attempt_observing(
         changes,
         capability,
     })
+    .await
 }
 
 /// A capability that counts its calls, so "the capability never ran" is
@@ -164,12 +166,13 @@ struct Spy {
     calls: AtomicUsize,
 }
 
+#[async_trait::async_trait]
 impl Capability for Spy {
     fn id(&self) -> CapabilityId {
         STUB_MARK
     }
 
-    fn execute(
+    async fn execute(
         &self,
         _grant: ExecutionGrant,
         _work_id: &str,
@@ -185,18 +188,22 @@ impl Capability for Spy {
 /// publication.
 struct MutateThenDie(StubMark);
 
+#[async_trait::async_trait]
 impl Capability for MutateThenDie {
     fn id(&self) -> CapabilityId {
         STUB_MARK
     }
 
-    fn execute(
+    async fn execute(
         &self,
         grant: ExecutionGrant,
         work_id: &str,
         invocation_ref: &str,
     ) -> Result<EvidenceRef, CapabilityError> {
-        self.0.execute(grant, work_id, invocation_ref).unwrap();
+        self.0
+            .execute(grant, work_id, invocation_ref)
+            .await
+            .unwrap();
         panic!("the process died after the effect landed");
     }
 }
@@ -268,15 +275,16 @@ fn unseal(path: &Path) {
 /// The happy path, stated first so the failure cases are read against it: the
 /// bundle lands, and the journal — having been superseded by it — leaves no
 /// record of an attempt in flight.
-#[test]
-fn a_published_attempt_leaves_the_bundle_and_no_journal_record() {
+#[tokio::test]
+async fn a_published_attempt_leaves_the_bundle_and_no_journal_record() {
     let project = Project::unstarted();
 
     let record = run_attempt(
         &project,
         &StubMark::new(project.stub_root(), PROJECT),
         &project.report_dir(),
-    );
+    )
+    .await;
 
     assert_eq!(record.bundle.outcome, RunOutcome::Completed);
     assert!(record.evidence_failure.is_none());
@@ -310,8 +318,8 @@ fn a_published_attempt_leaves_the_bundle_and_no_journal_record() {
 /// failure this is about: the effect landed, the bundle did not, and the
 /// question is what a later reader can still find out.
 #[cfg(unix)]
-#[test]
-fn an_executed_capability_is_recorded_even_when_publication_fails() {
+#[tokio::test]
+async fn an_executed_capability_is_recorded_even_when_publication_fails() {
     let project = Project::unstarted();
     // The journal's own directory, as an earlier attempt would have left it.
     std::fs::create_dir_all(project.report_dir().join(journal::JOURNAL_DIR)).unwrap();
@@ -321,7 +329,8 @@ fn an_executed_capability_is_recorded_even_when_publication_fails() {
         &project,
         &StubMark::new(project.stub_root(), PROJECT),
         &project.report_dir(),
-    );
+    )
+    .await;
 
     unseal(&project.report_dir());
     if record.published.is_some() {
@@ -365,6 +374,12 @@ fn an_executed_capability_is_recorded_even_when_publication_fails() {
 /// afterwards is that the attempt is *detectable* — a later reader can tell
 /// "something ran and was never recorded" from "nothing ran", which is the
 /// distinction M2's non-idempotent GitHub effects cannot recover without.
+///
+/// The one test here that drives its own runtime rather than taking
+/// `#[tokio::test]`'s. The panic has to happen *inside* `catch_unwind`, and
+/// since the attempt became a future, calling it merely builds one — the death
+/// only occurs where it is polled. `block_on` is therefore inside the closure,
+/// which it cannot be while an outer runtime already owns this thread.
 #[test]
 fn an_attempt_interrupted_between_the_effect_and_publication_is_detectable() {
     let project = Project::unstarted();
@@ -373,7 +388,9 @@ fn an_attempt_interrupted_between_the_effect_and_publication_is_detectable() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_attempt(&project, &capability, &project.report_dir())
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(run_attempt(&project, &capability, &project.report_dir()))
     }));
     std::panic::set_hook(previous);
 
@@ -404,13 +421,13 @@ fn an_attempt_interrupted_between_the_effect_and_publication_is_detectable() {
 /// The contrast that gives the previous test its meaning: an attempt that never
 /// reached its capability leaves nothing in flight. Without this, "a journal
 /// record exists" would be evidence of nothing in particular.
-#[test]
-fn an_attempt_that_never_reached_its_capability_leaves_nothing_in_flight() {
+#[tokio::test]
+async fn an_attempt_that_never_reached_its_capability_leaves_nothing_in_flight() {
     let project = Project::unstarted();
     project.hide_stub_root();
     let spy = Spy::default();
 
-    let record = run_attempt(&project, &spy, &project.report_dir());
+    let record = run_attempt(&project, &spy, &project.report_dir()).await;
 
     assert_eq!(spy.calls.load(Ordering::Relaxed), 0);
     assert!(matches!(record.bundle.outcome, RunOutcome::Failed { .. }));
@@ -427,14 +444,14 @@ fn an_attempt_that_never_reached_its_capability_leaves_nothing_in_flight() {
 /// an unrecordable intent has to stop the attempt rather than proceed
 /// unrecorded.
 #[cfg(unix)]
-#[test]
-fn an_unrecordable_intent_stops_the_attempt_before_the_capability_runs() {
+#[tokio::test]
+async fn an_unrecordable_intent_stops_the_attempt_before_the_capability_runs() {
     let project = Project::unstarted();
     std::fs::create_dir_all(project.report_dir()).unwrap();
     seal(&project.report_dir());
     let spy = Spy::default();
 
-    let record = run_attempt(&project, &spy, &project.report_dir());
+    let record = run_attempt(&project, &spy, &project.report_dir()).await;
 
     unseal(&project.report_dir());
     if record.published.is_some() {
@@ -472,8 +489,8 @@ fn an_unrecordable_intent_stops_the_attempt_before_the_capability_runs() {
 /// the whole defect being settled here was a variant name that did not match
 /// what repeating actually did.
 #[cfg(unix)]
-#[test]
-fn a_publication_failure_is_retryable_and_repeating_it_afterwards_succeeds() {
+#[tokio::test]
+async fn a_publication_failure_is_retryable_and_repeating_it_afterwards_succeeds() {
     let project = Project::unstarted();
     std::fs::create_dir_all(project.report_dir().join(journal::JOURNAL_DIR)).unwrap();
     seal(&project.report_dir());
@@ -482,7 +499,8 @@ fn a_publication_failure_is_retryable_and_repeating_it_afterwards_succeeds() {
         &project,
         &StubMark::new(project.stub_root(), PROJECT),
         &project.report_dir(),
-    );
+    )
+    .await;
 
     unseal(&project.report_dir());
     if failed.published.is_some() {
@@ -502,7 +520,8 @@ fn a_publication_failure_is_retryable_and_repeating_it_afterwards_succeeds() {
         &project,
         &StubMark::new(project.stub_root(), PROJECT),
         &project.report_dir(),
-    );
+    )
+    .await;
 
     assert_eq!(
         repeated.bundle.outcome,
@@ -529,14 +548,14 @@ fn a_publication_failure_is_retryable_and_repeating_it_afterwards_succeeds() {
 /// Nothing changes the world on a second attempt, so nothing is journaled: the
 /// journal records an *intent to mutate*, and an attempt over satisfied work has
 /// none. It still publishes its own bundle.
-#[test]
-fn a_second_attempt_over_satisfied_work_publishes_without_journaling() {
+#[tokio::test]
+async fn a_second_attempt_over_satisfied_work_publishes_without_journaling() {
     let project = Project::unstarted();
     let capability = StubMark::new(project.stub_root(), PROJECT);
 
-    run_attempt(&project, &capability, &project.report_dir());
+    run_attempt(&project, &capability, &project.report_dir()).await;
     let spy = Spy::default();
-    let second = run_attempt(&project, &spy, &project.report_dir());
+    let second = run_attempt(&project, &spy, &project.report_dir()).await;
 
     assert_eq!(spy.calls.load(Ordering::Relaxed), 0);
     assert_eq!(second.bundle.outcome, RunOutcome::Completed);
@@ -568,8 +587,8 @@ fn a_second_attempt_over_satisfied_work_publishes_without_journaling() {
 /// Note what this test does not depend on: no unusual reference, no malformed
 /// input, nothing hostile. Just a second writer, which is what M1's second
 /// capability and external references make ordinary.
-#[test]
-fn a_run_whose_world_is_taken_over_after_executing_reports_the_derivation_it_left() {
+#[tokio::test]
+async fn a_run_whose_world_is_taken_over_after_executing_reports_the_derivation_it_left() {
     let project = Project::unstarted();
     let changes = ForeignWriterBetweenObservations::over(&project);
 
@@ -578,7 +597,8 @@ fn a_run_whose_world_is_taken_over_after_executing_reports_the_derivation_it_lef
         &StubMark::new(project.stub_root(), PROJECT),
         &changes,
         &project.report_dir(),
-    );
+    )
+    .await;
 
     assert_eq!(
         project.marker().as_deref(),
@@ -654,12 +674,12 @@ fn a_run_whose_world_is_taken_over_after_executing_reports_the_derivation_it_lef
 /// derives `Execute` from its own entry observation and runs the capability
 /// again, which is exactly the "may succeed on a later attempt" `Retryable`
 /// promises.
-#[test]
-fn a_run_whose_effect_left_no_trace_reports_that_there_is_still_work_to_do() {
+#[tokio::test]
+async fn a_run_whose_effect_left_no_trace_reports_that_there_is_still_work_to_do() {
     let project = Project::unstarted();
     let spy = Spy::default();
 
-    let record = run_attempt(&project, &spy, &project.report_dir());
+    let record = run_attempt(&project, &spy, &project.report_dir()).await;
 
     assert_eq!(
         spy.calls.load(Ordering::Relaxed),
