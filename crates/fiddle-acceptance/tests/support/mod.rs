@@ -190,6 +190,33 @@ impl Scenario {
             .unwrap()
     }
 
+    /// The text of this scenario's own configuration document.
+    pub fn config_text(&self) -> String {
+        std::fs::read_to_string(self.config_path()).unwrap()
+    }
+
+    /// A sibling of this scenario's configuration document holding `text`, for
+    /// the assertions that are about a *rejected* document rather than the good
+    /// one.
+    ///
+    /// A sibling rather than a replacement, so the scenario that wrote it can
+    /// carry on using its own valid document afterwards.
+    pub fn write_config_variant(&self, name: &str, text: &str) -> PathBuf {
+        let path = self.dir.path().join(name);
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    /// Run `fiddle config check --config <config>` without `--json` and hand back
+    /// the whole process result, unjudged, for the cases that are about the
+    /// diagnostic a reader sees rather than the payload.
+    pub fn config_check_raw(&self, config: &Path) -> std::process::Output {
+        self.command()
+            .args(["config", "check", "--config", config.to_str().unwrap()])
+            .output()
+            .unwrap()
+    }
+
     /// The fixture directory both stub ports read.
     pub fn stub_root(&self) -> PathBuf {
         self.dir.path().join("stub-state")
@@ -317,6 +344,31 @@ impl Scenario {
     /// unobservable.
     pub fn remove_stub_root(&self) {
         std::fs::remove_dir_all(self.stub_root()).unwrap();
+    }
+
+    /// Move the whole fixture root aside, so every source the ports name becomes
+    /// unobservable *without* losing the state it held.
+    ///
+    /// Moved rather than emptied on purpose, and the distinction is the point of
+    /// the assertion it serves: an emptied root is still readable, so it would
+    /// exercise "the world is empty" rather than "I cannot see the world". Moved
+    /// rather than removed because a cumulative scenario has to carry on with
+    /// the same fixture afterwards — see [`Scenario::restore_stub_root`].
+    pub fn hide_stub_root(&self) {
+        std::fs::rename(self.stub_root(), self.hidden_stub_root()).unwrap();
+    }
+
+    /// Put back what [`Scenario::hide_stub_root`] moved aside, byte for byte, so
+    /// the steps that follow observe the world the earlier steps left.
+    pub fn restore_stub_root(&self) {
+        std::fs::rename(self.hidden_stub_root(), self.stub_root()).unwrap();
+    }
+
+    /// Where [`Scenario::hide_stub_root`] parks the fixture root: a sibling of
+    /// it, so the move stays within one filesystem and cannot fail across a
+    /// device boundary.
+    fn hidden_stub_root(&self) -> PathBuf {
+        self.dir.path().join("stub-state.hidden")
     }
 
     /// The marker recorded at `<stub.root>/changes/<work_id>.json`, or `None`

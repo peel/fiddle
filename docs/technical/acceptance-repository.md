@@ -74,10 +74,14 @@ observes the world its predecessor left:
    assesses `not_started`, and derives `execute stub_mark`. The stub root's
    path-and-digest snapshot is unchanged afterwards, and `<report.dir>` does not
    exist — looking neither mutates fixture state nor publishes evidence.
-3. **Failing closed.** With the stub root moved away, `run` exits **20**,
-   reports both sources as `unavailable` rather than empty, carries a typed
-   `failed` outcome and a `blocked` next action, and executes nothing:
-   `capability_executions` and `progress` are both empty.
+3. **Failing closed.** With the stub root moved away — moved rather than emptied,
+   because an emptied root is still readable and would exercise "the world is
+   empty" instead of "I cannot see the world" — `run` exits **20**, reports
+   `observations.work_item` as `unavailable` rather than degrading it to an empty
+   value, carries a typed `failed` outcome whose error names the unavailable
+   source, derives a `blocked` next action with a non-empty reason, and executes
+   nothing: `capability_executions` and `progress` are both empty. The root is
+   put back afterwards, so the steps that follow observe the same fixture.
 4. **Execution and evidence.** `run --json` completes, executes `stub_mark`, and
    names a bundle that exists on disk. The bundle declares
    `schema: "fiddle.report.v0"`, carries build identity
@@ -117,7 +121,19 @@ gh api repos/peel/fiddle-acceptance/keys --jq 'length'       # 0
 ## Keeping the two lanes together
 
 The in-repo scenario (`crates/fiddle-acceptance/tests/m0_skeleton.rs`) and the
-external one assert the same six properties by design. A change to the CLI
-surface that alters what one lane observes must be reflected in the other, or
-the external lane silently becomes the weaker proof — which is the one failure
-mode this arrangement exists to prevent.
+external one assert the same six properties, in the same order, by design. The
+numbered list above is that shared contract: each entry describes one step both
+lanes walk, and the two lanes are checked against it — and against each other —
+by hand.
+
+A change to the CLI surface that alters what one lane observes must be reflected
+in the other, or the lane left behind silently becomes the weaker proof — which
+is the one failure mode this arrangement exists to prevent. That is not a
+hypothetical: the in-repo lane once lacked step 3 entirely, so the command CI
+names as the M0 acceptance scenario, and later milestone seeds run as their
+regression baseline, never exercised the fail-closed rule at all.
+
+The expression of a property may differ where the two languages differ — `jq`
+regexes against hand-rolled character checks, a `sed`-inserted key on line 3
+against a `replacen`-inserted one on line 2 — as long as the property asserted
+is the same one. What must never differ is the *set* of properties.
