@@ -9,3 +9,10 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+# `fancy` pulls in the graphical report handler, which renders the offending
+# source line and caret that design §4.6 requires of a configuration error.
+miette = { workspace = true, features = ["fancy"] }
+thiserror.workspace = true

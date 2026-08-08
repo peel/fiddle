@@ -1,4 +1,5 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 /// The version string `fiddle --version` prints after the binary name:
 /// `<package version> (<source revision>)`. `concat!` needs both halves to be
@@ -20,4 +21,38 @@ pub fn fiddle_version() -> &'static str {
 
 #[derive(Parser)]
 #[command(name = "fiddle", version = fiddle_version(), disable_version_flag = false)]
-pub struct Cli {}
+pub struct Cli {
+    /// Path to the fiddle configuration document.
+    ///
+    /// Global, because every command that acts on a project needs the same
+    /// document; only its default location is a convention.
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATH",
+        default_value = "fiddle.toml"
+    )]
+    pub config: PathBuf,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Subcommand)]
+pub enum Command {
+    /// Work with the fiddle configuration document.
+    Config {
+        #[command(subcommand)]
+        action: ConfigCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCommand {
+    /// Load `--config` and report whether it satisfies the strict schema.
+    Check {
+        /// Emit the machine-readable payload instead of the human summary.
+        #[arg(long)]
+        json: bool,
+    },
+}
