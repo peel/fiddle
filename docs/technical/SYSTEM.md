@@ -20,11 +20,17 @@ Fiddle is a portable Agent Skills library that orchestrates a four-phase develop
 
 **Supporting skills** — `fiddle:discover-docs` (project context scan), `fiddle:deliver-docs` (post-ship doc updates), `fiddle:define-beans` (task sizing), `fiddle:adr`/`fiddle:feedback`/`fiddle:backlog` (append-only records).
 
+**`fiddle` CLI** (`crates/`) — The agentic factory binary M0 builds. Four crates with a hard ownership boundary: `fiddle-core` is the pure domain (identity, observation, assessment, outcome, report types) and reaches for no process, filesystem, network, environment or clock; `fiddle-runtime` owns every effect (ports, stub adapters, the `stub_mark` capability, orchestration, the attempt journal, evidence publication); `fiddle-cli` owns argument handling, rendering and the single exit-code mapping; `fiddle-acceptance` drives the compiled binary as a subprocess. Commands: `--version`, `config check`, `inspect`, `run`. The boundary is enforced mechanically, not by review — see Invariants.
+
 **Skill quality tooling** (`scripts/audit-skills.sh`, `scripts/check-portability.sh`) — Validates portable skill metadata, reachable companion documentation, primary-skill size, and optionally trigger-first descriptions. `skill-quality.yml` runs these checks and their fixtures in CI.
 
 ## Data
 
 **`orchestrate.json`** (JSON) — Declares external provider participation, evaluator settings, plans, and internal subagent models. `models.roles.<role>` overrides `models.phases.<phase>`; `default` inherits the current session model. External provider CLI selection is independent. Merge order is defaults, config file, then CLI flags.
+
+**Report bundle** (`<report.dir>/<invocation-slug>/<attempt-id>/report.json`) — What a `fiddle run` publishes as evidence: `schema` `fiddle.report.v0`, the build identity (package version and a 40-hex source revision or the literal `unknown`), the invocation and work refs, the attempt id, mode, outcome, next action, capability executions, progress, and the full observations view. Staged in a temporary directory and moved by rename, so a reader never observes a partial bundle; the staging directory is removed by a `Drop` guard on every failure path.
+
+**Attempt journal** (`<report.dir>/.attempts/`) — Records an attempt's intent *before* its capability mutates anything, so an attempt interrupted between effect and publication is detectable afterwards rather than indistinguishable from one that never ran. If the journal cannot be written the capability does not run at all.
 
 **Bean state** — Managed by external `beans` CLI. Epics, tasks, tags (worktree slots, CI retries, stall respawns, needs-attention). Beans are the unit of work for develop and swarm.
 
@@ -62,7 +68,17 @@ cargo test -p fiddle-acceptance --test m0_skeleton -- --nocapture
 - Internal subagent models resolve through `scripts/resolve-subagent-model.sh`: a role override wins over a phase default, while `default` omits an explicit model and inherits the session. Provider CLI selection never flows through this resolver.
 - `scripts/audit-skills.sh` returns exit 2 with JSON errors for malformed metadata, missing references, orphaned companions, or configured primary-skill size violations.
 - Acceptance tests launch the compiled `fiddle` binary as a subprocess and observe only its exit code, its `--json` payload, or a file it wrote; they never call library functions directly.
+- `fiddle-core` stays pure, enforced two ways rather than by review: a `cargo metadata` walk of its full resolved closure fails on `tokio`, `rig-core`, `reqwest`, `hyper` or `mio`, and a source grep fails on `std::process`, `std::fs`, `std::net`, `std::env`, `SystemTime::now` or `Instant::now` — including inside comments.
+- An invocation reference value is constrained at the parse boundary to ASCII letters, digits, `-`, `_` and `:`. Every path `fiddle` derives comes from that value, so validating once at parse is what keeps the bundle, the journal and the stub reads inside their configured roots; an invalid value exits 2 before any filesystem access.
+- An attempt's intent is journaled before its capability mutates anything, and a capability whose intent could not be recorded does not run.
+- A run's outcome is derived from its post-execution re-derivation, never assumed from the fact that a capability executed. `Complete` maps to `Completed`, `Blocked` to `Failed`, `Execute` to `Retryable`.
+- Acceptance tests resolve the binary under test through `support::fiddle_binary()`, which builds it and takes the path cargo reports. `harness_discipline.rs` fails if any acceptance source names `cargo_bin`, because a lane that resolves a path by convention silently tests whatever the last build left.
 - The M0 acceptance command (`cargo test -p fiddle-acceptance --test m0_skeleton -- --nocapture`) must stay credential-free and green. The milestone lane is never gated on a secret or an external repository, and later milestone seeds run this exact command as their baseline.
 
+## Known issues
+
+- Three permission-injection tests in `crates/fiddle-runtime/tests/attempt.rs` return early under an identity that ignores permission bits (root), so on a root CI runner they no-op silently instead of skipping visibly.
+- Parity between the in-repo and external acceptance lanes is maintained by hand. `docs/technical/acceptance-repository.md` states they assert the same properties; nothing mechanically checks it, and the two have already drifted once.
+
 ---
-Last reviewed: 2026-08-05
+Last reviewed: 2026-08-08
