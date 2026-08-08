@@ -1,7 +1,8 @@
 # CI deliberately does NOT run `nix flake check`: inputs.ai-devtools is path:/Users/peel/wrk/ai-devtools,
 # which exists on no runner and has no substitute providing flakeModules.ai-tools. See Task 0 Step 4.
 # `nix flake check` therefore stays the local-only developer gate, and CI runs the same four Cargo
-# commands directly against the channel pinned by rust-toolchain.toml.
+# gate commands directly against the channel pinned by rust-toolchain.toml, plus the named M0
+# acceptance scenario recorded in docs/technical/SYSTEM.md.
 name: rust
 on: [push, pull_request]
 jobs:
