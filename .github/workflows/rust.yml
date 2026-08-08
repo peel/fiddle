@@ -1,0 +1,17 @@
+# CI deliberately does NOT run `nix flake check`: inputs.ai-devtools is path:/Users/peel/wrk/ai-devtools,
+# which exists on no runner and has no substitute providing flakeModules.ai-tools. See Task 0 Step 4.
+# `nix flake check` therefore stays the local-only developer gate, and CI runs the same four Cargo
+# commands directly against the channel pinned by rust-toolchain.toml.
+name: rust
+on: [push, pull_request]
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.85.0", components: "rustfmt, clippy" }
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+      - run: cargo build --release

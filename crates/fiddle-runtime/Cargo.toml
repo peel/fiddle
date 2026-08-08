@@ -1,0 +1,7 @@
+[package]
+name = "fiddle-runtime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fiddle-core = { path = "../fiddle-core" }

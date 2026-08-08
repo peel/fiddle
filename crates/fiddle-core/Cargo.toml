@@ -1,0 +1,10 @@
+[package]
+name = "fiddle-core"
+version.workspace = true
+edition.workspace = true
+
+# Intentionally dependency-free at M0. `fiddle-core` holds pure domain types and
+# decision functions; it must never reach for an async runtime, an HTTP client,
+# or the process/filesystem/network/clock. `crates/fiddle-acceptance/tests/
+# crate_boundary.rs` enforces both halves of that rule mechanically.
+[dependencies]

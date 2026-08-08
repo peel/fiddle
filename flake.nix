@@ -42,7 +42,7 @@
         # channel via dtolnay/rust-toolchain (see .github/workflows/rust.yml).
         rustToolchain = inputs'.fenix.packages.fromToolchainFile {
           file = ./rust-toolchain.toml;
-          sha256 = "sha256-tiOCzZ1sJoRauyMvrE2u8Ftrc+U+vAqcCsPI9F0nk3Y=";
+          sha256 = "sha256-AJ6LX/Q/Er9kS15bn9iflkUwcgYqRQxiOIL2ToVAXaU=";
         };
       in {
         ai-tools.enable = true;

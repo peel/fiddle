@@ -1,0 +1,11 @@
+[package]
+name = "fiddle-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "fiddle"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "fiddle-acceptance"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Acceptance tests drive the compiled `fiddle` binary as a subprocess; they never
+# call library functions directly. The crate therefore has no library of its own
+# and no dependency on fiddle-core or fiddle-runtime.
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+assert_cmd.workspace = true
+regex.workspace = true
+serde_json.workspace = true
