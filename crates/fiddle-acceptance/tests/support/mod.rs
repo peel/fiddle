@@ -40,6 +40,15 @@ use tempfile::TempDir;
 /// So the harness builds the binary itself, once per test process, and uses the
 /// path cargo *reports* for the artefact rather than reconstructing one from
 /// assumptions about the target layout.
+///
+/// One constraint follows from how it does that, and it is why this is not the
+/// only acceptance lane: `env!("CARGO")` bakes in the absolute path of the cargo
+/// that compiled these tests, so this lane can only run where that toolchain and
+/// these sources are. It can never run as a relocated prebuilt test artefact on
+/// a machine holding neither — which is exactly the proof the external lane,
+/// `peel/fiddle-acceptance`, exists to give. The nested cargo invocation itself
+/// costs little: cargo runs test binaries sequentially and the `OnceLock`
+/// memoises per process, so a clean run waits on the build lock zero times.
 pub fn fiddle_binary() -> &'static Path {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
     BINARY.get_or_init(|| {
@@ -53,14 +62,9 @@ pub fn fiddle_binary() -> &'static Path {
                 "--message-format",
                 "json-render-diagnostics",
             ])
-            // Match the profile these tests were themselves built under, so a
-            // `cargo test --release` run exercises the release binary rather
-            // than quietly falling back to a debug one.
-            .args(if cfg!(debug_assertions) {
-                &[][..]
-            } else {
-                &["--release"][..]
-            });
+            .args(profile_args(
+                &std::env::current_exe().expect("could not locate this test binary"),
+            ));
         let out = build
             .output()
             .expect("could not run cargo to build the fiddle binary");
@@ -76,6 +80,42 @@ pub fn fiddle_binary() -> &'static Path {
             )
         })
     })
+}
+
+/// The cargo flags that build `fiddle` under the same profile as `test_exe`, the
+/// test binary asking for it.
+///
+/// Read off where the test binary actually lives — cargo puts it at
+/// `<target>/<profile>/deps/<name>` — rather than inferred from
+/// `cfg!(debug_assertions)`. The cfg is only a proxy for the profile, and an
+/// accurate one solely while the workspace declares no `[profile]` sections: a
+/// `[profile.release] debug-assertions = true` would invert it, so
+/// `cargo test --release` would build and drive a *debug* binary. That is the
+/// same class of mismatch this module exists to prevent, so it should not be left
+/// resting on a manifest section nobody has written yet. The directory cargo
+/// chose cannot disagree with the profile cargo chose.
+///
+/// Only the built-in profiles have directory names differing from their own —
+/// `dev` and `test` build into `debug`, `release` and `bench` into `release` —
+/// and each is asked for by the flag cargo documents. Every custom profile's
+/// directory carries its name, so it can be named straight back.
+fn profile_args(test_exe: &Path) -> Vec<String> {
+    let profile_dir = test_exe
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "could not read a build profile off this test binary's location: {}",
+                test_exe.display()
+            )
+        });
+    match profile_dir {
+        "debug" => Vec::new(),
+        "release" => vec!["--release".to_string()],
+        custom => vec!["--profile".to_string(), custom.to_string()],
+    }
 }
 
 /// `assert_cmd`'s wrapper around the built binary, ready for arguments.
