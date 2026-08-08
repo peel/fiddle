@@ -16,10 +16,17 @@
 //! correlation key into the fixture change set. It makes no network call, no
 //! model call, and no `git` invocation, so the same fixture and the same
 //! invocation reference always produce byte-identical output — which is what
-//! makes the two-invocation stability proof checkable.
+//! makes the two-invocation stability proof checkable. [`repair`] holds
+//! [`FixtureRepair`], which does the opposite of all three — it calls a model,
+//! spawns processes, and branches a git worktree — and is therefore where the
+//! question of what may be *believed* becomes sharp. Its answer is stated in
+//! that module: the check decides, and the model's account of itself is carried
+//! as evidence and consulted nowhere.
 
+pub mod repair;
 pub mod stub;
 
+pub use repair::{FixtureRepair, RepairConfig};
 pub use stub::StubMark;
 
 use fiddle_core::{CapabilityId, EvidenceRef, NextAction};
@@ -125,6 +132,34 @@ pub enum CapabilityError {
         #[source]
         source: std::io::Error,
     },
+
+    /// The capability finished, and the check it is answerable to did not pass.
+    ///
+    /// The variant that carries this milestone's central rule. `exit_code` is
+    /// what decided the outcome; `claimed` is what the model said about itself
+    /// and is here *because* it is not consulted — recording a claim beside the
+    /// verdict that overruled it is how a reader can see that the two were
+    /// different things. Nothing in this crate branches on it, and a future
+    /// caller that did would be reintroducing exactly the trust this variant
+    /// exists to have removed.
+    #[error(
+        "the check exited {exit_code}, so nothing was earned \
+         (the model claimed completion: {claimed}): {stderr}"
+    )]
+    CheckFailed {
+        claimed: bool,
+        exit_code: i32,
+        stderr: String,
+    },
+
+    /// The workspace the capability needed could not be prepared, used, or
+    /// interrogated.
+    #[error("the workspace could not be used: {0}")]
+    Workspace(#[from] crate::workspace::WorkspaceError),
+
+    /// The bounded attempt produced no report, so there is nothing to verify.
+    #[error("the attempt produced no report: {0}")]
+    Agent(#[from] crate::agent::AgentError),
 }
 
 #[cfg(test)]

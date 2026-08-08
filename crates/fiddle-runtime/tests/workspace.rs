@@ -376,6 +376,100 @@ async fn a_command_that_overruns_its_timeout_is_killed() {
 }
 
 #[tokio::test]
+async fn a_timed_out_command_takes_its_grandchildren_with_it() {
+    // The gap the previous test cannot see. `kill_on_drop` reaps the process
+    // this runtime holds a handle to and nothing underneath it, and the command
+    // this runner exists to run — `cargo test` — spawns test binaries. A check
+    // that hung would be reported as `Timeout` perfectly correctly while its
+    // children carried on.
+    //
+    // The shell below is that shape made small: it backgrounds a grandchild that
+    // outlives it and then waits past the deadline. Killing only the direct
+    // child leaves `survived` to appear a second later; killing the process
+    // group does not. Verified by removing `process_group(0)` and watching this
+    // assertion, and only this one, fail.
+    let _env = ENV.read().await;
+    let (ws, _dir) = workspace();
+    let err = ws
+        .run(&WorkspaceCommand {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "/bin/sh -c 'sleep 1; : > survived' & sleep 30".into(),
+            ],
+            timeout: Duration::from_millis(200),
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, WorkspaceError::Timeout { .. }), "got {err:?}");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        !ws.root().join("survived").exists(),
+        "a timed-out command must not leave a grandchild running"
+    );
+}
+
+#[tokio::test]
+async fn a_command_writes_its_caches_beside_the_worktree_and_not_into_it() {
+    // `HOME` is where a tool that insists on a cache will put one, and the
+    // worktree is the tree whose diff is this attempt's evidence. Pointing one
+    // at the other means the first `cargo test` inside a workspace reports
+    // `.cargo/.package-cache` and its siblings as files the agent changed —
+    // fabricated paths in published evidence, and three of the changed-file cap
+    // spent on nothing. The scratch home is still inside the per-attempt
+    // directory, so it is still thrown away; it is just not inside the diff.
+    let _env = ENV.read().await;
+    let (ws, _dir) = workspace();
+
+    ws.run(&cmd(
+        "/bin/sh",
+        &["-c", "echo cached > \"$HOME/.toolcache\""],
+    ))
+    .await
+    .unwrap();
+
+    assert!(
+        ws.changed_files().unwrap().is_empty(),
+        "a tool writing to HOME must not appear as a change to the repository: {:?}",
+        ws.changed_files().unwrap()
+    );
+    assert!(
+        ws.home().join(".toolcache").exists(),
+        "and it must still have landed somewhere the attempt owns"
+    );
+    assert!(
+        !ws.home().starts_with(ws.root()),
+        "which is only true while HOME is outside the worktree"
+    );
+}
+
+#[test]
+fn the_scratch_home_is_removed_with_the_worktree() {
+    // It is an ordinary directory git knows nothing about, so nothing removes it
+    // unless this does. A workspace root left holding one `.home` per attempt is
+    // the leak the Drop guard exists to prevent, one indirection along.
+    let _env = env_reader();
+    let dir = tempfile::tempdir().unwrap();
+    let repo = fixture::broken_crate(dir.path());
+    let root = dir.path().join("ws");
+    {
+        let ws = Workspace::create(&repo, &root, &attempt(), token()).unwrap();
+        std::fs::write(ws.home().join("cache"), "x").unwrap();
+    }
+    let leftovers: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "a dropped workspace must leave its scratch home behind no more than its \
+         worktree: {leftovers:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_cancelled_token_stops_a_command_before_it_runs() {
     let _env = ENV.read().await;
     let (ws, _dir) = workspace_with_cancelled_token();

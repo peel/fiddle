@@ -30,7 +30,10 @@ pub mod stub;
 pub mod workspace;
 
 pub use agent::{ToolHost, ToolReceipt, ToolReceipts};
-pub use capability::{Capability, CapabilityError, ExecutionGrant, StubMark, CAPABILITIES};
+pub use capability::{
+    Capability, CapabilityError, ExecutionGrant, FixtureRepair, RepairConfig, StubMark,
+    CAPABILITIES,
+};
 pub use evidence::{EvidenceError, BUNDLE_FILE};
 pub use fiddle_core as core;
 pub use journal::AttemptJournal;

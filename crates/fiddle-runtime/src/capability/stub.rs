@@ -69,7 +69,12 @@ impl Capability for StubMark {
 /// source, which fails closed to `Blocked` and would strand the work. The
 /// temporary file is removed on every failure path, so a run that could not
 /// finish leaves no debris behind for the next one to trip over.
-fn write_atomically(destination: &Path, state: &ChangeSetState) -> std::io::Result<()> {
+///
+/// Shared with [`super::repair`] rather than reimplemented there: both
+/// capabilities write the same file for the same reader, and two spellings of
+/// "record the change set" would be two chances to get the torn-write rule
+/// wrong.
+pub(super) fn write_atomically(destination: &Path, state: &ChangeSetState) -> std::io::Result<()> {
     let directory = destination.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(directory)?;
 

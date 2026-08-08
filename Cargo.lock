@@ -558,6 +558,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "fiddle-core",
+ "libc",
  "rig-agent",
  "rig-core",
  "schemars",

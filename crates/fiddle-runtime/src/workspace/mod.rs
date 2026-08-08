@@ -22,7 +22,10 @@
 //! environment is built from an allowlist rather than inherited.
 //!
 //! `changes` closes the loop by answering what an attempt actually did, from the
-//! repository rather than from the agent's account of itself.
+//! repository rather than from the agent's account of itself — which is why the
+//! worktree holds only the repository. Anything a command writes because it was
+//! given a `HOME` goes to [`Workspace::home`], a scratch directory beside the
+//! tree: a cargo cache inside the tree would be reported as work an agent did.
 
 mod changes;
 pub mod command;
@@ -90,6 +93,7 @@ pub enum WorkspaceError {
 /// a directory that the next attempt's `worktree add` would then collide with.
 pub struct Workspace {
     root: PathBuf,
+    home: PathBuf,
     fixture: PathBuf,
     cancel: CancellationToken,
     removed: bool,
@@ -100,6 +104,11 @@ impl Workspace {
     ///
     /// Detached on purpose: an attempt is not a branch, and leaving HEAD
     /// attached would make two concurrent attempts fight over the same ref.
+    ///
+    /// A scratch home is created beside the worktree at the same time, because
+    /// a workspace command needs somewhere to be pointed at that is throwaway
+    /// *and* is not the tree whose changes are the evidence — see
+    /// [`Workspace::home`].
     pub fn create(
         fixture: &Path,
         root: &Path,
@@ -111,6 +120,11 @@ impl Workspace {
             source,
         })?;
         let path = root.join(attempt.0.as_str());
+        let home = root.join(format!("{}.home", attempt.0));
+        std::fs::create_dir_all(&home).map_err(|source| WorkspaceError::Io {
+            path: home.clone(),
+            source,
+        })?;
         git(
             fixture,
             &[
@@ -124,6 +138,7 @@ impl Workspace {
         )?;
         Ok(Workspace {
             root: path,
+            home,
             fixture: fixture.to_path_buf(),
             cancel,
             removed: false,
@@ -133,6 +148,26 @@ impl Workspace {
     /// Where this workspace lives on disk.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The `HOME` a command run inside this workspace is given.
+    ///
+    /// Beside the worktree rather than inside it, and that placement is load
+    /// bearing. Pointing `HOME` at the worktree contains a tool's caches, which
+    /// is what it was for — but it also puts them *in the tree whose diff is the
+    /// evidence*. Cargo is the case that proves it: with `HOME` set to the
+    /// worktree, one `cargo test` leaves `.cargo/.package-cache`,
+    /// `.cargo/.global-cache` and `.cargo/.package-cache-mutate` behind, and
+    /// [`Workspace::changed_files`] then reports three files an agent never
+    /// touched — spending the changed-file cap on noise and putting fabricated
+    /// paths into published evidence. A repository cannot defend itself against
+    /// that by gitignoring names it does not know about, so the fix belongs
+    /// here.
+    ///
+    /// Still inside the per-attempt directory, so it is still thrown away with
+    /// everything else: containment is kept, the diff is not polluted.
+    pub fn home(&self) -> &Path {
+        &self.home
     }
 
     /// The token that cancels the work running against this workspace.
@@ -220,17 +255,21 @@ impl Workspace {
         })
     }
 
-    /// Remove the worktree, reporting whether git could.
+    /// Remove the worktree and the scratch home, reporting whether it could.
     ///
     /// Idempotent, so that the explicit call on the happy path and the [`Drop`]
     /// guard that follows it cannot both ask git to remove the same worktree —
     /// the second attempt would fail on a path git no longer knows about.
+    ///
+    /// Both halves are attempted whichever fails: the scratch home is an
+    /// ordinary directory git knows nothing about, so a `worktree remove` that
+    /// failed must not be allowed to leave it behind as well.
     pub fn remove(&mut self) -> Result<(), WorkspaceError> {
         if self.removed {
             return Ok(());
         }
         self.removed = true;
-        git(
+        let worktree = git(
             &self.fixture,
             &[
                 "worktree",
@@ -238,8 +277,17 @@ impl Workspace {
                 "--force",
                 &self.root.to_string_lossy(),
             ],
-        )?;
-        Ok(())
+        );
+        let home = match std::fs::remove_dir_all(&self.home) {
+            Err(source) if source.kind() != std::io::ErrorKind::NotFound => {
+                Err(WorkspaceError::Io {
+                    path: self.home.clone(),
+                    source,
+                })
+            }
+            _ => Ok(()),
+        };
+        worktree.and(home)
     }
 }
 

@@ -26,5 +26,12 @@ tokio.workspace = true
 tokio-util.workspace = true
 schemars.workspace = true
 
+# One call: `killpg`, so a timed-out check takes its whole process group with it
+# rather than only the process this runtime holds a handle to. There is no std
+# API for signalling a group, and `kill_on_drop` reaps the direct child alone —
+# which is not enough for a `cargo test` that has already spawned test binaries.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile.workspace = true
