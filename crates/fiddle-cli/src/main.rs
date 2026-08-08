@@ -309,3 +309,152 @@ fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fiddle_core::{ChangeSetState, NextAction, Observation};
+    use fiddle_runtime::ChangePort;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Every row of design §4.5's table, in one place.
+    ///
+    /// The rest of the exit-code coverage is black-box, in `fiddle-acceptance`,
+    /// and it can only reach the rows this build can be driven into. `Suspended`
+    /// is not one of them — M0 has no decision point, so nothing outside this
+    /// test can pin row 10 at all, and a variant whose code is written down but
+    /// never checked is exactly how a code drifts before the milestone that
+    /// starts producing it.
+    #[test]
+    fn every_outcome_maps_to_the_row_the_table_documents() {
+        let rows: [(RunOutcome, u8); 4] = [
+            (RunOutcome::Completed, 0),
+            (
+                RunOutcome::Suspended {
+                    reason: "awaiting a decision".into(),
+                },
+                10,
+            ),
+            (
+                RunOutcome::Retryable {
+                    reason: "try again".into(),
+                },
+                11,
+            ),
+            (
+                RunOutcome::Failed {
+                    error: "will not succeed".into(),
+                },
+                20,
+            ),
+        ];
+        for (outcome, code) in rows {
+            assert_eq!(
+                exit_code_for(&Termination::Ran(outcome.clone())),
+                code,
+                "{outcome:?} must exit {code}"
+            );
+        }
+
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(CliError::UnknownCapability(
+                UnknownCapability {
+                    requested: "nonsense".into(),
+                    known: "stub_mark".into(),
+                }
+            ))),
+            EXIT_INVALID_INPUT
+        );
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(CliError::InvocationRef(
+                InvalidInvocationRef(InvocationRefError::EmptyValue)
+            ))),
+            EXIT_INVALID_INPUT
+        );
+    }
+
+    /// **A race must not leave a code the table does not have.**
+    ///
+    /// The disagreement is real rather than described: the capability writes its
+    /// marker, another writer takes the change set over before the attempt looks
+    /// again, and the attempt's own conclusion — not one composed here — is what
+    /// gets mapped. That is what makes this a check on the whole chain, from the
+    /// runtime's re-derivation to the number the process leaves behind.
+    ///
+    /// Before this was derived rather than asserted, this same world exited 0
+    /// with a bundle reading `"outcome":"completed"` beside
+    /// `"next_action":{"blocked":…}` in release, and aborted with 101 — a row of
+    /// no table — in debug. Both halves are pinned shut here: one code, from the
+    /// table, in either profile.
+    #[test]
+    fn a_race_after_executing_still_exits_on_the_table() {
+        let root = tempfile::tempdir().unwrap();
+        let stub_root = root.path().join("stub-state");
+        std::fs::create_dir_all(stub_root.join("work")).unwrap();
+        std::fs::create_dir_all(stub_root.join("changes")).unwrap();
+        std::fs::write(
+            stub_root.join("work/fiddle-m0-demo.json"),
+            r#"{"id":"fiddle-m0-demo","status":"open"}"#,
+        )
+        .unwrap();
+
+        let reference: InvocationRef = "beans:fiddle-m0-demo".parse().unwrap();
+        let work_items = StubWorkItemPort::new(&stub_root);
+        let changes = OvertakenAfterTheFirstLook {
+            inner: StubChangePort::new(&stub_root),
+            change_set: stub_root.join("changes/fiddle-m0-demo.json"),
+            looks: AtomicUsize::new(0),
+        };
+        let marking = StubMark::new(&stub_root, "icecube");
+        let record = fiddle_runtime::attempt(&AttemptContext {
+            project: "icecube",
+            reference: &reference,
+            mode: fiddle_core::Mode::Unattended,
+            build: build_identity(),
+            report_dir: &root.path().join("reports"),
+            work_items: &work_items,
+            changes: &changes,
+            capability: &marking as &dyn Capability,
+        });
+
+        assert!(
+            matches!(record.bundle.next_action, NextAction::Blocked { .. }),
+            "the race must have produced a blocked re-derivation, got {:?}",
+            record.bundle.next_action
+        );
+        assert!(
+            matches!(record.bundle.outcome, RunOutcome::Failed { .. }),
+            "a blocked re-derivation is not a completed run, got {:?}",
+            record.bundle.outcome
+        );
+        assert_eq!(
+            exit_code_for(&Termination::Ran(record.bundle.outcome)),
+            20,
+            "the same row an unobservable world exits on, because the world it \
+             leaves behind is the same one a later invocation will block on"
+        );
+    }
+
+    /// Another agent rewriting the change set between an attempt's two
+    /// observations.
+    ///
+    /// Counted rather than raced, so the window is hit on every run: the foreign
+    /// write lands immediately before the second look, which is the moment a
+    /// concurrent writer would have to land it. The observation itself still
+    /// comes from the real stub port reading the real file.
+    struct OvertakenAfterTheFirstLook {
+        inner: StubChangePort,
+        change_set: PathBuf,
+        looks: AtomicUsize,
+    }
+
+    impl ChangePort for OvertakenAfterTheFirstLook {
+        fn observe(&self, work_id: &str) -> Observation<ChangeSetState> {
+            if self.looks.fetch_add(1, Ordering::Relaxed) == 1 {
+                std::fs::write(&self.change_set, r#"{"marker":"0123456789abcdef"}"#).unwrap();
+            }
+            self.inner.observe(work_id)
+        }
+    }
+}

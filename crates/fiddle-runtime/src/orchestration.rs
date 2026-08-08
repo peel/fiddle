@@ -19,6 +19,10 @@
 //!   it started with; design §4.7 shows `"next_action": "complete"` for a
 //!   successful first run, and a completed run that advertised work still to do
 //!   would send its caller round the loop for nothing.
+//! - Its *outcome* comes out of that same re-derivation, through [`concluded`].
+//!   Not a branch either, and deliberately not an assertion: the two fields of a
+//!   bundle a caller switches on are computed from one value, so no observation
+//!   and no race can produce a record that says `completed` beside `blocked`.
 //! - Executing and recording are one transaction, owned by [`attempt`]. The
 //!   ordering rationale is written there.
 
@@ -149,6 +153,74 @@ impl Authorised {
     }
 }
 
+/// What a run that executed concluded, given what it derived *afterwards*.
+///
+/// # Why this is a function of the re-derivation
+///
+/// A capability returning `Ok` says the capability succeeded, not that the work
+/// is done. Between the moment it wrote and the moment this run looked again,
+/// nothing holds `<stub.root>/changes/<id>.json` still, and `fiddle-core`
+/// deliberately reads a change set carrying somebody else's marker as
+/// [`NextAction::Blocked`] rather than as satisfied. So a second writer landing
+/// in that window — a routine event once M1 has a second capability and
+/// references from external sources — makes the post-execution derivation
+/// disagree with the assumption that executing implies completion.
+///
+/// The disagreement therefore has to be *concluded from*, not asserted away. A
+/// `debug_assert_eq!` here made the behaviour depend on the build profile: the
+/// tested artefact panicked with a code in no row of the exit-code table, and
+/// the shipped one published `"outcome":"completed"` beside
+/// `"next_action":{"blocked":…}` and exited 0.
+///
+/// # Which outcome each derivation means
+///
+/// - `Complete` — the ordinary case: the world the run left behind is the world
+///   it was asked to reach.
+///
+/// - `Blocked` — [`RunOutcome::Failed`], the same conclusion a `Blocked`
+///   derivation reaches before executing, so the mapping `Blocked ⇒ Failed` is
+///   one rule rather than two that happen to agree. That symmetry is the
+///   argument: this run and a run that found the same foreign marker on entry
+///   leave *identical* worlds, and an outcome that differed between them would
+///   be describing this process's history rather than the world. It also matches
+///   what the two words promise. `Retryable` means repeating the invocation
+///   succeeds once the named thing is fixed; repeating this one re-derives
+///   `Blocked` from its entry observation and concludes `Failed` again, and will
+///   keep doing so until somebody settles whose change set it is — which is
+///   exactly [`RunOutcome::Failed`]'s "will not succeed by being repeated as
+///   invoked". `Suspended` is wrong for a different reason: nothing is waiting
+///   on a decision fiddle could offer a human here, and M0 has no decision point
+///   at all.
+///
+/// - `Execute` — [`RunOutcome::Retryable`]. The world is fully observable and
+///   records no change set, so the effect this run made did not survive;
+///   repeating the invocation executes again and may well succeed, which is
+///   precisely what `Retryable` promises and `Failed` denies.
+///
+/// Both reasons name the fact that the capability had already run, because
+/// `Failed` and `Retryable` each have other producers and the exit code alone
+/// cannot tell them apart: exit 20 otherwise means "fiddle could not observe the
+/// world", and exit 11 otherwise names the change set, the attempt journal, or
+/// the report bundle. Neither adds a row to the exit-code table — the CLI's
+/// single `exit_code_for` maps these to 20 and 11 unchanged.
+fn concluded(next_action: &NextAction) -> RunOutcome {
+    match next_action {
+        NextAction::Complete => RunOutcome::Completed,
+        NextAction::Blocked { reason } => RunOutcome::Failed {
+            error: format!(
+                "the capability executed, and the work is not accounted for afterwards: {reason}"
+            ),
+        },
+        NextAction::Execute { capability_id } => RunOutcome::Retryable {
+            reason: format!(
+                "{} executed and reported success, and the work is still not started \
+                 afterwards",
+                capability_id.0
+            ),
+        },
+    }
+}
+
 /// Execute the M0 plan for one invocation.
 ///
 /// Total: every path returns a report. A capability failure becomes
@@ -168,6 +240,10 @@ pub fn run(ctx: &RunContext<'_>) -> RunReport {
             NextAction::Complete => {
                 RunReport::without_execution(RunOutcome::Completed, NextAction::Complete, view)
             }
+            // `Blocked ⇒ Failed`, the same rule [`concluded`] applies to a
+            // derivation taken after executing. Stated in both places because
+            // the two arms build different reason texts, not because they
+            // disagree about what a blocked world means.
             NextAction::Blocked { reason } => RunReport::without_execution(
                 RunOutcome::Failed {
                     error: reason.clone(),
@@ -213,13 +289,10 @@ pub fn run(ctx: &RunContext<'_>) -> RunReport {
             // run left behind, not the action it chose on entry.
             let after = ctx.observe();
             let next_action = derive_next(&after, &marker);
-            debug_assert_eq!(
-                next_action,
-                NextAction::Complete,
-                "a successful stub_mark must leave the work satisfied"
-            );
             RunReport {
-                outcome: RunOutcome::Completed,
+                // Derived from the re-derivation, never asserted to agree with
+                // it. See [`concluded`] for why the two can differ at all.
+                outcome: concluded(&next_action),
                 next_action,
                 executions: vec![execution(
                     capability_id,
