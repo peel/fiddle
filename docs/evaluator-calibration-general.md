@@ -113,3 +113,154 @@ Fresh-process invocation, external assertion, and the stability proof.
 at baseline (design §2.8, blocker B2). Until the provisioning bean lands, score that criterion against the
 credential-free in-repo lane and record the external lane as blocked — do not mark the criterion met by
 redefining it, and do not fail a bean for an external repository it does not own.
+
+## M1 — Bounded Rig capability
+
+Anchors for the milestone that inserts one bounded Rig agent attempt inside M0's deterministic
+spine. Every M1 bean declares `thresholds: {}` and every M1 bean changes code, so the 2026-07-29
+doc-only correction does not apply to any of them.
+
+**The scope rule for this milestone, stated once.** Model output quality is nondeterministic and is
+never the deterministic gate. Every criterion below is scored against what the *deterministic shell*
+does with the model's output — the bounds it enforces, the checks it runs, the evidence it derives
+independently — and never against how good the model's repair was. An evaluator that rewards a
+better-worded agent summary, or penalises a scripted fixture for being easy, has scored the wrong
+thing. Equally, a criterion is never met by asserting the model said it succeeded.
+
+### `m1-tool-protocol-correctness`
+
+The prompt, the advertised tool schemas, and what reaches a tool.
+
+- **Poor (1–3).** A trusted value — workspace root, cancellation token, effect executor, or anything
+  credential-bearing — appears in a tool's `Args` and is therefore model-visible. Tool schemas accept
+  absolute paths or unbounded arguments. The prompt or a tool result carries a resolved secret. Tools
+  are registered but nothing asserts which ones the model was actually offered.
+- **Acceptable (4–7).** Trusted values reach tools only through Rig's host-only `ToolContext` via
+  `context.require::<T>()`; `Args` carry relative paths and bounded values only. A test serializes the
+  model-visible request and asserts that the advertised schema contains no absolute path, no host
+  handle, and no credential, and that the offered tool set is exactly the capability's four tools. A
+  call to an unregistered tool name is rejected rather than dispatched.
+- **Excellent (8–10).** All of the above, plus the assertion is made against the *serialized outbound
+  request* rather than against the builder that produced it, so a future Rig change that starts
+  leaking context into arguments fails the test rather than passing it. The absence of host-only
+  values is asserted positively (the serialized prompt, messages, and tool arguments are searched for
+  the workspace root and for the credential variable's value) rather than inferred from the type.
+
+### `m1-typed-output-fidelity`
+
+Structured output, and the standing of what the model claims.
+
+- **Poor (1–3).** The run outcome is derived from the agent's own `claimed_complete`, its prose, or
+  the mere fact that the attempt returned `Ok`. Malformed or out-of-range structured output is
+  accepted, coerced, or silently defaulted.
+- **Acceptable (4–7).** `output_schema::<T>()` plus `prompt_typed::<T>()` return a validated Rust
+  value; malformed output is an error naming the field, not a default. `claimed_complete` is recorded
+  in evidence and never consulted for the outcome. A test drives a scripted model that returns
+  malformed JSON and asserts the attempt fails rather than proceeding.
+- **Excellent (8–10).** All of the above, plus **the model-lies case is a committed test**: a scripted
+  model returns `claimed_complete: true` over a fixture whose `cargo test --offline` still fails, and
+  the run concludes `Retryable` with the check failure named in its evidence. This is the criterion's
+  centre of gravity — a milestone that inserts a component able to assert its own success has not
+  proven anything until it has proven it can be disbelieved.
+
+### `m1-bounded-behavior`
+
+Turn, attempt, time, and mutation limits, and cancellation.
+
+- **Poor (1–3).** Only one bound exists, or the inner turn limit is enforced by a hand-rolled counter
+  rather than by the runtime. Cancellation is assumed to follow from dropping a future. A bound is
+  configured but nothing asserts it fires.
+- **Acceptable (4–7).** Two independent bounds — an outer per-capability attempt limit owned by
+  `fiddle-runtime` and an inner per-attempt turn limit enforced by Rig — plus a wall-clock deadline
+  and a files-changed cap. Each has a test that drives it past the limit and asserts the specific
+  error: a scripted model with more tool calls than `max_turns` yields Rig's `MaxTurnsError`. A
+  cancellation token is passed into every tool and the check runner and is checked before mutation.
+- **Excellent (8–10).** All of the above, plus a cancellation test that cancels *between inspection
+  and mutation* and asserts the workspace is unmutated afterwards — proving cancellation prevents an
+  effect rather than merely ending a future — and the cancelled attempt's outcome is shown to come
+  from M0's existing post-execution re-derivation, adding no row to the exit-code table.
+
+### `m1-workspace-isolation`
+
+The ephemeral workspace, path validation, and environment sanitization.
+
+- **Poor (1–3).** Path containment is a `starts_with(workspace_root)` check. `std::env::remove_var`
+  is used to strip credentials, mutating the host process. The workspace outlives the attempt, or its
+  teardown is skipped on the failure path. Build artefacts pollute the changed-file evidence.
+- **Acceptable (4–7).** A per-attempt `git worktree add --detach`, removed after evidence capture on
+  every path including failure. Paths are normalized, the deepest existing ancestor resolved, and
+  `..`, absolute paths, NUL bytes, and platform prefixes rejected. Workspace commands run under
+  `Command::env_clear()` with an explicit `HOME`/`PATH`/`LANG` allowlist. The fixture repository
+  gitignores `target/`, so `git status --porcelain` reports source changes only.
+- **Excellent (8–10).** All of the above, plus a symlink-escape case is a committed test — a symlink
+  inside the workspace pointing outside it is refused for both read and write, not merely for a path
+  containing `..` — and a test asserts that no credential-shaped variable survives into a workspace
+  command's environment, by running a command that dumps its own environment and searching the
+  output. ADR 011 exists because M0 shipped a path derived from an unvalidated value; the same class
+  of defect is checked here rather than assumed absent.
+
+### `m1-fixture-repair-acceptance`
+
+The credential-free black-box proof.
+
+- **Poor (1–3).** The lane calls library functions instead of launching the compiled binary. It
+  requires a credential, or a network call, to pass. The repair is asserted from the agent's response
+  rather than from the fixture on disk. M0's `m0_skeleton` lane was modified to accommodate M1.
+- **Acceptable (4–7).** `cargo test -p fiddle-acceptance --test m1_bounded_capability` exits 0,
+  driving the compiled binary as a subprocess over a deliberately broken zero-dependency Rust crate.
+  The repair is asserted by running the configured check (`cargo test --offline`, which fails before
+  and passes after) and by reading `git status --porcelain` in the worktree — both independent of the
+  model's response. The lane passes with `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `GH_TOKEN`, and
+  `JIRA_API_TOKEN` removed. `m0_skeleton` still exits 0, unmodified.
+- **Excellent (8–10).** All of the above, plus the adversarial cases ride in the same lane rather
+  than only in unit tests: `../outside.txt`, an absolute path, a symlink pointing out, an
+  unregistered tool name, malformed structured output, mutation past the files-changed cap, and
+  cancellation mid-attempt. The fixture repository is created by the harness with an explicit
+  `-c user.email` / `-c user.name`, so the lane does not depend on the runner having a git identity.
+
+### `m1-canary-evidence`
+
+The scheduled real-model run, and what it reports when it cannot run.
+
+The model provider is a **LiteLLM OpenAI-compatible gateway**, not Anthropic directly
+(design §2.4). Two facts follow, and both are scored here. The gateway translates OpenAI
+function-calling shape to the upstream provider, so the canary is the *only* proof that tool
+calls survive that translation — the deterministic lane replaces the provider with
+`MockCompletionModel` and never serializes a request to anyone. And the key carries a **$100
+hard cap**, so requests begin failing on spend rather than on correctness.
+
+- **Poor (1–3).** The canary gates merges, or fails the build when the credential is absent, or —
+  worst — reports success without having called a model. Its output is unstructured log text. It
+  records only pass/fail and a duration. A spent budget is reported as a capability failure.
+- **Acceptable (4–7).** A scheduled workflow separate from the merge gate, carrying
+  `workflow_dispatch` so it is runnable before it reaches the default branch. With
+  `LITELLM_API_KEY` absent it emits a machine-readable
+  `{"status":"degraded","reason":"missing_LITELLM_API_KEY","canary_exercised":false}` and does not
+  fail the deterministic gate. When exercised it records runtime, rig version, toolchain, gateway
+  base URL, model identifier, prompt and capability revision, fixture revision, configured limits,
+  outcome classification, deterministic check results, stop reason, input/output token counts, and
+  latency.
+- **Excellent (8–10).** All of the above, plus `canary_exercised: false` is asserted by a committed
+  test rather than left to the workflow's runtime behaviour; and `budget_exhausted`, `auth`,
+  `quota`, `timeout`, `provider` and `capability` are distinguishable classes in the emitted
+  payload rather than one `failed` — an exhausted budget that reads as a broken capability is the
+  specific defect this anchor exists to prevent. No raw prompt, tool result, or repository content
+  is persisted; content is carried by digest.
+
+### Known-blocked criteria
+
+None for M1's provider surface. The gateway credential exists locally, and the tool-call and
+structured-output round trips were both proven live against `claude-sonnet-4-6` during the seed
+(design §2.4). Two narrower notes:
+
+- The **scheduled** canary cannot fire until M1 reaches the default branch, because GitHub runs
+  `schedule` triggers only from the default branch's workflow file. Score the canary through
+  `workflow_dispatch` and do not treat an unfired schedule as a defect.
+- A **repository secret** for `LITELLM_API_KEY` may not exist when a bean is evaluated
+  (`gh secret list --repo peel/fiddle --json name` returned `[]` at baseline). That gates the
+  CI-exercised path only, never the local one; score it against the degraded path and record the
+  CI path as blocked rather than redefining the criterion.
+
+Model names come from the gateway, not from the RFC: the RFC's `claude-sonnet-4-5` is not
+available there. A bean that hardcodes an RFC model name has a runtime defect, not a style
+problem.
