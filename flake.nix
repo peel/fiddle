@@ -26,10 +26,28 @@
         inputs.ai-devtools.flakeModules.ai-tools
       ];
 
-      perSystem = {pkgs, ...}: {
+      perSystem = {
+        pkgs,
+        lib,
+        ...
+      }: {
         ai-tools.enable = true;
 
         devenv.shells.default = {
+          # devenv derives its root from $PWD, which pure evaluation blanks out,
+          # and then asserts. Day-to-day use goes through direnv (`use flake . --impure`),
+          # so $PWD is set and this resolves to the real checkout. Under pure
+          # evaluation (`nix flake check`, plain `nix develop`) fall back to a
+          # writable scratch root so the gate can evaluate the shell.
+          devenv.root = let
+            pwd = builtins.getEnv "PWD";
+          in
+            lib.mkDefault (
+              if pwd == ""
+              then "/tmp/fiddle-devenv-pure-eval"
+              else pwd
+            );
+
           packages = [
             pkgs.alejandra
             pkgs.gh
