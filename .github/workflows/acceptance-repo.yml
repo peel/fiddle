@@ -17,7 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
-        with: { toolchain: "1.85.0" }
+        # Kept in lockstep with rust-toolchain.toml: dtolnay/rust-toolchain
+        # requires an explicit toolchain and will not read that file.
+        with: { toolchain: "1.97.1" }
       - run: cargo build --release
       # Checked out with no `token:` and no `ssh-key:`. The repository is
       # public, so the default read-only job token is never even required to

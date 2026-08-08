@@ -1,8 +1,12 @@
 # CI deliberately does NOT run `nix flake check`: inputs.ai-devtools is path:/Users/peel/wrk/ai-devtools,
 # which exists on no runner and has no substitute providing flakeModules.ai-tools. See Task 0 Step 4.
 # `nix flake check` therefore stays the local-only developer gate, and CI runs the same four Cargo
-# gate commands directly against the channel pinned by rust-toolchain.toml, plus the named M0
-# acceptance scenario recorded in docs/technical/SYSTEM.md.
+# gate commands directly, plus the named M0 acceptance scenario recorded in
+# docs/technical/SYSTEM.md.
+#
+# dtolnay/rust-toolchain requires an explicit `toolchain` input and will not read
+# rust-toolchain.toml, so the channel below is a duplicate that must be changed in
+# lockstep with rust-toolchain.toml and .github/workflows/acceptance-repo.yml.
 name: rust
 on: [push, pull_request]
 jobs:
@@ -11,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
-        with: { toolchain: "1.85.0", components: "rustfmt, clippy" }
+        with: { toolchain: "1.97.1", components: "rustfmt, clippy" }
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features

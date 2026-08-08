@@ -15,6 +15,16 @@ fiddle-core = { path = "../fiddle-core" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# The impure side of the boundary. These live here and in no other crate: the
+# crate_boundary acceptance test walks fiddle-core's resolved closure and fails
+# if any of them becomes reachable from the pure domain. Nothing consumes them
+# yet; the later M1 tasks that build the Rig capability do.
+rig-core.workspace = true
+rig-agent.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+schemars.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
