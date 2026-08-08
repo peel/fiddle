@@ -155,16 +155,27 @@ pub fn run_human(bundle: &ReportBundle, published: Option<&Path>) -> String {
     out
 }
 
-/// The diagnostic for a bundle that could not be published.
+/// The diagnostic for an attempt that could not record itself.
 ///
 /// Plain lines rather than a `miette` report: the whole point of this
 /// diagnostic is that an operator can read `<report.dir>` out of it and go fix
 /// the permissions, and a graphical handler reflows long messages, which is
 /// exactly the wrong thing to do to a path. The directory is named on its own
 /// line, whole, whatever its length.
-pub fn publication_failure(report_dir: &Path, error: &EvidenceError) -> String {
+///
+/// The headline distinguishes the two moments, because they have different
+/// consequences an operator needs to know about: a journal that could not be
+/// written means the run *did not act*, while a bundle that could not be
+/// published means it acted and the record of it is missing.
+pub fn evidence_failure(report_dir: &Path, error: &EvidenceError) -> String {
+    let headline = match error {
+        EvidenceError::Journal { .. } => "could not record this attempt before executing it",
+        EvidenceError::Write { .. } | EvidenceError::Render { .. } => {
+            "could not publish the report bundle"
+        }
+    };
     format!(
-        "error: could not publish the report bundle\n  report.dir  = {}\n  cause       = {error}",
+        "error: {headline}\n  report.dir  = {}\n  cause       = {error}",
         report_dir.display(),
     )
 }

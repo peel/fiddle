@@ -22,16 +22,33 @@ use std::path::{Path, PathBuf};
 /// The file name every published attempt directory contains.
 pub const BUNDLE_FILE: &str = "report.json";
 
-/// Why a bundle was not published.
+/// Why an attempt could not record itself durably.
 ///
-/// Both variants name what could not be done and where, because this surfaces
+/// Every variant names what could not be done and where, because this surfaces
 /// to an operator as the reason a run failed: `<report.dir>` is theirs to fix,
-/// and a bare "could not publish" would leave them nothing to act on.
+/// and a bare "could not publish" would leave them nothing to act on. The
+/// wording differs per variant on purpose — all three of these become a
+/// [`RunOutcome::Retryable`](fiddle_core::RunOutcome::Retryable) reason, as does
+/// a change-set write a capability could not complete, and a reader of the
+/// payload alone has to be able to tell which of the three failed.
 #[derive(Debug, thiserror::Error)]
 pub enum EvidenceError {
     /// The bundle could not be written, moved into place, or given a directory.
     #[error("could not write the report bundle at {path}: {source}")]
     Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The attempt journal could not be appended to.
+    ///
+    /// Distinct from [`EvidenceError::Write`] because it fails at a different
+    /// moment and has a different consequence: a journal that cannot be written
+    /// stops the attempt *before* the capability runs, so nothing has changed
+    /// and the reason must not read as if the run had already done its work.
+    #[error("could not record the attempt journal at {path}: {source}")]
+    Journal {
         path: PathBuf,
         #[source]
         source: std::io::Error,

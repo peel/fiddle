@@ -52,17 +52,20 @@ fn run_publishes_a_bundle_carrying_package_version_and_source_revision() {
     );
 }
 
-/// The atomicity property, injected at the publication boundary this task
-/// introduces.
+/// The atomicity property, injected at the publication boundary this milestone
+/// introduces — and, with it, the fail-closed rule that governs it.
 ///
-/// Three separate claims, all of which have to hold: the run reports `failed`
-/// rather than `retryable` (repeating it would fail identically until someone
-/// fixes the directory), the diagnostic names the directory so they know which
-/// one, and nothing partial survives — no bundle, and no staging directory
+/// An unwritable `<report.dir>` is where an attempt records *both* what it is
+/// about to do and what it did, so a wholly unwritable one stops the attempt
+/// before it touches anything. Four claims, all of which have to hold: the run
+/// exits `11` rather than `20` (repeating it after an operator fixes the
+/// directory succeeds, which is what `retryable` promises and `failed` denies),
+/// the diagnostic names the directory so they know which one, the fixture is
+/// untouched, and nothing partial survives — no bundle, and no staging directory
 /// either.
 #[cfg(unix)]
 #[test]
-fn an_unwritable_report_dir_exits_20_and_leaves_no_partial_bundle() {
+fn an_unwritable_report_dir_exits_11_and_changes_nothing() {
     let s = Scenario::new();
     s.write_work_item("fiddle-m0-demo", "open");
     s.make_report_dir_unwritable();
@@ -77,14 +80,19 @@ fn an_unwritable_report_dir_exits_20_and_leaves_no_partial_bundle() {
     }
     assert_eq!(
         out.status.code(),
-        Some(20),
-        "a bundle that could not be published is failed, not retryable; stderr = {}",
+        Some(11),
+        "an attempt that could not record itself is retryable — fixing the directory and \
+         repeating it succeeds; stderr = {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(
         stderr.contains(s.report_dir().to_str().unwrap()),
         "diagnostic must name the path: {stderr}"
+    );
+    assert!(
+        s.read_change_marker("fiddle-m0-demo").is_none(),
+        "an attempt that could not record what it was about to do must not do it"
     );
 
     s.make_report_dir_writable();
@@ -103,12 +111,80 @@ fn an_unwritable_report_dir_exits_20_and_leaves_no_partial_bundle() {
             .all(|p| p.file_name().unwrap() != "report.json"),
         "no report.json may exist when publication failed"
     );
+
+    // And the promise the exit code makes is kept: the same invocation, repeated
+    // after the operator fixed the directory, succeeds.
+    let repeated = s.run_json("beans:fiddle-m0-demo", 0);
+    assert_eq!(repeated["outcome"], "completed");
 }
 
-/// A publication failure must stay distinguishable from a capability failure:
-/// the capability writing the change set is retryable (exit 11), publishing the
-/// bundle is not (exit 20). Same fixture, two different boundaries, two
-/// different answers — asserted together so neither can drift into the other.
+/// The other half of the publication boundary, which the fail-closed case above
+/// cannot reach: an attempt whose capability *succeeded* and whose bundle could
+/// not be published.
+///
+/// Injected by leaving the journal directory writable while `<report.dir>` itself
+/// is not, which is the state a `<report.dir>` sealed after an earlier attempt
+/// would be in. The claim is that the world moving is never unrecorded: the
+/// marker is on disk, no bundle exists, and the journal says which capability ran
+/// under which attempt.
+#[cfg(unix)]
+#[test]
+fn a_publication_failure_after_a_successful_execution_still_records_it() {
+    let s = Scenario::new();
+    s.write_work_item("fiddle-m0-demo", "open");
+    s.prepare_journal_dir();
+    s.make_report_dir_unwritable();
+
+    let out = s.run_raw_with(&["--json"], "beans:fiddle-m0-demo");
+
+    s.make_report_dir_writable();
+    if out.status.code() == Some(0) {
+        return; // an identity that ignores the permission bits
+    }
+    assert_eq!(
+        out.status.code(),
+        Some(11),
+        "stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        v["report"].is_null(),
+        "no bundle was published, so the payload must name none: {v}"
+    );
+    assert_eq!(
+        v["capability_executions"][0]["status"], "completed",
+        "the capability succeeded; got {}",
+        v["capability_executions"]
+    );
+    assert!(
+        s.read_change_marker("fiddle-m0-demo").is_some(),
+        "the world moved — this case is about what records that"
+    );
+    assert!(
+        walkdir_files(s.report_dir())
+            .iter()
+            .all(|p| p.file_name().unwrap() != "report.json"),
+        "publication failed, so no bundle may exist"
+    );
+
+    // The durable record of the execution, read the way an operator would find
+    // it: a file under `<report.dir>` naming the attempt and the capability.
+    let records = s.journal_records();
+    assert_eq!(records.len(), 1, "got {records:?}");
+    let text = std::fs::read_to_string(&records[0]).unwrap();
+    assert!(
+        text.contains("stub_mark") && text.contains("completed"),
+        "the journal must record that the capability executed: {text}"
+    );
+}
+
+/// A publication failure must stay distinguishable from a capability failure.
+/// Both are retryable and both exit `11`, so the reason is what tells them
+/// apart — the capability names the change set, publication names the report
+/// bundle, and an intent that could not be recorded names the attempt journal.
+/// Same fixture, two different boundaries, asserted together so neither reason
+/// can drift into the other.
 #[cfg(unix)]
 #[test]
 fn a_capability_failure_stays_retryable_and_distinct_from_a_publication_failure() {

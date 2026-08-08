@@ -1,26 +1,36 @@
-//! The static M0 orchestration: observe, derive, maybe execute, observe again.
+//! The static M0 orchestration: observe, derive, record, maybe execute, observe
+//! again, publish.
 //!
 //! Ordinary Rust rather than a workflow DSL. M0's plan is a single deterministic
-//! step, and the value of writing it as plain control flow is that the two rules
-//! it has to honour are visible in one screen:
+//! step, and the value of writing it as plain control flow is that the rules it
+//! has to honour are visible in one screen:
 //!
 //! - The capability is reached only through [`NextAction::Execute`]. That is not
 //!   a branch anyone has to remember — [`Capability::execute`] cannot be called
 //!   without an [`ExecutionGrant`], and `ExecutionGrant::authorise` only issues
 //!   one for an `Execute` derivation. A blocked or complete derivation therefore
 //!   publishes an empty execution list because there was no way to fill it.
+//! - An authorised execution is journaled before it happens. That is likewise
+//!   not a branch: the grant is wrapped in an [`Authorised`] whose only
+//!   constructor records the intent, and the one call to `execute` in this
+//!   module takes an `Authorised`.
 //! - After executing, the run observes *again* and derives *again*. What it
 //!   reports as the next action is the state it left behind, not the intention
 //!   it started with; design §4.7 shows `"next_action": "complete"` for a
 //!   successful first run, and a completed run that advertised work still to do
 //!   would send its caller round the loop for nothing.
+//! - Executing and recording are one transaction, owned by [`attempt`]. The
+//!   ordering rationale is written there.
 
 use crate::capability::{Capability, ExecutionGrant};
+use crate::evidence::{mint_attempt_id, publish, EvidenceError};
+use crate::journal::{AttemptJournal, FileJournal};
 use crate::ports::{ChangePort, WorkItemPort};
 use fiddle_core::{
-    correlation_key, derive_next, CapabilityExecution, EvidenceRef, NextAction, ProgressEntry,
-    RunOutcome, WorkStateView,
+    correlation_key, derive_next, CapabilityExecution, EvidenceRef, FiddleBuild, InvocationRef,
+    Mode, NextAction, ProgressEntry, ReportBundle, RunOutcome, WorkRef, WorkStateView,
 };
+use std::path::{Path, PathBuf};
 
 /// Observe both sides of the world for one work item.
 ///
@@ -55,6 +65,8 @@ pub struct RunContext<'a> {
     pub work_items: &'a dyn WorkItemPort,
     pub changes: &'a dyn ChangePort,
     pub capability: &'a dyn Capability,
+    /// Where this run writes down what it is about to do, before it does it.
+    pub journal: &'a dyn AttemptJournal,
 }
 
 impl RunContext<'_> {
@@ -81,6 +93,10 @@ pub struct RunReport {
     pub executions: Vec<CapabilityExecution>,
     pub progress: Vec<ProgressEntry>,
     pub observations: WorkStateView,
+    /// Set when the run could not record its intent, and therefore refused to
+    /// execute. Carried separately from `outcome` because the outcome says what
+    /// to do next while this says which path an operator has to make writable.
+    pub evidence_failure: Option<EvidenceError>,
 }
 
 impl RunReport {
@@ -100,7 +116,36 @@ impl RunReport {
             executions: Vec::new(),
             progress: Vec::new(),
             observations,
+            evidence_failure: None,
         }
+    }
+}
+
+/// A grant whose intent has been recorded.
+///
+/// The same trick as [`ExecutionGrant`], one layer up: the field is private and
+/// the only constructor is [`Authorised::recorded`], which journals the intent
+/// before it hands one back. The single call to [`Capability::execute`] in this
+/// module consumes an `Authorised`, so "the world is never changed before the
+/// intent to change it is durable" is a property the compiler holds rather than
+/// an ordering someone has to keep remembering.
+struct Authorised {
+    grant: ExecutionGrant,
+}
+
+impl Authorised {
+    /// Record `grant`'s intent, and authorise the execution only if that
+    /// succeeded.
+    fn recorded(
+        journal: &dyn AttemptJournal,
+        grant: ExecutionGrant,
+    ) -> Result<Self, EvidenceError> {
+        journal.record_intent(grant.capability_id())?;
+        Ok(Authorised { grant })
+    }
+
+    fn capability_id(&self) -> fiddle_core::CapabilityId {
+        self.grant.capability_id()
     }
 }
 
@@ -135,12 +180,35 @@ pub fn run(ctx: &RunContext<'_>) -> RunReport {
         };
     };
 
-    let capability_id = grant.capability_id();
+    // Fail closed on the journal. An intent that could not be recorded means a
+    // capability that would change the world with nothing saying it did, which
+    // is the hazard the journal exists to remove — so an unrecordable intent
+    // stops the run here rather than proceeding unrecorded. `Retryable`, because
+    // fixing the directory and repeating the invocation is exactly what works.
+    let authorised = match Authorised::recorded(ctx.journal, grant) {
+        Ok(authorised) => authorised,
+        Err(error) => {
+            let reason = error.to_string();
+            return RunReport {
+                evidence_failure: Some(error),
+                // Through the same constructor as the other two non-executing
+                // paths, so "nothing ran, so nothing is reported as having run"
+                // stays one statement rather than three.
+                ..RunReport::without_execution(RunOutcome::Retryable { reason }, derived, view)
+            };
+        }
+    };
+
+    let capability_id = authorised.capability_id();
     match ctx
         .capability
-        .execute(grant, ctx.work_id, ctx.invocation_ref)
+        .execute(authorised.grant, ctx.work_id, ctx.invocation_ref)
     {
         Ok(evidence) => {
+            // Recorded before anything else happens: until the bundle publishes,
+            // this is the only thing that says the world moved.
+            ctx.journal
+                .record_effect(capability_id, "completed", std::slice::from_ref(&evidence));
             // Re-observe and re-derive: the report must describe the state the
             // run left behind, not the action it chose on entry.
             let after = ctx.observe();
@@ -165,10 +233,15 @@ pub fn run(ctx: &RunContext<'_>) -> RunReport {
                     vec![evidence],
                 )],
                 observations: after,
+                evidence_failure: None,
             }
         }
         Err(error) => {
             let reason = error.to_string();
+            // Recorded too: "the capability tried and failed" and "the
+            // capability's fate is unknown" are different things to recover
+            // from, and only a record written here can tell them apart.
+            ctx.journal.record_effect(capability_id, "failed", &[]);
             RunReport {
                 outcome: RunOutcome::Retryable {
                     reason: reason.clone(),
@@ -177,6 +250,167 @@ pub fn run(ctx: &RunContext<'_>) -> RunReport {
                 executions: vec![execution(capability_id, "failed", Vec::new())],
                 progress: vec![progress(capability_id, "failed", reason, Vec::new())],
                 observations: view,
+                evidence_failure: None,
+            }
+        }
+    }
+}
+
+/// Everything one attempt needs: who it is for, what it may touch, what it may
+/// do, and where it records what it did.
+///
+/// The whole attempt, not the plan alone — which is the point. `RunContext` and
+/// [`run`] describe *executing*; this describes executing *and recording*, and
+/// the two are one transaction because separating them is what let a capability
+/// change the world with nothing on disk saying so.
+pub struct AttemptContext<'a> {
+    /// The project name the correlation key is derived from.
+    pub project: &'a str,
+    /// The work this attempt is about, as it was addressed.
+    pub reference: &'a InvocationRef,
+    /// How the attempt was invoked, recorded in what it publishes.
+    pub mode: Mode,
+    /// Which build is running, supplied by the binary that compiled it in
+    /// rather than looked up here — a bundle must be attributable to the exact
+    /// artefact that wrote it.
+    pub build: FiddleBuild,
+    /// Where bundles and journals live.
+    pub report_dir: &'a Path,
+    pub work_items: &'a dyn WorkItemPort,
+    pub changes: &'a dyn ChangePort,
+    pub capability: &'a dyn Capability,
+}
+
+/// What one attempt concluded, and what it managed to record.
+pub struct AttemptRecord {
+    /// The bundle this attempt concluded with — whether or not it was published,
+    /// this is what it concluded, and `bundle.outcome` is the outcome to act on.
+    pub bundle: ReportBundle,
+    /// Where the bundle landed, relative to `<report.dir>`; `None` when
+    /// publication failed. A path naming a bundle that is not there would be
+    /// worse than no path at all.
+    pub published: Option<PathBuf>,
+    /// The durable-evidence problem an operator has to fix, if any. Present in
+    /// exactly the cases whose `outcome` is a retryable evidence failure, so a
+    /// caller can render a diagnostic naming the path without re-deriving it
+    /// from the reason text.
+    pub evidence_failure: Option<EvidenceError>,
+}
+
+/// Execute and record one attempt: the whole transaction, start to finish.
+///
+/// # The ordering, and why it is this one
+///
+/// The sequence is: **observe, derive, record the intent, execute, re-observe,
+/// publish, supersede the journal.**
+///
+/// Recording comes before executing because the alternative is unrecoverable.
+/// M0's one capability is idempotent, so an attempt that mutated and was never
+/// recorded self-heals — the next attempt observes `Satisfied` and carries on.
+/// That is a property of `stub_mark`, not of this design. M2 carries this same
+/// sequence over a branch and a pull request, which are not idempotent: there, a
+/// crash between "the effect happened" and "the effect was recorded" cannot be
+/// resolved by inspection, because a retry has no way to tell *never ran* from
+/// *ran but was not recorded*, and will either duplicate the effect or skip it.
+/// Writing the intent down first is what makes that distinction survive the
+/// crash — see [`crate::journal`].
+///
+/// If the intent itself cannot be recorded, the capability does not run. That is
+/// the fail-closed direction, and it is the only consistent one: a journal whose
+/// write may be skipped is not a journal. The run reports
+/// [`RunOutcome::Retryable`] naming the journal, because fixing `<report.dir>`
+/// and repeating the invocation is precisely what succeeds.
+///
+/// # Which record is authoritative
+///
+/// The published bundle, always. The journal is not a second source of truth
+/// about what happened; it is a record that an attempt was in flight, and it is
+/// removed the moment a bundle for that attempt lands. For any attempt id at
+/// most one of the two exists, so they cannot be read as disagreeing, and a
+/// journal record means exactly one thing: this attempt did not finish recording
+/// itself. [`crate::journal::interrupted`] is how a later reader finds those.
+pub fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
+    // Minted once, here: an attempt id names this attempt, and one attempt is
+    // one run. It is minted before anything is recorded because both the journal
+    // and the bundle are filed under it.
+    let attempt_id = mint_attempt_id();
+    let invocation = ctx.reference.as_str();
+    let slug = ctx.reference.slug();
+    let journal = FileJournal::new(ctx.report_dir, &slug, &attempt_id, &invocation);
+
+    let RunReport {
+        outcome,
+        next_action,
+        executions,
+        progress,
+        observations,
+        evidence_failure,
+    } = run(&RunContext {
+        project: ctx.project,
+        invocation_ref: &invocation,
+        work_id: ctx.reference.value(),
+        work_items: ctx.work_items,
+        changes: ctx.changes,
+        capability: ctx.capability,
+        journal: &journal,
+    });
+
+    // `work_ref` is the invocation reference in M0, where a beans reference is
+    // both the request and the identity of the work. It is a separate field
+    // because the two diverge as soon as a second scheme can address the same
+    // work — and because the stability proof compares `work_ref` across two
+    // attempts, which would prove nothing if it were derived from the attempt.
+    let bundle = ReportBundle {
+        schema: fiddle_core::REPORT_SCHEMA,
+        fiddle: ctx.build.clone(),
+        invocation_ref: invocation.clone(),
+        work_ref: Some(WorkRef(invocation)),
+        attempt_id: attempt_id.clone(),
+        mode: ctx.mode,
+        outcome,
+        next_action,
+        capability_executions: executions,
+        progress,
+        observations,
+    };
+
+    match publish(ctx.report_dir, &slug, &attempt_id, &bundle) {
+        Ok(path) => {
+            // The bundle is the authoritative record from here on, so the
+            // journal has nothing left to say.
+            journal.supersede();
+            // Relative to `<report.dir>`, so a caller's payload stays the same
+            // whatever absolute prefix the configuration happens to name. `path`
+            // was built by joining onto that directory, so the strip cannot fail.
+            let relative = path.strip_prefix(ctx.report_dir).unwrap_or(&path);
+            AttemptRecord {
+                bundle,
+                published: Some(relative.to_path_buf()),
+                evidence_failure,
+            }
+        }
+        Err(error) => {
+            // A run whose intent could not be recorded already concluded on that,
+            // and it is the root cause: it is why nothing executed, and the
+            // publication failing afterwards is the same unwritable directory
+            // being reported twice. Otherwise publication is the last thing that
+            // can change what this attempt concluded, and it just did.
+            let (bundle, failure) = match evidence_failure {
+                Some(journal_failure) => (bundle, journal_failure),
+                None => (
+                    ReportBundle {
+                        outcome: RunOutcome::Retryable {
+                            reason: error.to_string(),
+                        },
+                        ..bundle
+                    },
+                    error,
+                ),
+            };
+            AttemptRecord {
+                bundle,
+                published: None,
+                evidence_failure: Some(failure),
             }
         }
     }
@@ -225,14 +459,40 @@ mod tests {
     const INVOCATION_REF: &str = "beans:fiddle-m0-demo";
     const PROJECT: &str = "icecube";
 
+    /// Everything a run reached, in the order it reached it.
+    ///
+    /// Shared by the spy capability and the spy journal, so "the intent was
+    /// recorded before the world changed" is an assertion about one sequence
+    /// rather than about two counters that happen to agree.
+    #[derive(Default)]
+    struct Log(std::sync::Mutex<Vec<String>>);
+
+    impl Log {
+        fn record(&self, event: impl Into<String>) {
+            self.0.lock().unwrap().push(event.into());
+        }
+
+        fn events(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
     /// A capability that records whether it was reached, so "never executed"
     /// can be asserted directly rather than inferred from its side effects.
     #[derive(Default)]
     struct Spy {
         calls: AtomicUsize,
+        log: std::sync::Arc<Log>,
     }
 
     impl Spy {
+        fn watching(log: &std::sync::Arc<Log>) -> Self {
+            Spy {
+                calls: AtomicUsize::new(0),
+                log: std::sync::Arc::clone(log),
+            }
+        }
+
         fn calls(&self) -> usize {
             self.calls.load(Ordering::Relaxed)
         }
@@ -250,7 +510,80 @@ mod tests {
             _invocation_ref: &str,
         ) -> Result<EvidenceRef, CapabilityError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
+            self.log.record("execute");
             Ok(EvidenceRef("spy:executed".to_string()))
+        }
+    }
+
+    /// The real capability, logging when it is reached.
+    ///
+    /// Used where the assertion is about ordering rather than about reachability:
+    /// the world has to actually change, or the re-observation the run performs
+    /// afterwards has nothing to see.
+    struct Watched {
+        inner: StubMark,
+        log: std::sync::Arc<Log>,
+    }
+
+    impl Capability for Watched {
+        fn id(&self) -> CapabilityId {
+            self.inner.id()
+        }
+
+        fn execute(
+            &self,
+            grant: ExecutionGrant,
+            work_id: &str,
+            invocation_ref: &str,
+        ) -> Result<EvidenceRef, CapabilityError> {
+            self.log.record("execute");
+            self.inner.execute(grant, work_id, invocation_ref)
+        }
+    }
+
+    /// A journal that logs what it was asked to record, and can be told to
+    /// refuse — which is how the fail-closed direction is tested without a
+    /// filesystem.
+    #[derive(Default)]
+    struct SpyJournal {
+        log: std::sync::Arc<Log>,
+        refuse: bool,
+    }
+
+    impl SpyJournal {
+        fn watching(log: &std::sync::Arc<Log>) -> Self {
+            SpyJournal {
+                log: std::sync::Arc::clone(log),
+                refuse: false,
+            }
+        }
+
+        fn refusing(log: &std::sync::Arc<Log>) -> Self {
+            SpyJournal {
+                log: std::sync::Arc::clone(log),
+                refuse: true,
+            }
+        }
+    }
+
+    impl AttemptJournal for SpyJournal {
+        fn record_intent(&self, _capability: CapabilityId) -> Result<(), EvidenceError> {
+            self.log.record("intent");
+            if self.refuse {
+                return Err(EvidenceError::Journal {
+                    path: PathBuf::from("/nowhere/.attempts"),
+                    source: std::io::Error::other("refused"),
+                });
+            }
+            Ok(())
+        }
+
+        fn record_effect(&self, _capability: CapabilityId, status: &str, _e: &[EvidenceRef]) {
+            self.log.record(format!("effect:{status}"));
+        }
+
+        fn supersede(&self) {
+            self.log.record("supersede");
         }
     }
 
@@ -258,6 +591,7 @@ mod tests {
         capability: &'a dyn Capability,
         work_items: &'a StubWorkItemPort,
         changes: &'a StubChangePort,
+        journal: &'a dyn AttemptJournal,
     ) -> RunContext<'a> {
         RunContext {
             project: PROJECT,
@@ -266,6 +600,7 @@ mod tests {
             work_items,
             changes,
             capability,
+            journal,
         }
     }
 
@@ -289,8 +624,9 @@ mod tests {
         let capability = StubMark::new(dir.path(), PROJECT);
         let work_items = StubWorkItemPort::new(dir.path());
         let changes = StubChangePort::new(dir.path());
+        let journal = SpyJournal::default();
 
-        let report = run(&context(&capability, &work_items, &changes));
+        let report = run(&context(&capability, &work_items, &changes, &journal));
 
         assert_eq!(report.outcome, RunOutcome::Completed);
         assert_eq!(
@@ -312,19 +648,31 @@ mod tests {
     #[test]
     fn a_second_run_completes_without_executing_again() {
         let dir = fixture_root();
-        let spy = Spy::default();
+        let log = std::sync::Arc::<Log>::default();
+        let spy = Spy::watching(&log);
         let marking = StubMark::new(dir.path(), PROJECT);
         let work_items = StubWorkItemPort::new(dir.path());
         let changes = StubChangePort::new(dir.path());
+        let journal = SpyJournal::watching(&log);
 
-        run(&context(&marking, &work_items, &changes));
-        let report = run(&context(&spy, &work_items, &changes));
+        run(&context(
+            &marking,
+            &work_items,
+            &changes,
+            &SpyJournal::default(),
+        ));
+        let report = run(&context(&spy, &work_items, &changes, &journal));
 
         assert_eq!(spy.calls(), 0, "a satisfied world must not execute");
         assert_eq!(report.outcome, RunOutcome::Completed);
         assert_eq!(report.next_action, NextAction::Complete);
         assert!(report.executions.is_empty());
         assert!(report.progress.is_empty());
+        assert!(
+            log.events().is_empty(),
+            "nothing was going to change the world, so nothing may be journaled: {:?}",
+            log.events()
+        );
     }
 
     /// The fail-closed arm: an unobservable world never reaches the capability,
@@ -333,17 +681,81 @@ mod tests {
     fn a_blocked_derivation_never_reaches_the_capability() {
         let dir = tempfile::tempdir().unwrap();
         let absent = dir.path().join("no-such-root");
-        let spy = Spy::default();
+        let log = std::sync::Arc::<Log>::default();
+        let spy = Spy::watching(&log);
         let work_items = StubWorkItemPort::new(&absent);
         let changes = StubChangePort::new(&absent);
+        let journal = SpyJournal::watching(&log);
 
-        let report = run(&context(&spy, &work_items, &changes));
+        let report = run(&context(&spy, &work_items, &changes, &journal));
 
         assert_eq!(spy.calls(), 0, "a blocked derivation must not execute");
         assert!(matches!(report.outcome, RunOutcome::Failed { .. }));
         assert!(matches!(report.next_action, NextAction::Blocked { .. }));
         assert!(report.executions.is_empty());
         assert!(report.progress.is_empty());
+        assert!(
+            log.events().is_empty(),
+            "a blocked derivation intends nothing, so it journals nothing: {:?}",
+            log.events()
+        );
+    }
+
+    /// **The ordering, asserted as an order.** The intent is recorded before the
+    /// capability is reached, and the effect after it returns — one sequence, so
+    /// no pair of independently-correct assertions can pass while the order is
+    /// wrong.
+    #[test]
+    fn the_intent_is_recorded_before_the_capability_is_reached() {
+        let dir = fixture_root();
+        let log = std::sync::Arc::<Log>::default();
+        let capability = Watched {
+            inner: StubMark::new(dir.path(), PROJECT),
+            log: std::sync::Arc::clone(&log),
+        };
+        let work_items = StubWorkItemPort::new(dir.path());
+        let changes = StubChangePort::new(dir.path());
+        let journal = SpyJournal::watching(&log);
+
+        run(&context(&capability, &work_items, &changes, &journal));
+
+        assert_eq!(
+            log.events(),
+            ["intent", "execute", "effect:completed"],
+            "the world must never move before the intention to move it is recorded"
+        );
+    }
+
+    /// The fail-closed direction of that ordering: an intent that could not be
+    /// recorded stops the run instead of letting it change the world unrecorded.
+    #[test]
+    fn an_unrecordable_intent_stops_the_run_before_the_capability() {
+        let dir = fixture_root();
+        let log = std::sync::Arc::<Log>::default();
+        let spy = Spy::watching(&log);
+        let work_items = StubWorkItemPort::new(dir.path());
+        let changes = StubChangePort::new(dir.path());
+        let journal = SpyJournal::refusing(&log);
+
+        let report = run(&context(&spy, &work_items, &changes, &journal));
+
+        assert_eq!(spy.calls(), 0);
+        assert_eq!(log.events(), ["intent"], "nothing may follow a refusal");
+        match &report.outcome {
+            RunOutcome::Retryable { reason } => assert!(
+                reason.contains("attempt journal"),
+                "the reason must name the journal: {reason}"
+            ),
+            other => panic!("an unrecordable intent is retryable, got {other:?}"),
+        }
+        assert!(
+            report.executions.is_empty() && report.progress.is_empty(),
+            "nothing ran, so nothing may be reported as having run"
+        );
+        assert!(matches!(
+            report.evidence_failure,
+            Some(EvidenceError::Journal { .. })
+        ));
     }
 
     /// A capability that could not write is retryable, and the failure is
@@ -360,14 +772,16 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = fixture_root();
+        let log = std::sync::Arc::<Log>::default();
         let changes_dir = dir.path().join("changes");
         let capability = StubMark::new(dir.path(), PROJECT);
         let work_items = StubWorkItemPort::new(dir.path());
         let changes = StubChangePort::new(dir.path());
+        let journal = SpyJournal::watching(&log);
 
         // Readable and listable, but not writable: observation still succeeds.
         std::fs::set_permissions(&changes_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
-        let report = run(&context(&capability, &work_items, &changes));
+        let report = run(&context(&capability, &work_items, &changes, &journal));
         std::fs::set_permissions(&changes_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         if report.outcome == RunOutcome::Completed {
@@ -383,5 +797,9 @@ mod tests {
         assert_eq!(report.executions[0].status, "failed");
         assert!(report.executions[0].evidence.is_empty());
         assert_eq!(report.progress[0].status, "failed");
+        // Journaled as *failed*, not left unknown: a later reader must be able to
+        // tell "the capability tried and failed" from "the capability's fate was
+        // never recorded", which is the whole distinction the journal carries.
+        assert_eq!(log.events(), ["intent", "effect:failed"]);
     }
 }

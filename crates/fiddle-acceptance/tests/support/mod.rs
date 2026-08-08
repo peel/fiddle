@@ -306,6 +306,33 @@ impl Scenario {
             .unwrap();
     }
 
+    /// Create the directory a run records its attempts in, leaving it writable,
+    /// so sealing `<report.dir>` afterwards fails the *publication* rather than
+    /// the record that precedes it.
+    ///
+    /// That is the state a `<report.dir>` sealed after an earlier attempt is in,
+    /// and it is the only way to reach "the capability succeeded and its bundle
+    /// could not be published" from outside the process: with nowhere at all to
+    /// record the attempt, fiddle refuses to execute, so the interesting case
+    /// never happens.
+    ///
+    /// The name is spelled here rather than read from `fiddle_runtime`, like
+    /// [`Scenario::expected_marker`] and for the same reason: the acceptance lane
+    /// checks the binary against the documented layout instead of against
+    /// itself. Design §4.9 names it.
+    pub fn prepare_journal_dir(&self) {
+        std::fs::create_dir_all(self.report_dir().join(".attempts")).unwrap();
+    }
+
+    /// Every attempt record under `<report.dir>`, however deep.
+    ///
+    /// This is what "an executed capability is always recorded" is asserted
+    /// against: a file an operator can open, found by walking the report
+    /// directory rather than by reconstructing a path.
+    pub fn journal_records(&self) -> Vec<PathBuf> {
+        walkdir_files(self.report_dir().join(".attempts"))
+    }
+
     /// Restore `<report.dir>` so the test can inspect what the failed run left
     /// behind — and so the temporary directory can be removed on drop.
     #[cfg(unix)]

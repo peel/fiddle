@@ -33,9 +33,22 @@ pub enum RunOutcome {
     Suspended { reason: String },
 
     /// The run failed at something that may succeed on a later attempt.
+    ///
+    /// The test is behavioural, not a judgement about severity: *would repeating
+    /// this invocation, once someone has fixed what the reason names, succeed?*
+    /// An unwritable directory passes that test — a permission is correctable and
+    /// the run then completes — so every failure to write durable evidence lands
+    /// here rather than in [`RunOutcome::Failed`]. Several distinct causes
+    /// therefore share this variant, and the `reason` is what keeps them apart:
+    /// it names the change set, the attempt journal, or the report bundle.
     Retryable { reason: String },
 
     /// The run will not succeed by being repeated as invoked.
+    ///
+    /// Reserved for exactly that. A world fiddle could not observe belongs here:
+    /// asking again does not make an unreadable source readable, and the run has
+    /// concluded something about the world rather than tripped over a correctable
+    /// obstacle.
     Failed { error: String },
 }
 

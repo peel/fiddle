@@ -70,11 +70,18 @@ Report-bundle completeness, atomic publication, and build identity.
 - **Acceptable (4–7).** The published `report.json` contains `schema` `fiddle.report.v0`,
   `fiddle.package_version` as a semver string, and `fiddle.source_revision` as a 40-hex sha or the literal
   `unknown`, plus `outcome`, `next_action`, `capability_executions`, and the full `observations` view. With
-  `<report.dir>` at mode `0o500`, `fiddle run` exits 20 naming the path on stderr and leaves neither
-  `report.json` nor a `.tmp` directory.
+  `<report.dir>` at mode `0o500`, `fiddle run` exits 11 naming the path on stderr and leaves neither
+  `report.json` nor a `.tmp` directory. **11, not 20**: `RunOutcome::Failed` means "will not succeed by
+  being repeated as invoked", and repeating this run once the operator has fixed the permissions does
+  succeed, so reporting it as `Failed` would tell the caller the opposite of the truth. Exit 20 stays
+  reachable through the unobservable-`<stub.root>` case, which asking again genuinely does not fix.
 - **Excellent (8–10).** All of the above, plus the bundle is read back from disk and asserted independently
   of process output, and the unwritable-directory failure injection is a committed test rather than a
-  manual check — the newly introduced publication boundary has its own negative case.
+  manual check — the newly introduced publication boundary has its own negative case. Executing and
+  recording are one transaction owned by `fiddle-runtime`, with a test in that crate covering the two
+  together: a capability that succeeded and a bundle that could not be published leaves durable evidence
+  that the capability ran, and an attempt interrupted between the effect and publication is detectable
+  afterwards rather than indistinguishable from one that never ran.
 
 ### `m0-black-box-acceptance`
 
