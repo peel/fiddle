@@ -74,9 +74,17 @@ if jq -e --arg epic_id "$EPIC_ID" 'any(.[]; has("parent") and .parent != $epic_i
   emit INVALID "child bean has a conflicting parent"
 fi
 
+# Generation identity binds a materialized bean to the seed that planned it, so a
+# bean claiming an identity it does not have is a planning defect worth blocking on.
+# Remediation beans are exempt for the same reason the planning seed is: holistic
+# review creates them mid-epic (develop-holistic 2d) from a scorecard, not from the
+# plan, so they have no plan position to carry. Requiring one would leave every epic
+# that remediates permanently INVALID, and satisfying it would mean back-dating
+# `generated-by` onto beans the seed never generated — recording a false provenance
+# to pass a provenance check. An untagged bean that is neither remains invalid.
 if [[ "$IMPLEMENTATION_COUNT" -gt 0 ]]; then
   if ! jq -e --arg seed_id "$SEED_ID" '
-    [.[] | select(((.tags // []) | index("planning")) | not)]
+    [.[] | select((((.tags // []) | index("planning")) or ((.tags // []) | index("remediation"))) | not)]
     | all(.[];
         ([.tags[]? | select(startswith("generated-by:"))] | length) == 1
         and ([.tags[]? | select(startswith("plan-task:"))] | length) == 1
@@ -86,7 +94,7 @@ if [[ "$IMPLEMENTATION_COUNT" -gt 0 ]]; then
   fi
   if jq -e '
     [.[]
-      | select(((.tags // []) | index("planning")) | not)
+      | select((((.tags // []) | index("planning")) or ((.tags // []) | index("remediation"))) | not)
       | (([.tags[] | select(startswith("generated-by:"))][0]) + "|" + ([.tags[] | select(startswith("plan-task:"))][0]))]
     | group_by(.)
     | any(.[]; length > 1)

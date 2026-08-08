@@ -54,3 +54,23 @@ Status: Resolved 2026-08-05 by literal marker splitting in `dispatch-provider.sh
 skills/debug/SKILL.md referenced root-cause-tracing.md, defense-in-depth.md, and condition-based-waiting.md, none of which have ever existed in skills/debug/. The pointers were dropped and their one-line substance folded into the surrounding prose; if backward call-stack tracing, layered validation, or condition-based waiting deserve full treatments, they need writing rather than referencing.
 Origin: implementation (epic fiddle-85jh, Claude-5 skill slim-down, utilities family)
 Tags: #debt #idea
+
+### 2026-08-08 — Permission-injection tests no-op silently under a root identity
+Three tests in `crates/fiddle-runtime/tests/attempt.rs` return early via `if record.published.is_some() { return; }`, an escape hatch for an identity that ignores permission bits. Under a root CI runner they pass without asserting anything instead of skipping visibly, so the fail-closed guarantees they cover would go unverified without anyone noticing.
+Origin: holistic review iteration 2 (epic fiddle-7lmw, bean fiddle-9mgy)
+Tags: #debt #test
+
+### 2026-08-08 — Acceptance lane parity is maintained by hand
+`docs/technical/acceptance-repository.md` states the in-repo `m0_skeleton.rs` and the external `scenarios/m0_skeleton.sh` "assert the same properties by design", and warns that divergence makes one of them the weaker proof. Nothing checks it mechanically. The two have already drifted once: the in-repo lane was missing the fail-closed step and the non-empty `attempt_id` assertion, and the in-repo lane is the one CI names and later milestone seeds inherit as their baseline.
+Origin: holistic review iterations 1 and 2 (epic fiddle-7lmw, beans fiddle-nciw, fiddle-89lv)
+Tags: #debt #test
+
+### 2026-08-08 — ASCII-only invocation values may reject M1's external identifiers
+ADR 011 constrains an invocation reference value to ASCII letters, digits, `-`, `_` and `:` at the parse boundary, which is the safe direction for path derivation. M1 introduces `jira`, `scheduled` and `scanner` references from external systems whose identifiers may contain non-ASCII characters and would now be rejected with exit 2. Confirm against real identifier formats before those adapters land.
+Origin: implementation (epic fiddle-7lmw, bean fiddle-1p8q)
+Tags: #idea #risk
+
+### 2026-08-08 — ReportBundle.work_ref is Option<WorkRef> but the design requires it
+Design §4.7 models `work_ref` as a required `WorkRef`; `crates/fiddle-core/src/report.rs` declares `Option<crate::identity::WorkRef>`. The runtime always supplies `Some` and the emitted bundle always carries it, but the type permits `None` and tests construct it, so the type is weaker than the contract it stands for. Either tighten the type or amend the design.
+Origin: deliver drift analysis (epic fiddle-7lmw)
+Tags: #debt

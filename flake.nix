@@ -4,6 +4,10 @@
     devenv.url = "github:cachix/devenv";
     flake-parts.url = "github:hercules-ci/flake-parts";
     ai-devtools.url = "path:/Users/peel/wrk/ai-devtools";
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   nixConfig = {
@@ -26,11 +30,40 @@
         inputs.ai-devtools.flakeModules.ai-tools
       ];
 
-      perSystem = {pkgs, ...}: {
+      perSystem = {
+        pkgs,
+        lib,
+        inputs',
+        ...
+      }: let
+        # One toolchain definition shared by the devenv shell and every cargo
+        # invocation: Fenix reads `rust-toolchain.toml`, so the channel and the
+        # components are pinned in exactly one place. CI installs the same
+        # channel via dtolnay/rust-toolchain (see .github/workflows/rust.yml).
+        rustToolchain = inputs'.fenix.packages.fromToolchainFile {
+          file = ./rust-toolchain.toml;
+          sha256 = "sha256-AJ6LX/Q/Er9kS15bn9iflkUwcgYqRQxiOIL2ToVAXaU=";
+        };
+      in {
         ai-tools.enable = true;
 
         devenv.shells.default = {
+          # devenv derives its root from $PWD, which pure evaluation blanks out,
+          # and then asserts. Day-to-day use goes through direnv (`use flake . --impure`),
+          # so $PWD is set and this resolves to the real checkout. Under pure
+          # evaluation (`nix flake check`, plain `nix develop`) fall back to a
+          # writable scratch root so the gate can evaluate the shell.
+          devenv.root = let
+            pwd = builtins.getEnv "PWD";
+          in
+            lib.mkDefault (
+              if pwd == ""
+              then "/tmp/fiddle-devenv-pure-eval"
+              else pwd
+            );
+
           packages = [
+            rustToolchain
             pkgs.alejandra
             pkgs.gh
             pkgs.jq
