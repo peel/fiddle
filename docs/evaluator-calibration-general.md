@@ -9,6 +9,11 @@
 
 ---
 
+## all dimensions — Correction (2026-08-08)
+**Evaluator scored:** varied by one point across repeated passes over an identical tree — `domain_spec_fidelity` 10 then 9 (fiddle-5fwq), `correctness` 9 then 8 then 9 (fiddle-oek3), with substantively identical rationales, empty guidance and no antipatterns on every pass.
+**Human corrected to:** n/a — not a score correction. Recorded from the mechanical score history: no implementer ran between the passes, so the deltas cannot be code regressions.
+**Anchor:** For this project, a one-point dimension delta on an unchanged tree is within evaluator noise, not a regression. `check-convergence.sh` reports PASS_REGRESSED on any downward move, which cost these two beans 9 dispatches each against a 16 budget — the only two in the epic to exceed 5. When re-scoring a tree no implementer has touched, hold a dimension at its prior score unless the second look found something the first missed, and say what that was. A confirmation-pass prompt must not name a dimension to reconsider: doing so manufactured the fiddle-5fwq regression outright.
+
 ## M0 — Executable skeleton
 
 Anchors for milestone epic `fiddle-7lmw`. Criterion IDs are milestone-namespaced and appear verbatim in the
