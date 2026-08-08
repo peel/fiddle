@@ -3,6 +3,15 @@
 //! Every helper here drives the compiled `fiddle` binary as a subprocess. None
 //! of them calls a library function, so what the tests observe is exactly what a
 //! caller at a shell would observe: an exit code, stdout, and stderr.
+//!
+//! Because the observable surface is the whole contract, the M0 scenario has a
+//! second, external expression: `scenarios/m0_skeleton.sh` in the public
+//! `peel/fiddle-acceptance` repository asserts the same six properties as a
+//! plain shell script, so the milestone is provable against a released binary
+//! by someone holding neither these sources nor a Rust toolchain. The two lanes
+//! are kept in step by hand; see `docs/technical/acceptance-repository.md`. A
+//! change to what a helper here observes should be reflected there, or the
+//! external lane quietly becomes the weaker proof.
 
 // This file is compiled once per test binary, and no single scenario needs every
 // helper — a builder used only by the assessment tests is not dead code, it is
@@ -99,6 +108,10 @@ fn executable_from(build_log: &[u8]) -> Option<PathBuf> {
 /// guarantee also holds on a CI runner that happens to define `GITHUB_TOKEN`
 /// for its own reasons — there, an accidental dependency on a token would
 /// otherwise pass here and fail for the next person.
+///
+/// The external lane removes these same four names before invoking `fiddle`, so
+/// shortening this list means shortening `scenarios/m0_skeleton.sh` in
+/// `peel/fiddle-acceptance` too.
 pub const CREDENTIAL_VARS: [&str; 4] = [
     "GITHUB_TOKEN",
     "GH_TOKEN",
