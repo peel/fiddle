@@ -45,6 +45,26 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigCommand,
     },
+
+    /// Report what fiddle observes about an invocation, without changing it.
+    ///
+    /// Read-only by contract: `inspect` never writes fixture state and never
+    /// publishes a report bundle.
+    Inspect {
+        // Held as a string here and parsed by `fiddle_core::InvocationRef` in
+        // the dispatcher, so the grammar has exactly one implementation and each
+        // malformed shape can be reported with its own diagnostic rather than
+        // clap's generic value error. Doc comments on this field become
+        // `--help` text, so the rationale stays a plain comment.
+        /// The work to inspect, as `<scheme>:<value>` — for example
+        /// `beans:fiddle-m0-demo`.
+        #[arg(value_name = "INVOCATION_REF")]
+        invocation_ref: String,
+
+        /// Emit the machine-readable payload instead of the human summary.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]

@@ -5,6 +5,7 @@
 //! through the command handlers.
 
 use crate::config::Config;
+use fiddle_core::InvocationRef;
 
 /// The machine-readable `config check` payload.
 ///
@@ -28,6 +29,31 @@ pub fn config_check_human(config: &Config) -> String {
         config.project.name,
         config.stub.root.display(),
         config.report.dir.display(),
+    )
+}
+
+/// The machine-readable `inspect` payload.
+///
+/// `invocation_ref` is the canonical text of the *parsed* reference rather than
+/// the argument as typed, so a caller can confirm the round trip; `scheme` is
+/// the typed scheme, serialized by `fiddle-core`, so the spelling here can
+/// never drift from the spelling the parser accepts. Later M0 tasks add
+/// observation and assessment members beside these two.
+pub fn inspect_json(reference: &InvocationRef) -> String {
+    let value = serde_json::json!({
+        "invocation_ref": reference.as_str(),
+        "scheme": reference.scheme(),
+    });
+    serde_json::to_string(&value).expect("inspect payload is always serializable")
+}
+
+/// The human-readable `inspect` summary.
+pub fn inspect_human(reference: &InvocationRef) -> String {
+    format!(
+        "invocation {}\n  scheme = {}\n  value  = {}",
+        reference.as_str(),
+        reference.scheme(),
+        reference.value(),
     )
 }
 

@@ -7,4 +7,14 @@ edition.workspace = true
 # decision functions; it must never reach for an async runtime, an HTTP client,
 # or the process/filesystem/network/clock. `crates/fiddle-acceptance/tests/
 # crate_boundary.rs` enforces both halves of that rule mechanically.
+#
+# `serde` and `thiserror` are admitted because both are pure: they generate
+# code, they do not reach outside the process. The boundary test walks the
+# resolved closure of both, so a future transitive runtime dependency would be
+# caught rather than assumed away.
 [dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

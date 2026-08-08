@@ -227,6 +227,7 @@ name = "fiddle-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "fiddle-core",
  "miette",
  "serde",
  "serde_json",
@@ -237,6 +238,11 @@ dependencies = [
 [[package]]
 name = "fiddle-core"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "fiddle-runtime"
