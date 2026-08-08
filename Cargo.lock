@@ -228,6 +228,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "fiddle-core",
+ "fiddle-runtime",
  "miette",
  "serde",
  "serde_json",
@@ -249,6 +250,9 @@ name = "fiddle-runtime"
 version = "0.1.0"
 dependencies = [
  "fiddle-core",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

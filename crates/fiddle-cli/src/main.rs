@@ -4,7 +4,8 @@ mod render;
 
 use clap::Parser;
 use config::ConfigError;
-use fiddle_core::{InvocationRef, InvocationRefError};
+use fiddle_core::{InvocationRef, InvocationRefError, WorkStateView};
+use fiddle_runtime::{ChangePort, StubChangePort, StubWorkItemPort, WorkItemPort};
 use std::process::ExitCode;
 
 /// Usage error or invalid input — row `2` of the exit-code table. Clap already
@@ -85,6 +86,27 @@ fn exit_code_for(error: &CliError) -> u8 {
     }
 }
 
+/// Observe both sides of the world for one invocation.
+///
+/// Nothing here can fail: a port that cannot read its source returns an
+/// `Unavailable` observation rather than an error, so an unobservable world is
+/// *reported* to the caller instead of aborting the command. That is why
+/// `inspect` still exits 0 over a missing fixture root — it succeeded at
+/// looking, and what it saw was that it could not see.
+///
+/// M0 has one implementation of each port; the CLI depends on the traits, so
+/// the only thing that changes when a real adapter arrives is these two
+/// constructor calls.
+fn observe(config: &config::Config, reference: &InvocationRef) -> WorkStateView {
+    let work_id = reference.value();
+    let work_item = StubWorkItemPort::new(&config.stub.root);
+    let changes = StubChangePort::new(&config.stub.root);
+    WorkStateView {
+        work_item: WorkItemPort::observe(&work_item, work_id),
+        changes: ChangePort::observe(&changes, work_id),
+    }
+}
+
 fn dispatch(cli: &cli::Cli) -> Result<(), CliError> {
     match &cli.command {
         cli::Command::Config { action } => match action {
@@ -106,15 +128,17 @@ fn dispatch(cli: &cli::Cli) -> Result<(), CliError> {
             // CLI's only job is to turn the rejection into a diagnostic and an
             // exit code.
             //
-            // At this milestone `inspect` reports the invocation identity only,
-            // so it consults no configuration; the observations that need
-            // `--config` arrive with the stub ports in a later task.
+            // The reference is validated *before* the configuration is loaded,
+            // so a caller who mistyped the argument is told about the argument
+            // rather than about a document they never mentioned.
             let reference: InvocationRef =
                 invocation_ref.parse().map_err(InvalidInvocationRef::from)?;
+            let config = config::load(&cli.config)?;
+            let observed = observe(&config, &reference);
             if *json {
-                println!("{}", render::inspect_json(&reference));
+                println!("{}", render::inspect_json(&reference, &observed));
             } else {
-                println!("{}", render::inspect_human(&reference));
+                println!("{}", render::inspect_human(&reference, &observed));
             }
             Ok(())
         }

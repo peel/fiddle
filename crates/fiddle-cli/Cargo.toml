@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 fiddle-core = { path = "../fiddle-core" }
+fiddle-runtime = { path = "../fiddle-runtime" }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

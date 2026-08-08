@@ -3,5 +3,17 @@ name = "fiddle-runtime"
 version.workspace = true
 edition.workspace = true
 
+# The port contract is stated against the traits, not against the stubs, so a
+# later real adapter living outside this crate can run the same harness. It is
+# compiled for this crate's own tests unconditionally and exported to other
+# crates behind this feature.
+[features]
+contract-harness = []
+
 [dependencies]
 fiddle-core = { path = "../fiddle-core" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
