@@ -7,8 +7,10 @@
 //! implementations of them — `capability` is what fiddle can change about that
 //! world, `journal` is where an attempt writes down what it is about to change
 //! before it changes it, `evidence` is how what it did is published where someone
-//! else can read it, and `orchestration` is the plan that decides whether to act
-//! and owns the whole attempt from observation to publication.
+//! else can read it, `orchestration` is the plan that decides whether to act
+//! and owns the whole attempt from observation to publication, and `workspace`
+//! is where a path a model asked for is proven to stay inside the tree it is
+//! allowed to touch before anything opens it.
 //!
 //! [`attempt`] is the front door: one call executes and records one attempt.
 //! Publication is deliberately not re-exported beside it, because "execute" and
@@ -21,6 +23,7 @@ pub mod journal;
 pub mod orchestration;
 pub mod ports;
 pub mod stub;
+pub mod workspace;
 
 pub use capability::{Capability, CapabilityError, ExecutionGrant, StubMark, CAPABILITIES};
 pub use evidence::{EvidenceError, BUNDLE_FILE};
@@ -31,3 +34,4 @@ pub use orchestration::{
 };
 pub use ports::{ChangePort, WorkItemPort};
 pub use stub::{StubChangePort, StubWorkItemPort};
+pub use workspace::{WorkspaceError, WorkspacePath};
