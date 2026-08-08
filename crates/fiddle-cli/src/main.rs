@@ -4,8 +4,10 @@ mod render;
 
 use clap::Parser;
 use config::ConfigError;
-use fiddle_core::{InvocationRef, InvocationRefError, WorkStateView};
-use fiddle_runtime::{ChangePort, StubChangePort, StubWorkItemPort, WorkItemPort};
+use fiddle_core::{CapabilityId, InvocationRef, InvocationRefError, RunOutcome, WorkStateView};
+use fiddle_runtime::{
+    Capability, RunContext, StubChangePort, StubMark, StubWorkItemPort, CAPABILITIES,
+};
 use std::process::ExitCode;
 
 /// Usage error or invalid input — row `2` of the exit-code table. Clap already
@@ -15,13 +17,30 @@ const EXIT_INVALID_INPUT: u8 = 2;
 
 fn main() -> ExitCode {
     let cli = cli::Cli::parse();
-    match dispatch(&cli) {
-        Ok(()) => ExitCode::from(0),
+    let termination = match dispatch(&cli) {
+        Ok(outcome) => Termination::Ran(outcome),
         Err(error) => {
             eprintln!("{}", render::diagnostic(&error));
-            ExitCode::from(exit_code_for(&error))
+            Termination::Rejected(error)
         }
-    }
+    };
+    ExitCode::from(exit_code_for(&termination))
+}
+
+/// How an invocation ended: as a typed run outcome, or as a rejection before
+/// any plan was executed.
+///
+/// The two halves are joined into one type so the exit-code table has one input
+/// and therefore one mapping function. Without it, "the mapping lives in
+/// exactly one place" would be a claim about discipline rather than about the
+/// code.
+enum Termination {
+    /// The command reached a conclusion about the work.
+    Ran(RunOutcome),
+    /// The command was refused before it could. Read-only commands that
+    /// succeed report [`RunOutcome::Completed`]; this arm is only reached when
+    /// fiddle declined the invocation itself.
+    Rejected(CliError),
 }
 
 /// Everything a command can fail with, unified so the exit-code mapping has a
@@ -35,6 +54,45 @@ enum CliError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     InvocationRef(#[from] InvalidInvocationRef),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    UnknownCapability(#[from] UnknownCapability),
+}
+
+/// A `--capability` value naming nothing this build can execute.
+///
+/// Rejected rather than ignored: a run asked to do something fiddle has never
+/// heard of and that exited 0 having done nothing would be indistinguishable
+/// from a run that did the work. The diagnostic names the value *and* what this
+/// build does know, because the usual cause is a typo or a stale script.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("unknown capability `{requested}`")]
+#[diagnostic(
+    code(fiddle::capability::unknown),
+    help("this build can execute: {known}")
+)]
+struct UnknownCapability {
+    requested: String,
+    known: String,
+}
+
+/// The capability `--capability` names, or a rejection listing what exists.
+///
+/// The known-id list comes from [`CAPABILITIES`], so the diagnostic cannot fall
+/// out of step with what the binary can actually run.
+fn resolve_capability(requested: &str) -> Result<CapabilityId, UnknownCapability> {
+    CAPABILITIES
+        .into_iter()
+        .find(|candidate| candidate.0 == requested)
+        .ok_or_else(|| UnknownCapability {
+            requested: requested.to_string(),
+            known: CAPABILITIES
+                .iter()
+                .map(|capability| capability.0)
+                .collect::<Vec<_>>()
+                .join(", "),
+        })
 }
 
 /// Presentation for a rejected invocation reference.
@@ -76,14 +134,43 @@ impl miette::Diagnostic for InvalidInvocationRef {
     }
 }
 
-/// The single realisation of the exit-code table. Every future outcome variant
-/// gains its row here and nowhere else, so the mapping can never drift between
-/// commands.
-fn exit_code_for(error: &CliError) -> u8 {
-    match error {
-        CliError::Config(ConfigError::NotFound(_) | ConfigError::Invalid(_)) => EXIT_INVALID_INPUT,
-        CliError::InvocationRef(_) => EXIT_INVALID_INPUT,
+/// The single realisation of the exit-code table (design §4.5).
+///
+/// The whole table is one `match`, so every row is visible at once and a new
+/// outcome variant cannot be added without the compiler demanding its code.
+/// Nothing else in the binary decides an exit code.
+///
+/// | code | meaning                                                    |
+/// |------|------------------------------------------------------------|
+/// | 0    | completed, or `config check` valid, or `inspect` succeeded  |
+/// | 2    | usage error or invalid configuration                        |
+/// | 10   | suspended                                                   |
+/// | 11   | retryable                                                   |
+/// | 20   | failed                                                       |
+fn exit_code_for(termination: &Termination) -> u8 {
+    match termination {
+        Termination::Ran(RunOutcome::Completed) => 0,
+        Termination::Ran(RunOutcome::Suspended { .. }) => 10,
+        Termination::Ran(RunOutcome::Retryable { .. }) => 11,
+        Termination::Ran(RunOutcome::Failed { .. }) => 20,
+        Termination::Rejected(
+            CliError::Config(ConfigError::NotFound(_) | ConfigError::Invalid(_))
+            | CliError::InvocationRef(_)
+            | CliError::UnknownCapability(_),
+        ) => EXIT_INVALID_INPUT,
     }
+}
+
+/// The two fixture-backed ports this configuration names.
+///
+/// M0 has one implementation of each; the rest of the binary depends on the
+/// traits, so the only thing that changes when a real adapter arrives is this
+/// one function.
+fn ports(config: &config::Config) -> (StubWorkItemPort, StubChangePort) {
+    (
+        StubWorkItemPort::new(&config.stub.root),
+        StubChangePort::new(&config.stub.root),
+    )
 }
 
 /// Observe both sides of the world for one invocation.
@@ -93,21 +180,12 @@ fn exit_code_for(error: &CliError) -> u8 {
 /// *reported* to the caller instead of aborting the command. That is why
 /// `inspect` still exits 0 over a missing fixture root — it succeeded at
 /// looking, and what it saw was that it could not see.
-///
-/// M0 has one implementation of each port; the CLI depends on the traits, so
-/// the only thing that changes when a real adapter arrives is these two
-/// constructor calls.
 fn observe(config: &config::Config, reference: &InvocationRef) -> WorkStateView {
-    let work_id = reference.value();
-    let work_item = StubWorkItemPort::new(&config.stub.root);
-    let changes = StubChangePort::new(&config.stub.root);
-    WorkStateView {
-        work_item: WorkItemPort::observe(&work_item, work_id),
-        changes: ChangePort::observe(&changes, work_id),
-    }
+    let (work_items, changes) = ports(config);
+    fiddle_runtime::observe(&work_items, &changes, reference.value())
 }
 
-fn dispatch(cli: &cli::Cli) -> Result<(), CliError> {
+fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
     match &cli.command {
         cli::Command::Config { action } => match action {
             cli::ConfigCommand::Check { json } => {
@@ -117,7 +195,7 @@ fn dispatch(cli: &cli::Cli) -> Result<(), CliError> {
                 } else {
                     println!("{}", render::config_check_human(&config));
                 }
-                Ok(())
+                Ok(RunOutcome::Completed)
             }
         },
         cli::Command::Inspect {
@@ -154,7 +232,52 @@ fn dispatch(cli: &cli::Cli) -> Result<(), CliError> {
                     render::inspect_human(&reference, &observed, &assessment, &next_action)
                 );
             }
-            Ok(())
+            Ok(RunOutcome::Completed)
+        }
+
+        cli::Command::Run {
+            invocation_ref,
+            mode,
+            capability,
+            json,
+        } => {
+            // Same order as `inspect`, and for the same reason: a caller who
+            // mistyped an argument is told about the argument rather than about
+            // a document they never mentioned. `--capability` is validated here
+            // too, before anything is observed and long before anything could
+            // be executed, so a rejected invocation provably did nothing.
+            let reference: InvocationRef =
+                invocation_ref.parse().map_err(InvalidInvocationRef::from)?;
+            if let Some(requested) = capability {
+                // M0 knows exactly one capability, so a valid selection can only
+                // ever name the capability the derivation would choose anyway.
+                // The flag's job here is to reject an unknown id loudly rather
+                // than to narrow a plan that cannot be narrowed.
+                resolve_capability(requested)?;
+            }
+            let config = config::load(&cli.config)?;
+
+            let (work_items, changes) = ports(&config);
+            let marking = StubMark::new(&config.stub.root, &config.project.name);
+            let invocation = reference.as_str();
+            let report = fiddle_runtime::run(&RunContext {
+                project: &config.project.name,
+                invocation_ref: &invocation,
+                work_id: reference.value(),
+                work_items: &work_items,
+                changes: &changes,
+                capability: &marking as &dyn Capability,
+            });
+
+            if *json {
+                println!("{}", render::run_json(&reference, *mode, &report));
+            } else {
+                println!("{}", render::run_human(&reference, *mode, &report));
+            }
+            // The payload is printed on every path, including the failing ones:
+            // a caller learns *what* fiddle concluded from stdout and *that* it
+            // failed from the exit code, rather than having to choose.
+            Ok(report.outcome)
         }
     }
 }

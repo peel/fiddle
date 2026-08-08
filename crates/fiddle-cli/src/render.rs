@@ -5,7 +5,11 @@
 //! through the command handlers.
 
 use crate::config::Config;
-use fiddle_core::{CapabilityAssessment, InvocationRef, NextAction, Observation, WorkStateView};
+use fiddle_core::{
+    CapabilityAssessment, CapabilityExecution, InvocationRef, Mode, NextAction, Observation,
+    ProgressEntry, WorkStateView,
+};
+use fiddle_runtime::RunReport;
 
 /// The machine-readable `config check` payload.
 ///
@@ -84,6 +88,83 @@ pub fn inspect_human(
         }),
         assessment_line(assessment),
         next_action_line(next_action),
+    )
+}
+
+/// The machine-readable `run` payload.
+///
+/// Shaped as the report bundle design §4.7 specifies, minus the fields a later
+/// task adds when the bundle is published to disk, so a caller reading stdout
+/// and a caller reading the published bundle are reading the same document.
+///
+/// `outcome`, `next_action`, `capability_executions`, `progress` and
+/// `observations` are the core's own serializations rather than shapes
+/// re-derived here — what a caller reads is what fiddle concluded and did, not
+/// a restatement of it that could drift. `next_action` in particular is the
+/// action derived *after* the run finished, so it describes the state the run
+/// left behind.
+pub fn run_json(reference: &InvocationRef, mode: Mode, report: &RunReport) -> String {
+    let value = serde_json::json!({
+        "invocation_ref": reference.as_str(),
+        "mode": mode,
+        "outcome": report.outcome,
+        "next_action": report.next_action,
+        "capability_executions": report.executions,
+        "progress": report.progress,
+        "observations": report.observations,
+    });
+    serde_json::to_string(&value).expect("run payload is always serializable")
+}
+
+/// The human-readable `run` summary.
+///
+/// A reader at a terminal gets the same five facts the payload carries: what
+/// was run, under which mode, how it ended, what it did, and what is left.
+pub fn run_human(reference: &InvocationRef, mode: Mode, report: &RunReport) -> String {
+    let mut out = format!(
+        "run {}\n  mode        = {mode}\n  outcome     = {}\n  next action = {}",
+        reference.as_str(),
+        outcome_line(&report.outcome),
+        next_action_line(&report.next_action),
+    );
+    if report.executions.is_empty() {
+        out.push_str("\n  executions  = none");
+    }
+    for execution in &report.executions {
+        out.push_str(&format!("\n  executed    = {}", execution_line(execution)));
+    }
+    for entry in &report.progress {
+        out.push_str(&format!("\n  progress    = {}", progress_line(entry)));
+    }
+    out
+}
+
+/// One outcome as a single line of prose. A non-completing outcome leads with
+/// its reason, so a reader learns why without re-deriving it.
+fn outcome_line(outcome: &fiddle_core::RunOutcome) -> String {
+    match outcome {
+        fiddle_core::RunOutcome::Completed => "completed".to_string(),
+        fiddle_core::RunOutcome::Suspended { reason } => format!("suspended — {reason}"),
+        fiddle_core::RunOutcome::Retryable { reason } => format!("retryable — {reason}"),
+        fiddle_core::RunOutcome::Failed { error } => format!("failed — {error}"),
+    }
+}
+
+/// One capability execution as a single line of prose.
+fn execution_line(execution: &CapabilityExecution) -> String {
+    format!(
+        "{} {} (evidence {})",
+        execution.capability_id,
+        execution.status,
+        join_evidence(&execution.evidence)
+    )
+}
+
+/// One progress entry as a single line of prose.
+fn progress_line(entry: &ProgressEntry) -> String {
+    format!(
+        "{}/{} {} — {}",
+        entry.capability_id, entry.stage, entry.status, entry.summary
     )
 }
 

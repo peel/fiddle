@@ -118,6 +118,66 @@ impl Scenario {
         std::fs::remove_dir_all(self.stub_root()).unwrap();
     }
 
+    /// The marker recorded at `<stub.root>/changes/<work_id>.json`, or `None`
+    /// when no change set was written there.
+    ///
+    /// Reads the fixture the way the stub change port does — as JSON with a
+    /// `marker` field — so a capability that wrote a file fiddle could not read
+    /// back fails this helper rather than passing on the file's mere existence.
+    pub fn read_change_marker(&self, work_id: &str) -> Option<String> {
+        let path = self.stub_root().join(format!("changes/{work_id}.json"));
+        let text = std::fs::read_to_string(&path).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| {
+            panic!("{} is not JSON ({e}): {text}", path.display());
+        });
+        value["marker"].as_str().map(str::to_string)
+    }
+
+    /// Run `fiddle run <invocation_ref> --json`, require `code`, and return the
+    /// parsed payload.
+    pub fn run_json(&self, invocation_ref: &str, code: i32) -> serde_json::Value {
+        self.run_json_with(&[], invocation_ref, code)
+    }
+
+    /// As [`Scenario::run_json`], with additional flags placed before `--json`.
+    pub fn run_json_with(
+        &self,
+        extra: &[&str],
+        invocation_ref: &str,
+        code: i32,
+    ) -> serde_json::Value {
+        let mut args = extra.to_vec();
+        args.push("--json");
+        let out = self.run_raw_with(&args, invocation_ref);
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "stderr = {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!(
+                "stdout is not JSON ({e}): {}",
+                String::from_utf8_lossy(&out.stdout)
+            )
+        })
+    }
+
+    /// Run `fiddle run <invocation_ref>` with `extra` flags and hand back the
+    /// whole process result — exit code, stdout, and stderr — unjudged, for the
+    /// cases that are about the diagnostic rather than the payload.
+    pub fn run_raw_with(&self, extra: &[&str], invocation_ref: &str) -> std::process::Output {
+        let mut command = Command::cargo_bin("fiddle").unwrap();
+        command.args([
+            "run",
+            invocation_ref,
+            "--config",
+            self.config_path().to_str().unwrap(),
+        ]);
+        command.args(extra);
+        command.output().unwrap()
+    }
+
     /// Run `fiddle inspect <invocation_ref> --json`, require exit 0, and return
     /// the parsed payload.
     pub fn inspect_json(&self, invocation_ref: &str) -> serde_json::Value {

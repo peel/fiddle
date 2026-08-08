@@ -1,4 +1,6 @@
+use clap::builder::TypedValueParser;
 use clap::{Parser, Subcommand};
+use fiddle_core::Mode;
 use std::path::PathBuf;
 
 /// The version string `fiddle --version` prints after the binary name:
@@ -60,6 +62,44 @@ pub enum Command {
         /// `beans:fiddle-m0-demo`.
         #[arg(value_name = "INVOCATION_REF")]
         invocation_ref: String,
+
+        /// Emit the machine-readable payload instead of the human summary.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Execute the plan fiddle derives for an invocation.
+    ///
+    /// The only command that changes anything. What it may do is decided by the
+    /// same derivation `inspect` reports, so a run over work that is already
+    /// accounted for completes without executing.
+    Run {
+        /// The work to run, as `<scheme>:<value>` — for example
+        /// `beans:fiddle-m0-demo`.
+        #[arg(value_name = "INVOCATION_REF")]
+        invocation_ref: String,
+
+        // The mode's meaning and spelling belong to `fiddle-core`, because the
+        // report bundle records it; what belongs here is only how the value is
+        // parsed off the command line. `PossibleValuesParser` rather than the
+        // bare `FromStr` so `--help` lists the choices and a bad value is
+        // rejected by clap with the usual usage exit code.
+        /// Whether a human is available to decide. M0 has no decision point, so
+        /// both modes execute identically; the mode is recorded in what the run
+        /// publishes.
+        #[arg(
+            long,
+            value_name = "MODE",
+            default_value_t = Mode::Unattended,
+            value_parser = clap::builder::PossibleValuesParser::new(Mode::NAMES)
+                .map(|value| value.parse::<Mode>().expect("clap restricts this to a known mode")),
+        )]
+        mode: Mode,
+
+        /// Restrict execution to one capability id. M0 knows exactly one:
+        /// `stub_mark`. An unknown id is a usage error, never a silent no-op.
+        #[arg(long, value_name = "CAPABILITY_ID")]
+        capability: Option<String>,
 
         /// Emit the machine-readable payload instead of the human summary.
         #[arg(long)]
