@@ -229,7 +229,10 @@ fn concluded(next_action: &NextAction) -> RunOutcome {
 pub fn run(ctx: &RunContext<'_>) -> RunReport {
     let marker = ctx.expected_marker();
     let view = ctx.observe();
-    let derived = derive_next(&view, &marker);
+    // The capability under consideration comes from the context, not from the
+    // core: the runtime is the half that knows which capability this run is
+    // holding, so it says so rather than leaving the pure core to guess.
+    let derived = derive_next(&view, &marker, ctx.capability.id());
 
     // The grant is the gate. `Complete` and `Blocked` produce none, so the
     // executing arm below is the only code that can reach the capability at
@@ -288,7 +291,7 @@ pub fn run(ctx: &RunContext<'_>) -> RunReport {
             // Re-observe and re-derive: the report must describe the state the
             // run left behind, not the action it chose on entry.
             let after = ctx.observe();
-            let next_action = derive_next(&after, &marker);
+            let next_action = derive_next(&after, &marker, ctx.capability.id());
             RunReport {
                 // Derived from the re-derivation, never asserted to agree with
                 // it. See [`concluded`] for why the two can differ at all.

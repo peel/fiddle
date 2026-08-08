@@ -15,7 +15,8 @@ pub mod outcome;
 pub mod report;
 
 pub use assessment::{
-    assess, correlation_key, derive_next, CapabilityAssessment, NextAction, STUB_MARK,
+    assess, correlation_key, derive_next, CapabilityAssessment, NextAction, FIXTURE_REPAIR,
+    STUB_MARK,
 };
 pub use identity::{
     AttemptId, CapabilityId, InvocationRef, InvocationRefError, InvocationScheme, WorkRef,

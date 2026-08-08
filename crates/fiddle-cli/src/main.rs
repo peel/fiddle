@@ -239,7 +239,13 @@ fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             let expected_marker =
                 fiddle_core::correlation_key(&config.project.name, &reference.as_str());
             let assessment = fiddle_core::assess(&observed, &expected_marker);
-            let next_action = fiddle_core::derive_next(&observed, &expected_marker);
+            // `inspect` takes no `--capability`, so it reports what the M0 plan
+            // would run: `stub_mark`. Naming it here rather than in the core is
+            // the point of the argument — the caller that knows which
+            // capability is under consideration is the one that says so, and a
+            // later selection reaches this line rather than the derivation.
+            let next_action =
+                fiddle_core::derive_next(&observed, &expected_marker, fiddle_core::STUB_MARK);
             if *json {
                 println!(
                     "{}",

@@ -26,6 +26,10 @@ use crate::report::EvidenceRef;
 /// The one capability M0 can execute.
 pub const STUB_MARK: CapabilityId = CapabilityId("stub_mark");
 
+/// The capability M1 adds: repair a broken fixture through a bounded agent
+/// attempt.
+pub const FIXTURE_REPAIR: CapabilityId = CapabilityId("fixture_repair");
+
 /// What fiddle concludes about the capability this invocation is about.
 ///
 /// Serialized externally tagged, so the variant name is the observable
@@ -156,11 +160,21 @@ pub fn assess(work: &WorkStateView, expected_marker: &str) -> CapabilityAssessme
 /// [`NextAction::Execute`] is reachable only from
 /// [`CapabilityAssessment::NotStarted`], which is the mechanism that stops a
 /// second run from executing again.
-pub fn derive_next(work: &WorkStateView, expected_marker: &str) -> NextAction {
+///
+/// The capability under consideration is an argument, and the returned
+/// [`NextAction::Execute`] names exactly it. Naming one here was
+/// indistinguishable from deriving it while a single capability existed; with a
+/// second it would be wrong, and the caller — which knows which capability it
+/// is holding — is the only thing that can say. It changes nothing else: which
+/// capability asked has no bearing on whether the world is satisfied or
+/// unobservable, so the other two arms ignore it.
+pub fn derive_next(
+    work: &WorkStateView,
+    expected_marker: &str,
+    capability_id: CapabilityId,
+) -> NextAction {
     match assess(work, expected_marker) {
-        CapabilityAssessment::NotStarted { .. } => NextAction::Execute {
-            capability_id: STUB_MARK,
-        },
+        CapabilityAssessment::NotStarted { .. } => NextAction::Execute { capability_id },
         CapabilityAssessment::Satisfied { .. } => NextAction::Complete,
         CapabilityAssessment::Blocked { reason, .. } => NextAction::Blocked { reason },
     }
@@ -318,19 +332,73 @@ mod tests {
     #[test]
     fn derive_next_maps_each_assessment() {
         assert_eq!(
-            derive_next(&view(avail_work(), changes_with(None)), "aaaa"),
+            derive_next(&view(avail_work(), changes_with(None)), "aaaa", STUB_MARK),
             NextAction::Execute {
                 capability_id: STUB_MARK
             }
         );
         assert_eq!(
-            derive_next(&view(avail_work(), changes_with(Some("aaaa"))), "aaaa"),
+            derive_next(
+                &view(avail_work(), changes_with(Some("aaaa"))),
+                "aaaa",
+                STUB_MARK
+            ),
             NextAction::Complete
         );
         assert!(matches!(
-            derive_next(&view(avail_work(), unavailable()), "aaaa"),
+            derive_next(&view(avail_work(), unavailable()), "aaaa", STUB_MARK),
             NextAction::Blocked { .. }
         ));
+    }
+
+    /// A derivation must name the capability it was asked about. While exactly
+    /// one capability existed, a hardcoded id was indistinguishable from a
+    /// derived one; with a second, the two answers differ and only the derived
+    /// one is right.
+    #[test]
+    fn the_derivation_names_the_capability_it_was_asked_about() {
+        let unmarked = view(avail_work(), changes_with(None));
+        assert_eq!(
+            derive_next(&unmarked, "expected", FIXTURE_REPAIR),
+            NextAction::Execute {
+                capability_id: FIXTURE_REPAIR
+            },
+            "a derivation must name the capability under consideration, not a hardcoded one"
+        );
+        assert_eq!(
+            derive_next(&unmarked, "expected", STUB_MARK),
+            NextAction::Execute {
+                capability_id: STUB_MARK
+            }
+        );
+    }
+
+    /// `Satisfied` and `Blocked` are properties of the world, not of which
+    /// capability asked about it — so the two capabilities must derive the
+    /// *same* action from the same view, not merely both a plausible one.
+    #[test]
+    fn the_capability_does_not_change_the_other_two_verdicts() {
+        let satisfied = view(avail_work(), changes_with(Some("expected")));
+        assert_eq!(
+            derive_next(&satisfied, "expected", FIXTURE_REPAIR),
+            NextAction::Complete
+        );
+        assert_eq!(
+            derive_next(&satisfied, "expected", STUB_MARK),
+            derive_next(&satisfied, "expected", FIXTURE_REPAIR),
+            "a satisfied world completes whoever asked"
+        );
+
+        let blocked = view(avail_work(), unavailable());
+        assert!(matches!(
+            derive_next(&blocked, "expected", FIXTURE_REPAIR),
+            NextAction::Blocked { .. }
+        ));
+        assert_eq!(
+            derive_next(&blocked, "expected", STUB_MARK),
+            derive_next(&blocked, "expected", FIXTURE_REPAIR),
+            "an unobservable world blocks whoever asked, with the same reason"
+        );
     }
 
     /// A foreign marker must reach `Blocked` through `derive_next` too — never
@@ -338,7 +406,11 @@ mod tests {
     /// change set.
     #[test]
     fn derive_next_blocks_on_a_foreign_marker() {
-        let action = derive_next(&view(avail_work(), changes_with(Some("bbbb"))), "aaaa");
+        let action = derive_next(
+            &view(avail_work(), changes_with(Some("bbbb"))),
+            "aaaa",
+            STUB_MARK,
+        );
         let NextAction::Blocked { reason } = action else {
             panic!("a foreign marker must block, got {action:?}");
         };
