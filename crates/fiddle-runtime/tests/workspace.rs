@@ -9,7 +9,9 @@
 mod fixture;
 
 use fiddle_core::AttemptId;
-use fiddle_runtime::workspace::{Workspace, WorkspaceError, WorkspacePath};
+use fiddle_runtime::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
+use std::time::Duration;
+use tokio::sync::{RwLock, RwLockReadGuard};
 use tokio_util::sync::CancellationToken;
 
 fn attempt() -> AttemptId {
@@ -24,8 +26,60 @@ fn p(raw: &str) -> WorkspacePath {
     WorkspacePath::parse(raw).expect("the test's own path must be workspace-relative")
 }
 
+/// Serializes the one test that mutates this process's environment against
+/// every test that reads it.
+///
+/// `setenv` is not thread-safe against a concurrent `getenv`, and libtest runs
+/// these tests as threads of a single process. Every test here spawns `git`
+/// with an *inherited* environment, which reads `environ`, so the sentinel test
+/// takes the write side and the rest take the read side. Readers never block
+/// each other, so this costs nothing except when the sentinel is actually set.
+/// `--test-threads=1` would do the same job, but only for whoever remembers the
+/// flag; this holds for anyone who runs the suite the ordinary way.
+///
+/// Tokio's lock rather than `std`'s because the tests that run a command hold
+/// the guard across an `await`, which a blocking guard must not be.
+static ENV: RwLock<()> = RwLock::const_new(());
+
+/// Claim the right to read this process's environment, from a blocking test.
+fn env_reader() -> RwLockReadGuard<'static, ()> {
+    ENV.blocking_read()
+}
+
+/// A workspace over a throwaway fixture repository.
+///
+/// The [`tempfile::TempDir`] comes back with it because it owns the fixture the
+/// worktree was branched from; dropping it early would delete the repository
+/// out from under the workspace.
+fn workspace() -> (Workspace, tempfile::TempDir) {
+    workspace_with(token())
+}
+
+fn workspace_with_cancelled_token() -> (Workspace, tempfile::TempDir) {
+    let cancel = token();
+    cancel.cancel();
+    workspace_with(cancel)
+}
+
+fn workspace_with(cancel: CancellationToken) -> (Workspace, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = fixture::broken_crate(dir.path());
+    let ws = Workspace::create(&repo, &dir.path().join("ws"), &attempt(), cancel).unwrap();
+    (ws, dir)
+}
+
+/// A command with a timeout generous enough that only a hang could reach it.
+fn cmd(program: &str, args: &[&str]) -> WorkspaceCommand {
+    WorkspaceCommand {
+        program: program.into(),
+        args: args.iter().map(|a| (*a).into()).collect(),
+        timeout: Duration::from_secs(30),
+    }
+}
+
 #[test]
 fn a_workspace_is_an_isolated_checkout_that_disappears() {
+    let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
     let repo = fixture::broken_crate(dir.path());
     let mut ws = Workspace::create(&repo, &dir.path().join("ws"), &attempt(), token()).unwrap();
@@ -46,6 +100,7 @@ fn a_workspace_is_an_isolated_checkout_that_disappears() {
 fn the_worktree_is_removed_even_when_nobody_calls_remove() {
     // Teardown must survive an early return, a `?`, and a panic. M0 learned this
     // for bundle publication with a Drop guard; the same applies here.
+    let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
     let repo = fixture::broken_crate(dir.path());
     let path = {
@@ -60,6 +115,7 @@ fn removing_twice_is_not_an_error() {
     // The explicit call and the guard both run on the happy path, so the second
     // removal has to be a no-op rather than a failed `git worktree remove` on a
     // path git no longer knows about.
+    let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
     let repo = fixture::broken_crate(dir.path());
     let mut ws = Workspace::create(&repo, &dir.path().join("ws"), &attempt(), token()).unwrap();
@@ -71,6 +127,7 @@ fn removing_twice_is_not_an_error() {
 
 #[test]
 fn a_symlink_pointing_out_of_the_workspace_is_refused() {
+    let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
     let repo = fixture::broken_crate(dir.path());
     let secret = dir.path().join("secret.txt");
@@ -103,6 +160,7 @@ fn a_dangling_symlink_out_of_the_workspace_is_refused() {
     // whose target is missing, canonicalize fails, the parent resolves *inside*,
     // and `std::fs::write` then follows the link and creates the file outside.
     // Only looking at the link itself distinguishes the two cases.
+    let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
     let repo = fixture::broken_crate(dir.path());
     let target = dir.path().join("not-yet.txt");
@@ -121,6 +179,7 @@ fn an_ordinary_file_round_trips_and_a_new_one_can_be_created() {
     // The counterpart to the refusals: resolution has to still admit a path
     // whose leaf does not exist yet, which is the branch the symlink check
     // reaches through the parent.
+    let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
     let repo = fixture::broken_crate(dir.path());
     let ws = Workspace::create(&repo, &dir.path().join("ws"), &attempt(), token()).unwrap();
@@ -128,4 +187,128 @@ fn an_ordinary_file_round_trips_and_a_new_one_can_be_created() {
     assert_eq!(ws.read(&p("src/lib.rs")).unwrap(), "pub fn f() {}\n");
     ws.write(&p("src/new.rs"), "pub fn n() {}\n").unwrap();
     assert_eq!(ws.read(&p("src/new.rs")).unwrap(), "pub fn n() {}\n");
+}
+
+#[tokio::test]
+async fn a_command_runs_in_the_workspace_and_reports_what_it_did() {
+    // Without this the isolation tests below would all pass on a runner that
+    // never actually runs anything: a command that produces no output cannot
+    // leak a credential either.
+    let _env = ENV.read().await;
+    let (ws, _dir) = workspace();
+
+    let result = ws
+        .run(&cmd("/bin/sh", &["-c", "echo out; echo err >&2; pwd"]))
+        .await
+        .unwrap();
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(result.stderr.trim(), "err");
+    let mut lines = result.stdout.lines();
+    assert_eq!(lines.next(), Some("out"));
+    // The command's working directory is the workspace, not this process's.
+    // Compared canonicalized because a macOS temp directory is reached through
+    // a symlink and `getcwd` reports the far side of it.
+    assert_eq!(
+        lines.next().map(std::path::PathBuf::from),
+        Some(ws.root().canonicalize().unwrap())
+    );
+
+    let failed = ws.run(&cmd("/bin/sh", &["-c", "exit 3"])).await.unwrap();
+    assert_eq!(
+        failed.exit_code, 3,
+        "a non-zero exit is a result, not an error"
+    );
+}
+
+#[tokio::test]
+async fn a_workspace_command_inherits_no_credential() {
+    let (ws, _dir) = workspace();
+    // Resolve the tool PATH before the environment is mutated, so that nothing
+    // inside `run` reads `environ` while the sentinel is being set below.
+    ws.run(&cmd("/usr/bin/true", &[])).await.unwrap();
+
+    let guard = ENV.write().await;
+    // SAFETY: `ENV` is held for writing, so no other test in this binary is
+    // reading the environment for the duration of the mutation. `run` itself
+    // does not read it — `env_clear` means the child's environment is built
+    // from the explicit allowlist rather than captured from this process.
+    unsafe { std::env::set_var("LITELLM_API_KEY", "sentinel-must-not-leak") };
+    let result = ws.run(&cmd("/usr/bin/env", &[])).await.unwrap();
+    unsafe { std::env::remove_var("LITELLM_API_KEY") };
+    drop(guard);
+
+    assert!(
+        !result.stdout.contains("sentinel-must-not-leak"),
+        "a workspace command must not observe the model credential: {}",
+        result.stdout
+    );
+    assert!(!result.stdout.contains("LITELLM_API_KEY"));
+    // The sentinel proves this one credential does not survive; the exhaustive
+    // check proves *nothing* does. A denylist would have to be extended for
+    // every credential added later, and this is the assertion that fails if
+    // `env_clear` is ever dropped for a selective `env_remove`.
+    let mut seen: Vec<&str> = result
+        .stdout
+        .lines()
+        .filter_map(|line| line.split('=').next())
+        .collect();
+    seen.sort_unstable();
+    assert_eq!(
+        seen,
+        ["HOME", "LANG", "PATH"],
+        "the child's environment must be exactly the allowlist: {}",
+        result.stdout
+    );
+}
+
+#[tokio::test]
+async fn a_command_that_overruns_its_timeout_is_killed() {
+    let _env = ENV.read().await;
+    let (ws, _dir) = workspace();
+    let err = ws
+        .run(&WorkspaceCommand {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            timeout: Duration::from_millis(300),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, WorkspaceError::Timeout { .. }), "got {err:?}");
+    // Naming the program is the point: an operator reading the diagnostic has to
+    // learn *what* hung, not only that something did.
+    assert!(err.to_string().contains("/bin/sh"), "got {err}");
+
+    // The deadline must *kill* the child, not merely stop waiting for it.
+    // Asserting the error alone would pass just as happily on a runner that
+    // leaves a `sleep 30` running with nobody holding its handle — verified by
+    // deleting `kill_on_drop` and watching this assertion, and only this one,
+    // fail. So the command is one that would leave a trace if it outlived its
+    // deadline, and the trace must not appear.
+    let err = ws
+        .run(&WorkspaceCommand {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 1; : > outlived".into()],
+            timeout: Duration::from_millis(200),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, WorkspaceError::Timeout { .. }), "got {err:?}");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        !ws.root().join("outlived").exists(),
+        "a timed-out command must not survive its deadline"
+    );
+}
+
+#[tokio::test]
+async fn a_cancelled_token_stops_a_command_before_it_runs() {
+    let _env = ENV.read().await;
+    let (ws, _dir) = workspace_with_cancelled_token();
+    let marker = ws.root().join("ran");
+    assert!(matches!(
+        ws.run(&cmd("/bin/sh", &["-c", "echo ran > ran"])).await,
+        Err(WorkspaceError::Cancelled)
+    ));
+    // Cancellation has to prevent the effect, not merely end the future.
+    assert!(!marker.exists(), "a cancelled command must not have run");
 }

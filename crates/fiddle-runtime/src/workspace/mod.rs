@@ -15,15 +15,25 @@
 //! defeated by a race; [`Workspace::resolve`] is the last word, because only the
 //! filesystem knows where a symlink points.
 
+//!
+//! [`command`] is the other half of that containment: a path check is worth
+//! nothing if the process the workspace hands control to can read the
+//! credentials of the process that started it, so a workspace command's
+//! environment is built from an allowlist rather than inherited.
+
+pub mod command;
 pub mod path;
 
+pub use command::{CommandResult, WorkspaceCommand};
 pub use path::WorkspacePath;
 
 use fiddle_core::AttemptId;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-/// What can go wrong when a requested path is turned into a usable one.
+/// What can go wrong when a requested path is turned into a usable one, or when
+/// a command is run against it.
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceError {
     /// The requested path was refused because it does not provably name
@@ -46,6 +56,21 @@ pub enum WorkspaceError {
     /// layer could say about, say, a worktree path that is already registered.
     #[error("git {command} failed: {stderr}")]
     Git { command: String, stderr: String },
+
+    /// A workspace command did not finish within its bound and was killed.
+    ///
+    /// The program is named because "something timed out" is not actionable:
+    /// an attempt runs a build and a test suite through the same runner, and
+    /// which of them hung is the first thing an operator needs to know.
+    #[error("{program} did not finish within {timeout:?} and was killed")]
+    Timeout { program: String, timeout: Duration },
+
+    /// The attempt was cancelled, so the work was not done.
+    ///
+    /// Distinct from a failure on purpose: nothing went wrong, and an outcome
+    /// derived from this must not read as the capability having tried and lost.
+    #[error("cancelled")]
+    Cancelled,
 }
 
 /// One attempt's private checkout of the repository under repair.
