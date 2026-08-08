@@ -106,6 +106,17 @@ observes the world its predecessor left:
    `ANTHROPIC_API_KEY`, and `JIRA_API_TOKEN` unset, showing fiddle does not
    *need* them. The same command with all four present returns the same answer
    and leaves the same bytes, showing it does not *consult* them either.
+7. **Containment of the invocation reference.** `run beans:../../../pwned`
+   exits **2** with a diagnostic naming the character class a value may be
+   written in, prints nothing on stdout, and — asserted against the whole
+   project tree, files and directories alike, rather than against the exit
+   code — creates nothing under `<report.dir>`, nothing under `<stub.root>`,
+   and nothing beside or above either. Three levels rather than two, because
+   the slug is `beans-` + value and `<report.dir>/beans-../../pwned`
+   normalises back *inside* to `<report.dir>/pwned`: the prefix absorbs one
+   `..`, so a two-dot form would pass while proving nothing. The exit code
+   alone would prove nothing either — the escape this step closes exited 20
+   *and* wrote a bundle two levels above `<report.dir>`.
 
 ## Cleanup and residue
 
@@ -128,7 +139,7 @@ gh api repos/peel/fiddle-acceptance/keys --jq 'length'       # 0
 ## Keeping the two lanes together
 
 The in-repo scenario (`crates/fiddle-acceptance/tests/m0_skeleton.rs`) and the
-external one assert the same six properties, in the same order, by design. The
+external one assert the same seven properties, in the same order, by design. The
 numbered list above is that shared contract: each entry describes one step both
 lanes walk, and the two lanes are checked against it — and against each other —
 by hand.

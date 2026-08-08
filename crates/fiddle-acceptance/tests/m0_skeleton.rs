@@ -11,8 +11,9 @@
 //!   4. `run` executes the capability and publishes a bundle with build identity
 //!   5. a second, genuinely fresh process finds nothing left to do
 //!   6. credentials are neither required nor consulted
+//!   7. an invocation reference cannot name a place outside the configured roots
 //!
-//! That ordering is the claim. Six independent `#[test]` functions could each
+//! That ordering is the claim. Seven independent `#[test]` functions could each
 //! pass while the sequence they describe does not work, because nothing would
 //! force the bundle assertion to be about the run that just happened, the
 //! fail-closed step to be about the fixture the other steps share, or the
@@ -22,7 +23,7 @@
 //! Everything is observed from outside the process: an exit code, a `--json`
 //! payload, or a file on disk. Nothing calls a library function.
 //!
-//! These are the same six properties, in the same order, that
+//! These are the same seven properties, in the same order, that
 //! `scenarios/m0_skeleton.sh` in the public `peel/fiddle-acceptance` repository
 //! asserts as a plain shell script. The two lanes are kept in step by hand; see
 //! `docs/technical/acceptance-repository.md`. An assertion added here without
@@ -364,5 +365,51 @@ fn m0_executable_skeleton_scenario() {
         s.stub_snapshot(),
         after_first,
         "and it must not change what fiddle writes"
+    );
+
+    // ---- 7. a reference cannot name a place outside the configured roots ----
+    //
+    // The identity every step above is addressed by arrives from outside — a
+    // beans id today, a ticket key or a scanner finding from M1 — and `run`
+    // derives the bundle path, the attempt journal path, and the sources the
+    // ports read from it. So the last thing this walk asserts is that the
+    // identity cannot be used to reach out of the two roots the configuration
+    // declares, against the very project the six steps before it built.
+    //
+    // Three levels, not two: the slug is `beans-` + value, so
+    // `<report.dir>/beans-../../pwned` normalises back *inside* to
+    // `<report.dir>/pwned` — the prefix absorbs one `..`. A two-dot form would
+    // pass here while proving nothing.
+    //
+    // Asserted against the filesystem rather than the exit code, because the
+    // escape also exited non-zero: exit 20, having written a bundle two levels
+    // above `<report.dir>`. Only the bytes on disk tell the two apart.
+    let before_traversal = s.project_tree();
+    let traversing = s.run_raw_with(&["--json"], "beans:../../../pwned");
+    assert_eq!(
+        traversing.status.code(),
+        Some(2),
+        "a reference that is not an identifier is invalid input, stderr = {}",
+        String::from_utf8_lossy(&traversing.stderr)
+    );
+    let refusal = String::from_utf8_lossy(&traversing.stderr);
+    assert!(
+        refusal.contains("ASCII letters, digits"),
+        "the diagnostic must say what a value may be written with, got {refusal}"
+    );
+    assert!(
+        traversing.stdout.is_empty(),
+        "a refused reference must write nothing to stdout, got {}",
+        String::from_utf8_lossy(&traversing.stdout)
+    );
+    assert_eq!(
+        s.project_tree(),
+        before_traversal,
+        "a refused reference must create nothing — not under `<report.dir>`, not \
+         under `<stub.root>`, and above all not beside them"
+    );
+    assert!(
+        !s.dir().join("pwned").exists(),
+        "the escape landed here; nothing may be created outside the configured roots"
     );
 }

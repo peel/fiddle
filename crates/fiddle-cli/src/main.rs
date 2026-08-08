@@ -118,6 +118,9 @@ impl miette::Diagnostic for InvalidInvocationRef {
             InvocationRefError::Malformed(_) => "fiddle::invocation_ref::malformed",
             InvocationRefError::UnknownScheme(_) => "fiddle::invocation_ref::unknown_scheme",
             InvocationRefError::EmptyValue => "fiddle::invocation_ref::empty_value",
+            InvocationRefError::IllegalValueCharacter { .. } => {
+                "fiddle::invocation_ref::illegal_value_character"
+            }
         }))
     }
 
@@ -131,6 +134,9 @@ impl miette::Diagnostic for InvalidInvocationRef {
             }
             InvocationRefError::EmptyValue => {
                 "the scheme is recognised but names no work; append the identifier, as in `beans:fiddle-m0-demo`"
+            }
+            InvocationRefError::IllegalValueCharacter { .. } => {
+                "a reference names work, never a location: fiddle derives the paths it writes from this value, so it is an identifier only — write it with ASCII letters, digits, `-`, `_` and `:`, as in `beans:fiddle-m0-demo`"
             }
         }))
     }

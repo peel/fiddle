@@ -6,7 +6,7 @@
 //!
 //! Because the observable surface is the whole contract, the M0 scenario has a
 //! second, external expression: `scenarios/m0_skeleton.sh` in the public
-//! `peel/fiddle-acceptance` repository asserts the same six properties as a
+//! `peel/fiddle-acceptance` repository asserts the same seven properties as a
 //! plain shell script, so the milestone is provable against a released binary
 //! by someone holding neither these sources nor a Rust toolchain. The two lanes
 //! are kept in step by hand; see `docs/technical/acceptance-repository.md`. A
@@ -213,6 +213,42 @@ impl Scenario {
     /// The `--config` argument every command in this scenario is given.
     pub fn config_path(&self) -> PathBuf {
         self.dir.path().join("fiddle.toml")
+    }
+
+    /// The whole disposable project, the directory both configured roots live
+    /// inside.
+    ///
+    /// Exposed so a containment assertion can look *above* `<report.dir>` and
+    /// `<stub.root>`, which is where an escape from either of them lands.
+    pub fn dir(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// Every file *and* every directory under the whole project, as
+    /// `(relative path, bytes)` with directories carrying none, sorted.
+    ///
+    /// Wider than [`Scenario::stub_snapshot`] on purpose: that one answers
+    /// "did the fixture change", while this one answers "did anything appear
+    /// anywhere at all". Directories are included because an escape that
+    /// created only `<report.dir>/beans-..` and no file inside it is still an
+    /// artefact written where none was asked for.
+    pub fn project_tree(&self) -> Vec<(String, Vec<u8>)> {
+        let root = self.dir.path();
+        let mut entries: Vec<(String, Vec<u8>)> = walkdir_dirs(root)
+            .into_iter()
+            .chain(walkdir_files(root))
+            .map(|path| {
+                let relative = path.strip_prefix(root).unwrap().display().to_string();
+                let bytes = if path.is_dir() {
+                    Vec::new()
+                } else {
+                    std::fs::read(&path).unwrap()
+                };
+                (relative, bytes)
+            })
+            .collect();
+        entries.sort();
+        entries
     }
 
     /// Run `fiddle config check --config <this scenario's document> --json` and

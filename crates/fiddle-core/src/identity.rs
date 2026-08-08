@@ -145,6 +145,18 @@ pub enum InvocationRefError {
     /// A known scheme followed by nothing, so the reference names no work.
     #[error("invocation reference value must not be empty")]
     EmptyValue,
+
+    /// A non-empty value written with a character outside
+    /// [`InvocationRef::VALUE_GRAMMAR`].
+    ///
+    /// The offending character is carried rather than only the value, because
+    /// the usual defect is one character in an otherwise plausible identifier
+    /// and "which one" is the whole of what the caller needs to know.
+    #[error(
+        "invocation reference value `{value}` contains `{character}`; \
+         a value is written with ASCII letters, digits, `-`, `_` and `:` only"
+    )]
+    IllegalValueCharacter { value: String, character: char },
 }
 
 impl FromStr for InvocationRef {
@@ -153,15 +165,22 @@ impl FromStr for InvocationRef {
     /// Split on the *first* `:` only, so a value may itself contain separators
     /// (`jira:ICE-1:sub` names the value `ICE-1:sub`).
     ///
-    /// The emptiness of the value is checked before the scheme is recognised so
-    /// that the more specific defect wins: `beans:` is reported as an empty
-    /// value rather than being dragged through scheme lookup.
+    /// The value is checked before the scheme is recognised so that the more
+    /// specific defect wins: `beans:` is reported as an empty value, and
+    /// `beans:../x` as an illegal character, rather than either being dragged
+    /// through scheme lookup.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (scheme, value) = s
             .split_once(':')
             .ok_or_else(|| InvocationRefError::Malformed(s.to_string()))?;
         if value.is_empty() {
             return Err(InvocationRefError::EmptyValue);
+        }
+        if let Some(character) = value.chars().find(|c| !InvocationRef::admits(*c)) {
+            return Err(InvocationRefError::IllegalValueCharacter {
+                value: value.to_string(),
+                character,
+            });
         }
         let scheme = InvocationScheme::ALL
             .into_iter()
@@ -175,6 +194,55 @@ impl FromStr for InvocationRef {
 }
 
 impl InvocationRef {
+    /// The character class an invocation reference *value* is written in, in
+    /// the words a diagnostic uses.
+    ///
+    /// **ASCII letters, digits, `-`, `_` and `:`.** Nothing else — not `.`, not
+    /// `/`, not `\`, not a space, not a character outside ASCII.
+    ///
+    /// # Why this class, and not a wider one
+    ///
+    /// [`InvocationRef::slug`] interpolates the value into the names of the
+    /// artefacts a run publishes, and the value is also what the ports are
+    /// asked to read. So the value is not free text that happens to be used in
+    /// a name; it *is* a name, and it arrives from outside — from `jira`,
+    /// `scheduled` and `scanner` sources fiddle does not control. A value that
+    /// can be read as a relative path can name a place outside every root the
+    /// configuration declares, which is a write primitive handed to whoever
+    /// files a ticket.
+    ///
+    /// The class is therefore an allow-list, checked once here rather than
+    /// sanitised at each of the three places a path is derived from it. A
+    /// deny-list of the sequences known to traverse would have to be repeated
+    /// and kept complete; an allow-list makes the next derived path safe
+    /// without anyone remembering it exists.
+    ///
+    /// `.` is excluded rather than merely `..`, and that is the deliberate
+    /// part. Excluding the character outright means no `.` or `..` component
+    /// can be *formed* — including by the prefix arithmetic that made the
+    /// original report's `beans:../../pwned` look contained when
+    /// `beans:../../../pwned` was not — and it also keeps a value from naming a
+    /// dot-file. It costs nothing the sources produce: beans ids
+    /// (`fiddle-m0-demo`, `fiddle-1p8q`), Jira keys (`ICE-1`), schedule names
+    /// (`nightly`) and scanner ids (`cve-2026-1`) are alphanumerics and
+    /// hyphens.
+    ///
+    /// `:` is *kept*, which is the one concession to compatibility. A value may
+    /// contain a separator — `jira:ICE-1:sub` names `ICE-1:sub` — and that is
+    /// deliberate existing behaviour rather than an accident of the split, so
+    /// removing it would break references that parse today. A colon cannot
+    /// traverse: it is an ordinary character in a name on the platforms fiddle
+    /// targets, and it separates nothing in a path.
+    pub const VALUE_GRAMMAR: &'static str = "ASCII letters, digits, `-`, `_` and `:`";
+
+    /// Whether `c` is admitted by [`InvocationRef::VALUE_GRAMMAR`].
+    ///
+    /// `is_ascii_alphanumeric` rather than `is_alphanumeric`, so a value can
+    /// never carry a character that looks like an ASCII one and is not.
+    fn admits(c: char) -> bool {
+        c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':')
+    }
+
     /// The source this invocation came from.
     pub fn scheme(&self) -> InvocationScheme {
         self.scheme
@@ -192,6 +260,13 @@ impl InvocationRef {
 
     /// A path- and filename-safe rendering, for naming the artefacts a run
     /// publishes about this invocation.
+    ///
+    /// Safe because of [`InvocationRef::VALUE_GRAMMAR`], not because of
+    /// anything done here: the scheme is a closed set and the value was
+    /// constrained at the parse boundary, so a slug is always one name with no
+    /// separator and no `.` component. That is what a caller deriving a path
+    /// from it is entitled to rely on, and it is why deriving a *fourth* path
+    /// from a slug needs no new sanitising step.
     pub fn slug(&self) -> String {
         format!("{}-{}", self.scheme.as_str(), self.value)
     }
@@ -249,6 +324,81 @@ mod tests {
             "beans:".parse::<InvocationRef>(),
             Err(InvocationRefError::EmptyValue)
         );
+        assert_eq!(
+            "beans:../../../pwned".parse::<InvocationRef>(),
+            Err(InvocationRefError::IllegalValueCharacter {
+                value: "../../../pwned".to_string(),
+                character: '.',
+            })
+        );
+    }
+
+    /// **A value can never be read as a relative path.**
+    ///
+    /// `slug()` is interpolated into the names of the artefacts a run
+    /// publishes, so a value carrying a separator or a `.` component escapes
+    /// the roots the configuration names. The grammar closes that at the parse
+    /// boundary rather than at each use site: every one of these is refused
+    /// before an `InvocationRef` exists at all, so no later layer can be the
+    /// one that forgot to sanitise.
+    #[test]
+    fn refuses_a_value_that_could_be_read_as_a_path() {
+        for text in [
+            "beans:../../../pwned",
+            "beans:..",
+            "beans:.",
+            "beans:a/b",
+            "beans:/etc/passwd",
+            "beans:a\\b",
+            "beans:.hidden",
+            "beans:work/../../../pwned.json",
+            "scanner:%2e%2e",
+        ] {
+            assert!(
+                matches!(
+                    text.parse::<InvocationRef>(),
+                    Err(InvocationRefError::IllegalValueCharacter { .. })
+                ),
+                "`{text}` must be refused as a value that is not an identifier, got {:?}",
+                text.parse::<InvocationRef>()
+            );
+        }
+    }
+
+    /// The other half of the grammar: what it must keep admitting.
+    ///
+    /// These are the shapes the sources fiddle addresses actually produce. A
+    /// character class chosen for safety alone would be free to reject them,
+    /// which is why they are pinned here beside the rejections.
+    #[test]
+    fn still_admits_the_identifiers_real_sources_produce() {
+        for text in [
+            "beans:fiddle-m0-demo",
+            "beans:fiddle-1p8q",
+            "jira:ICE-1",
+            "jira:ICE-1:sub",
+            "scheduled:nightly",
+            "scheduled:nightly_sweep",
+            "scanner:cve-2026-1",
+        ] {
+            let parsed: InvocationRef = text
+                .parse()
+                .unwrap_or_else(|e| panic!("`{text}` must still parse, got {e}"));
+            assert_eq!(parsed.as_str(), text);
+        }
+    }
+
+    /// Every character the grammar admits is one a slug can carry, and the slug
+    /// stays a single name rather than a path with parts.
+    #[test]
+    fn a_slug_of_an_admitted_value_is_one_name() {
+        for text in ["beans:fiddle-m0-demo", "jira:ICE-1:sub", "scanner:a_b-1"] {
+            let slug = text.parse::<InvocationRef>().unwrap().slug();
+            assert!(
+                !slug.contains('/') && !slug.contains('\\') && !slug.contains('.'),
+                "a slug names one artefact, got {slug}"
+            );
+        }
     }
 
     #[test]
