@@ -48,6 +48,13 @@ COMPLETED_SEED_ONLY=$(write_json completed-seed-only '[{"id":"seed-m0","type":"t
 DUPLICATE_GENERATION=$(write_json duplicate-generation '[{"id":"seed-m0","type":"task","status":"completed","tags":["planning"]},{"id":"task-1a","type":"task","status":"todo","tags":["generated-by:seed-m0","plan-task:1"]},{"id":"task-1b","type":"task","status":"todo","tags":["generated-by:seed-m0","plan-task:1"]}]')
 CONFLICTING_PARENT=$(write_json conflicting-parent '[{"id":"seed-m0","type":"task","status":"completed","parent":"factory-m0","tags":["planning"]},{"id":"task-1","type":"task","status":"todo","parent":"another-epic","tags":["generated-by:seed-m0","plan-task:1"]}]')
 LEGACY_WORK=$(write_json legacy-work '[{"id":"task-legacy","type":"task","status":"todo","tags":[]}]')
+# Holistic review creates remediation beans mid-epic (develop-holistic 2d). They
+# are not materialized from the planning seed, so they carry no generation
+# identity and must not be required to claim one — back-dating `generated-by`
+# onto them would make the resolver pass by asserting a provenance that is false.
+REMEDIATION_WORK=$(write_json remediation-work '[{"id":"seed-m0","type":"task","status":"completed","tags":["planning"]},{"id":"task-1","type":"task","status":"completed","tags":["generated-by:seed-m0","plan-task:1"]},{"id":"fix-1","type":"task","status":"completed","tags":["remediation"]}]')
+REMEDIATION_ACTIVE=$(write_json remediation-active '[{"id":"seed-m0","type":"task","status":"completed","tags":["planning"]},{"id":"task-1","type":"task","status":"completed","tags":["generated-by:seed-m0","plan-task:1"]},{"id":"fix-1","type":"task","status":"todo","tags":["remediation"]}]')
+UNTAGGED_WORK=$(write_json untagged-work '[{"id":"seed-m0","type":"task","status":"completed","tags":["planning"]},{"id":"task-1","type":"task","status":"completed","tags":["generated-by:seed-m0","plan-task:1"]},{"id":"stray","type":"task","status":"completed","tags":[]}]')
 MILESTONE_CHILDREN=$(write_json milestone-children '[{"id":"factory-m0","type":"epic","status":"todo","tags":["agentic-factory"]}]')
 
 echo "Seed-aware routing"
@@ -56,6 +63,8 @@ assert_state "interrupted seed routes to SEED" SEED "$EPIC" "$SEED_ACTIVE"
 assert_state "completed seed with work routes to DEVELOP" DEVELOP "$EPIC" "$SEED_AND_WORK"
 assert_state "terminal work routes to DELIVER" DELIVER "$EPIC" "$ALL_TERMINAL"
 assert_state "delivery-complete terminal work routes to DONE" DONE "$EPIC" "$ALL_TERMINAL" --delivery-complete
+assert_state "terminal work with remediation beans routes to DELIVER" DELIVER "$EPIC" "$REMEDIATION_WORK"
+assert_state "an open remediation bean keeps the epic in DEVELOP" DEVELOP "$EPIC" "$REMEDIATION_ACTIVE"
 
 echo "Invalid routing"
 assert_state "implementation cannot precede seed completion" INVALID "$EPIC" "$PREMATURE_WORK"
@@ -63,6 +72,7 @@ assert_state "multiple planning seeds are invalid" INVALID "$EPIC" "$TWO_SEEDS"
 assert_state "completed seed without generated work is invalid" INVALID "$EPIC" "$COMPLETED_SEED_ONLY"
 assert_state "duplicate generation identity is invalid" INVALID "$EPIC" "$DUPLICATE_GENERATION"
 assert_state "conflicting child parent is invalid" INVALID "$EPIC" "$CONFLICTING_PARENT"
+assert_state "untagged non-remediation work is still invalid" INVALID "$EPIC" "$UNTAGGED_WORK"
 assert_state "top milestone does not select a child implicitly" INVALID "$MILESTONE" "$MILESTONE_CHILDREN"
 
 echo "Legacy routing"
