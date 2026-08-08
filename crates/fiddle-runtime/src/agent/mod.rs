@@ -14,9 +14,16 @@
 //! `Args` struct, and never in an advertised JSON schema. A schema is a menu:
 //! anything named on it is something the model may fill in, and a workspace root
 //! the model may fill in is not a workspace root at all.
+//!
+//! [`audit`] is the other half of the same idea, applied to what is written
+//! down rather than to what is granted. The tools record themselves; the Rig
+//! hook in [`audit`] only watches. Which of the two an operator ends up
+//! trusting is decided here, not later.
 
+pub mod audit;
 pub mod tools;
 
+pub use audit::AuditHook;
 pub use tools::{
     CheckOutcome, ListFiles, NoArgs, ReadFile, ReadFileArgs, RunCheck, ToolError, ToolHost,
     WriteFile, WriteFileArgs, WriteReceipt,
@@ -34,6 +41,18 @@ pub struct ToolReceipts {
 }
 
 /// One tool call, as the runtime saw it.
+///
+/// Three fields, and the shortness is a decision rather than a placeholder.
+/// Receipts are published in the evidence bundle, so every field has to be safe
+/// to publish without anybody re-reading it first — which rules out the
+/// requested path (model-authored, and unbounded), the file contents, and the
+/// resolved path (the operator's filesystem layout). What is left answers the
+/// questions a bundle is actually asked: which tools ran, how each went, and
+/// where the time went.
+///
+/// `outcome` is one of `ok`, `refused`, `cancelled`, `failed`. A `&'static str`
+/// rather than an enum because the set is closed at the point that writes it and
+/// the only consumers are a serializer and a human reading JSON.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ToolReceipt {
     pub tool: String,

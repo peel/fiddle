@@ -32,12 +32,13 @@
 //! the same reason: the default classifies every domain error as opaque, which
 //! is safe but tells a model that mistyped a path nothing it can use.
 
-use super::ToolReceipts;
+use super::{ToolReceipt, ToolReceipts};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
 use rig_agent::tool::{Tool, ToolContext, ToolExecutionError};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 /// The host-only values a tool may reach. Never a tool argument.
@@ -81,6 +82,79 @@ impl ToolHost {
             return Err(ToolError::Cancelled);
         }
         Ok(())
+    }
+
+    /// Record what a tool body did and hand its result back to the caller.
+    ///
+    /// The result is taken *by value* and returned, rather than inspected
+    /// through a reference, so that the recording sits on the tool's return path
+    /// rather than beside it. That does not make omission impossible — a body
+    /// could still return early and skip this — but it removes the failure this
+    /// is actually written against, which is a tool that records its success and
+    /// forgets its refusal. There is one call site per tool and every arm of the
+    /// body flows through it, so success, refusal, cancellation and fault are
+    /// recorded by the same line or by none.
+    ///
+    /// The one call this cannot cover is a tool that never found a [`ToolHost`]
+    /// at all. There is no receipts store to write to in that case; the refusal
+    /// is recorded by [`ToolError::NoHostContext`] reaching Rig, and by nothing
+    /// else. That is a host misconfiguration rather than an attempt, and an
+    /// attempt is what receipts describe.
+    fn recorded<T>(
+        &self,
+        tool: &'static str,
+        started: Instant,
+        result: Result<T, ToolError>,
+    ) -> Result<T, ToolError> {
+        // `as u64` cannot wrap in any realistic sense: it would take half a
+        // billion years of one tool call, and every command here is already
+        // bounded by its own timeout.
+        let receipt = ToolReceipt {
+            tool: tool.to_string(),
+            outcome: outcome_of(&result),
+            duration_ms: started.elapsed().as_millis() as u64,
+        };
+        // Poison is recovered from rather than propagated. A panic in one tool
+        // call must not make the *record of every later call* unwritable, which
+        // is what an `unwrap()` here would arrange.
+        self.receipts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .calls
+            .push(receipt);
+        result
+    }
+
+    /// A snapshot of what this attempt has recorded so far.
+    ///
+    /// Cloned out from under the lock so that a reader — an evidence bundle
+    /// being written while the agent is still running, say — never holds it.
+    pub fn receipts(&self) -> ToolReceipts {
+        self.receipts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+/// Which class of thing happened, for an operator reading the bundle later.
+///
+/// Four classes, and the distinction that earns them is *who decided*. `refused`
+/// is the runtime declining before the filesystem was touched; `cancelled` is
+/// the attempt being stopped from outside; `failed` is the tool having been
+/// allowed to act and the world not cooperating. Collapsing any pair of them
+/// would make the bundle unable to answer the first question anyone asks of it,
+/// which is whether a bound fired or something broke.
+///
+/// A timeout is `failed` rather than `cancelled`: the check ran, the host's own
+/// deadline killed it, and nobody cancelled the attempt. The attempt may well
+/// continue afterwards, which a `cancelled` receipt would misdescribe.
+fn outcome_of<T>(result: &Result<T, ToolError>) -> &'static str {
+    match result {
+        Ok(_) => "ok",
+        Err(ToolError::NoHostContext) | Err(ToolError::Rejected { .. }) => "refused",
+        Err(ToolError::Cancelled) => "cancelled",
+        Err(ToolError::Timeout { .. }) | Err(ToolError::Failed { .. }) => "failed",
     }
 }
 
@@ -243,11 +317,20 @@ impl Tool for ReadFile {
 
     async fn call(&self, ctx: &mut ToolContext, args: Self::Args) -> Result<String, ToolError> {
         let host = ToolHost::from_context(ctx)?;
-        host.guard()?;
-        let path = parse(&args.path)?;
-        host.workspace
-            .read(&path)
-            .map_err(|source| ToolError::from_workspace("reading the file", source))
+        let started = Instant::now();
+        // The guard is inside the recorded body, not outside it: an attempt that
+        // was stopped is still an attempt, and a receipt that only appears when
+        // the tool succeeded is a record of the happy path rather than of what
+        // happened.
+        let result = async {
+            host.guard()?;
+            let path = parse(&args.path)?;
+            host.workspace
+                .read(&path)
+                .map_err(|source| ToolError::from_workspace("reading the file", source))
+        }
+        .await;
+        host.recorded(Self::NAME, started, result)
     }
 
     fn map_error(&self, error: Self::Error) -> ToolExecutionError {
@@ -307,17 +390,22 @@ impl Tool for WriteFile {
         args: Self::Args,
     ) -> Result<WriteReceipt, ToolError> {
         let host = ToolHost::from_context(ctx)?;
-        // Before the parse and before the write, both. A guard placed after
-        // either would let a cancelled attempt leave a file behind.
-        host.guard()?;
-        let path = parse(&args.path)?;
-        host.workspace
-            .write(&path, &args.contents)
-            .map_err(|source| ToolError::from_workspace("writing the file", source))?;
-        Ok(WriteReceipt {
-            path: path.as_str().to_string(),
-            bytes: args.contents.len(),
-        })
+        let started = Instant::now();
+        let result = async {
+            // Before the parse and before the write, both. A guard placed after
+            // either would let a cancelled attempt leave a file behind.
+            host.guard()?;
+            let path = parse(&args.path)?;
+            host.workspace
+                .write(&path, &args.contents)
+                .map_err(|source| ToolError::from_workspace("writing the file", source))?;
+            Ok(WriteReceipt {
+                path: path.as_str().to_string(),
+                bytes: args.contents.len(),
+            })
+        }
+        .await;
+        host.recorded(Self::NAME, started, result)
     }
 
     fn map_error(&self, error: Self::Error) -> ToolExecutionError {
@@ -344,15 +432,20 @@ impl Tool for ListFiles {
 
     async fn call(&self, ctx: &mut ToolContext, _args: NoArgs) -> Result<Vec<String>, ToolError> {
         let host = ToolHost::from_context(ctx)?;
-        host.guard()?;
-        let listed = host
-            .workspace
-            .list()
-            .map_err(|source| ToolError::from_workspace("listing the files", source))?;
-        Ok(listed
-            .into_iter()
-            .map(|path| path.as_str().to_string())
-            .collect())
+        let started = Instant::now();
+        let result = async {
+            host.guard()?;
+            let listed = host
+                .workspace
+                .list()
+                .map_err(|source| ToolError::from_workspace("listing the files", source))?;
+            Ok(listed
+                .into_iter()
+                .map(|path| path.as_str().to_string())
+                .collect())
+        }
+        .await;
+        host.recorded(Self::NAME, started, result)
     }
 
     fn map_error(&self, error: Self::Error) -> ToolExecutionError {
@@ -395,18 +488,23 @@ impl Tool for RunCheck {
 
     async fn call(&self, ctx: &mut ToolContext, _args: NoArgs) -> Result<CheckOutcome, ToolError> {
         let host = ToolHost::from_context(ctx)?;
-        host.guard()?;
-        let result = host
-            .workspace
-            .run(&host.check)
-            .await
-            .map_err(|source| ToolError::from_workspace("running the check", source))?;
-        let root = host.workspace.root();
-        Ok(CheckOutcome {
-            exit_code: result.exit_code,
-            stdout: relativised(&result.stdout, root),
-            stderr: relativised(&result.stderr, root),
-        })
+        let started = Instant::now();
+        let result = async {
+            host.guard()?;
+            let result = host
+                .workspace
+                .run(&host.check)
+                .await
+                .map_err(|source| ToolError::from_workspace("running the check", source))?;
+            let root = host.workspace.root();
+            Ok(CheckOutcome {
+                exit_code: result.exit_code,
+                stdout: relativised(&result.stdout, root),
+                stderr: relativised(&result.stderr, root),
+            })
+        }
+        .await;
+        host.recorded(Self::NAME, started, result)
     }
 
     fn map_error(&self, error: Self::Error) -> ToolExecutionError {
@@ -457,7 +555,7 @@ fn relativised(text: &str, root: &Path) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::agent::ToolReceipts;
     use crate::workspace::{Workspace, WorkspaceCommand};
@@ -472,7 +570,7 @@ mod tests {
     /// The `TempDir` comes back with it because dropping it would take the
     /// workspace with it; a test that let it fall would be reading a tree that
     /// no longer exists.
-    fn test_host() -> (ToolHost, tempfile::TempDir) {
+    pub(crate) fn test_host() -> (ToolHost, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let repo = dir.path().join("fixture");
         std::fs::create_dir_all(repo.join("src")).unwrap();
@@ -805,6 +903,211 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn the_runtime_records_every_tool_call_without_the_hook() {
+        // Receipts are written by the tools themselves. A hook that silently
+        // stops firing must not silently empty the evidence.
+        let (host, _g) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "src/lib.rs".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let _ = WriteFile
+            .call(
+                &mut ctx,
+                WriteFileArgs {
+                    path: "../nope".into(),
+                    contents: "x".into(),
+                },
+            )
+            .await;
+
+        let receipts = host.receipts();
+        assert_eq!(
+            receipts.calls.len(),
+            2,
+            "both the success and the refusal are evidence"
+        );
+        assert_eq!(receipts.calls[0].tool, "read_file");
+        assert_eq!(receipts.calls[0].outcome, "ok");
+        assert_eq!(receipts.calls[1].tool, "write_file");
+        assert_eq!(receipts.calls[1].outcome, "refused");
+    }
+
+    #[tokio::test]
+    async fn a_receipt_records_how_long_the_call_took() {
+        // A duration that is always zero is not a measurement, so the check is
+        // run against a command whose length is known: anything below the sleep
+        // means the clock was never started.
+        let (mut host, _g) = test_host();
+        host.check = WorkspaceCommand {
+            program: "sleep".to_string(),
+            args: vec!["0.2".to_string()],
+            timeout: Duration::from_secs(30),
+        };
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        RunCheck.call(&mut ctx, NoArgs::default()).await.unwrap();
+
+        let receipts = host.receipts();
+        assert_eq!(receipts.calls.len(), 1);
+        assert_eq!(receipts.calls[0].tool, "run_check");
+        assert!(
+            receipts.calls[0].duration_ms >= 150,
+            "the receipt did not time the call it describes: {:?}",
+            receipts.calls[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_call_is_recorded_because_a_stopped_attempt_is_still_an_attempt() {
+        let (host, _g) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+        host.cancel.cancel();
+
+        assert!(ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "src/lib.rs".into()
+                }
+            )
+            .await
+            .is_err());
+
+        let receipts = host.receipts();
+        assert_eq!(
+            receipts.calls.len(),
+            1,
+            "a call the guard stopped still happened: {receipts:?}"
+        );
+        assert_eq!(receipts.calls[0].outcome, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn a_check_that_outruns_its_bound_is_a_failure_and_not_a_refusal() {
+        // The classes exist to be told apart. A timeout is the host's own bound
+        // firing on a tool that was allowed to act, which is nothing like a path
+        // that was declined before it reached the filesystem.
+        let (mut host, _g) = test_host();
+        host.check = WorkspaceCommand {
+            program: "sleep".to_string(),
+            args: vec!["30".to_string()],
+            timeout: Duration::from_millis(50),
+        };
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        assert!(RunCheck.call(&mut ctx, NoArgs::default()).await.is_err());
+
+        let receipts = host.receipts();
+        assert_eq!(receipts.calls.len(), 1);
+        assert_eq!(receipts.calls[0].outcome, "failed");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn receipts_survive_being_read_while_they_are_being_written() {
+        // The `Arc<Mutex<_>>` inside a `Clone`d `ToolHost` is the whole claim:
+        // every clone appends to one record, and reading it never races with
+        // appending to it.
+        let (host, _g) = test_host();
+
+        let reader = {
+            let host = host.clone();
+            tokio::spawn(async move {
+                let mut seen = 0;
+                for _ in 0..500 {
+                    seen = seen.max(host.receipts().calls.len());
+                    tokio::task::yield_now().await;
+                }
+                seen
+            })
+        };
+
+        let writers: Vec<_> = (0..8)
+            .map(|_| {
+                let host = host.clone();
+                tokio::spawn(async move {
+                    let mut ctx = ToolContext::new();
+                    ctx.insert(host);
+                    for _ in 0..10 {
+                        ReadFile
+                            .call(
+                                &mut ctx,
+                                ReadFileArgs {
+                                    path: "src/lib.rs".into(),
+                                },
+                            )
+                            .await
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for writer in writers {
+            writer.await.expect("a writer finished");
+        }
+        let observed = reader.await.expect("the reader finished");
+
+        assert_eq!(
+            host.receipts().calls.len(),
+            80,
+            "eight clones must append to one record, not to eight private ones"
+        );
+        assert!(observed <= 80, "a reader saw more calls than were made");
+    }
+
+    #[tokio::test]
+    async fn a_receipt_carries_nothing_of_the_host_filesystem() {
+        // Receipts end up in the evidence bundle, which is published. They name
+        // the tool, how it went and how long it took — never a path, and never
+        // an argument the model authored.
+        let (host, _g) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "src/lib.rs".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let _ = ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "src/absent.rs".into(),
+                },
+            )
+            .await;
+
+        let published = serde_json::to_string(&host.receipts()).expect("receipts serialize");
+        for root in roots(&host) {
+            assert!(
+                !published.contains(&root),
+                "the host's filesystem layout reached the evidence bundle: {published}"
+            );
+        }
+        assert!(
+            !published.contains("absent.rs"),
+            "a receipt echoed a model-authored argument: {published}"
+        );
     }
 
     /// Every spelling of the workspace root this platform might produce.
