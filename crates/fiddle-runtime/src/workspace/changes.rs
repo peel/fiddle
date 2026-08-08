@@ -40,6 +40,25 @@ use std::path::Path;
 /// version is current", and the record layout below is v1's.
 const STATUS: &[&str] = &["status", "--porcelain=v1", "-z", "-uall"];
 
+/// The listing invocation.
+///
+/// `--cached` and `--others` together are what make this the *project's* files
+/// rather than either half of them: tracked files alone would omit everything
+/// the agent created, and untracked files alone would omit everything it was
+/// given. `--exclude-standard` applies the repository's own ignore rules, which
+/// is the whole reason this is git's job and not a directory walk — after one
+/// `run_check` a walk would return the entire `target/` tree, tens of thousands
+/// of paths that are neither the project nor anything a model should be handed.
+/// `-z` for the same reason as above: git quotes any path with a space in it
+/// unless told to separate records with NUL.
+const LIST: &[&str] = &[
+    "ls-files",
+    "--cached",
+    "--others",
+    "--exclude-standard",
+    "-z",
+];
+
 /// The width of a v1 status record's `XY ` prefix.
 const PREFIX: usize = 3;
 
@@ -53,11 +72,36 @@ impl super::Workspace {
     pub fn changed_files(&self) -> Result<Vec<WorkspacePath>, WorkspaceError> {
         changed_files(self.root())
     }
+
+    /// Every file of the project, as git understands the project.
+    ///
+    /// Each path goes back through [`WorkspacePath::parse`] rather than being
+    /// trusted because it came from git: the type is the carrier of the
+    /// containment guarantee, and a path that skipped the parse would be a path
+    /// nothing had checked.
+    pub fn list(&self) -> Result<Vec<WorkspacePath>, WorkspaceError> {
+        listed(&super::git_stdout(self.root(), LIST)?)
+    }
 }
 
 /// The changed-file set of the git worktree rooted at `root`.
 fn changed_files(root: &Path) -> Result<Vec<WorkspacePath>, WorkspaceError> {
     parse(&super::git_stdout(root, STATUS)?)
+}
+
+/// Turn `git ls-files -z` output into workspace paths.
+///
+/// Simpler than [`parse`] because there is no status field and no rename pair:
+/// every record is a bare path. Sorted and deduplicated because `--cached` and
+/// `--others` can each name a path that the other also names.
+fn listed(out: &[u8]) -> Result<Vec<WorkspacePath>, WorkspaceError> {
+    let mut paths = Vec::new();
+    for record in out.split(|byte| *byte == 0).filter(|r| !r.is_empty()) {
+        paths.push(WorkspacePath::parse(decode(LIST, record)?)?);
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 /// Turn `git status --porcelain=v1 -z -uall` output into workspace paths.
@@ -75,11 +119,14 @@ fn parse(out: &[u8]) -> Result<Vec<WorkspacePath>, WorkspaceError> {
         // change, so it is consumed here. Failing to consume it would report a
         // path the agent deleted as though it had written it.
         if status.contains(&b'R') || status.contains(&b'C') {
-            records
-                .next()
-                .ok_or_else(|| malformed("a rename record was not followed by its origin path"))?;
+            records.next().ok_or_else(|| {
+                malformed(
+                    STATUS,
+                    "a rename record was not followed by its origin path",
+                )
+            })?;
         }
-        paths.push(WorkspacePath::parse(decode(path)?)?);
+        paths.push(WorkspacePath::parse(decode(STATUS, path)?)?);
     }
     paths.sort();
     paths.dedup();
@@ -97,10 +144,13 @@ fn split(record: &[u8]) -> Result<(&[u8], &[u8]), WorkspaceError> {
         Some((status, path)) if status[PREFIX - 1] == b' ' && !path.is_empty() => {
             Ok((status, path))
         }
-        _ => Err(malformed(&format!(
-            "expected an `XY <path>` status record, got {:?}",
-            String::from_utf8_lossy(record)
-        ))),
+        _ => Err(malformed(
+            STATUS,
+            &format!(
+                "expected an `XY <path>` status record, got {:?}",
+                String::from_utf8_lossy(record)
+            ),
+        )),
     }
 }
 
@@ -111,19 +161,26 @@ fn split(record: &[u8]) -> Result<(&[u8], &[u8]), WorkspaceError> {
 /// `WorkspacePath` and names nothing on disk; the changed-file set would then be
 /// confidently wrong. Evidence that cannot be produced correctly is worth less
 /// than evidence that admits it.
-fn decode(path: &[u8]) -> Result<&str, WorkspaceError> {
+fn decode<'a>(command: &[&str], path: &'a [u8]) -> Result<&'a str, WorkspaceError> {
     std::str::from_utf8(path).map_err(|_| {
-        malformed(&format!(
-            "git named a path that is not valid UTF-8: {:?}",
-            String::from_utf8_lossy(path)
-        ))
+        malformed(
+            command,
+            &format!(
+                "git named a path that is not valid UTF-8: {:?}",
+                String::from_utf8_lossy(path)
+            ),
+        )
     })
 }
 
 /// git ran, but said something this parser does not understand.
-fn malformed(reason: &str) -> WorkspaceError {
+///
+/// The invocation is a parameter rather than a constant because two of them are
+/// parsed here now, and an error naming the wrong one would send whoever reads
+/// it to the wrong parser.
+fn malformed(command: &[&str], reason: &str) -> WorkspaceError {
     WorkspaceError::Git {
-        command: STATUS.join(" "),
+        command: command.join(" "),
         stderr: reason.to_string(),
     }
 }
@@ -142,6 +199,28 @@ mod tests {
             .iter()
             .map(|p| p.as_str().to_string())
             .collect()
+    }
+
+    #[test]
+    fn a_listing_is_bare_paths_deduplicated_and_ordered() {
+        let paths = listed(b"src/lib.rs\0src/a file.rs\0src/lib.rs\0")
+            .unwrap()
+            .iter()
+            .map(|p| p.as_str().to_string())
+            .collect::<Vec<_>>();
+        // `--cached` and `--others` can each name the same path; the model must
+        // not be told about one file twice.
+        assert_eq!(paths, ["src/a file.rs", "src/lib.rs"]);
+    }
+
+    #[test]
+    fn a_listed_path_that_is_not_text_is_refused_not_mangled() {
+        let err = listed(b"src/bad\xffname.rs\0").unwrap_err();
+        assert!(
+            matches!(&err, WorkspaceError::Git { command, stderr }
+                if command.starts_with("ls-files") && stderr.contains("not valid UTF-8")),
+            "the failure must name the invocation it came from: {err:?}"
+        );
     }
 
     #[test]
