@@ -66,24 +66,31 @@ The scenario is the *same proof* the in-repo lane runs
 sharing a single fixture project from the first step to the last, so each step
 observes the world its predecessor left:
 
-1. **Configuration.** `config check --json` reports `status: "valid"` and echoes
+1. **Configuration.** `config check --json` declares
+   `schema: "fiddle.config_check.v0"`, reports `status: "valid"`, and echoes
    the project identity. A document with an unknown key exits **2** and the
    diagnostic names the key, says `unknown field`, and points at its line.
-2. **Read-only inspection.** `inspect --json` echoes the invocation reference and
+2. **Read-only inspection.** `inspect --json` declares
+   `schema: "fiddle.inspect.v0"`, echoes the invocation reference and
    scheme, observes the work item as available and the change set as unmarked,
    assesses `not_started`, and derives `execute stub_mark`. The stub root's
    path-and-digest snapshot is unchanged afterwards, and `<report.dir>` does not
    exist — looking neither mutates fixture state nor publishes evidence.
 3. **Failing closed.** With the stub root moved away — moved rather than emptied,
    because an emptied root is still readable and would exercise "the world is
-   empty" instead of "I cannot see the world" — `run` exits **20**, reports
+   empty" instead of "I cannot see the world" — `run` exits **20**, still
+   declares `schema: "fiddle.run.v0"` so a caller can parse the failure without
+   first knowing it is one, reports
    `observations.work_item` as `unavailable` rather than degrading it to an empty
    value, carries a typed `failed` outcome whose error names the unavailable
    source, derives a `blocked` next action with a non-empty reason, and executes
    nothing: `capability_executions` and `progress` are both empty. The root is
    put back afterwards, so the steps that follow observe the same fixture.
 4. **Execution and evidence.** `run --json` completes, executes `stub_mark`, and
-   names a bundle that exists on disk. The bundle declares
+   names a bundle that exists on disk. The payload *leads* with
+   `schema: "fiddle.run.v0"` — asserted against the raw bytes rather than
+   through a parser, because design §3.2 shows the discriminator as the first
+   key and parsing throws key order away. The bundle declares
    `schema: "fiddle.report.v0"`, carries build identity
    (`fiddle.package_version` matching `x.y.z`, `fiddle.source_revision` a
    40-hex sha or `unknown`), records `invocation_ref`, `work_ref`, `attempt_id`,

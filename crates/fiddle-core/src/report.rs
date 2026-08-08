@@ -114,6 +114,35 @@ impl FiddleBuild {
 /// must change this string in the same edit.
 pub const REPORT_SCHEMA: &str = "fiddle.report.v0";
 
+/// The schema every `run --json` payload declares itself to be, as design §3.2
+/// specifies it.
+///
+/// The bundle on disk and the payload on stdout are two documents describing one
+/// attempt, and until now only the first of them was versioned: a consumer
+/// reading the bundle could dispatch on [`REPORT_SCHEMA`] and survive a shape
+/// change, while a consumer reading the same run's stdout had nothing to
+/// dispatch on. M1 onward adds fields to these payloads, so the asymmetry grows
+/// with every milestone.
+pub const RUN_SCHEMA: &str = "fiddle.run.v0";
+
+/// The schema every `inspect --json` payload declares itself to be.
+///
+/// Design §3.2 names only the run payload, because it is the one command the
+/// milestone is built around. The discriminator is extended to the other two
+/// `--json` contracts anyway: a consumer parsing `inspect` stdout has exactly
+/// the versioning problem a consumer parsing `run` stdout has, and a CLI where
+/// only some payloads can be dispatched on is worse than one where none can —
+/// the absence of the key stops meaning anything.
+pub const INSPECT_SCHEMA: &str = "fiddle.inspect.v0";
+
+/// The schema every `config check --json` payload declares itself to be.
+///
+/// Same reasoning as [`INSPECT_SCHEMA`]. The value is spelled `config_check`
+/// rather than `config-check` because every other identifier fiddle puts in a
+/// payload — key names, capability ids, progress stages — is snake_case, and a
+/// schema name is the last place to introduce a second convention.
+pub const CONFIG_CHECK_SCHEMA: &str = "fiddle.config_check.v0";
+
 /// The machine-readable record of one attempt, as design §4.7 specifies it.
 ///
 /// Everything a reader needs to reconstruct the attempt without re-running it:

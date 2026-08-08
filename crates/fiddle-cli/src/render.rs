@@ -7,10 +7,42 @@
 use crate::config::Config;
 use fiddle_core::{
     CapabilityAssessment, CapabilityExecution, InvocationRef, NextAction, Observation,
-    ProgressEntry, ReportBundle, WorkStateView,
+    ProgressEntry, ReportBundle, WorkStateView, CONFIG_CHECK_SCHEMA, INSPECT_SCHEMA, RUN_SCHEMA,
 };
 use fiddle_runtime::EvidenceError;
 use std::path::Path;
+
+/// One `--json` payload, led by the schema it is an instance of.
+///
+/// All three stdout contracts carry a discriminator, not only the `run` payload
+/// design §3.2 names: a consumer parsing `inspect` or `config check` stdout has
+/// exactly the same versioning problem, and a surface where only some payloads
+/// can be dispatched on is worse than one where none can — the absence of the
+/// key stops meaning anything. Each value is a named constant in `fiddle-core`
+/// beside `REPORT_SCHEMA`, never a literal spelled here, so a payload whose
+/// shape changes must change its version in the same edit.
+///
+/// This is a struct wrapping the body rather than one more key in the
+/// `serde_json` object because that object is a sorted map: `schema` would sort
+/// into the middle of the payload, and design §3.2 shows it *leading*. Serde
+/// writes struct fields in declaration order, which is the same mechanism that
+/// already puts `schema` first in a published [`ReportBundle`].
+#[derive(serde::Serialize)]
+struct Payload {
+    schema: &'static str,
+    /// Flattened, so the body's keys sit beside `schema` rather than nested
+    /// under a key of their own. Always a `serde_json` object — flattening
+    /// anything else is a serialization error, which is why every construction
+    /// site below builds one with `json!({ .. })`.
+    #[serde(flatten)]
+    body: serde_json::Value,
+}
+
+/// Render `body` as the payload for `schema`, discriminator first.
+fn payload(schema: &'static str, body: serde_json::Value) -> String {
+    serde_json::to_string(&Payload { schema, body })
+        .expect("a payload of an object body is always serializable")
+}
 
 /// The machine-readable `config check` payload.
 ///
@@ -18,13 +50,15 @@ use std::path::Path;
 /// configuration sections are echoed back so a caller can confirm *which*
 /// document was accepted without re-reading it.
 pub fn config_check_json(config: &Config) -> String {
-    let value = serde_json::json!({
-        "status": "valid",
-        "project": { "name": config.project.name },
-        "stub": { "root": config.stub.root },
-        "report": { "dir": config.report.dir },
-    });
-    serde_json::to_string(&value).expect("config check payload is always serializable")
+    payload(
+        CONFIG_CHECK_SCHEMA,
+        serde_json::json!({
+            "status": "valid",
+            "project": { "name": config.project.name },
+            "stub": { "root": config.stub.root },
+            "report": { "dir": config.report.dir },
+        }),
+    )
 }
 
 /// The human-readable `config check` summary.
@@ -57,14 +91,16 @@ pub fn inspect_json(
     assessment: &CapabilityAssessment,
     next_action: &NextAction,
 ) -> String {
-    let value = serde_json::json!({
-        "invocation_ref": reference.as_str(),
-        "scheme": reference.scheme(),
-        "observations": observed,
-        "assessment": assessment,
-        "next_action": next_action,
-    });
-    serde_json::to_string(&value).expect("inspect payload is always serializable")
+    payload(
+        INSPECT_SCHEMA,
+        serde_json::json!({
+            "invocation_ref": reference.as_str(),
+            "scheme": reference.scheme(),
+            "observations": observed,
+            "assessment": assessment,
+            "next_action": next_action,
+        }),
+    )
 }
 
 /// The human-readable `inspect` summary.
@@ -92,7 +128,11 @@ pub fn inspect_human(
     )
 }
 
-/// The machine-readable `run` payload.
+/// The machine-readable `run` payload — design §3.2's canonical output.
+///
+/// It leads with `schema`, exactly as §3.2 shows, on every path: the
+/// discriminator is a property of the payload, not of the outcome, so a caller
+/// can parse a failed run's stdout without first knowing it failed.
 ///
 /// Projected from the very [`ReportBundle`] that was published rather than
 /// rebuilt from the run, so a caller reading stdout and a caller reading the
@@ -112,7 +152,7 @@ pub fn inspect_human(
 /// action derived *after* the run finished, so it describes the state the run
 /// left behind.
 pub fn run_json(bundle: &ReportBundle, published: Option<&Path>) -> String {
-    let mut value = serde_json::json!({
+    let mut body = serde_json::json!({
         "invocation_ref": bundle.invocation_ref,
         "mode": bundle.mode,
         "outcome": bundle.outcome,
@@ -122,9 +162,9 @@ pub fn run_json(bundle: &ReportBundle, published: Option<&Path>) -> String {
         "observations": bundle.observations,
     });
     if let Some(path) = published {
-        value["report"] = serde_json::Value::String(path.display().to_string());
+        body["report"] = serde_json::Value::String(path.display().to_string());
     }
-    serde_json::to_string(&value).expect("run payload is always serializable")
+    payload(RUN_SCHEMA, body)
 }
 
 /// The human-readable `run` summary.

@@ -72,6 +72,13 @@ fn m0_executable_skeleton_scenario() {
         String::from_utf8_lossy(&checked.stderr)
     );
     let checked: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
+    // Every `--json` payload names the contract it is an instance of, so a
+    // caller can dispatch on the shape it is about to read rather than guess it
+    // from the keys that happen to be present.
+    assert_eq!(
+        checked["schema"], "fiddle.config_check.v0",
+        "the config check payload must declare its schema, got {checked}"
+    );
     assert_eq!(checked["status"], "valid");
     assert_eq!(checked["project"]["name"], support::PROJECT_NAME);
 
@@ -110,6 +117,10 @@ fn m0_executable_skeleton_scenario() {
 
     let pre = s.inspect_json(INVOCATION_REF);
 
+    assert_eq!(
+        pre["schema"], "fiddle.inspect.v0",
+        "the inspect payload must declare its schema, got {pre}"
+    );
     assert_eq!(pre["invocation_ref"], INVOCATION_REF);
     assert_eq!(pre["scheme"], "beans");
     assert_eq!(
@@ -153,6 +164,13 @@ fn m0_executable_skeleton_scenario() {
     let blocked = s.run_json(INVOCATION_REF, 20);
     s.restore_stub_root();
 
+    // A run that failed prints the same contract a run that completed prints:
+    // the discriminator is a property of the payload, not of the outcome, so a
+    // caller can parse the failure without first knowing it is one.
+    assert_eq!(
+        blocked["schema"], "fiddle.run.v0",
+        "a failing run's payload must declare its schema too, got {blocked}"
+    );
     assert!(
         blocked["capability_executions"]
             .as_array()
@@ -190,7 +208,23 @@ fn m0_executable_skeleton_scenario() {
     //
     // The evidence is read back off the filesystem rather than out of the process
     // output, the way a downstream reader would find it.
-    let first = s.run_json(INVOCATION_REF, 0);
+    // Read as bytes before it is parsed, because design §3.2 shows the
+    // discriminator *leading* the payload and parsing throws key order away. A
+    // reader that dispatches on the first key it meets — a streaming parser, or
+    // an eye at a terminal — gets the contract before it gets the content.
+    let first_raw = s.run_raw_with(&["--json"], INVOCATION_REF);
+    assert_eq!(
+        first_raw.status.code(),
+        Some(0),
+        "stderr = {}",
+        String::from_utf8_lossy(&first_raw.stderr)
+    );
+    let first_stdout = String::from_utf8(first_raw.stdout).unwrap();
+    assert!(
+        first_stdout.starts_with("{\"schema\":\"fiddle.run.v0\""),
+        "design §3.2 leads the run payload with its schema, got {first_stdout}"
+    );
+    let first: serde_json::Value = serde_json::from_str(&first_stdout).unwrap();
 
     assert_eq!(first["outcome"], "completed");
     assert_eq!(first["invocation_ref"], INVOCATION_REF);

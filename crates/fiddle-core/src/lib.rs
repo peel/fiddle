@@ -23,6 +23,6 @@ pub use identity::{
 pub use observation::{ChangeSetState, Observation, SourceRef, WorkItemState, WorkStateView};
 pub use outcome::{Mode, RunOutcome, UnknownMode};
 pub use report::{
-    CapabilityExecution, EvidenceRef, FiddleBuild, ProgressEntry, ReportBundle, REPORT_SCHEMA,
-    UNKNOWN_REVISION,
+    CapabilityExecution, EvidenceRef, FiddleBuild, ProgressEntry, ReportBundle,
+    CONFIG_CHECK_SCHEMA, INSPECT_SCHEMA, REPORT_SCHEMA, RUN_SCHEMA, UNKNOWN_REVISION,
 };
