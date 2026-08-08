@@ -5,12 +5,11 @@
 //! a well-formed reference is echoed back with its scheme, and each malformed
 //! shape is rejected with a diagnostic naming *its own* defect.
 
-use assert_cmd::Command;
+mod support;
 
 #[test]
 fn inspect_echoes_a_parsed_invocation_ref() {
-    let out = Command::cargo_bin("fiddle")
-        .unwrap()
+    let out = support::fiddle_command()
         .args([
             "inspect",
             "beans:fiddle-m0-demo",
@@ -43,8 +42,7 @@ fn inspect_rejects_a_malformed_invocation_ref() {
         ("mystery:x", "unknown invocation scheme"),
         ("beans:", "must not be empty"),
     ] {
-        let out = Command::cargo_bin("fiddle")
-            .unwrap()
+        let out = support::fiddle_command()
             .args([
                 "inspect",
                 arg,
@@ -79,8 +77,7 @@ fn inspect_rejects_a_malformed_invocation_ref() {
 /// configuration document they never mentioned.
 #[test]
 fn a_malformed_reference_is_reported_without_reference_to_configuration() {
-    let out = Command::cargo_bin("fiddle")
-        .unwrap()
+    let out = support::fiddle_command()
         .args(["inspect", "bogus", "--config", "no/such/fiddle.toml"])
         .output()
         .unwrap();

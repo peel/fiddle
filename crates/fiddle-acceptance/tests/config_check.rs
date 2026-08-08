@@ -3,7 +3,7 @@
 //! Every assertion here drives the compiled binary as a subprocess and reads its
 //! exit code, stdout, and stderr; nothing calls a library function directly.
 
-use assert_cmd::Command;
+mod support;
 
 /// The documented fixture, relative to this package's root — `cargo test` runs a
 /// test binary with the package directory as its working directory, so two
@@ -14,8 +14,7 @@ fn fixture() -> &'static str {
 
 #[test]
 fn config_check_accepts_the_documented_fixture() {
-    let out = Command::cargo_bin("fiddle")
-        .unwrap()
+    let out = support::fiddle_command()
         .args(["config", "check", "--config", fixture(), "--json"])
         .output()
         .unwrap();
@@ -39,8 +38,7 @@ fn config_check_rejects_an_unknown_key_by_name() {
         "[project]\nname = \"icecube\"\nnickname = \"nope\"\n\n[stub]\nroot = \".\"\n\n[report]\ndir = \".\"\n",
     )
     .unwrap();
-    let out = Command::cargo_bin("fiddle")
-        .unwrap()
+    let out = support::fiddle_command()
         .args(["config", "check", "--config", path.to_str().unwrap()])
         .output()
         .unwrap();

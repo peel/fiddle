@@ -94,8 +94,7 @@ fn malformed_work_item_is_unavailable_not_defaulted() {
 /// repository root, exactly as the documentation tells a reader to.
 #[test]
 fn the_tracked_demo_fixture_is_observable_from_the_repository_root() {
-    let out = assert_cmd::Command::cargo_bin("fiddle")
-        .unwrap()
+    let out = support::fiddle_command()
         .current_dir(repo_root())
         .args([
             "inspect",

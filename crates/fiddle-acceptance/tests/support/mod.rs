@@ -11,7 +11,84 @@
 
 use assert_cmd::Command;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tempfile::TempDir;
+
+/// The `fiddle` binary every scenario launches, built from the sources under
+/// test.
+///
+/// Worth the code because the obvious alternative is silently wrong.
+/// `assert_cmd`'s `cargo_bin` resolves a *path* under the target directory and
+/// trusts that something already put a binary there. Nothing does:
+/// `fiddle-acceptance` is a separate package from `fiddle-cli` and does not
+/// depend on it, so `cargo test --workspace` compiles `main.rs` only as a test
+/// harness under `deps/` and never produces `target/debug/fiddle`. On a clean
+/// checkout that path is absent and every acceptance test fails; on a developer
+/// machine it holds whatever the last `cargo build` left, which may predate the
+/// change under test — and a suite that passes against last week's binary is
+/// not evidence about anything.
+///
+/// So the harness builds the binary itself, once per test process, and uses the
+/// path cargo *reports* for the artefact rather than reconstructing one from
+/// assumptions about the target layout.
+pub fn fiddle_binary() -> &'static Path {
+    static BINARY: OnceLock<PathBuf> = OnceLock::new();
+    BINARY.get_or_init(|| {
+        let mut build = std::process::Command::new(env!("CARGO"));
+        build
+            .current_dir(repo_root())
+            .args([
+                "build",
+                "--bin",
+                "fiddle",
+                "--message-format",
+                "json-render-diagnostics",
+            ])
+            // Match the profile these tests were themselves built under, so a
+            // `cargo test --release` run exercises the release binary rather
+            // than quietly falling back to a debug one.
+            .args(if cfg!(debug_assertions) {
+                &[][..]
+            } else {
+                &["--release"][..]
+            });
+        let out = build
+            .output()
+            .expect("could not run cargo to build the fiddle binary");
+        assert!(
+            out.status.success(),
+            "building the fiddle binary failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        executable_from(&out.stdout).unwrap_or_else(|| {
+            panic!(
+                "cargo built no `fiddle` executable: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        })
+    })
+}
+
+/// `assert_cmd`'s wrapper around the built binary, ready for arguments.
+pub fn fiddle_command() -> Command {
+    Command::new(fiddle_binary())
+}
+
+/// The `fiddle` executable path out of a `--message-format json` build log.
+///
+/// Cargo emits one JSON object per line; the one worth having is the
+/// `compiler-artifact` for the `fiddle` binary, whose `executable` field is the
+/// path it landed at. Lines that are not JSON — a stray warning, a future
+/// message kind — are skipped rather than fatal, because the only thing this
+/// needs from the log is that one field.
+fn executable_from(build_log: &[u8]) -> Option<PathBuf> {
+    String::from_utf8_lossy(build_log)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|message| message["reason"] == "compiler-artifact")
+        .filter(|message| message["target"]["name"] == "fiddle")
+        .find_map(|message| Some(PathBuf::from(message["executable"].as_str()?)))
+}
 
 /// The `project.name` every scenario's configuration declares.
 ///
@@ -137,6 +214,46 @@ impl Scenario {
             .to_string()
     }
 
+    /// Every file under `<stub.root>/changes` that belongs to `work_id`.
+    ///
+    /// Prefix-matched rather than looking up the one path the stub writes, so a
+    /// second execution that wrote a *differently named* change set — a
+    /// `<id>-1.json`, a leftover `<id>.json.tmp` — is counted rather than
+    /// silently ignored. "Exactly one marker file exists" is only a claim worth
+    /// making if a second one would be seen.
+    pub fn change_files(&self, work_id: &str) -> Vec<PathBuf> {
+        walkdir_files(self.stub_root().join("changes"))
+            .into_iter()
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(work_id))
+            })
+            .collect()
+    }
+
+    /// The report bundle a `run --json` payload points at, parsed.
+    ///
+    /// The path is taken from the payload's `report` key and resolved against
+    /// `<report.dir>`, which is how a downstream reader would find it: the test
+    /// never reconstructs the attempt path itself, so a run whose payload
+    /// pointed somewhere unreadable fails here instead of being papered over.
+    pub fn read_bundle(&self, run_payload: &serde_json::Value) -> serde_json::Value {
+        let relative = run_payload["report"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the run payload must name its bundle: {run_payload}"));
+        let path = self.report_dir().join(relative);
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|e| panic!("could not read {} ({e})", path.display()));
+        serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            panic!(
+                "{} is not JSON ({e}): {}",
+                path.display(),
+                String::from_utf8_lossy(&bytes)
+            )
+        })
+    }
+
     /// Take the whole fixture root away, so every source the ports name becomes
     /// unobservable.
     pub fn remove_stub_root(&self) {
@@ -198,7 +315,7 @@ impl Scenario {
     /// whole process result — exit code, stdout, and stderr — unjudged, for the
     /// cases that are about the diagnostic rather than the payload.
     pub fn run_raw_with(&self, extra: &[&str], invocation_ref: &str) -> std::process::Output {
-        let mut command = Command::cargo_bin("fiddle").unwrap();
+        let mut command = fiddle_command();
         command.args([
             "run",
             invocation_ref,
@@ -218,8 +335,7 @@ impl Scenario {
     /// Run `fiddle inspect <invocation_ref>` without `--json`, require exit 0,
     /// and return what a reader at a terminal would see on stdout.
     pub fn inspect_human(&self, invocation_ref: &str) -> String {
-        let out = Command::cargo_bin("fiddle")
-            .unwrap()
+        let out = fiddle_command()
             .args([
                 "inspect",
                 invocation_ref,
@@ -240,8 +356,7 @@ impl Scenario {
     /// Run `fiddle inspect <invocation_ref> --json`, require `code`, and return
     /// the parsed payload.
     pub fn inspect_json_expect_code(&self, invocation_ref: &str, code: i32) -> serde_json::Value {
-        let out = Command::cargo_bin("fiddle")
-            .unwrap()
+        let out = fiddle_command()
             .args([
                 "inspect",
                 invocation_ref,
