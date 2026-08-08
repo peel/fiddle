@@ -189,6 +189,81 @@ fn an_ordinary_file_round_trips_and_a_new_one_can_be_created() {
     assert_eq!(ws.read(&p("src/new.rs")).unwrap(), "pub fn n() {}\n");
 }
 
+#[test]
+fn changed_files_come_from_git_not_from_anyones_claim() {
+    let _env = env_reader();
+    let (ws, _dir) = workspace();
+    assert!(
+        ws.changed_files().unwrap().is_empty(),
+        "an untouched workspace changed nothing"
+    );
+    ws.write(&p("src/lib.rs"), "pub fn g() {}\n").unwrap();
+    assert_eq!(ws.changed_files().unwrap(), vec![p("src/lib.rs")]);
+}
+
+#[test]
+fn build_artefacts_never_appear() {
+    let _env = env_reader();
+    let (ws, _dir) = workspace();
+    std::fs::create_dir_all(ws.root().join("target/debug")).unwrap();
+    std::fs::write(ws.root().join("target/debug/junk"), "x").unwrap();
+    assert!(
+        ws.changed_files().unwrap().is_empty(),
+        "the fixture gitignores target/, or the changed-file evidence is worthless"
+    );
+}
+
+#[test]
+fn a_path_with_a_space_is_parsed_correctly() {
+    // --porcelain QUOTES paths containing spaces or non-ASCII bytes, and renders a
+    // rename as `R  old -> new`. `-z` emits NUL-separated, never-quoted entries
+    // instead, so neither shape needs unquoting and a fixed byte slice cannot
+    // mis-parse. Prove it with a path the quoting form would mangle.
+    let _env = env_reader();
+    let (ws, _dir) = workspace();
+    ws.write(&p("src/a file.rs"), "// new\n").unwrap();
+    assert_eq!(ws.changed_files().unwrap(), vec![p("src/a file.rs")]);
+}
+
+#[test]
+fn a_rename_reports_the_new_path_once_not_both() {
+    // Observed from git 2.51: `git mv src/lib.rs src/renamed.rs` produces
+    // `R  src/renamed.rs\0src/lib.rs\0` — the NEW path in the status record and
+    // the origin as its own bare record. Consuming that second record is what
+    // stops the origin being mistaken for a changed file of its own.
+    let _env = env_reader();
+    let (ws, _dir) = workspace();
+    fixture::git(ws.root(), &["mv", "src/lib.rs", "src/renamed.rs"]);
+
+    let changed = ws.changed_files().unwrap();
+    assert_eq!(
+        changed,
+        vec![p("src/renamed.rs")],
+        "the rename's origin record is data about the same change, not a second one"
+    );
+}
+
+#[test]
+fn a_file_created_in_a_new_directory_is_named_not_just_its_directory() {
+    // git's default untracked mode collapses a wholly-new directory into one
+    // entry, `?? src/newmod/` — a directory, which is not a changed *file* and
+    // hides how many there are. `-uall` is what makes the evidence name the files
+    // an agent actually wrote. The same flag also overrides a
+    // `status.showUntrackedFiles=no` in an operator's config, which would
+    // otherwise drop every created file from the evidence silently.
+    let _env = env_reader();
+    let (ws, _dir) = workspace();
+    std::fs::create_dir_all(ws.root().join("src/newmod")).unwrap();
+    ws.write(&p("src/newmod/a.rs"), "pub fn a() {}\n").unwrap();
+    ws.write(&p("src/newmod/b.rs"), "pub fn b() {}\n").unwrap();
+
+    assert_eq!(
+        ws.changed_files().unwrap(),
+        vec![p("src/newmod/a.rs"), p("src/newmod/b.rs")],
+        "a new directory's files must be named individually, not collapsed"
+    );
+}
+
 #[tokio::test]
 async fn a_command_runs_in_the_workspace_and_reports_what_it_did() {
     // Without this the isolation tests below would all pass on a runner that

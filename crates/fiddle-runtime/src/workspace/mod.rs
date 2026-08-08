@@ -20,7 +20,11 @@
 //! nothing if the process the workspace hands control to can read the
 //! credentials of the process that started it, so a workspace command's
 //! environment is built from an allowlist rather than inherited.
+//!
+//! `changes` closes the loop by answering what an attempt actually did, from the
+//! repository rather than from the agent's account of itself.
 
+mod changes;
 pub mod command;
 pub mod path;
 
@@ -249,6 +253,17 @@ impl Drop for Workspace {
 
 /// Run git in `dir`, turning a non-zero exit into a [`WorkspaceError::Git`].
 fn git(dir: &Path, args: &[&str]) -> Result<(), WorkspaceError> {
+    git_stdout(dir, args).map(|_| ())
+}
+
+/// As [`git`], but hands back what git said on stdout.
+///
+/// Bytes rather than a `String`: git reports paths, and a path is a sequence of
+/// bytes that is not obliged to be valid UTF-8. Decoding here would force a
+/// choice between refusing every status because of one odd filename and
+/// replacing it with U+FFFD; the caller that knows which paths it is looking at
+/// is better placed to decide than this one is.
+fn git_stdout(dir: &Path, args: &[&str]) -> Result<Vec<u8>, WorkspaceError> {
     let output = std::process::Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -263,5 +278,5 @@ fn git(dir: &Path, args: &[&str]) -> Result<(), WorkspaceError> {
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         });
     }
-    Ok(())
+    Ok(output.stdout)
 }
