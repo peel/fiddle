@@ -240,7 +240,11 @@ fn m0_executable_skeleton_scenario() {
     );
     assert_eq!(b1["invocation_ref"], INVOCATION_REF);
     assert_eq!(b1["work_ref"], serde_json::json!(INVOCATION_REF));
-    assert!(b1["attempt_id"].is_string());
+    assert!(
+        b1["attempt_id"].as_str().is_some_and(|id| !id.is_empty()),
+        "the bundle must record its attempt, got {}",
+        b1["attempt_id"]
+    );
     // The bundle records the mode the run was *invoked* with, and these steps
     // pass no `--mode`, so it must be the default the CLI documents.
     assert_eq!(b1["mode"], "unattended");
