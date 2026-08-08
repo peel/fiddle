@@ -149,6 +149,12 @@ impl ToolHost {
 /// A timeout is `failed` rather than `cancelled`: the check ran, the host's own
 /// deadline killed it, and nobody cancelled the attempt. The attempt may well
 /// continue afterwards, which a `cancelled` receipt would misdescribe.
+///
+/// Two further classes exist on [`ToolReceipt`] — `malformed` and
+/// `unknown_tool` — and neither is reachable from here, which is the point of
+/// them being separate. Both name a call that never reached a tool body, so
+/// there is no `Result<T, ToolError>` to classify;
+/// [`AuditHook`](super::AuditHook) writes those.
 fn outcome_of<T>(result: &Result<T, ToolError>) -> &'static str {
     match result {
         Ok(_) => "ok",

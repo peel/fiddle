@@ -50,9 +50,29 @@ pub struct ToolReceipts {
 /// questions a bundle is actually asked: which tools ran, how each went, and
 /// where the time went.
 ///
-/// `outcome` is one of `ok`, `refused`, `cancelled`, `failed`. A `&'static str`
-/// rather than an enum because the set is closed at the point that writes it and
-/// the only consumers are a serializer and a human reading JSON.
+/// `outcome` is one of six classes, and which writer produced it is part of
+/// reading it correctly:
+///
+/// | outcome | written by | means |
+/// |---|---|---|
+/// | `ok` | the tool body | it did the thing |
+/// | `refused` | the tool body | we declined, before the filesystem was touched |
+/// | `cancelled` | the tool body | the attempt was stopped from outside |
+/// | `failed` | the tool body | we acted and the world did not cooperate |
+/// | `malformed` | [`AuditHook`] | the model's arguments did not decode, so no body ran |
+/// | `unknown_tool` | [`AuditHook`] | the model named a tool that does not exist |
+///
+/// The first four are the record proper and do not depend on a hook being
+/// installed. The last two describe calls that never reach a tool body at all,
+/// which is why nothing but a hook could ever have seen them; see [`audit`] for
+/// why that does not make the evidence hook-contingent.
+///
+/// `duration_ms` is zero for the two hook-written classes, honestly: there was
+/// no body to time.
+///
+/// A `&'static str` rather than an enum because the set is closed at the points
+/// that write it and the only consumers are a serializer and a human reading
+/// JSON.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ToolReceipt {
     pub tool: String,
