@@ -81,10 +81,35 @@ impl Scenario {
 
     /// The directory `report.dir` names.
     ///
-    /// Nothing in this harness creates it: its absence is what proves a
-    /// read-only command published no evidence bundle.
+    /// Nothing in this harness creates it unless a scenario asks: its absence
+    /// is what proves a read-only command published no evidence bundle.
     pub fn report_dir(&self) -> PathBuf {
         self.dir.path().join("reports")
+    }
+
+    /// Create `<report.dir>` readable and listable but not writable, so a run
+    /// can reach publication and fail there.
+    ///
+    /// Readable rather than absent on purpose: an absent directory would be
+    /// created by the run, and a wholly inaccessible one would fail earlier and
+    /// differently. Mode `0o500` isolates the one failure the atomicity
+    /// criterion is about — the run observed, derived, and executed
+    /// successfully, and could not publish what it did.
+    #[cfg(unix)]
+    pub fn make_report_dir_unwritable(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(self.report_dir()).unwrap();
+        std::fs::set_permissions(self.report_dir(), std::fs::Permissions::from_mode(0o500))
+            .unwrap();
+    }
+
+    /// Restore `<report.dir>` so the test can inspect what the failed run left
+    /// behind — and so the temporary directory can be removed on drop.
+    #[cfg(unix)]
+    pub fn make_report_dir_writable(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(self.report_dir(), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
     }
 
     /// Every file under `<stub.root>` as `(relative path, bytes)`, sorted.
@@ -163,6 +188,12 @@ impl Scenario {
         })
     }
 
+    /// Run `fiddle run <invocation_ref>` and hand back the whole process
+    /// result — exit code, stdout, and stderr — unjudged.
+    pub fn run_raw(&self, invocation_ref: &str) -> std::process::Output {
+        self.run_raw_with(&[], invocation_ref)
+    }
+
     /// Run `fiddle run <invocation_ref>` with `extra` flags and hand back the
     /// whole process result — exit code, stdout, and stderr — unjudged, for the
     /// cases that are about the diagnostic rather than the payload.
@@ -233,6 +264,55 @@ impl Scenario {
             )
         })
     }
+}
+
+/// Every file under `root`, recursively, as absolute paths.
+///
+/// A missing `root` yields an empty list rather than panicking, so "the command
+/// created nothing at all" and "the command created nothing under a directory
+/// that exists" are both expressible as an empty result.
+pub fn walkdir_files(root: impl AsRef<Path>) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.as_ref().to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Every directory under `root`, recursively, as absolute paths.
+///
+/// Publication stages a *directory*, so proving it left nothing behind means
+/// looking at directories, not only at the files inside them: an empty
+/// `.<attempt>.tmp` is exactly as much of a partial artefact as a full one.
+pub fn walkdir_dirs(root: impl AsRef<Path>) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.as_ref().to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                found.push(path.clone());
+                stack.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 /// Every file under `dir`, recursively, as a path relative to `root` paired

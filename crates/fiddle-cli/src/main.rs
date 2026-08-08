@@ -4,9 +4,12 @@ mod render;
 
 use clap::Parser;
 use config::ConfigError;
-use fiddle_core::{CapabilityId, InvocationRef, InvocationRefError, RunOutcome, WorkStateView};
+use fiddle_core::{
+    AttemptId, CapabilityId, FiddleBuild, InvocationRef, InvocationRefError, Mode, ReportBundle,
+    RunOutcome, WorkRef, WorkStateView,
+};
 use fiddle_runtime::{
-    Capability, RunContext, StubChangePort, StubMark, StubWorkItemPort, CAPABILITIES,
+    Capability, RunContext, RunReport, StubChangePort, StubMark, StubWorkItemPort, CAPABILITIES,
 };
 use std::process::ExitCode;
 
@@ -185,6 +188,50 @@ fn observe(config: &config::Config, reference: &InvocationRef) -> WorkStateView 
     fiddle_runtime::observe(&work_items, &changes, reference.value())
 }
 
+/// The build identity every bundle this binary publishes carries.
+///
+/// Both halves are compile-time constants: `CARGO_PKG_VERSION` from the
+/// manifest and `FIDDLE_SOURCE_REVISION` from `build.rs`. Passing them through
+/// [`FiddleBuild::new`] rather than into the struct fields directly is what
+/// makes "never fabricated" structural — a revision that is neither a 40-hex
+/// sha nor `unknown` is normalised to `unknown` there rather than trusted here.
+fn build_identity() -> FiddleBuild {
+    FiddleBuild::new(env!("CARGO_PKG_VERSION"), env!("FIDDLE_SOURCE_REVISION"))
+}
+
+/// The bundle this run publishes, assembled from what the run concluded.
+///
+/// Consumes the [`RunReport`] rather than borrowing it, so there is exactly one
+/// copy of the executions, the progress, and the observations, and the payload
+/// printed to stdout is a projection of the same value that was written to
+/// disk.
+///
+/// `work_ref` is the invocation reference in M0, where a beans reference is
+/// both the request and the identity of the work. It is a separate field
+/// because the two diverge as soon as a second scheme can address the same work
+/// — and because the stability proof compares `work_ref` across two attempts,
+/// which would prove nothing if it were derived from the attempt.
+fn bundle_for(
+    reference: &InvocationRef,
+    mode: Mode,
+    attempt_id: AttemptId,
+    report: RunReport,
+) -> ReportBundle {
+    ReportBundle {
+        schema: fiddle_core::REPORT_SCHEMA,
+        fiddle: build_identity(),
+        invocation_ref: reference.as_str(),
+        work_ref: Some(WorkRef(reference.as_str())),
+        attempt_id,
+        mode,
+        outcome: report.outcome,
+        next_action: report.next_action,
+        capability_executions: report.executions,
+        progress: report.progress,
+        observations: report.observations,
+    }
+}
+
 fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
     match &cli.command {
         cli::Command::Config { action } => match action {
@@ -269,15 +316,66 @@ fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 capability: &marking as &dyn Capability,
             });
 
+            // Minted once, here: an attempt id names this attempt, and one run
+            // is one attempt.
+            let attempt = fiddle_runtime::mint_attempt_id();
+            let mut bundle = bundle_for(&reference, *mode, attempt, report);
+
+            let publication = fiddle_runtime::publish(
+                &config.report.dir,
+                &reference.slug(),
+                &bundle.attempt_id,
+                &bundle,
+            );
+            // The published path — `None` when publication failed — and the
+            // outcome the process exits on, decided together because they are
+            // two halves of one fact.
+            let (published, outcome) = match publication {
+                Ok(path) => {
+                    // Relative to `<report.dir>`, so the payload stays the same
+                    // whatever absolute prefix the configuration happens to
+                    // name. `path` was built by joining onto that directory, so
+                    // the strip cannot fail.
+                    let relative = path.strip_prefix(&config.report.dir).unwrap_or(&path);
+                    (Some(relative.to_path_buf()), bundle.outcome.clone())
+                }
+                Err(error) => {
+                    eprintln!(
+                        "{}",
+                        render::publication_failure(&config.report.dir, &error)
+                    );
+                    // `Failed`, not `Retryable`, and the distinction is the
+                    // point. `Retryable` is the promise that repeating this
+                    // invocation unchanged may work — true of the change-set
+                    // write a capability attempts, which contends with the
+                    // fixture the run is trying to change. `<report.dir>` is
+                    // named by configuration and does not become writable on
+                    // its own, so repeating the run would fail identically
+                    // forever; it needs an operator, which is exactly what
+                    // `Failed` says. The two reasons also read differently — a
+                    // capability failure names the change set, this one names
+                    // the report bundle — so a caller reading only the payload
+                    // can still tell them apart.
+                    let failure = RunOutcome::Failed {
+                        error: error.to_string(),
+                    };
+                    // The bundle was not published, so nothing on disk
+                    // contradicts this; what the caller reads on stdout must
+                    // still agree with the exit code they get.
+                    bundle.outcome = failure.clone();
+                    (None, failure)
+                }
+            };
+
             if *json {
-                println!("{}", render::run_json(&reference, *mode, &report));
+                println!("{}", render::run_json(&bundle, published.as_deref()));
             } else {
-                println!("{}", render::run_human(&reference, *mode, &report));
+                println!("{}", render::run_human(&bundle, published.as_deref()));
             }
             // The payload is printed on every path, including the failing ones:
             // a caller learns *what* fiddle concluded from stdout and *that* it
             // failed from the exit code, rather than having to choose.
-            Ok(report.outcome)
+            Ok(outcome)
         }
     }
 }

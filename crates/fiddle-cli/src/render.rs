@@ -6,10 +6,11 @@
 
 use crate::config::Config;
 use fiddle_core::{
-    CapabilityAssessment, CapabilityExecution, InvocationRef, Mode, NextAction, Observation,
-    ProgressEntry, WorkStateView,
+    CapabilityAssessment, CapabilityExecution, InvocationRef, NextAction, Observation,
+    ProgressEntry, ReportBundle, WorkStateView,
 };
-use fiddle_runtime::RunReport;
+use fiddle_runtime::EvidenceError;
+use std::path::Path;
 
 /// The machine-readable `config check` payload.
 ///
@@ -93,9 +94,16 @@ pub fn inspect_human(
 
 /// The machine-readable `run` payload.
 ///
-/// Shaped as the report bundle design §4.7 specifies, minus the fields a later
-/// task adds when the bundle is published to disk, so a caller reading stdout
-/// and a caller reading the published bundle are reading the same document.
+/// Projected from the very [`ReportBundle`] that was published rather than
+/// rebuilt from the run, so a caller reading stdout and a caller reading the
+/// published bundle cannot be reading two different documents. The payload is
+/// the subset of the bundle a caller at a shell needs plus `report`, the path
+/// of the bundle itself relative to `<report.dir>` — the pointer that lets them
+/// go and read the rest.
+///
+/// `report` is absent when publication failed. A key naming a bundle that is
+/// not there would be worse than no key: it invites a reader to open a path
+/// that does not exist and conclude something about the run from its absence.
 ///
 /// `outcome`, `next_action`, `capability_executions`, `progress` and
 /// `observations` are the core's own serializations rather than shapes
@@ -103,40 +111,62 @@ pub fn inspect_human(
 /// a restatement of it that could drift. `next_action` in particular is the
 /// action derived *after* the run finished, so it describes the state the run
 /// left behind.
-pub fn run_json(reference: &InvocationRef, mode: Mode, report: &RunReport) -> String {
-    let value = serde_json::json!({
-        "invocation_ref": reference.as_str(),
-        "mode": mode,
-        "outcome": report.outcome,
-        "next_action": report.next_action,
-        "capability_executions": report.executions,
-        "progress": report.progress,
-        "observations": report.observations,
+pub fn run_json(bundle: &ReportBundle, published: Option<&Path>) -> String {
+    let mut value = serde_json::json!({
+        "invocation_ref": bundle.invocation_ref,
+        "mode": bundle.mode,
+        "outcome": bundle.outcome,
+        "next_action": bundle.next_action,
+        "capability_executions": bundle.capability_executions,
+        "progress": bundle.progress,
+        "observations": bundle.observations,
     });
+    if let Some(path) = published {
+        value["report"] = serde_json::Value::String(path.display().to_string());
+    }
     serde_json::to_string(&value).expect("run payload is always serializable")
 }
 
 /// The human-readable `run` summary.
 ///
-/// A reader at a terminal gets the same five facts the payload carries: what
-/// was run, under which mode, how it ended, what it did, and what is left.
-pub fn run_human(reference: &InvocationRef, mode: Mode, report: &RunReport) -> String {
+/// A reader at a terminal gets the same facts the payload carries: what was
+/// run, under which mode, how it ended, what it did, what is left, and where
+/// the published bundle can be found.
+pub fn run_human(bundle: &ReportBundle, published: Option<&Path>) -> String {
     let mut out = format!(
-        "run {}\n  mode        = {mode}\n  outcome     = {}\n  next action = {}",
-        reference.as_str(),
-        outcome_line(&report.outcome),
-        next_action_line(&report.next_action),
+        "run {}\n  mode        = {}\n  outcome     = {}\n  next action = {}",
+        bundle.invocation_ref,
+        bundle.mode,
+        outcome_line(&bundle.outcome),
+        next_action_line(&bundle.next_action),
     );
-    if report.executions.is_empty() {
+    if bundle.capability_executions.is_empty() {
         out.push_str("\n  executions  = none");
     }
-    for execution in &report.executions {
+    for execution in &bundle.capability_executions {
         out.push_str(&format!("\n  executed    = {}", execution_line(execution)));
     }
-    for entry in &report.progress {
+    for entry in &bundle.progress {
         out.push_str(&format!("\n  progress    = {}", progress_line(entry)));
     }
+    if let Some(path) = published {
+        out.push_str(&format!("\n  report      = {}", path.display()));
+    }
     out
+}
+
+/// The diagnostic for a bundle that could not be published.
+///
+/// Plain lines rather than a `miette` report: the whole point of this
+/// diagnostic is that an operator can read `<report.dir>` out of it and go fix
+/// the permissions, and a graphical handler reflows long messages, which is
+/// exactly the wrong thing to do to a path. The directory is named on its own
+/// line, whole, whatever its length.
+pub fn publication_failure(report_dir: &Path, error: &EvidenceError) -> String {
+    format!(
+        "error: could not publish the report bundle\n  report.dir  = {}\n  cause       = {error}",
+        report_dir.display(),
+    )
 }
 
 /// One outcome as a single line of prose. A non-completing outcome leads with

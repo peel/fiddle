@@ -72,6 +72,48 @@ impl std::fmt::Display for CapabilityId {
     }
 }
 
+/// The identity of the work itself, as opposed to the request that reached it.
+///
+/// Distinct from [`InvocationRef`] because the two diverge as soon as more than
+/// one kind of request can address the same work: a scheduled sweep and a
+/// webhook are different invocations of the same work item. In M0 they coincide
+/// — the beans reference *is* the work identity — and keeping the type separate
+/// now is what lets a later milestone tell two attempts on one work item apart
+/// from two attempts on two.
+///
+/// Serialized transparently, so a bundle carries the bare
+/// `"beans:fiddle-m0-demo"` string a reader can match on.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(transparent)]
+pub struct WorkRef(pub String);
+
+impl std::fmt::Display for WorkRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The identity of one attempt at some work.
+///
+/// Every run mints a new one, which is what makes "the second invocation was a
+/// genuine attempt, not a cached result" checkable from outside: two bundles
+/// carrying the same [`WorkRef`] and different `AttemptId`s are two attempts.
+/// It also names the directory a bundle is published into, so two attempts can
+/// never collide on one path.
+///
+/// A `String` rather than a structured timestamp because the core does not get
+/// to read a clock; minting one belongs to the runtime, and what the core needs
+/// is only that the value is opaque, orderable as text, and safe in a path.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize)]
+#[serde(transparent)]
+pub struct AttemptId(pub String);
+
+impl std::fmt::Display for AttemptId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// A parsed `<scheme>:<value>` invocation reference, such as
 /// `beans:fiddle-m0-demo`.
 ///
