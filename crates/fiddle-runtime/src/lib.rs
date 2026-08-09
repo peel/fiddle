@@ -13,7 +13,10 @@
 //! allowed to touch before anything opens it. `agent` is the only part of any
 //! of it a model can see: four tools, whose arguments the model authors and
 //! whose context — which workspace, which check, whether the attempt is still
-//! live — it does not.
+//! live — it does not. `gateway` is the single construction of a model that
+//! talks to a real provider, and the only reason this crate has one: everything
+//! else is generic over Rig's completion-model trait, which is what lets the
+//! milestone's central property be proven offline.
 //!
 //! [`attempt`] is the front door: one call executes and records one attempt.
 //! Publication is deliberately not re-exported beside it, because "execute" and
@@ -23,23 +26,25 @@
 pub mod agent;
 pub mod capability;
 pub mod evidence;
+pub mod gateway;
 pub mod journal;
 pub mod orchestration;
 pub mod ports;
 pub mod stub;
 pub mod workspace;
 
-pub use agent::{ToolHost, ToolReceipt, ToolReceipts};
+pub use agent::{AgentBudget, ToolHost, ToolReceipt, ToolReceipts};
 pub use capability::{
     Capability, CapabilityError, ExecutionGrant, FixtureRepair, RepairConfig, StubMark,
     CAPABILITIES,
 };
-pub use evidence::{EvidenceError, BUNDLE_FILE};
+pub use evidence::{mint_attempt_id, EvidenceError, BUNDLE_FILE};
 pub use fiddle_core as core;
+pub use gateway::{completion_model, GatewayError, GatewayModel};
 pub use journal::AttemptJournal;
 pub use orchestration::{
     attempt, observe, run, AttemptContext, AttemptRecord, RunContext, RunReport,
 };
 pub use ports::{ChangePort, WorkItemPort};
 pub use stub::{StubChangePort, StubWorkItemPort};
-pub use workspace::{WorkspaceError, WorkspacePath};
+pub use workspace::{WorkspaceCommand, WorkspaceError, WorkspacePath};

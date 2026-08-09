@@ -24,6 +24,11 @@ thiserror.workspace = true
 # if `tokio` appears in it — but the CLI is the impure end of the workspace, and
 # something has to drive the runtime.
 tokio.workspace = true
+# The cancellation token an interrupt handler flips. It reaches the check
+# through `RepairConfig`, and it is the only thing that does: a workspace
+# command runs in a process group of its own, so the terminal's `SIGINT` no
+# longer reaches it and cancellation is the whole of the channel.
+tokio-util.workspace = true
 
 # Only the exit-code table's tests reach for a filesystem: they drive a real
 # attempt over a fixture root so the code they pin is the code a real conclusion

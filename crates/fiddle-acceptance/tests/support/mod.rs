@@ -271,6 +271,56 @@ impl Scenario {
         std::fs::read_to_string(self.config_path()).unwrap()
     }
 
+    /// Append `text` to this scenario's own configuration document.
+    ///
+    /// A scenario starts with the M0-shaped document — three tables, no
+    /// `[agent]`, no `[workspace]` — because that is the document the milestone
+    /// baseline runs against. A scenario about a capability that needs a model
+    /// adds the tables it needs on top, so the two documents differ by exactly
+    /// what is under test rather than by having been written separately.
+    pub fn append_config(&self, text: &str) {
+        let mut document = self.config_text();
+        document.push('\n');
+        document.push_str(text);
+        std::fs::write(self.config_path(), document).unwrap();
+    }
+
+    /// A one-commit git repository inside this scenario, as the repository a
+    /// repairing capability is pointed at.
+    ///
+    /// Real git rather than a bare directory: `Workspace::create` branches a
+    /// detached worktree, so a scenario over a non-repository would fail before
+    /// the capability got anywhere near a model — and would then prove nothing
+    /// about which capability was selected.
+    ///
+    /// The committer identity is passed on the command line because a CI runner
+    /// has none configured and `git commit` refuses without one.
+    pub fn write_fixture_repo(&self) -> PathBuf {
+        let repo = self.dir.path().join("fixture");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(
+            repo.join("src/lib.rs"),
+            "pub fn last_index(len: usize) -> usize { len }\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join(".gitignore"), "target/\nCargo.lock\n").unwrap();
+        git(&repo, &["init", "-q", "."]);
+        git(&repo, &["add", "-A"]);
+        git(
+            &repo,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "the fixture",
+            ],
+        );
+        repo
+    }
+
     /// A sibling of this scenario's configuration document holding `text`, for
     /// the assertions that are about a *rejected* document rather than the good
     /// one.
@@ -529,6 +579,20 @@ impl Scenario {
     /// whole process result — exit code, stdout, and stderr — unjudged, for the
     /// cases that are about the diagnostic rather than the payload.
     pub fn run_raw_with(&self, extra: &[&str], invocation_ref: &str) -> std::process::Output {
+        self.run_command(invocation_ref)
+            .args(extra)
+            .output()
+            .unwrap()
+    }
+
+    /// `fiddle run <invocation_ref> --config <this scenario's document>`, with
+    /// this scenario's credential-free environment applied and nothing else
+    /// decided.
+    ///
+    /// Handed back unlaunched so a scenario can add its own flags *and* its own
+    /// environment. Every helper above builds its command through here, so the
+    /// subcommand and the `--config` argument are spelled once.
+    pub fn run_command(&self, invocation_ref: &str) -> Command {
         let mut command = self.command();
         command.args([
             "run",
@@ -536,8 +600,7 @@ impl Scenario {
             "--config",
             self.config_path().to_str().unwrap(),
         ]);
-        command.args(extra);
-        command.output().unwrap()
+        command
     }
 
     /// Run `fiddle run <invocation_ref> --json` with `env` restored to the
@@ -552,14 +615,8 @@ impl Scenario {
         env: &[(&str, &str)],
         invocation_ref: &str,
     ) -> std::process::Output {
-        let mut command = self.command();
-        command.args([
-            "run",
-            invocation_ref,
-            "--config",
-            self.config_path().to_str().unwrap(),
-            "--json",
-        ]);
+        let mut command = self.run_command(invocation_ref);
+        command.arg("--json");
         for (name, value) in env {
             command.env(name, value);
         }
@@ -691,8 +748,22 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
 
 /// A path as a TOML basic string. Written by hand rather than through `toml`'s
 /// serializer so the acceptance crate keeps its single-purpose dependency set.
-fn toml_string(path: &Path) -> String {
+pub fn toml_string(path: &Path) -> String {
     format!("{:?}", path.display().to_string())
+}
+
+/// Run git in `dir`, panicking with its stderr if it fails.
+fn git(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|source| panic!("could not run git {args:?}: {source}"));
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// The repository root, two levels above this package.

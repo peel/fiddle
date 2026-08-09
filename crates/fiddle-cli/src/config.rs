@@ -28,19 +28,13 @@ use std::time::Duration;
 /// capability that needs a model asks for [`Config::agent`] and fails loudly
 /// when the table is missing, rather than inventing an endpoint.
 ///
-/// Both fields, and everything they reach, carry `#[allow(dead_code)]`. The
-/// schema lands one task before its consumer: Task 12 builds the gateway client
-/// and `fiddle_runtime::agent::AgentBudget` out of them, and until it does,
-/// dead-code analysis in a *binary* crate — which has no external caller to
-/// reach a `pub` field from — reports every one as unread. The alternative was
-/// to invent a read somewhere to keep the lint quiet, which would leave the
-/// next reader disproving a use nobody asked for. They come off in Task 12,
-/// when something reads them.
-///
-/// `expect` would have been the self-removing form, and it does not work here:
-/// the tests below already read almost every field, so the lint fires in the
-/// binary build and not in the test build, and an expectation unfulfilled by
-/// either target is itself an error under `-D warnings`.
+/// Both tables landed one task before anything read them, behind a blanket
+/// `#[allow(dead_code)]`. That allowance is gone: `main.rs` builds the gateway
+/// client, `fiddle_runtime::agent::AgentBudget` and
+/// `fiddle_runtime::RepairConfig` out of these fields, so the compiler now
+/// proves the schema is wired rather than being asked to overlook that it is
+/// not. Three fields still carry a narrow allowance of their own, each with the
+/// reason written at the field.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -48,10 +42,8 @@ pub struct Config {
     pub stub: Stub,
     pub report: Report,
     #[serde(default)]
-    #[allow(dead_code, reason = "read by Task 12; see the note above")]
     pub agent: Option<Agent>,
     #[serde(default)]
-    #[allow(dead_code, reason = "read by Task 12; see the note above")]
     pub workspace: Option<Workspace>,
 }
 
@@ -87,12 +79,11 @@ pub struct Report {
 /// bound has a defensible conservative value, so it is defaulted here and
 /// pinned by test.
 ///
-/// This is the shape `fiddle_runtime::agent::AgentBudget` is built from in
-/// Task 12; the field names are its field names, so the mapping can be read
-/// rather than deciphered.
+/// This is the shape `fiddle_runtime::agent::AgentBudget` is built from; the
+/// field names are its field names, so the mapping can be read rather than
+/// deciphered.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code, reason = "read by Task 12; see the note on `Config`")]
 pub struct Agent {
     /// The model identifier as the gateway spells it.
     pub model: String,
@@ -129,7 +120,20 @@ pub struct Agent {
     /// alongside `run_timeout` and `max_parallel`. That table is deferred to
     /// the milestone that has a durable lifecycle to bound (design §6.6), so
     /// the key lives beside the bound it is the counterpart to until then.
+    ///
+    /// The one bound with no consumer yet, and the allowance says exactly that
+    /// rather than being inherited from a blanket one. Nothing in the runtime
+    /// starts a second attempt at the same work: `fiddle_runtime::attempt` runs
+    /// one, and a capability that failed surfaces as
+    /// `RunOutcome::Retryable` for the *caller* to repeat. Reading this value
+    /// therefore means writing that retry loop, which changes what every
+    /// existing outcome does — including M0's — and belongs to the task that
+    /// owns the lifecycle rather than to the one that wires a capability. The
+    /// key stays because a document written against the reference
+    /// configuration must load, and because the pair of bounds is only
+    /// meaningful written down together.
     #[serde(default = "default_max_capability_attempts")]
+    #[allow(dead_code, reason = "no consumer yet; see the note above")]
     pub max_capability_attempts: usize,
 
     /// Per-completion token ceiling handed to the provider. 8192 is the
@@ -178,7 +182,6 @@ pub struct Agent {
 /// reach. [`EnvRefVisitor::visit_str`] answers the same mistake without
 /// repeating what it was given.
 #[derive(Debug)]
-#[allow(dead_code, reason = "read by Task 12; see the note on `Config`")]
 pub struct EnvRef {
     pub env: String,
 }
@@ -237,18 +240,50 @@ impl<'de> serde::de::Visitor<'de> for EnvRefVisitor {
     }
 }
 
-/// How an attempt gets a checkout of its own, and what happens to it after.
+/// How an attempt gets a checkout of its own, what it is a checkout *of*, what
+/// judges it, and what happens to it after.
 ///
 /// `root` is defaulted to the reference configuration's location and the two
 /// enums to their only supported value, so `[workspace]` may be written empty
 /// and still mean something exact.
+///
+/// # Two keys the design's enumeration does not have
+///
+/// Design §6.6 lists this table as `root`, `isolation`, `command_timeout` and
+/// `cleanup`. `fiddle_runtime::RepairConfig` needs two things that enumeration
+/// does not name — the repository under repair, and the check that decides
+/// whether a repair earned anything — and with `deny_unknown_fields` there is
+/// no other way for an operator to supply either. They are added here rather
+/// than guessed at the call site, because both are the kind of value that
+/// cannot be defaulted without being wrong somewhere:
+///
+/// - a guessed `fixture` would branch a worktree of whichever repository the
+///   process happened to be standing in;
+/// - a guessed `check` would be the thing that *decides the milestone's central
+///   property*. "The outcome is decided by the configured check" is the whole
+///   claim; a check nobody configured deciding it is not a smaller version of
+///   that claim, it is a different one.
+///
+/// Both are therefore `Option` with no default. `[workspace]` written empty
+/// still loads — an M0-shaped deployment configures neither — and a capability
+/// that needs one refuses by name when it is absent, at the moment it is
+/// needed.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code, reason = "read by Task 12; see the note on `Config`")]
 pub struct Workspace {
     /// Where per-attempt worktrees are created.
     #[serde(default = "default_workspace_root")]
     pub root: PathBuf,
+
+    /// The repository an attempt branches its worktree from and never writes
+    /// to.
+    #[serde(default)]
+    pub fixture: Option<PathBuf>,
+
+    /// The command that decides whether a repair earned the correlation
+    /// marker.
+    #[serde(default)]
+    pub check: Option<Check>,
 
     /// How an attempt is isolated from the repository under repair.
     #[serde(default)]
@@ -264,6 +299,31 @@ pub struct Workspace {
     /// What happens to the worktree when the attempt ends.
     #[serde(default)]
     pub cleanup: Cleanup,
+}
+
+/// A program the workspace runs to judge an attempt.
+///
+/// A table of `program` and `args` rather than one shell string, because a
+/// shell string has to be split by somebody and every splitter is wrong about
+/// quoting somewhere. `fiddle_runtime::workspace::WorkspaceCommand` takes the
+/// program and its arguments already separated; this is the same shape, so the
+/// document says exactly what will be executed.
+///
+/// There is no `timeout` key: the bound on the check is
+/// [`Workspace::command_timeout`], which is documented as the ceiling on any
+/// single command run inside the workspace, *the check included*. A second
+/// place to write it down is a second place for the two to disagree.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Check {
+    /// The program to run, resolved against the workspace command runner's
+    /// `PATH`.
+    pub program: String,
+
+    /// Its arguments, already separated. Defaulted empty so a check that takes
+    /// none can be written as `{ program = "…" }`.
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 /// How an attempt is isolated from the repository it repairs.
@@ -320,7 +380,6 @@ pub struct HumanDuration(Duration);
 
 impl HumanDuration {
     /// The bound as the runtime's own type.
-    #[allow(dead_code, reason = "read by Task 12; see the note on `Config`")]
     pub const fn as_duration(self) -> Duration {
         self.0
     }
@@ -515,6 +574,8 @@ max_turns = 12
 [workspace]
 root = ".fiddle/workspaces"
 isolation = "git-worktree"
+fixture = "fixtures/m1-demo"
+check = { program = "cargo", args = ["test", "--offline"] }
 "#;
 
     #[test]
@@ -525,6 +586,60 @@ isolation = "git-worktree"
         assert_eq!(agent.api_key.env, "LITELLM_API_KEY");
         assert_eq!(agent.max_turns, 12);
         assert_eq!(cfg.workspace.unwrap().isolation, Isolation::GitWorktree);
+    }
+
+    /// The repository under repair and the command that judges it are both
+    /// written down, in the shape `WorkspaceCommand` takes: program and
+    /// arguments already separated, so nothing has to guess where one argument
+    /// ends and the next begins.
+    #[test]
+    fn the_repository_under_repair_and_its_check_are_configured() {
+        let workspace = toml::from_str::<Config>(VALID).unwrap().workspace.unwrap();
+        assert_eq!(workspace.fixture, Some(PathBuf::from("fixtures/m1-demo")));
+        let check = workspace.check.expect("the check is part of the document");
+        assert_eq!(check.program, "cargo");
+        assert_eq!(check.args, ["test", "--offline"]);
+    }
+
+    /// Neither key may be invented when it is absent, so both are `None` rather
+    /// than defaulted — including for a `[workspace]` written empty, which is
+    /// how a deployment that runs only the deterministic capability writes it.
+    #[test]
+    fn an_unconfigured_fixture_and_check_are_absent_rather_than_guessed() {
+        let cfg: Config = toml::from_str(
+            "[project]\nname=\"p\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n[workspace]\n",
+        )
+        .unwrap();
+        let workspace = cfg.workspace.unwrap();
+        assert_eq!(workspace.fixture, None);
+        assert!(workspace.check.is_none());
+    }
+
+    /// A check with no arguments is written as the program alone; the strict
+    /// schema still reaches inside the table.
+    #[test]
+    fn a_check_may_take_no_arguments_and_is_still_strict() {
+        let with = |check: &str| {
+            toml::from_str::<Config>(&VALID.replace(
+                r#"check = { program = "cargo", args = ["test", "--offline"] }"#,
+                check,
+            ))
+        };
+        let workspace = with(r#"check = { program = "make" }"#)
+            .unwrap()
+            .workspace
+            .unwrap();
+        assert!(workspace.check.unwrap().args.is_empty());
+
+        assert!(
+            with(r#"check = { program = "make", timeout = "5m" }"#).is_err(),
+            "the check is bounded by workspace.command_timeout; a second place \
+             to write that down is a second place for the two to disagree"
+        );
+        assert!(
+            with(r#"check = { args = ["test"] }"#).is_err(),
+            "a check with no program names nothing to run"
+        );
     }
 
     #[test]

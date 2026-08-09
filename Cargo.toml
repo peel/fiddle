@@ -31,6 +31,10 @@ tempfile = "3"
 rig-core = { version = "=0.41.0", features = ["derive", "test-utils"] }
 rig-agent = "=0.41.0"
 async-trait = "0.1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "sync"] }
+# "signal" is what lets the CLI turn a terminal `^C` into a cancellation. It
+# has to be here rather than only in the binary because the feature set is
+# unified across the workspace anyway, and a feature enabled in one member
+# silently for another is how a dependency becomes load-bearing by accident.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "signal", "sync", "time"] }
 tokio-util = "0.7"
 schemars = "1"
