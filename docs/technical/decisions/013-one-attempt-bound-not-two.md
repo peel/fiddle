@@ -13,7 +13,9 @@ The gap was recorded in `docs/BACKLOG.md` (2026-08-09) and argued at the field. 
 
 ## Decision
 
-**M1 ships one bound and says so.** `max_capability_attempts` stays in the schema — a document written against the reference configuration must load under `deny_unknown_fields`, and the pair of bounds is only meaningful written down together — and stays unconsumed, behind a narrow allowance whose reason is this ADR. Retry remains the caller's, expressed as `RunOutcome::Retryable` and exit 11.
+**M1 ships one bound and says so.** `max_capability_attempts` stays in the schema — a document written against the reference configuration must load under `deny_unknown_fields`, and the pair of bounds is only meaningful written down together — and *no run consumes it*. Retry remains the caller's, expressed as `RunOutcome::Retryable` and exit 11.
+
+"Says so" is now literal rather than a figure of speech. It was originally satisfied by this document and a field comment; the field carried a `#[allow(dead_code)]` whose stated reason was this ADR. That allowance is gone, because `config check` reads the value in order to report it as accepted-and-not-enforced — see **Consequences**. Nothing about the bound's *behaviour* changed: it is read to be reported, never to be applied.
 
 The calibration anchor is corrected to require the bounds that exist: the inner turn limit, the wall-clock deadline, the files-changed cap, and the per-tool timeout, each with a test that drives it past its limit. The reconciled-claims preamble names this as the fourth claim it reconciles.
 
@@ -33,7 +35,22 @@ Written down because "deferred" without a price is indistinguishable from "forgo
 
 ## Consequences
 
-**A deployment that writes `max_capability_attempts = 5` gets one attempt.** That is the sharp edge of this decision, and there are exactly two places a reader can find it out: the field's own documentation in `crates/fiddle-cli/src/config.rs`, and here. It is not surfaced at runtime — `config check` reports the document valid, because it is.
+**A deployment that writes `max_capability_attempts = 5` gets one attempt.** That is the sharp edge of this decision, and `config check` says so out loud. It reports the document valid — because it is — and reports the bound as *accepted and not enforced* beside the number of attempts that will actually be made:
+
+```json
+"max_capability_attempts": {
+  "configured": 5,
+  "enforced": 1,
+  "status": "accepted-not-enforced",
+  "decision": "013-one-attempt-bound-not-two"
+}
+```
+
+Every bound that fires is a plain scalar in the same payload, so the shape alone tells the two kinds apart, and the `decision` key leads a reader here. The human rendering says the same thing in prose on the `agent.max_capability_attempts` line.
+
+This corrects the position this section originally took, which was that the edge is discoverable in "exactly two places" — the field's documentation and this file — and "is not surfaced at runtime". That was true when this ADR was written and it is no longer. The correction matters beyond bookkeeping: design §6.6 promises that under `deny_unknown_fields` a deferred key is a loud error rather than a silently ignored one, and this key escaped that promise by a route §6.6 does not name — it is *known* rather than unknown, so strictness never looked at it. Deferring the retry loop is still right, and pricing it (above) is still the substance of this decision; what was wrong was treating non-surfacing as inherent to the deferral. It was a separate, cheap choice, and it has been made the other way.
+
+Three commitments follow from the payload above, and breaking any of them silently is the failure this paragraph exists to prevent. `enforced` is a literal in `crates/fiddle-cli/src/render.rs` — `ENFORCED_CAPABILITY_ATTEMPTS`, currently `1` — not a value read from the document, because the whole point is that the document's number does not apply. The milestone that builds the loop has to change that constant, drop the object for a plain scalar, and delete this section. Until then, `crates/fiddle-acceptance/tests/config_check.rs::config_check_marks_the_attempt_bound_it_accepts_and_does_not_enforce` asserts all four keys from outside the process, so the surface cannot quietly stop existing.
 
 **The direction of the error is the conservative one.** Nothing repeats, so an invocation's ceiling is one attempt's: one `max_turns` conversation, one `max_tokens` per completion, one `deadline`. A wrong outer bound would have been the other kind of mistake, and the gateway key carries a $100 hard cap (ADR 012).
 

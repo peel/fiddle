@@ -29,7 +29,7 @@ pub mod stub;
 pub use repair::{FixtureRepair, RepairConfig};
 pub use stub::StubMark;
 
-use fiddle_core::{CapabilityId, EvidenceRef, NextAction};
+use fiddle_core::{AttemptId, CapabilityId, EvidenceRef, NextAction};
 use std::path::PathBuf;
 
 /// Every capability this build can execute.
@@ -39,35 +39,70 @@ use std::path::PathBuf;
 /// diagnostic without anyone remembering to update a second list.
 pub const CAPABILITIES: [CapabilityId; 2] = [fiddle_core::STUB_MARK, fiddle_core::FIXTURE_REPAIR];
 
-/// Proof that a derivation authorised an execution.
+/// Proof that a derivation authorised an execution, as part of a named attempt.
 ///
-/// The field is private and the only constructor is [`ExecutionGrant::authorise`],
-/// so a value of this type cannot exist unless some [`NextAction`] was
-/// `Execute`. That is the whole point: "the capability is never executed from a
-/// blocked derivation" stops being a property of the orchestration's control
-/// flow and becomes a property of the types, checkable by the compiler at every
-/// call site that will ever exist.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The fields are private and the only constructor is
+/// [`ExecutionGrant::authorise`], so a value of this type cannot exist unless
+/// some [`NextAction`] was `Execute`. That is the whole point: "the capability
+/// is never executed from a blocked derivation" stops being a property of the
+/// orchestration's control flow and becomes a property of the types, checkable
+/// by the compiler at every call site that will ever exist.
+///
+/// # Why the attempt id is here
+///
+/// Because a grant is not "you may do this"; it is "**this attempt** authorises
+/// you to do this", and a capability that needs to say which attempt it was has
+/// nowhere else to get an honest answer. The alternative — the one this
+/// replaced — was for the caller assembling a capability to mint an id of its
+/// own and hand it over in the capability's configuration. That produced two
+/// real, unique ids that did not name each other:
+/// [`crate::orchestration::attempt`] minted the one the journal and the bundle
+/// are filed under, `main.rs` minted the one
+/// [`FixtureRepair`](repair::FixtureRepair) named its worktree and its evidence
+/// after, and `repair:<changed>:<attempt>` therefore pointed at a bundle that
+/// did not exist. A reference whose *format* implies a cross-reference that
+/// does not hold is worse than one carrying no identifier at all.
+///
+/// Minting stays where it was — once, in `attempt`, so no caller can hand in a
+/// duplicate and collide two bundles on one path. What changed is that the id
+/// now *travels* to the capability along the one channel that already means
+/// "you are authorised, as part of this run", instead of being minted a second
+/// time at the edge.
+///
+/// No longer `Copy`, because [`AttemptId`] owns a `String`. It is passed by
+/// value into [`Capability::execute`] exactly once per execution, so the clone
+/// is per-attempt rather than per-call.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionGrant {
     capability_id: CapabilityId,
+    attempt: AttemptId,
 }
 
 impl ExecutionGrant {
-    /// A grant for `action`, if and only if it authorises an execution.
+    /// A grant for `action` as part of `attempt`, if and only if `action`
+    /// authorises an execution.
     ///
     /// `Complete` and `Blocked` yield `None`, and there is no other way in.
-    pub fn authorise(action: &NextAction) -> Option<Self> {
+    pub fn authorise(action: &NextAction, attempt: &AttemptId) -> Option<Self> {
         match action {
             NextAction::Execute { capability_id } => Some(ExecutionGrant {
                 capability_id: *capability_id,
+                attempt: attempt.clone(),
             }),
             NextAction::Complete | NextAction::Blocked { .. } => None,
         }
     }
 
     /// The capability the derivation named.
-    pub fn capability_id(self) -> CapabilityId {
+    pub fn capability_id(&self) -> CapabilityId {
         self.capability_id
+    }
+
+    /// The attempt this execution is part of — the same id the journal record
+    /// and the published bundle are filed under, so a capability quoting it in
+    /// its evidence names a document a reader can go and open.
+    pub fn attempt_id(&self) -> &AttemptId {
+        &self.attempt
     }
 }
 
@@ -225,11 +260,15 @@ mod tests {
 
     const WORK_ID: &str = "fiddle-m0-demo";
     const INVOCATION_REF: &str = "beans:fiddle-m0-demo";
+    const ATTEMPT: &str = "01JQZX0000000000000000000";
 
     fn grant() -> ExecutionGrant {
-        ExecutionGrant::authorise(&NextAction::Execute {
-            capability_id: STUB_MARK,
-        })
+        ExecutionGrant::authorise(
+            &NextAction::Execute {
+                capability_id: STUB_MARK,
+            },
+            &AttemptId(ATTEMPT.to_string()),
+        )
         .expect("an Execute derivation authorises")
     }
 
@@ -264,13 +303,28 @@ mod tests {
     /// call to `execute` can be written from them.
     #[test]
     fn only_an_execute_derivation_yields_a_grant() {
+        let attempt = AttemptId(ATTEMPT.to_string());
         assert_eq!(grant().capability_id(), STUB_MARK);
-        assert_eq!(ExecutionGrant::authorise(&NextAction::Complete), None);
         assert_eq!(
-            ExecutionGrant::authorise(&NextAction::Blocked {
-                reason: "unobservable".into()
-            }),
+            ExecutionGrant::authorise(&NextAction::Complete, &attempt),
             None
         );
+        assert_eq!(
+            ExecutionGrant::authorise(
+                &NextAction::Blocked {
+                    reason: "unobservable".into()
+                },
+                &attempt
+            ),
+            None
+        );
+    }
+
+    /// A grant carries the attempt it was issued under, so a capability quoting
+    /// an attempt id in its evidence quotes the one its bundle is filed under
+    /// rather than one it minted for itself.
+    #[test]
+    fn a_grant_names_the_attempt_it_was_issued_under() {
+        assert_eq!(grant().attempt_id(), &AttemptId(ATTEMPT.to_string()));
     }
 }

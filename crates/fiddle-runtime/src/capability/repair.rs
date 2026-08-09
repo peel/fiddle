@@ -51,7 +51,7 @@
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::{attempt, AgentBudget, ToolHost, ToolReceipts};
 use crate::workspace::{Workspace, WorkspaceCommand};
-use fiddle_core::{correlation_key, AttemptId, CapabilityId, ChangeSetState, EvidenceRef};
+use fiddle_core::{correlation_key, CapabilityId, ChangeSetState, EvidenceRef};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -116,10 +116,19 @@ fn tool_evidence(receipts: &ToolReceipts) -> Vec<EvidenceRef> {
 
 /// Everything [`FixtureRepair`] needs that is not the model.
 ///
-/// One struct rather than eight constructor arguments, because every field here
+/// One struct rather than seven constructor arguments, because every field here
 /// is a host decision an operator configures and none of them is derivable from
 /// the others. Grouping them also keeps the model — the one value with a
 /// credential behind it — visibly separate from the rest.
+///
+/// **The attempt id is not here**, and its absence is the point. It used to be:
+/// the CLI minted one when it assembled the capability, and the runtime minted
+/// the bundle's separately, so the evidence reference below named an attempt
+/// that appeared in no bundle and on no disk. It now arrives on the
+/// [`ExecutionGrant`], which is the one value that already means "this attempt
+/// authorises this execution" — so there is nowhere left for a caller to supply
+/// a second one. Every field that remains is a *deployment* decision; the
+/// attempt is a property of the run, and the run owns it.
 pub struct RepairConfig {
     /// The repository under repair. Each attempt branches a worktree from it and
     /// never writes to it.
@@ -137,10 +146,6 @@ pub struct RepairConfig {
     /// reference, and the capability must compute the same one the assessment
     /// will compare against.
     pub project: String,
-
-    /// This attempt's identity. Names the worktree and appears in the evidence,
-    /// so a reader can tie a reference back to a journal record.
-    pub attempt: AttemptId,
 
     /// The check that decides whether this repair earned anything.
     pub check: WorkspaceCommand,
@@ -246,6 +251,12 @@ where
             });
         }
         let config = &self.config;
+        // The attempt this execution is part of, taken from the grant rather
+        // than from the configuration. It names the worktree and it is quoted in
+        // the evidence below, and both of those are claims about *this run* —
+        // so both must be the id the journal record and the published bundle are
+        // filed under, which is the one the grant carries.
+        let attempt_id = grant.attempt_id();
 
         // Held for the whole of this function and dropped at the end of it on
         // every path out — an early return, a `?`, a panic — because the Drop
@@ -255,7 +266,7 @@ where
         let workspace = Arc::new(Workspace::create(
             &config.fixture,
             &config.workspace_root,
-            &config.attempt,
+            attempt_id,
             config.cancel.clone(),
         )?);
 
@@ -289,10 +300,13 @@ where
 
         // Earned: the check passed, so this invocation may account for the work.
         self.record_change_set(work_id, invocation_ref)?;
+        // `repair:<changed>:<attempt>` is a cross-reference, and it now resolves:
+        // the attempt it names is the one this run's bundle is published under,
+        // so a reader holding this reference can go and open that document.
         Ok(EvidenceRef(format!(
             "{REPAIR_ORIGIN}:{}:{}",
             changed.len(),
-            config.attempt.0
+            attempt_id.0
         )))
     }
 }
@@ -300,7 +314,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fiddle_core::NextAction;
+    use fiddle_core::{AttemptId, NextAction};
     use rig_core::test_utils::{MockCompletionModel, MockTurn};
     use serde_json::json;
     use std::path::Path;
@@ -309,6 +323,11 @@ mod tests {
     const WORK_ID: &str = "fiddle-m1-demo";
     const INVOCATION_REF: &str = "beans:fiddle-m1-demo";
     const PROJECT: &str = "icecube";
+
+    /// The attempt every scenario here executes under. Fixed rather than minted,
+    /// so the evidence reference these tests assert on is a function of the run
+    /// rather than of the clock.
+    const ATTEMPT: &str = "01JQZX0000000000000000000";
 
     /// The defect the fixture ships with: an off-by-one that compiles cleanly
     /// and fails its own test, so a repair has to be a real edit rather than a
@@ -319,9 +338,12 @@ mod tests {
     const REPAIRED: &str = "pub fn last_index(len: usize) -> usize { len - 1 }\n";
 
     fn grant() -> ExecutionGrant {
-        ExecutionGrant::authorise(&NextAction::Execute {
-            capability_id: fiddle_core::FIXTURE_REPAIR,
-        })
+        ExecutionGrant::authorise(
+            &NextAction::Execute {
+                capability_id: fiddle_core::FIXTURE_REPAIR,
+            },
+            &AttemptId(ATTEMPT.to_string()),
+        )
         .expect("an Execute derivation authorises")
     }
 
@@ -398,7 +420,6 @@ mod tests {
                 workspace_root: self.workspace_root(),
                 stub_root: self.stub_root(),
                 project: PROJECT.to_string(),
-                attempt: AttemptId("01JQZX0000000000000000000".to_string()),
                 check: WorkspaceCommand {
                     program: "cargo".to_string(),
                     args: vec!["test".to_string(), "--offline".to_string()],
@@ -534,8 +555,10 @@ mod tests {
             "the marker must be the one the next invocation's assessment expects"
         );
         assert_eq!(
-            evidence.0, "repair:1:01JQZX0000000000000000000",
-            "the evidence names what git saw change, not what the model claimed"
+            evidence.0,
+            format!("repair:1:{ATTEMPT}"),
+            "the evidence names what git saw change, not what the model claimed \
+             — and names the attempt it was granted, not one of its own"
         );
     }
 
@@ -615,9 +638,12 @@ mod tests {
     #[tokio::test]
     async fn a_grant_for_another_capability_is_refused_before_any_workspace_exists() {
         let f = broken_fixture();
-        let foreign = ExecutionGrant::authorise(&NextAction::Execute {
-            capability_id: fiddle_core::STUB_MARK,
-        })
+        let foreign = ExecutionGrant::authorise(
+            &NextAction::Execute {
+                capability_id: fiddle_core::STUB_MARK,
+            },
+            &AttemptId(ATTEMPT.to_string()),
+        )
         .unwrap();
 
         let error = FixtureRepair::new(MockCompletionModel::new(repairs()), f.config())

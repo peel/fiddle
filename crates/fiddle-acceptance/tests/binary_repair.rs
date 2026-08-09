@@ -503,6 +503,60 @@ fn the_binary_drives_a_repair_that_passes_its_check_and_records_the_marker() {
     );
 }
 
+/// **The attempt a published evidence reference names is the attempt the
+/// bundle is filed under.**
+///
+/// `repair:<changed>:<attempt>` is a cross-reference: its last field is there so
+/// a reader holding the evidence can go and find the record of the same attempt.
+/// It was not one. `main.rs` minted an id for `RepairConfig` and
+/// `fiddle_runtime::attempt` minted the bundle's separately, so the reference
+/// named an id that appeared in no bundle and on no disk — a format implying a
+/// tie that did not hold, which is worse than carrying no identifier at all.
+///
+/// Both halves are read out of the published document, because that is the
+/// artefact a downstream reader has: whatever the process said on stdout, the
+/// tie either exists in the bundle on disk or it does not exist.
+#[test]
+fn the_published_evidence_reference_names_the_attempt_the_bundle_is_filed_under() {
+    let gateway = StubGateway::serving(a_real_repair());
+    let s = scenario(&gateway, 4);
+
+    let out = repair(&s);
+    let payload = payload(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a repair whose check passed completed, payload = {payload} stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let bundle = s.read_bundle(&payload);
+    let attempt_id = bundle["attempt_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the bundle must record its attempt: {bundle}"));
+    let evidence = bundle["capability_executions"][0]["evidence"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("a completed repair earns an evidence reference: {bundle}"));
+
+    assert_eq!(
+        evidence,
+        format!("repair:1:{attempt_id}"),
+        "the evidence names an attempt, so it must name *this* one — the bundle \
+         a reader holding this reference would go and open"
+    );
+
+    // And the bundle really is filed under that id, so following the reference
+    // reaches a document rather than a name.
+    let reported = payload["report"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the run payload must name its bundle: {payload}"));
+    assert!(
+        reported.contains(attempt_id),
+        "the published path must be the one the reference leads to, got \
+         {reported} for attempt {attempt_id}"
+    );
+}
+
 /// **A bound in the document is a bound on the run.**
 ///
 /// The same endpoint, the same script, the same fixture, the same check — and

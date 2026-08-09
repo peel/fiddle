@@ -123,10 +123,7 @@ pub struct Agent {
     /// the key lives beside the bound it is the counterpart to until then.
     ///
     /// **This bound does not fire.** A document that writes
-    /// `max_capability_attempts = 5` gets one attempt, and this and
-    /// `decisions/013-one-attempt-bound-not-two.md` are the only two places a
-    /// reader learns it — `config check` reports such a document valid, because
-    /// it is.
+    /// `max_capability_attempts = 5` gets one attempt.
     ///
     /// Nothing in the runtime starts a second attempt at the same work:
     /// `fiddle_runtime::attempt` runs one, and a capability that failed
@@ -138,8 +135,17 @@ pub struct Agent {
     /// stays because a document written against the reference configuration
     /// must load, and because the pair of bounds is only meaningful written
     /// down together.
+    ///
+    /// It carried a `#[allow(dead_code)]` until `config check` learned to say
+    /// so at runtime. The value is now read by
+    /// [`crate::render::config_check_json`], which reports it as *accepted and
+    /// not enforced* beside the number of attempts that will actually be made —
+    /// so the sharp edge is discoverable by a machine reading a payload rather
+    /// than only by a human reading this comment and the ADR. Design §6.6
+    /// promises a deferred key is loud rather than silent; a key that is
+    /// *known* rather than unknown escapes `deny_unknown_fields` entirely, and
+    /// this is where that route is closed instead.
     #[serde(default = "default_max_capability_attempts")]
-    #[allow(dead_code, reason = "recorded as ADR 013; see the note above")]
     pub max_capability_attempts: usize,
 
     /// Per-completion token ceiling handed to the provider. 8192 is the
@@ -338,7 +344,7 @@ pub struct Check {
 /// place: it turns `isolation = "none"` into a refusal at the line it was
 /// written on, where a plain `String` would have accepted it and left the
 /// operator believing they had turned isolation off.
-#[derive(Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Isolation {
     /// A detached git worktree per attempt, branched from the fixture.
@@ -356,7 +362,7 @@ pub enum Isolation {
 /// so the axis is visible and so a document written against the reference
 /// configuration loads; the missing variant arrives with the code that can
 /// honour it.
-#[derive(Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Cleanup {
     /// The worktree is removed however the attempt ends.
@@ -392,6 +398,31 @@ impl HumanDuration {
 
     const fn secs(secs: u64) -> Self {
         Self(Duration::from_secs(secs))
+    }
+}
+
+/// Written back the way it was written down: the largest whole unit that
+/// divides it, so a document saying `"45m"` is echoed as `"45m"` rather than as
+/// an amount of seconds an operator has to divide before recognising.
+///
+/// Round-tripping is the actual contract, not the cosmetics:
+/// [`HumanDuration::from_str`] accepts everything this produces, so a caller
+/// reading a duration out of a `config check` payload can put it straight back
+/// into a document. `a_rendered_duration_parses_back_to_itself` is what keeps
+/// the two halves in step.
+impl std::fmt::Display for HumanDuration {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let seconds = self.0.as_secs();
+        // Ordered widest-first, and every arm divides exactly: a bound that is
+        // not a whole number of hours or minutes is reported in seconds rather
+        // than rounded, because a rounded bound is not the bound that will fire.
+        if seconds.is_multiple_of(3600) {
+            write!(f, "{}h", seconds / 3600)
+        } else if seconds.is_multiple_of(60) {
+            write!(f, "{}m", seconds / 60)
+        } else {
+            write!(f, "{seconds}s")
+        }
     }
 }
 
@@ -800,6 +831,32 @@ check = { program = "cargo", args = ["test", "--offline"] }
         // already out of time, so a typo would look like a systematic failure
         // of the agent rather than of the document.
         assert!(with("0s").is_err(), "a zero bound is a typo, not a policy");
+    }
+
+    /// A duration `config check` reports can be written straight back into a
+    /// document.
+    ///
+    /// The round trip is the contract, not the spelling: a caller reading
+    /// `"45m"` out of a payload must be able to put `"45m"` into a file. The
+    /// rendering is asserted too, because "45m" and "2700s" are the same bound
+    /// and only one of them is the one the operator wrote.
+    #[test]
+    fn a_rendered_duration_parses_back_to_itself() {
+        for (seconds, expected) in [
+            (45 * 60, "45m"),
+            (15 * 60, "15m"),
+            (2 * 3600, "2h"),
+            (90, "90s"),
+            (1, "1s"),
+        ] {
+            let rendered = HumanDuration::secs(seconds).to_string();
+            assert_eq!(rendered, expected);
+            assert_eq!(
+                rendered.parse::<HumanDuration>().unwrap().as_duration(),
+                Duration::from_secs(seconds),
+                "a reported duration must be one this schema accepts: {rendered}"
+            );
+        }
     }
 
     /// Refusing a credential must not publish it.

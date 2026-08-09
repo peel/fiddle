@@ -474,25 +474,21 @@ fn build_capability(
                     workspace_root: workspace.root.clone(),
                     stub_root: config.stub.root.clone(),
                     project: config.project.name.clone(),
-                    // **Not the id the bundle is filed under**, and the seam
-                    // gives no way for it to be. `fiddle_runtime::attempt`
-                    // mints the run's id itself — deliberately, so no caller
-                    // can hand it a duplicate and collide two bundles on one
-                    // path — while the capability is built out here, before
-                    // that call. So the two ids are both real and both unique,
-                    // and they do not name each other.
+                    // **No attempt id is minted here**, and the seam no longer
+                    // has a place to put one. It used to: this binary minted an
+                    // id for `RepairConfig` while `fiddle_runtime::attempt`
+                    // minted the bundle's separately, so `repair:<n>:<attempt>`
+                    // named an attempt that appeared in no bundle and on no
+                    // disk. Both ids were real and unique, and they did not name
+                    // each other.
                     //
-                    // What that costs is the tie `capability::repair` claims
-                    // for its evidence reference: `repair:<n>:<attempt>` is
-                    // meant to lead a reader back to the record of the same
-                    // attempt, and it leads to this id rather than the
-                    // bundle's. Nothing is wrong on disk — the worktree is
-                    // named uniquely and the evidence is well-formed — but the
-                    // cross-reference is not yet real, and closing it means
-                    // deciding where an attempt id is minted, which is a
-                    // question about the orchestration's contract rather than
-                    // about wiring a capability.
-                    attempt: fiddle_runtime::mint_attempt_id(),
+                    // The id now travels to the capability on its
+                    // `ExecutionGrant` — the value that already means "this
+                    // attempt authorises this execution" — so it is still minted
+                    // exactly once, in `attempt`, where no caller can hand in a
+                    // duplicate and collide two bundles on one path. Everything
+                    // left in this struct is a deployment decision an operator
+                    // configured; the attempt belongs to the run.
                     check: WorkspaceCommand {
                         program: check.program.clone(),
                         args: check.args.clone(),

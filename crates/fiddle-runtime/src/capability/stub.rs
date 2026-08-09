@@ -108,15 +108,19 @@ mod tests {
     use super::*;
     use crate::ports::ChangePort;
     use crate::stub::StubChangePort;
-    use fiddle_core::{NextAction, Observation, STUB_MARK};
+    use fiddle_core::{AttemptId, NextAction, Observation, STUB_MARK};
 
     const WORK_ID: &str = "fiddle-m0-demo";
     const INVOCATION_REF: &str = "beans:fiddle-m0-demo";
+    const ATTEMPT: &str = "01JQZX0000000000000000000";
 
     fn grant() -> ExecutionGrant {
-        ExecutionGrant::authorise(&NextAction::Execute {
-            capability_id: STUB_MARK,
-        })
+        ExecutionGrant::authorise(
+            &NextAction::Execute {
+                capability_id: STUB_MARK,
+            },
+            &AttemptId(ATTEMPT.to_string()),
+        )
         .expect("an Execute derivation authorises")
     }
 
@@ -190,9 +194,12 @@ mod tests {
     #[tokio::test]
     async fn a_grant_for_another_capability_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let foreign = ExecutionGrant::authorise(&NextAction::Execute {
-            capability_id: CapabilityId("other_capability"),
-        })
+        let foreign = ExecutionGrant::authorise(
+            &NextAction::Execute {
+                capability_id: CapabilityId("other_capability"),
+            },
+            &AttemptId(ATTEMPT.to_string()),
+        )
         .unwrap();
 
         let error = StubMark::new(dir.path(), "icecube")

@@ -82,6 +82,13 @@ pub struct RunContext<'a> {
     pub invocation_ref: &'a str,
     /// The work item both ports are asked about.
     pub work_id: &'a str,
+    /// The attempt this run *is*, minted by [`attempt`] and borrowed here.
+    ///
+    /// Borrowed rather than minted: an id names an attempt, one attempt is one
+    /// run, and the journal and the bundle are both filed under this value. It
+    /// travels on into [`ExecutionGrant`] so a capability can quote it in
+    /// evidence and have the quotation lead somewhere.
+    pub attempt: &'a fiddle_core::AttemptId,
     pub work_items: &'a dyn WorkItemPort,
     pub changes: &'a dyn ChangePort,
     pub capability: &'a dyn Capability,
@@ -254,7 +261,7 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
     // executing arm below is the only code that can reach the capability at
     // all — there is no ordering mistake available here that would let a
     // blocked derivation slip through.
-    let Some(grant) = ExecutionGrant::authorise(&derived) else {
+    let Some(grant) = ExecutionGrant::authorise(&derived, ctx.attempt) else {
         return match derived {
             NextAction::Complete => {
                 RunReport::without_execution(RunOutcome::Completed, NextAction::Complete, view)
@@ -447,7 +454,10 @@ pub struct AttemptRecord {
 pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
     // Minted once, here: an attempt id names this attempt, and one attempt is
     // one run. It is minted before anything is recorded because both the journal
-    // and the bundle are filed under it.
+    // and the bundle are filed under it — and because a capability that quotes
+    // an attempt id in its evidence is handed *this* one, through the grant, so
+    // the quotation names a document that exists. Nothing outside this function
+    // mints one for a run; a second minting site is how the two came to disagree.
     let attempt_id = mint_attempt_id();
     let invocation = ctx.reference.as_str();
     let slug = ctx.reference.slug();
@@ -464,6 +474,7 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
         project: ctx.project,
         invocation_ref: &invocation,
         work_id: ctx.reference.value(),
+        attempt: &attempt_id,
         work_items: ctx.work_items,
         changes: ctx.changes,
         capability: ctx.capability,
@@ -590,6 +601,7 @@ mod tests {
     const WORK_ID: &str = "fiddle-m0-demo";
     const INVOCATION_REF: &str = "beans:fiddle-m0-demo";
     const PROJECT: &str = "icecube";
+    const ATTEMPT: &str = "01JQZX0000000000000000000";
 
     /// Everything a run reached, in the order it reached it.
     ///
@@ -734,16 +746,25 @@ mod tests {
         work_items: &'a StubWorkItemPort,
         changes: &'a StubChangePort,
         journal: &'a dyn AttemptJournal,
+        attempt: &'a fiddle_core::AttemptId,
     ) -> RunContext<'a> {
         RunContext {
             project: PROJECT,
             invocation_ref: INVOCATION_REF,
             work_id: WORK_ID,
+            attempt,
             work_items,
             changes,
             capability,
             journal,
         }
+    }
+
+    /// The attempt every scenario below runs under. A fixed value rather than a
+    /// minted one: these tests are about what a run does, and a stable id keeps
+    /// what they assert a function of the world rather than of the clock.
+    fn attempt_id() -> fiddle_core::AttemptId {
+        fiddle_core::AttemptId(ATTEMPT.to_string())
     }
 
     fn fixture_root() -> tempfile::TempDir {
@@ -768,7 +789,14 @@ mod tests {
         let changes = StubChangePort::new(dir.path());
         let journal = SpyJournal::default();
 
-        let report = run(&context(&capability, &work_items, &changes, &journal)).await;
+        let report = run(&context(
+            &capability,
+            &work_items,
+            &changes,
+            &journal,
+            &attempt_id(),
+        ))
+        .await;
 
         assert_eq!(report.outcome, RunOutcome::Completed);
         assert_eq!(
@@ -802,9 +830,17 @@ mod tests {
             &work_items,
             &changes,
             &SpyJournal::default(),
+            &attempt_id(),
         ))
         .await;
-        let report = run(&context(&spy, &work_items, &changes, &journal)).await;
+        let report = run(&context(
+            &spy,
+            &work_items,
+            &changes,
+            &journal,
+            &attempt_id(),
+        ))
+        .await;
 
         assert_eq!(spy.calls(), 0, "a satisfied world must not execute");
         assert_eq!(report.outcome, RunOutcome::Completed);
@@ -830,7 +866,14 @@ mod tests {
         let changes = StubChangePort::new(&absent);
         let journal = SpyJournal::watching(&log);
 
-        let report = run(&context(&spy, &work_items, &changes, &journal)).await;
+        let report = run(&context(
+            &spy,
+            &work_items,
+            &changes,
+            &journal,
+            &attempt_id(),
+        ))
+        .await;
 
         assert_eq!(spy.calls(), 0, "a blocked derivation must not execute");
         assert!(matches!(report.outcome, RunOutcome::Failed { .. }));
@@ -860,7 +903,14 @@ mod tests {
         let changes = StubChangePort::new(dir.path());
         let journal = SpyJournal::watching(&log);
 
-        run(&context(&capability, &work_items, &changes, &journal)).await;
+        run(&context(
+            &capability,
+            &work_items,
+            &changes,
+            &journal,
+            &attempt_id(),
+        ))
+        .await;
 
         assert_eq!(
             log.events(),
@@ -880,7 +930,14 @@ mod tests {
         let changes = StubChangePort::new(dir.path());
         let journal = SpyJournal::refusing(&log);
 
-        let report = run(&context(&spy, &work_items, &changes, &journal)).await;
+        let report = run(&context(
+            &spy,
+            &work_items,
+            &changes,
+            &journal,
+            &attempt_id(),
+        ))
+        .await;
 
         assert_eq!(spy.calls(), 0);
         assert_eq!(log.events(), ["intent"], "nothing may follow a refusal");
@@ -924,7 +981,14 @@ mod tests {
 
         // Readable and listable, but not writable: observation still succeeds.
         std::fs::set_permissions(&changes_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
-        let report = run(&context(&capability, &work_items, &changes, &journal)).await;
+        let report = run(&context(
+            &capability,
+            &work_items,
+            &changes,
+            &journal,
+            &attempt_id(),
+        ))
+        .await;
         std::fs::set_permissions(&changes_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         if report.outcome == RunOutcome::Completed {

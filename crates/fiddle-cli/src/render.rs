@@ -60,31 +60,206 @@ fn payload(schema: &'static str, body: serde_json::Value) -> String {
         .expect("a payload of an object body is always serializable")
 }
 
+/// How many attempts at one capability a run actually makes.
+///
+/// A literal rather than a value read from the document, because that is
+/// precisely the point: `agent.max_capability_attempts` is parsed and not
+/// consumed, so the number that applies is this one whatever the document says.
+/// See `decisions/013-one-attempt-bound-not-two.md`, and
+/// [`crate::config::Agent::max_capability_attempts`].
+const ENFORCED_CAPABILITY_ATTEMPTS: usize = 1;
+
+/// The decision a reader following the unenforced bound is sent to.
+const ATTEMPT_BOUND_DECISION: &str = "013-one-attempt-bound-not-two";
+
+/// What a key that parses and fires nothing is reported as.
+const ACCEPTED_NOT_ENFORCED: &str = "accepted-not-enforced";
+
 /// The machine-readable `config check` payload.
 ///
-/// The shape is part of the CLI contract: `status` is `"valid"` and the three
-/// configuration sections are echoed back so a caller can confirm *which*
-/// document was accepted without re-reading it.
+/// The shape is part of the CLI contract: `status` is `"valid"` and every
+/// configuration section the document carries is echoed back, so a caller can
+/// confirm *which* document was accepted without re-reading it. That is the
+/// command's whole stated purpose, and it is why `[agent]` and `[workspace]`
+/// are here: a payload naming only the three M0 tables could not show an
+/// operator the model, the endpoint, the fixture under repair, the check that
+/// decides whether a repair earned anything, or any of the six bounds.
+///
+/// # Three rules this payload keeps
+///
+/// **Never the resolved credential — the variable's name only.** `api_key` is
+/// echoed as `{ "env": "NAME" }`, the shape the document itself writes, and
+/// there is nothing else it could be: `config::EnvRef` has no value to hold.
+/// This function is also not where a credential could be resolved — the one
+/// call to `std::env::var` in this binary is `main::resolve_credential`, on the
+/// repairing arm of `build_capability`, which `config check` never reaches.
+///
+/// **A table the document does not carry produces no key at all**, rather than
+/// a `null` one. A deployment that names no model has not left `[agent]` blank;
+/// it has described a deployment that does not have one, and the two are
+/// different claims. It is also what keeps the schema version honest: an
+/// M0-shaped document — three tables, which is what
+/// `crates/fiddle-acceptance/tests/m0_skeleton.rs` runs against — produces
+/// exactly the bytes it produced before either table existed, so
+/// [`CONFIG_CHECK_SCHEMA`] stays `v0`. Nothing a v0 reader ever saw has moved
+/// or changed meaning; the change is purely additive.
+///
+/// A key *inside* a table the document does carry is the opposite case, and is
+/// reported as `null`: `workspace.fixture` and `workspace.check` are the two a
+/// repair refuses by name when they are absent, so an operator confirming a
+/// document should learn which refusal is waiting for them rather than having
+/// to notice a missing key.
+///
+/// **A bound that does not fire does not look like one that does.** Every
+/// enforced bound is a plain scalar; `max_capability_attempts` is an object
+/// carrying what the document `configured`, what is `enforced`, a `status` a
+/// machine can key on, and the `decision` that explains it. See
+/// [`ENFORCED_CAPABILITY_ATTEMPTS`].
 pub fn config_check_json(config: &Config) -> String {
-    payload(
-        CONFIG_CHECK_SCHEMA,
-        serde_json::json!({
-            "status": "valid",
-            "project": { "name": config.project.name },
-            "stub": { "root": config.stub.root },
-            "report": { "dir": config.report.dir },
-        }),
-    )
+    let mut body = serde_json::json!({
+        "status": "valid",
+        "project": { "name": config.project.name },
+        "stub": { "root": config.stub.root },
+        "report": { "dir": config.report.dir },
+    });
+    if let Some(agent) = &config.agent {
+        body["agent"] = serde_json::json!({
+            "model": agent.model,
+            "base_url": agent.base_url,
+            // The name, never the value. See the rules above.
+            "api_key": { "env": agent.api_key.env },
+            "max_turns": agent.max_turns,
+            "max_tokens": agent.max_tokens,
+            "max_changed_files": agent.max_changed_files,
+            "deadline": agent.deadline.to_string(),
+            "tool_timeout": agent.tool_timeout.to_string(),
+            "max_capability_attempts": {
+                "configured": agent.max_capability_attempts,
+                "enforced": ENFORCED_CAPABILITY_ATTEMPTS,
+                "status": ACCEPTED_NOT_ENFORCED,
+                "decision": ATTEMPT_BOUND_DECISION,
+            },
+        });
+    }
+    if let Some(workspace) = &config.workspace {
+        body["workspace"] = serde_json::json!({
+            "root": workspace.root,
+            "fixture": workspace.fixture,
+            "check": workspace.check.as_ref().map(|check| serde_json::json!({
+                "program": check.program,
+                "args": check.args,
+            })),
+            "isolation": isolation(workspace.isolation),
+            "command_timeout": workspace.command_timeout.to_string(),
+            "cleanup": cleanup(workspace.cleanup),
+        });
+    }
+    payload(CONFIG_CHECK_SCHEMA, body)
+}
+
+/// The spelling a document writes an isolation mechanism as.
+///
+/// Matched rather than derived through `Serialize`, for the same reason
+/// `main::build_capability` matches it: adding a variant then has to be
+/// answered *here*, at the place that would otherwise report a new mechanism
+/// under an old name, instead of silently acquiring a serialization.
+fn isolation(isolation: crate::config::Isolation) -> &'static str {
+    match isolation {
+        crate::config::Isolation::GitWorktree => "git-worktree",
+    }
+}
+
+/// The spelling a document writes a cleanup policy as. See [`isolation`].
+fn cleanup(cleanup: crate::config::Cleanup) -> &'static str {
+    match cleanup {
+        crate::config::Cleanup::Always => "always",
+    }
 }
 
 /// The human-readable `config check` summary.
+///
+/// The same facts the payload carries, in the order the document writes them,
+/// so a reader at a terminal and a reader parsing `--json` confirm the same
+/// document. Each line is `<table>.<key> = <value>`, spelled exactly as the key
+/// is written in the file, because the reader's next move is to go and edit it.
+///
+/// The unenforced bound is the one line that says more than its value, and it
+/// says it in prose rather than in the payload's four keys: a person needs the
+/// consequence, which is that one attempt is made whatever the number is.
 pub fn config_check_human(config: &Config) -> String {
-    format!(
+    let mut out = format!(
         "configuration valid\n  project.name = {}\n  stub.root    = {}\n  report.dir   = {}",
         config.project.name,
         config.stub.root.display(),
         config.report.dir.display(),
-    )
+    );
+    if let Some(agent) = &config.agent {
+        // The name of the variable, never its value — there is none here to
+        // print, and `config check` never resolves one.
+        out.push_str(&format!(
+            "\n  agent.model = {}\
+             \n  agent.base_url = {}\
+             \n  agent.api_key.env = {}\
+             \n  agent.max_turns = {}\
+             \n  agent.max_tokens = {}\
+             \n  agent.max_changed_files = {}\
+             \n  agent.deadline = {}\
+             \n  agent.tool_timeout = {}\
+             \n  agent.max_capability_attempts = {} \
+             (accepted, not enforced: {} attempt is made — see decision {})",
+            agent.model,
+            agent.base_url,
+            agent.api_key.env,
+            agent.max_turns,
+            agent.max_tokens,
+            agent.max_changed_files,
+            agent.deadline,
+            agent.tool_timeout,
+            agent.max_capability_attempts,
+            ENFORCED_CAPABILITY_ATTEMPTS,
+            ATTEMPT_BOUND_DECISION,
+        ));
+    }
+    if let Some(workspace) = &config.workspace {
+        out.push_str(&format!(
+            "\n  workspace.root = {}\
+             \n  workspace.fixture = {}\
+             \n  workspace.check = {}\
+             \n  workspace.isolation = {}\
+             \n  workspace.command_timeout = {}\
+             \n  workspace.cleanup = {}",
+            workspace.root.display(),
+            optional(workspace.fixture.as_ref().map(|p| p.display().to_string())),
+            optional(workspace.check.as_ref().map(|check| {
+                // Each token quoted separately, rather than joined into one
+                // space-separated line. `config::Check` is a program and its
+                // arguments *already separated* precisely because a shell
+                // string has to be split by somebody and every splitter is
+                // wrong about quoting somewhere; rendering one here would put
+                // that ambiguity back at the surface an operator reads, and
+                // an argument containing a space would be indistinguishable
+                // from two arguments.
+                std::iter::once(&check.program)
+                    .chain(check.args.iter())
+                    .map(|token| format!("{token:?}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })),
+            isolation(workspace.isolation),
+            workspace.command_timeout,
+            cleanup(workspace.cleanup),
+        ));
+    }
+    out
+}
+
+/// A key a present table left out, said out loud.
+///
+/// "not configured" rather than a blank, because a blank after `=` reads as an
+/// empty value — and for both keys that use this, absent is a fact a repair
+/// will refuse on by name.
+fn optional(value: Option<String>) -> String {
+    value.unwrap_or_else(|| "not configured".to_string())
 }
 
 /// The machine-readable `inspect` payload.

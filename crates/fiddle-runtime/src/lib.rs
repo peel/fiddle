@@ -38,7 +38,13 @@ pub use capability::{
     Capability, CapabilityError, ExecutionGrant, FixtureRepair, RepairConfig, StubMark,
     CAPABILITIES,
 };
-pub use evidence::{mint_attempt_id, EvidenceError, BUNDLE_FILE};
+// `mint_attempt_id` is deliberately *not* re-exported beside these, for the
+// same reason publication is not re-exported beside [`attempt`]: minting an id
+// out here is what let a caller name an attempt the run it belonged to had never
+// heard of. [`attempt`] mints exactly one and hands it to the capability through
+// its [`ExecutionGrant`]. It stays reachable as `evidence::mint_attempt_id`;
+// what it is no longer is the front door.
+pub use evidence::{EvidenceError, BUNDLE_FILE};
 pub use fiddle_core as core;
 pub use gateway::{completion_model, GatewayError, GatewayModel};
 pub use journal::AttemptJournal;

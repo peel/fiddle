@@ -636,7 +636,6 @@ impl Fixture {
             workspace_root: self.workspace_root(),
             stub_root: self.stub_root(),
             project: PROJECT.to_string(),
-            attempt: AttemptId(ATTEMPT.to_string()),
             check: WorkspaceCommand {
                 program: "cargo".to_string(),
                 args: vec!["test".to_string(), "--offline".to_string()],
@@ -660,16 +659,16 @@ impl Fixture {
     /// and the config are, and they are the two arguments.
     async fn run(&self, script: Vec<MockTurn>, config: RepairConfig) -> RunReport {
         let capability = FixtureRepair::new(MockCompletionModel::new(script), config);
-        let journal = FileJournal::new(
-            &self.report_dir(),
-            SLUG,
-            &AttemptId(ATTEMPT.to_string()),
-            INVOCATION_REF,
-        );
+        // One id for the journal *and* for the run, because that is now what a
+        // capability's evidence quotes: every `repair:<n>:<attempt>` asserted
+        // below is an assertion that the tie holds.
+        let attempt = AttemptId(ATTEMPT.to_string());
+        let journal = FileJournal::new(&self.report_dir(), SLUG, &attempt, INVOCATION_REF);
         orchestration::run(&RunContext {
             project: PROJECT,
             invocation_ref: INVOCATION_REF,
             work_id: WORK_ID,
+            attempt: &attempt,
             work_items: &StubWorkItemPort::new(self.stub_root()),
             changes: &StubChangePort::new(self.stub_root()),
             capability: &capability,
@@ -796,9 +795,12 @@ fn completion_claim() -> MockTurn {
 }
 
 fn grant() -> ExecutionGrant {
-    ExecutionGrant::authorise(&NextAction::Execute {
-        capability_id: FIXTURE_REPAIR,
-    })
+    ExecutionGrant::authorise(
+        &NextAction::Execute {
+            capability_id: FIXTURE_REPAIR,
+        },
+        &AttemptId(ATTEMPT.to_string()),
+    )
     .expect("an Execute derivation authorises")
 }
 
