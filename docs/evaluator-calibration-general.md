@@ -534,6 +534,22 @@ Two, both recorded read-only during planning and neither resolvable without a wr
   `repo` and ADMIN on both existing repositories, so write is *plausible*, and planning's read-only
   mandate is why it is not *proven*. Score the bean that creates the repository on whether it proves
   the write and cleans up; do not score sibling beans as though the repository were already there.
+
+  **Resolved 2026-08-09, before implementation began.** The repository exists, is public, and holds
+  zero secrets and zero deploy keys. A fine-grained token scoped to it alone created and deleted
+  `refs/heads/probe`, leaving branches at exactly `main`. So this is no longer a blocked criterion
+  and a bean must not be scored as though it were. Two things the probe settled that the anchors
+  above now depend on:
+
+  - **The duplicate create returns exactly `422 "Reference already exists"`**, observed rather than
+    predicted. `m2-branch-422-resolved-by-reading` is therefore scored against a known response
+    shape, and a bean that maps that status to failure on its face has contradicted a measured fact.
+  - **The token's scope is proven by 403, not by 404.** `peel/fiddle` is public, so reading it
+    succeeds with any credential and proves nothing; what proves the grant is absent is
+    `Resource not accessible by personal access token` on a permission-gated endpoint. A bean whose
+    isolation evidence is a successful public read has asserted nothing, and `.permissions` on the
+    repository payload is worse than nothing — it reports the *user's* rights, reading
+    `admin=true` on a repository the token cannot write.
 - **No repository secret exists.** `gh secret list --repo peel/fiddle` is empty, and the default
   `GITHUB_TOKEN` is scoped to `peel/fiddle` and cannot write to the disposable repository whatever
   its `permissions:` block says. The `workflow_dispatch` lane therefore needs a cross-repository PAT
