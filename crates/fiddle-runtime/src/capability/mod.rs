@@ -93,6 +93,35 @@ pub trait Capability: Send + Sync {
     /// The identity this capability is derived and reported under.
     fn id(&self) -> CapabilityId;
 
+    /// The observable stage a [`ProgressEntry`](fiddle_core::ProgressEntry) for
+    /// this capability is filed under.
+    ///
+    /// # Why the capability names it, and why there is no default
+    ///
+    /// A published bundle's `stage` is the vocabulary a reader uses to say
+    /// *which part of the work this line is about*, so it belongs to whoever
+    /// knows the parts. The orchestration does not: it holds a
+    /// `&dyn Capability` precisely so it need not know which one it is holding,
+    /// and the one thing it must not do is invent a name on the capability's
+    /// behalf. It did exactly that until this method existed — a single
+    /// `const STAGE: &str = "mark"` in [`crate::orchestration`], which is
+    /// [`StubMark`]'s one step — and so a `fixture_repair` run published
+    /// `{"capability_id":"fixture_repair","stage":"mark", …}`.
+    ///
+    /// **Deliberately not defaulted**, unlike [`Capability::receipts`]. That
+    /// method defaults to the empty list, which is the neutral value: a
+    /// capability with nothing to say about itself says nothing, and no reader
+    /// is misled. There is no neutral stage name. Any default would be some
+    /// capability's real vocabulary applied to every other one, which is
+    /// verbatim the defect above — so the third capability this build gains has
+    /// to name its own stage or fail to compile, rather than silently inheriting
+    /// the first one's.
+    ///
+    /// `&'static str` rather than `String`: a stage is a fixed name from a
+    /// closed set the implementation knows at compile time, not something
+    /// computed per execution.
+    fn stage(&self) -> &'static str;
+
     /// Do the thing, and hand back what a reader can go and check.
     ///
     /// The `grant` argument is not consulted for permission by convention; it

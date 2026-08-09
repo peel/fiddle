@@ -35,6 +35,13 @@ impl Capability for StubMark {
         fiddle_core::STUB_MARK
     }
 
+    /// The one stage M0's capability has, and the name every M0 bundle already
+    /// carries. Stated here rather than in the orchestration so that it is this
+    /// capability's word for its own step.
+    fn stage(&self) -> &'static str {
+        "mark"
+    }
+
     async fn execute(
         &self,
         grant: ExecutionGrant,

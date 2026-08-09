@@ -159,6 +159,18 @@ pub const CREDENTIAL_VARS: [&str; 4] = [
     "JIRA_API_TOKEN",
 ];
 
+/// The defect [`Scenario::write_fixture_repo`] ships: an off-by-one that is
+/// perfectly good Rust and is simply wrong, so repairing it is a real edit
+/// rather than a syntax fix.
+///
+/// Public because a scenario that drives a repair has to say what the repaired
+/// contents are, and the two spellings must differ by exactly the defect.
+pub const BROKEN_FIXTURE: &str = "pub fn last_index(len: usize) -> usize { len }\n";
+
+/// The edit that removes it, and the only content a check over this fixture
+/// should accept.
+pub const REPAIRED_FIXTURE: &str = "pub fn last_index(len: usize) -> usize { len - 1 }\n";
+
 /// The `project.name` every scenario's configuration declares.
 ///
 /// Named once because the correlation key is derived from it: a scenario that
@@ -293,16 +305,16 @@ impl Scenario {
     /// the capability got anywhere near a model — and would then prove nothing
     /// about which capability was selected.
     ///
+    /// The one source file it holds carries [`BROKEN_FIXTURE`], the defect a
+    /// repair scenario exists to remove, so a check pointed at this repository
+    /// can genuinely tell a repaired tree from this one.
+    ///
     /// The committer identity is passed on the command line because a CI runner
     /// has none configured and `git commit` refuses without one.
     pub fn write_fixture_repo(&self) -> PathBuf {
         let repo = self.dir.path().join("fixture");
         std::fs::create_dir_all(repo.join("src")).unwrap();
-        std::fs::write(
-            repo.join("src/lib.rs"),
-            "pub fn last_index(len: usize) -> usize { len }\n",
-        )
-        .unwrap();
+        std::fs::write(repo.join("src/lib.rs"), BROKEN_FIXTURE).unwrap();
         std::fs::write(repo.join(".gitignore"), "target/\nCargo.lock\n").unwrap();
         git(&repo, &["init", "-q", "."]);
         git(&repo, &["add", "-A"]);
@@ -649,6 +661,55 @@ impl Scenario {
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8(out.stdout).unwrap()
+    }
+
+    /// `fiddle inspect <invocation_ref> --config <this scenario's document>`,
+    /// with this scenario's credential-free environment already applied and
+    /// nothing else decided.
+    ///
+    /// Handed back unlaunched, the same shape as [`Scenario::run_command`], so a
+    /// scenario can add its own flags and its own environment. Every `inspect`
+    /// helper builds its command through here, so the subcommand and the
+    /// `--config` argument are spelled once.
+    pub fn inspect_command(&self, invocation_ref: &str) -> Command {
+        let mut command = self.command();
+        command.args([
+            "inspect",
+            invocation_ref,
+            "--config",
+            self.config_path().to_str().unwrap(),
+        ]);
+        command
+    }
+
+    /// Run `fiddle inspect <invocation_ref>` with `extra` flags and hand back
+    /// the whole process result — exit code, stdout, and stderr — unjudged, for
+    /// the cases that are about the diagnostic rather than the payload.
+    pub fn inspect_raw_with(&self, extra: &[&str], invocation_ref: &str) -> std::process::Output {
+        self.inspect_command(invocation_ref)
+            .args(extra)
+            .output()
+            .unwrap()
+    }
+
+    /// As [`Scenario::inspect_json`], with additional flags placed before
+    /// `--json`. Requires exit 0.
+    pub fn inspect_json_with(&self, extra: &[&str], invocation_ref: &str) -> serde_json::Value {
+        let mut args = extra.to_vec();
+        args.push("--json");
+        let out = self.inspect_raw_with(&args, invocation_ref);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "stderr = {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!(
+                "stdout is not JSON ({e}): {}",
+                String::from_utf8_lossy(&out.stdout)
+            )
+        })
     }
 
     /// Run `fiddle inspect <invocation_ref> --json`, require `code`, and return

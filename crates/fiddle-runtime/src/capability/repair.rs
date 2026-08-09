@@ -217,6 +217,13 @@ where
         fiddle_core::FIXTURE_REPAIR
     }
 
+    /// One bounded attempt judged by one check is one step, so this capability
+    /// has one stage too — but it is *this* capability's step, and naming it
+    /// after M0's is what published `stage: "mark"` on a repair.
+    fn stage(&self) -> &'static str {
+        "repair"
+    }
+
     fn receipts(&self) -> Vec<EvidenceRef> {
         tool_evidence(
             &self

@@ -63,6 +63,27 @@ pub enum Command {
         #[arg(value_name = "INVOCATION_REF")]
         invocation_ref: String,
 
+        // Why a selection flag exists on a command that changes nothing:
+        // `inspect` reports the *next action*, and a next action names a
+        // capability. Without the flag it named one particular capability
+        // whatever the caller was about to run, so over a repair-configured
+        // project `inspect` said `execute stub_mark` while `run --capability
+        // fixture_repair` did something else — a read-only command whose whole
+        // purpose is to say what a run would do, saying the wrong thing. The
+        // flag is spelled and defaulted exactly as `run`'s is, so the two cannot
+        // disagree while being asked the same question.
+        //
+        // Selecting is *all* it does here. The id reaches the derivation and
+        // nothing else: no capability is built, no credential is resolved and no
+        // configuration table is required, so `inspect --capability
+        // fixture_repair` still answers offline over an M0 document and stays
+        // read-only.
+        /// Report the plan for one capability id rather than for the default.
+        /// The same ids `run --capability` takes; an unknown id is a usage
+        /// error.
+        #[arg(long, value_name = "CAPABILITY_ID")]
+        capability: Option<String>,
+
         /// Emit the machine-readable payload instead of the human summary.
         #[arg(long)]
         json: bool,
@@ -96,7 +117,7 @@ pub enum Command {
         )]
         mode: Mode,
 
-        /// Restrict execution to one capability id. M0 knows exactly one:
+        /// Restrict execution to one capability id. Absent selects the default,
         /// `stub_mark`. An unknown id is a usage error, never a silent no-op.
         #[arg(long, value_name = "CAPABILITY_ID")]
         capability: Option<String>,

@@ -309,6 +309,7 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
                 )],
                 progress: vec![progress(
                     capability_id,
+                    ctx.capability.stage(),
                     "completed",
                     format!("wrote correlation marker {marker}"),
                     with_receipts(evidence, &observed),
@@ -333,7 +334,13 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
                 },
                 next_action: derived,
                 executions: vec![execution(capability_id, "failed", observed.clone())],
-                progress: vec![progress(capability_id, "failed", reason, observed)],
+                progress: vec![progress(
+                    capability_id,
+                    ctx.capability.stage(),
+                    "failed",
+                    reason,
+                    observed,
+                )],
                 observations: view,
                 evidence_failure: None,
             }
@@ -502,10 +509,6 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
     }
 }
 
-/// The one stage M0's capability has. Named once so the execution record and
-/// the progress entry cannot disagree about what ran.
-const STAGE: &str = "mark";
-
 /// `earned` first, then whatever the capability observed of its own run.
 ///
 /// The order is the contract: the reference a capability *returned* is what a
@@ -530,15 +533,23 @@ fn execution(
     }
 }
 
+/// One progress entry, filed under the stage the capability names for itself.
+///
+/// `stage` is a parameter rather than a constant here because the orchestration
+/// holds a `&dyn Capability` and therefore does not know which capability it is
+/// running — which is the point of the seam. A constant in this module was
+/// necessarily one capability's vocabulary applied to every other one; see
+/// [`Capability::stage`].
 fn progress(
     capability_id: fiddle_core::CapabilityId,
+    stage: &str,
     status: &str,
     summary: String,
     evidence: Vec<EvidenceRef>,
 ) -> ProgressEntry {
     ProgressEntry {
         capability_id,
-        stage: STAGE.to_string(),
+        stage: stage.to_string(),
         status: status.to_string(),
         summary,
         evidence,
@@ -602,6 +613,10 @@ mod tests {
             STUB_MARK
         }
 
+        fn stage(&self) -> &'static str {
+            "spied"
+        }
+
         async fn execute(
             &self,
             _grant: ExecutionGrant,
@@ -628,6 +643,10 @@ mod tests {
     impl Capability for Watched {
         fn id(&self) -> CapabilityId {
             self.inner.id()
+        }
+
+        fn stage(&self) -> &'static str {
+            self.inner.stage()
         }
 
         async fn execute(

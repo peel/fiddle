@@ -172,6 +172,10 @@ impl Capability for Spy {
         STUB_MARK
     }
 
+    fn stage(&self) -> &'static str {
+        "spied"
+    }
+
     async fn execute(
         &self,
         _grant: ExecutionGrant,
@@ -192,6 +196,10 @@ struct MutateThenDie(StubMark);
 impl Capability for MutateThenDie {
     fn id(&self) -> CapabilityId {
         STUB_MARK
+    }
+
+    fn stage(&self) -> &'static str {
+        self.0.stage()
     }
 
     async fn execute(

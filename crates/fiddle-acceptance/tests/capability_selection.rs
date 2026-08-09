@@ -1,5 +1,5 @@
-//! Which capability a run selects, what it takes to build one, and what a
-//! refusal is allowed to say.
+//! Which capability an invocation selects, what it takes to build one, and what
+//! a refusal is allowed to say.
 //!
 //! With one capability registered, `--capability` could only ever name the one
 //! the derivation would have chosen anyway, so validating the value and acting
@@ -12,6 +12,13 @@
 //! a capability that needs a model, and it must reach neither stdout, nor
 //! stderr, nor anything the run writes to disk — so the scenarios that supply
 //! one supply a sentinel and then go looking for it everywhere.
+//!
+//! The third part is that `inspect` asks the same question. A read-only command
+//! that reports which capability is next is making the claim `run` acts on, so
+//! the two are driven here together and compared against *each other* rather
+//! than each against a literal — an assertion on two constants would still pass
+//! if both commands moved to a third capability together, and would say nothing
+//! about the pair.
 //!
 //! Everything is observed from outside the process. Nothing calls a library
 //! function.
@@ -130,6 +137,49 @@ fn the_selected_capability_is_the_one_that_runs() {
         None,
         "nothing earned a correlation marker: `stub_mark` never ran, and the \
          repair never passed a check"
+    );
+}
+
+/// **A repair's progress is filed under the repair's own stage.**
+///
+/// The published bundle is what a downstream reader consumes, and every
+/// [`ProgressEntry`] in it carries a `stage`. Before this test, that field was a
+/// single constant in the orchestration — `"mark"`, the name of M0's one
+/// observable step — so a `fixture_repair` run published
+/// `{"capability_id":"fixture_repair","stage":"mark", …}`: a bundle labelled
+/// with the wrong capability's vocabulary. Nothing caught it because every
+/// existing assertion on `stage` is over a `stub_mark` bundle, where the
+/// constant happened to be right.
+///
+/// Asserted over the *published bundle* rather than over stdout, because that is
+/// the artefact the field is a contract to; and on the failing arm because the
+/// gateway is unreachable, which is exactly the arm an operator reads a stage
+/// name on. The stage names what ran, not whether it worked.
+#[test]
+fn a_repair_files_its_progress_under_a_stage_of_its_own() {
+    let s = repairable();
+
+    let out = s
+        .run_command(INVOCATION_REF)
+        .args(["--capability", "fixture_repair", "--json"])
+        .env(CREDENTIAL, SENTINEL)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let payload: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not JSON ({e}): {stdout}\nstderr = {stderr}"));
+    let bundle = s.read_bundle(&payload);
+
+    assert_eq!(
+        bundle["progress"][0]["capability_id"], "fixture_repair",
+        "the bundle must record the capability that ran: {bundle}"
+    );
+    assert_eq!(
+        bundle["progress"][0]["stage"], "repair",
+        "a repair's progress must be filed under a stage describing the repair, \
+         never under M0's `mark`: {bundle}"
     );
 }
 
@@ -276,6 +326,142 @@ fn a_document_with_no_workspace_table_says_so() {
     assert!(
         stderr.contains("[workspace]"),
         "the diagnostic must name the table to add: {stderr}"
+    );
+}
+
+/// **`inspect` and `run` never disagree about what will happen.**
+///
+/// The defect this closes: `inspect` took no `--capability` and reported the
+/// plan for `stub_mark` unconditionally, so over a repair-configured project
+///
+/// ```text
+/// fiddle inspect beans:x --json  -> next_action: execute stub_mark
+/// fiddle run     beans:x --capability fixture_repair -> executes fixture_repair
+/// ```
+///
+/// — a read-only command whose whole purpose is to say what a run would do,
+/// saying the wrong thing.
+///
+/// The two halves are driven here in one scenario and compared against *each
+/// other* rather than against a literal, because the property is agreement: an
+/// assertion on two constants would still pass if both commands moved to a
+/// third capability together, and would say nothing about the pair.
+#[test]
+fn inspect_names_the_capability_a_run_with_the_same_flags_executes() {
+    let s = repairable();
+
+    let inspected = s.inspect_json_with(&["--capability", "fixture_repair"], INVOCATION_REF);
+    let foreseen = &inspected["next_action"]["execute"]["capability_id"];
+    assert_eq!(
+        foreseen, "fixture_repair",
+        "inspect must report the capability it was asked about: {inspected}"
+    );
+
+    let out = s
+        .run_command(INVOCATION_REF)
+        .args(["--capability", "fixture_repair", "--json"])
+        .env(CREDENTIAL, SENTINEL)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let ran: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout is not JSON ({e}): {stdout}\nstderr = {}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+
+    assert_eq!(
+        &ran["capability_executions"][0]["capability_id"], foreseen,
+        "the capability inspect foresaw and the capability run executed must be \
+         the same one: inspect said {foreseen}, run did {ran}"
+    );
+}
+
+/// The default did not move: an `inspect` with no flag reports `stub_mark`,
+/// exactly as M0's lane asserts, even over a document that configures a repair.
+///
+/// This is the other half of the agreement, and it is why adding the flag was
+/// enough on its own: `run` with no flag also selects `stub_mark`, so the two
+/// commands agree at the default as well as at every explicit selection. There
+/// is no configuration left where they differ without the caller having asked
+/// them different questions.
+#[test]
+fn an_unqualified_inspect_and_an_unqualified_run_agree_on_the_default() {
+    let s = repairable();
+
+    let inspected = s.inspect_json_with(&[], INVOCATION_REF);
+    let ran = s.run_json(INVOCATION_REF, 0);
+
+    assert_eq!(
+        inspected["next_action"]["execute"]["capability_id"], "stub_mark",
+        "the default plan is unchanged: {inspected}"
+    );
+    assert_eq!(
+        inspected["next_action"]["execute"]["capability_id"],
+        ran["capability_executions"][0]["capability_id"],
+        "unqualified, the two commands must still name the same capability"
+    );
+}
+
+/// `inspect` gained a selection and not a side effect.
+///
+/// The command is read-only by contract — it never writes fixture state and
+/// never publishes a bundle — and a flag that reaches the derivation must not
+/// have quietly reached the capability builder as well. Asserted over the whole
+/// project tree, so an escape of any kind is seen rather than only the two
+/// artefacts a run is known to write.
+#[test]
+fn selecting_a_capability_leaves_inspect_read_only() {
+    let s = repairable();
+    let before = s.project_tree();
+
+    let payload = s.inspect_json_with(&["--capability", "fixture_repair"], INVOCATION_REF);
+
+    assert_eq!(
+        payload["next_action"]["execute"]["capability_id"], "fixture_repair",
+        "the scenario must have reached the derivation to prove anything: {payload}"
+    );
+    assert_eq!(
+        s.project_tree(),
+        before,
+        "inspect is read-only, whichever capability it was asked about"
+    );
+    assert!(
+        !s.report_dir().exists(),
+        "inspect must publish no bundle, whichever capability it was asked about"
+    );
+}
+
+/// The selection `inspect` accepts is the same selection `run` accepts, down to
+/// the refusal: an id this build cannot execute is a usage error naming what it
+/// can, not a plan for something that does not exist.
+///
+/// Refused without a credential in the environment, because `inspect` needs
+/// none — the flag names the capability the plan is *about*, and nothing is
+/// built from it.
+#[test]
+fn an_unknown_capability_is_refused_by_inspect_too() {
+    let s = repairable();
+    let before = s.project_tree();
+
+    let out = s.inspect_raw_with(&["--capability", "nope", "--json"], INVOCATION_REF);
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stdout = {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("stub_mark") && stderr.contains("fixture_repair"),
+        "the diagnostic must list every id this build can execute: {stderr}"
+    );
+    assert_eq!(
+        s.project_tree(),
+        before,
+        "a rejected inspection provably did nothing"
     );
 }
 

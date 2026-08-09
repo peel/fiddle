@@ -531,6 +531,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
         },
         cli::Command::Inspect {
             invocation_ref,
+            capability,
             json,
         } => {
             // Parsed through `fiddle-core` rather than re-implemented here: the
@@ -542,6 +543,14 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             // rather than about a document they never mentioned.
             let reference: InvocationRef =
                 invocation_ref.parse().map_err(InvalidInvocationRef::from)?;
+            // Resolved through the very same two lines `run` uses, and that is
+            // the point rather than an economy: a second spelling of "absent
+            // means `stub_mark`" is exactly how the two commands would drift
+            // apart again.
+            let selection = match capability {
+                Some(requested) => Selection::parse(requested)?,
+                None => Selection::Mark,
+            };
             let config = config::load(&cli.config)?;
             let observed = observe(&config, &reference);
             // The CLI owns the configuration, so the CLI computes the marker
@@ -551,13 +560,17 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             let expected_marker =
                 fiddle_core::correlation_key(&config.project.name, &reference.as_str());
             let assessment = fiddle_core::assess(&observed, &expected_marker);
-            // `inspect` takes no `--capability`, so it reports what the M0 plan
-            // would run: `stub_mark`. Naming it here rather than in the core is
-            // the point of the argument — the caller that knows which
-            // capability is under consideration is the one that says so, and a
-            // later selection reaches this line rather than the derivation.
-            let next_action =
-                fiddle_core::derive_next(&observed, &expected_marker, fiddle_core::STUB_MARK);
+            // The capability under consideration, named by the caller. Naming it
+            // here rather than in the core is the point of `derive_next`'s
+            // argument — the caller that knows which capability is under
+            // consideration is the one that says so — and `inspect` is a caller
+            // that now knows, instead of a caller that passed a constant.
+            //
+            // **Selected, and not built.** `run` follows its identical
+            // `Selection` into `build_capability`; this line takes the id and
+            // stops, which is what keeps `inspect` read-only, offline and
+            // credential-free for every value of the flag.
+            let next_action = fiddle_core::derive_next(&observed, &expected_marker, selection.id());
             if *json {
                 println!(
                     "{}",
