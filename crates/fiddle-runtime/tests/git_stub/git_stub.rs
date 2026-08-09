@@ -29,7 +29,20 @@
 //! which is the security boundary — would have to be weakened to a filter over
 //! the fixture's own noise. A compiled recorder adds nothing, so what it writes
 //! down is exactly what the parent passed.
+//!
+//! # Why two of the modes hand the work to a real `git`
+//!
+//! Most of what this fixture is asked is about the *invocation*, and a canned
+//! answer is enough. The ambiguous-write modes are not: their whole subject is a
+//! push that genuinely moved a ref and then genuinely failed to say so, and a
+//! fixture that only claimed to have pushed would leave the executor's
+//! postcondition read with nothing real to find. So `push_then_killed` and
+//! `never_answers` delegate to the real `git`, against a real repository, and
+//! interpose only on how the invocation *ends*. The environment is passed
+//! through untouched, so the push that lands still runs under the seven names
+//! the product built.
 
+use std::io::Write;
 use std::path::PathBuf;
 
 /// What `rev-parse HEAD` answers, so a fixture with no repository behind it can
@@ -37,10 +50,18 @@ use std::path::PathBuf;
 /// anything that is not one.
 const HEAD_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
+/// Longer than any deadline a test sets, so a mode that never answers is ended
+/// by the runtime's own bound and by nothing else.
+const FOREVER: std::time::Duration = std::time::Duration::from_secs(120);
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let subcommand = args.first().cloned().unwrap_or_default();
     let dir: PathBuf = std::env::current_dir().expect("the adapter runs its git in the worktree");
+    let mode = std::fs::read_to_string(dir.join("mode"))
+        .unwrap_or_else(|_| "accepted".to_string())
+        .trim()
+        .to_string();
 
     // Keyed by subcommand, because a publish runs `git` twice — an
     // unauthenticated local read and then the authenticated push — and the
@@ -55,15 +76,33 @@ fn main() {
     )
     .unwrap();
 
+    if subcommand == "push" {
+        // Append-only, so "how many pushes were dispatched?" is a question about
+        // the filesystem. The per-subcommand record above is overwritten by each
+        // invocation and could never answer it, and it is the exact number a
+        // duplicate hides behind: an `Unknown` resolved by retrying instead of
+        // by reading would show up here as two.
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("pushes"))
+            .unwrap();
+        writeln!(log, "{}", args.join(" ")).unwrap();
+    }
+
     if subcommand == "rev-parse" {
-        println!("{HEAD_SHA}");
+        // The canned answer keeps the recording fixture repository-free, which
+        // is what the argument and environment assertions need. The delegating
+        // modes below are driving a real repository, so theirs has to come out
+        // of it or the sha the adapter reports would name no commit.
+        match delegating(&mode) {
+            true => delegate(&args),
+            false => println!("{HEAD_SHA}"),
+        }
         return;
     }
 
-    match std::fs::read_to_string(dir.join("mode"))
-        .unwrap_or_else(|_| "accepted".to_string())
-        .trim()
-    {
+    match mode.as_str() {
         // A first push, as `--porcelain` reports one.
         "accepted" => print!("To stub\n*\tHEAD:refs/heads/fiddle/abc\t[new branch]\nDone\n"),
         // The adversarial one: the configured header comes back on `stderr`,
@@ -77,6 +116,49 @@ fn main() {
             );
             std::process::exit(128);
         }
+        // The ambiguous write, and the reason these two modes exist: a push
+        // whose *answer* was lost is not a push that failed, and the only way
+        // to prove a runtime tells those apart is to really lose the answer to
+        // a push that really happened.
+        //
+        // Note the order. The ref is pushed by a real `git`, against a real
+        // repository, and the death comes afterwards — a fixture that died
+        // first would be testing a failed write, which proves nothing. It ends
+        // with `abort`, so the signal leaves no exit code behind and the
+        // adapter reaches `GitError::Killed` rather than reading a number.
+        "push_then_killed" => {
+            delegate(&args);
+            std::process::abort();
+        }
+        // The other half of the same ambiguity, and the other failure that
+        // classifies `Unknown`: nothing is pushed and nothing is answered, so
+        // the runtime's own deadline is what ends this — there is no timeout
+        // flag in `git` and this is the only thing that can end it.
+        "never_answers" => std::thread::sleep(FOREVER),
         other => panic!("unknown mode {other}"),
+    }
+}
+
+/// Whether a mode is driving a real repository rather than answering from the
+/// fixture's own constants.
+fn delegating(mode: &str) -> bool {
+    matches!(mode, "push_then_killed" | "never_answers")
+}
+
+/// Hand the invocation to the real `git`, unchanged.
+///
+/// The environment is *not* rebuilt: this child inherits exactly what the
+/// adapter handed the fixture, so the push that lands the ref runs under the
+/// same seven names the product built and the delegation cannot quietly grant
+/// itself something the boundary forbids. Streams are inherited too, so the
+/// porcelain report reaches the adapter's own pipes as though nothing were in
+/// between.
+fn delegate(args: &[String]) {
+    let status = std::process::Command::new("git")
+        .args(args)
+        .status()
+        .expect("git is on the PATH the adapter passed through");
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
     }
 }

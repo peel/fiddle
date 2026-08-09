@@ -237,23 +237,17 @@ fn world_answer(dir: &Path, key: &str) -> (u16, String) {
             .nth(1)
             .unwrap_or_default()
             .replace('_', "/");
-        // A bare repository beside the script is a world some *other* process
-        // built — a real `git push`, which is how a branch is actually created,
-        // since a ref can only point at an object the remote already holds. The
-        // stub mirrors it rather than modelling it, so "what does the next
-        // process see?" is answered by the remote and not by this fixture's
-        // idea of what a push does.
-        let remote = dir.join("remote.git");
-        if remote.is_dir() {
-            return match bare_repository_ref(&remote, &branch) {
-                Some(sha) => (200, format!(r#"{{"object":{{"sha":"{sha}"}}}}"#)),
-                None => (404, r#"{"message":"Not Found"}"#.to_string()),
-            };
-        }
-        return match landed.iter().any(|w| landed_key(w, "git_refs")) {
-            true => (200, format!(r#"{{"object":{{"sha":"c0ffee{branch}"}}}}"#)),
+        // A ref is answered out of the bare repository beside the script,
+        // because that is the only place a ref can actually come from: it must
+        // point at an object the remote already holds, so it is created by a
+        // real `git push` and never by a request this stub could have recorded.
+        // The stub therefore mirrors the remote rather than modelling it, and
+        // "what does the next process see?" is answered by the world a push
+        // built and not by this fixture's idea of what a push does.
+        return match bare_repository_ref(&dir.join("remote.git"), &branch) {
+            Some(sha) => (200, format!(r#"{{"object":{{"sha":"{sha}"}}}}"#)),
             // An absent ref is a 404, which the adapter reads as knowledge.
-            false => (404, r#"{"message":"Not Found"}"#.to_string()),
+            None => (404, r#"{"message":"Not Found"}"#.to_string()),
         };
     }
     if key.starts_with("GET_repos") && key.contains("pulls") {

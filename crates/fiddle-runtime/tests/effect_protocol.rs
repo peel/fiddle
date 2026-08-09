@@ -33,7 +33,7 @@ use fiddle_runtime::effect::{
     EffectTrace, ExecutionStep, Executor, IntegrationOperation, ObservedState,
 };
 use fiddle_runtime::git::{GitCli, GitError};
-use fiddle_runtime::github::{branch_name, BranchRef, EnsureBranchPublished};
+use fiddle_runtime::github::{branch_name, EnsureBranchPublished};
 use fiddle_runtime::{GhCli, GhError};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -874,14 +874,51 @@ impl Remote {
         )
     }
 
+    /// How many pushes were dispatched, counted from what the pushing `git`
+    /// wrote down rather than inferred from the remote.
+    ///
+    /// The number a duplicate hides behind: an `Unknown` resolved by retrying
+    /// the mutation instead of by reading the world shows up here as two, and
+    /// leaves a remote that looks exactly the same either way.
+    fn pushes(&self) -> usize {
+        std::fs::read_to_string(self.work.join("pushes"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
     /// A context whose `gh` is the scripted one and whose `git` is the real one.
     fn context(&self) -> EffectContext {
-        self.context_reading_with(PathBuf::from(env!("CARGO_BIN_EXE_gh_stub")))
+        self.context_with(
+            PathBuf::from(env!("CARGO_BIN_EXE_gh_stub")),
+            PathBuf::from("git"),
+            PATIENT,
+        )
     }
 
     /// The same, with the `gh` program named — so a `gh` that cannot answer at
     /// all can be handed to the same operation.
     fn context_reading_with(&self, gh: PathBuf) -> EffectContext {
+        self.context_with(gh, PathBuf::from("git"), PATIENT)
+    }
+
+    /// A context whose pushes go through the recording `git` in `mode`, under
+    /// `timeout`.
+    ///
+    /// The mode is written into the worktree because that is the only channel
+    /// the fixture has: the push environment is pinned to seven names and its
+    /// argument vector is asserted exactly, so the working directory is what is
+    /// left. See `tests/git_stub/git_stub.rs`.
+    fn context_pushing_with(&self, mode: &str, timeout: Duration) -> EffectContext {
+        std::fs::write(self.work.join("mode"), mode).unwrap();
+        self.context_with(
+            PathBuf::from(env!("CARGO_BIN_EXE_gh_stub")),
+            PathBuf::from(env!("CARGO_BIN_EXE_git_stub")),
+            timeout,
+        )
+    }
+
+    fn context_with(&self, gh: PathBuf, git: PathBuf, timeout: Duration) -> EffectContext {
         EffectContext::new(
             GhCli::new(
                 gh,
@@ -898,13 +935,13 @@ impl Remote {
                 PATIENT,
             ),
             GitCli::new(
-                PathBuf::from("git"),
+                git,
                 // Never used: a path remote authenticates nobody, which is what
                 // keeps this lane credential-free while still running the exact
                 // environment the product builds.
                 "ghp_never_used_by_a_path_remote".to_string(),
                 "FIDDLE_GITHUB_TOKEN",
-                PATIENT,
+                timeout,
             ),
             self.work.clone(),
             CancellationToken::new(),
@@ -913,6 +950,11 @@ impl Remote {
 
     fn steps(&self) -> Vec<&'static str> {
         self.steps.lock().unwrap().clone()
+    }
+
+    /// How many times the executor dispatched the mutation, from the step trace.
+    fn applies(&self) -> usize {
+        self.steps().iter().filter(|step| **step == "apply").count()
     }
 }
 
@@ -927,10 +969,6 @@ fn branch_operation(intended: &str) -> EnsureBranchPublished {
 }
 
 /// Walk the authorization order for one branch effect.
-///
-/// Generic over the operation so that the 422 cases below can substitute a
-/// mutation while keeping the *real* read — which is the half the criterion is
-/// actually about.
 async fn publish_the_branch<O>(
     remote: &Remote,
     ctx: &EffectContext,
@@ -1186,144 +1224,136 @@ async fn a_ref_at_our_name_pointing_elsewhere_is_refused_not_overwritten() {
 }
 
 // ---------------------------------------------------------------------------
-// A 422, resolved by looking
+// An ambiguous push, resolved by looking
 // ---------------------------------------------------------------------------
 
-/// A ref creation that answers **422** while the real read decides what it meant.
+/// A deadline short enough that a `git` which never answers is ended by it, and
+/// long enough that a `git` which does answer is not raced against it.
+const IMPATIENT: Duration = Duration::from_secs(3);
+
+/// The milestone's central rule, against a push that really happened.
 ///
-/// The 422 is injected rather than produced, and the reason is worth stating
-/// plainly. Creating a ref through the API is not how this operation publishes —
-/// a ref can only point at an object the remote already holds, so the objects
-/// and the ref go up together in one `git push`, and `git` has no 422 to give.
-/// What GitHub answers when a ref creation collides is nonetheless the thing
-/// this rule exists for, verified against the real service during planning:
-/// exactly `422 {"message":"Reference already exists"}`, a status that covers
-/// malformed input, invalid ref syntax, spam protection and "it is already
-/// there" alike, and therefore means nothing on its face.
+/// This is the state the whole design turns on and the one no scripted world
+/// can honestly stand in for: the pack reached the remote, the ref moved, and
+/// then the child died before it could say so. `GitError::outcome` calls that
+/// `Unknown` — not `NotCommitted` — precisely so the executor goes and looks
+/// instead of concluding, because a landed write reported as failed is retried
+/// into the duplicate this milestone exists to prevent.
 ///
-/// So only the *answer* is scripted. [`inspect`](IntegrationOperation::inspect)
-/// delegates to the production operation, and `lands` decides whether the world
-/// really changed first — which is the only difference between the two cases,
-/// and the only thing that can tell them apart.
-struct RefCreationAnswering422 {
-    inner: EnsureBranchPublished,
-    /// Whether the ref creation really landed before its answer came back.
-    lands: bool,
-}
-
-#[async_trait]
-impl IntegrationOperation for RefCreationAnswering422 {
-    type State = BranchRef;
-
-    fn minimum(&self) -> HumanDecisionRequirement {
-        self.inner.minimum()
-    }
-
-    /// The production read, unmodified. This is the half the criterion is about.
-    async fn inspect(&self, ctx: &EffectContext) -> Result<Option<BranchRef>, GhError> {
-        self.inner.inspect(ctx).await
-    }
-
-    async fn apply(
-        &self,
-        ctx: &EffectContext,
-        _authorized: &AuthorizedEffect<Self>,
-    ) -> Result<(), GhError> {
-        // The effect lands and *then* the answer is lost — that order, and not
-        // the other one, is what makes this an ambiguous write rather than a
-        // failed one.
-        if self.lands {
-            ctx.git
-                .publish(&ctx.work, self.inner.branch(), &ctx.cancel)
-                .await
-                .map_err(GhError::Push)?;
-        }
-        Err(GhError::Http {
-            status: 422,
-            message: "Reference already exists".to_string(),
-        })
-    }
-}
-
-fn ref_creation_answering_422(intended: &str, lands: bool) -> RefCreationAnswering422 {
-    RefCreationAnswering422 {
-        inner: branch_operation(intended),
-        lands,
-    }
-}
-
-/// A 422 whose ref then matches is a success the naive reading would have called
-/// a failure.
-///
-/// `GhError::outcome` maps 422 to `Unknown` precisely so the executor cannot act
-/// on it, and what settles it is the ref read — matching, so the postcondition
-/// holds. The mutation is dispatched once and never again: the world is
-/// consulted, not the request repeated.
+/// The push is a real `git` against a real bare repository, interposed on only
+/// to take the answer away afterwards. So the ref the postcondition read finds
+/// is one that genuinely got there, and "resolved by reading" is a claim about
+/// the system rather than about the harness.
 #[tokio::test]
-async fn a_422_is_resolved_by_reading_the_ref_not_by_believing_it() {
-    let remote = Remote::empty();
-    let ctx = remote.context();
-    let head = remote.head();
+async fn a_push_that_landed_before_its_answer_was_lost_is_resolved_by_reading() {
+    // The hazard is demonstrated before it is relied on. Both halves of an
+    // ambiguous write have to be real or this test would pass on a push that
+    // simply succeeded — the executor reaches `Committed` either way, and only
+    // this witness says which route it took. A separate remote, because a push
+    // into the one under test would satisfy the postcondition before the
+    // executor ever ran.
+    let witness = Remote::empty();
+    let wctx = witness.context_pushing_with("push_then_killed", PATIENT);
+    let lost = wctx
+        .git
+        .publish(&wctx.work, &published_branch(), &wctx.cancel)
+        .await
+        .expect_err("the fixture must really lose the answer, or it proves nothing");
+    assert!(
+        matches!(lost, GitError::Killed),
+        "expected a child that died without answering, got {lost:?}"
+    );
+    assert_eq!(
+        lost.outcome(),
+        EffectOutcome::Unknown,
+        "and it must classify Unknown, or the executor would never go and look"
+    );
+    assert_eq!(
+        witness.branch_sha(&published_branch()),
+        witness.head(),
+        "and the write must really have landed, or the answer was all that was lost"
+    );
 
-    let receipt = publish_the_branch(
-        &remote,
-        &ctx,
-        &head,
-        ref_creation_answering_422(&head, true),
-    )
-    .await
-    .expect("a 422 whose ref is there is the postcondition, not a failure");
+    let remote = Remote::empty();
+    let head = remote.head();
+    let ctx = remote.context_pushing_with("push_then_killed", PATIENT);
+
+    let receipt = publish_the_branch(&remote, &ctx, &head, branch_operation(&head))
+        .await
+        .expect("the answer was lost, not the write");
 
     assert_eq!(receipt.outcome, EffectOutcome::Committed);
-    assert_eq!(receipt.external_ref.as_deref(), Some(head.as_str()));
+    assert_eq!(
+        receipt.external_ref.as_deref(),
+        Some(head.as_str()),
+        "the sha comes from the read, since the push never reported one"
+    );
     assert_eq!(
         remote.branches(),
         [published_branch()],
-        "exactly one branch: the answer was lost, not the write"
+        "exactly one branch — the property, stated as an object count"
+    );
+    assert_eq!(remote.branch_sha(&published_branch()), head);
+    assert_eq!(
+        remote.pushes(),
+        1,
+        "the mutation was dispatched exactly once; an Unknown settled by \
+         retrying instead of by reading would show up here as two"
     );
     assert_eq!(
-        remote
-            .steps()
-            .iter()
-            .filter(|step| **step == "apply")
-            .count(),
+        remote.applies(),
         1,
-        "an unknown outcome is resolved by reading, never by dispatching again"
+        "and the executor agrees it dispatched once"
     );
 }
 
-/// And a 422 that was genuinely a bad request stays a failure.
+/// The other direction: the answer was lost and nothing is behind it.
 ///
-/// The other direction, and the one that stops "422 means it already exists"
-/// from being written down as a rule. Nothing is in the remote, so nothing
-/// resolves the ambiguity, and the effect stays unresolved rather than being
-/// reported as either confident answer — a caller told "failed" here would retry
-/// a write that might have landed.
+/// A deadline the runtime imposed is the second failure that classifies
+/// `Unknown`, and it reaches the same rule from the other side — the read finds
+/// no ref, so nothing settles the question and the effect stays `Unresolved`.
+/// Deliberately not "failed": the push may still be in flight, and a caller told
+/// it failed would retry a write that could yet land. The push is still
+/// dispatched exactly once, because an unresolved outcome is not a licence to
+/// try again either.
 #[tokio::test]
-async fn a_422_with_no_matching_ref_is_still_a_failure() {
+async fn a_push_whose_answer_was_lost_with_no_ref_behind_it_stays_unresolved() {
     let remote = Remote::empty();
-    let ctx = remote.context();
     let head = remote.head();
+    let ctx = remote.context_pushing_with("never_answers", IMPATIENT);
 
-    let error = publish_the_branch(
-        &remote,
-        &ctx,
-        &head,
-        ref_creation_answering_422(&head, false),
-    )
-    .await
-    .expect_err("a 422 with no ref behind it is not a success");
+    let error = publish_the_branch(&remote, &ctx, &head, branch_operation(&head))
+        .await
+        .expect_err("nothing was observed, so nothing is confirmed");
 
     assert!(
         matches!(error, EffectError::Unresolved { .. }),
-        "expected Unresolved, got {error:?}"
+        "expected Unresolved rather than a confident answer, got {error:?}"
     );
+    let rendered = format!("{error}");
     assert!(
-        format!("{error}").contains("422"),
-        "the refusal must carry what GitHub actually said: {error}"
+        rendered.contains("answer was lost"),
+        "a caller has to be able to tell this from a settled failure: {rendered}"
+    );
+    // The hazard, demonstrated rather than assumed. A `git` that answered
+    // promptly and did nothing would also leave the ref absent and also reach
+    // `Unresolved` — by the arm that means "the adapter claimed success", which
+    // is a different rule entirely. Naming the deadline in the message is what
+    // distinguishes the two, so this test cannot pass on a fixture whose sleep
+    // stopped working.
+    assert!(
+        rendered.contains("timeout"),
+        "the answer has to have been really lost, to a deadline this runtime \
+         imposed: {rendered}"
     );
     assert!(
         remote.branches().is_empty(),
-        "no branch was created, and none was invented by reading"
+        "no ref was created, and none was invented by reading"
     );
+    assert_eq!(
+        remote.pushes(),
+        1,
+        "an unresolved outcome is never resolved by dispatching again"
+    );
+    assert_eq!(remote.applies(), 1);
 }
