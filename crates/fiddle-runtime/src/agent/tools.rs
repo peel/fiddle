@@ -379,7 +379,13 @@ impl Tool for WriteFile {
     type Error = ToolError;
 
     fn description(&self) -> String {
-        "Replace one file in the project you are repairing with the contents you supply.".into()
+        // The second sentence is the whole reason the resolution below walks to
+        // the deepest existing ancestor. A model that does not know it may name
+        // a path whose directories are absent will not try, and there is nothing
+        // else in its context that would tell it.
+        "Replace one file in the project you are repairing with the contents you supply. \
+         The file is created if it does not exist, along with any directories on the way to it."
+            .into()
     }
 
     fn parameters(&self) -> serde_json::Value {
