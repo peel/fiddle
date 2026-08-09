@@ -18,9 +18,11 @@
 //! else is generic over Rig's completion-model trait, which is what lets the
 //! milestone's central property be proven offline. `github` is the second
 //! credential-carrying construction beside it — one `gh`, one environment, one
-//! place to look — and `effect` is the vocabulary its failures are classified
-//! into, where the difference between a refused write and a lost answer is
-//! made. `process` is private and holds the one thing every child this runtime
+//! place to look — and `effect` is the mandatory authorization boundary in front
+//! of it: the executor that walks validate → identity → postcondition → policy →
+//! authorize → delegate → observe, the envelope no caller can forge, and the
+//! vocabulary in which the difference between a refused write and a lost answer
+//! is made. `process` is private and holds the one thing every child this runtime
 //! spawns has in common: a deadline it cannot outlive and a process group that
 //! dies with it. What a child may *see* is never shared; only the bound is.
 //!
@@ -53,7 +55,10 @@ pub use capability::{
 // heard of. [`attempt`] mints exactly one and hands it to the capability through
 // its [`ExecutionGrant`]. It stays reachable as `evidence::mint_attempt_id`;
 // what it is no longer is the front door.
-pub use effect::EffectOutcome;
+pub use effect::{
+    AuthorizedEffect, DeploymentPolicy, EffectContext, EffectError, EffectOutcome, EffectReceipt,
+    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ObservedState,
+};
 pub use evidence::{EvidenceError, BUNDLE_FILE};
 pub use fiddle_core as core;
 pub use gateway::{completion_model, GatewayError, GatewayModel};
