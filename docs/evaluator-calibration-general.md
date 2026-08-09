@@ -388,3 +388,155 @@ milestone was built:
 - **Model names come from the gateway, not from the RFC.** The RFC's `claude-sonnet-4-5` is not
   available there. A bean that hardcodes an RFC model name has a runtime defect, not a style
   problem.
+
+## M2 — Safe GitHub effects
+
+Anchors for the milestone that gives fiddle its first authenticated, mutating reach outside the
+process. Every M2 bean declares `thresholds: {}` and every M2 bean changes code, so the 2026-07-29
+doc-only correction does not apply to any of them.
+
+**The scope rule for this milestone, stated once.** M2 is scored on how the deterministic shell
+*interprets* GitHub, never on whether GitHub cooperated. A network that was slow, a rate limit that
+fired, a workflow that queued — none of these is a defect in a bean. What is a defect is a shell
+that reads any of them as a settled answer. The single question behind every criterion below is:
+when the result was not known, did the code go and look, or did it guess? A bean that retries a
+mutation to resolve an unknown has failed this milestone's central property however green its tests
+are.
+
+**A second rule, because this is the first milestone that can damage something.** An anchor here is
+scored against the *external* state a run left behind, not against its exit code or its report. M1
+could be judged by reading a bundle; M2 cannot, because a bundle claiming one pull request and a
+repository holding two is exactly the failure the milestone exists to prevent.
+
+### `m2-effect-boundary-coverage`
+
+The executor, the authorization envelope, and stable effect identity.
+
+- **Poor (1–3).** A capability, a tool, or an adapter performs a mutation without passing the
+  executor. `AuthorizedEffect` is constructible outside it, so the envelope proves nothing. Effect
+  identity is a UUID, a timestamp, a counter, or anything else a fresh process cannot recompute —
+  or it is not derived at all and the code relies on a local file to remember what it did. Policy is
+  consulted after the mutation, or not at all.
+- **Acceptable (4–7).** Every mutation passes the executor, which walks the PRD's order: validate,
+  derive `EffectId` and payload hash, inspect the postcondition, combine capability minimum with
+  deployment policy, obtain the handle, construct the envelope, delegate, observe the postcondition,
+  return a receipt. `EffectId` derives through `blake3` over canonical inputs in the same shape as
+  `correlation_key`, so a fresh process recomputes it from `(project, invocation_ref, kind, target)`
+  with no local state. `AuthorizedEffect`'s constructor is private to the executor. The receipt
+  carries effect id, payload hash, target identity, observed postcondition, and external reference.
+  `combine` is a total function over its enums and is tested as one.
+- **Excellent (8–10).** All of the above, plus the envelope's privacy is proven rather than
+  asserted — a compile-fail test, or a boundary test in the shape of `crate_boundary.rs`, shows that
+  no path outside the executor constructs one. The payload hash is load-bearing rather than
+  decorative: a changed payload against an unchanged identity is *detected* and reported, which is
+  what stops an approved effect from being widened later. And the policy combination's
+  never-weaken rule is proven exhaustively over the product of both enums rather than sampled at
+  three interesting points.
+
+### `m2-ambiguity-classification`
+
+The three-valued outcome, and what the code does when it does not know.
+
+- **Poor (1–3).** A transport timeout, a killed subprocess, or a 5xx is classified as failure. A 422
+  is mapped to success on its face, or to failure on its face. `gh`'s exit code is read as though it
+  carried an HTTP status. An unknown result is resolved by retrying the mutation. Any of these
+  alone is Poor: each is a way of turning "I do not know" into a confident wrong answer, and each
+  produces the duplicate the milestone forbids.
+- **Acceptable (4–7).** `EffectOutcome` separates `Committed`, `NotCommitted` and `Unknown`, and the
+  three are produced by distinct evidence rather than by one branch with a comment. A killed `gh`, a
+  transport timeout and a 5xx all reach `Unknown`. `Unknown` is resolved by a postcondition read and
+  by nothing else. A 422 goes back to the same lookup before being called anything. The status comes
+  from the `gh api -i` status line — exit 4 is authentication, exit 2 is cancellation — because
+  `gh help exit-codes` documents exit 1 for every HTTP failure regardless of status, so a bean that
+  branches on the exit code has read the wrong surface.
+- **Excellent (8–10).** All of the above, plus `Unknown` is not a leaf: the postcondition read has
+  its own three outcomes and a read that itself fails leaves the effect unresolved and *says so*,
+  rather than degrading to one of the two confident answers. The retry budget is per-effect and
+  bounded, `Retry-After` and the `X-RateLimit-*` headers `-i` exposes are honoured rather than
+  parsed and dropped, and more than one matching object is reported as a duplicate-state error
+  rather than resolved by choosing the first. A bean that silently picks `[0]` from a two-element
+  result has written the bug this milestone is about.
+
+### `m2-credential-isolation`
+
+Where the two credentials live, and what can reach them.
+
+- **Poor (1–3).** A token appears in `argv` — `git push https://<token>@…` is the specific form,
+  and `/proc/<pid>/cmdline` is world-readable on Linux. A token reaches a workspace command, a
+  model-visible tool, a tool schema, an error message, or a published bundle. The `gh` subprocess
+  inherits the ambient environment, so which credential it used depends on the operator's machine.
+  A configuration document accepts a literal token.
+- **Acceptable (4–7).** `gh` runs under `env_clear()` plus exactly `PATH`, `GH_TOKEN`,
+  `GH_CONFIG_DIR`, `GH_PROMPT_DISABLED` and `NO_COLOR`, with `HOME` deliberately absent. The push
+  credential reaches git through `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`
+  as an `http.…extraHeader`, never through `argv`, with `GIT_TERMINAL_PROMPT=0`. The token resolves
+  from `{ env = "NAME" }` only. Neither spawn site is a workspace command, and
+  `workspace::a_workspace_command_inherits_no_credential` still pins the four-name set exactly —
+  a bean that widens *that* allowlist to make GitHub work has broken M1's invariant to build M2.
+- **Excellent (8–10).** All of the above, plus the isolation is proven the way
+  `acceptance-repository.md` proves its credential-free clone — by running the thing and showing it
+  refuses. With `HOME` absent and `GH_CONFIG_DIR` pointed at an empty directory, `gh` answers
+  `please run: gh auth login` rather than reaching the operator's keyring; with `credential.helper`
+  set empty, the push cannot fall back to the keychain. Both are assertions, not paragraphs. And the
+  credential's *value* is searched for in every published bundle, every diagnostic and every stdout
+  byte, in the shape `capability_selection.rs` already established with its `LITELLM_API_KEY`
+  sentinel — a second sentinel for the GitHub token, not a second prose promise.
+
+### `m2-duplicate-proof`
+
+The milestone's mandatory automated proof.
+
+- **Poor (1–3).** Exactly-once is asserted only against a live repository, so the gate does not
+  carry it. The ambiguous write is simulated by calling the code twice rather than by interrupting
+  it after dispatch, which proves the read-before-write path and nothing about a lost response. The
+  proof asserts an exit code or a report field instead of counting objects at the remote. Cleanup is
+  absent, so the second run's starting state is the first run's residue.
+- **Acceptable (4–7).** The fault is injected after the mutation was dispatched and before its
+  result was observed — the scripted `gh` stub records what it was asked for and then exits as
+  though killed, which is a genuine lost answer rather than a mocked one. A *fresh process* then
+  recomputes the identity, observes the recorded state, and publishes nothing further. Exactly one
+  branch, one pull request and one requested check are asserted afterwards. Because the stub owns
+  both halves, this runs in the gating offline suite, for the same reason M1's adversarial cases
+  ride in `repair_protocol` rather than in a live lane.
+- **Excellent (8–10).** All of the above, plus the injection point is exercised at *each* of the
+  three objects rather than once at the easiest of them — and the check request is the one that
+  counts, because `git push` to a named ref is already idempotent and GitHub already refuses a
+  second pull request for the same head and base, while `workflow_dispatch` will genuinely start a
+  second run. A proof that demonstrates exactly-once only where GitHub was going to provide it
+  anyway has demonstrated GitHub's property, not fiddle's. The live lane repeats the same walk
+  against the disposable repository and asserts zero residue afterwards, so a failure leaves the
+  next run a clean world.
+
+### `m2-live-github-grounding`
+
+Whether the design and its beans are anchored in the GitHub that exists.
+
+- **Poor (1–3).** An endpoint, a permission, a `gh` flag or an output shape is asserted from the RFC
+  or from training rather than from a probe. The disposable repository is assumed to exist. The CI
+  lane is assumed to work with the default `GITHUB_TOKEN`.
+- **Acceptable (4–7).** Read-only evidence is recorded for token scopes, repository permissions, the
+  acceptance repository's state, `gh`'s error and exit-code surface, and git's environment config
+  channel. Assumptions that could not be proven read-only are recorded as unproven and assigned to a
+  bean rather than quietly assumed. An isolated implementation/acceptance bean owns creating the
+  disposable repository, the deterministic naming, and the cleanup assertions.
+- **Excellent (8–10).** All of the above, plus each probe is recorded with the command and its actual
+  output, so a later reader can rerun it rather than trust it — and where a probe *changed* the
+  design, the anchor says so. The two facts that most need this treatment are that `gh`'s exit code
+  carries no HTTP status (so `-i` is not a preference) and that the credential has no `delete_repo`
+  scope (so the standing-repository choice is forced, not stylistic).
+
+### Known-blocked criteria
+
+Two, both recorded read-only during planning and neither resolvable without a write:
+
+- **Cross-repository write permission is unproven.** `peel/fiddle-effects-acceptance` does not
+  exist; `gh repo list peel` returns exactly `fiddle` and `fiddle-acceptance`. The credential holds
+  `repo` and ADMIN on both existing repositories, so write is *plausible*, and planning's read-only
+  mandate is why it is not *proven*. Score the bean that creates the repository on whether it proves
+  the write and cleans up; do not score sibling beans as though the repository were already there.
+- **No repository secret exists.** `gh secret list --repo peel/fiddle` is empty, and the default
+  `GITHUB_TOKEN` is scoped to `peel/fiddle` and cannot write to the disposable repository whatever
+  its `permissions:` block says. The `workflow_dispatch` lane therefore needs a cross-repository PAT
+  the operator must add. Until it exists, that lane is blocked rather than failing, and a bean is
+  scored on having named the requirement precisely — not on having made a lane pass without a
+  credential it cannot have.
