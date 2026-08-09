@@ -32,6 +32,7 @@ pub use tools::{
     WriteFile, WriteFileArgs, WriteReceipt,
 };
 
+use rig_agent::agent::OutputMode;
 use rig_agent::completion::{PromptError, StructuredOutputError, TypedPrompt};
 use rig_agent::tool::ToolContext;
 use rig_agent::AgentBuilder;
@@ -176,6 +177,39 @@ pub enum AgentError {
 /// changed is only knowable once it has stopped changing things. It is checked
 /// against git afterwards, and against git rather than against
 /// [`RepairReport::changed_files`], which is a claim.
+///
+/// # Why `output_mode` is stated, and why the default was wrong here
+///
+/// **Without [`OutputMode::Tool`] this function calls no tools at all.** Not
+/// rarely, not for weak models — never, for every model on the gateway. It was
+/// found by the first Tier 1 smoke run and reproduced directly against the
+/// endpoint: the same request carrying `tools` alone comes back with
+/// `finish_reason: tool_calls` and a call; add `response_format: {type:
+/// json_schema}` and it comes back `finish_reason: stop`, `tool_calls: null`,
+/// with the report filled in from nothing.
+///
+/// Rig knows about this — it is issue #1928, and [`OutputMode`] is the remedy —
+/// but its default, [`OutputMode::Auto`], resolves per *provider*, and it
+/// resolves wrongly for us through no fault of its own. `Auto` keeps native
+/// structured output whenever the provider reports
+/// `composes_native_output_with_tools()`, and
+/// [`crate::gateway::GatewayModel`] is `openai::completion::CompletionModel`,
+/// which reports `true` — a true statement about OpenAI's own endpoint. Ours is
+/// an OpenAI-*compatible* endpoint fronting Anthropic, and the composition does
+/// not survive that translation. The provider type and the upstream disagree by
+/// construction, so the mode is named here rather than inferred.
+///
+/// [`OutputMode::Tool`] registers the schema as a synthetic tool the model calls
+/// to finalise, and sends no native constraint, so the four real tools stay
+/// callable. It costs nothing in turns — the finalising call *is* a turn of the
+/// same loop, so [`AgentBudget::max_turns`] still bounds the whole attempt and
+/// there is no second request to account for. What it costs is strictness: Tool
+/// mode is best-effort where Native was guaranteed, so a model may return a
+/// report that does not match the schema. That is why the schema is still
+/// validated afterwards and why [`classify`] maps a deserialisation failure to
+/// [`AgentError::Protocol`] — under this mode, a malformed report genuinely is
+/// the model failing to hold up its end, and saying so is more honest than a
+/// guarantee bought by never letting it use a tool.
 pub async fn attempt<M>(
     model: M,
     host: ToolHost,
@@ -192,10 +226,13 @@ where
         // function actually relies on; they are different settings and the
         // duplication is deliberate.
         .default_max_turns(budget.max_turns)
-        // Redundant with `prompt_typed`, which derives the schema from `T` and
-        // pins native structured output regardless. Stated anyway so the
-        // agent's contract does not depend on which prompting method is used.
+        // Stated explicitly rather than left to `prompt_typed`, which derives
+        // the same schema from `T`, so the agent's contract does not depend on
+        // which prompting method is used.
         .output_schema::<RepairReport>()
+        // **The line that makes the tool loop happen at all.** See the section
+        // in this function's documentation.
+        .output_mode(OutputMode::Tool)
         .tool(ReadFile)
         .tool(WriteFile)
         .tool(ListFiles)

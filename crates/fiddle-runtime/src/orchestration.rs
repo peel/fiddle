@@ -289,6 +289,10 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             // this is the only thing that says the world moved.
             ctx.journal
                 .record_effect(capability_id, "completed", std::slice::from_ref(&evidence));
+            // What the capability observed of its own run, asked for on both
+            // arms — see `Capability::receipts`. Empty for every capability that
+            // has nothing to say, which is what keeps M0's bundles unchanged.
+            let observed = ctx.capability.receipts();
             // Re-observe and re-derive: the report must describe the state the
             // run left behind, not the action it chose on entry.
             let after = ctx.observe();
@@ -301,13 +305,13 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
                 executions: vec![execution(
                     capability_id,
                     "completed",
-                    vec![evidence.clone()],
+                    with_receipts(evidence.clone(), &observed),
                 )],
                 progress: vec![progress(
                     capability_id,
                     "completed",
                     format!("wrote correlation marker {marker}"),
-                    vec![evidence],
+                    with_receipts(evidence, &observed),
                 )],
                 observations: after,
                 evidence_failure: None,
@@ -319,13 +323,17 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             // capability's fate is unknown" are different things to recover
             // from, and only a record written here can tell them apart.
             ctx.journal.record_effect(capability_id, "failed", &[]);
+            // **The arm this exists for.** An execution that failed is when an
+            // operator most needs to know what it did before it failed, and
+            // until this line the answer published here was `[]`.
+            let observed = ctx.capability.receipts();
             RunReport {
                 outcome: RunOutcome::Retryable {
                     reason: reason.clone(),
                 },
                 next_action: derived,
-                executions: vec![execution(capability_id, "failed", Vec::new())],
-                progress: vec![progress(capability_id, "failed", reason, Vec::new())],
+                executions: vec![execution(capability_id, "failed", observed.clone())],
+                progress: vec![progress(capability_id, "failed", reason, observed)],
                 observations: view,
                 evidence_failure: None,
             }
@@ -497,6 +505,18 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
 /// The one stage M0's capability has. Named once so the execution record and
 /// the progress entry cannot disagree about what ran.
 const STAGE: &str = "mark";
+
+/// `earned` first, then whatever the capability observed of its own run.
+///
+/// The order is the contract: the reference a capability *returned* is what a
+/// reader is looking for, and the receipts are context underneath it. A
+/// capability that observed nothing produces exactly `[earned]`, unchanged from
+/// before this existed.
+fn with_receipts(earned: EvidenceRef, observed: &[EvidenceRef]) -> Vec<EvidenceRef> {
+    let mut evidence = vec![earned];
+    evidence.extend_from_slice(observed);
+    evidence
+}
 
 fn execution(
     capability_id: fiddle_core::CapabilityId,

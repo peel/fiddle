@@ -59,6 +59,61 @@ use tokio_util::sync::CancellationToken;
 /// The origin this capability's evidence is named under.
 const REPAIR_ORIGIN: &str = "repair";
 
+/// The tool names this crate registers, and the only ones an evidence
+/// reference may repeat.
+///
+/// A receipt's `tool` field is *not* always ours. `AuditHook` records a call to
+/// a tool that does not exist under the name the **model** chose, which is
+/// model-authored and unbounded — and evidence is published. Every name outside
+/// this set is therefore collapsed to [`FOREIGN_TOOL`] rather than quoted, the
+/// same discipline `AgentError` already keeps when it refuses to name the tool
+/// in `the model called a tool that does not exist`. The count survives; the
+/// string the model made up does not.
+const REGISTERED_TOOLS: [&str; 4] = ["read_file", "write_file", "list_files", "run_check"];
+
+/// What a call to anything outside [`REGISTERED_TOOLS`] is counted as.
+const FOREIGN_TOOL: &str = "unregistered";
+
+/// One attempt's tool receipts, as evidence references a bundle can carry.
+///
+/// # Why a summary rather than the receipts themselves
+///
+/// [`EvidenceRef`] is a string, and the bundle's evidence is a list of them.
+/// The receipts are a `Vec` of records with durations, which would have to be
+/// either serialised into one enormous reference or given a new home in the
+/// report schema — and the schema is a published contract that this is not the
+/// task to widen. A summary answers the questions a bundle is actually asked:
+/// *were any tools called at all*, *which ones*, and *how did each go*.
+///
+/// The leading `tools:<n>` is emitted **even when `n` is zero**, and that is the
+/// whole reason this function exists. An attempt in which the model called
+/// nothing is the exact shape of the defect that made every model on the
+/// gateway fail, and it is invisible from outside a process unless something
+/// says so out loud. `tools:0` says so.
+///
+/// Counts are sorted so two runs that did the same things produce byte-identical
+/// evidence, which is what makes a diff between two bundles readable.
+fn tool_evidence(receipts: &ToolReceipts) -> Vec<EvidenceRef> {
+    let mut counts: std::collections::BTreeMap<(&str, &str), usize> =
+        std::collections::BTreeMap::new();
+    for call in &receipts.calls {
+        let tool = REGISTERED_TOOLS
+            .iter()
+            .find(|known| **known == call.tool)
+            .copied()
+            .unwrap_or(FOREIGN_TOOL);
+        *counts.entry((tool, call.outcome)).or_default() += 1;
+    }
+
+    let mut evidence = vec![EvidenceRef(format!("tools:{}", receipts.calls.len()))];
+    evidence.extend(
+        counts
+            .into_iter()
+            .map(|((tool, outcome), count)| EvidenceRef(format!("tool:{tool}:{outcome}:{count}"))),
+    );
+    evidence
+}
+
 /// Everything [`FixtureRepair`] needs that is not the model.
 ///
 /// One struct rather than eight constructor arguments, because every field here
@@ -106,12 +161,22 @@ pub struct RepairConfig {
 pub struct FixtureRepair<M> {
     model: M,
     config: RepairConfig,
+    /// The record the tools append to, held here rather than only inside the
+    /// [`ToolHost`] so that [`Capability::receipts`] can read it *after* the
+    /// execution — including after one that failed. The host gets a clone of
+    /// this same `Arc`, so there is one record and no copy-back step that an
+    /// early return could skip.
+    receipts: Arc<Mutex<ToolReceipts>>,
 }
 
 impl<M> FixtureRepair<M> {
     /// A capability that will run `model` under `config`.
     pub fn new(model: M, config: RepairConfig) -> Self {
-        FixtureRepair { model, config }
+        FixtureRepair {
+            model,
+            config,
+            receipts: Arc::new(Mutex::new(ToolReceipts::default())),
+        }
     }
 
     /// Record this invocation's correlation key as the change set for the work
@@ -152,6 +217,15 @@ where
         fiddle_core::FIXTURE_REPAIR
     }
 
+    fn receipts(&self) -> Vec<EvidenceRef> {
+        tool_evidence(
+            &self
+                .receipts
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
+
     async fn execute(
         &self,
         grant: ExecutionGrant,
@@ -182,7 +256,7 @@ where
             workspace: Arc::clone(&workspace),
             cancel: config.cancel.clone(),
             check: config.check.clone(),
-            receipts: Arc::new(Mutex::new(ToolReceipts::default())),
+            receipts: Arc::clone(&self.receipts),
         };
 
         // One attempt, bounded. An attempt that failed produced no repair, so

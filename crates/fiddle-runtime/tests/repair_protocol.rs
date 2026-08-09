@@ -164,6 +164,86 @@ async fn the_success_path_is_proven_without_any_model_dependence() {
 }
 
 // ---------------------------------------------------------------------------
+// What the bundle says the attempt did
+// ---------------------------------------------------------------------------
+
+/// **The published evidence names the tools that actually ran.**
+///
+/// Everything else in this file asserts what an attempt *earned*. This pair
+/// asserts what it *did*, and the distinction is not academic: for the whole of
+/// this milestone's development, `FixtureRepair` built a `ToolHost`, handed it
+/// to `attempt`, and never read `host.receipts()` back — so the bundle said
+/// nothing at all about tool use, however much or little there had been.
+///
+/// The receipts are a summary rather than the raw records, because
+/// `EvidenceRef` is a string and the report schema is a published contract. The
+/// summary answers what a bundle is actually asked: were any tools called,
+/// which, and how did each go.
+#[tokio::test]
+async fn the_published_evidence_names_the_tools_that_ran() {
+    let f = broken_fixture();
+    let report = f.run(repairs(), f.config()).await;
+
+    assert_eq!(report.outcome, RunOutcome::Completed);
+    let evidence = evidence_of(&report);
+    assert!(
+        evidence.contains(&"tools:2".to_string()),
+        "the script calls exactly two tools: {evidence:?}"
+    );
+    assert!(
+        evidence.contains(&"tool:write_file:ok:1".to_string()),
+        "{evidence:?}"
+    );
+    assert!(
+        evidence.contains(&"tool:run_check:ok:1".to_string()),
+        "{evidence:?}"
+    );
+    assert!(
+        evidence.contains(&format!("repair:1:{ATTEMPT}")),
+        "the reference the capability earned still leads: {evidence:?}"
+    );
+}
+
+/// **An attempt that called nothing says so, out loud.**
+///
+/// `tools:0` is the shape of the defect this evidence exists to make visible: a
+/// model that answers with the structured report on its first turn, calls no
+/// tool, changes nothing, and is refused by a check that was judging an
+/// untouched tree. From outside the process that is indistinguishable from a
+/// model that tried and lost — unless the bundle says which it was.
+///
+/// Reached here with a scripted model that claims completion immediately, which
+/// is exactly what every model on the gateway did while the agent pinned native
+/// structured output for the whole run.
+#[tokio::test]
+async fn an_attempt_that_called_no_tools_publishes_tools_zero() {
+    let f = broken_fixture();
+    let report = f.run(vec![completion_claim()], f.config()).await;
+
+    assert_retryable_because(&report, "the check exited");
+    assert_eq!(
+        evidence_of(&report),
+        vec!["tools:0".to_string()],
+        "a model that called nothing must be published as having called nothing"
+    );
+    assert_eq!(
+        f.marker(WORK_ID),
+        None,
+        "and it must still have earned nothing"
+    );
+}
+
+/// The evidence of the one execution `report` recorded, as plain strings.
+fn evidence_of(report: &RunReport) -> Vec<String> {
+    assert_eq!(report.executions.len(), 1, "{:?}", report.executions);
+    report.executions[0]
+        .evidence
+        .iter()
+        .map(|reference| reference.0.clone())
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // The adversarial cases
 // ---------------------------------------------------------------------------
 
@@ -690,15 +770,33 @@ fn assert_retryable_because(report: &RunReport, expected: &str) {
     );
 }
 
-/// Exactly one execution, recorded as having failed.
+/// Exactly one execution, recorded as having failed — and still saying what it
+/// did before it failed.
+///
+/// # What this assertion used to say, and why that was the bug
+///
+/// It used to require `evidence.is_empty()`, on the reasoning that "a failed
+/// execution has nothing to point at". That reasoning was wrong, and it was
+/// wrong in the direction that hides things: an execution which failed is
+/// exactly when an operator most needs to know what it *did*. Worse, the
+/// assertion actively defended the gap — a change that started publishing tool
+/// receipts on the failing arm would have been failed by this suite as a
+/// regression.
+///
+/// What the gap concealed: a repair capability calling **no tools at all**, for
+/// every model on the gateway, surfacing as an ordinary failed check that
+/// nothing outside the process could tell apart from a model that tried and
+/// lost. `tools:0` is now a thing a bundle can say, and this is the assertion
+/// that requires it to be said one way or the other.
 fn failed_once(report: &RunReport) {
     assert_eq!(report.executions.len(), 1, "{:?}", report.executions);
     assert_eq!(report.executions[0].capability_id, FIXTURE_REPAIR);
     assert_eq!(report.executions[0].status, "failed");
+    let evidence = &report.executions[0].evidence;
     assert!(
-        report.executions[0].evidence.is_empty(),
-        "a failed execution has nothing to point at: {:?}",
-        report.executions[0].evidence
+        evidence.iter().any(|e| e.0.starts_with("tools:")),
+        "a failed execution must still say what its tools did, even when the \
+         answer is `tools:0`: {evidence:?}"
     );
 }
 

@@ -35,7 +35,13 @@ set -euo pipefail
 
 : "${LITELLM_API_KEY:?tier 2 requires a credential}"
 
-MODEL="${FIDDLE_TIER2_MODEL:-claude-sonnet-5}"
+# Defaulted to a model measured to drive the whole loop rather than to the
+# largest one available. Through this gateway both Claude-family models finalise
+# after a single tool call, while kimi, deepseek and glm-5 all list, read, write,
+# check and earn the marker — see the table at `DEFAULT_MODEL` in
+# crates/fiddle-cli/tests/smoke.rs. Comparing models is what FIDDLE_TIER2_MODEL
+# is for, and it is a good use of Tier 2.
+MODEL="${FIDDLE_TIER2_MODEL:-bedrock/moonshotai.kimi-k2.5}"
 BASE_URL="${FIDDLE_TIER2_BASE_URL:-https://litellm.firn.snplow.net/v1}"
 CREDENTIAL_VAR="LITELLM_API_KEY"
 

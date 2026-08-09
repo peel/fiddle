@@ -104,6 +104,33 @@ pub trait Capability: Send + Sync {
         work_id: &str,
         invocation_ref: &str,
     ) -> Result<EvidenceRef, CapabilityError>;
+
+    /// What this capability observed of its own execution, whether or not that
+    /// execution succeeded.
+    ///
+    /// # Why this is a second method rather than part of `execute`'s return
+    ///
+    /// Because the interesting case is the failing one. [`Capability::execute`]
+    /// returns `Result<EvidenceRef, _>`, so everything it can say about *how* it
+    /// ran travels on the `Ok` arm — and an execution that failed is precisely
+    /// when an operator most needs to know what it did before it failed. That
+    /// gap is not hypothetical: it is what let a repair capability call no tools
+    /// at all, for every model, and surface as an ordinary failed check that
+    /// nothing outside the process could distinguish from a model that tried and
+    /// lost. Widening the return type would close it too, at the cost of
+    /// changing every implementation and every call site of the seam the
+    /// orchestration is built on. A separate accessor the orchestration consults
+    /// on **both** arms closes it without moving anything.
+    ///
+    /// Defaulted to empty, so a capability with nothing to observe about itself
+    /// — [`StubMark`], which writes one file and never yields — is unaffected,
+    /// and M0's bundles keep the bytes they have always had.
+    ///
+    /// Read *after* the execution, which is why it takes `&self` and why an
+    /// implementation with something to report needs interior mutability.
+    fn receipts(&self) -> Vec<EvidenceRef> {
+        Vec::new()
+    }
 }
 
 /// Why an execution did not produce evidence.

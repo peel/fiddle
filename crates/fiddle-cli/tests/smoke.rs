@@ -83,8 +83,38 @@ const CREDENTIAL_VAR: &str = "LITELLM_API_KEY";
 const MODEL_VAR: &str = "FIDDLE_TIER1_MODEL";
 const BASE_URL_VAR: &str = "FIDDLE_TIER1_BASE_URL";
 
-/// The sensible default: Claude-family, and cheap.
-const DEFAULT_MODEL: &str = "claude-haiku-4-5";
+/// The default, chosen from what the gateway was observed to do rather than
+/// from what family it belongs to.
+///
+/// The plan for this task named `claude-haiku-4-5`, reasoning that a
+/// Claude-family model is the most exercised translation path on a
+/// Claude-centric gateway. Measured, that turned out to be the wrong way round.
+/// Over the trivial fixture below, at reference-configuration bounds, once the
+/// tool loop worked at all:
+///
+/// | model | tool calls | outcome |
+/// |---|---|---|
+/// | `claude-haiku-4-5` | 1 (`list_files`) | check failed |
+/// | `claude-sonnet-5` | 1 (`list_files`) | report failed its schema |
+/// | `bedrock/moonshotai.kimi-k2.5` | 6 | **completed** |
+/// | `deepseek.v3.2` | 7 | **completed** |
+/// | `zai.glm-5` | 7 | **completed** |
+///
+/// Both Claude-family models finalise after a single tool call through this
+/// gateway; the other three drive the whole loop — list, read, write, check —
+/// and earn the marker. Three consecutive kimi runs produced an identical
+/// six-call profile, so the default is the one that reliably exercises the most
+/// wiring, and it is also the cheapest of the five at $0.60/$3.03 per Mtok.
+///
+/// Tier 1 asserts only that *some* tool was called, so haiku would still pass.
+/// But a smoke test earns its keep by how much of the machine it moves, and a
+/// model that never reaches `write_file`, the check, or the marker leaves most
+/// of this milestone unexercised. Set `FIDDLE_TIER1_MODEL` to compare.
+///
+/// That Claude-family models behave worst here is worth a bean of its own: it
+/// is a property of this gateway's translation, not of the models, and the
+/// deterministic suite cannot see it.
+const DEFAULT_MODEL: &str = "bedrock/moonshotai.kimi-k2.5";
 
 /// The gateway the epic is verified against.
 const DEFAULT_BASE_URL: &str = "https://litellm.firn.snplow.net/v1";
@@ -185,6 +215,38 @@ fn the_agent_loop_still_works_against_a_real_model() {
     assert_eq!(
         payload["capability_executions"][0]["capability_id"], "fixture_repair",
         "the run must execute the capability it was asked for: {payload}"
+    );
+
+    // **Tools were actually called.**
+    //
+    // Protocol, not performance: it says the agent loop *ran*, and says nothing
+    // about whether it ran well. A model that listed the files, gave up and
+    // reported failure passes this; a model that answered with the structured
+    // report on its first turn without touching anything does not.
+    //
+    // This is the assertion that would have caught, on day one, the defect that
+    // made every model on this gateway useless — `output_schema` enforced
+    // natively for the whole run, which suppresses tool calls through a gateway
+    // fronting Anthropic. It could not be written until the capability began
+    // publishing its tool receipts, which is why the two landed together.
+    let evidence: Vec<String> = payload["capability_executions"][0]["evidence"]
+        .as_array()
+        .unwrap_or_else(|| panic!("an execution must carry evidence: {payload}"))
+        .iter()
+        .map(|reference| reference.as_str().unwrap_or_default().to_string())
+        .collect();
+    let tool_calls = evidence
+        .iter()
+        .find_map(|reference| reference.strip_prefix("tools:"))
+        .unwrap_or_else(|| panic!("the execution must report what its tools did: {evidence:?}"))
+        .parse::<usize>()
+        .unwrap_or_else(|e| panic!("`tools:` must carry a count ({e}): {evidence:?}"));
+    assert!(
+        tool_calls > 0,
+        "the model called no tools at all, so the agent loop did not run. That \
+         is the wiring, not the model: a run that answers with the structured \
+         report on its first turn has not been given a working tool loop. \
+         Evidence: {evidence:?}"
     );
 
     let conclusion = Conclusion::read(&payload, &stderr);
@@ -299,15 +361,17 @@ fn the_agent_loop_still_works_against_a_real_model() {
         }
     }
     println!("  marker written   = {}", marker.is_some());
-    println!("  tools called     = unknown — receipts are not published");
+    println!("  tool calls       = {tool_calls}");
+    for reference in evidence.iter().filter(|e| e.starts_with("tool:")) {
+        println!("    {reference}");
+    }
     println!("  bundle           = {}", bundle_path.display());
     println!("───────────────────────────────────────────────────────────");
     println!(
-        "  Neither answer above is a verdict. `repair landed = no` is correct \
-         behaviour and\n  is recorded as data; only a run that never reached a \
-         model turn fails this test.\n  `tools called` cannot be answered from \
-         outside until ToolReceipts reach the bundle;\n  see `classify` for why \
-         that gap matters."
+        "  `repair landed` is data, never a verdict: `no` is correct behaviour \
+         and cannot\n  fail this test. `tool calls` is the opposite — it is \
+         protocol, it is asserted,\n  and a zero there means the agent loop is \
+         not wired up."
     );
 }
 
@@ -371,22 +435,19 @@ impl Conclusion {
 /// leads with `the check exited`. Only the provider arm and the workspace arm
 /// are refused.
 ///
-/// # What this deliberately does *not* claim
+/// # What this does *not* have to claim
 ///
-/// It does not establish that a **tool** ran. It cannot, and the gap is real
-/// rather than theoretical: `ToolReceipt`'s own documentation says receipts are
-/// published in the evidence bundle, and they are not —
-/// `FixtureRepair::execute` builds a `ToolHost`, hands it to `attempt`, and
-/// never reads `host.receipts()` back, so nothing outside the process can see
-/// which tools were called or whether any were. The first Tier 1 run against
-/// this gateway found a defect that lives squarely in that blind spot: with
-/// `response_format` pinned to a JSON schema, the gateway's models answer with
-/// the structured report on turn one and call no tools at all, so the check
-/// fails over an untouched tree and the run reports `Retryable` — which is
-/// indistinguishable, from out here, from a model that tried and lost.
+/// It does not have to establish that a tool ran, because the caller already
+/// asserted that against the execution's published receipts. The two together
+/// are what make a `Retryable` run readable: the receipts say the loop ran, and
+/// this says the reason it stopped is one a running loop produces.
 ///
-/// Until receipts reach the bundle, `the check exited …` means *a completion
-/// came back and the tree did not satisfy the check*, and no more than that.
+/// That division is the fix for a real gap. The first Tier 1 run against this
+/// gateway found a defect neither half could have caught alone — with
+/// `output_schema` enforced natively for the whole run, every model answered
+/// with the structured report on turn one and called nothing, so the check
+/// judged an untouched tree and the run reported `Retryable` with a reason that
+/// looks exactly like a model that tried and lost.
 fn classify(reason: &str) {
     const REACHED_THE_MODEL: [&str; 3] = [
         "the check exited",
@@ -425,13 +486,16 @@ impl Project {
     /// A project pointed at `model` on `base_url`, with one open work item and
     /// a repository that fails its own check.
     ///
-    /// The bounds are deliberately tight. `max_tokens` covers a one-line file
-    /// plus the structured report and nothing more; `max_turns` leaves room for
-    /// read, write, check, and report with a couple of retries; the deadline
-    /// and the command timeout are minutes rather than the reference
-    /// configuration's tens of minutes, because a Tier 1 run that has taken
-    /// five minutes over a two-line crate has already told us what it is going
-    /// to tell us.
+    /// The bounds are deliberately tight, and sized against what a working loop
+    /// was measured to need rather than guessed. The default model drives this
+    /// fixture in six tool calls — one `list_files`, three `read_file`, one
+    /// `write_file`, one `run_check` — so `max_turns = 16` leaves roughly double
+    /// the room a successful attempt uses, and `max_tokens = 4096` covers
+    /// rewriting the whole of a small file plus the structured report. The
+    /// deadline and the command timeout are minutes rather than the reference
+    /// configuration's tens of minutes, because a Tier 1 run that has taken five
+    /// minutes over a two-line crate has already told us what it is going to
+    /// tell us.
     fn new(model: &str, base_url: &str) -> Self {
         let project = Project {
             dir: tempfile::tempdir().expect("a temporary directory"),
@@ -463,8 +527,8 @@ impl Project {
                  model = \"{model}\"\n\
                  base_url = \"{base_url}\"\n\
                  api_key = {{ env = \"{CREDENTIAL_VAR}\" }}\n\
-                 max_turns = 12\n\
-                 max_tokens = 2048\n\
+                 max_turns = 16\n\
+                 max_tokens = 4096\n\
                  deadline = \"5m\"\n\
                  tool_timeout = \"4m\"\n\
                  \n\
