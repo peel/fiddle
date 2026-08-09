@@ -75,7 +75,12 @@ fn main() {
     // between the first call and the second.
     let key = script_key(&args);
     if key.starts_with("GET") {
-        let (status, body) = world_answer(&dir, &key);
+        // The *raw* path, query and all. `script_key` mangles the separators so
+        // that a key is a filename, which is fine for choosing a script and
+        // useless for answering a filtered read: a list endpoint's answer
+        // depends on the parameters, and a stub that could not read them back
+        // would answer the same thing whatever it was asked.
+        let (status, body) = world_answer(&dir, &key, &request_path(&args));
         print!("HTTP/2.0 {status} \r\n\r\n{body}");
         std::process::exit(if status < 400 { 0 } else { 1 });
     }
@@ -93,7 +98,7 @@ fn main() {
     // really lands and then the answer is really lost. Note the order — a stub
     // that exited first would be testing a failed write, which proves nothing.
     if let Some(death) = mode.strip_prefix("commit_then_") {
-        apply_effect(&dir, &key, &body_in);
+        apply_effect(&dir, &key, &body_in, mode);
         match death {
             // 128 + SIGKILL, the shell's spelling of a killed child, which some
             // wrappers pass on as their own exit code.
@@ -117,8 +122,19 @@ fn main() {
         std::process::exit(exit);
     }
 
+    // Another actor got there first. GitHub answers a duplicate pull request
+    // with a 422, and the reason it can is that a pull request for that head and
+    // base already exists — so the refusal and the object are one event, and the
+    // stub writes both. It is written *before* the response for the same reason
+    // `commit_then_*` mutates before it dies: a world that changed only after
+    // the client heard about it would be a world the client could not have
+    // raced.
+    if mode == "conflict" {
+        open_pull_request_for(&dir, &body_in);
+    }
+
     if status < 400 {
-        apply_effect(&dir, &key, &body_in);
+        apply_effect(&dir, &key, &body_in, mode);
     }
     print!(
         "HTTP/2.0 {status} \r\n{}\r\n{}",
@@ -200,9 +216,137 @@ fn script_key(args: &[String]) -> String {
     )
 }
 
+/// The API path exactly as it was asked for, query string included.
+fn request_path(args: &[String]) -> String {
+    args.iter()
+        .find(|a| a.starts_with('/'))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// One query parameter, percent-decoded.
+///
+/// Decoded rather than compared raw, because the encoding is the client's
+/// choice and the *value* is the contract: a stub that matched on the literal
+/// `%3A` would fail a client that sent a bare colon, which GitHub accepts.
+fn query_param(path: &str, name: &str) -> Option<String> {
+    let query = path.split_once('?')?.1;
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == name).then(|| percent_decode(value))
+    })
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&value[i + 1..i + 3], 16) {
+                Ok(byte) => {
+                    out.push(byte);
+                    i += 3;
+                }
+                Err(_) => {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            },
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The pull requests this world holds, in the order they came to exist.
+///
+/// Two sources, one list. `pulls_seed` is what existed before this process ran —
+/// written by the test to arrange a world, or by the `conflict` mode to record
+/// the racing actor's create — and the world log supplies the ones this run's
+/// own `POST`s created. Numbers are positional and start at 7 rather than 1, so
+/// a test asserting on an external reference cannot pass by accident against an
+/// index or a count.
+fn pull_requests(dir: &Path) -> Vec<serde_json::Value> {
+    let seeded = read_pull_request_seed(dir);
+    let created = std::fs::read_to_string(dir.join("world"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|w| {
+            let key = w["key"].as_str().unwrap_or_default();
+            key.starts_with("POST") && key.contains("pulls")
+        })
+        .map(|w| {
+            serde_json::from_str::<serde_json::Value>(w["body"].as_str().unwrap_or("{}"))
+                .unwrap_or(serde_json::Value::Null)
+        })
+        .collect::<Vec<_>>();
+
+    seeded
+        .into_iter()
+        .chain(created)
+        .enumerate()
+        .map(|(i, pr)| {
+            let head = pr["head"].as_str().unwrap_or_default().to_string();
+            serde_json::json!({
+                "number": 7 + i,
+                "state": "open",
+                "title": pr["title"].as_str().unwrap_or_default(),
+                // GitHub's own shape: the head is a `label` of `owner:branch`
+                // beside the bare `ref`, and the base is a `ref` alone.
+                "head": {
+                    "label": head,
+                    "ref": head.split_once(':').map(|(_, r)| r).unwrap_or(&head),
+                },
+                "base": { "ref": pr["base"].as_str().unwrap_or_default() },
+            })
+        })
+        .collect()
+}
+
+fn read_pull_request_seed(dir: &Path) -> Vec<serde_json::Value> {
+    serde_json::from_str::<Vec<serde_json::Value>>(
+        &std::fs::read_to_string(dir.join("pulls_seed")).unwrap_or_default(),
+    )
+    .unwrap_or_default()
+}
+
+/// Record a pull request somebody else opened for the head and base this
+/// request asked for.
+///
+/// The title is deliberately *not* the one the request carried: the whole point
+/// of the case is that the object which makes the create a duplicate was written
+/// by another actor, and an identity that read titles would fail to recognise
+/// it.
+fn open_pull_request_for(dir: &Path, body: &str) {
+    let request: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+    let mut seed = read_pull_request_seed(dir);
+    seed.push(serde_json::json!({
+        "head": request["head"].as_str().unwrap_or_default(),
+        "base": request["base"].as_str().unwrap_or_default(),
+        "title": "opened by another run",
+    }));
+    std::fs::write(
+        dir.join("pulls_seed"),
+        serde_json::Value::Array(seed).to_string(),
+    )
+    .unwrap();
+}
+
 /// The world is an append-only log of the mutations that actually landed, so a
 /// test asserts against what happened rather than against what was answered.
-fn apply_effect(dir: &Path, key: &str, body: &str) {
+///
+/// The `mode` is recorded beside the mutation, and it earns its place: it is how
+/// a test can assert, *of the world it is making its claims about*, that a write
+/// landed under a `gh` that then died before it could say so. Without it, a
+/// suite could only demonstrate the ambiguity on some other directory and hope
+/// the run under test took the same route — and a test that would pass on a
+/// request that simply succeeded is not yet a test of the ambiguous one.
+fn apply_effect(dir: &Path, key: &str, body: &str, mode: &str) {
     if !key.starts_with("POST") && !key.starts_with("DELETE") {
         return; // a read changes nothing
     }
@@ -211,13 +355,18 @@ fn apply_effect(dir: &Path, key: &str, body: &str) {
         .append(true)
         .open(dir.join("world"))
         .unwrap();
-    writeln!(f, "{}", serde_json::json!({ "key": key, "body": body })).unwrap();
+    writeln!(
+        f,
+        "{}",
+        serde_json::json!({ "key": key, "body": body, "mode": mode })
+    )
+    .unwrap();
 }
 
 /// Answer a read from the world the writes built. This is what makes the
 /// exactly-once harness meaningful: after a `commit_then_*` mode, the object is
 /// really there, so the fresh process's postcondition read really finds it.
-fn world_answer(dir: &Path, key: &str) -> (u16, String) {
+fn world_answer(dir: &Path, key: &str, path: &str) -> (u16, String) {
     let world = std::fs::read_to_string(dir.join("world")).unwrap_or_default();
     let landed: Vec<serde_json::Value> = world
         .lines()
@@ -251,15 +400,32 @@ fn world_answer(dir: &Path, key: &str) -> (u16, String) {
         };
     }
     if key.starts_with("GET_repos") && key.contains("pulls") {
-        let prs: Vec<_> = landed
-            .iter()
-            .filter(|w| {
-                w["key"].as_str().unwrap_or_default().starts_with("POST") && landed_key(w, "pulls")
+        // The list endpoint filters, and the filtering is the fixture's real
+        // work. A stub that answered every pull request it held whatever it was
+        // asked would let a client with an unqualified — or simply wrong — query
+        // pass, which is the exact defect the head-and-base identity exists to
+        // prevent. `pulls_unfiltered` is the marker that switches it off, so a
+        // test can put a pull request the client never asked for in front of it.
+        let unfiltered = dir.join("pulls_unfiltered").exists();
+        let matches: Vec<_> = pull_requests(dir)
+            .into_iter()
+            .filter(|pr| {
+                unfiltered
+                    || [
+                        ("head", pr["head"]["label"].as_str()),
+                        ("base", pr["base"]["ref"].as_str()),
+                        ("state", pr["state"].as_str()),
+                    ]
+                    .into_iter()
+                    .all(|(name, held)| match query_param(path, name) {
+                        Some(asked) => held == Some(asked.as_str()),
+                        // GitHub's own default: a parameter nobody sent
+                        // constrains nothing.
+                        None => true,
+                    })
             })
-            .enumerate()
-            .map(|(i, _)| serde_json::json!({ "number": 7 + i, "state": "open" }))
             .collect();
-        return (200, serde_json::Value::Array(prs).to_string());
+        return (200, serde_json::Value::Array(matches).to_string());
     }
     if key.starts_with("GET_repos") && key.contains("actions_workflows") {
         // Runs are located by run-name, because a workflow dispatch answers 204

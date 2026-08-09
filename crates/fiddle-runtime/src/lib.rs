@@ -68,6 +68,7 @@ pub use fiddle_core as core;
 pub use gateway::{completion_model, GatewayError, GatewayModel};
 pub use git::{GitCli, GitError, PublishedBranch};
 pub use github::{branch_name, branch_target, BranchRef, EnsureBranchPublished};
+pub use github::{pull_request_target, EnsurePullRequest, PullRequest};
 pub use github::{GhCli, GhError, GhResponse};
 pub use journal::AttemptJournal;
 pub use orchestration::{
