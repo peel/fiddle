@@ -63,7 +63,7 @@ fn workspace_with_cancelled_token() -> (Workspace, tempfile::TempDir) {
 
 fn workspace_with(cancel: CancellationToken) -> (Workspace, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let repo = fixture::broken_crate(dir.path());
+    let repo = fixture::trivial_repo(dir.path());
     let ws = Workspace::create(&repo, &dir.path().join("ws"), &attempt(), cancel).unwrap();
     (ws, dir)
 }
@@ -81,7 +81,7 @@ fn cmd(program: &str, args: &[&str]) -> WorkspaceCommand {
 fn a_workspace_is_an_isolated_checkout_that_disappears() {
     let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
-    let repo = fixture::broken_crate(dir.path());
+    let repo = fixture::trivial_repo(dir.path());
     let mut ws = Workspace::create(&repo, &dir.path().join("ws"), &attempt(), token()).unwrap();
     let path = ws.root().to_path_buf();
 
@@ -102,7 +102,7 @@ fn the_worktree_is_removed_even_when_nobody_calls_remove() {
     // for bundle publication with a Drop guard; the same applies here.
     let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
-    let repo = fixture::broken_crate(dir.path());
+    let repo = fixture::trivial_repo(dir.path());
     let path = {
         let ws = Workspace::create(&repo, &dir.path().join("ws"), &attempt(), token()).unwrap();
         ws.root().to_path_buf()
@@ -117,7 +117,7 @@ fn removing_twice_is_not_an_error() {
     // path git no longer knows about.
     let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
-    let repo = fixture::broken_crate(dir.path());
+    let repo = fixture::trivial_repo(dir.path());
     let mut ws = Workspace::create(&repo, &dir.path().join("ws"), &attempt(), token()).unwrap();
 
     ws.remove().unwrap();
@@ -129,7 +129,7 @@ fn removing_twice_is_not_an_error() {
 fn a_symlink_pointing_out_of_the_workspace_is_refused() {
     let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
-    let repo = fixture::broken_crate(dir.path());
+    let repo = fixture::trivial_repo(dir.path());
     let secret = dir.path().join("secret.txt");
     std::fs::write(&secret, "do not read me").unwrap();
     let ws = Workspace::create(&repo, &dir.path().join("ws"), &attempt(), token()).unwrap();
@@ -162,7 +162,7 @@ fn a_dangling_symlink_out_of_the_workspace_is_refused() {
     // Only looking at the link itself distinguishes the two cases.
     let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
-    let repo = fixture::broken_crate(dir.path());
+    let repo = fixture::trivial_repo(dir.path());
     let target = dir.path().join("not-yet.txt");
     let ws = Workspace::create(&repo, &dir.path().join("ws"), &attempt(), token()).unwrap();
 
@@ -181,7 +181,7 @@ fn an_ordinary_file_round_trips_and_a_new_one_can_be_created() {
     // reaches through the parent.
     let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
-    let repo = fixture::broken_crate(dir.path());
+    let repo = fixture::trivial_repo(dir.path());
     let ws = Workspace::create(&repo, &dir.path().join("ws"), &attempt(), token()).unwrap();
 
     assert_eq!(ws.read(&p("src/lib.rs")).unwrap(), "pub fn f() {}\n");
@@ -451,7 +451,7 @@ fn the_scratch_home_is_removed_with_the_worktree() {
     // the leak the Drop guard exists to prevent, one indirection along.
     let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
-    let repo = fixture::broken_crate(dir.path());
+    let repo = fixture::trivial_repo(dir.path());
     let root = dir.path().join("ws");
     {
         let ws = Workspace::create(&repo, &root, &attempt(), token()).unwrap();

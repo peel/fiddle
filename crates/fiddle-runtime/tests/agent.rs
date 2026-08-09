@@ -32,7 +32,7 @@ const REPAIRED: &str = "pub fn f() -> u8 { 1 }\n";
 /// workspace with it.
 fn test_host() -> (ToolHost, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("a temporary directory");
-    let repo = fixture::broken_crate(dir.path());
+    let repo = fixture::trivial_repo(dir.path());
     let cancel = CancellationToken::new();
     let workspace = Workspace::create(
         &repo,
