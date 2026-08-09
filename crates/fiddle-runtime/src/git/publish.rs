@@ -357,7 +357,15 @@ impl GitCli {
     /// the credential: reading the local `HEAD` needs no authority, so it is
     /// granted none. That is what keeps the credential-carrying environment to
     /// exactly one construction in this module.
-    async fn head_sha(
+    ///
+    /// Public because the commit being published is the *caller's* business —
+    /// [`EnsureBranchPublished`](crate::github::EnsureBranchPublished) takes the
+    /// intended sha rather than resolving `HEAD` itself, precisely so that a
+    /// capability cannot publish a commit its own proposal never named. The
+    /// binary reads it here, once, before the proposal is built, and this is the
+    /// reader it uses so that "the sha in the payload" and "the sha `git push`
+    /// reports" come from one implementation.
+    pub async fn head_sha(
         &self,
         worktree: &Path,
         cancel: &CancellationToken,

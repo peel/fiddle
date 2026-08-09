@@ -39,7 +39,17 @@ pub enum HumanDecisionRequirement {
 /// can take an effect off the table entirely, for reasons — a protected branch,
 /// an audit regime, a repository fiddle is only meant to read — that the
 /// capability's author could not have known about.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// `Deserialize` because this is the one input to [`combine`] an *operator*
+/// writes: it is spelled in `[github.policy]`, one key per effect kind, and the
+/// spellings are `snake_case` so that the value a document writes matches the
+/// vocabulary the rest of the system uses for the same three concepts. There is
+/// deliberately no `Serialize`, no `Default` and no catch-all variant — a rule
+/// this build cannot honour must be refused at the line it was written on rather
+/// than silently read as the permissive one, and what an *absent* key means is a
+/// question about a particular table rather than about this type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeploymentRule {
     Allow,
     RequireHuman,
