@@ -111,6 +111,33 @@ pub struct ChangeSetState {
     pub marker: Option<String>,
 }
 
+/// What CI says about one exact head, and about nothing else.
+///
+/// `head_sha` is a field of the value rather than context the caller is trusted
+/// to remember, and that is the whole point of the type. A check suite follows a
+/// *commit*, not a branch: a green result for a head the branch has since moved
+/// past is a green result about something else, and a verification that could
+/// not say which commit it was about would be indistinguishable from one that
+/// was.
+///
+/// The three lists are the required checks that are not satisfied, split by
+/// *why*, and they are separate for the same reason [`Observation`] has three
+/// variants. A required check with no run at this head is absent — CI may not
+/// have started — while one that is queued is running and one that concluded
+/// anything other than a success has answered. Merging any two of them is how
+/// "has not started" is read as "passed". All three empty is the only state in
+/// which the required checks are satisfied.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VerificationState {
+    pub head_sha: String,
+    /// Required by name, with no check run at this head at all.
+    pub required_missing: Vec<String>,
+    /// Present at this head and concluded something that is not a success.
+    pub failed: Vec<String>,
+    /// Present at this head and not finished.
+    pub pending: Vec<String>,
+}
+
 /// Everything a run observed about one invocation, in one value.
 ///
 /// The two observations are carried side by side rather than merged, so a

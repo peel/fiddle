@@ -68,6 +68,13 @@ pub use fiddle_core as core;
 pub use gateway::{completion_model, GatewayError, GatewayModel};
 pub use git::{GitCli, GitError, PublishedBranch};
 pub use github::{branch_name, branch_target, BranchRef, EnsureBranchPublished};
+// `classify` and `run_name` are deliberately not here. They read as check
+// vocabulary under `github::checks` and as nothing in particular at the root of
+// a crate that also has runs, attempts and outcomes; both stay reachable where
+// their meaning is.
+pub use github::{
+    check_request_target, observe_checks, CheckState, EnsureCheckRequested, WorkflowRun,
+};
 pub use github::{pull_request_target, EnsurePullRequest, PullRequest};
 pub use github::{GhCli, GhError, GhResponse};
 pub use journal::AttemptJournal;

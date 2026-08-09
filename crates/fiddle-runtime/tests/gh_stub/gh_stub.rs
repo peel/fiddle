@@ -176,6 +176,14 @@ fn response_body(status: u16, mode: &str) -> String {
         let token = std::env::var("GH_TOKEN").unwrap_or_default();
         return serde_json::json!({ "message": format!("Bad credentials: {token}") }).to_string();
     }
+    // A response that offers a run id, which the real dispatch endpoint never
+    // does — it answers 204 with nothing at all. The mode exists so a suite can
+    // prove the client is not reading one: an implementation that took its
+    // external reference from here would report 999999, which is not the id of
+    // anything in the world the listing describes.
+    if mode == "answers_a_run_id" {
+        return serde_json::json!({ "id": 999_999 }).to_string();
+    }
     match status >= 400 {
         true => serde_json::json!({ "message": format!("scripted {status}") }).to_string(),
         false => "{}".to_string(),
@@ -309,8 +317,17 @@ fn pull_requests(dir: &Path) -> Vec<serde_json::Value> {
 }
 
 fn read_pull_request_seed(dir: &Path) -> Vec<serde_json::Value> {
+    read_seed(dir, "pulls_seed")
+}
+
+/// Objects a test put in the world before the run under test started.
+///
+/// Arranged through the stub's own files rather than by driving the code under
+/// test, so a world a suite claims to have built is never built by the thing its
+/// assertions are about.
+fn read_seed(dir: &Path, name: &str) -> Vec<serde_json::Value> {
     serde_json::from_str::<Vec<serde_json::Value>>(
-        &std::fs::read_to_string(dir.join("pulls_seed")).unwrap_or_default(),
+        &std::fs::read_to_string(dir.join(name)).unwrap_or_default(),
     )
     .unwrap_or_default()
 }
@@ -427,17 +444,83 @@ fn world_answer(dir: &Path, key: &str, path: &str) -> (u16, String) {
             .collect();
         return (200, serde_json::Value::Array(matches).to_string());
     }
+    if key.starts_with("GET_repos") && key.contains("commits") && key.contains("check-runs") {
+        if let Some(status) = unreadable(dir, "checks_unreadable") {
+            return (status, format!(r#"{{"message":"scripted {status}"}}"#));
+        }
+        // `/repos/{owner}/{repo}/commits/{sha}/check-runs` — the sha is the
+        // fifth segment, and it is the whole of what this endpoint is addressed
+        // by. The filtering is the fixture's real work: a stub that answered
+        // every check run it held whatever head it was asked about would let a
+        // client that observed the *branch* pass, which is the exact defect
+        // observing by exact head exists to prevent. `checks_unfiltered` is the
+        // marker that switches it off, so a test can put a result for a
+        // superseded head in front of a client that never asked for it.
+        let asked = path
+            .split('?')
+            .next()
+            .unwrap_or_default()
+            .split('/')
+            .nth(5)
+            .unwrap_or_default();
+        let unfiltered = dir.join("checks_unfiltered").exists();
+        let runs: Vec<_> = read_seed(dir, "checks_seed")
+            .into_iter()
+            .filter(|check| unfiltered || check["head_sha"].as_str() == Some(asked))
+            .collect();
+        return (
+            200,
+            serde_json::json!({ "total_count": runs.len(), "check_runs": runs }).to_string(),
+        );
+    }
     if key.starts_with("GET_repos") && key.contains("actions_workflows") {
+        if let Some(status) = unreadable(dir, "runs_unreadable") {
+            return (status, format!(r#"{{"message":"scripted {status}"}}"#));
+        }
         // Runs are located by run-name, because a workflow dispatch answers 204
         // with no run id and the runs listing does not expose dispatch inputs.
-        let runs: Vec<_> = landed
+        // The seeded runs come first and the dispatched ones after, so a test
+        // can place its own run between two of somebody else's — which is what
+        // makes "filtered by our id" distinguishable from "took the first" and
+        // from "took the most recent".
+        let dispatched = landed
             .iter()
             .filter(|w| landed_key(w, "dispatches"))
             .map(|w| {
+                let body = parse(w["body"].as_str().unwrap_or("{}"));
                 serde_json::json!({
-                    "id": 1,
                     "name": format!("fiddle-{}", effect_id_in(&w["body"])),
                     "status": "queued",
+                    "head_branch": body["ref"],
+                })
+            });
+        let runs: Vec<_> = read_seed(dir, "runs_seed")
+            .into_iter()
+            .chain(dispatched)
+            // Ids start at 4200 rather than at 1 or at 0, so a test asserting on
+            // an external reference cannot pass by accident against an index or
+            // a count.
+            .enumerate()
+            .map(|(i, run)| {
+                serde_json::json!({
+                    "id": 4200 + i,
+                    "name": run["name"],
+                    "status": run["status"].as_str().unwrap_or("queued"),
+                    "head_branch": run["head_branch"],
+                    "event": "workflow_dispatch",
+                })
+            })
+            .filter(|run| {
+                [
+                    ("branch", run["head_branch"].as_str()),
+                    ("event", run["event"].as_str()),
+                ]
+                .into_iter()
+                .all(|(name, held)| match query_param(path, name) {
+                    Some(asked) => held == Some(asked.as_str()),
+                    // GitHub's own default: a parameter nobody sent constrains
+                    // nothing.
+                    None => true,
                 })
             })
             .collect();
@@ -472,8 +555,28 @@ fn bare_repository_ref(remote: &Path, branch: &str) -> Option<String> {
 }
 
 fn effect_id_in(body: &serde_json::Value) -> String {
-    serde_json::from_str::<serde_json::Value>(body.as_str().unwrap_or("{}"))
-        .ok()
-        .and_then(|b| b["inputs"]["fiddle_effect_id"].as_str().map(String::from))
+    parse(body.as_str().unwrap_or("{}"))["inputs"]["fiddle_effect_id"]
+        .as_str()
         .unwrap_or_default()
+        .to_string()
+}
+
+/// The status a read has been made to fail with, when a test asked for one.
+///
+/// Scoped to an endpoint by marker file rather than keyed on the mangled request
+/// path, so a suite asking "what does this client do when the source is
+/// unreadable?" does not have to spell the client's own query string back at it
+/// — and so the answer to that question cannot quietly become "the read
+/// succeeded" the day the query changes.
+fn unreadable(dir: &Path, marker: &str) -> Option<u16> {
+    std::fs::read_to_string(dir.join(marker))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// One recorded request body, read back as JSON. `Null` when it was not one.
+fn parse(body: &str) -> serde_json::Value {
+    serde_json::from_str(body).unwrap_or(serde_json::Value::Null)
 }

@@ -41,7 +41,7 @@
 //! are the two things GitHub has committed to.
 
 use crate::effect::{AuthorizedEffect, EffectContext, IntegrationOperation, ObservedState};
-use crate::github::GhError;
+use crate::github::{encode, GhError};
 use fiddle_core::HumanDecisionRequirement;
 
 /// An open pull request, as it was observed to be.
@@ -305,26 +305,6 @@ impl IntegrationOperation for EnsurePullRequest {
             .await
             .map(|_response| ())
     }
-}
-
-/// Percent-encode one query parameter value.
-///
-/// Written here rather than pulled in, because the whole need is three values in
-/// one query string and a dependency added to the impure crate is a dependency
-/// the boundary test has to walk. Everything outside RFC 3986's unreserved set
-/// is escaped — which includes the `:` of an owner-qualified head and the `/` a
-/// namespaced branch carries, the two characters that would otherwise be read as
-/// structure by something between here and GitHub.
-fn encode(value: &str) -> String {
-    value
-        .bytes()
-        .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                (byte as char).to_string()
-            }
-            other => format!("%{other:02X}"),
-        })
-        .collect()
 }
 
 #[cfg(test)]
