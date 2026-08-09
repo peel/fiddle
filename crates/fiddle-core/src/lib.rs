@@ -5,11 +5,14 @@
 //! filesystem, network, environment, or clock access, and no async runtime.
 //! `identity` holds the references a run is addressed by, `observation` holds
 //! what a run saw of the world, `assessment` holds what that world means and
-//! what to do about it, `outcome` holds how the run ended, `published` holds the
+//! what to do about it, `effect` holds the identity by which a later process
+//! recognises an external effect an earlier one performed, `outcome` holds how
+//! the run ended, `published` holds the
 //! bound every piece of free text a run publishes is subject to, and `report`
 //! holds the document a run publishes to say all of that to a later reader.
 
 pub mod assessment;
+pub mod effect;
 pub mod identity;
 pub mod observation;
 pub mod outcome;
@@ -20,6 +23,7 @@ pub use assessment::{
     assess, correlation_key, derive_next, CapabilityAssessment, NextAction, FIXTURE_REPAIR,
     STUB_MARK,
 };
+pub use effect::{effect_id, payload_hash, EffectId, EffectKind, PayloadHash, ProposedEffect};
 pub use identity::{
     AttemptId, CapabilityId, InvocationRef, InvocationRefError, InvocationScheme, WorkRef,
 };
