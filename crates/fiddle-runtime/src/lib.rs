@@ -18,7 +18,10 @@
 //! else is generic over Rig's completion-model trait, which is what lets the
 //! milestone's central property be proven offline. `github` is the second
 //! credential-carrying construction beside it — one `gh`, one environment, one
-//! place to look — and `effect` is the mandatory authorization boundary in front
+//! place to look — and `git` is the third: the one `git push` that publishes a
+//! branch, carrying its credential through git's environment configuration
+//! channel because `argv` is world-readable and the environment is not.
+//! `effect` is the mandatory authorization boundary in front
 //! of it: the executor that walks validate → identity → postcondition → policy →
 //! authorize → delegate → observe, the envelope no caller can forge, and the
 //! vocabulary in which the difference between a refused write and a lost answer
@@ -36,6 +39,7 @@ pub mod capability;
 pub mod effect;
 pub mod evidence;
 pub mod gateway;
+pub mod git;
 pub mod github;
 pub mod journal;
 pub mod orchestration;
@@ -62,6 +66,7 @@ pub use effect::{
 pub use evidence::{EvidenceError, BUNDLE_FILE};
 pub use fiddle_core as core;
 pub use gateway::{completion_model, GatewayError, GatewayModel};
+pub use git::{GitCli, GitError, PublishedBranch};
 pub use github::{GhCli, GhError, GhResponse};
 pub use journal::AttemptJournal;
 pub use orchestration::{
