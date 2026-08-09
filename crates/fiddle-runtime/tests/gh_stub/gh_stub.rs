@@ -228,7 +228,28 @@ fn world_answer(dir: &Path, key: &str) -> (u16, String) {
     };
 
     if key.starts_with("GET_repos") && key.contains("git_ref_heads") {
-        let branch = key.rsplit('_').next().unwrap_or_default();
+        // `/repos/o/r/git/ref/heads/fiddle/<id>` arrives as one underscored key,
+        // so the branch is everything after the endpoint and the separators go
+        // back to slashes. Safe for the names this suite reads, which are
+        // `fiddle/` plus a hex digest and carry no underscore of their own.
+        let branch = key
+            .split("git_ref_heads_")
+            .nth(1)
+            .unwrap_or_default()
+            .replace('_', "/");
+        // A bare repository beside the script is a world some *other* process
+        // built — a real `git push`, which is how a branch is actually created,
+        // since a ref can only point at an object the remote already holds. The
+        // stub mirrors it rather than modelling it, so "what does the next
+        // process see?" is answered by the remote and not by this fixture's
+        // idea of what a push does.
+        let remote = dir.join("remote.git");
+        if remote.is_dir() {
+            return match bare_repository_ref(&remote, &branch) {
+                Some(sha) => (200, format!(r#"{{"object":{{"sha":"{sha}"}}}}"#)),
+                None => (404, r#"{"message":"Not Found"}"#.to_string()),
+            };
+        }
         return match landed.iter().any(|w| landed_key(w, "git_refs")) {
             true => (200, format!(r#"{{"object":{{"sha":"c0ffee{branch}"}}}}"#)),
             // An absent ref is a 404, which the adapter reads as knowledge.
@@ -266,6 +287,28 @@ fn world_answer(dir: &Path, key: &str) -> (u16, String) {
         );
     }
     (404, r#"{"message":"Not Found"}"#.to_string())
+}
+
+/// What a bare repository's `refs/heads/<branch>` points at, or `None` when it
+/// holds no such ref.
+///
+/// Read out of the repository's own files rather than by spawning a `git`: this
+/// fixture stands in for GitHub's ref endpoint, and a fixture that shelled out
+/// would be one more child inside a suite whose whole subject is which children
+/// get spawned with what. Both storage forms are handled, because a repository
+/// is free to pack a ref at any time and a fixture that only understood loose
+/// refs would fail on the day one did.
+fn bare_repository_ref(remote: &Path, branch: &str) -> Option<String> {
+    let loose = remote.join("refs").join("heads").join(branch);
+    if let Ok(sha) = std::fs::read_to_string(loose) {
+        return Some(sha.trim().to_string());
+    }
+    let packed = std::fs::read_to_string(remote.join("packed-refs")).ok()?;
+    let wanted = format!("refs/heads/{branch}");
+    packed.lines().find_map(|line| {
+        let (sha, name) = line.split_once(' ')?;
+        (name.trim() == wanted).then(|| sha.trim().to_string())
+    })
 }
 
 fn effect_id_in(body: &serde_json::Value) -> String {

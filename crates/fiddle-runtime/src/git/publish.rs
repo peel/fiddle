@@ -57,6 +57,7 @@
 //! A diverged push is therefore reported and never retried with `--force`, and
 //! [`GitCli::publish`] has no parameter that could ask for one.
 
+use crate::effect::EffectOutcome;
 use crate::process::{run_bounded, Bounded};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -147,6 +148,60 @@ pub enum GitError {
     /// exit code, which is what a signal leaves behind, reaches this variant.
     #[error("git was killed before it answered")]
     Killed,
+}
+
+impl GitError {
+    /// What this failure says about whether the ref was written.
+    ///
+    /// The counterpart of [`crate::github::GhError::outcome`], and it exists for
+    /// the same reason: the executor resolves an `Unknown` by reading the world
+    /// and a `NotCommitted` by letting the refusal stand, so a landed push
+    /// reported as `NotCommitted` is retried into a duplicate.
+    ///
+    /// **The porcelain report is the refusal channel, and its absence is not a
+    /// refusal.** `git push --porcelain` writes one line per ref, and a `!` line
+    /// is git telling us, per ref, that the update did not happen — that is
+    /// where [`GitError::NonFastForward`] and [`GitError::Rejected`] come from,
+    /// and it is the only evidence this adapter ever gets that the ref was left
+    /// alone. Everything else about a push is a statement about the *process*,
+    /// not about the ref.
+    ///
+    /// So the three groups below are: nothing was spawned that could write; the
+    /// remote refused this ref by name; or the ref's fate is simply not known.
+    /// The last group is where a killed `git` goes, because a push killed on the
+    /// way back may have delivered its pack and moved the ref already — the case
+    /// Task 4 left explicitly to whoever wired this up.
+    pub fn outcome(&self) -> EffectOutcome {
+        match self {
+            // Nothing reached the remote. `publish` validates the branch name,
+            // checks cancellation and reads the local `HEAD` *before* it builds
+            // the pushing child, so each of these three is a failure on the near
+            // side of the only spawn that can change anything.
+            GitError::InvalidBranch { .. } | GitError::Cancelled | GitError::Head { .. } => {
+                EffectOutcome::NotCommitted
+            }
+            // The remote named this ref and said no. A divergent ref is this
+            // one, and it is the whole reason M2 needs no ownership trailer:
+            // git refuses the non-fast-forward, so the branch is reported and
+            // never overwritten.
+            GitError::NonFastForward { .. } | GitError::Rejected { .. } => {
+                EffectOutcome::NotCommitted
+            }
+            // The deadline passed, or a signal ended the child. Neither says
+            // anything about the ref, and both are the ambiguous write this
+            // milestone exists for.
+            GitError::Timeout(_) | GitError::Killed => EffectOutcome::Unknown,
+            // A push that failed without rejecting a ref: an unreachable
+            // remote, a credential the far end would not take, a connection
+            // that dropped. Deliberately `Unknown` rather than `NotCommitted`,
+            // even though the commonest cause never reached the remote at all —
+            // git expressed no verdict on the ref, and inventing one here is
+            // exactly how a landed write gets reported as a failure. The
+            // postcondition read settles it either way, and settling it by
+            // looking costs one `GET`.
+            GitError::Push { .. } => EffectOutcome::Unknown,
+        }
+    }
 }
 
 /// The one place a GitHub credential is turned into a running `git`.
@@ -624,6 +679,73 @@ mod tests {
         }
         for accepted in ["fiddle/abc", "main", "fiddle/repair-2024_01.v2", "a-b/c.d"] {
             assert!(validate_branch(accepted).is_ok(), "{accepted:?}");
+        }
+    }
+
+    /// The classification, stated exhaustively.
+    ///
+    /// Written as a table over every variant rather than as a few interesting
+    /// cases, because the failure this guards against is a *new* variant added
+    /// later and defaulted into whichever arm was written with a wildcard. There
+    /// is no wildcard in [`GitError::outcome`], and this is what keeps it that
+    /// way: a variant added without a decision cannot compile past here.
+    ///
+    /// The two rows that carry the milestone are `Killed` and `NonFastForward`.
+    /// A killed push may have delivered its pack and moved the ref, so reporting
+    /// it `NotCommitted` would send a caller to retry a write that landed. A
+    /// non-fast-forward is git naming this ref and refusing it, which is the
+    /// verdict the design leans on in place of the ownership trailer it dropped.
+    #[test]
+    fn a_push_failure_says_what_it_knows_about_the_ref() {
+        for (error, expected) in [
+            (
+                GitError::InvalidBranch {
+                    branch: "+f".to_string(),
+                    reason: "r".to_string(),
+                },
+                EffectOutcome::NotCommitted,
+            ),
+            (GitError::Cancelled, EffectOutcome::NotCommitted),
+            (
+                GitError::Head {
+                    stderr: "s".to_string(),
+                },
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                GitError::NonFastForward {
+                    branch: "fiddle/abc".to_string(),
+                },
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                GitError::Rejected {
+                    branch: "fiddle/abc".to_string(),
+                    reason: "pre-receive hook".to_string(),
+                },
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                GitError::Timeout(Duration::from_secs(1)),
+                EffectOutcome::Unknown,
+            ),
+            (GitError::Killed, EffectOutcome::Unknown),
+            (
+                GitError::Push {
+                    stderr: "s".to_string(),
+                },
+                EffectOutcome::Unknown,
+            ),
+        ] {
+            assert_eq!(error.outcome(), expected, "{error:?}");
+            // The verdict has to survive the trip into the executor's own
+            // vocabulary, or the classification is decided twice and the second
+            // decision is the one that counts.
+            assert_eq!(
+                crate::github::GhError::from(error).outcome(),
+                expected,
+                "the wrapped failure must classify the same way"
+            );
         }
     }
 

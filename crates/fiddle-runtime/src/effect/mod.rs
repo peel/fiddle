@@ -33,11 +33,13 @@ pub mod receipt;
 
 pub use receipt::{EffectError, EffectReceipt, ObservedState};
 
+use crate::git::GitCli;
 use crate::github::{GhCli, GhError};
 use fiddle_core::{
     combine, effect_id, payload_hash, CapabilityId, DeploymentRule, EffectId, EffectKind,
     HumanDecisionRequirement, PayloadHash, PolicyDecision, ProposedEffect,
 };
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
 /// The three-valued result an ambiguous write forces.
@@ -137,16 +139,36 @@ pub trait DeploymentPolicy: Send + Sync {
 /// once when the executor is built rather than obtained per effect: there is one
 /// credential-carrying construction in this process ([`crate::github::cli`]) and
 /// this is where it is handed to the operations that use it.
+///
+/// `git` and `work` are the second half of the same arrangement, and they are
+/// here for a reason worth stating: publishing a branch is not an API call. A
+/// ref can only be created pointing at an object the remote already holds, so
+/// the objects and the ref go up together in one `git push`, out of the
+/// worktree the attempt did its work in. Both are resolved once, beside the
+/// `gh`, so the two credential-carrying constructions this process has are
+/// handed to operations from one place rather than built per effect.
 pub struct EffectContext {
     pub gh: GhCli,
+    /// The one `git` that pushes. Its credential channel and environment are
+    /// [`crate::git::publish`]'s subject and nothing here re-argues them.
+    pub git: GitCli,
+    /// The worktree whose `HEAD` is published. One per run, because an attempt
+    /// works in one checkout; an operation that could name another would be
+    /// naming work this run never did.
+    pub work: PathBuf,
     /// The run's cancellation. An operation passes it down so a cancelled run
     /// stops before spawning rather than after.
     pub cancel: CancellationToken,
 }
 
 impl EffectContext {
-    pub fn new(gh: GhCli, cancel: CancellationToken) -> Self {
-        Self { gh, cancel }
+    pub fn new(gh: GhCli, git: GitCli, work: PathBuf, cancel: CancellationToken) -> Self {
+        Self {
+            gh,
+            git,
+            work,
+            cancel,
+        }
     }
 }
 

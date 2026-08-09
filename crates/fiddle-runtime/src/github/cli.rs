@@ -48,6 +48,7 @@
 //! keeps it from being reported as a failure.
 
 use crate::effect::EffectOutcome;
+use crate::git::GitError;
 use crate::process::{run_bounded, Bounded};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -110,6 +111,22 @@ pub enum GhError {
     /// resolved by picking the first.
     #[error("{count} objects matched where at most one was expected")]
     Duplicate { count: usize },
+    /// A push, which is `git` rather than `gh`.
+    ///
+    /// [`IntegrationOperation`](crate::effect::IntegrationOperation) fixes one
+    /// error type for every operation's mutation, and `ensure_branch_published`
+    /// is the one whose mutation is not an API call: a ref can only point at an
+    /// object the remote already has, so the objects and the ref are published
+    /// together by [`GitCli::publish`](crate::git::GitCli::publish) and there is
+    /// no `POST /git/refs` to fail instead.
+    ///
+    /// The [`GitError`] is carried whole rather than flattened into a message,
+    /// and that is the point of the variant. [`GhError::outcome`] delegates to
+    /// [`GitError::outcome`], so the judgment about whether a failed push may
+    /// have moved the ref is made by the type that knows git's refusal channel —
+    /// rather than by mapping a push failure onto an HTTP status nobody sent.
+    #[error("the branch could not be pushed: {0}")]
+    Push(#[from] GitError),
 }
 
 impl GhError {
@@ -153,6 +170,10 @@ impl GhError {
             GhError::Auth | GhError::Cancelled | GhError::Malformed(_) => {
                 EffectOutcome::NotCommitted
             }
+            // Delegated rather than restated: git's refusal channel is the
+            // porcelain report, and only `GitError` knows which of its variants
+            // came from one.
+            GhError::Push(error) => error.outcome(),
         }
     }
 }

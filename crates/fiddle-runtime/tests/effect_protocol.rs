@@ -1,15 +1,27 @@
-//! The effect executor's protocol, proven in process and offline.
+//! The effect executor's protocol, and the first operation that composes it.
 //!
-//! Every case here is an *ambiguity* case: what the executor does when it does
-//! not know whether a write landed. None of them reaches GitHub, and none of
-//! them spawns a process — the world is a scripted [`IntegrationOperation`], so
-//! the properties the milestone turns on are decided by the executor rather
-//! than by whatever a network happened to do that afternoon.
+//! Two halves, and the split between them is the point rather than an
+//! arrangement of convenience.
 //!
-//! The one rule underneath all of it: **`Unknown` is resolved by reading the
-//! world, never by retrying the mutation.** A retry there is how a duplicate
-//! external effect is born, so the mutation dispatch count is asserted directly
-//! rather than inferred from an outcome.
+//! The **protocol half** is every *ambiguity* case: what the executor does when
+//! it does not know whether a write landed. None of it reaches GitHub and none
+//! of it spawns a process — the world is a scripted [`IntegrationOperation`], so
+//! the properties the milestone turns on are decided by the executor rather than
+//! by whatever a network happened to do that afternoon. The one rule underneath
+//! all of it: **`Unknown` is resolved by reading the world, never by retrying
+//! the mutation.** A retry there is how a duplicate external effect is born, so
+//! the mutation dispatch count is asserted directly rather than inferred from an
+//! outcome.
+//!
+//! The **branch half** is `ensure_branch_published` end to end, and it must be
+//! asked of something real: a **bare repository on disk** pushed to by the
+//! product's own `git`, and the **scripted `gh`** answering the ref read out of
+//! that same repository. A fixture answering the read from its own idea of what
+//! a push does would be asserting this file's assumptions about git rather than
+//! git's behaviour — and "a divergent ref is refused as a non-fast-forward" is
+//! precisely a claim about git's behaviour, since it is the claim that stands in
+//! for the ownership trailer the design dropped. Still offline, still
+//! credential-free: a path remote authenticates nobody.
 
 use async_trait::async_trait;
 use fiddle_core::{
@@ -17,14 +29,17 @@ use fiddle_core::{
     ProposedEffect, FIXTURE_REPAIR, STUB_MARK,
 };
 use fiddle_runtime::effect::{
-    AuthorizedEffect, DeploymentPolicy, EffectContext, EffectError, EffectOutcome, EffectTrace,
-    ExecutionStep, Executor, IntegrationOperation, ObservedState,
+    AuthorizedEffect, DeploymentPolicy, EffectContext, EffectError, EffectOutcome, EffectReceipt,
+    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ObservedState,
 };
+use fiddle_runtime::git::{GitCli, GitError};
+use fiddle_runtime::github::{branch_name, BranchRef, EnsureBranchPublished};
 use fiddle_runtime::{GhCli, GhError};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
+use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
 const PROJECT: &str = "acme/widget";
@@ -308,13 +323,13 @@ impl Harness {
     }
 }
 
-/// A context nothing in this suite reaches.
+/// A context nothing in the protocol half reaches.
 ///
-/// The scripted operation ignores it, so the `gh` inside it is never spawned
-/// and the program path is deliberately one that does not exist: if a future
-/// change made the executor talk to GitHub behind the operation's back, these
-/// tests would fail loudly rather than quietly acquire a dependency on a
-/// network.
+/// The scripted operation ignores it, so neither the `gh` nor the `git` inside
+/// it is ever spawned and both program paths are deliberately ones that do not
+/// exist: if a future change made the executor talk to GitHub — or push —
+/// behind the operation's back, these tests would fail loudly rather than
+/// quietly acquire a dependency on a network.
 fn unreachable_context() -> EffectContext {
     EffectContext::new(
         GhCli::new(
@@ -325,6 +340,13 @@ fn unreachable_context() -> EffectContext {
             PathBuf::from("/nonexistent"),
             Duration::from_secs(1),
         ),
+        GitCli::new(
+            PathBuf::from("/nonexistent/git"),
+            String::new(),
+            "FIDDLE_GITHUB_TOKEN",
+            Duration::from_secs(1),
+        ),
+        PathBuf::from("/nonexistent"),
         CancellationToken::new(),
     )
 }
@@ -697,4 +719,611 @@ async fn the_receipt_carries_the_recomputable_identity_and_payload_hash() {
     assert_eq!(receipt.payload_hash, payload_hash(PAYLOAD));
     assert_eq!(receipt.target, TARGET);
     assert_eq!(receipt.value, "deadbeef");
+}
+
+// ---------------------------------------------------------------------------
+// One real branch
+// ---------------------------------------------------------------------------
+
+/// The repository the scripted `gh` answers for, and the one the API paths name.
+const REPO: &str = "o/r";
+
+/// A generous bound for children that answer immediately. Nothing in this half
+/// is about the deadline; `github_cli` and `git_publish` own the process bounds
+/// and this file inherits them rather than restating them.
+const PATIENT: Duration = Duration::from_secs(60);
+
+/// Run a setup `git` in `dir` and insist it succeeded.
+///
+/// Setup runs under the ambient environment on purpose — it is the test
+/// arranging a world, not the code under test — but identity and the initial
+/// branch are pinned with `-c` so that an operator's global configuration
+/// cannot change what the fixture is.
+fn git_setup(dir: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.email=fiddle@example.invalid",
+            "-c",
+            "user.name=fiddle",
+            "-c",
+            "init.defaultBranch=main",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("git is on PATH for the test process");
+    assert!(
+        output.status.success(),
+        "setup `git {}` failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// One `git` question, answered as a trimmed string.
+fn git_says(dir: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// The world one branch effect runs against: a bare repository standing in for
+/// GitHub, a worktree holding the work, and the scripted `gh` that answers reads
+/// out of the first of those.
+///
+/// The two adapters see the *same* remote through different doors — `git` writes
+/// to it over a path, the scripted `gh` reads its ref files — which is what makes
+/// "the postcondition was read back rather than assumed" a real claim here. A
+/// stub answering from its own memory of what it had been asked would agree with
+/// a push that never happened.
+struct Remote {
+    dir: TempDir,
+    remote: PathBuf,
+    work: PathBuf,
+    steps: Mutex<Vec<&'static str>>,
+}
+
+impl EffectTrace for Remote {
+    fn step(&self, step: ExecutionStep) {
+        self.steps.lock().unwrap().push(step.as_str());
+    }
+}
+
+impl Remote {
+    /// An empty remote and a worktree with one commit pointing at it.
+    fn empty() -> Self {
+        let dir = TempDir::new().unwrap();
+        // `remote.git` is the name the scripted `gh` looks for beside its own
+        // scratch directory; see `tests/gh_stub/gh_stub.rs`.
+        let remote = dir.path().join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        git_setup(&remote, &["init", "-q", "--bare", "."]);
+        // Empty, and stays empty: it is what a real `gh` would be pinned to.
+        std::fs::create_dir_all(dir.path().join("config")).unwrap();
+
+        let this = Self {
+            work: dir.path().join("work"),
+            remote,
+            dir,
+            steps: Mutex::new(Vec::new()),
+        };
+        this.worktree("work", "one");
+        this
+    }
+
+    /// A working repository with one commit whose content is `content`, and an
+    /// `origin` pointing at the bare repository.
+    fn worktree(&self, name: &str, content: &str) -> PathBuf {
+        let work = self.dir.path().join(name);
+        std::fs::create_dir_all(&work).unwrap();
+        git_setup(&work, &["init", "-q", "."]);
+        std::fs::write(work.join("file"), content).unwrap();
+        git_setup(&work, &["add", "file"]);
+        git_setup(&work, &["commit", "-q", "-m", name]);
+        git_setup(
+            &work,
+            &[
+                "remote",
+                "add",
+                "origin",
+                &self.remote.display().to_string(),
+            ],
+        );
+        work
+    }
+
+    /// Put `worktree`'s commit on `branch` before the effect runs.
+    ///
+    /// Arranged with the test's own `git` rather than with the adapter under
+    /// test, so a world this file claims to have built is not built by the code
+    /// the assertions are about.
+    fn seed(&self, worktree: &Path, branch: &str) {
+        git_setup(
+            worktree,
+            &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
+        );
+    }
+
+    /// The commit the work is sitting on: what a publish intends.
+    fn head(&self) -> String {
+        git_says(&self.work, &["rev-parse", "HEAD"])
+    }
+
+    /// Every branch the remote holds, in ref order.
+    fn branches(&self) -> Vec<String> {
+        git_says(
+            &self.remote,
+            &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        )
+        .lines()
+        .map(str::to_string)
+        .collect()
+    }
+
+    /// What one branch of the remote points at.
+    fn branch_sha(&self, branch: &str) -> String {
+        git_says(
+            &self.remote,
+            &["rev-parse", &format!("refs/heads/{branch}")],
+        )
+    }
+
+    /// A context whose `gh` is the scripted one and whose `git` is the real one.
+    fn context(&self) -> EffectContext {
+        self.context_reading_with(PathBuf::from(env!("CARGO_BIN_EXE_gh_stub")))
+    }
+
+    /// The same, with the `gh` program named — so a `gh` that cannot answer at
+    /// all can be handed to the same operation.
+    fn context_reading_with(&self, gh: PathBuf) -> EffectContext {
+        EffectContext::new(
+            GhCli::new(
+                gh,
+                // The scratch directory arrives in `argv` because the adapter's
+                // environment has room for exactly five names; see
+                // `tests/gh_stub/gh_stub.rs`.
+                vec![
+                    "--stub-dir".to_string(),
+                    self.dir.path().display().to_string(),
+                ],
+                "ghp_never_reaches_a_network".to_string(),
+                "FIDDLE_GITHUB_TOKEN",
+                self.dir.path().join("config"),
+                PATIENT,
+            ),
+            GitCli::new(
+                PathBuf::from("git"),
+                // Never used: a path remote authenticates nobody, which is what
+                // keeps this lane credential-free while still running the exact
+                // environment the product builds.
+                "ghp_never_used_by_a_path_remote".to_string(),
+                "FIDDLE_GITHUB_TOKEN",
+                PATIENT,
+            ),
+            self.work.clone(),
+            CancellationToken::new(),
+        )
+    }
+
+    fn steps(&self) -> Vec<&'static str> {
+        self.steps.lock().unwrap().clone()
+    }
+}
+
+/// The branch this run publishes, recomputed the way a fresh process would.
+fn published_branch() -> String {
+    branch_name(PROJECT, INVOCATION_REF)
+}
+
+/// The operation under test, aimed at `intended`.
+fn branch_operation(intended: &str) -> EnsureBranchPublished {
+    EnsureBranchPublished::new(REPO.to_string(), published_branch(), intended.to_string())
+}
+
+/// Walk the authorization order for one branch effect.
+///
+/// Generic over the operation so that the 422 cases below can substitute a
+/// mutation while keeping the *real* read — which is the half the criterion is
+/// actually about.
+async fn publish_the_branch<O>(
+    remote: &Remote,
+    ctx: &EffectContext,
+    intended: &str,
+    operation: O,
+) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, EffectError>
+where
+    O: IntegrationOperation,
+{
+    let deployment = Deployment(DeploymentRule::Allow);
+    let proposed = ProposedEffect {
+        capability: FIXTURE_REPAIR,
+        kind: EffectKind::EnsureBranchPublished,
+        target: fiddle_runtime::github::branch_target(&published_branch()),
+        payload: serde_json::json!({ "repo": REPO, "sha": intended }).to_string(),
+    };
+    Executor::new(
+        FIXTURE_REPAIR,
+        PROJECT.to_string(),
+        INVOCATION_REF.to_string(),
+        &deployment,
+        ctx,
+    )
+    .observed_by(remote)
+    .execute(proposed, operation)
+    .await
+}
+
+/// The name is the durable remote locator — the thing a fresh process has to
+/// find a branch by after its own answer was lost — so it must fall out of
+/// canonical inputs and nothing else.
+///
+/// The syntax assertions are not decoration. A name is rejected by git if it
+/// contains `..`, ends a component in `.lock`, or begins with `-`, and a name
+/// that reached the far end and failed there would be a failure this adapter
+/// could have prevented. They hold *structurally* here — the digest is hex — but
+/// they are asserted because the construction is what guarantees it, and a
+/// construction can be changed. `an_absent_ref_is_published_and_then_read_back`
+/// is the other half of the same claim: it pushes this exact name through
+/// `GitCli::publish`, whose own boundary check is the one a real `git` would
+/// have applied.
+#[test]
+fn the_branch_name_is_derived_and_stable() {
+    let first = branch_name("acme/widget", "beans:w-1");
+    assert_eq!(first, branch_name("acme/widget", "beans:w-1"));
+    assert!(
+        first.starts_with("fiddle/"),
+        "namespaced, so a human can see whose it is: {first}"
+    );
+    // Both canonical inputs move the name, or two runs would publish over each
+    // other's work under one ref.
+    assert_ne!(first, branch_name("acme/widget", "beans:w-2"));
+    assert_ne!(first, branch_name("acme/other", "beans:w-1"));
+
+    // The identity's own derivation, reused rather than a second hash invented.
+    assert_eq!(
+        first,
+        format!(
+            "fiddle/{}",
+            effect_id(
+                "acme/widget",
+                "beans:w-1",
+                EffectKind::EnsureBranchPublished,
+                "acme/widget"
+            )
+            .0
+        )
+    );
+
+    // git's own ref rules.
+    assert!(!first.contains(".."));
+    assert!(!first.ends_with(".lock"));
+    assert!(!first.split('/').any(|part| part.ends_with(".lock")));
+    assert!(!first.starts_with(['-', '.', '/']));
+    assert!(!first.ends_with(['.', '/']));
+    assert!(first
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/-_".contains(c)));
+
+    // Every input, not only the well-behaved ones: the encoding underneath is
+    // length-prefixed, so a project carrying a separator, a NUL or a refspec
+    // metacharacter still produces a name git will take.
+    for project in [
+        "",
+        "a\0b",
+        "+force:me",
+        "../../etc",
+        "x".repeat(500).as_str(),
+    ] {
+        let name = branch_name(project, "beans:w-1");
+        assert!(
+            name.strip_prefix("fiddle/")
+                .is_some_and(|id| id.len() == 16 && id.chars().all(|c| c.is_ascii_hexdigit())),
+            "{project:?} produced {name}"
+        );
+    }
+}
+
+/// An absent ref is the only state that licenses a push — and a 404 is how the
+/// remote says so.
+///
+/// This is `m2-branch-404-is-knowledge` in its ordinary form: the first
+/// inspection of an empty remote is a 404, and it has to come back as "not
+/// there" rather than as a failure to look, or the very first publish of every
+/// run would fail closed.
+#[tokio::test]
+async fn an_absent_ref_is_published_and_then_read_back() {
+    let remote = Remote::empty();
+    let ctx = remote.context();
+    let head = remote.head();
+
+    let receipt = publish_the_branch(&remote, &ctx, &head, branch_operation(&head))
+        .await
+        .expect("an absent ref is published");
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(
+        remote.branches(),
+        [published_branch()],
+        "exactly one branch, at the deterministic name"
+    );
+    assert_eq!(
+        receipt.external_ref.as_deref(),
+        Some(head.as_str()),
+        "the observed sha, read back out of the remote rather than assumed"
+    );
+    assert_eq!(receipt.value.branch, published_branch());
+    assert_eq!(receipt.value.sha, head);
+    assert_eq!(
+        remote.steps().last(),
+        Some(&"observe_postcondition"),
+        "the receipt is built from the read that follows the push"
+    );
+}
+
+/// The same rule stated on its own, and its fail-closed edge beside it.
+///
+/// A 404 is a read that *succeeded* and returned an absence; a `gh` that could
+/// not answer at all is a source that could not be read. M0's rule is that the
+/// two are never equivalent, and this is that rule at the GitHub boundary: the
+/// first is `Ok(None)` and licenses a push, the second is an error and stops
+/// one. Collapsing them in either direction is a defect — one way the first
+/// publish never happens, the other way an outage looks like an empty remote and
+/// gets pushed over.
+#[tokio::test]
+async fn a_404_is_knowledge_and_an_unreadable_source_is_not() {
+    let remote = Remote::empty();
+    let operation = branch_operation(&remote.head());
+
+    assert_eq!(
+        operation.inspect(&remote.context()).await.unwrap(),
+        None,
+        "the remote answered 404: the ref is absent, and that is knowledge"
+    );
+
+    let unreadable = remote.context_reading_with(PathBuf::from("/nonexistent/gh"));
+    let error = operation
+        .inspect(&unreadable)
+        .await
+        .expect_err("a source that could not be read is never an absent ref");
+    assert!(
+        matches!(error, GhError::Malformed(_)),
+        "expected the read to fail, got {error:?}"
+    );
+}
+
+/// A ref already at the intended sha is the postcondition, not a conflict.
+///
+/// The steps are asserted rather than a push count, which is the stronger
+/// claim: not merely that nothing landed, but that the executor never dispatched
+/// a mutation at all. A fresh process meeting the world a previous one built is
+/// exactly this case, and it is the whole of the recovery.
+#[tokio::test]
+async fn a_ref_already_at_the_intended_sha_is_already_satisfied() {
+    let remote = Remote::empty();
+    let head = remote.head();
+    remote.seed(&remote.work, &published_branch());
+
+    let ctx = remote.context();
+    let receipt = publish_the_branch(&remote, &ctx, &head, branch_operation(&head))
+        .await
+        .expect("the postcondition already holds");
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(receipt.external_ref.as_deref(), Some(head.as_str()));
+    assert_eq!(
+        remote.steps(),
+        [
+            "validate_capability",
+            "derive_identity",
+            "inspect_postcondition"
+        ],
+        "the walk stops at the inspection; nothing is pushed and nothing is even \
+         put to policy"
+    );
+    assert_eq!(remote.branches(), [published_branch()]);
+    assert_eq!(remote.branch_sha(&published_branch()), head);
+}
+
+/// A ref at the deterministic name pointing somewhere else is the case §5.5
+/// deliberately left to git rather than to a commit trailer: the push is
+/// attempted and refused as a non-fast-forward, so a divergent branch is
+/// reported and never overwritten.
+///
+/// This is the assertion that the dropped ownership check left no hole, and it
+/// has to be asked of a real `git` against a real remote — a fixture answering
+/// "rejected" would be this file agreeing with its own belief about git, when
+/// git's behaviour is the entire load-bearing claim.
+///
+/// Three things are asserted, and they are three different claims. The refusal
+/// carries git's own verdict rather than a generic failure, so a caller can tell
+/// a divergence from an outage. The ref still points where it did, so nothing
+/// was forced. And no second branch appeared, so nothing routed around the
+/// refusal by publishing elsewhere.
+#[tokio::test]
+async fn a_ref_at_our_name_pointing_elsewhere_is_refused_not_overwritten() {
+    let remote = Remote::empty();
+    let other = remote.worktree("other", "another");
+    let theirs = git_says(&other, &["rev-parse", "HEAD"]);
+    remote.seed(&other, &published_branch());
+    let head = remote.head();
+    assert_ne!(head, theirs, "the two worktrees must really diverge");
+
+    let ctx = remote.context();
+    let error = publish_the_branch(&remote, &ctx, &head, branch_operation(&head))
+        .await
+        .expect_err("a ref that is not an ancestor cannot fast-forward");
+
+    assert!(
+        matches!(
+            error,
+            EffectError::Adapter {
+                source: GhError::Push(GitError::NonFastForward { .. }),
+                ..
+            }
+        ),
+        "expected git's own non-fast-forward verdict, got {error:?}"
+    );
+    assert_eq!(
+        remote.branch_sha(&published_branch()),
+        theirs,
+        "the refused push must not have moved the ref"
+    );
+    assert_eq!(
+        remote.branches(),
+        [published_branch()],
+        "and must not have added one beside it"
+    );
+    assert!(
+        remote.steps().contains(&"apply"),
+        "the judgment belongs to git, so the push has to actually be attempted"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A 422, resolved by looking
+// ---------------------------------------------------------------------------
+
+/// A ref creation that answers **422** while the real read decides what it meant.
+///
+/// The 422 is injected rather than produced, and the reason is worth stating
+/// plainly. Creating a ref through the API is not how this operation publishes —
+/// a ref can only point at an object the remote already holds, so the objects
+/// and the ref go up together in one `git push`, and `git` has no 422 to give.
+/// What GitHub answers when a ref creation collides is nonetheless the thing
+/// this rule exists for, verified against the real service during planning:
+/// exactly `422 {"message":"Reference already exists"}`, a status that covers
+/// malformed input, invalid ref syntax, spam protection and "it is already
+/// there" alike, and therefore means nothing on its face.
+///
+/// So only the *answer* is scripted. [`inspect`](IntegrationOperation::inspect)
+/// delegates to the production operation, and `lands` decides whether the world
+/// really changed first — which is the only difference between the two cases,
+/// and the only thing that can tell them apart.
+struct RefCreationAnswering422 {
+    inner: EnsureBranchPublished,
+    /// Whether the ref creation really landed before its answer came back.
+    lands: bool,
+}
+
+#[async_trait]
+impl IntegrationOperation for RefCreationAnswering422 {
+    type State = BranchRef;
+
+    fn minimum(&self) -> HumanDecisionRequirement {
+        self.inner.minimum()
+    }
+
+    /// The production read, unmodified. This is the half the criterion is about.
+    async fn inspect(&self, ctx: &EffectContext) -> Result<Option<BranchRef>, GhError> {
+        self.inner.inspect(ctx).await
+    }
+
+    async fn apply(
+        &self,
+        ctx: &EffectContext,
+        _authorized: &AuthorizedEffect<Self>,
+    ) -> Result<(), GhError> {
+        // The effect lands and *then* the answer is lost — that order, and not
+        // the other one, is what makes this an ambiguous write rather than a
+        // failed one.
+        if self.lands {
+            ctx.git
+                .publish(&ctx.work, self.inner.branch(), &ctx.cancel)
+                .await
+                .map_err(GhError::Push)?;
+        }
+        Err(GhError::Http {
+            status: 422,
+            message: "Reference already exists".to_string(),
+        })
+    }
+}
+
+fn ref_creation_answering_422(intended: &str, lands: bool) -> RefCreationAnswering422 {
+    RefCreationAnswering422 {
+        inner: branch_operation(intended),
+        lands,
+    }
+}
+
+/// A 422 whose ref then matches is a success the naive reading would have called
+/// a failure.
+///
+/// `GhError::outcome` maps 422 to `Unknown` precisely so the executor cannot act
+/// on it, and what settles it is the ref read — matching, so the postcondition
+/// holds. The mutation is dispatched once and never again: the world is
+/// consulted, not the request repeated.
+#[tokio::test]
+async fn a_422_is_resolved_by_reading_the_ref_not_by_believing_it() {
+    let remote = Remote::empty();
+    let ctx = remote.context();
+    let head = remote.head();
+
+    let receipt = publish_the_branch(
+        &remote,
+        &ctx,
+        &head,
+        ref_creation_answering_422(&head, true),
+    )
+    .await
+    .expect("a 422 whose ref is there is the postcondition, not a failure");
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(receipt.external_ref.as_deref(), Some(head.as_str()));
+    assert_eq!(
+        remote.branches(),
+        [published_branch()],
+        "exactly one branch: the answer was lost, not the write"
+    );
+    assert_eq!(
+        remote
+            .steps()
+            .iter()
+            .filter(|step| **step == "apply")
+            .count(),
+        1,
+        "an unknown outcome is resolved by reading, never by dispatching again"
+    );
+}
+
+/// And a 422 that was genuinely a bad request stays a failure.
+///
+/// The other direction, and the one that stops "422 means it already exists"
+/// from being written down as a rule. Nothing is in the remote, so nothing
+/// resolves the ambiguity, and the effect stays unresolved rather than being
+/// reported as either confident answer — a caller told "failed" here would retry
+/// a write that might have landed.
+#[tokio::test]
+async fn a_422_with_no_matching_ref_is_still_a_failure() {
+    let remote = Remote::empty();
+    let ctx = remote.context();
+    let head = remote.head();
+
+    let error = publish_the_branch(
+        &remote,
+        &ctx,
+        &head,
+        ref_creation_answering_422(&head, false),
+    )
+    .await
+    .expect_err("a 422 with no ref behind it is not a success");
+
+    assert!(
+        matches!(error, EffectError::Unresolved { .. }),
+        "expected Unresolved, got {error:?}"
+    );
+    assert!(
+        format!("{error}").contains("422"),
+        "the refusal must carry what GitHub actually said: {error}"
+    );
+    assert!(
+        remote.branches().is_empty(),
+        "no branch was created, and none was invented by reading"
+    );
 }
