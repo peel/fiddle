@@ -16,7 +16,13 @@
 //! live — it does not. `gateway` is the single construction of a model that
 //! talks to a real provider, and the only reason this crate has one: everything
 //! else is generic over Rig's completion-model trait, which is what lets the
-//! milestone's central property be proven offline.
+//! milestone's central property be proven offline. `github` is the second
+//! credential-carrying construction beside it — one `gh`, one environment, one
+//! place to look — and `effect` is the vocabulary its failures are classified
+//! into, where the difference between a refused write and a lost answer is
+//! made. `process` is private and holds the one thing every child this runtime
+//! spawns has in common: a deadline it cannot outlive and a process group that
+//! dies with it. What a child may *see* is never shared; only the bound is.
 //!
 //! [`attempt`] is the front door: one call executes and records one attempt.
 //! Publication is deliberately not re-exported beside it, because "execute" and
@@ -25,11 +31,14 @@
 
 pub mod agent;
 pub mod capability;
+pub mod effect;
 pub mod evidence;
 pub mod gateway;
+pub mod github;
 pub mod journal;
 pub mod orchestration;
 pub mod ports;
+pub(crate) mod process;
 pub mod stub;
 pub mod workspace;
 
@@ -44,9 +53,11 @@ pub use capability::{
 // heard of. [`attempt`] mints exactly one and hands it to the capability through
 // its [`ExecutionGrant`]. It stays reachable as `evidence::mint_attempt_id`;
 // what it is no longer is the front door.
+pub use effect::EffectOutcome;
 pub use evidence::{EvidenceError, BUNDLE_FILE};
 pub use fiddle_core as core;
 pub use gateway::{completion_model, GatewayError, GatewayModel};
+pub use github::{GhCli, GhError, GhResponse};
 pub use journal::AttemptJournal;
 pub use orchestration::{
     attempt, observe, run, AttemptContext, AttemptRecord, RunContext, RunReport,

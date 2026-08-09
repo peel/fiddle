@@ -9,6 +9,38 @@ edition.workspace = true
 # crates behind this feature.
 [features]
 contract-harness = []
+# Builds the scripted `gh` the deterministic GitHub suite drives. Off by default
+# and switched on only through the self dev-dependency below, so it is present
+# for every `cargo test` and absent from every `cargo build --release`.
+gh-stub = []
+
+# The scripted `gh` the deterministic suite points `[github] cli.program` at.
+#
+# A `[[bin]]` rather than an example or a `harness = false` test target, for one
+# mechanical reason: `CARGO_BIN_EXE_gh_stub` is the only way an integration test
+# can name a helper binary with certainty, and a bin is the only one of the three
+# cargo still builds when a single test target is asked for by name — which the
+# task's own `cargo test -p fiddle-runtime --test github_cli` does. Examples are
+# not built for a named test target, and a `harness = false` test binary lands
+# under a hashed path with nothing to resolve it by.
+#
+# `required-features` is what keeps it out of the product: with `gh-stub` off,
+# cargo skips the target entirely, so `cargo build --release` never produces it.
+#
+# The file is `tests/gh_stub/gh_stub.rs` and not `tests/gh_stub/main.rs` because
+# cargo auto-discovers `tests/*/main.rs` as an integration test; a file claimed
+# by two targets builds twice and warns on every single cargo invocation. The
+# alternative — `autotests = false` — would mean every future test file has to be
+# declared here or silently never run, which is a far worse trap than a filename.
+[[bin]]
+name = "gh_stub"
+path = "tests/gh_stub/gh_stub.rs"
+required-features = ["gh-stub"]
+# It is a fixture, not a unit under test: without these, `cargo test` reports an
+# extra binary that contains no tests and `cargo doc` documents a `gh` that does
+# not exist. Neither disables *building* it, which is what the suite needs.
+test = false
+doc = false
 
 [dependencies]
 fiddle-core = { path = "../fiddle-core" }
@@ -35,3 +67,9 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
+# This crate depending on itself is deliberate and is the whole mechanism behind
+# `gh-stub`: cargo unifies dev-dependency features only when it is building test
+# targets, so the scripted `gh` exists for `cargo test` and for nothing else. A
+# plain default feature would put it in the release build; leaving it to
+# `--all-features` would break the single-target test command.
+fiddle-runtime = { path = ".", features = ["gh-stub"] }
