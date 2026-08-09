@@ -12,6 +12,17 @@
 //! from it. The difference only shows up in the future: a denylist protects the
 //! credentials someone remembered, an allowlist protects the ones nobody has
 //! added yet.
+//!
+//! Two entries on that allowlist come from the parent rather than from a
+//! constant — [`TOOL_PATH`] and `RUSTUP_HOME` — and both are narrowings of
+//! "built from nothing" rather than exceptions to it. The rule they are narrowed
+//! by is stated once, here: **a locator may be inherited, an authority may
+//! not.** `PATH` and `RUSTUP_HOME` say *where a toolchain is*; they grant a
+//! child nothing it could not already reach by absolute path, and a child that
+//! reads either learns the operator's directory layout and no more. A
+//! `LITELLM_API_KEY` says *who the child may act as*, which is a different kind
+//! of thing entirely and stays out. Everything credential-shaped stays out by
+//! default, because the list is closed rather than filtered.
 
 use super::{Workspace, WorkspaceError};
 use std::path::PathBuf;
@@ -72,15 +83,44 @@ static TOOL_PATH: LazyLock<String> = LazyLock::new(|| match std::env::var("PATH"
 /// Where to look for tools when this process was started without a `PATH`.
 const MINIMUM_PATH: &str = "/usr/bin:/bin";
 
+/// Where a rustup-installed toolchain lives, when the parent names one.
+///
+/// `PATH` is necessary for a child to *find* `cargo` and, where cargo is a real
+/// binary, sufficient for it to run. Where cargo is a **rustup proxy** it is
+/// not: the proxy resolves which toolchain to exec through `RUSTUP_HOME`,
+/// defaulting to `$HOME/.rustup` — and [`Workspace::run`] deliberately points
+/// `HOME` at a per-attempt scratch directory that has no `.rustup` in it. The
+/// proxy then exits non-zero with "no default toolchain configured", every
+/// nested check fails for a reason that has nothing to do with the tree under
+/// repair, and the capability reports `CheckFailed` over a repair that was
+/// correct.
+///
+/// That failure is invisible wherever cargo is a real binary — a Nix dev shell,
+/// for one — and appears on any machine that installed Rust through rustup,
+/// which includes `dtolnay/rust-toolchain` and therefore this project's own
+/// merge gate. `a_toolchain_proxy_finds_its_toolchain_because_rustup_home_survives`
+/// is what keeps it from becoming invisible again.
+///
+/// Read at spawn rather than resolved once into a [`LazyLock`] the way
+/// [`TOOL_PATH`] is, and the asymmetry is deliberate: `TOOL_PATH` *computes* a
+/// value — it falls back to [`MINIMUM_PATH`] — so caching it is what stops two
+/// commands of one attempt from disagreeing about a fallback. There is nothing
+/// to compute here. The variable is passed through when the parent has one and
+/// is simply absent when it does not, so caching would only make the child's
+/// view a function of which command in the process happened to run first.
+const RUSTUP_HOME: &str = "RUSTUP_HOME";
+
 impl Workspace {
     /// Run `cmd` in the workspace with an environment built from nothing.
     ///
-    /// `env_clear` then an explicit allowlist: the parent environment is never
-    /// consulted, so a credential added to the runner tomorrow is excluded by
-    /// default rather than by remembering to deny it. `std::env::remove_var`
-    /// would mutate this process and is wrong for a concurrent runtime — it
-    /// would strip the credential from every other attempt running beside this
-    /// one, and race with anything reading the environment meanwhile.
+    /// `env_clear` then an explicit allowlist: the parent environment is
+    /// consulted for exactly the two locators the module doc argues for — `PATH`
+    /// and `RUSTUP_HOME` — and for nothing else, so a credential added to the
+    /// runner tomorrow is excluded by default rather than by remembering to deny
+    /// it. `std::env::remove_var` would mutate this process and is wrong for a
+    /// concurrent runtime — it would strip the credential from every other
+    /// attempt running beside this one, and race with anything reading the
+    /// environment meanwhile.
     ///
     /// `HOME` points at [`Workspace::home`] — a throwaway directory *beside* the
     /// worktree — so that a tool which insists on writing a cache or a config
@@ -144,6 +184,13 @@ impl Workspace {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // The one conditional entry on the allowlist, and conditional in the
+        // honest direction: present only when the parent has one, never
+        // fabricated. See [`RUSTUP_HOME`] for why a toolchain locator is
+        // inheritable where a credential is not.
+        if let Ok(rustup_home) = std::env::var(RUSTUP_HOME) {
+            command.env(RUSTUP_HOME, rustup_home);
+        }
         #[cfg(unix)]
         command.process_group(0);
 

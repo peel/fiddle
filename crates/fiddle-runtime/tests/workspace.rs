@@ -303,36 +303,129 @@ async fn a_workspace_command_inherits_no_credential() {
     ws.run(&cmd("/usr/bin/true", &[])).await.unwrap();
 
     let guard = ENV.write().await;
+    let inherited = std::env::var("RUSTUP_HOME").ok();
     // SAFETY: `ENV` is held for writing, so no other test in this binary is
-    // reading the environment for the duration of the mutation. `run` itself
-    // does not read it — `env_clear` means the child's environment is built
-    // from the explicit allowlist rather than captured from this process.
-    unsafe { std::env::set_var("LITELLM_API_KEY", "sentinel-must-not-leak") };
-    let result = ws.run(&cmd("/usr/bin/env", &[])).await.unwrap();
-    unsafe { std::env::remove_var("LITELLM_API_KEY") };
+    // reading or writing the environment for the duration of the mutations
+    // below. `env_clear` means the child's environment is built from the
+    // explicit allowlist rather than captured from this process; `run` reads
+    // exactly one variable of its own — `RUSTUP_HOME` — so it is the write lock,
+    // rather than the absence of any reader, that makes this sound.
+    unsafe {
+        std::env::set_var("LITELLM_API_KEY", "sentinel-must-not-leak");
+        std::env::remove_var("RUSTUP_HOME");
+    }
+    // Both shapes of the allowlist, decided here rather than inherited from
+    // whatever the runner happens to export: a test whose expected set depended
+    // on the ambient environment would assert one thing locally and another on
+    // CI, which is the class of failure this scenario exists to catch.
+    let without = ws.run(&cmd("/usr/bin/env", &[])).await.unwrap();
+    unsafe { std::env::set_var("RUSTUP_HOME", "/nonexistent/rustup") };
+    let with = ws.run(&cmd("/usr/bin/env", &[])).await.unwrap();
+    unsafe {
+        std::env::remove_var("LITELLM_API_KEY");
+        match &inherited {
+            Some(value) => std::env::set_var("RUSTUP_HOME", value),
+            None => std::env::remove_var("RUSTUP_HOME"),
+        }
+    }
     drop(guard);
 
-    assert!(
-        !result.stdout.contains("sentinel-must-not-leak"),
-        "a workspace command must not observe the model credential: {}",
-        result.stdout
-    );
-    assert!(!result.stdout.contains("LITELLM_API_KEY"));
+    for result in [&without, &with] {
+        assert!(
+            !result.stdout.contains("sentinel-must-not-leak"),
+            "a workspace command must not observe the model credential: {}",
+            result.stdout
+        );
+        assert!(!result.stdout.contains("LITELLM_API_KEY"));
+    }
     // The sentinel proves this one credential does not survive; the exhaustive
-    // check proves *nothing* does. A denylist would have to be extended for
-    // every credential added later, and this is the assertion that fails if
+    // checks prove *nothing* does. A denylist would have to be extended for
+    // every credential added later, and these are the assertions that fail if
     // `env_clear` is ever dropped for a selective `env_remove`.
-    let mut seen: Vec<&str> = result
-        .stdout
+    //
+    // Two exact sets rather than one loosened to a `contains`, because
+    // `RUSTUP_HOME` is the allowlist's one conditional entry and "conditional"
+    // has to mean *exactly* present-when-the-parent-has-one. A `contains` would
+    // admit any number of further names nobody ever argued for.
+    assert_eq!(
+        names(&without.stdout),
+        ["HOME", "LANG", "PATH"],
+        "with no toolchain locator to pass through, the allowlist is the three constants: {}",
+        without.stdout
+    );
+    assert_eq!(
+        names(&with.stdout),
+        ["HOME", "LANG", "PATH", "RUSTUP_HOME"],
+        "and exactly one more when the parent names one: {}",
+        with.stdout
+    );
+}
+
+/// Every variable name a child saw, sorted.
+fn names(stdout: &str) -> Vec<&str> {
+    let mut seen: Vec<&str> = stdout
         .lines()
         .filter_map(|line| line.split('=').next())
         .collect();
     seen.sort_unstable();
+    seen
+}
+
+/// A toolchain proxy inside a workspace command can still find its toolchain.
+///
+/// The allowlist assertion above says `RUSTUP_HOME` reaches the child. This says
+/// why anybody should care, and it is the assertion that would have caught the
+/// defect: rustup's `cargo` is not a compiler but a proxy, which resolves which
+/// toolchain to exec through `RUSTUP_HOME` and refuses outright without one —
+/// and `run` points `HOME` at a per-attempt scratch directory precisely so that
+/// nothing is found under `$HOME/.rustup`. So on every machine whose Rust came
+/// from rustup, which is every machine this project's merge gate runs on, a
+/// nested `cargo test --offline` failed before it compiled anything, and the
+/// capability reported `CheckFailed` over repairs that were correct.
+///
+/// Proven against a shim rather than against rustup itself, because a test that
+/// needed rustup installed would be skipped in exactly the dev shell where this
+/// is written. The shim asserts the one behaviour that defines the proxy: no
+/// `RUSTUP_HOME`, no toolchain, non-zero exit.
+#[tokio::test]
+async fn a_toolchain_proxy_finds_its_toolchain_because_rustup_home_survives() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (ws, dir) = workspace();
+    let shim = dir.path().join("cargo");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\n\
+         if [ -z \"$RUSTUP_HOME\" ]; then\n\
+         \x20 echo 'error: no default toolchain configured' >&2\n\
+         \x20 exit 1\n\
+         fi\n\
+         exit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let guard = ENV.write().await;
+    let inherited = std::env::var("RUSTUP_HOME").ok();
+    // SAFETY: as above — `ENV` is held for writing, so this is the only thread
+    // in this binary touching the environment.
+    unsafe { std::env::set_var("RUSTUP_HOME", "/nonexistent/rustup") };
+    // Named by absolute path, so what is proven is that the *environment*
+    // reaches the child. Going through `PATH` would prove nothing extra and
+    // could not be arranged anyway: `TOOL_PATH` is resolved once per process.
+    let result = ws.run(&cmd(&shim.to_string_lossy(), &[])).await.unwrap();
+    unsafe {
+        match &inherited {
+            Some(value) => std::env::set_var("RUSTUP_HOME", value),
+            None => std::env::remove_var("RUSTUP_HOME"),
+        }
+    }
+    drop(guard);
+
     assert_eq!(
-        seen,
-        ["HOME", "LANG", "PATH"],
-        "the child's environment must be exactly the allowlist: {}",
-        result.stdout
+        result.exit_code, 0,
+        "the toolchain locator did not survive the environment rebuild: {}",
+        result.stderr
     );
 }
 

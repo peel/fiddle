@@ -118,13 +118,20 @@ impl CheckResult {
 /// That `HOME` is what keeps a nested check hermetic. `CARGO_HOME` defaults to
 /// `$HOME/.cargo`, so each repository gets a cargo home of its own and two
 /// checks running concurrently — which is what `cargo test` does to this file's
-/// consumers — never contend on one package cache. `PATH` is the single
-/// inherited variable, for the reason `command.rs` states at length: the
-/// toolchain lives at a content-hashed Nix store path that no constant can name.
+/// consumers — never contend on one package cache.
+///
+/// The inherited set is `PATH` and `RUSTUP_HOME`, and it is deliberately the
+/// same set `command.rs` allows, for the same reason and with the same
+/// justification: both are toolchain *locators*, neither is an authority. It
+/// matters that the two agree. A helper that inherited more than the product
+/// does would pass here and leave the capability's own check failing; one that
+/// inherited less would fail here for a reason the product does not have. They
+/// share fate on purpose, so a divergence is one failure with one cause.
 pub fn check(repo: &Path) -> CheckResult {
     let home = repo.with_extension("check-home");
     std::fs::create_dir_all(&home).unwrap();
-    let output = std::process::Command::new("cargo")
+    let mut command = std::process::Command::new("cargo");
+    command
         .args(["test", "--offline"])
         .current_dir(repo)
         .env_clear()
@@ -136,7 +143,14 @@ pub fn check(repo: &Path) -> CheckResult {
         .env("LANG", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Where cargo is a rustup proxy it resolves its toolchain through this and
+    // refuses without it, and `HOME` above has just been pointed somewhere with
+    // no `.rustup` in it.
+    if let Ok(rustup_home) = std::env::var("RUSTUP_HOME") {
+        command.env("RUSTUP_HOME", rustup_home);
+    }
+    let output = command
         .output()
         .unwrap_or_else(|source| panic!("could not run cargo in {}: {source}", repo.display()));
     CheckResult {
