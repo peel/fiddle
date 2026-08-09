@@ -48,7 +48,7 @@
       "providers": [
         "claude"
       ],
-      "max_iterations": 4
+      "max_iterations": 8
     }
   },
   "models": {
