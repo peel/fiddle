@@ -359,3 +359,28 @@ smaller while the bar stays fixed. Four rounds of "one point under threshold" ca
 indefinitely on a system that is fundamentally sound. Consider whether a later milestone should score
 severity explicitly, or converge on "no finding that changes a verdict or leaks a secret" rather than
 on a fixed dimension score.
+
+### 2026-08-09 — Items 4 and 8 discharged: ADR 012 no longer states a refuted mechanism
+
+ADR 012's `OutputMode` consequence and its budget consequence both described a system that had since
+changed underneath them, and `SYSTEM.md` routes a cold reader straight to that ADR. Corrected in
+place rather than superseded, because the decision it records — the gateway itself — was never in
+question; only its stated reasons were.
+
+Three corrections. The `OutputMode` consequence keeps the gateway measurement (which stands) and
+retracts the mechanism: `TypedPromptRequest::from_agent` overwrites the mode with `Native`
+unconditionally, so the builder line is inert, the "Tool mode is best-effort where Native was
+guaranteed" cost is not being paid, and
+`binary_repair::the_serialized_request_offers_four_tools_and_carries_no_host_fact` pins what actually
+goes out. The attribution for the tool loop starting to work now names both changes that landed in
+`e993f4a` — the inert line and `DEFAULT_MODEL` haiku → kimi — and says plainly that the cause was
+never isolated, rather than presenting the model table as a later finding. The budget consequence now
+states what `tier2.sh` records after `4b2333b`: `the gateway answered <status>` and nothing else, so
+the claim that a human could distinguish a spend cap from the reason text is withdrawn.
+
+Item 8 went with it: the inline comment at the `.output_mode` call now says the line is inert instead
+of calling it the line that makes the tool loop happen.
+
+**What this does not close.** The underlying gap in each case is still open and still recorded above:
+no isolated per-mode measurement across the model table, and no typed signal for a spend-cap refusal.
+Only the documents lying about them are fixed.

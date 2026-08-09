@@ -263,8 +263,10 @@ where
         // the same schema from `T`, so the agent's contract does not depend on
         // which prompting method is used.
         .output_schema::<RepairReport>()
-        // **The line that makes the tool loop happen at all.** See the section
-        // in this function's documentation.
+        // Inert on this path: `prompt_typed` overwrites it with `Native`, and
+        // deleting this line leaves the serialized request byte-identical. Kept
+        // as the statement of intent, not as the thing that makes the tool loop
+        // work. See the section in this function's documentation.
         .output_mode(OutputMode::Tool)
         .tool(ReadFile)
         .tool(WriteFile)
