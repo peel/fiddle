@@ -560,7 +560,8 @@ async fn a_workspace_command_inherits_no_credential() {
     assert_eq!(
         names(&without.stdout),
         ["HOME", "LANG", "PATH"],
-        "with no toolchain locator to pass through, the allowlist is the three constants: {}",
+        "with no toolchain locator to pass through, the allowlist is its three \
+         unconditional names: {}",
         without.stdout
     );
     assert_eq!(

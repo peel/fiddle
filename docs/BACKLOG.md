@@ -2,8 +2,28 @@
 
 <!-- Ideas, technical debt, someday/maybe items. Cross-cutting — covers both
      product and technical concerns. Append-only with dates.
-     
-     Periodically review: promote to beans, delete, or leave.
+
+     THE RULE, AND IT IS ONE RULE. This file grows at the end. An entry's
+     finding text is never rewritten and no entry is ever deleted — the record
+     of what was found outlives whether it still matters, and a list that
+     forgets its own history cannot be read against the tree. The same rule is
+     stated as an invariant in docs/technical/SYSTEM.md.
+
+     Exactly two moves are available:
+       - Append a `Status:` line to an entry, recording its resolution. This is
+         the only edit an existing entry ever receives.
+       - Append a NEW entry that names the one it acts on, to correct a claim,
+         supersede an action, or close a finding. Superseding an action is the
+         pattern this file has used throughout; the superseded entry's text
+         stays as written.
+     Promoting an entry to a bean is a `Status:` line, not a deletion.
+
+     A backlog action must be written against a committed document — this file,
+     docs/technical/SYSTEM.md, an ADR under docs/technical/decisions/, or a
+     named code path. Never against docs/specs/, docs/plans/, or a bean body:
+     all three are gitignored, so an action pointing at one cannot be closed by
+     anybody who does not already have the machine it was written on.
+
      Agents can suggest additions here during brainstorming.
      Agents should read this before planning to avoid re-discovering known items. -->
 
@@ -11,6 +31,7 @@
      Description of the idea or debt item.
      Origin: brainstorm session / feedback / code review / noticed during work
      Tags: #idea #debt #optimization #feature #experiment #infrastructure
+     Status: (appended later, when the entry is resolved, superseded or promoted)
 -->
 
 ### 2026-04-02 — Skill size estimates are unreliable for verbatim extraction
@@ -79,11 +100,13 @@ Tags: #debt
 `RepairConfig.attempt` names the per-attempt worktree and is the suffix of the evidence reference `repair:<changed>:<attempt>`; `capability/repair.rs` states that this lets a reader tie the reference back to the record of the same attempt. It does not. `fiddle_runtime::attempt` mints the run's id itself — so that no caller can hand it a duplicate and collide two bundles on one path — while the capability is constructed by the CLI *before* that call and therefore mints its own. Both ids are unique and nothing on disk is malformed; the cross-reference simply is not real. Closing it means deciding where an attempt id is minted: passing one into `AttemptContext` gives up the "minted once, here" property that makes a bundle collision impossible, and handing the id to the capability at `execute` time instead changes the `Capability` trait. Either is a decision about the orchestration's contract rather than about wiring.
 Origin: implementation (epic fiddle-y1w6, Task 12 wiring the capability selection)
 Tags: #debt
+Status: Resolved 2026-08-09 through the `ExecutionGrant`, recorded as `decisions/014-the-grant-carries-the-attempt.md` and asserted from outside the process by `binary_repair::the_published_evidence_reference_names_the_attempt_the_bundle_is_filed_under`. See the closing entry *Two entries above are closed* below.
 
 ### 2026-08-09 — `[workspace] fixture` and `check` are absent from the approved schema enumeration
 Design §6.6 enumerates `[workspace]` as `root`, `isolation`, `command_timeout`, `cleanup`, and `[agent]` without a repository or a check. `fiddle_runtime::RepairConfig` needs both, and `deny_unknown_fields` leaves an operator no other way to supply them, so Task 12 added `workspace.fixture` and `workspace.check = { program, args }` as `Option` with no default. The design text should catch up, or the keys should be moved to wherever the milestone that owns the deployment shape wants them.
 Origin: implementation (epic fiddle-y1w6, Task 12)
 Tags: #debt
+Status: First half resolved 2026-08-09 — `docs/technical/SYSTEM.md`'s **Data** section documents `fiddle.toml` with both keys named, so the committed record and the code agree. The second half stays open and is an ADR, not a text edit: whether these keys belong to the deployment shape at all. See *Three backlog actions resolve to amending a gitignored file* below.
 
 ### 2026-08-09 — `agent.max_capability_attempts` has no consumer
 The outer attempt bound parses, defaults to 3, and is read by nothing: `fiddle_runtime::attempt` runs one attempt and reports `RunOutcome::Retryable` for a caller to repeat. It carries the one remaining `#[allow(dead_code)]` in `fiddle-cli`. Reading it means writing a retry loop, which changes what every existing retryable outcome does — M0's included — and belongs to the milestone that owns the durable lifecycle.
@@ -149,6 +172,7 @@ Tags: #debt #infrastructure
 M1 design §6 item 4 states that "the acceptance lanes scrub [`LITELLM_API_KEY`] alongside the four M0 already removes". They do not, and should not. `support::CREDENTIAL_VARS` is a four-name list — `GITHUB_TOKEN`, `GH_TOKEN`, `ANTHROPIC_API_KEY`, `JIRA_API_TOKEN` — pinned by an assertion inside `m0_skeleton.rs` itself and mirrored by hand in `peel/fiddle-acceptance`, so extending it is a two-repository change. Extending it would also prove nothing: the M0 scenario runs `stub_mark`, which never reaches a model, so removing a gateway credential from it demonstrates only that an unused variable was unused. The property the design was reaching for is proved instead, and more strongly, by `capability_selection.rs`, which sets `LITELLM_API_KEY` to a sentinel and asserts the sentinel appears in no stdout, no diagnostic and no published bundle. Recorded so the next reader closes this by amending the design text rather than by lengthening a pinned, cross-repository list.
 Origin: implementation (epic fiddle-y1w6, Task 15 verification)
 Tags: #debt
+Status: Resolved 2026-08-09 — the finding is durable in `docs/technical/SYSTEM.md`'s M0 acceptance paragraph, which states the four-name list, why it is not extended per milestone, and that `LITELLM_API_KEY` is covered instead by `capability_selection.rs`'s sentinel assertion. Nothing further is owed to a gitignored spec. See *Three backlog actions resolve to amending a gitignored file* below.
 
 ### 2026-08-09 — What the scripted-gateway acceptance lane proves, and what it does not
 `crates/fiddle-acceptance/tests/binary_repair.rs` closes the gap that `build_capability`'s document-to-capability wiring was gated by nothing: it binds a loopback port, answers the OpenAI chat-completions requests the real gateway client sends, and drives the compiled binary through a repair that writes the fix, passes the configured check and earns the correlation marker — offline, with a sentinel credential that authenticates nothing because the endpoint is the test's own socket. Three things it does not prove. First, only one bound is shown to travel from the document into `AgentBudget`: the paired scenario flips `max_turns` from 4 to 1 over an otherwise identical setup and watches the outcome change, and the other four bounds (`max_tokens`, `deadline`, `max_changed_files`, `tool_timeout`) are still carried by nothing but the code reading right — a swap of two of them would leave this lane green. Second, it is a *scripted* model: it says nothing about whether any real model can drive the loop, which is Tier 1's job and is deliberately never asserted there either. Third, its check compiles nothing — `grep` for the repaired text rather than the fixture crate's own test suite — for the toolchain-environment reason recorded under *A workspace check cannot find the macOS SDK* below; the `cargo test --offline` flavour of a check is gated by `repair_protocol` and not by this lane. Closing the first needs a scenario per bound whose configured value is small enough to be the thing that stops the run.
@@ -245,3 +269,25 @@ Closes, without editing, two entries dated the same day. This file is append-onl
 
 Origin: implementation (epic fiddle-y1w6, holistic remediation iteration 1 — bean fiddle-wvsf)
 Tags: #debt #resolved
+
+### 2026-08-09 — The `output_mode` line is inert on the typed path, and the request shape is right for a reason nobody had checked
+`crates/fiddle-runtime/src/agent/mod.rs` sets `.output_mode(OutputMode::Tool)` on the agent builder and carries a long argued rationale for it: that Tool mode "registers the schema as a synthetic tool the model calls to finalise, and sends no native constraint, so the four real tools stay callable". Reading the serialized chat-completions bodies the compiled binary actually puts on a socket says otherwise, and the measurement is now a committed test.
+
+**What goes out.** Turn 0 carries the four capability tools and no `response_format` at all. The finalising turn carries the same four tools *and* `response_format: {type: json_schema, json_schema: {name: "RepairReport", strict: true, …}}` — the native constraint. No synthetic `final_result` tool is advertised on any turn.
+
+**Why.** `rig_agent`'s `TypedPromptRequest::from_agent` overwrites the agent's `output_mode` with `OutputMode::Native` unconditionally; its own comment says typed prompts deserialize the model's final string, and that the untyped `output_schema`/`output_mode` API is what to use for tool-composing structured output today. So `prompt_typed::<RepairReport>()` discards the builder's choice. Verified by deleting the line and re-reading the wire: byte-identical shape, same tools, same constraint placement.
+
+**What this does and does not mean.** The shape that goes out is, by measurement, the working one — a first turn carrying tools and no constraint is exactly the request this gateway answers with a tool call, which is what the Tier 1 investigation was reaching for. The observation and the outcome were right; the diagnosis in the doc block was wrong, and it has been corrected in place. The line is left standing as the statement of intent for the day rig's typed path stops overriding it, and `binary_repair::the_serialized_request_offers_four_tools_and_carries_no_host_fact` pins the shape in both directions so that day is visible in the gate rather than in a Tier 1 run.
+
+**What is left open.** Whether to move to the untyped `output_schema`/`output_mode` API, which is the only way to get the mode that was asked for. It changes what goes out on *every* turn — a synthetic finalising tool advertised throughout, no native constraint anywhere — and nothing in the gate can tell whether that is better against a real gateway, because the deterministic suite never serialises to anyone and `binary_repair` answers itself. Closing it means a Tier 1 measurement per mode across the models in ADR 012's table, then a decision, and it is worth nothing until somebody has that table.
+Origin: implementation (epic fiddle-y1w6, holistic remediation iteration 1 — found writing the serialized-request test `m1-tool-protocol-correctness` asked for)
+Tags: #debt #risk
+
+### 2026-08-09 — The workspace command allowlist was stated four ways, and this is the one statement
+`workspace::command` builds a child's environment from `env_clear` plus exactly four names: `HOME` at the workspace's scratch home, `LANG` fixed to `C`, `PATH` inherited from this process (or `/usr/bin:/bin` when it has none), and `RUSTUP_HOME` inherited **only when the parent has one**. `workspace::a_workspace_command_inherits_no_credential` asserts both shapes of that set exactly, so a fifth name cannot be added without changing an assertion.
+
+Four documents said four different things and none of them said that: `docs/technical/SYSTEM.md`'s component paragraph said "a two-name allowlist", its own invariant named `PATH` and `RUSTUP_HOME` without mentioning that `HOME` and `LANG` are set at all, `docs/evaluator-calibration-general.md` said "an explicit `HOME`/`PATH`/`LANG` allowlist" and omitted `RUSTUP_HOME`, and `binary_repair.rs` said "an allowlist of two locators". Each was true of the fragment its author was arguing about — the *inherited* names, or the *constant* ones — and each read as a statement of the whole. The statement now lives once, in SYSTEM.md's Invariants, and every other mention points at it.
+
+This corrects, without editing, the opening sentence of **2026-08-09 — A workspace check cannot find the macOS SDK, because the allowlist has no locator for it** above. That entry's finding is unaffected: its argument is about which *locators* may be inherited, `PATH` and `RUSTUP_HOME` are still the only two, and whether `DEVELOPER_DIR`/`SDKROOT` join them is still the open question. Only its count of the whole environment was short by two.
+Origin: implementation (epic fiddle-y1w6, holistic remediation iteration 1 — bean fiddle-i7f3, coherence)
+Tags: #debt #process

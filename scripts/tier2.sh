@@ -11,12 +11,15 @@
 # That is the whole difference between this and the two lanes either side of it:
 #
 #   deterministic suite   always, free, offline    MockCompletionModel   GATES
-#   tier 1 (smoke.rs)     every development run    real, cheap           no
-#   tier 2 (this)         on demand                real                  no
+#   tier 1 (smoke.rs)     opt-in, #[ignore]d       real, cheap           no
+#   tier 2 (this)         opt-in, on demand        real                  no
 #
-# Nothing in .github/workflows invokes this file, and nothing should. It needs a
-# credential and it costs money; a workflow that ran it would make both a
-# condition of merging.
+# Neither real-model tier ever runs unless somebody asks for it by name. Tier 1
+# is one #[ignore]d test, reachable only through `--ignored`; this script is
+# reachable only by being invoked. Nothing in .github/workflows invokes either,
+# and nothing should: they need a credential and they cost money, so a workflow
+# that ran one would make both a condition of merging. ADR 012 records the
+# decision and what it gives up.
 #
 # Usage
 #   ( set -a; . .env; set +a; ./scripts/tier2.sh )

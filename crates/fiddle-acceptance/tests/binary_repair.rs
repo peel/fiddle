@@ -64,7 +64,7 @@ mod support;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use support::Scenario;
 
 const WORK_ID: &str = "fiddle-m1-demo";
@@ -128,6 +128,7 @@ fn refused(status: u16, phrase: &'static str, body: serde_json::Value) -> Reply 
 struct StubGateway {
     port: u16,
     served: Arc<AtomicUsize>,
+    bodies: Arc<Mutex<Vec<String>>>,
 }
 
 impl StubGateway {
@@ -137,6 +138,8 @@ impl StubGateway {
         let port = listener.local_addr().unwrap().port();
         let served = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&served);
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&bodies);
         // Detached rather than joined. A scenario that drove fewer turns than
         // the script holds leaves this thread blocked in `accept`, and joining
         // it would turn "the binary stopped early" — a perfectly good assertion
@@ -146,13 +149,23 @@ impl StubGateway {
                 let Ok((stream, _)) = listener.accept() else {
                     return;
                 };
-                if answer(stream, &reply).is_err() {
+                let Ok(body) = answer(stream, &reply) else {
                     return;
-                }
+                };
+                // Recorded before the count, so a scenario that reads both
+                // cannot see a turn counted without its request beside it.
+                recorder
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(String::from_utf8_lossy(&body).into_owned());
                 counter.fetch_add(1, Ordering::SeqCst);
             }
         });
-        StubGateway { port, served }
+        StubGateway {
+            port,
+            served,
+            bodies,
+        }
     }
 
     /// The `agent.base_url` a document must name to reach this endpoint.
@@ -164,18 +177,36 @@ impl StubGateway {
     fn served(&self) -> usize {
         self.served.load(Ordering::SeqCst)
     }
+
+    /// The **request bodies** this endpoint received, in order.
+    ///
+    /// The bodies and not the whole requests, deliberately. The credential
+    /// belongs in the `authorization` header and is sent there on every turn,
+    /// so a search over the full request would find it and prove nothing. What
+    /// a scenario asks of this is the other question: whether anything the
+    /// *model* is shown — preamble, message history, tool definitions, tool
+    /// arguments and tool results — carries a host fact. That is the body.
+    fn request_bodies(&self) -> Vec<String> {
+        self.bodies
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
 }
 
-/// Read one whole HTTP request off `stream` and answer it with `reply`.
+/// Read one whole HTTP request off `stream`, answer it with `reply`, and hand
+/// back the **request body** that was received.
 ///
 /// The request is drained in full — headers *and* body — before anything is
 /// written back, because a server that replies while the client is still
 /// sending gets its answer thrown away with a connection reset on some
-/// platforms.
+/// platforms. Draining it was always necessary; returning it costs nothing and
+/// is what lets a scenario assert against the bytes the client actually put on
+/// the wire rather than against the builder that produced them.
 ///
 /// `connection: close` on the response, so the client opens a fresh connection
 /// per turn and this function never has to multiplex one.
-fn answer(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
+fn answer(mut stream: TcpStream, reply: &Reply) -> std::io::Result<Vec<u8>> {
     let mut request = Vec::new();
     let mut chunk = [0u8; 4096];
 
@@ -185,7 +216,7 @@ fn answer(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
         }
         let read = stream.read(&mut chunk)?;
         if read == 0 {
-            return Ok(());
+            return Ok(Vec::new());
         }
         request.extend_from_slice(&chunk[..read]);
     };
@@ -198,6 +229,7 @@ fn answer(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
         }
         request.extend_from_slice(&chunk[..read]);
     }
+    let received = request[head..].to_vec();
 
     let body = reply.body.to_string();
     stream.write_all(
@@ -212,7 +244,7 @@ fn answer(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
     )?;
     stream.flush()?;
     let _ = stream.shutdown(std::net::Shutdown::Write);
-    Ok(())
+    Ok(received)
 }
 
 /// The `content-length` a request's head declares, or zero when it declares
@@ -343,8 +375,10 @@ fn a_refusal_quoting_the_credential() -> Vec<Reply> {
 ///
 /// The obvious alternative is `cargo test --offline`, which is what
 /// `fiddle-runtime`'s `repair_protocol` suite already gates. It is deliberately
-/// not used here. `Workspace::run` builds a child's environment from an
-/// allowlist of two locators, `PATH` and `RUSTUP_HOME`, and on macOS under this
+/// not used here. `Workspace::run` builds a child's environment from
+/// `env_clear` plus four names — `HOME`, `LANG`, `PATH`, and `RUSTUP_HOME` when
+/// the parent has one — of which the last two are the only inherited locators,
+/// and on macOS under this
 /// project's Nix dev shell that is not enough for a *compiler*: the shell also
 /// exports `DEVELOPER_DIR` and `SDKROOT`, and stripped of them a nested
 /// `cargo test` warns `unable to find sdk: 'macosx'` and links against whatever
@@ -774,5 +808,159 @@ fn a_failing_checks_output_is_bounded_and_names_no_workspace_path() {
         s.read_change_marker(WORK_ID),
         None,
         "the check failed, so nothing was earned"
+    );
+}
+
+/// **What the model was actually offered, read off the wire.**
+///
+/// Every other assertion about the tool protocol in this workspace is made
+/// against the *builder* — `ReadFile.parameters()`, `WriteFile.description()`,
+/// the four `Tool` impls inspected one at a time inside `agent::tools`. Those
+/// are claims about our own constructors, and they hold whether or not the
+/// constructors are what reaches a provider. This one is made against the
+/// serialized chat-completions request body the compiled binary put on a
+/// socket, so a rig release that started composing tool definitions
+/// differently, or that began folding host context into arguments on the way
+/// out, fails here rather than passing.
+///
+/// # The offered set is exactly four, and that is a measurement
+///
+/// It is not what reading `agent::attempt` would suggest. That function asks
+/// for `OutputMode::Tool`, whose documented behaviour is to register the
+/// structured-output schema as a synthetic tool the model calls to finalise —
+/// which would make the advertised set five names. It does not happen: rig
+/// 0.41's `prompt_typed` pins `OutputMode::Native` over whatever the builder
+/// asked for, so no synthetic tool is ever advertised and the native
+/// `response_format` constraint is sent instead, on the finalising turn only.
+/// The shape is pinned here in both directions — four tools every turn, and
+/// the constraint appearing exactly once — because it is the shape that was
+/// measured to work against the real gateway, and nothing else in the gate
+/// could see it change.
+///
+/// The set is asserted exactly rather than by `contains`. A fifth capability
+/// tool nobody argued for, and rig beginning to advertise a helper of its own,
+/// are both things a menu assertion exists to catch.
+///
+/// # The positive search
+///
+/// Absence of host-only values is asserted by *looking for them*, not inferred
+/// from the fact that `ToolHost` is not a serializable field. Two things are
+/// searched for across the whole body: both spellings of the scenario root, so
+/// that macOS's `/var` → `/private/var` symlink cannot make the search vacuous,
+/// and the credential's value. The credential is legitimately in the
+/// `authorization` header of the same request and is deliberately outside what
+/// [`StubGateway::request_bodies`] keeps, so this is a claim about the model's
+/// view rather than about the transport.
+#[test]
+fn the_serialized_request_offers_four_tools_and_carries_no_host_fact() {
+    let gateway = StubGateway::serving(a_real_repair());
+    let s = scenario(&gateway, 4);
+
+    let out = repair(&s);
+    let payload = payload(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the run must complete, or the requests below are not the requests a \
+         working attempt sends: payload = {payload} stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let bodies = gateway.request_bodies();
+    assert_eq!(
+        bodies.len(),
+        2,
+        "both turns must have reached the socket, or there is nothing here to \
+         inspect"
+    );
+
+    // Both spellings of the disposable project, which is the ancestor of the
+    // ephemeral worktree, the fixture repository and the report directory
+    // alike: one host path found anywhere below it is one too many.
+    let mut roots = vec![s.dir().display().to_string()];
+    if let Ok(canonical) = s.dir().canonicalize() {
+        let canonical = canonical.display().to_string();
+        if !roots.contains(&canonical) {
+            roots.push(canonical);
+        }
+    }
+
+    let mut constrained = 0;
+    for (turn, body) in bodies.iter().enumerate() {
+        let request: serde_json::Value = serde_json::from_str(body)
+            .unwrap_or_else(|e| panic!("turn {turn} is not JSON ({e}): {body}"));
+
+        // The premise. Without it the searches below could pass over a request
+        // that never carried a prompt or a tool at all.
+        assert!(
+            body.contains("You are repairing one small Rust project"),
+            "turn {turn} carries no preamble, so this is not the request the \
+             agent sends: {body}"
+        );
+
+        let tools = request["tools"]
+            .as_array()
+            .unwrap_or_else(|| panic!("turn {turn} advertises no tools: {request}"));
+        let mut offered: Vec<&str> = tools
+            .iter()
+            .map(|tool| {
+                tool["function"]["name"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("a tool with no name on turn {turn}: {tool}"))
+            })
+            .collect();
+        offered.sort_unstable();
+        assert_eq!(
+            offered,
+            ["list_files", "read_file", "run_check", "write_file"],
+            "turn {turn} must offer the capability's four tools and nothing \
+             else — see this test's note on the synthetic output tool that is \
+             not here: {request}"
+        );
+
+        // A schema is a menu: anything named on one is something the model may
+        // fill in, so a host handle appearing here is a host handle granted.
+        // `"/` is a JSON string that begins at the filesystem root, which is
+        // the shape of every absolute path and of nothing a relative one.
+        for tool in tools {
+            let name = tool["function"]["name"].as_str().unwrap();
+            let advertised = tool["function"].to_string();
+            for banned in ["workspace", "cancel", "receipts", "\"/"] {
+                assert!(
+                    !advertised.contains(banned),
+                    "`{banned}` reaches the advertised schema of `{name}` on \
+                     turn {turn}: {advertised}"
+                );
+            }
+        }
+
+        if request.get("response_format").is_some() {
+            constrained += 1;
+            assert_eq!(
+                request["response_format"]["json_schema"]["name"], "RepairReport",
+                "the only structured-output constraint fiddle asks for is its \
+                 own report: {request}"
+            );
+        }
+
+        for root in &roots {
+            assert!(
+                !body.contains(root.as_str()),
+                "turn {turn} shows the model the host path {root}: {body}"
+            );
+        }
+        assert!(
+            !body.contains(SENTINEL),
+            "turn {turn} carries the credential in what the model is shown; it \
+             belongs in the authorization header and nowhere else: {body}"
+        );
+    }
+
+    assert_eq!(
+        constrained, 1,
+        "the native structured-output constraint belongs on the finalising \
+         turn alone: a first turn carrying it is the shape measured to stop \
+         this gateway calling tools at all, and every turn carrying none is a \
+         report nothing validates"
     );
 }

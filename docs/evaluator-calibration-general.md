@@ -135,6 +135,16 @@ and is read by nothing; M1 ships one bound, and the decision, with what taking u
 cost, is `decisions/013-one-attempt-bound-not-two.md`. `m1-bounded-behavior` below asks for the
 bounds that fire.
 
+**That sweep reached three criteria of five, and this completes it (2026-08-09).**
+`m1-tool-protocol-correctness` named a test that had never been written, so its Excellent level
+was unreachable and its Acceptable level described nothing. `m1-workspace-isolation` carried two
+statements the tree contradicts, and the second of them had *already* been corrected for a sibling
+criterion thirty lines further down and left standing here — which is the worse of the two
+failures, because a document that answers the same question two ways scores a bean on which
+paragraph the evaluator happened to read. Both are settled at their criteria below, and each says
+how: an anchor is a promise about the tree, so *reconciling the anchor* and *building what it
+names* are different answers and a reader is owed which one was given.
+
 **The scope rule for this milestone, stated once.** Model output quality is nondeterministic and is
 never the deterministic gate. Every criterion below is scored against what the *deterministic shell*
 does with the model's output — the bounds it enforces, the checks it runs, the evidence it derives
@@ -146,6 +156,26 @@ thing. Equally, a criterion is never met by asserting the model said it succeede
 
 The prompt, the advertised tool schemas, and what reaches a tool.
 
+**The serialized-request test now exists; it was written for this anchor rather than found by it.**
+When this section was first reconciled, no test in the workspace had ever read an outbound request:
+`MockCompletionModel::requests()` and `request_count()` had zero call sites, and the whole of the
+protocol evidence was `ReadFile.parameters()` and its siblings inspected on the builder — which
+made the Excellent level below unreachable and the Acceptable level a description of nothing. The
+test is `binary_repair::the_serialized_request_offers_four_tools_and_carries_no_host_fact`, and it
+reads the chat-completions bodies the **compiled binary** put on a loopback socket, which is the
+outbound request in the strongest available sense.
+
+Two corrections it forced, both measured rather than reasoned:
+
+- **The offered set is four names, not five.** `agent::attempt` asks for `OutputMode::Tool`, whose
+  documented behaviour would advertise a synthetic finalising tool as a fifth. Rig 0.41's
+  `prompt_typed` overrides the mode to `Native`, so no synthetic tool is ever sent and the anchor's
+  "exactly the capability's four tools" is right for a reason nobody had checked. Deleting the
+  `output_mode` line changes nothing on the wire. See BACKLOG, *The `output_mode` line is inert on
+  the typed path*.
+- **The native `response_format` constraint is sent, on the finalising turn only.** A criterion
+  scored against "no native constraint is sent" would be scored against a claim the wire refutes.
+
 - **Poor (1–3).** A trusted value — workspace root, cancellation token, effect executor, or anything
   credential-bearing — appears in a tool's `Args` and is therefore model-visible. Tool schemas accept
   absolute paths or unbounded arguments. The prompt or a tool result carries a resolved secret. Tools
@@ -153,13 +183,17 @@ The prompt, the advertised tool schemas, and what reaches a tool.
 - **Acceptable (4–7).** Trusted values reach tools only through Rig's host-only `ToolContext` via
   `context.require::<T>()`; `Args` carry relative paths and bounded values only. A test serializes the
   model-visible request and asserts that the advertised schema contains no absolute path, no host
-  handle, and no credential, and that the offered tool set is exactly the capability's four tools. A
-  call to an unregistered tool name is rejected rather than dispatched.
+  handle, and no credential, and that the offered tool set is exactly the capability's four tools —
+  `read_file`, `write_file`, `list_files`, `run_check`. A call to an unregistered tool name is
+  rejected rather than dispatched.
 - **Excellent (8–10).** All of the above, plus the assertion is made against the *serialized outbound
   request* rather than against the builder that produced it, so a future Rig change that starts
   leaking context into arguments fails the test rather than passing it. The absence of host-only
   values is asserted positively (the serialized prompt, messages, and tool arguments are searched for
-  the workspace root and for the credential variable's value) rather than inferred from the type.
+  the workspace root — in both of its spellings, since macOS's `/var` is a symlink to `/private/var`
+  and searching for one alone is vacuous — and for the credential variable's *value*, which is
+  legitimately in the `authorization` header of the same request and must therefore be searched for
+  in the body alone) rather than inferred from the type.
 
 ### `m1-typed-output-fidelity`
 
@@ -214,14 +248,28 @@ having noticed* the key is unconsumed is scoring correctly only if the bean touc
 
 The ephemeral workspace, path validation, and environment sanitization.
 
+**Two statements in this criterion were reconciled a pass late (2026-08-09), and the second one had
+already been corrected for a sibling criterion.** The allowlist was written here as three names and
+is four. And `git status --porcelain` was named here as the whole of the changed-file derivation,
+which the two-half derivation invalidated — `m1-fixture-repair-acceptance` below says so and this
+criterion did not, so a bean touching `workspace::changes` could be scored against a superseded
+question and a corrected one thirty lines apart in the same document.
+
 - **Poor (1–3).** Path containment is a `starts_with(workspace_root)` check. `std::env::remove_var`
   is used to strip credentials, mutating the host process. The workspace outlives the attempt, or its
   teardown is skipped on the failure path. Build artefacts pollute the changed-file evidence.
 - **Acceptable (4–7).** A per-attempt `git worktree add --detach`, removed after evidence capture on
   every path including failure. Paths are normalized, the deepest existing ancestor resolved, and
   `..`, absolute paths, NUL bytes, and platform prefixes rejected. Workspace commands run under
-  `Command::env_clear()` with an explicit `HOME`/`PATH`/`LANG` allowlist. The fixture repository
-  gitignores `target/`, so `git status --porcelain` reports source changes only.
+  `Command::env_clear()` and an allowlist of exactly four names — `HOME` at the workspace's scratch
+  home, `LANG` fixed to `C`, `PATH` inherited (or `/usr/bin:/bin` when the parent has none), and
+  `RUSTUP_HOME` inherited only when the parent has one — which is the statement in
+  `docs/technical/SYSTEM.md`'s Invariants, the code in `crates/fiddle-runtime/src/workspace/command.rs`, and the two exact
+  sets `workspace::a_workspace_command_inherits_no_credential` asserts. The changed-file set is
+  derived in two halves and not from `git status` alone: tracked changes from
+  `git status --porcelain=v1 -z -uno`, created files from `git ls-files --others` under the ignore
+  rules committed at the branched HEAD, so a `target/` the check produced is excluded by the
+  project's own rules rather than by the worktree's current ones.
 - **Excellent (8–10).** All of the above, plus a symlink-escape case is a committed test — a symlink
   inside the workspace pointing outside it is refused for both read and write, not merely for a path
   containing `..` — and a test asserts that no credential-shaped variable survives into a workspace

@@ -13,7 +13,17 @@
 //! credentials someone remembered, an allowlist protects the ones nobody has
 //! added yet.
 //!
-//! Two entries on that allowlist come from the parent rather than from a
+//! **The allowlist is four names, and this is the statement of it.** `HOME`,
+//! pointed at the workspace's scratch home; `LANG`, fixed to `C`; `PATH`,
+//! inherited from this process or [`MINIMUM_PATH`] when it has none; and
+//! `RUSTUP_HOME`, inherited only when the parent has one and absent otherwise.
+//! `workspace::a_workspace_command_inherits_no_credential` asserts both shapes
+//! of that set exactly, so a fifth name cannot arrive without an assertion
+//! changing. `docs/technical/SYSTEM.md`'s Invariants carry the same four for a
+//! reader who is not in this file; every other mention in the repository points
+//! at one of the two rather than restating a count.
+//!
+//! Two of the four come from the parent rather than from a
 //! constant — [`TOOL_PATH`] and `RUSTUP_HOME` — and both are narrowings of
 //! "built from nothing" rather than exceptions to it. The rule they are narrowed
 //! by is stated once, here: **a locator may be inherited, an authority may
