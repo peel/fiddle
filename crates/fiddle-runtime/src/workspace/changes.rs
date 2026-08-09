@@ -3,27 +3,50 @@
 //! An agent's report of its own work is a claim, and a claim is not evidence: a
 //! model that edited three files and said it edited one is indistinguishable, to
 //! anything downstream, from a model that edited one — unless the changed-file
-//! set is derived from somewhere the model does not author. `git status` over
-//! the workspace is that somewhere. Nothing here reads a report.
+//! set is derived from somewhere the model does not author. The repository is
+//! that somewhere. Nothing here reads a report.
 //!
-//! The whole of the difficulty is in parsing git's answer without introducing a
-//! second way for the evidence to be wrong. Two flags carry that weight:
+//! # Why one git command is not enough
 //!
-//! `-z`, because the default `--porcelain` rendering is lossy in exactly the
-//! cases that matter. It *quotes* any path containing a space or a non-ASCII
-//! byte (`?? "src/a file.rs"`) and renders a rename as `R  old -> new`, so a
-//! parser that slices a fixed prefix silently yields a quoted path in one case
-//! and a run-on `old -> new` pseudo-path in the other. With `-z` the entries are
-//! NUL-separated and never quoted, and a rename arrives as two records instead
-//! of one ambiguous line.
+//! It is tempting to make this `git status` and be done. It was, and the flaw is
+//! that ignore rules live in a file *inside the checkout*. An attempt that
+//! writes `*` into `.gitignore` and then creates ten files has git report one
+//! change, because it has edited an input to the question rather than the
+//! answer. `--ignored` would close that and reopen the reason the exclusion
+//! exists: one `run_check` writes a whole `target/` tree, and evidence drowned
+//! in build output says as little as evidence suppressed by the model.
 //!
-//! `-uall`, because git's default untracked mode reports a wholly-new directory
-//! as the single entry `?? src/newmod/` rather than the files inside it. A
-//! directory is not a changed file, and an agent that adds a module would
-//! otherwise have its work described by a path that names no file it wrote. The
-//! same flag also pins the behaviour against a `status.showUntrackedFiles=no` in
-//! an operator's config, which would drop every created file from the evidence
-//! without saying so.
+//! So the set is derived in two halves, split along the line the difficulty
+//! actually follows — **whether an ignore rule can bear on the answer at all**:
+//!
+//! 1. **What changed about files the repository already tracks**, from
+//!    `git status`. No ignore rule reaches a tracked file, by git's own
+//!    definition, so this half is beyond an attempt's influence for free. It is
+//!    also where deletions and renames live, which no listing reports.
+//! 2. **What the attempt created**, from `git ls-files --others` under the
+//!    project's committed ignore rules and no others — see
+//!    [`Workspace::baseline_ignore`](super::Workspace::baseline_ignore). This is
+//!    the half where the rules matter, and the point is that they are the
+//!    project's, fixed before the attempt began.
+//!
+//! `git status` is asked with `-uno` for the same reason: an untracked entry it
+//! returned would have been filtered under the worktree's rules, which are not
+//! the ones this module honours. The parser skips `??` records anyway, so the
+//! flag and the filter are two independent guards over one gap.
+//!
+//! # Reading git's answer without introducing a second way to be wrong
+//!
+//! `-z` throughout, because the default `--porcelain` rendering is lossy in
+//! exactly the cases that matter. It *quotes* any path containing a space or a
+//! non-ASCII byte (`?? "src/a file.rs"`) and renders a rename as
+//! `R  old -> new`, so a parser that slices a fixed prefix silently yields a
+//! quoted path in one case and a run-on `old -> new` pseudo-path in the other.
+//! With `-z` the entries are NUL-separated and never quoted, and a rename
+//! arrives as two records instead of one ambiguous line.
+//!
+//! `ls-files --others` names files rather than directories, which is what makes
+//! a wholly-new module appear as the files an agent wrote instead of as the
+//! single entry `?? src/newmod/` that `git status` would have collapsed it into.
 //!
 //! Records are parsed as bytes rather than as `str`. That is not an
 //! optimisation: `str::split_at(3)` panics when byte 3 is not a character
@@ -32,35 +55,20 @@
 //! become text is a checked decode that fails loudly.
 
 use super::{WorkspaceError, WorkspacePath};
-use std::path::Path;
 
 /// The status invocation, pinned to the format this parser was written against.
 ///
 /// `=v1` is explicit rather than defaulted: `--porcelain` alone means "whatever
-/// version is current", and the record layout below is v1's.
-const STATUS: &[&str] = &["status", "--porcelain=v1", "-z", "-uall"];
-
-/// The listing invocation.
-///
-/// `--cached` and `--others` together are what make this the *project's* files
-/// rather than either half of them: tracked files alone would omit everything
-/// the agent created, and untracked files alone would omit everything it was
-/// given. `--exclude-standard` applies the repository's own ignore rules, which
-/// is the whole reason this is git's job and not a directory walk — after one
-/// `run_check` a walk would return the entire `target/` tree, tens of thousands
-/// of paths that are neither the project nor anything a model should be handed.
-/// `-z` for the same reason as above: git quotes any path with a space in it
-/// unless told to separate records with NUL.
-const LIST: &[&str] = &[
-    "ls-files",
-    "--cached",
-    "--others",
-    "--exclude-standard",
-    "-z",
-];
+/// version is current", and the record layout below is v1's. `-uno` because the
+/// untracked half of the answer is not taken from here; see the module
+/// documentation.
+const STATUS: &[&str] = &["status", "--porcelain=v1", "-z", "-uno"];
 
 /// The width of a v1 status record's `XY ` prefix.
 const PREFIX: usize = 3;
+
+/// A v1 status field meaning "git has never heard of this path".
+const UNTRACKED: &[u8] = b"??";
 
 impl super::Workspace {
     /// The paths git reports as changed — the authoritative record of what this
@@ -70,46 +78,78 @@ impl super::Workspace {
     /// same evidence and a diff between attempts means a difference in what
     /// happened rather than in what order git happened to walk.
     pub fn changed_files(&self) -> Result<Vec<WorkspacePath>, WorkspaceError> {
-        changed_files(self.root())
+        let mut paths = tracked(&super::git_stdout(self.root(), STATUS)?)?;
+        paths.extend(self.created()?);
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
     }
 
-    /// Every file of the project, as git understands the project.
+    /// Every file of the project, as the project itself defines the project.
+    ///
+    /// `--cached` and `--others` together are what make this the project's files
+    /// rather than either half of them: tracked files alone would omit
+    /// everything the agent created, and untracked files alone would omit
+    /// everything it was given.
     ///
     /// Each path goes back through [`WorkspacePath::parse`] rather than being
     /// trusted because it came from git: the type is the carrier of the
     /// containment guarantee, and a path that skipped the parse would be a path
     /// nothing had checked.
     pub fn list(&self) -> Result<Vec<WorkspacePath>, WorkspaceError> {
-        listed(&super::git_stdout(self.root(), LIST)?)
+        self.ls_files(&["--cached", "--others"])
     }
-}
 
-/// The changed-file set of the git worktree rooted at `root`.
-fn changed_files(root: &Path) -> Result<Vec<WorkspacePath>, WorkspaceError> {
-    parse(&super::git_stdout(root, STATUS)?)
+    /// The files this attempt created, under the project's committed rules.
+    fn created(&self) -> Result<Vec<WorkspacePath>, WorkspaceError> {
+        self.ls_files(&["--others"])
+    }
+
+    /// `git ls-files` with `selection`, excluding under the baseline rules.
+    ///
+    /// `--exclude-from` rather than `--exclude-standard`, and that is the whole
+    /// substance of this function. `--exclude-standard` reads the worktree's own
+    /// `.gitignore` files — which the agent can write — along with this
+    /// repository's `.git/info/exclude` and the operator's global excludes,
+    /// which would make one attempt's evidence depend on whose machine it ran
+    /// on. Naming one snapshot file instead answers under the project's
+    /// committed rules and nothing else.
+    fn ls_files(&self, selection: &[&str]) -> Result<Vec<WorkspacePath>, WorkspaceError> {
+        let baseline = self.baseline_ignore().to_string_lossy().to_string();
+        let mut args = vec!["ls-files", "-z", "--exclude-from", &baseline];
+        args.extend_from_slice(selection);
+        listed(&args, &super::git_stdout(self.root(), &args)?)
+    }
 }
 
 /// Turn `git ls-files -z` output into workspace paths.
 ///
-/// Simpler than [`parse`] because there is no status field and no rename pair:
+/// Simpler than [`tracked`] because there is no status field and no rename pair:
 /// every record is a bare path. Sorted and deduplicated because `--cached` and
 /// `--others` can each name a path that the other also names.
-fn listed(out: &[u8]) -> Result<Vec<WorkspacePath>, WorkspaceError> {
+fn listed(command: &[&str], out: &[u8]) -> Result<Vec<WorkspacePath>, WorkspaceError> {
     let mut paths = Vec::new();
     for record in out.split(|byte| *byte == 0).filter(|r| !r.is_empty()) {
-        paths.push(WorkspacePath::parse(decode(LIST, record)?)?);
+        paths.push(WorkspacePath::parse(decode(command, record)?)?);
     }
     paths.sort();
     paths.dedup();
     Ok(paths)
 }
 
-/// Turn `git status --porcelain=v1 -z -uall` output into workspace paths.
+/// Turn `git status --porcelain=v1 -z` output into the tracked paths it names.
 ///
 /// Separated from the invocation so the record layout can be tested against the
 /// exact bytes git was observed to emit, rather than against whatever a fixture
 /// repository happens to produce today.
-fn parse(out: &[u8]) -> Result<Vec<WorkspacePath>, WorkspaceError> {
+///
+/// `??` records are skipped rather than parsed. Whether git emits any is the
+/// flag's business; whether they are counted here is this function's, and they
+/// must not be — an untracked entry from `git status` survived the worktree's
+/// own ignore rules, which is precisely the filter this module refuses to
+/// inherit. Created files arrive from
+/// [`Workspace::created`](super::Workspace::created) instead.
+fn tracked(out: &[u8]) -> Result<Vec<WorkspacePath>, WorkspaceError> {
     let mut paths = Vec::new();
     let mut records = out.split(|byte| *byte == 0).filter(|r| !r.is_empty());
     while let Some(record) = records.next() {
@@ -125,6 +165,9 @@ fn parse(out: &[u8]) -> Result<Vec<WorkspacePath>, WorkspaceError> {
                     "a rename record was not followed by its origin path",
                 )
             })?;
+        }
+        if status.starts_with(UNTRACKED) {
+            continue;
         }
         paths.push(WorkspacePath::parse(decode(STATUS, path)?)?);
     }
@@ -194,16 +237,19 @@ mod tests {
     /// this parser necessary — the quoted path and the two-record rename — are
     /// precisely the ones that are easy to misremember.
     fn parsed(out: &[u8]) -> Vec<String> {
-        parse(out)
+        tracked(out)
             .unwrap()
             .iter()
             .map(|p| p.as_str().to_string())
             .collect()
     }
 
+    /// The invocation a listing is parsed under, for the error-naming test.
+    const LS_FILES: &[&str] = &["ls-files", "-z", "--exclude-from", "…", "--others"];
+
     #[test]
     fn a_listing_is_bare_paths_deduplicated_and_ordered() {
-        let paths = listed(b"src/lib.rs\0src/a file.rs\0src/lib.rs\0")
+        let paths = listed(LS_FILES, b"src/lib.rs\0src/a file.rs\0src/lib.rs\0")
             .unwrap()
             .iter()
             .map(|p| p.as_str().to_string())
@@ -215,7 +261,7 @@ mod tests {
 
     #[test]
     fn a_listed_path_that_is_not_text_is_refused_not_mangled() {
-        let err = listed(b"src/bad\xffname.rs\0").unwrap_err();
+        let err = listed(LS_FILES, b"src/bad\xffname.rs\0").unwrap_err();
         assert!(
             matches!(&err, WorkspaceError::Git { command, stderr }
                 if command.starts_with("ls-files") && stderr.contains("not valid UTF-8")),
@@ -231,17 +277,36 @@ mod tests {
     #[test]
     fn it_reads_the_ordinary_shapes() {
         assert_eq!(
-            parsed(b" M src/lib.rs\0?? src/new.rs\0 D src/gone.rs\0AM src/two.rs\0"),
-            ["src/gone.rs", "src/lib.rs", "src/new.rs", "src/two.rs"],
+            parsed(b" M src/lib.rs\0 D src/gone.rs\0AM src/two.rs\0"),
+            ["src/gone.rs", "src/lib.rs", "src/two.rs"],
             "the status field is two columns wide whatever it says"
         );
     }
 
     #[test]
+    fn an_untracked_record_is_not_this_halfs_business() {
+        // `-uno` should mean git never emits one. If it does — an operator's
+        // config, a future git, a caller that changed the flag — it must still
+        // not be counted here: a `??` entry from `git status` is an entry that
+        // survived the *worktree's* ignore rules, which is the one filter this
+        // module refuses to inherit, because an attempt can write it. Created
+        // files come from `ls-files --others` under the committed rules instead.
+        assert_eq!(
+            parsed(b" M src/lib.rs\0?? src/smuggled.rs\0"),
+            ["src/lib.rs"]
+        );
+    }
+
+    #[test]
     fn a_space_in_a_path_is_not_a_field_separator() {
-        // The plain rendering of this same entry is `?? "src/a file.rs"`, quotes
+        // The plain rendering of this same entry is `M "src/a file.rs"`, quotes
         // included. Under `-z` there is nothing to unquote.
-        assert_eq!(parsed(b"?? src/a file.rs\0"), ["src/a file.rs"]);
+        assert_eq!(parsed(b" M src/a file.rs\0"), ["src/a file.rs"]);
+        assert_eq!(
+            listed(LS_FILES, b"src/a file.rs\0").unwrap()[0].as_str(),
+            "src/a file.rs",
+            "and the other half of the derivation has the same property"
+        );
     }
 
     #[test]
@@ -270,7 +335,7 @@ mod tests {
 
     #[test]
     fn a_path_git_cannot_render_as_text_is_refused_not_mangled() {
-        let err = parse(b" M src/bad\xffname.rs\0").unwrap_err();
+        let err = tracked(b" M src/bad\xffname.rs\0").unwrap_err();
         assert!(
             matches!(&err, WorkspaceError::Git { stderr, .. } if stderr.contains("not valid UTF-8")),
             "got {err:?}"
@@ -283,13 +348,13 @@ mod tests {
         // lost its place in the stream, and every path after it is suspect.
         for out in [&b"X\0"[..], &b"XYZsrc/lib.rs\0"[..], &b" M \0"[..]] {
             assert!(
-                parse(out).is_err(),
+                tracked(out).is_err(),
                 "{:?} must be refused, not skipped",
                 String::from_utf8_lossy(out)
             );
         }
         // A rename whose origin record never arrives is the same failure.
-        assert!(parse(b"R  src/renamed.rs\0").is_err());
+        assert!(tracked(b"R  src/renamed.rs\0").is_err());
     }
 
     #[test]
@@ -301,6 +366,6 @@ mod tests {
         // choice of bytes over `str` earns itself: `str::split_at(3)` on these
         // four bytes *panics*, because byte 3 falls inside a character. The same
         // input has to come back as a refusal, not as a downed runtime.
-        assert!(parse("üü\0".as_bytes()).is_err());
+        assert!(tracked("üü\0".as_bytes()).is_err());
     }
 }

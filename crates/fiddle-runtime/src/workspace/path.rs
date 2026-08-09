@@ -1,6 +1,42 @@
-//! Turning a requested path into one that provably stays inside the workspace.
+//! Turning a requested path into one that provably stays inside the workspace,
+//! and names something the workspace is *for*.
+//!
+//! Containment is the older of the two rules and the more obvious one. The
+//! second is that a workspace is a checkout of a project, and a checkout carries
+//! the repository's own bookkeeping alongside it — which is inside the tree, is
+//! reached by an ordinary relative path, and is not the project. See
+//! [`GIT_DIR`].
 
 use super::WorkspaceError;
+
+/// The one name the repository's own bookkeeping goes by.
+///
+/// A path with this component is refused wherever it appears, for reading and
+/// for writing alike, and the rule is about a *class* rather than a filename:
+/// `.git` is the repository's private state, which is not part of the project
+/// under repair in any sense a tool should honour. What is in the class with it
+/// is everything underneath — `.git/config`, `.git/info/exclude`, `.git/hooks/`
+/// — and the same directory as a submodule carries it, which is why the match is
+/// on any component and not on a prefix.
+///
+/// The concrete harm, in the layout every attempt actually runs in: a linked
+/// worktree's `.git` is a regular **file** whose whole contents are
+/// `gitdir: <absolute host path>`. One `read_file(".git")` therefore hands the
+/// model the operator's directory layout, the fixture repository's location and
+/// the attempt's own identity, in a tool's *success* output — the surface
+/// `relativised` does not cover and no schema assertion can see. The write side
+/// matters for a different reason: `.git/info/exclude` and `.git/config` are
+/// inputs to git's own answers, and the changed-file evidence is one of those
+/// answers.
+///
+/// Compared case-insensitively because macOS and Windows checkouts live on
+/// case-insensitive filesystems, where `.GIT/config` opens the same file.
+/// git's own defence against this goes further still — it also refuses NTFS
+/// short names and HFS+ ignorable code points — and this is deliberately the
+/// ASCII fold rather than a reimplementation of that: the containment check in
+/// [`super::Workspace::resolve`] is what keeps an exotic spelling inside the
+/// workspace, and this is what keeps the ordinary ones out of the metadata.
+const GIT_DIR: &str = ".git";
 
 /// A path a model asked for, proven to name something inside the workspace.
 ///
@@ -45,6 +81,16 @@ impl WorkspacePath {
             match part {
                 "" | "." => continue,
                 ".." => return Err(escape("the path contains a parent-directory component")),
+                // Checked per component, so that a submodule's `.git` is refused
+                // by the same rule as the root one, and so that the refusal
+                // cannot be walked around with `.git/../.git` — which the arm
+                // above has already declined anyway.
+                other if other.eq_ignore_ascii_case(GIT_DIR) => {
+                    return Err(WorkspaceError::NotProject {
+                        path: raw.to_string(),
+                        reason: "the path names the repository's own metadata".to_string(),
+                    })
+                }
                 other => parts.push(other),
             }
         }
@@ -79,6 +125,52 @@ mod tests {
             assert!(
                 WorkspacePath::parse(raw).is_err(),
                 "{raw:?} must be refused before it can reach the filesystem"
+            );
+        }
+    }
+
+    #[test]
+    fn it_refuses_the_repositorys_own_bookkeeping() {
+        // Not a denylist of one filename: `.git` names a *class* — the
+        // repository's own metadata — and the class is refused wherever it
+        // appears in a path, because a submodule carries one too. In a linked
+        // worktree `.git` is a regular *file* whose entire contents are an
+        // absolute host path, so a `read_file` that admitted it would hand the
+        // model the operator's directory layout in a tool's success output.
+        for raw in [
+            ".git",
+            ".git/config",
+            "./.git/info/exclude",
+            "sub/.git",
+            "sub/.git/config",
+            ".git/worktrees/x/gitdir",
+            // Two spellings of the same directory on a case-insensitive
+            // filesystem, which is every macOS checkout by default.
+            ".GIT/config",
+            ".Git",
+        ] {
+            assert!(
+                WorkspacePath::parse(raw).is_err(),
+                "{raw:?} names the repository's own metadata and must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn it_does_not_mistake_project_files_for_that_bookkeeping() {
+        // The rule is a whole path *component* equal to `.git`, so the files a
+        // project keeps beside it — which are ordinary versioned content — are
+        // untouched by it.
+        for raw in [
+            ".gitignore",
+            ".gitattributes",
+            ".gitmodules",
+            ".github/workflows/ci.yml",
+            "src/git.rs",
+        ] {
+            assert!(
+                WorkspacePath::parse(raw).is_ok(),
+                "{raw:?} is project content, not repository metadata"
             );
         }
     }

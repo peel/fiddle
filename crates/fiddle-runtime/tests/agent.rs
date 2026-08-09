@@ -167,6 +167,52 @@ async fn exceeding_the_changed_file_cap_fails_the_attempt() {
 }
 
 #[tokio::test]
+async fn an_ignore_rule_the_model_wrote_cannot_lift_the_changed_file_cap() {
+    // The cap counts git's changed set rather than the model's claim, which the
+    // test above proves. This is the next question along and the one that makes
+    // the first answer worth anything: *whose* rules does git apply when it
+    // answers? `.gitignore` is a file the model can write, so a derivation
+    // honouring the worktree's own ignore rules lets the model author the
+    // question as well as decline to answer it — four files changed, one
+    // reported, and a bound the host set quietly bypassed.
+    let (host, _g) = test_host();
+    let model = MockCompletionModel::new([
+        MockTurn::tool_call(
+            "c1",
+            "write_file",
+            json!({"path": ".gitignore", "contents": "*\n"}),
+        ),
+        MockTurn::tool_call("c2", "write_file", json!({"path": "a.rs", "contents": "x"})),
+        MockTurn::tool_call("c3", "write_file", json!({"path": "b.rs", "contents": "x"})),
+        MockTurn::tool_call("c4", "write_file", json!({"path": "c.rs", "contents": "x"})),
+        MockTurn::text(r#"{"changed_files":[],"summary":"","claimed_complete":true}"#),
+    ]);
+
+    let outcome = attempt(
+        model,
+        host.clone(),
+        AgentBudget {
+            max_changed_files: 2,
+            ..budget()
+        },
+    )
+    .await;
+
+    match outcome {
+        Err(AgentError::Bounded { reason }) => assert!(
+            reason.contains("4 files changed") && reason.contains("cap is 2"),
+            "the model wrote the ignore rule; it must not have written the count: {reason}"
+        ),
+        other => panic!("the changed-file cap must fire on the true count: {other:?}"),
+    }
+    assert_eq!(
+        host.workspace.changed_files().unwrap().len(),
+        4,
+        "the ignore rule and the three files it was written to hide"
+    );
+}
+
+#[tokio::test]
 async fn malformed_structured_output_is_a_protocol_error_not_a_default() {
     let (host, _g) = test_host();
     let model = MockCompletionModel::new([MockTurn::text("this is not the schema")]);

@@ -214,6 +214,91 @@ fn build_artefacts_never_appear() {
 }
 
 #[test]
+fn an_ignore_rule_the_attempt_wrote_cannot_hide_what_it_created() {
+    // **The changed-file set is evidence, so it may not be an output the thing
+    // being judged can shape.** `.gitignore` is an ordinary versioned file: it
+    // parses, it resolves, and `write_file` will write it. A derivation that
+    // asked git *with the worktree's own ignore rules applied* would therefore
+    // be asking a question the agent had already answered for it — ten created
+    // files reported as one, the changed-file cap bypassed, and a published
+    // evidence reference naming a count that is not true.
+    let _env = env_reader();
+    let (ws, _dir) = workspace();
+
+    ws.write(&p(".gitignore"), "*\n").unwrap();
+    for i in 0..10 {
+        ws.write(&p(&format!("evil{i}.rs")), "// smuggled\n")
+            .unwrap();
+    }
+
+    let changed = ws.changed_files().unwrap();
+    assert_eq!(
+        changed.len(),
+        11,
+        "the rules the attempt wrote decided what the evidence says: {changed:?}"
+    );
+    for i in 0..10 {
+        assert!(
+            changed.contains(&p(&format!("evil{i}.rs"))),
+            "evil{i}.rs was hidden by a rule the attempt authored: {changed:?}"
+        );
+    }
+    assert!(
+        changed.contains(&p(".gitignore")),
+        "and the edit that tried to hide them is itself a change: {changed:?}"
+    );
+}
+
+#[test]
+fn an_ignore_rule_the_attempt_wrote_cannot_drag_build_output_in_either() {
+    // The other direction of the same rule, and the one that says the fix is
+    // not simply `--ignored`. Excluding build output is what makes the evidence
+    // readable at all — one `cargo test` writes thousands of files nobody
+    // edited. So the exclusion has to survive an attempt that *removes* the
+    // rule producing it: the rules that shape the evidence are the project's,
+    // as committed, and an attempt cannot add to them or take from them.
+    let _env = env_reader();
+    let (ws, _dir) = workspace();
+    std::fs::create_dir_all(ws.root().join("target/debug")).unwrap();
+    std::fs::write(ws.root().join("target/debug/junk"), "x").unwrap();
+
+    ws.write(&p(".gitignore"), "# nothing is ignored now\n")
+        .unwrap();
+
+    assert_eq!(
+        ws.changed_files().unwrap(),
+        vec![p(".gitignore")],
+        "an attempt that un-ignored the build tree drowned its own evidence in it"
+    );
+}
+
+#[test]
+fn a_file_the_project_does_not_contain_is_not_readable() {
+    // A build tree is inside the workspace and syntactically innocent, and its
+    // files routinely carry absolute host paths — cargo writes them into every
+    // `.d`. "The project you are repairing" is what git says the project is,
+    // and what is not in it is not readable.
+    let _env = env_reader();
+    let (ws, _dir) = workspace();
+    std::fs::create_dir_all(ws.root().join("target/debug")).unwrap();
+    std::fs::write(
+        ws.root().join("target/debug/fixture.d"),
+        format!("{}/src/lib.rs:\n", ws.root().display()),
+    )
+    .unwrap();
+
+    assert!(
+        ws.read(&p("target/debug/fixture.d")).is_err(),
+        "a build artefact is not part of the project and must not be served"
+    );
+    // Not a rule that refuses everything: a file the project does contain, and
+    // one the attempt created itself, both still read.
+    assert_eq!(ws.read(&p("src/lib.rs")).unwrap(), "pub fn f() {}\n");
+    ws.write(&p("src/added.rs"), "pub fn a() {}\n").unwrap();
+    assert_eq!(ws.read(&p("src/added.rs")).unwrap(), "pub fn a() {}\n");
+}
+
+#[test]
 fn a_path_with_a_space_is_parsed_correctly() {
     // --porcelain QUOTES paths containing spaces or non-ASCII bytes, and renders a
     // rename as `R  old -> new`. `-z` emits NUL-separated, never-quoted entries

@@ -26,6 +26,23 @@
 //! worktree holds only the repository. Anything a command writes because it was
 //! given a `HOME` goes to [`Workspace::home`], a scratch directory beside the
 //! tree: a cargo cache inside the tree would be reported as work an agent did.
+//!
+//! # What the workspace knows without asking
+//!
+//! Deriving the answer from git rather than from the agent is only half of
+//! independence. The other half is *which rules git is asked under*, because a
+//! checkout contains the file that carries them. An agent that writes
+//! `.gitignore` is writing an input to `git status`, so a derivation made under
+//! the worktree's current rules is one the agent has a hand in — and the
+//! changed-file set is the cap and the published evidence both.
+//!
+//! One decision settles it for every question asked here: the rules are the
+//! project's, **as committed at the HEAD this worktree was branched from**,
+//! captured before the attempt began and kept outside the tree. See
+//! [`Workspace::baseline_ignore`]. It is what makes [`Workspace::changed_files`]
+//! independent, what keeps a build tree out of [`Workspace::list`] without
+//! letting an agent decide the same, and what tells [`Workspace::read`] which
+//! files are the project at all.
 
 mod changes;
 pub mod command;
@@ -39,6 +56,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+/// The ignore file whose committed contents are the project's own rules.
+///
+/// The repository root's, and only that one — see
+/// [`Workspace::baseline_ignore`] for why nested ones are left out and which way
+/// that errs.
+const IGNORE_FILE: &str = ".gitignore";
+
 /// What can go wrong when a requested path is turned into a usable one, or when
 /// a command is run against it.
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +73,18 @@ pub enum WorkspaceError {
     /// rather than only that something was.
     #[error("path {path} escapes the workspace: {reason}")]
     Escape { path: String, reason: String },
+
+    /// The path is inside the workspace and names something that is not part of
+    /// the project the workspace holds — the repository's own metadata, or a
+    /// file the project's committed ignore rules exclude.
+    ///
+    /// Distinct from [`WorkspaceError::Escape`] because it is a different claim
+    /// about a different thing: an escape is a containment failure, and this is
+    /// a path that is contained perfectly well and still names none of the
+    /// project. Collapsing them would make an operator reading a refusal unable
+    /// to tell an attempted breakout from a `read_file("target/…")`.
+    #[error("path {path} is not part of the project: {reason}")]
+    NotProject { path: String, reason: String },
 
     /// The path was legal but the filesystem operation on it failed.
     #[error("io error at {path}: {source}")]
@@ -95,6 +131,7 @@ pub struct Workspace {
     root: PathBuf,
     home: PathBuf,
     fixture: PathBuf,
+    baseline_ignore: PathBuf,
     cancel: CancellationToken,
     removed: bool,
 }
@@ -109,6 +146,11 @@ impl Workspace {
     /// a workspace command needs somewhere to be pointed at that is throwaway
     /// *and* is not the tree whose changes are the evidence — see
     /// [`Workspace::home`].
+    ///
+    /// The project's ignore rules are snapshotted beside it, before anything has
+    /// run — see [`Workspace::baseline_ignore`]. Doing it here rather than at
+    /// the point of use is the whole of the guarantee: what is captured is the
+    /// state of the repository as it was handed over.
     pub fn create(
         fixture: &Path,
         root: &Path,
@@ -136,13 +178,78 @@ impl Workspace {
                 "HEAD",
             ],
         )?;
-        Ok(Workspace {
+        let baseline_ignore = root.join(format!("{}.ignore", attempt.0));
+        let workspace = Workspace {
             root: path,
             home,
             fixture: fixture.to_path_buf(),
+            baseline_ignore,
             cancel,
             removed: false,
+        };
+        // After the struct exists, so that a failure here still tears the
+        // worktree down through the Drop guard rather than leaking it.
+        workspace.snapshot_baseline_ignore()?;
+        Ok(workspace)
+    }
+
+    /// Capture the project's committed ignore rules where nothing this attempt
+    /// does can reach them.
+    ///
+    /// `ls-tree` first and `show` second rather than a `show` whose failure is
+    /// swallowed: a repository with no ignore file at all and a git that could
+    /// not answer are different situations, and treating the second as the
+    /// first would silently widen the evidence with no diagnostic anywhere.
+    fn snapshot_baseline_ignore(&self) -> Result<(), WorkspaceError> {
+        let committed = git_stdout(
+            &self.root,
+            &["ls-tree", "-z", "--name-only", "HEAD", "--", IGNORE_FILE],
+        )?;
+        let rules = if committed.is_empty() {
+            Vec::new()
+        } else {
+            git_stdout(&self.root, &["show", &format!("HEAD:{IGNORE_FILE}")])?
+        };
+        std::fs::write(&self.baseline_ignore, rules).map_err(|source| WorkspaceError::Io {
+            path: self.baseline_ignore.clone(),
+            source,
         })
+    }
+
+    /// The exclude file every derivation about this workspace is made under.
+    ///
+    /// **The rules that decide what counts as the project must not be rules the
+    /// attempt can write.** `.gitignore` is an ordinary versioned file: it
+    /// parses, it resolves, and `write_file` will write it. So an attempt that
+    /// wrote `*` into it and then created ten files would, under
+    /// `--exclude-standard`, have git report one change — the changed-file cap
+    /// bypassed, and a published evidence reference naming a count that is not
+    /// true. Adding `--ignored` would answer that and lose the thing the
+    /// exclusion is *for*: one `cargo test` writes thousands of files nobody
+    /// edited, and evidence drowned in build output says as little as evidence
+    /// suppressed by the model.
+    ///
+    /// So neither. What is used instead is the ignore file **as committed at the
+    /// HEAD this worktree was branched from**, snapshotted into a file outside
+    /// the worktree before the attempt began. It excludes exactly what the
+    /// project says it excludes, an attempt cannot add to it or take from it,
+    /// and it says the same thing on every machine — `--exclude-standard` would
+    /// also honour the operator's global excludes and this repository's
+    /// `.git/info/exclude`, which would make one attempt's evidence depend on
+    /// whose laptop it ran on.
+    ///
+    /// Two things it deliberately does not do. Ignore files in *subdirectories*
+    /// are not honoured, because `--exclude-from` reads one flat list whose
+    /// patterns are all relative to the top and concatenating nested files would
+    /// change what they mean; the error is therefore towards reporting more,
+    /// which is the safe direction. And a file written into a path the project
+    /// already excludes — `target/something` — is still not counted, which is
+    /// the residue of the same trade: the exclusion is the project's own
+    /// declaration, made before the attempt, and an attempt that hides work
+    /// where the project keeps no source has still earned nothing, because the
+    /// check decides the verdict.
+    pub fn baseline_ignore(&self) -> &Path {
+        &self.baseline_ignore
     }
 
     /// Where this workspace lives on disk.
@@ -232,9 +339,39 @@ impl Workspace {
         Ok(resolved)
     }
 
-    /// Read a file from inside the workspace.
+    /// Read a file of the project from inside the workspace.
+    ///
+    /// Containment is not the whole question, and treating it as though it were
+    /// is what let `read_file(".git")` return the operator's directory layout.
+    /// A workspace is a checkout, and a checkout holds three kinds of thing: the
+    /// project, the repository's own metadata, and whatever a build left behind.
+    /// Only the first is what "the project you are repairing" means, and only
+    /// the first is served — the second is refused at
+    /// [`WorkspacePath::parse`](crate::workspace::WorkspacePath::parse), and the
+    /// third is refused here.
+    ///
+    /// Refused here rather than by a rule about names, because the third kind
+    /// has no name to write down: a dependency file cargo fills with absolute
+    /// host paths is `target/debug/fixture.d` in this project and something else
+    /// in the next one. What every member of it *does* have in common is that
+    /// the project's own committed rules exclude it, which is a question git can
+    /// answer — see [`Workspace::baseline_ignore`] for why the answer is taken
+    /// under those rules and not the worktree's current ones.
+    ///
+    /// The cost is one `git ls-files` per read. That is a subprocess for a
+    /// question the filesystem could not have answered, on a path taken a
+    /// handful of times per attempt.
     pub fn read(&self, path: &WorkspacePath) -> Result<String, WorkspaceError> {
+        // Containment first, so that a path resolving outside is still reported
+        // as the escape it is rather than as a file the project happens not to
+        // contain.
         let resolved = self.resolve(path)?;
+        if !self.list()?.contains(path) {
+            return Err(WorkspaceError::NotProject {
+                path: path.as_str().to_string(),
+                reason: "the project does not contain that file".to_string(),
+            });
+        }
         std::fs::read_to_string(&resolved).map_err(|source| WorkspaceError::Io {
             path: resolved,
             source,
@@ -261,9 +398,10 @@ impl Workspace {
     /// guard that follows it cannot both ask git to remove the same worktree —
     /// the second attempt would fail on a path git no longer knows about.
     ///
-    /// Both halves are attempted whichever fails: the scratch home is an
-    /// ordinary directory git knows nothing about, so a `worktree remove` that
-    /// failed must not be allowed to leave it behind as well.
+    /// Every half is attempted whichever fails: the scratch home and the ignore
+    /// snapshot are ordinary paths git knows nothing about, so a
+    /// `worktree remove` that failed must not be allowed to leave them behind as
+    /// well.
     pub fn remove(&mut self) -> Result<(), WorkspaceError> {
         if self.removed {
             return Ok(());
@@ -278,16 +416,12 @@ impl Workspace {
                 &self.root.to_string_lossy(),
             ],
         );
-        let home = match std::fs::remove_dir_all(&self.home) {
-            Err(source) if source.kind() != std::io::ErrorKind::NotFound => {
-                Err(WorkspaceError::Io {
-                    path: self.home.clone(),
-                    source,
-                })
-            }
-            _ => Ok(()),
-        };
-        worktree.and(home)
+        // Closures rather than the functions themselves: both are generic over
+        // `AsRef<Path>`, so passing the item directly leaves the compiler unable
+        // to prove it holds for every lifetime.
+        let home = discarded(&self.home, |path| std::fs::remove_dir_all(path));
+        let baseline = discarded(&self.baseline_ignore, |path| std::fs::remove_file(path));
+        worktree.and(home).and(baseline)
     }
 }
 
@@ -296,6 +430,24 @@ impl Drop for Workspace {
         // Best-effort: a Drop cannot report, but a leaked worktree would make the
         // next attempt's `worktree add` fail on a path that already exists.
         let _ = self.remove();
+    }
+}
+
+/// Throw `path` away with `remove`, treating an absent path as already gone.
+///
+/// Idempotence is the point: [`Workspace::remove`] runs on the happy path and
+/// again from the [`Drop`] guard, and a second removal must be a no-op rather
+/// than a failure about a path nobody expects to still be there.
+fn discarded<F>(path: &Path, remove: F) -> Result<(), WorkspaceError>
+where
+    F: FnOnce(&Path) -> std::io::Result<()>,
+{
+    match remove(path) {
+        Err(source) if source.kind() != std::io::ErrorKind::NotFound => Err(WorkspaceError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+        _ => Ok(()),
     }
 }
 

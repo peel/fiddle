@@ -233,6 +233,65 @@ async fn an_attempt_that_called_no_tools_publishes_tools_zero() {
     );
 }
 
+/// **The count in a published evidence reference is git's, under the project's
+/// rules rather than the attempt's.**
+///
+/// `the_success_path_is_proven_without_any_model_dependence` asserts `repair:1:`
+/// over a model that changed one file and said so. It cannot see the failure
+/// this scenario is written against, because a cooperative script never tries:
+/// `.gitignore` is an ordinary versioned file, `write_file` will write it, and a
+/// changed-file derivation that applied the worktree's own ignore rules would
+/// publish `repair:1:` over an attempt that changed three files — a reference
+/// whose own test says it "names what git saw change, not what the model
+/// claimed".
+///
+/// The check still decides the verdict, and it decides it correctly here: the
+/// repair is real and the marker is earned. What a model-authored ignore rule
+/// defeats is the *evidence* and the bound, not the outcome, and this asserts
+/// the evidence while the outcome is a pass.
+#[tokio::test]
+async fn the_published_count_is_gits_however_the_attempt_wrote_the_ignore_rules() {
+    let f = broken_fixture();
+    let report = f
+        .run(
+            vec![
+                MockTurn::tool_call(
+                    "c1",
+                    "write_file",
+                    json!({"path": "src/lib.rs", "contents": fixture::REPAIRED}),
+                ),
+                MockTurn::tool_call(
+                    "c2",
+                    "write_file",
+                    json!({"path": ".gitignore", "contents": "*\n"}),
+                ),
+                MockTurn::tool_call(
+                    "c3",
+                    "write_file",
+                    json!({"path": "decoy.rs", "contents": "// unasked for\n"}),
+                ),
+                MockTurn::text(
+                    r#"{"changed_files":["src/lib.rs"],"summary":"one file","claimed_complete":true}"#,
+                ),
+            ],
+            f.config(),
+        )
+        .await;
+
+    assert_eq!(
+        report.outcome,
+        RunOutcome::Completed,
+        "the repair is real, so the check passes: {:?}",
+        report.outcome
+    );
+    assert!(
+        evidence_of(&report).contains(&format!("repair:3:{ATTEMPT}")),
+        "the source, the ignore rule and the file it was written to hide are three \
+         changes: {:?}",
+        evidence_of(&report)
+    );
+}
+
 /// The evidence of the one execution `report` recorded, as plain strings.
 fn evidence_of(report: &RunReport) -> Vec<String> {
     assert_eq!(report.executions.len(), 1, "{:?}", report.executions);

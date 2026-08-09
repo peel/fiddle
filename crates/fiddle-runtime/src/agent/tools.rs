@@ -224,7 +224,17 @@ impl ToolError {
     /// kept as the source for whoever is reading logs rather than prompts.
     fn from_workspace(operation: &'static str, source: WorkspaceError) -> Self {
         match source {
+            // Two refusals with one rendering, and deliberately so: from where
+            // the model sits, "that path leaves the project" and "that path is
+            // not in the project" call for the same next move, and both fields
+            // are safe — the path is the model's own string and the reason is
+            // one of a fixed set of English phrases. The distinction between
+            // them is for the operator, and it survives in the `source`.
             WorkspaceError::Escape {
+                ref path,
+                ref reason,
+            }
+            | WorkspaceError::NotProject {
                 ref path,
                 ref reason,
             } => ToolError::Rejected {
@@ -1116,6 +1126,92 @@ pub(crate) mod tests {
         );
     }
 
+    /// **A tool's success output is a model-visible surface too.**
+    ///
+    /// Every other leak assertion in this file looks at a schema, a description
+    /// or a refusal. This one looks at the channel that carries the most bytes
+    /// and had the least said about it: what a tool returns when it *works*.
+    ///
+    /// Two files make the point, and they are two members of one class rather
+    /// than two special cases. In a linked worktree — which is what every
+    /// attempt runs in — `.git` is a regular **file** whose entire contents are
+    /// `gitdir: <absolute host path>`, so one `read_file(".git")` hands over the
+    /// operator's directory layout, the fixture repository's location and the
+    /// attempt id in a single string. A build tree is the same class one step
+    /// along: cargo writes its dependency files with absolute paths in them, and
+    /// they are inside the workspace and syntactically innocent.
+    ///
+    /// Neither is part of the project under repair — one is the repository's own
+    /// bookkeeping and the other is what a build produced — which is the line
+    /// the fix draws, rather than a denylist of the two names below.
+    #[tokio::test]
+    async fn a_tools_success_output_never_carries_the_host_layout() {
+        let (host, dir) = test_host();
+        let root = host.workspace.root().to_path_buf();
+
+        // The leak has to be real before refusing it proves anything: if `.git`
+        // in a worktree stopped being a file naming the fixture, this test would
+        // otherwise pass over a `read_file` that had never been fixed.
+        let metadata = std::fs::read_to_string(root.join(".git")).expect(".git is a file here");
+        assert!(
+            metadata.contains("gitdir:") && metadata.contains("fixture"),
+            "the premise is gone: .git no longer names the host's filesystem: {metadata}"
+        );
+        // The build-artefact half, written the way cargo writes a `.d` file.
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        std::fs::write(
+            root.join("target/debug/fixture.d"),
+            format!(
+                "{}/src/lib.rs: {}/src/lib.rs\n",
+                root.display(),
+                root.display()
+            ),
+        )
+        .unwrap();
+
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+        for path in [".git", ".git/config", "target/debug/fixture.d"] {
+            let result = ReadFile
+                .call(
+                    &mut ctx,
+                    ReadFileArgs {
+                        path: path.to_string(),
+                    },
+                )
+                .await;
+            let refusal = match result {
+                Ok(contents) => panic!("`{path}` was served to the model: {contents}"),
+                Err(refusal) => refusal,
+            };
+            let text = ReadFile
+                .map_error(refusal)
+                .model_output()
+                .as_text()
+                .unwrap_or_default()
+                .to_string();
+            for secret in layout(&host, &dir) {
+                assert!(
+                    !text.contains(&secret),
+                    "reading `{path}` put {secret:?} in front of the model: {text}"
+                );
+            }
+        }
+
+        // And the tool still does its job, or the assertions above would be
+        // satisfied by a `read_file` that refused everything.
+        assert!(ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "src/lib.rs".into()
+                }
+            )
+            .await
+            .unwrap()
+            .contains("pub fn"));
+    }
+
     /// Every spelling of the workspace root this platform might produce.
     ///
     /// macOS hands out temporary directories under `/var`, which is itself a
@@ -1128,5 +1224,24 @@ pub(crate) mod tests {
             spellings.push(canonical.display().to_string());
         }
         spellings
+    }
+
+    /// Everything about where this attempt is running that the model must never
+    /// be told: the workspace, the fixture repository it branched from, the
+    /// directory holding both, and the attempt's own identity.
+    ///
+    /// Wider than [`roots`] on purpose. The `.git` of a linked worktree names
+    /// the *fixture's* git directory rather than the workspace's, so a check
+    /// against the workspace root alone would watch the wrong string go past.
+    fn layout(host: &ToolHost, dir: &tempfile::TempDir) -> Vec<String> {
+        let mut secrets = roots(host);
+        for path in [dir.path().to_path_buf(), dir.path().join("fixture")] {
+            secrets.push(path.display().to_string());
+            if let Ok(canonical) = path.canonicalize() {
+                secrets.push(canonical.display().to_string());
+            }
+        }
+        secrets.push("01JQZX0000000000000000000".to_string());
+        secrets
     }
 }
