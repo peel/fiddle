@@ -291,3 +291,71 @@ Four documents said four different things and none of them said that: `docs/tech
 This corrects, without editing, the opening sentence of **2026-08-09 — A workspace check cannot find the macOS SDK, because the allowlist has no locator for it** above. That entry's finding is unaffected: its argument is about which *locators* may be inherited, `PATH` and `RUSTUP_HOME` are still the only two, and whether `DEVELOPER_DIR`/`SDKROOT` join them is still the open question. Only its count of the whole environment was short by two.
 Origin: implementation (epic fiddle-y1w6, holistic remediation iteration 1 — bean fiddle-i7f3, coherence)
 Tags: #debt #process
+
+### 2026-08-09 — Holistic review iteration 4: accepted with findings recorded
+Epic `fiddle-y1w6` (M1) was accepted without the holistic review formally converging. Four
+iterations ran; each found genuinely different defects rather than re-litigating earlier ones, and
+severity fell sharply round on round: a tool loop that called no tools → a capability that ran the
+wrong thing and reported success → forgeable changed-file evidence → a credential in the published
+bundle → the items below, none of which produces a wrong verdict or leaks a secret.
+
+Iteration 4 scored integration 6/7, coherence 6/7, holistic_spec_fidelity **8/8 (passed, up from 7)**,
+polish 6/6, runtime_health 9/9. The decision to stop was the user's, taken on the severity curve
+rather than on the scores. Everything the reviewer found is below; nothing was dropped.
+
+Origin: holistic review iteration 4 (epic fiddle-y1w6)
+Tags: #debt #m2-input
+
+**Worth fixing first — cheap, and each is a real inconsistency:**
+
+1. **`Workspace::write` and `Workspace::read` disagree about what the project is.** `read` gates on
+   `list()` and refuses anything outside it as `NotProject`; `write` consults neither `list()` nor the
+   baseline ignore rules. So `write_file("target/x")` succeeds and is invisible to `changed_files()`,
+   which makes `max_changed_files` evadable — the bound whose stated purpose is catching an attempt
+   that "did something nobody asked for". Nothing is *earned*, because the check still decides the
+   verdict, and the sibling channel (an attempt rewriting `.gitignore`) is closed and tested. The fix
+   is giving `write` the same `list()` test `read` already runs. No test covers this today.
+2. **`run_check`'s leak test uses the narrow root set.** `agent/tools.rs` defines `layout()` as
+   "everything about where this attempt is running that the model must never be told" — workspace,
+   fixture repository, containing directory, attempt id — and applies it to `read_file`'s test, while
+   `run_check`'s test uses the narrower `roots()`. `relativised` strips only the workspace root, and
+   the fixture repository is a *sibling*, so a check shelling out to git (or a `build.rs` reading VCS
+   info) can print the fixture path to the model. SYSTEM.md's invariant states the rule absolutely.
+3. **A git failure masks the milestone's central error.** `capability/repair.rs` derives `changed`
+   with `?` before the exit-code gate, so a failure asking git what changed turns what should be
+   `CheckFailed` into `CapabilityError::Workspace`. Moving the line below the gate costs nothing.
+4. **ADR 012 predates the work that refuted it.** It still states `OutputMode::Tool` as the operative
+   mechanism; the wire shows rig overwrites it with `Native` and the line is inert (the code doc,
+   BACKLOG and the calibration were corrected in iteration 3; the ADR was not). Its budget consequence
+   also rests on `tier2.sh`'s 300-character reason excerpt letting a human spot a spend cap — after
+   the `provider_fault` fix that excerpt reads only `the gateway answered <status>`. And commit
+   `e993f4a` changed `DEFAULT_MODEL` in the same commit that added the inert line, so what actually
+   made the tool loop work is unattributed. ADR 012 is the document SYSTEM.md routes a cold reader to.
+
+**Recorded, lower value:**
+
+5. The changed-file cap is applied to a pre-check tree while the published `repair:<n>` counts a
+   post-check one. M1's fixture ignores `target/` and `Cargo.lock`, which hides the divergence.
+6. `fiddle_core::Published` gates `RunOutcome`'s three reasons and `ProgressEntry::summary`, but
+   `NextAction::Blocked.reason` and `Observation::Unavailable/NotApplicable.reason` are bare `String`s
+   that are also published. `orchestration.rs` bounds one copy of the same string and publishes the
+   other unbounded in one expression. `published.rs`'s module doc asserts an exhaustive enumeration
+   that is wrong.
+7. `agent/mod.rs` states "a provider's response body is never quoted, on any path", but `classify`'s
+   `DeserializationError` arm renders serde's diagnostic over the gateway's *success* content, which
+   quotes the offending value verbatim. The doc justifies this as "model-authored", which conflates
+   the model with the gateway ADR 012 exists to say sits between them. Either the rule or the code
+   should move; the choice needs writing down.
+8. `agent/mod.rs` still carries `// **The line that makes the tool loop happen at all.**` forty lines
+   below the section saying the line is inert.
+9. `SYSTEM.md` states the `fiddle-core` purity denylist as five names; `crate_boundary.rs` has six,
+   and the omitted one is `rig-agent` — the name M1 added.
+10. SYSTEM.md's Invariants state neither the publication bound (`PUBLISHED_TEXT_LIMIT`) nor the
+    never-quote-a-provider-body rule, though both came out of the epic's one critical-severity bean.
+
+**A note on the review process itself, worth carrying to M2.** The holistic instrument scores against
+thresholds calibrated for a finished product, so each round's remaining findings are necessarily
+smaller while the bar stays fixed. Four rounds of "one point under threshold" can continue
+indefinitely on a system that is fundamentally sound. Consider whether a later milestone should score
+severity explicitly, or converge on "no finding that changes a verdict or leaks a secret" rather than
+on a fixed dimension score.
