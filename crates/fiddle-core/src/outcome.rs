@@ -7,6 +7,8 @@
 //! (design §4.5); the core's job is only to make the terminal state a value
 //! rather than a control-flow accident.
 
+use crate::published::Published;
+
 /// The typed result of a run.
 ///
 /// Four variants because they are four different things to do next, not four
@@ -20,6 +22,15 @@
 /// bare string `"completed"` and the other three carry their reason under their
 /// own key. That spelling is the observable contract of the `--json` payload.
 ///
+/// The three reasons are [`Published`] rather than `String`, and that is a
+/// guarantee about the type rather than a habit of its callers: whatever a run
+/// was holding when it concluded — a subprocess's output, an `io::Error`, a
+/// response somebody else authored — reaches a reader through this enum, and
+/// [`Published::of`] is the only way to put it there. A fifth variant added
+/// later inherits the bound by being written at all. See [`crate::published`]
+/// for what the policy covers and what it deliberately leaves to the places
+/// text *enters* the process.
+///
 /// M0 never produces `Suspended`: it has no human decision point. The variant
 /// exists so the exit-code table is complete from the start rather than being
 /// widened later, which is exactly the kind of change that lets a code drift.
@@ -30,7 +41,7 @@ pub enum RunOutcome {
     Completed,
 
     /// The run stopped short of a decision it is not entitled to make.
-    Suspended { reason: String },
+    Suspended { reason: Published },
 
     /// The run failed at something that may succeed on a later attempt.
     ///
@@ -41,7 +52,7 @@ pub enum RunOutcome {
     /// here rather than in [`RunOutcome::Failed`]. Several distinct causes
     /// therefore share this variant, and the `reason` is what keeps them apart:
     /// it names the change set, the attempt journal, or the report bundle.
-    Retryable { reason: String },
+    Retryable { reason: Published },
 
     /// The run will not succeed by being repeated as invoked.
     ///
@@ -49,7 +60,7 @@ pub enum RunOutcome {
     /// asking again does not make an unreadable source readable, and the run has
     /// concluded something about the world rather than tripped over a correctable
     /// obstacle.
-    Failed { error: String },
+    Failed { error: Published },
 }
 
 /// How a run was invoked: with a human available to decide, or without one.
@@ -130,21 +141,21 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(RunOutcome::Suspended {
-                reason: "awaiting approval".into()
+                reason: Published::of("awaiting approval")
             })
             .unwrap(),
             serde_json::json!({ "suspended": { "reason": "awaiting approval" } })
         );
         assert_eq!(
             serde_json::to_value(RunOutcome::Retryable {
-                reason: "disk full".into()
+                reason: Published::of("disk full")
             })
             .unwrap(),
             serde_json::json!({ "retryable": { "reason": "disk full" } })
         );
         assert_eq!(
             serde_json::to_value(RunOutcome::Failed {
-                error: "blocked".into()
+                error: Published::of("blocked")
             })
             .unwrap(),
             serde_json::json!({ "failed": { "error": "blocked" } })

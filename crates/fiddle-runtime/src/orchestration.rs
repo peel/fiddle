@@ -25,6 +25,22 @@
 //!   and no race can produce a record that says `completed` beside `blocked`.
 //! - Executing and recording are one transaction, owned by [`attempt`]. The
 //!   ordering rationale is written there.
+//!
+//! # The publication boundary
+//!
+//! This module is also where a *string* becomes something a stranger reads. Four
+//! fields of a bundle are free text — the three [`RunOutcome`] reasons and
+//! [`ProgressEntry::summary`] — and every one of them is filled in here, from an
+//! error rendered with `to_string()`. Whatever the run happened to be holding at
+//! that moment therefore lands in a published document: an `io::Error`, a check
+//! runner's stderr, a response body written at the other end of a socket.
+//!
+//! The bound on that is not a rule this module remembers. All four fields are
+//! [`Published`], whose only constructor applies it, so a fifth field or a fifth
+//! variant is bounded by being written at all rather than by whoever writes it
+//! having read this paragraph. What the bound does and does not cover — and
+//! where the two things it deliberately does not do are handled instead — is in
+//! [`fiddle_core::published`].
 
 use crate::capability::{Capability, ExecutionGrant};
 use crate::evidence::{mint_attempt_id, publish, EvidenceError};
@@ -32,7 +48,7 @@ use crate::journal::{AttemptJournal, FileJournal};
 use crate::ports::{ChangePort, WorkItemPort};
 use fiddle_core::{
     correlation_key, derive_next, CapabilityExecution, EvidenceRef, FiddleBuild, InvocationRef,
-    Mode, NextAction, ProgressEntry, ReportBundle, RunOutcome, WorkRef, WorkStateView,
+    Mode, NextAction, ProgressEntry, Published, ReportBundle, RunOutcome, WorkRef, WorkStateView,
 };
 use std::path::{Path, PathBuf};
 
@@ -207,16 +223,16 @@ fn concluded(next_action: &NextAction) -> RunOutcome {
     match next_action {
         NextAction::Complete => RunOutcome::Completed,
         NextAction::Blocked { reason } => RunOutcome::Failed {
-            error: format!(
+            error: Published::of(format!(
                 "the capability executed, and the work is not accounted for afterwards: {reason}"
-            ),
+            )),
         },
         NextAction::Execute { capability_id } => RunOutcome::Retryable {
-            reason: format!(
+            reason: Published::of(format!(
                 "{} executed and reported success, and the work is still not started \
                  afterwards",
                 capability_id.0
-            ),
+            )),
         },
     }
 }
@@ -249,7 +265,7 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             // disagree about what a blocked world means.
             NextAction::Blocked { reason } => RunReport::without_execution(
                 RunOutcome::Failed {
-                    error: reason.clone(),
+                    error: Published::of(&reason),
                 },
                 NextAction::Blocked { reason },
                 view,
@@ -267,7 +283,7 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
     let authorised = match Authorised::recorded(ctx.journal, grant) {
         Ok(authorised) => authorised,
         Err(error) => {
-            let reason = error.to_string();
+            let reason = Published::of(error.to_string());
             return RunReport {
                 evidence_failure: Some(error),
                 // Through the same constructor as the other two non-executing
@@ -311,7 +327,7 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
                     capability_id,
                     ctx.capability.stage(),
                     "completed",
-                    format!("wrote correlation marker {marker}"),
+                    Published::of(format!("wrote correlation marker {marker}")),
                     with_receipts(evidence, &observed),
                 )],
                 observations: after,
@@ -319,7 +335,14 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             }
         }
         Err(error) => {
-            let reason = error.to_string();
+            // **The widest of the four.** A capability failure renders whatever
+            // the capability was holding — a check runner's stderr, or an
+            // `AgentError` that has already declined to quote a response body —
+            // and this is the one place it is turned into something published.
+            // Bounded here, once, for both fields, because they carry the same
+            // text and a bound applied to one of them would be a bound on
+            // neither.
+            let reason = Published::of(error.to_string());
             // Recorded too: "the capability tried and failed" and "the
             // capability's fate is unknown" are different things to recover
             // from, and only a record written here can tell them apart.
@@ -493,7 +516,7 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
                 None => (
                     ReportBundle {
                         outcome: RunOutcome::Retryable {
-                            reason: error.to_string(),
+                            reason: Published::of(error.to_string()),
                         },
                         ..bundle
                     },
@@ -544,7 +567,7 @@ fn progress(
     capability_id: fiddle_core::CapabilityId,
     stage: &str,
     status: &str,
-    summary: String,
+    summary: Published,
     evidence: Vec<EvidenceRef>,
 ) -> ProgressEntry {
     ProgressEntry {
@@ -863,7 +886,7 @@ mod tests {
         assert_eq!(log.events(), ["intent"], "nothing may follow a refusal");
         match &report.outcome {
             RunOutcome::Retryable { reason } => assert!(
-                reason.contains("attempt journal"),
+                reason.as_str().contains("attempt journal"),
                 "the reason must name the journal: {reason}"
             ),
             other => panic!("an unrecordable intent is retryable, got {other:?}"),
@@ -910,7 +933,9 @@ mod tests {
         }
 
         match &report.outcome {
-            RunOutcome::Retryable { reason } => assert!(reason.contains("change set"), "{reason}"),
+            RunOutcome::Retryable { reason } => {
+                assert!(reason.as_str().contains("change set"), "{reason}")
+            }
             other => panic!("a failed write must be retryable, got {other:?}"),
         }
         assert_eq!(report.executions.len(), 1);

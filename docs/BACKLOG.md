@@ -215,3 +215,18 @@ Tags: #debt #process
 - **Nothing bounds how deep a model may build.** `max_changed_files` caps the files; the directories on the way to them are uncounted and uncapped. Over M1's fixture this is invisible. It becomes a question at the same time as the uncapped `read_file`/`list_files` entry above.
 Origin: implementation (epic fiddle-y1w6, holistic remediation iteration 1 — bean fiddle-9v2d)
 Tags: #debt #risk
+
+### 2026-08-09 — Two claims above are corrected: the check's stderr *was* a leak, and the relativisation entry named only half its readers
+Corrects, without editing, two entries dated the same day.
+
+**2026-08-09 — `CheckFailed.stderr` is unbounded and reaches a published bundle** says "The path is already relativised, so this is a size problem rather than a leak." It was not relativised. `relativised` had exactly two call sites, both inside the `run_check` *tool*, so what was protected was the string handed to the **model**. `FixtureRepair::execute` calls `workspace.run(&config.check)` directly and puts `check.stderr` into `CapabilityError::CheckFailed`, which `orchestration::run` renders into `RunOutcome::Retryable.reason` and `ProgressEntry.summary` — so the absolute worktree path the model is protected from was published in `report.json` and printed on stdout. Both halves are now closed: relativisation moved into `Workspace::run`, the one place a `CommandResult` is constructed, so no reader of one can hold an unrelativised stream; and the size half is closed by `fiddle_core::Published`, the type of all four free-text bundle fields, whose only constructor bounds them to `PUBLISHED_TEXT_LIMIT` characters.
+
+**2026-08-09 — Tool-output relativisation is a prefix rewrite, not a redactor** is right about what the function does and understated who reads it: "before the model sees them" and "the model cannot learn where this attempt is working" name one of two consumers. The published bundle is the other, and the one whose readers are not sandboxed. The residue that entry records is unchanged and still open — a child process printing a Nix store path, a `~/.cargo` checkout, or a path in a panic message is rewritten by nothing, and that is now true of the *bundle* as well as of the model's view.
+
+**What remains open after this bean.** Three things, each a deliberate stop:
+- `Published` bounds size and nothing else. It is not a redactor, and deliberately so: a denylist over content an adversary chooses is not a guarantee. The two channels that could carry a secret are handled where text *enters* — a provider response body is never quoted (`agent::provider_fault`), and a workspace command's output is relativised at construction — but a third such channel added later gets the bound and not the analysis.
+- **A gateway that echoes a *fragment* of the credential is not covered by anything.** `provider_fault` withholds the whole body, so this is closed for the body; it is not closed for any future path that quotes provider text selectively. The general fix is a scrubber registered with the resolved credential at the one place it is read, which is a process-wide mutable registry and therefore an ADR rather than a patch.
+- **`NextAction::Blocked.reason` is still a bare `String`** and is published. Its content is derived by `fiddle-core` from an observation, so it is host-authored and short by construction today — but it is the one published free-text field the bound does not reach, and the argument for that is a property of the current deriver rather than of the type.
+
+Origin: implementation (epic fiddle-y1w6, holistic remediation iteration 1 — bean fiddle-joen)
+Tags: #debt #risk #security

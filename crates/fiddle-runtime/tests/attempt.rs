@@ -477,7 +477,7 @@ async fn an_unrecordable_intent_stops_the_attempt_before_the_capability_runs() {
     );
     match &record.bundle.outcome {
         RunOutcome::Retryable { reason } => assert!(
-            reason.contains("attempt journal"),
+            reason.as_str().contains("attempt journal"),
             "the reason must name the journal, so an operator knows what to fix: {reason}"
         ),
         other => panic!("an unrecordable intent is retryable, got {other:?}"),
@@ -516,7 +516,7 @@ async fn a_publication_failure_is_retryable_and_repeating_it_afterwards_succeeds
     }
     match &failed.bundle.outcome {
         RunOutcome::Retryable { reason } => assert!(
-            reason.contains("report bundle"),
+            reason.as_str().contains("report bundle"),
             "the reason must name the bundle, keeping it distinct from the other retryable \
              causes — the change set and the attempt journal: {reason}"
         ),
@@ -627,7 +627,7 @@ async fn a_run_whose_world_is_taken_over_after_executing_reports_the_derivation_
 
     match &record.bundle.outcome {
         RunOutcome::Failed { error } => assert!(
-            error.contains(FOREIGN_MARKER) && error.contains("executed"),
+            error.as_str().contains(FOREIGN_MARKER) && error.as_str().contains("executed"),
             "the error must name both the foreign marker and the fact that the capability had \
              already run, so this exit 20 is distinguishable from an unobservable source: {error}"
         ),
@@ -705,7 +705,7 @@ async fn a_run_whose_effect_left_no_trace_reports_that_there_is_still_work_to_do
     );
     match &record.bundle.outcome {
         RunOutcome::Retryable { reason } => assert!(
-            reason.contains("executed") && reason.contains("not started"),
+            reason.as_str().contains("executed") && reason.as_str().contains("not started"),
             "the reason must say the capability already ran and the work is still \
              undone, keeping this exit 11 distinct from the change set, the attempt \
              journal and the report bundle: {reason}"

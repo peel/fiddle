@@ -25,7 +25,7 @@
 //! default, because the list is closed rather than filtered.
 
 use super::{Workspace, WorkspaceError};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -48,6 +48,19 @@ pub struct WorkspaceCommand {
 /// exactly the observation the repair loop is asking for, and turning it into an
 /// `Err` would put the interesting case on the path reserved for the runner
 /// itself breaking.
+///
+/// # Both streams are already relativised
+///
+/// `stdout` and `stderr` are the child's, with this workspace's own absolute
+/// path rewritten out of them — see [`relativised`]. That happens in
+/// [`Workspace::run`], where the only value of this type is built, rather than
+/// at the call sites that read one, and the difference is not cosmetic. When it
+/// was a call site's job there were exactly two of them, both inside the
+/// `run_check` tool; the capability's own verifying check ran through the same
+/// function, embedded `stderr` in `CapabilityError::CheckFailed`, and published
+/// the absolute worktree path in a report bundle — the surface the model is
+/// protected from and the operator's reader is not. A guarantee that has to be
+/// re-applied by each reader is a guarantee about today's readers.
 #[derive(Debug, Clone)]
 pub struct CommandResult {
     pub exit_code: i32,
@@ -232,12 +245,57 @@ impl Workspace {
                     // file with invalid UTF-8 in it is still the evidence the
                     // caller needs, and refusing to decode it would discard the
                     // whole run over one byte.
-                    stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-                    stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                    //
+                    // Relativised here, at the one place a `CommandResult` comes
+                    // into existence, so that no reader of one can be holding an
+                    // unrelativised stream. See [`CommandResult`].
+                    stdout: relativised(&String::from_utf8_lossy(&out.stdout), &self.root),
+                    stderr: relativised(&String::from_utf8_lossy(&out.stderr), &self.root),
                 })
             }
         }
     }
+}
+
+/// Rewrite the workspace's absolute path out of a child process's output.
+///
+/// Check runners announce where they are working — `cargo` prints
+/// `Compiling foo v0.1.0 (/…/ws/<attempt>)` on every build — so carrying the
+/// output verbatim hands the operator's directory layout to whoever reads it
+/// next, without anybody deciding to. There are two such readers and they are
+/// easy to mistake for one: the **model**, through `run_check`'s output, and a
+/// **published bundle**, through the `stderr` a failing check puts in
+/// `CapabilityError::CheckFailed`. Rewriting the prefix to `.` costs nothing
+/// diagnostically and gains something for the first of them: what is left is
+/// the relative path the model can pass straight back to `read_file`.
+///
+/// Both spellings of the root are rewritten, and the longer one first. macOS's
+/// temporary directories live under `/var`, which is a symlink to
+/// `/private/var`, so a child resolving its own working directory reports a path
+/// that is not the string the workspace was created with — and stripping only
+/// the string it was created with would strip nothing at all. Longest-first
+/// matters because one spelling is a suffix-extension of the other: rewriting
+/// `/var/…` first would leave `/private.` behind.
+///
+/// This is a prefix rewrite, not a redactor. A child is free to print an
+/// absolute path of its own choosing — a toolchain in the Nix store, a registry
+/// checkout in `~/.cargo` — and nothing here can stop it; what it cannot do is
+/// reveal where this attempt is working.
+fn relativised(text: &str, root: &Path) -> String {
+    let mut spellings = Vec::new();
+    if let Ok(canonical) = root.canonicalize() {
+        spellings.push(canonical.display().to_string());
+    }
+    spellings.push(root.display().to_string());
+    spellings.sort_by_key(|spelling| std::cmp::Reverse(spelling.len()));
+
+    let mut text = text.to_string();
+    for spelling in spellings {
+        if !spelling.is_empty() {
+            text = text.replace(&spelling, ".");
+        }
+    }
+    text
 }
 
 /// Kill whatever is still running in the child's process group.

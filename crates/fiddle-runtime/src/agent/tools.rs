@@ -36,7 +36,6 @@ use super::{ToolReceipt, ToolReceipts};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
 use rig_agent::tool::{Tool, ToolContext, ToolExecutionError};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -518,11 +517,16 @@ impl Tool for RunCheck {
                 .run(&host.check)
                 .await
                 .map_err(|source| ToolError::from_workspace("running the check", source))?;
-            let root = host.workspace.root();
+            // Handed over as it arrives. `Workspace::run` has already rewritten
+            // its own root out of both streams — see
+            // [`crate::workspace::command`] — so there is nothing left for this
+            // call site to remember, which is the point: it was one of exactly
+            // two that did remember, and the capability's own check was not one
+            // of them.
             Ok(CheckOutcome {
                 exit_code: result.exit_code,
-                stdout: relativised(&result.stdout, root),
-                stderr: relativised(&result.stderr, root),
+                stdout: result.stdout,
+                stderr: result.stderr,
             })
         }
         .await;
@@ -538,42 +542,6 @@ impl Tool for RunCheck {
 fn parse(raw: &str) -> Result<WorkspacePath, ToolError> {
     WorkspacePath::parse(raw)
         .map_err(|source| ToolError::from_workspace("reading the path", source))
-}
-
-/// Rewrite the workspace's absolute path out of a child process's output.
-///
-/// Check runners announce where they are working — `cargo` prints
-/// `Compiling foo v0.1.0 (/…/ws/<attempt>)` on every build — so returning the
-/// output verbatim would hand the model the operator's directory layout on the
-/// first call, without anybody deciding to. Rewriting the prefix to `.` costs
-/// nothing diagnostically and gains something: what is left is the relative path
-/// the model can pass straight back to `read_file`.
-///
-/// Both spellings of the root are rewritten, and the canonical one first.
-/// macOS's temporary directories live under `/var`, which is a symlink to
-/// `/private/var`, so a child resolving its own working directory reports a path
-/// that is not the string the workspace was created with — and stripping only
-/// the string it was created with would strip nothing at all.
-///
-/// This is a prefix, not a redactor. A child is free to print an absolute path
-/// of its own choosing — a toolchain in the Nix store, a registry checkout in
-/// `~/.cargo` — and nothing here can stop it; what it cannot do is reveal where
-/// this attempt is working.
-fn relativised(text: &str, root: &Path) -> String {
-    let mut spellings = Vec::new();
-    if let Ok(canonical) = root.canonicalize() {
-        spellings.push(canonical.display().to_string());
-    }
-    spellings.push(root.display().to_string());
-    spellings.sort_by_key(|spelling| std::cmp::Reverse(spelling.len()));
-
-    let mut text = text.to_string();
-    for spelling in spellings {
-        if !spelling.is_empty() {
-            text = text.replace(&spelling, ".");
-        }
-    }
-    text
 }
 
 #[cfg(test)]

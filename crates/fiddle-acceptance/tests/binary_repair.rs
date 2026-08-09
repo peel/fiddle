@@ -35,6 +35,18 @@
 //! credential is a sentinel string that authenticates nothing — the endpoint is
 //! ours — so the lane needs no secret and reaches no network beyond loopback.
 //!
+//! # The other thing only an answering endpoint can prove
+//!
+//! What a gateway *says back*. `capability_selection` searches everything a run
+//! produced for the credential sentinel, and finds nothing there because its
+//! endpoint refuses the connection and produces no response body at all. An
+//! endpoint that answers can be scripted to answer *badly* — a `401` whose body
+//! quotes the key it rejected, which is what an OpenAI-compatible
+//! `invalid_api_key` envelope contains — and that is the only way to drive the
+//! path from a foreign response body to a published bundle. Same for the
+//! check's own output: reaching `CheckFailed` at all needs an attempt that got
+//! as far as producing a report.
+//!
 //! # What a scripted model can and cannot prove
 //!
 //! It cannot prove a model is any good at repairing things; that is Tier 1's
@@ -69,6 +81,37 @@ const SENTINEL: &str = "sk-sentinel-must-never-be-printed-9f3a1c";
 // A gateway that answers
 // ---------------------------------------------------------------------------
 
+/// One scripted answer: the status line it is sent under, and its body.
+///
+/// The status is scripted rather than fixed at 200 because the interesting
+/// half of a gateway's behaviour is the half that refuses. A gateway that
+/// answers `401` with a body quoting the key it was sent is an ordinary
+/// deployment accident — and until it could be scripted here, nothing in the
+/// suite could reach the code that decides what a refusal is allowed to say.
+struct Reply {
+    status: u16,
+    phrase: &'static str,
+    body: serde_json::Value,
+}
+
+/// A reply the client is meant to accept.
+fn accepted(body: serde_json::Value) -> Reply {
+    Reply {
+        status: 200,
+        phrase: "OK",
+        body,
+    }
+}
+
+/// A reply that refuses, carrying whatever the gateway felt like saying.
+fn refused(status: u16, phrase: &'static str, body: serde_json::Value) -> Reply {
+    Reply {
+        status,
+        phrase,
+        body,
+    }
+}
+
 /// A loopback endpoint that answers `POST <base>/chat/completions` from a fixed
 /// script of replies.
 ///
@@ -89,7 +132,7 @@ struct StubGateway {
 
 impl StubGateway {
     /// An endpoint that will answer with each of `script` in turn.
-    fn serving(script: Vec<serde_json::Value>) -> Self {
+    fn serving(script: Vec<Reply>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         let port = listener.local_addr().unwrap().port();
         let served = Arc::new(AtomicUsize::new(0));
@@ -132,7 +175,7 @@ impl StubGateway {
 ///
 /// `connection: close` on the response, so the client opens a fresh connection
 /// per turn and this function never has to multiplex one.
-fn answer(mut stream: TcpStream, reply: &serde_json::Value) -> std::io::Result<()> {
+fn answer(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
     let mut request = Vec::new();
     let mut chunk = [0u8; 4096];
 
@@ -156,11 +199,13 @@ fn answer(mut stream: TcpStream, reply: &serde_json::Value) -> std::io::Result<(
         request.extend_from_slice(&chunk[..read]);
     }
 
-    let body = reply.to_string();
+    let body = reply.body.to_string();
     stream.write_all(
         format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+            "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\n\
              content-length: {}\r\nconnection: close\r\n\r\n{body}",
+            reply.status,
+            reply.phrase,
             body.len(),
         )
         .as_bytes(),
@@ -243,21 +288,46 @@ fn reports(report: serde_json::Value) -> serde_json::Value {
 /// Two turns, and the first one is the whole point — the repair has to be made
 /// through the binary's own `write_file` tool, into the binary's own ephemeral
 /// worktree, or the check that follows has nothing to pass over.
-fn a_real_repair() -> Vec<serde_json::Value> {
+fn a_real_repair() -> Vec<Reply> {
     vec![
-        calls(
+        accepted(calls(
             "write_file",
             serde_json::json!({
                 "path": "src/lib.rs",
                 "contents": support::REPAIRED_FIXTURE,
             }),
-        ),
-        reports(serde_json::json!({
+        )),
+        accepted(reports(serde_json::json!({
             "changed_files": ["src/lib.rs"],
             "summary": "corrected the off-by-one",
             "claimed_complete": true,
-        })),
+        }))),
     ]
+}
+
+/// The gateway refuses, and quotes the key it was sent while doing it.
+///
+/// Not an invented shape. An OpenAI-compatible gateway's `invalid_api_key`
+/// envelope names the credential it rejected, which is the whole reason the
+/// response body of a *failed* call is the most dangerous string in this
+/// system: it is authored by something outside the process, and it routinely
+/// contains the one secret fiddle holds.
+fn a_refusal_quoting_the_credential() -> Vec<Reply> {
+    vec![refused(
+        401,
+        "Unauthorized",
+        serde_json::json!({
+            "error": {
+                "message": format!(
+                    "Incorrect API key provided: {SENTINEL}. \
+                     You can find your API key at https://example.invalid/keys."
+                ),
+                "type": "invalid_request_error",
+                "param": null,
+                "code": "invalid_api_key",
+            }
+        }),
+    )]
 }
 
 /// A scenario with an open work item, the broken fixture repository, and an
@@ -285,6 +355,21 @@ fn a_real_repair() -> Vec<serde_json::Value> {
 /// which program the check is remains the operator's business, and the `cargo`
 /// flavour of it is proven elsewhere.
 fn scenario(gateway: &StubGateway, max_turns: usize) -> Scenario {
+    scenario_checked(gateway, max_turns, PASSES_ONCE_REPAIRED)
+}
+
+/// The default check: `grep` for the repaired text. See [`scenario`].
+const PASSES_ONCE_REPAIRED: &str =
+    "{ program = \"grep\", args = [\"-q\", \"len - 1\", \"src/lib.rs\"] }";
+
+/// As [`scenario`], with the `workspace.check` value written out in full.
+///
+/// The check is a parameter because two of the properties this lane proves are
+/// properties *of what a check printed*: that the workspace it printed is not
+/// republished, and that however much it printed, the run's published reason
+/// stays inside its bound. Both need a check that prints, and the repairing
+/// one deliberately prints nothing.
+fn scenario_checked(gateway: &StubGateway, max_turns: usize, check: &str) -> Scenario {
     let s = Scenario::new();
     s.write_work_item(WORK_ID, "open");
     let fixture = s.write_fixture_repo();
@@ -302,7 +387,7 @@ fn scenario(gateway: &StubGateway, max_turns: usize) -> Scenario {
          [workspace]\n\
          root = {}\n\
          fixture = {}\n\
-         check = {{ program = \"grep\", args = [\"-q\", \"len - 1\", \"src/lib.rs\"] }}\n\
+         check = {check}\n\
          command_timeout = \"300s\"\n",
         gateway.base_url(),
         support::toml_string(&s.dir().join("workspaces")),
@@ -461,5 +546,179 @@ fn a_turn_budget_of_one_stops_the_same_repair_before_it_earns_anything() {
         s.read_change_marker(WORK_ID),
         None,
         "no check ever ran, so nothing was earned"
+    );
+}
+
+/// **What the gateway said is not what fiddle publishes.**
+///
+/// The channel this closes, traced hop by hop: rig preserves a non-2xx
+/// response body verbatim, its `Display` renders `status <n>: <body>`,
+/// `AgentError::Provider` used to carry that rendering, `CapabilityError::Agent`
+/// wrapped it, and `orchestration::run` copied `error.to_string()` into both
+/// `RunOutcome::Retryable.reason` and `ProgressEntry.summary` — which are
+/// printed on stdout and written into the published bundle.
+///
+/// The body here quotes the credential, which is what an OpenAI-compatible
+/// gateway's `invalid_api_key` envelope actually does. So the scenario is the
+/// design invariant stated as a run: a secret reaches the provider, the
+/// provider hands it back, and nothing fiddle publishes may contain it.
+///
+/// Asserted over every surface the run produced, not only the payload: stdout,
+/// stderr, and every byte of every file under the project — the bundle, the
+/// journal, the fixture, the workspace root.
+///
+/// The reason is still asserted to *say something*. Dropping the text would
+/// pass this test and fail the operator: a 401 and a 503 are different things
+/// to do about a run, and the reason is where the difference is legible.
+#[test]
+fn a_gateway_refusal_never_reaches_what_the_run_publishes() {
+    let gateway = StubGateway::serving(a_refusal_quoting_the_credential());
+    let s = scenario(&gateway, 4);
+
+    let out = repair(&s);
+    let payload = payload(&out);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    assert_eq!(
+        gateway.served(),
+        1,
+        "the binary must have dialled the gateway and been refused, or this \
+         scenario proves nothing: payload = {payload} stderr = {stderr}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(11),
+        "a refused provider call did not do the work, and repeating it may well \
+         succeed: payload = {payload} stderr = {stderr}"
+    );
+
+    assert!(
+        !stdout.contains(SENTINEL),
+        "the payload republished the gateway's copy of the credential: {stdout}"
+    );
+    assert!(
+        !stderr.contains(SENTINEL),
+        "the diagnostic republished the gateway's copy of the credential: {stderr}"
+    );
+    let leaked: Vec<String> = s
+        .project_tree()
+        .into_iter()
+        .filter(|(_, bytes)| String::from_utf8_lossy(bytes).contains(SENTINEL))
+        .map(|(path, _)| path)
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "the gateway's copy of the credential was written to {leaked:?}"
+    );
+
+    // The other half: an operator still learns what happened. `401` is the one
+    // fact about a refusal that decides what to do next, and it is fiddle's to
+    // report because the status line is not the response body.
+    let reason = payload["outcome"]["retryable"]["reason"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a refused provider call concludes retryably: {payload}"));
+    assert!(
+        reason.contains("401"),
+        "the run must still name what the gateway did, so an operator knows \
+         whether to fix a key or wait out a rate limit: {reason}"
+    );
+    assert!(
+        !reason.contains("Incorrect API key provided"),
+        "the response body is authored outside this process and must not be \
+         quoted at all: {reason}"
+    );
+}
+
+/// The ceiling on any single string this run promotes into a published field.
+///
+/// Written here as a literal rather than imported, because the acceptance lane
+/// checks the binary against the contract and not against itself.
+const PUBLISHED_TEXT_LIMIT: usize = 2048;
+
+/// A check that says where it is working and then says far too much.
+///
+/// `pwd` first, because the workspace root is exactly the string a published
+/// reason must not carry — a linked worktree's absolute path is the operator's
+/// directory layout and this attempt's identity. Then four thousand characters,
+/// which is what an ordinary failing `cargo test` looks like from outside and
+/// is comfortably past [`PUBLISHED_TEXT_LIMIT`]. Then a non-zero exit, so the
+/// capability reports `CheckFailed` and the whole lot is promoted.
+const A_LOUD_FAILING_CHECK: &str = "{ program = \"sh\", args = [\"-c\", \
+     \"pwd >&2; i=0; while [ $i -lt 400 ]; do printf '0123456789' >&2; \
+     i=$((i+1)); done; exit 1\"] }";
+
+/// **A check that printed a megabyte still publishes a bounded reason, and one
+/// that names no host path.**
+///
+/// The second seam of the same defect. `CapabilityError::CheckFailed` embeds
+/// the check's stderr, and the check is an arbitrary operator-configured
+/// program run over a tree a model has been writing to: its output is unbounded
+/// in size and, until the workspace relativised its own root out of what it
+/// hands back, carried the absolute worktree path. Both then reached
+/// `RunOutcome::Retryable.reason` and `ProgressEntry.summary` verbatim.
+///
+/// Both surfaces are asserted, and the bundle as well as stdout, because the
+/// bundle is the artefact a downstream reader consumes.
+#[test]
+fn a_failing_checks_output_is_bounded_and_names_no_workspace_path() {
+    let gateway = StubGateway::serving(a_real_repair());
+    let s = scenario_checked(&gateway, 4, A_LOUD_FAILING_CHECK);
+
+    let out = repair(&s);
+    let payload = payload(&out);
+
+    assert_eq!(
+        out.status.code(),
+        Some(11),
+        "the check exited non-zero, so nothing was earned: payload = {payload} \
+         stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let reason = payload["outcome"]["retryable"]["reason"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a failing check concludes retryably: {payload}"));
+    let bundle = s.read_bundle(&payload);
+    let summary = bundle["progress"][0]["summary"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a failed execution still records progress: {bundle}"));
+
+    // The workspace root is `<workspaces>/<attempt>`, so the parent's own path
+    // is a prefix of it: a reason carrying either spelling of that prefix is
+    // carrying the host's directory layout.
+    let workspaces = s.dir().join("workspaces");
+    let spellings = [
+        workspaces.display().to_string(),
+        std::fs::canonicalize(&workspaces)
+            .unwrap_or_else(|_| workspaces.clone())
+            .display()
+            .to_string(),
+    ];
+
+    for (field, text) in [("reason", reason), ("summary", summary)] {
+        for spelling in &spellings {
+            assert!(
+                !text.contains(spelling.as_str()),
+                "the published `{field}` names the host's workspace path \
+                 {spelling}"
+            );
+        }
+        assert!(
+            text.chars().count() <= PUBLISHED_TEXT_LIMIT,
+            "the published `{field}` is {} characters, and the bound is \
+             {PUBLISHED_TEXT_LIMIT}",
+            text.chars().count()
+        );
+        assert!(
+            text.contains("exited"),
+            "an operator must still learn that the check is what refused this \
+             run: {field} = {text}"
+        );
+    }
+
+    assert_eq!(
+        s.read_change_marker(WORK_ID),
+        None,
+        "the check failed, so nothing was earned"
     );
 }

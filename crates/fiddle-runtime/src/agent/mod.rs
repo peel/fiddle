@@ -116,14 +116,36 @@ pub struct RepairReport {
 /// [`ToolError`] they may carry diagnostics freely — the direction that matters
 /// for a `ToolError` is towards the provider, and nothing here goes that way.
 ///
+/// # What a `reason` is allowed to contain
+///
 /// `reason` never *quotes back* something the model chose to name: not a tool
 /// name, not a path. Those are unbounded, they are already in the receipts under
-/// their own outcome class, and repeating them buys nothing. The one exception
-/// is deliberate and is the serde diagnostic on a schema failure, which is the
-/// only thing that distinguishes "the model omitted `summary`" from "the model
-/// wrote prose" — and which may quote the offending fragment. Anything that
-/// later copies an `AgentError` into a *published* surface has to treat that one
-/// reason as model-authored text.
+/// their own outcome class, and repeating them buys nothing.
+///
+/// There are **two** deliberate admissions of text this process did not write,
+/// and they are admitted on different grounds:
+///
+/// - The **serde diagnostic** on a schema failure, which may quote the offending
+///   fragment. It is the only thing that distinguishes "the model omitted
+///   `summary`" from "the model wrote prose", and it is *model*-authored — the
+///   model is a party we are already reading the output of.
+/// - A **provider transport failure's own text**, on [`AgentError::Provider`],
+///   and only when rig can prove there is no response body inside it. See
+///   [`classify`] and [`provider_fault`] for how that is decided and why the
+///   body itself is never admitted on any path.
+///
+/// This doc block used to say the serde diagnostic was "the one exception". It
+/// was not, and the second one was the wider of the two: until `provider_fault`
+/// existed, `classify`'s two wildcard arms rendered rig's error with
+/// `to_string()`, and rig preserves a non-2xx **response body verbatim** in the
+/// error it renders. A gateway that quotes the key it rejected — which is what
+/// an OpenAI-compatible `invalid_api_key` envelope does — therefore put a
+/// credential into a published bundle by the ordinary route.
+///
+/// Anything that later copies an `AgentError` into a *published* surface still
+/// has to treat these reasons as foreign text and bound them; that is
+/// [`fiddle_core::Published`]'s job and it is not optional, because
+/// [`fiddle_core::RunOutcome`]'s reasons cannot be spelled any other way.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     /// A bound the host set was reached.
@@ -300,6 +322,10 @@ where
 /// false rather than the model reaching a limit. Its `tool_name` is deliberately
 /// not quoted into the reason — it is a string the model authored, and
 /// [`AuditHook`] has already recorded the call under `unknown_tool`.
+///
+/// The two wildcard arms fall to [`provider_fault`] rather than to
+/// `other.to_string()`, which is where the gateway's response body used to
+/// enter this process's published output. See that function.
 fn classify(error: StructuredOutputError) -> AgentError {
     match error {
         StructuredOutputError::DeserializationError(source) => AgentError::Protocol {
@@ -317,12 +343,71 @@ fn classify(error: StructuredOutputError) -> AgentError {
                 reason: "the model called a tool that does not exist".to_string(),
             },
             other => AgentError::Provider {
-                reason: other.to_string(),
+                reason: provider_fault(
+                    other.provider_response_status(),
+                    other.provider_response_body(),
+                    &other,
+                ),
             },
         },
         other => AgentError::Provider {
-            reason: other.to_string(),
+            reason: provider_fault(
+                other.provider_response_status(),
+                other.provider_response_body(),
+                &other,
+            ),
         },
+    }
+}
+
+/// What may be said about a failure that came from the far end of the wire.
+///
+/// # The rule
+///
+/// **A provider's response body is never quoted, on any path.** What is said
+/// instead is the HTTP status, which fiddle reads off the status line rather
+/// than out of the payload — a number from a closed set, authored by the
+/// protocol and not by whoever is answering on the socket.
+///
+/// # Why the body cannot simply be sanitised on the way out
+///
+/// Because it is chosen by something outside this process, and no filter over
+/// content an adversary picks is a guarantee. The concrete case is not
+/// hypothetical: an OpenAI-compatible gateway refusing a call answers `401` with
+/// `{"error":{"message":"Incorrect API key provided: sk-…"}}` — the credential
+/// fiddle just sent it, handed straight back. rig preserves that body verbatim
+/// (`HttpError::InvalidStatusCodeWithMessage`, or `ProviderResponse` for a 2xx
+/// error envelope) and renders it in `Display`, so every `to_string()` of such
+/// an error carries it. Design §3 lists "no secret in evidence or telemetry"
+/// among the invariants, and the only version of that which holds against an
+/// arbitrary body is that the body does not come in.
+///
+/// # Why the rest of the error text still does
+///
+/// Because losing it would cost the diagnostic that matters most in practice and
+/// buy nothing. `provider_response_body()` is rig's own answer to *does this
+/// error carry a payload the provider wrote?*, and it is `Some` for exactly the
+/// two variants whose rendering contains one. When it is `None` the text is
+/// rig's and the transport's — "connection refused", a DNS failure, a TLS
+/// error — which is what an operator with a mistyped `base_url` needs to read,
+/// and which no gateway authored.
+///
+/// A status of `None` beside a body of `Some` is a non-HTTP transport, which
+/// this deployment does not use; it is answered rather than assumed away,
+/// because the safe answer costs one arm.
+///
+/// Generic over the status rather than naming `http::StatusCode`, so that
+/// pinning rig's HTTP crate into this crate's own manifest is not the price of
+/// keeping a body out of a bundle.
+fn provider_fault(
+    status: Option<impl std::fmt::Display>,
+    body: Option<&str>,
+    error: &dyn std::fmt::Display,
+) -> String {
+    match (status, body) {
+        (Some(status), _) => format!("the gateway answered {status}"),
+        (None, Some(_)) => "the gateway answered with an error payload and no status".to_string(),
+        (None, None) => error.to_string(),
     }
 }
 
@@ -375,4 +460,75 @@ pub struct ToolReceipt {
     pub tool: String,
     pub outcome: &'static str,
     pub duration_ms: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rig_agent::completion::CompletionError;
+
+    /// A body an unaudited gateway might send back, quoting the key it refused.
+    const ECHOED: &str =
+        r#"{"error":{"message":"Incorrect API key provided: sk-unit-must-not-appear-4c2f"}}"#;
+
+    /// **A preserved provider body is never rendered into a reason.**
+    ///
+    /// The arm asserted here is the one the acceptance lane cannot reach: a
+    /// provider error carrying a body and *no* HTTP status, which is what rig
+    /// produces for a non-HTTP transport. The status-bearing arm is proven end
+    /// to end by `binary_repair`'s
+    /// `a_gateway_refusal_never_reaches_what_the_run_publishes`, over a real
+    /// socket and the real client.
+    ///
+    /// Constructed through rig's own `from_provider_body`, so this stays a test
+    /// about rig's error shape rather than about a shape we invented — if a
+    /// later version routes the body somewhere `provider_response_body` does
+    /// not report, this fails.
+    #[test]
+    fn a_preserved_provider_body_is_never_rendered_into_a_reason() {
+        let error = StructuredOutputError::PromptError(Box::new(PromptError::CompletionError(
+            CompletionError::from_provider_body(ECHOED),
+        )));
+        // The premise: rig really is carrying the body, and really does render
+        // it. Without this the assertion below could pass over an error that
+        // never held the string at all.
+        assert!(
+            error.to_string().contains("sk-unit-must-not-appear-4c2f"),
+            "rig no longer renders a preserved body, so this test is not \
+             testing anything: {error}"
+        );
+
+        match classify(error) {
+            AgentError::Provider { reason } => {
+                assert!(
+                    !reason.contains("sk-unit-must-not-appear-4c2f"),
+                    "the response body reached the reason: {reason}"
+                );
+                assert!(
+                    reason.contains("gateway"),
+                    "an operator must still learn who failed: {reason}"
+                );
+            }
+            other => panic!("a provider failure must classify as Provider, got {other:?}"),
+        }
+    }
+
+    /// The other direction, and the reason the rule is stated over
+    /// `provider_response_body` rather than as "never quote rig": a transport
+    /// failure carries no provider payload, so its text is rig's own and is
+    /// exactly what an operator with a mistyped `base_url` needs to read.
+    #[test]
+    fn a_transport_failure_keeps_the_text_that_explains_it() {
+        let error = StructuredOutputError::PromptError(Box::new(PromptError::CompletionError(
+            CompletionError::ProviderError("connection refused".to_string()),
+        )));
+
+        match classify(error) {
+            AgentError::Provider { reason } => assert!(
+                reason.contains("connection refused"),
+                "a failure with no provider body has nothing to withhold: {reason}"
+            ),
+            other => panic!("a provider failure must classify as Provider, got {other:?}"),
+        }
+    }
 }

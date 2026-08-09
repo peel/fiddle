@@ -51,12 +51,18 @@ pub struct CapabilityExecution {
 /// happened while it ran*, in the words a reader can act on. M0's single
 /// capability emits exactly one entry per execution, so an empty
 /// `capability_executions` implies an empty `progress`.
+///
+/// `summary` is the one field here that is prose rather than a name from a
+/// closed set, and it is therefore where a run's own failure text lands — the
+/// same text [`RunOutcome`](crate::RunOutcome) carries, filed under the stage
+/// it happened at. It is [`Published`](crate::Published) for the same reason
+/// and with the same guarantee.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ProgressEntry {
     pub capability_id: crate::identity::CapabilityId,
     pub stage: String,
     pub status: String,
-    pub summary: String,
+    pub summary: crate::published::Published,
     pub evidence: Vec<EvidenceRef>,
 }
 
@@ -224,7 +230,7 @@ mod tests {
                 capability_id: CapabilityId("stub_mark"),
                 stage: "mark".to_string(),
                 status: "completed".to_string(),
-                summary: "wrote correlation marker".to_string(),
+                summary: crate::published::Published::of("wrote correlation marker"),
                 evidence: Vec::new(),
             }],
             observations: WorkStateView {

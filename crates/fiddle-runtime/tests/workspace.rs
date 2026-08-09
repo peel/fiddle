@@ -441,18 +441,67 @@ async fn a_command_runs_in_the_workspace_and_reports_what_it_did() {
     assert_eq!(result.stderr.trim(), "err");
     let mut lines = result.stdout.lines();
     assert_eq!(lines.next(), Some("out"));
-    // The command's working directory is the workspace, not this process's.
-    // Compared canonicalized because a macOS temp directory is reached through
-    // a symlink and `getcwd` reports the far side of it.
+    // **The command's working directory is the workspace, and the result says
+    // so relatively.** Both halves in one assertion, because one implies the
+    // other here: `pwd` prints `getcwd()`, and the only reason it can come back
+    // as `.` is that `getcwd()` was the workspace root and `Workspace::run`
+    // rewrote it. A command that had run somewhere else would print that
+    // somewhere else, unrewritten, and this would fail.
+    //
+    // Which spelling `getcwd()` reports is not something this has to know any
+    // more — a macOS temporary directory is reached through a symlink, so it is
+    // the far side of it, and both spellings are rewritten.
     assert_eq!(
-        lines.next().map(std::path::PathBuf::from),
-        Some(ws.root().canonicalize().unwrap())
+        lines.next(),
+        Some("."),
+        "a command result must carry no absolute path of the workspace it ran \
+         in: stdout = {}",
+        result.stdout
     );
 
     let failed = ws.run(&cmd("/bin/sh", &["-c", "exit 3"])).await.unwrap();
     assert_eq!(
         failed.exit_code, 3,
         "a non-zero exit is a result, not an error"
+    );
+}
+
+/// **Neither stream of a command result names the workspace, in any spelling.**
+///
+/// Asserted against a command that prints the path on *both* streams, and
+/// against both spellings of it, because the consumer that matters most reads
+/// `stderr`: `CapabilityError::CheckFailed` embeds it, and the orchestration
+/// publishes that error's rendering as a run's `reason` and as a progress
+/// summary. Before this guarantee lived in `Workspace::run` it lived at two
+/// call sites in the `run_check` tool, so the model was protected from the
+/// worktree path and the published bundle was not.
+#[tokio::test]
+async fn neither_stream_of_a_command_result_names_the_workspace() {
+    let _env = ENV.read().await;
+    let (ws, _dir) = workspace();
+
+    let result = ws
+        .run(&cmd("/bin/sh", &["-c", "pwd; pwd >&2"]))
+        .await
+        .unwrap();
+
+    let mut spellings = vec![ws.root().display().to_string()];
+    if let Ok(canonical) = ws.root().canonicalize() {
+        spellings.push(canonical.display().to_string());
+    }
+    for spelling in spellings {
+        assert!(
+            !result.stdout.contains(&spelling) && !result.stderr.contains(&spelling),
+            "a command result named {spelling}: stdout = {} stderr = {}",
+            result.stdout,
+            result.stderr
+        );
+    }
+    assert_eq!(
+        (result.stdout.trim(), result.stderr.trim()),
+        (".", "."),
+        "the rewrite must be a relative path the reader can still use, not a \
+         deletion"
     );
 }
 

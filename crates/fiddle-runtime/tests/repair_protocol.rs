@@ -815,7 +815,7 @@ fn grant() -> ExecutionGrant {
 /// `AgentError::Protocol` and `AgentError::Cancelled` are told apart by it.
 fn refusal(report: &RunReport) -> String {
     match &report.outcome {
-        RunOutcome::Retryable { reason } => reason.clone(),
+        RunOutcome::Retryable { reason } => reason.to_string(),
         other => panic!("expected a retryable run, got {other:?}"),
     }
 }

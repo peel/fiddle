@@ -655,7 +655,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fiddle_core::{ChangeSetState, NextAction, Observation};
+    use fiddle_core::{ChangeSetState, NextAction, Observation, Published};
     use fiddle_runtime::ChangePort;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -674,19 +674,19 @@ mod tests {
             (RunOutcome::Completed, 0),
             (
                 RunOutcome::Suspended {
-                    reason: "awaiting a decision".into(),
+                    reason: Published::of("awaiting a decision"),
                 },
                 10,
             ),
             (
                 RunOutcome::Retryable {
-                    reason: "try again".into(),
+                    reason: Published::of("try again"),
                 },
                 11,
             ),
             (
                 RunOutcome::Failed {
-                    error: "will not succeed".into(),
+                    error: Published::of("will not succeed"),
                 },
                 20,
             ),

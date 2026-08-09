@@ -11,7 +11,11 @@
 //! The other half is the credential. It is read in exactly one place, only for
 //! a capability that needs a model, and it must reach neither stdout, nor
 //! stderr, nor anything the run writes to disk — so the scenarios that supply
-//! one supply a sentinel and then go looking for it everywhere.
+//! one supply a sentinel and then go looking for it everywhere. What they can
+//! look for it in is bounded by [`UNREACHABLE_GATEWAY`]: nothing here ever
+//! receives a response, so the half of the property that is about what a
+//! gateway *says back* belongs to `binary_repair`, which has an endpoint that
+//! answers.
 //!
 //! The third part is that `inspect` asks the same question. A read-only command
 //! that reports which capability is next is making the claim `run` acts on, so
@@ -489,15 +493,31 @@ fn an_unknown_capability_is_a_usage_error_listing_the_known_ids() {
     );
 }
 
-/// **The credential never leaves the process.**
+/// **A run that reached no gateway writes the credential down nowhere.**
 ///
 /// The run above is driven again, and this time everything it produced is
 /// searched: stdout, stderr, and every byte of every file anywhere under the
 /// project — the published bundle, the attempt journal, the fixture, the
 /// workspace root. Configuration already cannot hold a credential; this is the
 /// other half, that a run holding one does not write it down.
+///
+/// # What this scenario cannot reach, and where that half lives
+///
+/// [`UNREACHABLE_GATEWAY`] is port 9 on loopback, so the connection is refused
+/// and **no HTTP response body is ever produced**. That makes this a proof
+/// about fiddle's own handling of a credential it read — the request headers,
+/// the client construction, the diagnostics — and not a proof about what a
+/// gateway hands *back*.
+///
+/// The docstring here used to claim the stronger property, "the credential
+/// never leaves the process", over exactly this fixture. It was not provable
+/// from here and it was not true: a gateway that answers `401` quoting the key
+/// it rejected put that key into rig's error, into `AgentError::Provider`, and
+/// from there into a published bundle. Proving the answering case needs a
+/// gateway that answers, which is `binary_repair`'s
+/// `a_gateway_refusal_never_reaches_what_the_run_publishes`.
 #[test]
-fn nothing_a_run_produces_contains_the_credential() {
+fn nothing_a_run_that_reaches_no_gateway_produces_contains_the_credential() {
     let s = repairable();
 
     let out = s
