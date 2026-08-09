@@ -121,12 +121,19 @@ spine. Every M1 bean declares `thresholds: {}` and every M1 bean changes code, s
 doc-only correction does not apply to any of them.
 
 **Reconciled against what was built (2026-08-09).** This section was written before implementation
-and anchored on three things that do not exist: an `m1_bounded_capability` acceptance lane, a
-scheduled degraded-JSON canary workflow, and a live round-trip proof against a Claude-family
-model. Each has been replaced below by the artifact that actually ships. An anchor that names a
-file is a promise that the file is there; where one is not, the anchor is the defect, not the
-implementation. Criterion ids are unchanged, because they appear verbatim in the `eval` blocks of
-epic `fiddle-y1w6`'s beans — read `m1-canary-evidence` as *the real-model lanes*.
+and anchored on **four** things that do not exist: an `m1_bounded_capability` acceptance lane, a
+scheduled degraded-JSON canary workflow, a live round-trip proof against a Claude-family model,
+and an outer per-capability attempt limit owned by `fiddle-runtime`. Each has been replaced below
+by the artifact that actually ships. An anchor that names a file is a promise that the file is
+there; where one is not, the anchor is the defect, not the implementation. Criterion ids are
+unchanged, because they appear verbatim in the `eval` blocks of epic `fiddle-y1w6`'s beans — read
+`m1-canary-evidence` as *the real-model lanes*.
+
+The fourth was found a pass later than the other three, in this document rather than by it, and it
+is the reason this paragraph now counts. `agent.max_capability_attempts` parses and defaults to 3
+and is read by nothing; M1 ships one bound, and the decision, with what taking up the second would
+cost, is `decisions/013-one-attempt-bound-not-two.md`. `m1-bounded-behavior` below asks for the
+bounds that fire.
 
 **The scope rule for this milestone, stated once.** Model output quality is nondeterministic and is
 never the deterministic gate. Every criterion below is scored against what the *deterministic shell*
@@ -173,16 +180,31 @@ Structured output, and the standing of what the model claims.
 
 ### `m1-bounded-behavior`
 
-Turn, attempt, time, and mutation limits, and cancellation.
+Turn, time, tool, and mutation limits, and cancellation.
 
-- **Poor (1–3).** Only one bound exists, or the inner turn limit is enforced by a hand-rolled counter
-  rather than by the runtime. Cancellation is assumed to follow from dropping a future. A bound is
-  configured but nothing asserts it fires.
-- **Acceptable (4–7).** Two independent bounds — an outer per-capability attempt limit owned by
-  `fiddle-runtime` and an inner per-attempt turn limit enforced by Rig — plus a wall-clock deadline
-  and a files-changed cap. Each has a test that drives it past the limit and asserts the specific
-  error: a scripted model with more tool calls than `max_turns` yields Rig's `MaxTurnsError`. A
-  cancellation token is passed into every tool and the check runner and is checked before mutation.
+**There is no outer per-capability attempt bound, and its absence is a decision, not a gap.**
+`agent.max_capability_attempts` parses, defaults to 3, and is consumed by nothing:
+`fiddle_runtime::attempt` runs one attempt and reports `RunOutcome::Retryable` for a caller to
+repeat. `decisions/013-one-attempt-bound-not-two.md` records the decision and prices the change —
+`Retryable` has four producers of which only one is "the capability tried and lost", so the loop
+needs a taxonomy the outcome type does not carry, and both placements for it move something M0
+asserts. Score against the bounds that fire. An evaluator that marks this criterion down for the
+missing outer bound is scoring against a superseded plan; one that marks a bean down for *not
+having noticed* the key is unconsumed is scoring correctly only if the bean touched that path.
+
+- **Poor (1–3).** No bound is enforced at all, or the inner turn limit is enforced by a hand-rolled
+  counter rather than by the runtime. Cancellation is assumed to follow from dropping a future. A
+  bound is configured but nothing asserts it fires. A configuration key that fires nothing is
+  presented as though it did.
+- **Acceptable (4–7).** Four bounds that fire, each with a test that drives it past its limit and
+  asserts the specific error: the per-attempt turn limit enforced by Rig (a scripted model with
+  more tool calls than `max_turns` yields Rig's `MaxTurnsError` —
+  `agent::the_turn_budget_is_enforced_by_the_runtime`), the wall-clock deadline
+  (`the_deadline_bounds_an_attempt_that_would_otherwise_run_on`), the files-changed cap
+  (`exceeding_the_changed_file_cap_fails_the_attempt`), and the per-tool timeout
+  (`the_budgets_tool_timeout_bounds_a_single_tool_without_ending_the_run`), with
+  `workspace::a_command_that_overruns_its_timeout_is_killed` under it. A cancellation token is
+  passed into every tool and the check runner and is checked before mutation.
 - **Excellent (8–10).** All of the above, plus a cancellation test that cancels *between inspection
   and mutation* and asserts the workspace is unmutated afterwards — proving cancellation prevents an
   effect rather than merely ending a future — and the cancelled attempt's outcome is shown to come
@@ -226,7 +248,10 @@ design, carrying the adversarial cases), and in `crates/fiddle-acceptance/tests/
   `cargo test -p fiddle-acceptance` both exit 0. The success path is proven with zero model
   dependence: a scripted model writes known-correct content, the configured check runs over the tree
   the attempt actually left, and the correlation marker appears only after the check exits 0 — all
-  read back from disk and from `git status --porcelain -uall`, never from the model's response.
+  read back from disk and from git, never from the model's response. (Which git question is not the
+  criterion's business, and this line named one that is no longer asked: the derivation is
+  `git status --porcelain=v1 -z -uno` for tracked changes plus `git ls-files --others` under the
+  ignore rules committed at the branched HEAD for created files. See `workspace::changes`.)
   Nothing in `src/` knows a test is happening: no transcript provider, no test-only runtime mode.
   Every lane passes with `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `GH_TOKEN` and `JIRA_API_TOKEN`
   removed, and `LITELLM_API_KEY` set to a sentinel that authenticates nothing. `m0_skeleton` still

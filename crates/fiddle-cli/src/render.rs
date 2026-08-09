@@ -1,8 +1,24 @@
 //! Human and `--json` renderers.
 //!
-//! Every byte the CLI writes to stdout or stderr is produced here, so the
-//! observable output contract lives in one file rather than being scattered
-//! through the command handlers.
+//! Everything fiddle says *about a command it ran* — every `--json` payload,
+//! every human rendering, and the miette diagnostic for a request it refused —
+//! is produced here, so the observable output contract lives in one file rather
+//! than being scattered through the command handlers.
+//!
+//! Two things the process writes are outside that, and naming them is what
+//! stops the claim above from being the kind that quietly stops being true:
+//!
+//! - **clap's own output.** `--version`, `--help`, and the error for a
+//!   malformed command line are written and exited on by the parser, before
+//!   `dispatch` is reached and therefore before there is any command to say
+//!   anything about. `crates/fiddle-acceptance/tests/version.rs` pins the
+//!   `--version` shape at the boundary where it is actually produced.
+//! - **The interrupt notice.** `main.rs` writes "interrupted; stopping the
+//!   attempt" from inside the signal handler. It describes something happening
+//!   *to* the process rather than anything a run concluded, it is emitted while
+//!   the run is still in flight, and every payload this module produces is
+//!   still emitted afterwards unchanged. Routing it through here would have put
+//!   a renderer with no bundle to render beside the ones that always have one.
 
 use crate::config::Config;
 use fiddle_core::{

@@ -713,6 +713,40 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn write_file_can_add_a_file_in_a_directory_the_project_does_not_have_yet() {
+        // The model-visible half of the workspace's deepest-existing-ancestor
+        // resolution, and the reason it is worth having: "extract this into its
+        // own module" is the ordinary shape of a repair, and it names a
+        // directory that is not there. This tool could not express it — the
+        // write failed on the absent parent and the model was told `writing the
+        // file did not succeed`, with the missing directory behind a `#[source]`
+        // no prompt ever carries. A capability that cannot be told what went
+        // wrong cannot recover from it, and the turn budget is finite.
+        let (host, _g) = test_host();
+        let root = host.workspace.root().to_path_buf();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let receipt = WriteFile
+            .call(
+                &mut ctx,
+                WriteFileArgs {
+                    path: "src/newmod/deep/a.rs".into(),
+                    contents: "pub fn a() {}\n".into(),
+                },
+            )
+            .await
+            .expect("a new directory is the workspace's to make, not the model's to work around");
+
+        assert_eq!(receipt.path, "src/newmod/deep/a.rs");
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/newmod/deep/a.rs")).unwrap(),
+            "pub fn a() {}\n",
+            "the receipt has to describe a file that is there"
+        );
+    }
+
+    #[tokio::test]
     async fn cancellation_between_inspection_and_mutation_prevents_the_write() {
         // The interleaving that matters: the agent has already read, and the
         // token is cancelled before it writes. The mutation must not happen.

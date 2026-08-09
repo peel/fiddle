@@ -201,3 +201,17 @@ Deriving the changed-file set under the project's ignore rules *as committed* cl
 
 Origin: implementation (epic fiddle-y1w6, bean fiddle-93cj — recorded while fixing the changed-file derivation, not deferred from it)
 Tags: #debt #risk
+
+### 2026-08-09 — The outer attempt bound's absence is now a decision, and this is what closes it
+Supersedes the *action* of **2026-08-09 — `agent.max_capability_attempts` has no consumer** above; that entry's finding stands and its text is left alone, because this file is append-only. The decision is recorded in `docs/technical/decisions/013-one-attempt-bound-not-two.md`, which prices the change rather than deferring it again: `RunOutcome::Retryable` has four producers of which only one is "the capability tried and lost", so a retry loop needs a taxonomy the outcome type does not carry; and both placements for the loop move something committed — inside `run` it changes the shape of `capability_executions` and `progress` that every bundle consumer has seen, inside `attempt` it breaks the one-process-one-attempt-id premise that `fresh_invocation.rs` and `m0_skeleton.rs` both read. Taking it up means points 1–4 of that ADR in order, taxonomy first.
+Origin: implementation (epic fiddle-y1w6, holistic remediation iteration 1 — bean fiddle-9v2d)
+Tags: #debt #process
+
+### 2026-08-09 — What creating a directory on the model's behalf does not close
+`Workspace::resolve` now walks to the deepest existing ancestor and `Workspace::write` makes the intervening directories, each proven inside the workspace by the same canonicalize-and-compare the leaf gets, before and again after creation. Three residues, none of them regressions and each a deliberate stop.
+
+- **The check-to-write window is unchanged, not closed.** Nothing stops another process replacing a resolved component with a symlink between the containment check and the write; the fix re-canonicalizes the parent after `create_dir_all` and rebuilds the leaf on it, which narrows the window that creation opened but does not remove the one `std::fs::write` always had. Inside a per-attempt worktree the only other writer is the operator's own `run_check` program. Closing it properly means `openat`-style resolution against a directory handle — `cap-std` is the obvious candidate — which is a dependency decision, not a patch.
+- **An empty directory a failed write left behind is invisible to the evidence.** git tracks files, so a `write_file` that resolved, made `src/newmod/`, and then failed to write leaves a directory that `changed_files()` will never name. It costs nothing and hides nothing that matters — no content is in it — but "the workspace is as the attempt left it" is one directory weaker than the changed-file set says.
+- **Nothing bounds how deep a model may build.** `max_changed_files` caps the files; the directories on the way to them are uncounted and uncapped. Over M1's fixture this is invisible. It becomes a question at the same time as the uncapped `read_file`/`list_files` entry above.
+Origin: implementation (epic fiddle-y1w6, holistic remediation iteration 1 — bean fiddle-9v2d)
+Tags: #debt #risk

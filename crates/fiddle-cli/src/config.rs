@@ -33,8 +33,9 @@ use std::time::Duration;
 /// client, `fiddle_runtime::agent::AgentBudget` and
 /// `fiddle_runtime::RepairConfig` out of these fields, so the compiler now
 /// proves the schema is wired rather than being asked to overlook that it is
-/// not. Three fields still carry a narrow allowance of their own, each with the
-/// reason written at the field.
+/// not. One field still carries a narrow allowance of its own —
+/// [`Agent::max_capability_attempts`] — with the reason written at the field
+/// and the decision recorded in `decisions/013-one-attempt-bound-not-two.md`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -121,19 +122,24 @@ pub struct Agent {
     /// the milestone that has a durable lifecycle to bound (design §6.6), so
     /// the key lives beside the bound it is the counterpart to until then.
     ///
-    /// The one bound with no consumer yet, and the allowance says exactly that
-    /// rather than being inherited from a blanket one. Nothing in the runtime
-    /// starts a second attempt at the same work: `fiddle_runtime::attempt` runs
-    /// one, and a capability that failed surfaces as
-    /// `RunOutcome::Retryable` for the *caller* to repeat. Reading this value
-    /// therefore means writing that retry loop, which changes what every
-    /// existing outcome does — including M0's — and belongs to the task that
-    /// owns the lifecycle rather than to the one that wires a capability. The
-    /// key stays because a document written against the reference
-    /// configuration must load, and because the pair of bounds is only
-    /// meaningful written down together.
+    /// **This bound does not fire.** A document that writes
+    /// `max_capability_attempts = 5` gets one attempt, and this and
+    /// `decisions/013-one-attempt-bound-not-two.md` are the only two places a
+    /// reader learns it — `config check` reports such a document valid, because
+    /// it is.
+    ///
+    /// Nothing in the runtime starts a second attempt at the same work:
+    /// `fiddle_runtime::attempt` runs one, and a capability that failed
+    /// surfaces as `RunOutcome::Retryable` for the *caller* to repeat. Reading
+    /// this value means writing that retry loop, and `Retryable` is produced by
+    /// four sites of which only one is "the capability tried and lost", so the
+    /// loop needs a distinction the outcome type does not carry — see the ADR,
+    /// which prices the whole change rather than asserting it is small. The key
+    /// stays because a document written against the reference configuration
+    /// must load, and because the pair of bounds is only meaningful written
+    /// down together.
     #[serde(default = "default_max_capability_attempts")]
-    #[allow(dead_code, reason = "no consumer yet; see the note above")]
+    #[allow(dead_code, reason = "recorded as ADR 013; see the note above")]
     pub max_capability_attempts: usize,
 
     /// Per-completion token ceiling handed to the provider. 8192 is the
@@ -676,7 +682,10 @@ check = { program = "cargo", args = ["test", "--offline"] }
 
         let agent = cfg.agent.unwrap();
         assert_eq!(agent.max_turns, 40, "the inner bound Rig enforces");
-        assert_eq!(agent.max_capability_attempts, 3, "the outer bound");
+        assert_eq!(
+            agent.max_capability_attempts, 3,
+            "the outer bound, which is parsed and not consumed — ADR 013"
+        );
         assert_eq!(agent.max_tokens, 8192);
         assert_eq!(agent.max_changed_files, 16);
         assert_eq!(agent.deadline.as_duration(), Duration::from_secs(45 * 60));
@@ -697,9 +706,13 @@ check = { program = "cargo", args = ["test", "--offline"] }
         assert_eq!(workspace.cleanup, Cleanup::Always);
     }
 
-    /// The two bounds are independent knobs, not one value read twice: the
-    /// product of them is the worst case a deployment pays for, so a document
-    /// must be able to move either without moving the other.
+    /// The two bounds are independent knobs, not one value read twice — a
+    /// document must be able to move either without moving the other.
+    ///
+    /// A claim about the *schema*, and only that. The product of them would be
+    /// the worst case a deployment pays for if both were consumed; only
+    /// `max_turns` is, so today the worst case is one attempt's. See ADR 013,
+    /// and [`Agent::max_capability_attempts`] for why the key is here at all.
     #[test]
     fn the_two_attempt_bounds_are_set_separately() {
         let cfg: Config = toml::from_str(

@@ -177,8 +177,9 @@ fn a_dangling_symlink_out_of_the_workspace_is_refused() {
 #[test]
 fn an_ordinary_file_round_trips_and_a_new_one_can_be_created() {
     // The counterpart to the refusals: resolution has to still admit a path
-    // whose leaf does not exist yet, which is the branch the symlink check
-    // reaches through the parent.
+    // whose leaf does not exist yet — the walk stops at the last component that
+    // is there and joins the rest on, and that is the branch the dangling-link
+    // check above sits in front of.
     let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();
     let repo = fixture::trivial_repo(dir.path());
@@ -187,6 +188,77 @@ fn an_ordinary_file_round_trips_and_a_new_one_can_be_created() {
     assert_eq!(ws.read(&p("src/lib.rs")).unwrap(), "pub fn f() {}\n");
     ws.write(&p("src/new.rs"), "pub fn n() {}\n").unwrap();
     assert_eq!(ws.read(&p("src/new.rs")).unwrap(), "pub fn n() {}\n");
+}
+
+#[test]
+fn a_file_can_be_created_in_a_directory_that_does_not_exist_yet() {
+    // **A repair that cannot add a module is a repair capability with a hole in
+    // it.** Adding a file under a new directory is the ordinary shape of "extract
+    // this into its own module", and until resolution walked to the deepest
+    // *existing* ancestor it was not merely refused — it could not be expressed:
+    // `canonicalize` on an absent parent fails with ENOENT, which surfaced as
+    // `WorkspaceError::Io` and reached the model as "writing the file did not
+    // succeed", with nothing anywhere telling it that a directory was what was
+    // missing.
+    let _env = env_reader();
+    let (ws, _dir) = workspace();
+
+    ws.write(&p("src/newmod/deep/a.rs"), "pub fn a() {}\n")
+        .unwrap();
+
+    assert_eq!(
+        ws.read(&p("src/newmod/deep/a.rs")).unwrap(),
+        "pub fn a() {}\n"
+    );
+    assert!(
+        ws.root().join("src/newmod/deep").is_dir(),
+        "the intervening directories must exist inside the workspace"
+    );
+    assert_eq!(
+        ws.changed_files().unwrap(),
+        vec![p("src/newmod/deep/a.rs")],
+        "and the file must be evidence like any other created file"
+    );
+}
+
+#[test]
+fn no_directory_created_on_the_models_behalf_lands_outside_the_workspace() {
+    // The containment guarantee has to hold for the directories resolution
+    // creates, not only for the leaf it opens — a `create_dir_all` that followed
+    // a link would build a tree on the operator's filesystem before any
+    // containment check saw the leaf at all. Every rung is checked by the same
+    // rule: an existing component is canonicalized and must resolve inside, and
+    // only once a component is genuinely absent does the rest of the path become
+    // plain names joined onto a directory already proven inside.
+    let _env = env_reader();
+    let dir = tempfile::tempdir().unwrap();
+    let repo = fixture::trivial_repo(dir.path());
+    let outside = dir.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let ws = Workspace::create(&repo, &dir.path().join("ws"), &attempt(), token()).unwrap();
+
+    // A link to a real directory outside, and a link to nothing at all: the
+    // first would have `create_dir_all` build a tree out there, the second is
+    // the shape whose leaf check already existed and which must keep firing when
+    // it is an *interior* component rather than the leaf.
+    std::os::unix::fs::symlink(&outside, ws.root().join("elsewhere")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("not-yet"), ws.root().join("dangle")).unwrap();
+
+    for raw in ["elsewhere/newmod/a.rs", "dangle/newmod/a.rs"] {
+        let refusal = ws.write(&p(raw), "pub fn a() {}\n");
+        assert!(
+            matches!(refusal, Err(WorkspaceError::Escape { .. })),
+            "{raw} must be refused by containment, got {refusal:?}"
+        );
+    }
+    assert!(
+        !outside.join("newmod").exists(),
+        "a refused write must not have created a directory outside the workspace"
+    );
+    assert!(
+        !dir.path().join("not-yet").exists(),
+        "and must not have created the far end of a dangling link either"
+    );
 }
 
 #[test]
@@ -330,15 +402,19 @@ fn a_rename_reports_the_new_path_once_not_both() {
 
 #[test]
 fn a_file_created_in_a_new_directory_is_named_not_just_its_directory() {
-    // git's default untracked mode collapses a wholly-new directory into one
-    // entry, `?? src/newmod/` — a directory, which is not a changed *file* and
-    // hides how many there are. `-uall` is what makes the evidence name the files
-    // an agent actually wrote. The same flag also overrides a
-    // `status.showUntrackedFiles=no` in an operator's config, which would
-    // otherwise drop every created file from the evidence silently.
+    // `git status` collapses a wholly-new directory into one entry,
+    // `?? src/newmod/` — a directory, which is not a changed *file* and hides
+    // how many there are. Created files are therefore derived from
+    // `git ls-files --others` instead, which names files and never directories,
+    // and which cannot be silenced by a `status.showUntrackedFiles=no` in an
+    // operator's config either.
+    //
+    // The directories are the workspace's to make. This test used to call
+    // `create_dir_all` on the agent's behalf, which was the defect in
+    // miniature: what it was proving about the evidence was true, and the model
+    // could not have got into that position at all.
     let _env = env_reader();
     let (ws, _dir) = workspace();
-    std::fs::create_dir_all(ws.root().join("src/newmod")).unwrap();
     ws.write(&p("src/newmod/a.rs"), "pub fn a() {}\n").unwrap();
     ws.write(&p("src/newmod/b.rs"), "pub fn b() {}\n").unwrap();
 

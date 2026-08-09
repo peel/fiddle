@@ -291,52 +291,108 @@ impl Workspace {
     /// out is a symlink. `canonicalize` follows every link and containment is
     /// checked against the *result* — which is why this, not the parse, is the
     /// last word.
+    ///
+    /// # Why it walks to the deepest *existing* ancestor
+    ///
+    /// A path a model asks to write does not have to exist yet, and neither do
+    /// its directories: "extract this into its own module" is `src/newmod/a.rs`
+    /// over a tree with no `src/newmod`. Canonicalizing the immediate parent and
+    /// no further answered the one-level case only — a second missing level made
+    /// `canonicalize` fail with ENOENT, which is not an escape and not a
+    /// resolution, and surfaced to the model as `writing the file did not
+    /// succeed` with the cause behind a `#[source]` it never sees. Design §6.3
+    /// asks for the deepest existing ancestor, and that is what this walks to.
+    ///
+    /// # What each rung is checked by
+    ///
+    /// One component at a time, and the rule does not change with depth:
+    ///
+    /// - **Something is there** — only the filesystem knows what, so
+    ///   `canonicalize` decides and containment is checked against its answer.
+    ///   A component that resolves outside is refused whether it is the leaf or
+    ///   a directory halfway along.
+    /// - **Something is there and will not resolve** — a dangling symlink, the
+    ///   case that makes "it does not exist yet" unsafe to infer from a failed
+    ///   `canonicalize`: `std::fs::write` and `create_dir_all` both follow such
+    ///   a link and act at the far end, outside.
+    /// - **Nothing is there** — then nothing below it is either, and the walk
+    ///   stops. `resolved` at that moment is canonical and proven inside, and
+    ///   what is left of the path is plain names with no `..` among them, so
+    ///   joining them on cannot leave the tree.
+    ///
+    /// Nothing is created here. Resolution is asked for by
+    /// [`Workspace::read`] too, and a read that made directories would be a
+    /// read that changed the world; creation belongs to [`Workspace::write`],
+    /// which re-proves containment after making them.
     pub fn resolve(&self, path: &WorkspacePath) -> Result<PathBuf, WorkspaceError> {
         let escape = |reason: &str| WorkspaceError::Escape {
             path: path.as_str().to_string(),
             reason: reason.to_string(),
         };
-        let root = self
-            .root
-            .canonicalize()
-            .map_err(|source| WorkspaceError::Io {
-                path: self.root.clone(),
-                source,
-            })?;
-        let joined = root.join(path.as_str());
-        let resolved = match joined.canonicalize() {
-            Ok(resolved) => resolved,
-            // The leaf may legitimately not exist yet (a create). Resolve its
-            // parent — which must itself be inside — and re-attach the name.
-            Err(_) => {
-                // Unless something *is* there and merely would not resolve. A
-                // dangling symlink is the case that matters: canonicalize fails,
-                // yet `std::fs::write` would happily follow it and create the
-                // file at the far end, outside. Refusing here is what stops the
-                // not-yet-exists branch from becoming the escape hatch.
-                if joined.symlink_metadata().is_ok() {
-                    return Err(escape("the path is a link that does not resolve"));
+        let root = self.canonical_root()?;
+
+        let mut resolved = root.clone();
+        let mut components = path.as_str().split('/').peekable();
+        while let Some(component) = components.next() {
+            let leaf = components.peek().is_none();
+            let candidate = resolved.join(component);
+            match candidate.symlink_metadata() {
+                Ok(_) => match candidate.canonicalize() {
+                    Ok(real) if real.starts_with(&root) => resolved = real,
+                    // The two phrases the operator reading a refusal had before
+                    // this walked further than one level, kept apart for the
+                    // same reason: a leaf that points out and a directory that
+                    // points out are different mistakes to go looking for.
+                    Ok(_) if leaf => return Err(escape("the path resolves outside the workspace")),
+                    Ok(_) => {
+                        return Err(escape(
+                            "the parent directory resolves outside the workspace",
+                        ))
+                    }
+                    Err(_) => return Err(escape("the path is a link that does not resolve")),
+                },
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                    resolved.push(component);
+                    break;
                 }
-                let parent = joined
-                    .parent()
-                    .unwrap_or(&root)
-                    .canonicalize()
-                    .map_err(|source| WorkspaceError::Io {
-                        path: joined.clone(),
+                // Not a containment question: the path is legal and the
+                // filesystem would not answer — an unreadable directory, or a
+                // component under something that is not a directory at all.
+                Err(source) => {
+                    return Err(WorkspaceError::Io {
+                        path: candidate,
                         source,
-                    })?;
-                if !parent.starts_with(&root) {
-                    return Err(escape(
-                        "the parent directory resolves outside the workspace",
-                    ));
+                    })
                 }
-                parent.join(joined.file_name().unwrap_or_default())
             }
-        };
+        }
+        for component in components {
+            resolved.push(component);
+        }
+
+        // The invariant the walk maintains, restated as the gate it has always
+        // been: nothing leaves this function without having been compared
+        // against the canonical root.
         if !resolved.starts_with(&root) {
             return Err(escape("the path resolves outside the workspace"));
         }
         Ok(resolved)
+    }
+
+    /// This workspace's root with every link followed, the frame containment is
+    /// judged in.
+    ///
+    /// Taken fresh rather than cached because the comparison is only meaningful
+    /// against the tree as it is now — and because a macOS temp directory is
+    /// reached through a symlink, so the stored root and its canonical form
+    /// routinely differ.
+    fn canonical_root(&self) -> Result<PathBuf, WorkspaceError> {
+        self.root
+            .canonicalize()
+            .map_err(|source| WorkspaceError::Io {
+                path: self.root.clone(),
+                source,
+            })
     }
 
     /// Read a file of the project from inside the workspace.
@@ -378,18 +434,73 @@ impl Workspace {
         })
     }
 
-    /// Write a file inside the workspace.
+    /// Write a file inside the workspace, creating the directories it needs.
     ///
     /// [`Workspace::resolve`] runs first and its failure returns, so a path that
-    /// resolves outside is refused *before* any file is opened. That ordering is
-    /// the whole protection: `std::fs::write` follows a symlink and writes
-    /// through it, so a check made afterwards would be a check made too late.
+    /// resolves outside is refused *before* any file is opened or any directory
+    /// is made. That ordering is the whole protection: `std::fs::write` follows
+    /// a symlink and writes through it, so a check made afterwards would be a
+    /// check made too late.
+    ///
+    /// The directories are made because otherwise the resolution above buys
+    /// nothing: `std::fs::write` creates no parent, so a model could name
+    /// `src/newmod/a.rs` correctly and still be told only that the write did not
+    /// succeed. See [`Workspace::resolve`] for why the parent is worth resolving
+    /// at all.
+    ///
+    /// # The one thing making a directory adds, and what answers it
+    ///
+    /// `create_dir_all` follows links like everything else, so a directory it
+    /// made could in principle land outside — which would put a tree on the
+    /// operator's filesystem before the leaf's own check ever ran. Two things
+    /// keep that shut. Every existing component was canonicalized and proven
+    /// inside on the way down, and the components below the first missing one
+    /// are plain names; and the parent is canonicalized *again* after creation,
+    /// with the leaf rebuilt from that proven path rather than from the one
+    /// resolution predicted. So a directory the check would refuse is refused
+    /// before anything is written through it.
+    ///
+    /// What that does not close is a race: nothing stops another process from
+    /// replacing a component with a link between the check and the write. It is
+    /// the same window `std::fs::write` has always had here and is not widened
+    /// by this — inside a per-attempt worktree the only other writer is a
+    /// `run_check` program the operator configured, which is arbitrary code they
+    /// asked to run.
     pub fn write(&self, path: &WorkspacePath, contents: &str) -> Result<(), WorkspaceError> {
-        let resolved = self.resolve(path)?;
+        let resolved = self.prepared(path, self.resolve(path)?)?;
         std::fs::write(&resolved, contents).map_err(|source| WorkspaceError::Io {
             path: resolved,
             source,
         })
+    }
+
+    /// Make `resolved`'s directories exist, and re-prove they are inside.
+    ///
+    /// Returns the leaf rebuilt on the canonicalized parent, so the path handed
+    /// to `std::fs::write` is one containment has just been checked against
+    /// rather than one predicted before the directories existed.
+    fn prepared(&self, path: &WorkspacePath, resolved: PathBuf) -> Result<PathBuf, WorkspaceError> {
+        let (Some(parent), Some(leaf)) = (resolved.parent(), resolved.file_name()) else {
+            // `WorkspacePath` guarantees at least one component, so a resolution
+            // always has both. Nothing to prepare if that ever stops being true.
+            return Ok(resolved);
+        };
+        std::fs::create_dir_all(parent).map_err(|source| WorkspaceError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+        let root = self.canonical_root()?;
+        let parent = parent.canonicalize().map_err(|source| WorkspaceError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+        if !parent.starts_with(&root) {
+            return Err(WorkspaceError::Escape {
+                path: path.as_str().to_string(),
+                reason: "the parent directory resolves outside the workspace".to_string(),
+            });
+        }
+        Ok(parent.join(leaf))
     }
 
     /// Remove the worktree and the scratch home, reporting whether it could.

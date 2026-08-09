@@ -44,10 +44,10 @@
 //! `--nocapture` because the interesting half of this test is the observation
 //! block it prints, and cargo swallows stdout for a test that passes.
 //!
-//! `FIDDLE_TIER1_MODEL` overrides the model; `claude-haiku-4-5` is the default
-//! because it is Claude-family — the most exercised translation path on a
-//! Claude-centric gateway — and cheap enough that running it on every
-//! development pass costs nothing worth measuring.
+//! `FIDDLE_TIER1_MODEL` overrides the model. The default is
+//! [`DEFAULT_MODEL`], chosen from what this gateway was measured to do rather
+//! than from what family a model belongs to — the table and the retraction of
+//! the Claude-family rationale are recorded there and in ADR 012.
 //!
 //! # The fixture, and why it is copied rather than shared
 //!
