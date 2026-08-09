@@ -384,3 +384,18 @@ of calling it the line that makes the tool loop happen.
 **What this does not close.** The underlying gap in each case is still open and still recorded above:
 no isolated per-mode measurement across the model table, and no typed signal for a spend-cap refusal.
 Only the documents lying about them are fixed.
+
+### 2026-08-09 — The develop loop re-derives the same orientation once per bean
+Measured across M2's nine completed beans: orientation averages 5.7 min of a 23.4 min bean and barely varies with bean size — one bean spent 8.0 min orienting to do 2.5 min of work. Every fresh implementer reads the same prior-task sources, the same epic `## Contracts`, and the same accumulated antipattern history, and re-derives the same understanding of them.
+
+The fresh context is deliberate and should not be traded away: `skills/develop-loop` dispatches a new implementer per bean precisely so that a previous bean's rationalisations do not carry forward, and the milestone's best catches — a NUL identity collision, a criterion naming a deleted API path, three separately self-caught vacuous tests — came from implementers reasoning from sources rather than from a summary. So "reuse the agent" is the wrong fix.
+
+What is worth trying instead, in rough order of expected value:
+- Have the *lead* distil each completed bean into the findings the next implementer needs, and hand those forward in the prompt, rather than pointing at source files and letting each one re-derive them. M2 did this ad hoc for antipatterns and it visibly worked — Task 6 caught the same vacuous-test hazard Task 5 had found, one bean later, because it was told about it.
+- Put the durable half in the epic's `## Contracts` section, which already exists for shared type names and is already read by every bean. It currently carries types and constraints but not findings.
+- Measure whether orientation shrinks when a bean's prompt names *what changed since the last bean* rather than *what exists*.
+
+Two process wastes found alongside it, both fixed the day this was written: named regression lanes were being re-run individually after a clean full-workspace run had already printed the same counts, and each verification issued ~18 separate `nix develop -c` entries. `scripts/gate.sh` now does the whole gate in one entry and prints the per-binary counts to parse.
+
+Origin: performance investigation during M2 implementation (epic fiddle-srrw), from nine implementer transcripts
+Tags: #debt #optimization #orchestrate
