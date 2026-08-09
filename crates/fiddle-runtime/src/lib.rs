@@ -50,8 +50,8 @@ pub mod workspace;
 
 pub use agent::{AgentBudget, ToolHost, ToolReceipt, ToolReceipts};
 pub use capability::{
-    Capability, CapabilityError, ExecutionGrant, FixtureRepair, RepairConfig, StubMark,
-    CAPABILITIES,
+    Capability, CapabilityError, ExecutionGrant, FixtureRepair, PublishChange, PublishConfig,
+    RepairConfig, StubMark, CAPABILITIES,
 };
 // `mint_attempt_id` is deliberately *not* re-exported beside these, for the
 // same reason publication is not re-exported beside [`attempt`]: minting an id

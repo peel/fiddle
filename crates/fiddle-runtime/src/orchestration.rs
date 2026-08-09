@@ -105,6 +105,30 @@ impl RunContext<'_> {
         observe(self.work_items, self.changes, self.work_id)
     }
 
+    /// The same, plus whatever the capability saw of a forge.
+    ///
+    /// Two ports and one capability, rather than three ports, and the asymmetry
+    /// is the point: the ports are local and are read here, while a review and a
+    /// verification exist only if something reached a forge — and the only
+    /// participant in a run that can do that is the capability. Reading them
+    /// here instead would put a credentialled call inside [`observe`], which
+    /// `inspect` shares and which is credential-free for every value of
+    /// `--capability`.
+    ///
+    /// A capability that reached no forge answers `None` and the view keeps the
+    /// `NotApplicable` pair [`WorkStateView::without_publication`] gives it, so
+    /// M0's and M1's bundles are unchanged.
+    ///
+    /// Called on both arms of the execution, so a run that published a branch
+    /// and then failed still publishes what it observed. The two halves are then
+    /// from slightly different moments — the ports read now, the forge read
+    /// during the execution — which is the same arrangement
+    /// [`Capability::receipts`] already has, and the honest one: the alternative
+    /// is a bundle that says nothing about a branch that really is out there.
+    fn observe_with(&self, capability: &dyn Capability) -> WorkStateView {
+        with_publication(self.observe(), capability)
+    }
+
     /// The marker a satisfied change set must carry for this invocation.
     fn expected_marker(&self) -> String {
         correlation_key(self.project, self.invocation_ref)
@@ -320,8 +344,9 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             // has nothing to say, which is what keeps M0's bundles unchanged.
             let observed = ctx.capability.receipts();
             // Re-observe and re-derive: the report must describe the state the
-            // run left behind, not the action it chose on entry.
-            let after = ctx.observe();
+            // run left behind, not the action it chose on entry — including
+            // what it left behind on a forge, which only the capability saw.
+            let after = ctx.observe_with(ctx.capability);
             let next_action = derive_next(&after, &marker, ctx.capability.id());
             RunReport {
                 // Derived from the re-derivation, never asserted to agree with
@@ -374,7 +399,12 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
                     reason,
                     observed,
                 )],
-                observations: view,
+                // The entry view, plus whatever the capability did reach before
+                // it failed. A run that published a branch and then lost its
+                // pull request has still put a commit somewhere a reader can go
+                // and look at, and a bundle that said nothing about it would be
+                // the same gap `receipts` exists to have closed.
+                observations: with_publication(view, ctx.capability),
                 evidence_failure: None,
             }
         }
@@ -543,6 +573,21 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
                 evidence_failure: Some(failure),
             }
         }
+    }
+}
+
+/// `view`, with the review and the verification the capability observed folded
+/// in.
+///
+/// Written once rather than at each of its call sites, so the executing arm and
+/// the failing arm cannot come to disagree about whether a capability's
+/// observation of a forge is worth publishing. It is, on both.
+fn with_publication(view: WorkStateView, capability: &dyn Capability) -> WorkStateView {
+    match capability.publication() {
+        Some(publication) => {
+            WorkStateView::with_publication(view.work_item, view.changes, publication)
+        }
+        None => view,
     }
 }
 

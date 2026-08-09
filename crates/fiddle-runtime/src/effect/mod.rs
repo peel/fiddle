@@ -37,7 +37,8 @@ use crate::git::GitCli;
 use crate::github::{GhCli, GhError};
 use fiddle_core::{
     combine, effect_id, payload_hash, CapabilityId, DeploymentRule, EffectId, EffectKind,
-    HumanDecisionRequirement, PayloadHash, PolicyDecision, ProposedEffect,
+    HumanDecisionRequirement, Observation, PayloadHash, PolicyDecision, ProposedEffect,
+    VerificationState,
 };
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
@@ -301,6 +302,67 @@ impl<'a> Executor<'a> {
     pub fn observed_by(mut self, trace: &'a dyn EffectTrace) -> Self {
         self.trace = trace;
         self
+    }
+
+    /// The capability this executor proposes on behalf of.
+    ///
+    /// Readable so a caller can check the binding it was handed rather than
+    /// discover the mismatch at step 1; step 1 is still what refuses.
+    pub fn capability(&self) -> CapabilityId {
+        self.capability
+    }
+
+    /// The project half of this run's identity.
+    ///
+    /// # Why this is exposed at all
+    ///
+    /// Because an operation whose *lookup* happens at step 3 — before step 6
+    /// mints the envelope — has to derive the same identity the executor will,
+    /// and therefore has to be handed the same pair.
+    /// [`EnsureCheckRequested::new`](crate::github::EnsureCheckRequested::new)
+    /// is that operation: the dispatched run is *named* by the identity it
+    /// computes and *found* by the identity it computes, so a caller that built
+    /// the operation from one pair and the executor from another would name a
+    /// run by one identity and look it up by the other. Every attempt would then
+    /// find nothing and dispatch again — an unbounded supply of workflow runs,
+    /// which is the failure this milestone exists to prevent.
+    ///
+    /// [`EnsureCheckRequested::apply`](crate::effect::IntegrationOperation::apply)
+    /// refuses before the request when the two disagree, and that guard stays
+    /// the backstop. This accessor is the other half: with the executor's own
+    /// pair readable, a caller has no reason to hold a second copy, so the two
+    /// cannot drift.
+    pub fn project(&self) -> &str {
+        &self.project
+    }
+
+    /// The invocation reference half of this run's identity. See
+    /// [`Executor::project`] for why it is readable.
+    pub fn invocation_ref(&self) -> &str {
+        &self.invocation_ref
+    }
+
+    /// Read what CI says about one exact head.
+    ///
+    /// A *read*, so it mints no envelope, takes no policy decision and reaches
+    /// [`IntegrationOperation`] not at all — there is nothing to authorize about
+    /// looking. It lives on the executor anyway, and that placement is the
+    /// point: the executor is a capability's whole window on the outside world.
+    /// A capability that had to reach [`EffectContext::gh`] itself to ask this
+    /// question would be holding the credential, which is the arrangement this
+    /// type exists to prevent.
+    ///
+    /// Fails closed the way [`crate::github::observe_checks`] does — an
+    /// unreadable CI is [`Observation::Unavailable`] and never an empty
+    /// [`VerificationState`], which would read as "nothing is failing".
+    pub async fn observe_checks(
+        &self,
+        repo: &str,
+        head_sha: &str,
+        required: &[String],
+    ) -> Observation<VerificationState> {
+        crate::github::observe_checks(&self.ctx.gh, repo, head_sha, required, &self.ctx.cancel)
+            .await
     }
 
     /// Walk the authorization order for one proposed effect.

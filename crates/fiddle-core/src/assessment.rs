@@ -30,6 +30,14 @@ pub const STUB_MARK: CapabilityId = CapabilityId("stub_mark");
 /// attempt.
 pub const FIXTURE_REPAIR: CapabilityId = CapabilityId("fixture_repair");
 
+/// The capability M2 adds: publish a change through authenticated effects.
+///
+/// Here beside the other two rather than in the runtime that executes it, for
+/// the reason the other two are: an id is a *name*, and naming something reaches
+/// nothing outside the process. It is what `derive_next` is told this run is
+/// about, so the pure core has to be able to say it.
+pub const PUBLISH_CHANGE: CapabilityId = CapabilityId("publish_change");
+
 /// What fiddle concludes about the capability this invocation is about.
 ///
 /// Serialized externally tagged, so the variant name is the observable

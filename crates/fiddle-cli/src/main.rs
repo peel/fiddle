@@ -124,6 +124,9 @@ enum Selection {
     /// One bounded agent attempt inside an ephemeral worktree, judged by the
     /// configured check.
     Repair,
+    /// One change published to a forge: a branch, a pull request and a requested
+    /// check, each proposed through the effect executor.
+    Publish,
 }
 
 impl Selection {
@@ -132,6 +135,7 @@ impl Selection {
         match self {
             Selection::Mark => fiddle_core::STUB_MARK,
             Selection::Repair => fiddle_core::FIXTURE_REPAIR,
+            Selection::Publish => fiddle_core::PUBLISH_CHANGE,
         }
     }
 
@@ -148,6 +152,8 @@ impl Selection {
             Ok(Selection::Mark)
         } else if requested == fiddle_core::FIXTURE_REPAIR.0 {
             Ok(Selection::Repair)
+        } else if requested == fiddle_core::PUBLISH_CHANGE.0 {
+            Ok(Selection::Publish)
         } else {
             Err(UnknownCapability {
                 requested: requested.to_string(),
@@ -430,6 +436,21 @@ fn build_capability(
             &config.stub.root,
             &config.project.name,
         ))),
+        // The capability exists, is registered, and is reached by
+        // `--capability publish_change` on both commands — what this document
+        // cannot yet say is *which* repository to publish to, because the
+        // `[github]` table is the next task's. Refused the way any other
+        // undescribed deployment is refused, on the same exit row: the document
+        // is valid and simply does not describe the deployment the invocation
+        // asked for.
+        //
+        // This arm is where `PublishChange` is assembled once that table lands.
+        // It cannot be assembled *here*, in this function's present shape: the
+        // capability borrows an `Executor`, which borrows the `EffectContext`
+        // holding the credential — and that is the arrangement rather than an
+        // inconvenience, because an owned context is a held credential. The
+        // context is built by the caller and the capability borrows it there.
+        Selection::Publish => Err(missing("[github]").into()),
         Selection::Repair => {
             let agent = config.agent.as_ref().ok_or_else(|| missing("[agent]"))?;
             let workspace = config

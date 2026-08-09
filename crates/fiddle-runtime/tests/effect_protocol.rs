@@ -1043,3 +1043,688 @@ async fn a_push_whose_answer_was_lost_with_no_ref_behind_it_stays_unresolved() {
     );
     assert_eq!(remote.applies(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// The capability: where eight tasks of parts become one thing a run can do
+// ---------------------------------------------------------------------------
+//
+// Everything above asks what the executor does with *one* effect. This half asks
+// what a capability does with three of them, and it is the first place in the
+// milestone with a product caller: `EnsureBranchPublished`, `EnsurePullRequest`,
+// `EnsureCheckRequested` and `observe_checks` were all exercised only by tests
+// until this section, and `ReviewState` was constructed nowhere at all.
+//
+// It runs the whole attempt — `fiddle_runtime::attempt`, not `PublishChange`
+// alone — because four of the seven things this task has to be true about are
+// properties of the *published bundle*, and a test that called the capability
+// and inspected its return value would be asserting them of a value nobody
+// publishes. Still offline and still credential-free: the remote is a bare
+// repository on a path, the `gh` is the scripted one, and a path remote
+// authenticates nobody.
+
+/// The owner the head branch lives under, which is [`REPO`]'s own owner here.
+const HEAD_OWNER: &str = "o";
+
+/// The branch a publication is proposed into.
+const BASE: &str = "main";
+
+/// The workflow a check is requested from, spelled as the API path spells it.
+const WORKFLOW: &str = "fiddle-check.yml";
+
+/// The check a reader of this run's verification requires by name.
+const REQUIRED_CHECK: &str = "build";
+
+/// A deployment that refuses exactly one kind and allows the rest.
+///
+/// One kind rather than all of them, because the property under test is about
+/// *ordering*: a policy that denied everything would stop the sequence at its
+/// first step and say nothing about whether a refusal half way through stops
+/// what comes after it.
+struct Denying(EffectKind);
+
+impl fiddle_runtime::effect::DeploymentPolicy for Denying {
+    fn rule_for(&self, kind: EffectKind) -> DeploymentRule {
+        match kind == self.0 {
+            true => DeploymentRule::Deny,
+            false => DeploymentRule::Allow,
+        }
+    }
+}
+
+/// Everything the ports and the publication need that the remote does not hold:
+/// the fixture the work item is read from and the directory bundles land in.
+struct Local {
+    dir: TempDir,
+}
+
+impl Local {
+    /// A fixture holding this invocation's work item and no change set.
+    fn new(work_id: &str) -> Self {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        std::fs::create_dir_all(dir.path().join("changes")).unwrap();
+        std::fs::write(
+            dir.path().join(format!("work/{work_id}.json")),
+            format!(r#"{{"id":"{work_id}","status":"open"}}"#),
+        )
+        .unwrap();
+        Self { dir }
+    }
+
+    fn root(&self) -> &Path {
+        self.dir.path()
+    }
+
+    fn reports(&self) -> PathBuf {
+        self.dir.path().join("reports")
+    }
+
+    /// Remove every local artifact a previous attempt left: the change set, the
+    /// bundles, the journal.
+    ///
+    /// What survives is the *world*, which is the only thing a fresh process is
+    /// entitled to recognise its own work from. A retry that needed any of this
+    /// would be remembering rather than recomputing, and would duplicate every
+    /// effect the moment a machine was replaced.
+    fn forget(&self) {
+        let _ = std::fs::remove_dir_all(self.dir.path().join("changes"));
+        let _ = std::fs::remove_dir_all(self.reports());
+        std::fs::create_dir_all(self.dir.path().join("changes")).unwrap();
+    }
+}
+
+/// What the scripted world holds and what it was asked for, read back out of the
+/// stub's own files.
+///
+/// Read from the world the requests built rather than from anything the code
+/// under test returned, so an assertion about how many objects exist is an
+/// assertion about the world.
+impl Remote {
+    /// Seed one check run at one exact head, before the run under test starts.
+    fn check(&self, name: &str, status: &str, conclusion: Option<&str>, head_sha: &str) {
+        let path = self.dir.path().join("checks_seed");
+        let mut seed: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_default())
+                .unwrap_or_default();
+        seed.push(serde_json::json!({
+            "name": name,
+            "status": status,
+            "conclusion": conclusion,
+            "head_sha": head_sha,
+        }));
+        std::fs::write(&path, serde_json::Value::Array(seed).to_string()).unwrap();
+    }
+
+    /// Every request the scripted `gh` recorded, in arrival order.
+    fn requests(&self) -> Vec<serde_json::Value> {
+        let dir = self.dir.path().join("requests");
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map(|entries| entries.filter_map(Result::ok).map(|e| e.path()).collect())
+            .unwrap_or_default();
+        files.sort();
+        files
+            .iter()
+            .filter_map(|file| serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok())
+            .collect()
+    }
+
+    /// How many mutations of one shape were *asked for*, landed or not.
+    ///
+    /// Counted from the requests rather than from the objects, because that is
+    /// the number a sequence that failed to stop would move and the object count
+    /// might not.
+    fn posts_to(&self, suffix: &str) -> usize {
+        self.requests()
+            .iter()
+            .filter(|request| {
+                let argv: Vec<String> = request["argv"]
+                    .as_array()
+                    .map(|argv| {
+                        argv.iter()
+                            .filter_map(|a| a.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                argv.iter().any(|a| a == "POST")
+                    && argv.iter().any(|a| a.trim_end().ends_with(suffix))
+            })
+            .count()
+    }
+
+    fn pull_request_creates(&self) -> usize {
+        self.posts_to("/pulls")
+    }
+
+    fn dispatch_requests(&self) -> usize {
+        self.posts_to("/dispatches")
+    }
+
+    /// Every mutation that actually changed the world, of one shape.
+    fn landed(&self, needle: &str) -> usize {
+        std::fs::read_to_string(self.dir.path().join("world"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| {
+                serde_json::from_str::<serde_json::Value>(line)
+                    .ok()
+                    .and_then(|w| w["key"].as_str().map(|key| key.contains(needle)))
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+}
+
+/// The branch, the pull request target and the check target this run's identity
+/// produces, recomputed the way a fresh process would.
+fn publish_targets() -> (String, String, String) {
+    let branch = branch_name(PROJECT, INVOCATION_REF);
+    let pull = fiddle_runtime::github::pull_request_target(REPO, HEAD_OWNER, &branch, BASE);
+    let check = fiddle_runtime::github::check_request_target(REPO, WORKFLOW, &branch);
+    (branch, pull, check)
+}
+
+/// The configuration every publish scenario below runs under.
+fn publish_config(remote: &Remote, local: &Local) -> fiddle_runtime::PublishConfig {
+    fiddle_runtime::PublishConfig {
+        repo: REPO.to_string(),
+        head_owner: HEAD_OWNER.to_string(),
+        base: BASE.to_string(),
+        head_sha: remote.head(),
+        title: "publish the work".to_string(),
+        body: "opened by fiddle".to_string(),
+        workflow: WORKFLOW.to_string(),
+        required_checks: vec![REQUIRED_CHECK.to_string()],
+        stub_root: local.root().to_path_buf(),
+        project: PROJECT.to_string(),
+    }
+}
+
+/// One whole attempt over the publish capability, and the bundle it published.
+///
+/// The bundle rather than the capability's return value: `capability_executions`,
+/// `progress`, `observations` and the evidence under them are all published
+/// documents, and a test that read them off an in-memory report would be
+/// asserting about a value no consumer ever sees.
+async fn publish_attempt(
+    remote: &Remote,
+    local: &Local,
+    deployment: &dyn fiddle_runtime::effect::DeploymentPolicy,
+) -> serde_json::Value {
+    let ctx = remote.context();
+    let reference: fiddle_core::InvocationRef = INVOCATION_REF.parse().unwrap();
+    let executor = Executor::new(
+        fiddle_core::PUBLISH_CHANGE,
+        PROJECT.to_string(),
+        INVOCATION_REF.to_string(),
+        deployment,
+        &ctx,
+    )
+    .observed_by(remote);
+    let capability = fiddle_runtime::PublishChange::new(executor, publish_config(remote, local));
+
+    let work_items = fiddle_runtime::StubWorkItemPort::new(local.root());
+    let changes = fiddle_runtime::StubChangePort::new(local.root());
+    let record = fiddle_runtime::attempt(&fiddle_runtime::AttemptContext {
+        project: PROJECT,
+        reference: &reference,
+        mode: fiddle_core::Mode::Unattended,
+        build: fiddle_core::FiddleBuild::new("0.1.0", fiddle_core::UNKNOWN_REVISION),
+        report_dir: &local.reports(),
+        work_items: &work_items,
+        changes: &changes,
+        capability: &capability,
+    })
+    .await;
+    serde_json::to_value(&record.bundle).unwrap()
+}
+
+/// A world in which all three effects can succeed, with the required check
+/// already green at the head this run is about to publish.
+///
+/// The check is seeded at the *worktree's* head, which is the commit the push
+/// will put on the branch — so a capability that asked CI about any other head
+/// would get an answer with the requirement missing, and the assertion below
+/// would fail rather than quietly pass.
+fn a_publishable_world() -> (Remote, Local) {
+    let remote = Remote::empty();
+    let local = Local::new("w-1");
+    remote.check(REQUIRED_CHECK, "completed", Some("success"), &remote.head());
+    (remote, local)
+}
+
+/// The evidence one progress entry carries, as strings.
+fn evidence_of(bundle: &serde_json::Value) -> Vec<String> {
+    bundle["progress"][0]["evidence"]
+        .as_array()
+        .expect("a run that executed publishes one progress entry")
+        .iter()
+        .map(|entry| entry.as_str().unwrap().to_string())
+        .collect()
+}
+
+/// One capability per run, so the bundle shape every consumer has seen is
+/// unchanged. ADR 013 priced the alternative and deferred it: three effects are
+/// three receipts *inside* one execution, never three executions.
+#[tokio::test]
+async fn a_publish_run_records_exactly_one_capability_execution() {
+    let (remote, local) = a_publishable_world();
+    let bundle = publish_attempt(&remote, &local, &Deployment(DeploymentRule::Allow)).await;
+
+    let executions = bundle["capability_executions"].as_array().unwrap();
+    assert_eq!(executions.len(), 1, "{}", bundle["capability_executions"]);
+    assert_eq!(executions[0]["capability_id"], "publish_change");
+    assert_eq!(executions[0]["status"], "completed");
+    assert_eq!(
+        bundle["progress"].as_array().unwrap().len(),
+        1,
+        "one execution is one progress entry, which is the shape M0 published"
+    );
+    // The three effects really happened, so the single execution above is one
+    // execution *of three effects* rather than one that did nothing.
+    assert_eq!(
+        remote.branches(),
+        vec![branch_name(PROJECT, INVOCATION_REF)]
+    );
+    assert_eq!(remote.pull_request_creates(), 1);
+    assert_eq!(remote.dispatch_requests(), 1);
+}
+
+/// Its progress stage is its own vocabulary, as M0's `mark` and M1's `repair`
+/// are. There is no neutral stage name, which is why `Capability::stage` has no
+/// default and why a third capability had to say its own word.
+#[tokio::test]
+async fn progress_is_labelled_in_this_capabilitys_own_vocabulary() {
+    let (remote, local) = a_publishable_world();
+    let bundle = publish_attempt(&remote, &local, &Deployment(DeploymentRule::Allow)).await;
+
+    assert_eq!(bundle["progress"][0]["stage"], "publish");
+    assert_eq!(bundle["progress"][0]["capability_id"], "publish_change");
+    assert_eq!(bundle["progress"][0]["status"], "completed");
+}
+
+/// The three effects are proposed in order and each one's receipt is evidence a
+/// reader can act on: which effect it was, the identity the object was created
+/// under, the external reference to open, and the postcondition that was
+/// observed to hold.
+///
+/// The identities are recomputed here from the canonical inputs rather than
+/// copied out of the bundle, so this cannot pass on a capability that invented
+/// three ids of its own — which is the failure mode that would make a fresh
+/// process unable to recognise its own work.
+#[tokio::test]
+async fn all_three_receipts_reach_the_published_bundle() {
+    let (remote, local) = a_publishable_world();
+    let bundle = publish_attempt(&remote, &local, &Deployment(DeploymentRule::Allow)).await;
+
+    let (branch, pull, check) = publish_targets();
+    let sha = remote.branch_sha(&branch);
+    let evidence = evidence_of(&bundle);
+
+    assert_eq!(
+        evidence.len(),
+        4,
+        "the reference the capability earned, then one per effect: {evidence:?}"
+    );
+    assert_eq!(evidence[0], format!("publish:{REPO}/pull/7"));
+
+    let kinds: Vec<&str> = evidence[1..]
+        .iter()
+        .map(|entry| entry.split(':').nth(1).unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "ensure_branch_published",
+            "ensure_pull_request",
+            "ensure_check_requested"
+        ],
+        "{evidence:?}"
+    );
+
+    let identity = |kind, target: &str| {
+        effect_id(PROJECT, INVOCATION_REF, kind, target)
+            .0
+            .to_string()
+    };
+    assert_eq!(
+        evidence[1],
+        format!(
+            "effect:ensure_branch_published:{}:committed:{sha}:refs/heads/{branch} points at {sha}",
+            identity(
+                EffectKind::EnsureBranchPublished,
+                &fiddle_runtime::github::branch_target(&branch)
+            )
+        )
+    );
+    assert!(
+        evidence[2].starts_with(&format!(
+            "effect:ensure_pull_request:{}:committed:7:pull request #7 from {HEAD_OWNER}:{branch} \
+             into {BASE}",
+            identity(EffectKind::EnsurePullRequest, &pull)
+        )),
+        "{}",
+        evidence[2]
+    );
+    assert!(
+        evidence[3].starts_with(&format!(
+            "effect:ensure_check_requested:{}:committed:4200:workflow run 4200 named",
+            identity(EffectKind::EnsureCheckRequested, &check)
+        )),
+        "{}",
+        evidence[3]
+    );
+    // The same list is on the execution as well as on the progress entry, so a
+    // consumer reading either finds the receipts.
+    let on_execution: Vec<String> = bundle["capability_executions"][0]["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(on_execution, evidence);
+}
+
+/// A capability cannot reach the credential; it reaches an executor already
+/// bound to its own identity, and the executor holds the client.
+///
+/// A source-level assertion because that is the level the property is at: the
+/// type system cannot express "names no secret", and the alternative — asserting
+/// that no token *reached* GitHub — would pass on a capability that held one and
+/// happened not to use it this time.
+#[test]
+fn the_capability_never_receives_a_raw_token() {
+    let source = include_str!("../src/capability/publish.rs");
+    for named in ["GH_TOKEN", "FIDDLE_GITHUB_TOKEN", "token"] {
+        assert!(
+            !source.contains(named),
+            "the capability names no credential, and it names `{named}`"
+        );
+    }
+    for constructed in ["GhCli", "GitCli", "EffectContext::new"] {
+        assert!(
+            !source.contains(constructed),
+            "the capability constructs no client, and it constructs `{constructed}`"
+        );
+    }
+}
+
+/// Registration: a build that can execute a capability names it in the one list
+/// the CLI validates `--capability` against, so `run` and `inspect` both reach
+/// it. `every_registered_capability_can_be_selected` in the binary is the other
+/// half — it fails to build if a registered id has no selection.
+#[test]
+fn the_registry_holds_three_capabilities() {
+    let ids: Vec<&str> = fiddle_runtime::CAPABILITIES
+        .iter()
+        .map(|capability| capability.0)
+        .collect();
+    assert_eq!(ids, ["stub_mark", "fixture_repair", "publish_change"]);
+}
+
+/// The two observations Task 8 added are filled by the run that can see them.
+/// A type defined and filled by nobody would be the same defect as a
+/// configuration key with no consumer.
+///
+/// Every value asserted here is checked against the world rather than against
+/// another field of the same bundle: the pull request number is the one the
+/// scripted forge really assigned, and the head is the sha the bare repository
+/// really holds. The required check is green only because it was seeded at that
+/// exact head — a capability that asked CI about any other commit would find the
+/// requirement missing here rather than passing quietly.
+#[tokio::test]
+async fn a_publish_run_populates_the_review_and_verification_observations() {
+    let (remote, local) = a_publishable_world();
+    let bundle = publish_attempt(&remote, &local, &Deployment(DeploymentRule::Allow)).await;
+
+    let (branch, _, _) = publish_targets();
+    let sha = remote.branch_sha(&branch);
+
+    let review = &bundle["observations"]["review"]["available"];
+    assert!(review.is_object(), "{}", bundle["observations"]["review"]);
+    assert_eq!(review["value"]["branch"], branch);
+    assert_eq!(review["value"]["pull_request"], 7);
+    assert_eq!(review["value"]["state"], "open");
+    assert_eq!(review["revision"], sha);
+
+    let verification = &bundle["observations"]["verification"]["available"];
+    assert!(
+        verification.is_object(),
+        "{}",
+        bundle["observations"]["verification"]
+    );
+    assert_eq!(verification["value"]["head_sha"], sha);
+    assert_eq!(
+        verification["value"]["required_missing"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "the required check was seeded at this exact head: {verification}"
+    );
+    assert_eq!(verification["value"]["failed"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        verification["value"]["pending"].as_array().unwrap().len(),
+        0
+    );
+
+    // And the two local observations M0 publishes are still exactly where they
+    // were, still describing the state the run left behind.
+    assert_eq!(
+        bundle["observations"]["work_item"]["available"]["value"]["status"],
+        "open"
+    );
+    assert_eq!(
+        bundle["observations"]["changes"]["available"]["value"]["marker"],
+        fiddle_core::correlation_key(PROJECT, INVOCATION_REF),
+        "a publication accounts for the work, so it records the marker the next \
+         invocation completes on"
+    );
+    assert_eq!(bundle["outcome"], "completed");
+    assert_eq!(bundle["next_action"], "complete");
+}
+
+/// A refused effect stops the sequence, and the effects after it are not
+/// attempted.
+///
+/// Asserted positively, against what reached the world: the pull request create
+/// and the dispatch are counted from the requests the scripted `gh` recorded, so
+/// this cannot pass by inferring "nothing ran" from an error type. What was
+/// already published stands — a branch is not unpublished by a later refusal —
+/// and the receipt for it still reaches the bundle.
+#[tokio::test]
+async fn a_denied_effect_stops_the_sequence() {
+    let (remote, local) = a_publishable_world();
+    let bundle = publish_attempt(&remote, &local, &Denying(EffectKind::EnsurePullRequest)).await;
+
+    let branch = branch_name(PROJECT, INVOCATION_REF);
+    assert_eq!(
+        remote.branches(),
+        vec![branch.clone()],
+        "the branch it had already published stands"
+    );
+    assert_eq!(
+        remote.pull_request_creates(),
+        0,
+        "the refused effect itself never reached the forge"
+    );
+    assert_eq!(
+        remote.dispatch_requests(),
+        0,
+        "and nothing after the refusal ran"
+    );
+    assert_eq!(remote.landed("dispatches"), 0);
+
+    // One execution, failed, carrying the receipt for the step that did happen.
+    let executions = bundle["capability_executions"].as_array().unwrap();
+    assert_eq!(executions.len(), 1);
+    assert_eq!(executions[0]["status"], "failed");
+    let evidence = evidence_of(&bundle);
+    assert_eq!(evidence.len(), 1, "{evidence:?}");
+    assert!(
+        evidence[0].starts_with("effect:ensure_branch_published:"),
+        "{}",
+        evidence[0]
+    );
+    assert!(
+        bundle["progress"][0]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("policy denied"),
+        "the reason must name the refusal: {}",
+        bundle["progress"][0]["summary"]
+    );
+
+    // What did land is still described, because a reader has to be able to find
+    // the branch that is really out there.
+    let review = &bundle["observations"]["review"]["available"];
+    assert_eq!(review["value"]["branch"], branch);
+    assert!(
+        review["value"]["pull_request"].is_null(),
+        "no pull request was opened, and none may be claimed: {review}"
+    );
+    assert!(
+        review["value"]["state"].is_null(),
+        "a state naming no object would be describing nothing: {review}"
+    );
+    // And the work is *not* accounted for: no marker was written, so the next
+    // invocation does not complete on a publication that stopped half way.
+    assert!(
+        bundle["observations"]["changes"]["available"]["value"]["marker"].is_null(),
+        "{}",
+        bundle["observations"]["changes"]
+    );
+}
+
+/// The check effect's identity comes from the executor's own pair, and from
+/// nowhere else.
+///
+/// This is the hazard the whole arrangement exists for: the lookup happens at
+/// step 3, before the envelope is minted at step 6, so a capability holding a
+/// second copy of `(project, invocation_ref)` could name a run by one identity
+/// and look it up by the other — and every attempt would then find nothing and
+/// dispatch again, without bound. The name is recomputed here from the canonical
+/// inputs, and the second attempt is what proves the lookup finds it.
+#[tokio::test]
+async fn a_second_attempt_recognises_the_run_the_first_one_dispatched() {
+    let (remote, local) = a_publishable_world();
+    let (branch, _, check_target) = publish_targets();
+
+    publish_attempt(&remote, &local, &Deployment(DeploymentRule::Allow)).await;
+    assert_eq!(remote.dispatch_requests(), 1);
+
+    // The name the dispatched run carries, derived the way a fresh process
+    // derives it rather than read back out of the request.
+    let expected = fiddle_runtime::github::run_name(&effect_id(
+        PROJECT,
+        INVOCATION_REF,
+        EffectKind::EnsureCheckRequested,
+        &check_target,
+    ));
+    let dispatched = remote
+        .requests()
+        .into_iter()
+        .find_map(|request| {
+            let body: serde_json::Value =
+                serde_json::from_str(request["body"].as_str().unwrap_or("")).ok()?;
+            body["inputs"]["fiddle_effect_id"]
+                .as_str()
+                .map(|id| format!("fiddle-{id}"))
+        })
+        .expect("the dispatch carries this effect's identity as an input");
+    assert_eq!(dispatched, expected);
+
+    // A second attempt over the same world. The change set now carries this
+    // invocation's marker, so the derivation completes without executing — which
+    // is itself the property, and the effects are proved unrepeated below.
+    // The second attempt runs with **every local artifact removed**, which is
+    // what makes this a test of the lookup rather than of the marker. Left in
+    // place, the change set would satisfy the derivation and the capability
+    // would never run at all — so the counts below would hold on a build whose
+    // identity did not survive a fresh process, which is exactly the failure
+    // they exist to catch.
+    local.forget();
+    let bundle = publish_attempt(&remote, &local, &Deployment(DeploymentRule::Allow)).await;
+    assert_eq!(
+        bundle["capability_executions"][0]["status"], "completed",
+        "the capability really executed a second time: {}",
+        bundle["capability_executions"]
+    );
+    assert_eq!(bundle["outcome"], "completed");
+
+    // Nothing was asked for twice. Each of the three effects recomputed its
+    // identity from the canonical inputs, found the object an earlier process
+    // had created, and short-circuited before the mutation.
+    assert_eq!(
+        remote.dispatch_requests(),
+        1,
+        "exactly one run was ever asked for"
+    );
+    assert_eq!(remote.pull_request_creates(), 1);
+    assert_eq!(remote.landed("dispatches"), 1);
+    assert_eq!(remote.branches(), vec![branch]);
+
+    // And the second attempt's own check receipt names the run the first one
+    // dispatched, so the recognition is the identity's rather than the
+    // fixture's.
+    let evidence = evidence_of(&bundle);
+    assert_eq!(evidence.len(), 4, "{evidence:?}");
+    assert!(
+        evidence[3].contains(&expected),
+        "the check receipt must name {expected}: {}",
+        evidence[3]
+    );
+}
+
+/// An executor bound to another capability refuses the first proposal, so a
+/// capability cannot propose an effect in a name that is not its own.
+///
+/// The binding is the executor's, not the proposal's, which is why this is
+/// asserted of a real publish attempt rather than of a hand-built
+/// `ProposedEffect`: the capability fills in its own id and has no parameter
+/// through which a caller could supply another.
+#[tokio::test]
+async fn a_capability_cannot_publish_through_another_capabilitys_executor() {
+    let (remote, local) = a_publishable_world();
+    let ctx = remote.context();
+    let deployment = Deployment(DeploymentRule::Allow);
+    let executor = Executor::new(
+        FIXTURE_REPAIR,
+        PROJECT.to_string(),
+        INVOCATION_REF.to_string(),
+        &deployment,
+        &ctx,
+    );
+    let capability = fiddle_runtime::PublishChange::new(executor, publish_config(&remote, &local));
+
+    let reference: fiddle_core::InvocationRef = INVOCATION_REF.parse().unwrap();
+    let work_items = fiddle_runtime::StubWorkItemPort::new(local.root());
+    let changes = fiddle_runtime::StubChangePort::new(local.root());
+    let record = fiddle_runtime::attempt(&fiddle_runtime::AttemptContext {
+        project: PROJECT,
+        reference: &reference,
+        mode: fiddle_core::Mode::Unattended,
+        build: fiddle_core::FiddleBuild::new("0.1.0", fiddle_core::UNKNOWN_REVISION),
+        report_dir: &local.reports(),
+        work_items: &work_items,
+        changes: &changes,
+        capability: &capability,
+    })
+    .await;
+
+    let bundle = serde_json::to_value(&record.bundle).unwrap();
+    assert_eq!(bundle["capability_executions"][0]["status"], "failed");
+    assert!(
+        bundle["progress"][0]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("cannot propose for"),
+        "{}",
+        bundle["progress"][0]["summary"]
+    );
+    assert!(
+        remote.branches().is_empty(),
+        "a proposal made under another capability's name reaches nothing"
+    );
+    assert_eq!(remote.pull_request_creates(), 0);
+    assert_eq!(remote.dispatch_requests(), 0);
+}

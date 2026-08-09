@@ -163,6 +163,26 @@ impl EnsureBranchPublished {
         branch_target(&self.branch)
     }
 
+    /// The canonical payload: the whole request, order-stable.
+    ///
+    /// Written here rather than at each call site, for the reason
+    /// [`EnsureBranchPublished::target`] is: it is hashed, so two spellings of
+    /// one request would be two payload hashes for the same push.
+    ///
+    /// The branch is deliberately absent — it *is* the target, and is already in
+    /// the identity. What is here is the pair a reader of a receipt would
+    /// compare: which repository, and which commit was meant to land on it. A
+    /// run aimed at a different commit is therefore the same effect against the
+    /// same target carrying a different payload hash, which is exactly where a
+    /// changed request should become visible.
+    pub fn payload(&self) -> String {
+        serde_json::json!({
+            "repo": self.repo,
+            "sha": self.intended_sha,
+        })
+        .to_string()
+    }
+
     /// The single-ref read. `/git/ref/heads/<branch>` and not `/git/refs/...`:
     /// the plural form answers a *prefix* match with an array, which would make
     /// "is this ref there?" a question about how many things came back.

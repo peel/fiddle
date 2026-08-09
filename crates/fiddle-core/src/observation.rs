@@ -162,6 +162,26 @@ pub struct VerificationState {
     pub pending: Vec<String>,
 }
 
+/// What a run that reached a forge saw there, in the pair a view needs.
+///
+/// The two observations travel together because they are made together and are
+/// meaningless apart: a verification is *about* the head a review names, and a
+/// caller free to supply one without the other could publish a green check for a
+/// commit no review mentions. Pairing them also means
+/// [`WorkStateView::with_publication`] has one argument to answer for rather
+/// than two that must agree.
+///
+/// Each half is an [`Observation`] rather than a value, because the run that
+/// reached the forge is exactly the run that can find it unreadable — and
+/// `Unavailable` is never equivalent to empty.
+#[derive(Clone, Debug)]
+pub struct Publication {
+    /// What the forge says has been published for this invocation.
+    pub review: Observation<ReviewState>,
+    /// What CI says about the head that was published.
+    pub verification: Observation<VerificationState>,
+}
+
 /// Everything a run observed about one invocation, in one value.
 ///
 /// The observations are carried side by side rather than merged, so a readable
@@ -198,7 +218,20 @@ impl WorkStateView {
     ///
     /// A constructor rather than four literals at each call site, so the two
     /// reasons are written once and a capability that *can* see a review builds
-    /// the view itself rather than overwriting a default it inherited.
+    /// the view itself — through [`WorkStateView::with_publication`] — rather
+    /// than overwriting a default it inherited.
+    ///
+    /// # Why the reasons name the *reading* and not the capability
+    ///
+    /// They named the capability until a capability that publishes existed, and
+    /// then they were wrong in the one place a reader would look. This
+    /// constructor is reached by three callers and only one of them is about a
+    /// capability that cannot publish: the read-only `inspect`, which reaches no
+    /// forge whatever `--capability` names; a run's *entry* observation, taken
+    /// before any capability has executed; and a run whose capability publishes
+    /// nothing. What all three have in common is that no forge was consulted,
+    /// which is the honest reason and the one that stays true as capabilities
+    /// are added.
     pub fn without_publication(
         work_item: Observation<WorkItemState>,
         changes: Observation<ChangeSetState>,
@@ -207,13 +240,37 @@ impl WorkStateView {
             work_item,
             changes,
             review: Observation::NotApplicable {
-                reason: "this capability publishes no change, so no pull request is expected"
-                    .to_string(),
+                reason: "no forge was consulted, so no pull request is expected".to_string(),
             },
             verification: Observation::NotApplicable {
-                reason: "this capability publishes no change, so no checks are expected"
-                    .to_string(),
+                reason: "no forge was consulted, so no checks are expected".to_string(),
             },
+        }
+    }
+
+    /// The view of a run that *did* publish, and looked.
+    ///
+    /// The counterpart [`WorkStateView::without_publication`]'s documentation
+    /// promises: "a capability that can see a review builds the view itself
+    /// rather than overwriting a default it inherited". This is that
+    /// constructor, and its existence is what stops the two observations from
+    /// being types nobody fills.
+    ///
+    /// It takes the pair whole rather than four separate observations, and it
+    /// takes them as [`Observation`]s rather than as values: the capability that
+    /// reached the forge is the only participant that can say whether the read
+    /// succeeded, and this constructor must not be able to turn "the forge could
+    /// not be read" into "the forge holds nothing" on its way past.
+    pub fn with_publication(
+        work_item: Observation<WorkItemState>,
+        changes: Observation<ChangeSetState>,
+        publication: Publication,
+    ) -> Self {
+        WorkStateView {
+            work_item,
+            changes,
+            review: publication.review,
+            verification: publication.verification,
         }
     }
 }
