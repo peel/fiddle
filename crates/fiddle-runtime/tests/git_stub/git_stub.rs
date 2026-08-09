@@ -30,17 +30,17 @@
 //! the fixture's own noise. A compiled recorder adds nothing, so what it writes
 //! down is exactly what the parent passed.
 //!
-//! # Why two of the modes hand the work to a real `git`
+//! # Why some of the modes hand the work to a real `git`
 //!
 //! Most of what this fixture is asked is about the *invocation*, and a canned
 //! answer is enough. The ambiguous-write modes are not: their whole subject is a
 //! push that genuinely moved a ref and then genuinely failed to say so, and a
 //! fixture that only claimed to have pushed would leave the executor's
-//! postcondition read with nothing real to find. So `push_then_killed` and
-//! `never_answers` delegate to the real `git`, against a real repository, and
-//! interpose only on how the invocation *ends*. The environment is passed
-//! through untouched, so the push that lands still runs under the seven names
-//! the product built.
+//! postcondition read with nothing real to find. So `push_then_killed`,
+//! `never_answers` and `delegated` hand the work to the real `git`, against a
+//! real repository, and interpose only on how the invocation *ends* — which for
+//! `delegated` is not at all. The environment is passed through untouched, so
+//! the push that lands still runs under the seven names the product built.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -128,8 +128,23 @@ fn main() {
         // adapter reaches `GitError::Killed` rather than reading a number.
         "push_then_killed" => {
             delegate(&args);
+            // Written between the push and the death, and that placement is the
+            // whole of what it is for: its presence is the fixture's own record
+            // that the ref *landed* and the answer was lost *afterwards*. A suite
+            // that asserted only on the mode it had itself written down would be
+            // asserting its own arrangement; this is the observation that the
+            // arranged fault actually fired, and a mode that pushed and then
+            // returned normally would leave it absent.
+            std::fs::write(dir.join("pushed_then_died"), "yes").unwrap();
             std::process::abort();
         }
+        // The recording `git`, driving a real repository and interposing on
+        // nothing. It exists for the suites whose subject is *another* object's
+        // ambiguity: they need the branch to genuinely land, and they still need
+        // the push counted, which the canned `accepted` above cannot do because
+        // it never pushes. Nothing about how the invocation ends is changed, so
+        // this mode adds no behaviour of its own — it only keeps the recording.
+        "delegated" => delegate(&args),
         // The other half of the same ambiguity, and the other failure that
         // classifies `Unknown`: nothing is pushed and nothing is answered, so
         // the runtime's own deadline is what ends this — there is no timeout
@@ -142,7 +157,7 @@ fn main() {
 /// Whether a mode is driving a real repository rather than answering from the
 /// fixture's own constants.
 fn delegating(mode: &str) -> bool {
-    matches!(mode, "push_then_killed" | "never_answers")
+    matches!(mode, "push_then_killed" | "never_answers" | "delegated")
 }
 
 /// Hand the invocation to the real `git`, unchanged.

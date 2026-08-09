@@ -41,10 +41,12 @@
 //!   before it, so the intent record survives whatever happens to the effect
 //!   record.
 
+use crate::effect::{EffectTrace, ExecutionStep};
 use crate::evidence::{EvidenceError, BUNDLE_FILE};
-use fiddle_core::{AttemptId, CapabilityId, EvidenceRef};
+use fiddle_core::{AttemptId, CapabilityId, EffectKind, EvidenceRef};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// The directory under `<report.dir>` holding attempt journals.
 ///
@@ -60,12 +62,60 @@ pub const JOURNAL_DIR: &str = ".attempts";
 /// assert the *ordering* (intent before execution) without a temporary
 /// directory, and what keeps `run` free of a `<report.dir>` argument it would
 /// otherwise have to thread through.
-pub trait AttemptJournal {
+/// `Send + Sync` because [`AttemptTrace`] holds one behind an [`Arc`] shared with
+/// an executor that may be driven from any task the runtime happens to be on.
+pub trait AttemptJournal: Send + Sync {
     /// Record that this attempt is about to execute `capability`.
     ///
     /// Must not return `Ok` until the record is durable: the caller treats `Ok`
     /// as permission to change the world.
     fn record_intent(&self, capability: CapabilityId) -> Result<(), EvidenceError>;
+
+    /// Record that the execution of an effect of `kind` reached `step`.
+    ///
+    /// # What this adds to an interrupted attempt's record
+    ///
+    /// The intent record says *which capability was about to run*. That is
+    /// enough to make the attempt findable, and not enough to act on: a
+    /// publication walks three effects, and "the capability may have run" leaves
+    /// a recovery unable to say whether a branch, a pull request or a workflow
+    /// dispatch may be out there. A record naming
+    /// [`ExecutionStep::Apply`](crate::effect::ExecutionStep::Apply) and the
+    /// kind it was entered for is the difference between *something may have
+    /// happened* and *this may have happened*.
+    ///
+    /// It is written *before* the step it names is performed, which is what makes
+    /// it worth writing at all: a record appended afterwards would be missing
+    /// from exactly the attempts that were interrupted, which are the only
+    /// attempts a journal exists for.
+    ///
+    /// # Why this is infallible where [`AttemptJournal::record_intent`] is not
+    ///
+    /// The fail-closed invariant is `record_intent`'s and stays entirely with
+    /// it: a capability whose intent could not be recorded does not run, so a
+    /// journal that cannot be written has already stopped the attempt before any
+    /// step could be traced. This is therefore never the write that decides
+    /// whether the world may change; it refines a record whose existence is
+    /// already guaranteed. Returning a `Result` here would offer the executor a
+    /// decision it has no better answer for than "carry on", in the middle of an
+    /// authorization order whose whole value is that it is fixed.
+    ///
+    /// # What may be in it
+    ///
+    /// Two closed enumerations and nothing else — no target, no payload, no
+    /// response, no postcondition. That is a bound on what it *can* say rather
+    /// than a convention about what it does: neither
+    /// [`EffectKind::as_str`](fiddle_core::EffectKind::as_str) nor
+    /// [`ExecutionStep::as_str`](crate::effect::ExecutionStep::as_str) can
+    /// render externally-authored text, so no credential and no unbounded string
+    /// reaches this file through here. The postcondition — which *is* somebody
+    /// else's text — goes to the published bundle through
+    /// [`fiddle_core::Published`], where the receipts are.
+    ///
+    /// It is also the reason this is cheap enough to do per step: a publication
+    /// walks seven steps three times, so twenty-one lines of about sixty bytes
+    /// are appended beside the two records an attempt already writes.
+    fn record_step(&self, kind: EffectKind, step: ExecutionStep);
 
     /// Record how the execution ended.
     ///
@@ -157,6 +207,21 @@ impl AttemptJournal for FileJournal {
         }))
     }
 
+    /// One line per step, appended and synced like every other record.
+    ///
+    /// `"effect_step"` and not `"effect"`: [`read_records`] finds the effect
+    /// record by exact string, so these are invisible to it and an
+    /// [`InterruptedAttempt`]'s meaning is unchanged by their presence. A reader
+    /// that wants the walk reads the file.
+    fn record_step(&self, kind: EffectKind, step: ExecutionStep) {
+        let _ = self.append(&serde_json::json!({
+            "record": "effect_step",
+            "attempt_id": self.attempt,
+            "kind": kind.as_str(),
+            "step": step.as_str(),
+        }));
+    }
+
     fn record_effect(&self, capability: CapabilityId, status: &str, evidence: &[EvidenceRef]) {
         let _ = self.append(&serde_json::json!({
             "record": "effect",
@@ -177,6 +242,69 @@ impl AttemptJournal for FileJournal {
         // The per-invocation directory is left in place. It is where an operator
         // looks for attempts in flight, and creating and removing it around
         // every attempt would be churn for no reader's benefit.
+    }
+}
+
+/// The executor's step trace, sunk into the journal of the attempt it runs
+/// inside.
+///
+/// # Why the sink is attached late
+///
+/// The binding order is forced by the two things this joins, and neither of them
+/// can move. An [`Executor`](crate::effect::Executor) is built *before* a run
+/// starts, because the capability that borrows it is what the run is about — and
+/// it must be built by the caller that owns the credential-carrying clients, on
+/// that caller's stack. A journal is named by an attempt id, which is minted
+/// inside [`attempt`](crate::attempt) precisely so there is one minting site. So
+/// the journal does not exist when the executor is built, and it does not outlive
+/// the executor either.
+///
+/// What crosses that gap is this: created by the caller beside the executor,
+/// handed to it as its sink, and filled in by `attempt` with the journal it just
+/// built. An [`Arc`] rather than a borrow because the journal is the shorter-lived
+/// of the two, which is exactly the direction a reference could not go.
+///
+/// # What an unattached trace does
+///
+/// Discards, silently, and only for as long as no attempt owns it. That is not a
+/// default sink by another name: the window is the few statements between
+/// construction and `attempt`, during which no executor has been asked to do
+/// anything. A run that reached an effect with nothing attached would be an
+/// executor running outside any attempt, which the orchestration has no path to.
+pub struct AttemptTrace {
+    journal: Mutex<Option<Arc<dyn AttemptJournal>>>,
+}
+
+impl AttemptTrace {
+    /// A trace with no attempt behind it yet.
+    pub fn new() -> Self {
+        AttemptTrace {
+            journal: Mutex::new(None),
+        }
+    }
+
+    /// Attach the journal of the attempt this trace belongs to.
+    pub fn attach(&self, journal: Arc<dyn AttemptJournal>) {
+        *self.journal.lock().unwrap() = Some(journal);
+    }
+}
+
+impl Default for AttemptTrace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EffectTrace for AttemptTrace {
+    /// The handle is cloned out from under the lock before the record is written,
+    /// so an `fsync` is never held across it. Twenty-one appends per publication
+    /// is not a hot path beside the two children each effect spawns, but holding a
+    /// mutex across a disk sync would be a bad habit whatever the count.
+    fn step(&self, kind: EffectKind, step: ExecutionStep) {
+        let journal = self.journal.lock().unwrap().clone();
+        if let Some(journal) = journal {
+            journal.record_step(kind, step);
+        }
     }
 }
 
@@ -395,6 +523,72 @@ mod tests {
             "got {error:?}"
         );
         assert!(error.to_string().contains("attempt journal"), "got {error}");
+    }
+
+    /// A step record is appended beside the intent and changes nothing about how
+    /// the intent reads — which is the constraint on adding it at all.
+    #[test]
+    fn a_step_record_is_appended_and_leaves_the_intent_reading_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt = AttemptId("01ATTEMPT".to_string());
+        let recording = journal(dir.path(), &attempt);
+
+        recording.record_intent(STUB_MARK).unwrap();
+        recording.record_step(EffectKind::EnsurePullRequest, ExecutionStep::Apply);
+
+        let written = std::fs::read_to_string(
+            dir.path()
+                .join(JOURNAL_DIR)
+                .join(SLUG)
+                .join("01ATTEMPT.jsonl"),
+        )
+        .unwrap();
+        assert_eq!(written.lines().count(), 2, "appended, not rewritten");
+        assert!(
+            written.contains(r#""step":"apply""#)
+                && written.contains(r#""kind":"ensure_pull_request""#),
+            "the step and the effect it belongs to must both be there: {written}"
+        );
+        // The reading a recovery makes is unchanged: `effect` is matched by exact
+        // string, so `effect_step` is invisible to it and this attempt still has
+        // no recorded outcome.
+        assert_eq!(
+            interrupted(dir.path(), SLUG),
+            vec![InterruptedAttempt {
+                attempt_id: attempt,
+                capability: STUB_MARK.0.to_string(),
+                effect: None,
+            }]
+        );
+    }
+
+    /// The bridge: nothing before an attempt owns it, the journal afterwards.
+    #[test]
+    fn a_trace_records_nothing_until_an_attempt_attaches_its_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt = AttemptId("01ATTEMPT".to_string());
+        let path = dir
+            .path()
+            .join(JOURNAL_DIR)
+            .join(SLUG)
+            .join("01ATTEMPT.jsonl");
+
+        let trace = AttemptTrace::new();
+        trace.step(EffectKind::EnsureBranchPublished, ExecutionStep::Apply);
+        assert!(
+            !path.exists(),
+            "an unattached trace must not create a journal of its own"
+        );
+
+        trace.attach(Arc::new(journal(dir.path(), &attempt)));
+        trace.step(EffectKind::EnsureBranchPublished, ExecutionStep::Apply);
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            written.lines().count(),
+            1,
+            "exactly the step recorded after attaching: {written}"
+        );
     }
 
     /// Journals for one invocation must not be reported under another's slug.

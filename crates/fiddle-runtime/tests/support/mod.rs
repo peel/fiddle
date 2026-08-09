@@ -135,7 +135,7 @@ impl World {
 /// the world keeps the list. This is what makes the *order* assertable rather
 /// than only the endpoints.
 impl EffectTrace for World {
-    fn step(&self, step: ExecutionStep) {
+    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
     }
 }
@@ -303,8 +303,25 @@ impl Harness {
             INVOCATION_REF.to_string(),
             &self.deployment,
             &self.ctx,
+            &self.world,
         )
-        .observed_by(&self.world)
+    }
+
+    /// The same executor, reporting its steps somewhere other than this world.
+    ///
+    /// For the one question [`Harness::executor`] cannot ask: not *what order did
+    /// the executor walk*, which the world already records, but *where do those
+    /// steps end up outside a test* — which is a claim about a sink the world is
+    /// not one of.
+    pub fn executor_observed_by<'a>(&'a self, trace: &'a dyn EffectTrace) -> Executor<'a> {
+        Executor::new(
+            self.capability,
+            PROJECT.to_string(),
+            INVOCATION_REF.to_string(),
+            &self.deployment,
+            &self.ctx,
+            trace,
+        )
     }
 
     pub fn operation(&self) -> ScriptedOperation<'_> {

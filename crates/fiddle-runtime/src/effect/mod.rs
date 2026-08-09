@@ -103,26 +103,30 @@ impl ExecutionStep {
     }
 }
 
-/// Where the executor writes down which step it is on.
+/// Where the executor writes down which step it is on, and for which effect.
 ///
 /// This is an observation seam of the same family as [`crate::ports`] — a trait
-/// the runtime calls unconditionally, with the sink supplied by whoever built
-/// the executor. The default sink discards; the deterministic suite records and
-/// asserts the order. Unlike a configuration value that parses and is read by
-/// nothing, this is *called* on every execution: what varies is where the
-/// steps go, not whether they are produced.
+/// the runtime calls unconditionally, with the sink supplied by whoever built the
+/// executor. The deterministic suite records and asserts the order; production
+/// passes [`crate::journal::AttemptTrace`], which sinks the walk into the
+/// attempt's own journal.
+///
+/// **There is no default sink, and that is deliberate.** One was offered until
+/// M2's exactly-once bean, and what it produced was a seam whose only real
+/// implementor was the test suite: an executor built without `observed_by`
+/// silently discarded everything, so a production path could go dark by
+/// omission rather than by decision. [`Executor::new`] therefore takes the sink,
+/// and a caller that has nothing to do with a step has to say so by passing a
+/// sink that discards — which is a line of code somebody wrote, not a default
+/// nobody noticed.
+///
+/// The [`EffectKind`] is carried beside the step because the seven steps repeat
+/// once per effect, and a record that could not say *which* mutation `Apply` was
+/// entered for would tell a recovery only that something may have happened —
+/// which is the question, not the answer.
 pub trait EffectTrace: Send + Sync {
-    fn step(&self, step: ExecutionStep);
+    fn step(&self, kind: EffectKind, step: ExecutionStep);
 }
-
-/// The sink for a run that is not being observed.
-struct NoTrace;
-
-impl EffectTrace for NoTrace {
-    fn step(&self, _step: ExecutionStep) {}
-}
-
-static NO_TRACE: NoTrace = NoTrace;
 
 /// What the deployment document says about each effect kind.
 ///
@@ -276,17 +280,22 @@ pub struct Executor<'a> {
 }
 
 impl<'a> Executor<'a> {
-    /// Build an executor for one capability, one project and one invocation.
+    /// Build an executor for one capability, one project and one invocation,
+    /// reporting its step order to `trace`.
     ///
     /// `project` and `invocation_ref` are here rather than in [`ProposedEffect`]
     /// because they are the run's identity and not the proposal's: a capability
     /// that could name them could name a different run's effect.
+    ///
+    /// `trace` is required rather than defaulted — see [`EffectTrace`] for why an
+    /// optional sink was the wrong shape.
     pub fn new(
         capability: CapabilityId,
         project: String,
         invocation_ref: String,
         deployment: &'a dyn DeploymentPolicy,
         ctx: &'a EffectContext,
+        trace: &'a dyn EffectTrace,
     ) -> Self {
         Self {
             capability,
@@ -294,14 +303,8 @@ impl<'a> Executor<'a> {
             invocation_ref,
             deployment,
             ctx,
-            trace: &NO_TRACE,
+            trace,
         }
-    }
-
-    /// Send this executor's step order somewhere it can be read.
-    pub fn observed_by(mut self, trace: &'a dyn EffectTrace) -> Self {
-        self.trace = trace;
-        self
     }
 
     /// The capability this executor proposes on behalf of.
@@ -384,7 +387,7 @@ impl<'a> Executor<'a> {
         // 1. The proposing capability is the one this executor is bound to.
         //    First, and before anything looks at the world: a proposal made
         //    under someone else's name must not even be inspected for.
-        self.trace.step(ExecutionStep::ValidateCapability);
+        self.trace.step(kind, ExecutionStep::ValidateCapability);
         if proposed.capability != self.capability {
             return Err(EffectError::PolicyDenied {
                 kind,
@@ -398,14 +401,14 @@ impl<'a> Executor<'a> {
         // 2. Identity and payload hash, from canonical inputs alone — no clock,
         //    no counter, no local state — so the process that has to recognise
         //    this effect after a crash recomputes the same identity.
-        self.trace.step(ExecutionStep::DeriveIdentity);
+        self.trace.step(kind, ExecutionStep::DeriveIdentity);
         let effect_id = effect_id(&self.project, &self.invocation_ref, kind, &proposed.target);
         let payload_hash = payload_hash(&proposed.payload);
 
         // 3. Does the desired postcondition already hold? Before the mutation,
         //    and before policy: an effect the world already satisfies is not a
         //    request to act on, so there is nothing left to authorize.
-        self.trace.step(ExecutionStep::InspectPostcondition);
+        self.trace.step(kind, ExecutionStep::InspectPostcondition);
         match operation.inspect(self.ctx).await {
             Ok(Some(state)) => {
                 return Ok(receipt(
@@ -423,7 +426,7 @@ impl<'a> Executor<'a> {
         // 4. Capability minimum combined with deployment policy. The document
         //    may strengthen this and may never weaken it; `combine` owns that
         //    rule and this is where its answer is acted on.
-        self.trace.step(ExecutionStep::CombinePolicy);
+        self.trace.step(kind, ExecutionStep::CombinePolicy);
         match combine(operation.minimum(), self.deployment.rule_for(kind)) {
             PolicyDecision::Allow => {}
             PolicyDecision::Deny { reason } => {
@@ -441,7 +444,7 @@ impl<'a> Executor<'a> {
 
         // 5-6. The adapter handle is already resolved (`ctx.gh`); the envelope
         //      is minted here for this exact payload and nothing else.
-        self.trace.step(ExecutionStep::Authorize);
+        self.trace.step(kind, ExecutionStep::Authorize);
         let authorized = AuthorizedEffect {
             effect_id: effect_id.clone(),
             payload_hash: payload_hash.clone(),
@@ -450,13 +453,13 @@ impl<'a> Executor<'a> {
 
         // 7. Delegate. This is the only line in the process that changes
         //    anything outside it, and it is reached exactly once per call.
-        self.trace.step(ExecutionStep::Apply);
+        self.trace.step(kind, ExecutionStep::Apply);
         let dispatched = authorized.operation.apply(self.ctx, &authorized).await;
 
         // 8. Observe the postcondition. Whatever the dispatch said, the world is
         //    the authority — a response that never arrived cannot be believed,
         //    and a response that claimed success cannot be either.
-        self.trace.step(ExecutionStep::ObservePostcondition);
+        self.trace.step(kind, ExecutionStep::ObservePostcondition);
         let observed = authorized.operation.inspect(self.ctx).await;
 
         match observed {

@@ -44,13 +44,14 @@
 
 use crate::capability::{Capability, ExecutionGrant};
 use crate::evidence::{mint_attempt_id, publish, EvidenceError};
-use crate::journal::{AttemptJournal, FileJournal};
+use crate::journal::{AttemptJournal, AttemptTrace, FileJournal};
 use crate::ports::{ChangePort, WorkItemPort};
 use fiddle_core::{
     correlation_key, derive_next, CapabilityExecution, EvidenceRef, FiddleBuild, InvocationRef,
     Mode, NextAction, ProgressEntry, Published, ReportBundle, RunOutcome, WorkRef, WorkStateView,
 };
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Observe both local sides of the world for one work item.
 ///
@@ -434,6 +435,19 @@ pub struct AttemptContext<'a> {
     pub work_items: &'a dyn WorkItemPort,
     pub changes: &'a dyn ChangePort,
     pub capability: &'a dyn Capability,
+    /// The step trace the capability's executor was built with, if it has one, so
+    /// this attempt can point it at its own journal.
+    ///
+    /// `Option` rather than always present, and the shape is the honest one: only
+    /// a capability that reaches the outside world through an
+    /// [`Executor`](crate::effect::Executor) has a walk to record, and M0's
+    /// `stub_mark` and M1's `fixture_repair` have none. A trace supplied for
+    /// those would be a seam that could never be called, which is the class of
+    /// thing this bean was wiring up rather than adding to.
+    ///
+    /// See [`AttemptTrace`] for why the attaching happens here rather than where
+    /// the executor was built.
+    pub trace: Option<&'a AttemptTrace>,
 }
 
 /// What one attempt concluded, and what it managed to record.
@@ -494,7 +508,20 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
     let attempt_id = mint_attempt_id();
     let invocation = ctx.reference.as_str();
     let slug = ctx.reference.slug();
-    let journal = FileJournal::new(ctx.report_dir, &slug, &attempt_id, &invocation);
+    // Shared rather than owned, because the executor's trace outlives this frame
+    // and the journal does not — see [`AttemptTrace`]. The attaching happens
+    // before `run`, so the very first step of the very first effect is already
+    // recorded: a trace connected afterwards would be missing exactly the steps
+    // an interrupted attempt is asked about.
+    let journal: Arc<dyn AttemptJournal> = Arc::new(FileJournal::new(
+        ctx.report_dir,
+        &slug,
+        &attempt_id,
+        &invocation,
+    ));
+    if let Some(trace) = ctx.trace {
+        trace.attach(Arc::clone(&journal));
+    }
 
     let RunReport {
         outcome,
@@ -511,7 +538,7 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
         work_items: ctx.work_items,
         changes: ctx.changes,
         capability: ctx.capability,
-        journal: &journal,
+        journal: journal.as_ref(),
     })
     .await;
 
@@ -778,6 +805,11 @@ mod tests {
                 });
             }
             Ok(())
+        }
+
+        fn record_step(&self, kind: fiddle_core::EffectKind, step: crate::effect::ExecutionStep) {
+            self.log
+                .record(format!("step:{}:{}", kind.as_str(), step.as_str()));
         }
 
         fn record_effect(&self, _capability: CapabilityId, status: &str, _e: &[EvidenceRef]) {

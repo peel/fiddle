@@ -476,7 +476,7 @@ struct Remote {
 }
 
 impl EffectTrace for Remote {
-    fn step(&self, step: ExecutionStep) {
+    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
     }
 }
@@ -677,8 +677,8 @@ where
         INVOCATION_REF.to_string(),
         &deployment,
         ctx,
+        remote,
     )
-    .observed_by(remote)
     .execute(proposed, operation)
     .await
 }
@@ -1258,8 +1258,8 @@ async fn publish_attempt(
         INVOCATION_REF.to_string(),
         deployment,
         &ctx,
-    )
-    .observed_by(remote);
+        remote,
+    );
     let capability = fiddle_runtime::PublishChange::new(executor, publish_config(remote, local));
 
     let work_items = fiddle_runtime::StubWorkItemPort::new(local.root());
@@ -1273,6 +1273,11 @@ async fn publish_attempt(
         work_items: &work_items,
         changes: &changes,
         capability: &capability,
+        // The executor here reports to `Remote`, which is what these scenarios
+        // assert the step *order* against. Sinking the same walk into the journal
+        // as well is `attempt`'s and the acceptance lane's subject, not this
+        // file's.
+        trace: None,
     })
     .await;
     serde_json::to_value(&record.bundle).unwrap()
@@ -1693,6 +1698,7 @@ async fn a_capability_cannot_publish_through_another_capabilitys_executor() {
         INVOCATION_REF.to_string(),
         &deployment,
         &ctx,
+        &remote,
     );
     let capability = fiddle_runtime::PublishChange::new(executor, publish_config(&remote, &local));
 
@@ -1708,6 +1714,11 @@ async fn a_capability_cannot_publish_through_another_capabilitys_executor() {
         work_items: &work_items,
         changes: &changes,
         capability: &capability,
+        // The executor here reports to `Remote`, which is what these scenarios
+        // assert the step *order* against. Sinking the same walk into the journal
+        // as well is `attempt`'s and the acceptance lane's subject, not this
+        // file's.
+        trace: None,
     })
     .await;
 

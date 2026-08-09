@@ -9,8 +9,8 @@ use fiddle_core::{
 };
 use fiddle_runtime::effect::{EffectContext, Executor};
 use fiddle_runtime::{
-    AgentBudget, AttemptContext, Capability, FixtureRepair, GatewayError, GhCli, GitCli,
-    PublishChange, PublishConfig, RepairConfig, StubChangePort, StubMark, StubWorkItemPort,
+    AgentBudget, AttemptContext, AttemptTrace, Capability, FixtureRepair, GatewayError, GhCli,
+    GitCli, PublishChange, PublishConfig, RepairConfig, StubChangePort, StubMark, StubWorkItemPort,
     WorkspaceCommand, CAPABILITIES,
 };
 use std::path::{Path, PathBuf};
@@ -475,6 +475,15 @@ struct Forge {
     /// The workflow a check is requested from, already refused by name if the
     /// document did not carry one.
     workflow: String,
+    /// Where the executor's step order goes: the journal of the attempt this run
+    /// turns out to be.
+    ///
+    /// It lives here for exactly the reason the context does — it has to outlive
+    /// the capability that borrows it — and it is *empty* when it is built,
+    /// because the attempt it belongs to has not been minted yet.
+    /// [`fiddle_runtime::attempt`] fills it in with the journal it creates; see
+    /// [`AttemptTrace`] for why the binding cannot go the other way round.
+    trace: AttemptTrace,
 }
 
 /// Build the forge this run publishes through, from `config` alone.
@@ -551,6 +560,7 @@ async fn resolve_forge(
         ctx: EffectContext::new(gh, git, work.clone(), cancel.clone()),
         head_sha,
         workflow,
+        trace: AttemptTrace::new(),
     })
 }
 
@@ -607,12 +617,19 @@ fn build_capability<'a>(
             // `capability::publish`'s module documentation for what a second
             // copy would cost. `&github.policy` is the deployment's word, and
             // this borrow is the whole path from the document to step 4.
+            //
+            // `&forge.trace` is the other borrow, and it is what makes the
+            // executor's step order a durable record rather than a test
+            // observation: `attempt` points it at this attempt's journal, so an
+            // attempt interrupted between an effect and its bundle leaves behind
+            // which step of which effect it had reached.
             let executor = Executor::new(
                 fiddle_core::PUBLISH_CHANGE,
                 config.project.name.clone(),
                 reference.as_str(),
                 &github.policy,
                 &forge.ctx,
+                &forge.trace,
             );
 
             Ok(Box::new(PublishChange::new(
@@ -859,6 +876,9 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 work_items: &work_items,
                 changes: &changes,
                 capability: selected.as_ref(),
+                // Only a publication has an executor, and therefore a step order
+                // to record; `stub_mark` and `fixture_repair` reach no forge.
+                trace: forge.as_ref().map(|forge| &forge.trace),
             })
             .await;
 
@@ -1247,6 +1267,8 @@ mod tests {
             work_items: &work_items,
             changes: &changes,
             capability: &marking as &dyn Capability,
+            // A deterministic capability reaches no forge and has no executor.
+            trace: None,
         })
         .await;
 

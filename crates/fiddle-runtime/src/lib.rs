@@ -77,7 +77,7 @@ pub use github::{
 };
 pub use github::{pull_request_target, EnsurePullRequest, PullRequest};
 pub use github::{GhCli, GhError, GhResponse};
-pub use journal::AttemptJournal;
+pub use journal::{AttemptJournal, AttemptTrace};
 pub use orchestration::{
     attempt, observe, run, AttemptContext, AttemptRecord, RunContext, RunReport,
 };

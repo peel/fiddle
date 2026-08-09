@@ -88,7 +88,7 @@ struct Forge {
 }
 
 impl EffectTrace for Forge {
-    fn step(&self, step: ExecutionStep) {
+    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
     }
 }
@@ -283,8 +283,8 @@ async fn open_the_pull_request(
         INVOCATION_REF.to_string(),
         &deployment,
         ctx,
+        forge,
     )
-    .observed_by(forge)
     .execute(proposed, operation)
     .await
 }

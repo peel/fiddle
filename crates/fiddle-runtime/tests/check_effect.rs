@@ -126,7 +126,7 @@ struct Ci {
 }
 
 impl EffectTrace for Ci {
-    fn step(&self, step: ExecutionStep) {
+    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
     }
 }
@@ -345,8 +345,8 @@ async fn request_the_check(
         INVOCATION_REF.to_string(),
         &deployment,
         ctx,
+        ci,
     )
-    .observed_by(ci)
     .execute(proposed, operation)
     .await
 }
