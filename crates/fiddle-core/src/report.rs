@@ -245,6 +245,12 @@ mod tests {
                 changes: Observation::NotApplicable {
                     reason: "nothing yet".to_string(),
                 },
+                review: Observation::NotApplicable {
+                    reason: "nothing published".to_string(),
+                },
+                verification: Observation::NotApplicable {
+                    reason: "nothing to verify".to_string(),
+                },
             },
         };
 
@@ -264,5 +270,10 @@ mod tests {
         );
         assert_eq!(value["progress"][0]["stage"], "mark");
         assert!(value["observations"]["work_item"]["available"].is_object());
+        // The bundle's schema is unchanged by two more observations, because a
+        // reader dispatches on `schema` and then reads by path: `v0` promised
+        // these keys and still carries them.
+        assert!(value["observations"]["review"]["not_applicable"].is_object());
+        assert!(value["observations"]["verification"]["not_applicable"].is_object());
     }
 }

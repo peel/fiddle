@@ -52,21 +52,24 @@ use fiddle_core::{
 };
 use std::path::{Path, PathBuf};
 
-/// Observe both sides of the world for one work item.
+/// Observe both local sides of the world for one work item.
 ///
 /// Nothing here can fail: a port that cannot read its source returns an
 /// `Unavailable` observation rather than an error, so an unobservable world is
 /// *reported* rather than aborting the caller. Shared by `run` and by the
 /// read-only `inspect`, so both commands see the world through the same call.
+///
+/// The review and the verification are
+/// [`NotApplicable`](fiddle_core::Observation::NotApplicable) here rather than
+/// empty, and [`WorkStateView::without_publication`] is where that is written
+/// down. Both ports are local: this call reaches no forge, so it has no standing
+/// to claim a forge holds nothing.
 pub fn observe(
     work_items: &dyn WorkItemPort,
     changes: &dyn ChangePort,
     work_id: &str,
 ) -> WorkStateView {
-    WorkStateView {
-        work_item: work_items.observe(work_id),
-        changes: changes.observe(work_id),
-    }
+    WorkStateView::without_publication(work_items.observe(work_id), changes.observe(work_id))
 }
 
 /// Everything one run acts on: who it is for, what it may touch, and what it
@@ -810,6 +813,53 @@ mod tests {
             report.observations.changes.value().unwrap().marker,
             Some(correlation_key(PROJECT, INVOCATION_REF)),
             "the reported observations must be the post-execution ones"
+        );
+    }
+
+    /// **The production path, not only the constructor.** A run whose capability
+    /// publishes nothing reports the review and the verification as not
+    /// applicable in the bundle it publishes — never as an `Available` value.
+    /// Without this, [`WorkStateView::without_publication`] could be entirely
+    /// correct and never reached, and a run that spoke to no forge would be
+    /// publishing a clean review it never looked for.
+    #[tokio::test]
+    async fn a_run_that_publishes_nothing_reports_no_review_and_no_verification() {
+        let dir = fixture_root();
+        let capability = StubMark::new(dir.path(), PROJECT);
+        let work_items = StubWorkItemPort::new(dir.path());
+        let changes = StubChangePort::new(dir.path());
+
+        let report = run(&context(
+            &capability,
+            &work_items,
+            &changes,
+            &SpyJournal::default(),
+            &attempt_id(),
+        ))
+        .await;
+
+        let json = serde_json::to_value(&report.observations).unwrap();
+        for key in ["review", "verification"] {
+            assert!(
+                json[key]["available"].is_null(),
+                "a run that reached no forge must publish no {key} value: {}",
+                json[key]
+            );
+            assert!(
+                json[key]["not_applicable"]["reason"]
+                    .as_str()
+                    .is_some_and(|reason| !reason.is_empty()),
+                "{key} must say why the question does not apply: {}",
+                json[key]
+            );
+        }
+        // And the two observations M0's lane reads are still exactly where they
+        // were, still saying what the run left behind.
+        assert_eq!(json["work_item"]["available"]["value"]["status"], "open");
+        assert_eq!(
+            json["changes"]["available"]["value"]["marker"],
+            correlation_key(PROJECT, INVOCATION_REF),
+            "the two new observations must not have displaced the post-execution ones"
         );
     }
 

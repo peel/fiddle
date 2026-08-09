@@ -189,10 +189,10 @@ mod tests {
         work: Observation<WorkItemState>,
         changes: Observation<ChangeSetState>,
     ) -> WorkStateView {
-        WorkStateView {
-            work_item: work,
-            changes,
-        }
+        // The review and the verification are deliberately not varied here:
+        // `assess` reads the two local observations and nothing else, and a
+        // helper that let a caller set the other two would suggest otherwise.
+        WorkStateView::without_publication(work, changes)
     }
 
     fn avail_work() -> Observation<WorkItemState> {
