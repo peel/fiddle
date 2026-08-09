@@ -120,6 +120,14 @@ Anchors for the milestone that inserts one bounded Rig agent attempt inside M0's
 spine. Every M1 bean declares `thresholds: {}` and every M1 bean changes code, so the 2026-07-29
 doc-only correction does not apply to any of them.
 
+**Reconciled against what was built (2026-08-09).** This section was written before implementation
+and anchored on three things that do not exist: an `m1_bounded_capability` acceptance lane, a
+scheduled degraded-JSON canary workflow, and a live round-trip proof against a Claude-family
+model. Each has been replaced below by the artifact that actually ships. An anchor that names a
+file is a promise that the file is there; where one is not, the anchor is the defect, not the
+implementation. Criterion ids are unchanged, because they appear verbatim in the `eval` blocks of
+epic `fiddle-y1w6`'s beans — read `m1-canary-evidence` as *the real-model lanes*.
+
 **The scope rule for this milestone, stated once.** Model output quality is nondeterministic and is
 never the deterministic gate. Every criterion below is scored against what the *deterministic shell*
 does with the model's output — the bounds it enforces, the checks it runs, the evidence it derives
@@ -203,64 +211,107 @@ The ephemeral workspace, path validation, and environment sanitization.
 
 The credential-free black-box proof.
 
-- **Poor (1–3).** The lane calls library functions instead of launching the compiled binary. It
-  requires a credential, or a network call, to pass. The repair is asserted from the agent's response
-  rather than from the fixture on disk. M0's `m0_skeleton` lane was modified to accommodate M1.
-- **Acceptable (4–7).** `cargo test -p fiddle-acceptance --test m1_bounded_capability` exits 0,
-  driving the compiled binary as a subprocess over a deliberately broken zero-dependency Rust crate.
-  The repair is asserted by running the configured check (`cargo test --offline`, which fails before
-  and passes after) and by reading `git status --porcelain` in the worktree — both independent of the
-  model's response. The lane passes with `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `GH_TOKEN`, and
-  `JIRA_API_TOKEN` removed. `m0_skeleton` still exits 0, unmodified.
-- **Excellent (8–10).** All of the above, plus the adversarial cases ride in the same lane rather
-  than only in unit tests: `../outside.txt`, an absolute path, a symlink pointing out, an
-  unregistered tool name, malformed structured output, mutation past the files-changed cap, and
-  cancellation mid-attempt. The fixture repository is created by the harness with an explicit
-  `-c user.email` / `-c user.name`, so the lane does not depend on the runner having a git identity.
+**There is no `m1_bounded_capability` lane.** The proof landed as three files, and an evaluator
+scoring this criterion runs those rather than looking for a lane that was never written:
+`crates/fiddle-runtime/tests/repair_protocol.rs` (the deterministic protocol suite, in-process by
+design, carrying the adversarial cases), and in `crates/fiddle-acceptance/tests/`,
+`capability_selection.rs` (black-box, reaching the selection, rejection and failure arms) and
+`binary_repair.rs` (black-box, driving a repair that succeeds against a loopback stub gateway).
+
+- **Poor (1–3).** The black-box lanes call library functions instead of launching the compiled
+  binary. Any of them requires a credential, or a network call beyond loopback, to pass. The repair
+  is asserted from the agent's response rather than from the fixture on disk. M0's `m0_skeleton`
+  lane was modified to accommodate M1.
+- **Acceptable (4–7).** `cargo test -p fiddle-runtime --test repair_protocol` and
+  `cargo test -p fiddle-acceptance` both exit 0. The success path is proven with zero model
+  dependence: a scripted model writes known-correct content, the configured check runs over the tree
+  the attempt actually left, and the correlation marker appears only after the check exits 0 — all
+  read back from disk and from `git status --porcelain -uall`, never from the model's response.
+  Nothing in `src/` knows a test is happening: no transcript provider, no test-only runtime mode.
+  Every lane passes with `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `GH_TOKEN` and `JIRA_API_TOKEN`
+  removed, and `LITELLM_API_KEY` set to a sentinel that authenticates nothing. `m0_skeleton` still
+  exits 0, unmodified.
+- **Excellent (8–10).** All of the above, plus the adversarial cases exist as committed tests, each
+  asserting the fixture was left unmutated: `../outside.txt`, an absolute path, a symlink pointing
+  out, an unregistered tool name, malformed structured output, mutation past the files-changed cap,
+  turn-budget exhaustion, and cancellation mid-attempt. They currently ride in `repair_protocol`
+  rather than in a black-box lane, which is a defensible split — their claim is about the *shell's*
+  response to a model input, not about the assembled binary — so an evaluator does not mark a bean
+  down for their location; it marks one down if a case is absent, or is asserted from the model's
+  own report. The fixture repository is created by the harness with an explicit `-c user.email` /
+  `-c user.name`, so no lane depends on the runner having a git identity. At this level the
+  document-to-capability wiring is also gated offline: `binary_repair.rs` answers real
+  chat-completions requests from a loopback socket, so a `build_capability` that mapped `deadline`
+  onto `tool_timeout` fails a gate command rather than surviving until someone runs Tier 1.
 
 ### `m1-canary-evidence`
 
-The scheduled real-model run, and what it reports when it cannot run.
+The real-model lanes, and what they report when they cannot run.
 
-The model provider is a **LiteLLM OpenAI-compatible gateway**, not Anthropic directly
-(design §2.4). Two facts follow, and both are scored here. The gateway translates OpenAI
-function-calling shape to the upstream provider, so the canary is the *only* proof that tool
-calls survive that translation — the deterministic lane replaces the provider with
-`MockCompletionModel` and never serializes a request to anyone. And the key carries a **$100
-hard cap**, so requests begin failing on spend rather than on correctness.
+The model provider is a **LiteLLM OpenAI-compatible gateway**, not Anthropic directly. Two facts
+follow, and both are scored here. The gateway translates OpenAI function-calling shape to the
+upstream provider, so a real-model lane is the *only* proof that tool calls survive that
+translation — the deterministic suite replaces the provider with `MockCompletionModel` and never
+serializes a request to anyone, and `binary_repair.rs` serializes to its own loopback socket, which
+proves the wire format and not the translation. And the key carries a **$100 hard cap**, so
+requests begin failing on spend rather than on correctness.
 
-- **Poor (1–3).** The canary gates merges, or fails the build when the credential is absent, or —
-  worst — reports success without having called a model. Its output is unstructured log text. It
-  records only pass/fail and a duration. A spent budget is reported as a capability failure.
-- **Acceptable (4–7).** A scheduled workflow separate from the merge gate, carrying
-  `workflow_dispatch` so it is runnable before it reaches the default branch. With
-  `LITELLM_API_KEY` absent it emits a machine-readable
-  `{"status":"degraded","reason":"missing_LITELLM_API_KEY","canary_exercised":false}` and does not
-  fail the deterministic gate. When exercised it records runtime, rig version, toolchain, gateway
-  base URL, model identifier, prompt and capability revision, fixture revision, configured limits,
-  outcome classification, deterministic check results, stop reason, input/output token counts, and
-  latency.
-- **Excellent (8–10).** All of the above, plus `canary_exercised: false` is asserted by a committed
-  test rather than left to the workflow's runtime behaviour; and `budget_exhausted`, `auth`,
-  `quota`, `timeout`, `provider` and `capability` are distinguishable classes in the emitted
-  payload rather than one `failed` — an exhausted budget that reads as a broken capability is the
-  specific defect this anchor exists to prevent. No raw prompt, tool result, or repository content
-  is persisted; content is carried by digest.
+**There is no scheduled canary, and its absence is a decision, not a gap.** No workflow carries a
+`schedule:` trigger, no crate has a canary subcommand, and no degraded-status payload exists
+anywhere. Two opt-in local lanes replace it — Tier 1 (`crates/fiddle-cli/tests/smoke.rs`, one
+`#[ignore]`d test) and Tier 2 (`scripts/tier2.sh`) — for the reasons ADR 012 records, including
+what the substitution gives up. Score against those two. An evaluator that marks this criterion met
+by pointing at a scheduled workflow has found something that does not exist, and one that marks a
+bean down for not having built it is scoring against a superseded plan.
+
+- **Poor (1–3).** A real-model lane gates merges, or is invoked from `.github/workflows`, or fails
+  a gate command when the credential is absent. It asserts that the model succeeded. It reports
+  success without having reached a model turn. Its output is unstructured log text, or records only
+  pass/fail and a duration. A spent budget is reported as a capability failure with nothing recorded
+  that would let a reader tell the two apart.
+- **Acceptable (4–7).** Tier 1 is `#[ignore]`d so the gate stays offline and free, needs
+  `LITELLM_API_KEY`, and fails loudly naming the variable rather than skipping silently — a test
+  that passes for want of a key proves nothing and says it proved something. It asserts protocol
+  only: the run reached the capability it was asked for, concluded on a row of the exit-code table,
+  the exit code is that row's, a bundle was published and parses, the fixture repository is
+  untouched, the marker is present exactly when the check earned it, and the credential appears in
+  no stdout, no stderr and no file. A run that never reached a model turn is classified
+  *inconclusive* and fails, rather than being reported as a weak model. Tier 2 writes one JSON
+  record per fixture plus a `summary.json` carrying model, gateway base URL, exit code, outcome
+  kind, reason, elapsed seconds, the marker, `capability_executions` and `repair_landed`, and exits
+  0 whatever the model made of the fixtures.
+- **Excellent (8–10).** All of the above, plus the credential-free half of the same wiring is pulled
+  into the gate rather than left to a lane nobody runs on a schedule — `binary_repair.rs` answers
+  the real chat-completions requests from loopback, so Tier 1 is left proving only what genuinely
+  needs a real model. And the failure classes an operator must tell apart are separated in what is
+  recorded rather than collapsed into one `failed`: `budget_exhausted` above all, since an exhausted
+  budget that reads as a broken capability is the specific defect this anchor exists to prevent.
+  **That separation is not implemented** — a spend-cap refusal reaches `AgentError::Provider` with
+  the gateway's message text, distinguishable by a human reading Tier 2's `reason` field and by
+  nothing else — and ADR 012 records it as an open consequence with a backlog entry. Score a bean on
+  what it did about that gap, and do not treat the gap itself as the bean's defect. Persistence is
+  the other half of this level: no raw prompt, tool result or repository content should be kept
+  beyond what a human needs to read the run, and today Tier 2 keeps the model's report verbatim and
+  a 4000-character stderr excerpt, which is a cost a bean touching that path should name rather than
+  widen.
 
 ### Known-blocked criteria
 
-None for M1's provider surface. The gateway credential exists locally, and the tool-call and
-structured-output round trips were both proven live against `claude-sonnet-4-6` during the seed
-(design §2.4). Two narrower notes:
+None for M1's provider surface. The gateway credential exists locally and both real-model tiers have
+been run against it. Three notes, all of them corrections to what this section claimed before the
+milestone was built:
 
-- The **scheduled** canary cannot fire until M1 reaches the default branch, because GitHub runs
-  `schedule` triggers only from the default branch's workflow file. Score the canary through
-  `workflow_dispatch` and do not treat an unfired schedule as a defect.
-- A **repository secret** for `LITELLM_API_KEY` may not exist when a bean is evaluated
-  (`gh secret list --repo peel/fiddle --json name` returned `[]` at baseline). That gates the
-  CI-exercised path only, never the local one; score it against the degraded path and record the
-  CI path as blocked rather than redefining the criterion.
-
-Model names come from the gateway, not from the RFC: the RFC's `claude-sonnet-4-5` is not
-available there. A bean that hardcodes an RFC model name has a runtime defect, not a style
-problem.
+- **There is no live proof against a Claude-family model, and one is not expected.** An earlier
+  draft recorded the tool-call and structured-output round trips as proven live against
+  `claude-sonnet-4-6`. Measurement superseded that: through this gateway `claude-haiku-4-5` and
+  `claude-sonnet-5` both finalise after a single `list_files`, and sonnet then fails its own report
+  schema. The round trips are proven live against `bedrock/moonshotai.kimi-k2.5`, `deepseek.v3.2`
+  and `zai.glm-5` — see ADR 012's table, which is the committed record. A bean whose real-model lane
+  defaults to a Claude-family model is choosing the worst-measured path on this gateway.
+- **No repository secret exists, and no lane needs one.** `gh secret list --repo peel/fiddle --json
+  name` returns `[]`. Nothing in `.github/workflows` invokes a real-model lane, so there is no
+  CI-exercised path to be blocked. Score the tiers from their local invocation; the absence of a CI
+  path is ADR 012's decision, not a blocked criterion.
+- **Model names come from the gateway, not from the RFC.** The RFC's `claude-sonnet-4-5` is not
+  available there. A bean that hardcodes an RFC model name has a runtime defect, not a style
+  problem.
