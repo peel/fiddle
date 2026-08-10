@@ -1,0 +1,152 @@
+# M2's remote half: the walk `scripts/live-github.sh` performs, run from a real
+# runner, so "remote GitHub Actions execution" is evidenced by a run id and a
+# conclusion rather than claimed from a file. It invokes that script rather than
+# repeating it — one lane, two places it can be started from.
+#
+# ## READ THIS FIRST IF YOU CANNOT DISPATCH THIS WORKFLOW
+#
+# `workflow_dispatch` resolves workflows on the repository's **default branch
+# only**. Until this file is on `main`, GitHub creates no workflow entity for it
+# at all, and every way of starting it fails identically:
+#
+#     $ gh workflow run github-effects.yml --repo peel/fiddle --ref <any-branch>
+#     HTTP 404: workflow github-effects.yml not found on the default branch
+#
+#     $ gh api repos/peel/fiddle/actions/workflows --jq '.workflows[].path'
+#     ... this file absent from the list ...
+#
+# Note what that does *not* mean. `workflow_dispatch` **is** the manual trigger,
+# so "just run it by hand" is the same mechanism and is equally blocked — the
+# Actions UI button does not appear either, because the workflow does not exist
+# as far as GitHub is concerned. There is no ref you can pass to work around it.
+#
+# So a dispatch-only lane living on a feature branch is not slow or awkward, it
+# is **inert**, and it stays inert for everyone until the file merges. That is
+# the only reason M2 shipped with this lane's run evidence obtained under a
+# temporarily flipped default branch (run 31364842113, event workflow_dispatch,
+# conclusion success, `main` restored immediately and asserted): the mechanism
+# was proven, the lane was not yet live. Once this file is on `main`, dispatch it
+# once with any `fiddle_effect_id` and that gap closes on its own — no code
+# change is owed.
+#
+# The lesson generalises past this file: any future dispatch-only lane inherits
+# the same property, and a milestone that plans one on a feature branch has
+# planned something it cannot exercise.
+#
+# ## This lane never gates
+#
+# `workflow_dispatch` is its only trigger. No `push`, no `pull_request`, no
+# `schedule`, and no reusable-workflow entry point either, because it needs a
+# credential and an external repository — the two things M0's hard constraint
+# keeps out of a milestone lane. `.github/workflows/rust.yml` is the gate and
+# stays offline and credential-free; nothing here is reachable from it.
+#
+# ## Why a named repository secret and not the job's GITHUB_TOKEN
+#
+# The walk writes to `peel/fiddle-effects-acceptance`: it pushes a branch, opens
+# a pull request, and dispatches a workflow run there. `secrets.GITHUB_TOKEN` is
+# minted per run and scoped to **this** repository alone, so it cannot write to
+# another repository whatever the `permissions:` block below says — that block
+# can only *narrow* the job token, never widen its reach past `peel/fiddle`.
+# Hence `FIDDLE_EFFECTS_TOKEN`, a fine-grained personal access token whose
+# repository selection deliberately **excludes** `peel/fiddle`;
+# `docs/technical/effects-repository.md` records the probes that establish both
+# halves of that, including the 403 proving it cannot enumerate any repository's
+# secrets.
+#
+# This is the mirror image of `.github/workflows/acceptance-repo.yml`, whose
+# header explains at equal length why *no* secret appears in it: that lane only
+# ever reads a public repository, so the credential-free rule costs it nothing.
+# This one writes, so it cannot be credential-free — and therefore cannot gate.
+#
+# ## Why an absent secret is a failure and not a skip
+#
+# A silently skipped lane is indistinguishable from a passing one. So there is no
+# `if:` anywhere in this file — a job or step conditioned on the secret would go
+# green by not running — and no `continue-on-error:`, so the job's conclusion is
+# the lane's verdict. `${{ secrets.X }}` renders as the empty string when `X`
+# does not exist (GitHub does not error), which is why the first step tests for
+# emptiness and exits non-zero, before the checkout and the build, naming what it
+# needs. The script it eventually calls holds the same line with `:?` on
+# `FIDDLE_GITHUB_TOKEN`; this step is the earlier and louder of the two, not a
+# replacement for it.
+name: github-effects
+# Echoes the input back, so a dispatch can be found again in the runs listing —
+# the same trick, for the same reason, as the `run-name` the dispatch target in
+# `peel/fiddle-effects-acceptance` carries. It also makes `inputs` observably
+# resolvable at workflow level, which is what the `concurrency` group below
+# depends on.
+run-name: github-effects ${{ inputs.fiddle_effect_id || github.run_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      fiddle_effect_id:
+        description: "Effect id, echoed into run-name so a dispatch can be found again"
+        required: false
+# Only what `actions/checkout` of this repository needs. The credentialed work
+# does not use this token at all.
+permissions:
+  contents: read
+# Keyed on the effect id with `cancel-in-progress: false` — the same contract
+# `EnsureCheckRequested` requires of its own dispatch target, and for the same
+# reason: `POST .../dispatches` answers 204 with no run id, so a run cancelled
+# mid-flight turns a write whose answer was already unavailable into a genuinely
+# ambiguous one, which is the single outcome this milestone must not manufacture.
+# With no id supplied the group falls back to this run's own id, so two anonymous
+# dispatches still never share a group and neither can cancel the other.
+concurrency:
+  group: github-effects-${{ inputs.fiddle_effect_id || github.run_id }}
+  cancel-in-progress: false
+jobs:
+  effects:
+    runs-on: ubuntu-latest
+    steps:
+      # First, because an absent credential should cost seconds and name itself
+      # rather than fail five minutes later inside the script's own `:?`.
+      - name: Require FIDDLE_EFFECTS_TOKEN — fail loudly, never skip
+        env:
+          FIDDLE_EFFECTS_TOKEN: ${{ secrets.FIDDLE_EFFECTS_TOKEN }}
+        run: |
+          if [ -z "${FIDDLE_EFFECTS_TOKEN:-}" ]; then
+            echo "::error title=github-effects: FIDDLE_EFFECTS_TOKEN is not set::This lane fails rather than skips, because a silently-skipped lane is indistinguishable from a passing one."
+            {
+              echo "github-effects needs the repository secret FIDDLE_EFFECTS_TOKEN."
+              echo
+              echo "  What it must be: a fine-grained personal access token whose repository"
+              echo "  selection is peel/fiddle-effects-acceptance, with Contents, Pull requests"
+              echo "  and Workflows at read and write, and no Secrets permission at all."
+              echo "  See docs/technical/effects-repository.md."
+              echo
+              echo "  Where it goes: Settings -> Secrets and variables -> Actions on this"
+              echo "  repository, as an Actions secret named FIDDLE_EFFECTS_TOKEN:"
+              echo "    gh secret set FIDDLE_EFFECTS_TOKEN --repo ${GITHUB_REPOSITORY} < token.txt"
+              echo
+              echo "  Why not the job's GITHUB_TOKEN: it is scoped to ${GITHUB_REPOSITORY} and"
+              echo "  cannot write to another repository whatever this workflow's permissions"
+              echo "  block says. See this file's header."
+            } >&2
+            exit 1
+          fi
+          echo "FIDDLE_EFFECTS_TOKEN is present. Its value is never printed or logged."
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        # Kept in lockstep with rust-toolchain.toml, rust.yml and
+        # acceptance-repo.yml: dtolnay/rust-toolchain requires an explicit
+        # toolchain and will not read that file.
+        with: { toolchain: "1.97.1" }
+      - run: cargo build --release
+      # `gh`, `git` and `jq` are all preinstalled on ubuntu-latest, and the
+      # script checks for each and fails with a clear message rather than a
+      # confusing one if any is missing.
+      #
+      # Only FIDDLE_GITHUB_TOKEN is set: that is the name both this script and
+      # the `[github] token = { env = ... }` table it writes agree on, and the
+      # secret's different name is mapped to it here, on one line. GH_TOKEN is
+      # deliberately *not* set, because the script exports it from
+      # FIDDLE_GITHUB_TOKEN itself — alongside a scratch GH_CONFIG_DIR, so the
+      # credential its `gh` uses is provably the one it was handed. A second
+      # source here would mask a regression in exactly that plumbing.
+      - name: M2 GitHub-effect walk (live, credentialed, never part of the gate)
+        env:
+          FIDDLE_GITHUB_TOKEN: ${{ secrets.FIDDLE_EFFECTS_TOKEN }}
+        run: FIDDLE_BIN="$PWD/target/release/fiddle" scripts/live-github.sh
