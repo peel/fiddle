@@ -261,6 +261,11 @@ struct World {
     dir: TempDir,
     steps: Mutex<Vec<&'static str>>,
     model: MockCompletionModel,
+    /// Who this deployment nominated. A field rather than a constant in
+    /// [`World::resolve`] so that a deployment which nominated *nobody* is a world
+    /// this file can build — see
+    /// [`a_deployment_that_nominated_nobody_authorizes_nobody`].
+    allowlist: Vec<u64>,
 }
 
 /// The walk writes down which step it is on, and the world keeps the list. This
@@ -288,6 +293,7 @@ impl World {
             dir,
             steps: Mutex::new(Vec::new()),
             model: MockCompletionModel::new([MockTurn::text(scripted)]),
+            allowlist: vec![APPROVER],
         };
         world.pull(json!({
             "state": "open",
@@ -296,6 +302,12 @@ impl World {
             "head": {"sha": HEAD_SHA},
         }));
         world
+    }
+
+    /// The same world under a different allowlist, including an empty one.
+    fn authorizing(mut self, ids: &[u64]) -> Self {
+        self.allowlist = ids.to_vec();
+        self
     }
 
     /// Put one pull request in the world, as `GET /repos/{repo}/pulls/{n}`
@@ -384,7 +396,7 @@ impl World {
             kind: EffectKind::EnsurePullRequestReady,
             target: &target,
             payload: &payload,
-            allowlist: &[APPROVER],
+            allowlist: &self.allowlist,
         };
         resolve(
             &ctx,
@@ -562,6 +574,43 @@ fn with_only_unauthorized_replies() -> World {
     world
 }
 
+/// An approving conversation in a deployment that nominated nobody.
+///
+/// Not the same arrangement as [`with_only_unauthorized_replies`], and the
+/// difference is the point: there the allowlist holds somebody and the reply's
+/// author is not them, here the allowlist is empty and the reply's author is the
+/// person every other case here authorizes. Removing the allowlist check
+/// altogether — inversion I9 — is a third thing again, and none of the three
+/// stands in for the others.
+fn with_nobody_authorized() -> World {
+    approving().authorizing(&[])
+}
+
+/// A request comment whose marker names a payload the rebuilt operation does not
+/// produce: the head widened to `*`, which is the shape a mistake takes.
+fn with_a_widened_payload() -> World {
+    let world = World::new(APPROVES);
+    let (request, effect, _) = derived();
+    let widened = render_marker(&DecisionBinding {
+        request,
+        effect,
+        payload: payload_hash(r#"{"head":"*","pr":7,"repo":"acme/r"}"#),
+        head_sha: HEAD_SHA.to_string(),
+    });
+    world.converse(&[
+        Comment::new(ASKED, APPROVER, &format!("{QUESTION}\n\n{widened}")),
+        Comment::new(1_002, APPROVER, YES),
+    ]);
+    world
+}
+
+/// A conversation GitHub would not return.
+fn with_an_unreadable_conversation() -> World {
+    let world = approving();
+    world.unreadable(500);
+    world
+}
+
 /// fiddle's question and nothing else.
 fn with_only_the_request_comment() -> World {
     let world = World::new(APPROVES);
@@ -671,13 +720,29 @@ async fn every_refusal_names_what_actually_moved() {
         with_marker_for_another_effect().resolve().await,
         Err(DecisionError::ForeignEffect { .. })
     ));
+    // The two edits are two refusals. One variant carrying a comment number would
+    // have satisfied every line in this test while telling a reader which of the
+    // two happened only if they went and looked the number up.
+    let edited_request = with_edited_request()
+        .resolve()
+        .await
+        .expect_err("an edited request comment refuses");
     assert!(matches!(
-        with_edited_request().resolve().await,
-        Err(DecisionError::Edited { comment: ASKED })
+        edited_request,
+        DecisionError::RequestEdited { comment: ASKED }
     ));
+    // And it names the edit rather than a window it does not establish. This
+    // fixture's edit is already visible *in the listing* — `created_at` and
+    // `updated_at` disagree there — so a message claiming the comment changed
+    // since it was listed would be false of the check that produced it.
+    assert!(
+        !edited_request.to_string().contains("since it was listed"),
+        "the evidence is `created_at != updated_at`, which an edit made before the \
+         listing fails too: {edited_request}"
+    );
     assert!(matches!(
         with_edited_approval().resolve().await,
-        Err(DecisionError::Edited { comment: 1_002 })
+        Err(DecisionError::ReplyEdited { comment: 1_002 })
     ));
     assert!(matches!(
         with_closed_pr().resolve().await,
@@ -698,32 +763,75 @@ async fn every_refusal_names_what_actually_moved() {
 /// The variants above are what code matches on; these are what a person reads,
 /// and a distinct variant carrying a shared message would satisfy the first claim
 /// while defeating the second.
+///
+/// Two things are what make this test able to *fail*, and neither is incidental:
+///
+/// - **Every refusal reachable here is in the list** — ten worlds for the ten
+///   `DecisionError` variants, including both edits, which are the pair most
+///   likely to be folded together because they carry the same field. A world left
+///   out is a message this test cannot read, and an omission looks exactly like a
+///   pass.
+/// - **The comparison has the numbers taken out of it.** Comparing messages
+///   verbatim would let two instances of *one* variant pass by carrying different
+///   comment ids — which is the shared refusal this test forbids, wearing a number
+///   as a disguise. Distinctness is asserted over the variant as well, so a
+///   collapse is caught whether or not the prose was changed with it.
 #[tokio::test]
 async fn no_two_refusals_read_the_same_to_a_person() {
-    let mut messages = Vec::new();
+    let mut refusals = Vec::new();
     for world in [
         without_request(),
         with_duplicate_request(),
         with_marker_for_another_effect(),
         with_edited_request(),
+        with_edited_approval(),
         with_closed_pr(),
         with_ready_pr(),
         with_moved_head(),
+        with_a_widened_payload(),
+        with_an_unreadable_conversation(),
     ] {
-        messages.push(
+        refusals.push(
             world
                 .resolve()
                 .await
-                .expect_err("each of these worlds refuses")
-                .to_string(),
+                .expect_err("each of these worlds refuses"),
         );
     }
+    // One variant per condition. `matches!` on a variant name cannot see this,
+    // because two conditions folded into one variant still match the name they
+    // were folded into.
+    for (at, refusal) in refusals.iter().enumerate() {
+        for other in &refusals[at + 1..] {
+            assert_ne!(
+                std::mem::discriminant(refusal),
+                std::mem::discriminant(other),
+                "{refusal:?} and {other:?} are two conditions sharing one variant"
+            );
+        }
+    }
+    // And one sentence per condition, read the way a person reads it rather than
+    // the way an id makes it look.
+    let messages: Vec<String> = refusals
+        .iter()
+        .map(|refusal| without_numbers(&refusal.to_string()))
+        .collect();
     for (at, message) in messages.iter().enumerate() {
         assert!(
             !messages[at + 1..].contains(message),
-            "{message:?} is two different refusals"
+            "{message:?} is two refusals told apart only by the numbers in them"
         );
     }
+}
+
+/// One refusal's message with every digit taken out of it.
+///
+/// Crude on purpose. What has to be defeated is a message whose only
+/// distinguishing content is an identifier — a comment number, a digest, a
+/// revision — and deleting the digits defeats it without a pattern that has to
+/// guess which parts of a sentence are identifiers.
+fn without_numbers(message: &str) -> String {
+    message.chars().filter(|c| !c.is_ascii_digit()).collect()
 }
 
 /// A conversation that could not be read is never an empty one.
@@ -735,8 +843,7 @@ async fn no_two_refusals_read_the_same_to_a_person() {
 /// nobody had asked.
 #[tokio::test]
 async fn an_unreadable_conversation_is_not_a_missing_request() {
-    let world = approving();
-    world.unreadable(500);
+    let world = with_an_unreadable_conversation();
     assert!(matches!(
         world.resolve().await,
         Err(DecisionError::Unreadable(_))
@@ -893,6 +1000,42 @@ async fn neither_a_bot_nor_an_app_can_decide() {
             .any(|i| i.comment == 1_002 && i.reason == Ignored::NotAPerson));
         assert_eq!(world.model_calls(), 0);
     }
+}
+
+/// A deployment that nominated nobody authorizes nobody.
+///
+/// Distinct from removing the allowlist check, which is what an inversion does to
+/// the production code, and the two failure modes are opposite: a check that was
+/// deleted authorizes everybody, while a list that is *empty* must authorize
+/// nobody — including the person every other case in this file nominates, whose
+/// reply is the one being ignored here. Worth its own case because a run
+/// configured with no approvers is a real configuration and not a broken one, and
+/// nothing else here drives it.
+#[tokio::test]
+async fn a_deployment_that_nominated_nobody_authorizes_nobody() {
+    let world = with_nobody_authorized();
+    let decision = world
+        .resolve()
+        .await
+        .expect("an unanswered question is not an error");
+    assert!(
+        decision.acted_on_nothing(),
+        "an empty allowlist cannot authorize the approval it received"
+    );
+    assert!(
+        decision.considered.is_empty(),
+        "there is no candidate to consider: {:?}",
+        decision.considered
+    );
+    assert!(
+        decision
+            .ignored
+            .iter()
+            .any(|i| i.comment == 1_002 && i.reason == Ignored::ActorNotAuthorized),
+        "the reply is recorded as declined rather than dropped: {:?}",
+        decision.ignored
+    );
+    assert_eq!(world.model_calls(), 0);
 }
 
 /// The request comment is never read as a reply to itself.
@@ -1091,19 +1234,7 @@ fn a_verdict_that_is_not_an_approval_has_no_spelling_the_executor_would_spend() 
 /// deletes one of the two claims.
 #[tokio::test]
 async fn an_approval_for_a_different_payload_is_refused_before_the_executor() {
-    let world = World::new(APPROVES);
-    let (request, effect, _) = derived();
-    let widened = render_marker(&DecisionBinding {
-        request,
-        effect,
-        payload: payload_hash(r#"{"head":"*","pr":7,"repo":"acme/r"}"#),
-        head_sha: HEAD_SHA.to_string(),
-    });
-    world.converse(&[
-        Comment::new(ASKED, APPROVER, &format!("{QUESTION}\n\n{widened}")),
-        Comment::new(1_002, APPROVER, YES),
-    ]);
-
+    let world = with_a_widened_payload();
     let error = world
         .resolve()
         .await

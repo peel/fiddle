@@ -11,9 +11,10 @@
 //!
 //! That is not a performance argument. Every refusal below is a decision the
 //! shell can reach on its own — there is no request comment, there are two, the
-//! marker names an effect this run does not derive, a comment was rewritten after
-//! it was listed, the pull request was closed, it is already out of draft, its
-//! head moved, nobody authorized has replied at all. A walk that asked a model to
+//! marker names an effect this run does not derive, fiddle's own question has been
+//! edited, a reply was rewritten after it was listed, the pull request was closed,
+//! it is already out of draft, its head moved, nobody authorized has replied at
+//! all. A walk that asked a model to
 //! read a comment it was going to refuse anyway has given the model a say in a
 //! decision the shell had already made, and the model's say is the one part of
 //! this system nobody can bound. So the order is announced to a
@@ -61,7 +62,7 @@
 //! not a comment that appears after it in the returned vector; the reply that
 //! decides is the one with the **greatest id**, and not the last element. Against
 //! a sorted fixture the two readings are indistinguishable, which is exactly why
-//! `a_scrambled_listing_reaches_the_same_decision` exists.
+//! `a_scrambled_listing_reaches_the_same_decision_as_a_sorted_one` exists.
 //!
 //! # What the model is handed, and what it is not
 //!
@@ -153,6 +154,13 @@ pub trait DecisionTrace: Send + Sync {
 /// One variant per condition rather than one shared `Stale`, because a refusal
 /// whose message is "stale" sends its reader back to the conversation to guess
 /// which of eight things happened. Each message below names the thing.
+///
+/// One variant per *condition* and not one per *field shape*: two conditions that
+/// happen to carry the same payload — a comment number, say — are still two
+/// variants, because a message a reader can only disambiguate by looking up that
+/// number is the shared `Stale` again in a longer sentence. That is the whole of
+/// why [`DecisionError::RequestEdited`] and [`DecisionError::ReplyEdited`] are two
+/// things.
 #[derive(Debug, thiserror::Error)]
 pub enum DecisionError {
     /// More than one comment names this request. Reported, never chosen from.
@@ -178,11 +186,30 @@ pub enum DecisionError {
     /// does not match means it is ours and the work has changed underneath it.
     #[error("the marker names payload {found} and this run rebuilds {derived}")]
     ForeignPayload { found: String, derived: String },
-    /// A comment is not the comment that was read. Either it changed between the
-    /// listing and the re-read, or — for the request comment, which fiddle wrote
-    /// and never rewrites — it has been edited at all.
-    #[error("comment {comment} changed since it was listed")]
-    Edited { comment: u64 },
+    /// fiddle's own question has been edited, which fiddle has no path that does.
+    ///
+    /// Separate from [`DecisionError::ReplyEdited`] rather than one `Edited`
+    /// carrying a comment number, because the number is the only thing that would
+    /// have distinguished them and a reader holding the message would have had to
+    /// go back to the conversation to learn whether it named fiddle's question or
+    /// somebody's answer — the one act every refusal here exists to spare them.
+    ///
+    /// The evidence is `created_at != updated_at`, which is a claim about the
+    /// comment's whole history and not about the window between the listing and
+    /// the re-read: an edit made long before this walk started fails it too. The
+    /// message says so.
+    #[error("the request comment {comment} has been edited since fiddle wrote it")]
+    RequestEdited { comment: u64 },
+    /// A candidate reply is not the reply that was listed.
+    ///
+    /// The evidence is narrower than [`DecisionError::RequestEdited`]'s and the
+    /// message is correspondingly narrower: `updated_at` moved between the listing
+    /// and the re-read, so this walk selected one text and was about to read
+    /// another. A reply edited before the listing is not this refusal — it is
+    /// simply the reply, and a person is entitled to compose one in more than one
+    /// pass.
+    #[error("reply {comment} changed between the listing and the re-read")]
+    ReplyEdited { comment: u64 },
     /// The pull request was closed or merged. Whatever was approved, it is not a
     /// transition this object can still make.
     #[error("the pull request is no longer open")]
@@ -417,13 +444,18 @@ where
 
     // Step 5. Everything the decision rests on, read again by its own id.
     trace.step(DecisionStep::ReReadCandidates);
-    let asked_again = reread(ctx, walk.repo, asked).await?;
+    let asked_again = reread(ctx, walk.repo, asked, |comment| {
+        DecisionError::RequestEdited { comment }
+    })
+    .await?;
     // fiddle wrote this comment and has no path that edits one, so an edit is
     // somebody else's. `created_at` and `updated_at` are equal on a comment
     // nobody has touched, which makes the whole history visible rather than only
-    // the window between the listing and this read.
+    // the window between the listing and this read — and is why both of this
+    // comment's refusals are spelled `RequestEdited`: an edit found either way is
+    // the same fact about the same comment, and neither is news about a reply.
     if asked_again.created_at != asked_again.updated_at {
-        return Err(DecisionError::Edited {
+        return Err(DecisionError::RequestEdited {
             comment: asked.comment,
         });
     }
@@ -432,7 +464,12 @@ where
         // The re-read is what is carried onward, not the listing. An approval this
         // run acts on is the text of a comment it has just read, rather than a
         // snapshot of one taken some pages ago.
-        considered.push(reread(ctx, walk.repo, candidate).await?);
+        considered.push(
+            reread(ctx, walk.repo, candidate, |comment| {
+                DecisionError::ReplyEdited { comment }
+            })
+            .await?,
+        );
     }
 
     // Step 6. The world, as it is now rather than as it was when the question was
@@ -539,18 +576,23 @@ fn select_candidates<'c>(
 /// listing carried means the text this walk is about to read is not the text it
 /// selected. An approval that was rewritten after it was listed is not an
 /// approval this run may act on.
+///
+/// `moved` is how the refusal is spelled, and it is the caller's to supply
+/// because the two callers are refusing two different things: fiddle's own
+/// question having been touched at all, and a reply having changed under a walk
+/// that had already chosen it. One shared spelling would have left a reader
+/// deciding which from a comment number alone.
 async fn reread(
     ctx: &EffectContext,
     repo: &str,
     listed: &HumanResponse,
+    moved: fn(u64) -> DecisionError,
 ) -> Result<HumanResponse, DecisionError> {
     let current = read_one_comment(&ctx.gh, repo, listed.comment, &ctx.cancel)
         .await
         .map_err(unreadable)?;
     if current.updated_at != listed.updated_at {
-        return Err(DecisionError::Edited {
-            comment: listed.comment,
-        });
+        return Err(moved(listed.comment));
     }
     Ok(current)
 }
