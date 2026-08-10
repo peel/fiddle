@@ -750,6 +750,13 @@ fn comment_answer(dir: &Path, path: &str) -> Option<(u16, String, String)> {
 /// header being *absent* rather than on `rel="next"` being absent would run past
 /// the end here rather than passing.
 ///
+/// The header can also be scripted verbatim, by writing `page-{k}.link` beside
+/// the page. That *replaces* the synthesized one rather than adding to it,
+/// because the cases needing it are the ones asserting which RFC 8288 spellings
+/// of a relation are read as a further page — `rel="next last"`, `rel = "next"`,
+/// a relation spelled inside another parameter's value — and a synthesized
+/// `rel="next"` sitting alongside would answer those either way.
+///
 /// A page nobody scripted is a panic naming the file, and deliberately not an
 /// empty list. This route has no unscripted default at all, because the reads
 /// it serves are the ones whose whole subject is completeness: an empty answer
@@ -791,9 +798,13 @@ fn comment_page(dir: &Path, collection: &str, path: &str) -> (u16, String, Strin
         rels.push(link(page - 1, "prev"));
         rels.push(link(1, "first"));
     }
-    let headers = match rels.is_empty() {
-        true => String::new(),
-        false => format!("Link: {}\r\n", rels.join(", ")),
+    let scripted = std::fs::read_to_string(dir.join(collection).join(format!("page-{page}.link")));
+    let headers = match scripted {
+        Ok(header) => format!("Link: {}\r\n", header.trim_end_matches(['\r', '\n'])),
+        Err(_) => match rels.is_empty() {
+            true => String::new(),
+            false => format!("Link: {}\r\n", rels.join(", ")),
+        },
     };
     (200, headers, body)
 }

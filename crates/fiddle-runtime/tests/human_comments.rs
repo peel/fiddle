@@ -85,6 +85,19 @@ impl World {
         .unwrap();
     }
 
+    /// The `Link` header one page carries, written verbatim.
+    ///
+    /// For the cases whose subject is the header rather than the pages behind
+    /// it. It replaces the header the stub would have synthesized, so a case
+    /// asserting that some spelling of a relation *is* read as a further page is
+    /// asserting it about that spelling and not about a `rel="next"` the fixture
+    /// added anyway.
+    fn link(&self, collection: &str, page: u64, header: &str) {
+        let dir = self.dir.path().join(collection);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("page-{page}.link")), header).unwrap();
+    }
+
     /// One comment answered by its own id, which is a different route from the
     /// listing and is scripted separately.
     fn by_id(&self, collection: &str, id: u64, comment: &serde_json::Value) {
@@ -177,6 +190,148 @@ async fn a_conversation_longer_than_the_bound_is_refused_not_truncated() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("more than 2 pages"), "got {err}");
+}
+
+/// The bound's boundary. Exactly `max_pages` pages is a conversation that was
+/// read, not one that ran past its allowance.
+///
+/// Without this case `1..max_pages` and `1..=max_pages` are indistinguishable to
+/// the suite — the refusal case above scripts four pages against a bound of two
+/// and still errors after one, and every other case here runs a bound of ten
+/// against at most three pages. So the effective bound could be off by one and
+/// the only symptom would be a conversation refused for being exactly as long as
+/// it was allowed to be.
+#[tokio::test]
+async fn exactly_max_pages_is_read_and_not_refused() {
+    let world = World::new();
+    for k in 1..=3 {
+        world.page("issue-comments", k, &[comment(k, "peel", 505401, "x")]);
+    }
+    let all = read_conversation(&world.gh(), "acme/r", 7, 3, &token())
+        .await
+        .unwrap();
+    assert_eq!(all.iter().map(|c| c.comment).collect::<Vec<_>>(), [1, 2, 3]);
+}
+
+/// RFC 8288 gives a relation more shapes than GitHub happens to send, and every
+/// one of them must be read as a further page.
+///
+/// The value is a space-separated *set* of relation types, so `rel="next last"`
+/// is a next; the quotes are optional, so `rel=next` is one; whitespace is legal
+/// around the `=`, so `rel = "next"` is one; and a relation is not required to be
+/// the first parameter. Reading any of them as an end returns `Ok` with a partial
+/// conversation, which the module's own header calls the worst of its three
+/// failure shapes.
+///
+/// And it is worse than an incomplete list. §5.6 gives the decision to the LAST
+/// authorized reply, chosen exactly so that an approval followed by "wait, no"
+/// does not mutate. Each case here puts the approval on page one and the
+/// retraction on page two: a read that stops at the header sees the approval
+/// alone and the run proceeds. The one case §5.6 exists to protect is the case a
+/// truncation defeats, which is why this is a safety property and not tidiness.
+#[tokio::test]
+async fn a_relation_list_and_sloppy_whitespace_are_still_a_next_page() {
+    const PAGE_2: &str = "https://api.github.com/repositories/1/issues/7/comments?page=2";
+    for header in [
+        format!(r#"<{PAGE_2}>; rel="next last""#),
+        format!(r#"<{PAGE_2}>; rel = "next""#),
+        format!(r#"<{PAGE_2}>; rel=next"#),
+        format!(r#"<{PAGE_2}>; type="application/json", rel="next""#),
+        format!(r#"<{PAGE_2}>; rel="NEXT""#),
+    ] {
+        let world = World::new();
+        world.page(
+            "issue-comments",
+            1,
+            &[comment(1, "peel", 505401, "approve")],
+        );
+        world.page(
+            "issue-comments",
+            2,
+            &[comment(2, "peel", 505401, "wait, no")],
+        );
+        world.link("issue-comments", 1, &header);
+        let all = read_conversation(&world.gh(), "acme/r", 7, 10, &token())
+            .await
+            .unwrap_or_else(|error| panic!("{header:?} was not read at all: {error}"));
+        assert_eq!(all.len(), 2, "{header:?} was read as an end of pages");
+        assert_eq!(all[1].body, "wait, no");
+    }
+}
+
+/// And the other direction, which widening the parser must not cost. A relation
+/// is a parameter named exactly `rel` sitting after the target, so a relation
+/// spelled inside another parameter's value, spelled in the URL, or spelled as
+/// the prefix of a longer token is not one.
+#[tokio::test]
+async fn a_relation_named_somewhere_else_is_not_a_next_page() {
+    const PAGE_2: &str = "https://api.github.com/repositories/1/issues/7/comments?page=2";
+    /// A cursor that spells the relation in its own path. GitHub chose this text
+    /// and this client only passes it on, so it must not be able to claim to be
+    /// a relation.
+    const SPELLS_IT_IN_THE_PATH: &str =
+        "https://api.github.com/repositories/1/issues/7/next?page=2";
+    for header in [
+        format!(r#"<{PAGE_2}>; title="rel=next""#),
+        format!(r#"<{SPELLS_IT_IN_THE_PATH}>; rel="prev""#),
+        format!(r#"<{PAGE_2}>; rel="nextish""#),
+        format!(r#"<{PAGE_2}>; rel="prev first""#),
+    ] {
+        let world = World::new();
+        world.page("issue-comments", 1, &[comment(1, "peel", 505401, "only")]);
+        world.page(
+            "issue-comments",
+            2,
+            &[comment(2, "peel", 505401, "unreachable")],
+        );
+        world.link("issue-comments", 1, &header);
+        let all = read_conversation(&world.gh(), "acme/r", 7, 10, &token())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 1, "{header:?} was read as a next page");
+        assert_eq!(all[0].body, "only");
+    }
+}
+
+/// A header this client cannot interpret is not an end of pages. It walks the
+/// read to its bound and fails there, because a refusal naming the bound is a
+/// thing somebody investigates and a silent successful truncation is a thing
+/// somebody acts on.
+///
+/// Both pages carry the unreadable header and the bound is two, so the walk is
+/// asserted out of the requests the stub recorded rather than out of the error
+/// alone. A read that stopped at page one would produce the same message on a
+/// bound of one, and that is a message an empty loop can also produce.
+#[tokio::test]
+async fn a_link_header_that_cannot_be_read_is_refused_not_treated_as_the_end() {
+    let world = World::new();
+    world.page(
+        "issue-comments",
+        1,
+        &[comment(1, "peel", 505401, "approve")],
+    );
+    world.page(
+        "issue-comments",
+        2,
+        &[comment(2, "peel", 505401, "wait, no")],
+    );
+    for page in 1..=2 {
+        world.link(
+            "issue-comments",
+            page,
+            "something that is not a link at all",
+        );
+    }
+    let err = read_conversation(&world.gh(), "acme/r", 7, 2, &token())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("more than 2 pages"), "got {err}");
+    assert_eq!(
+        world.recorded_paths().len(),
+        2,
+        "the read stopped instead of walking: {:?}",
+        world.recorded_paths()
+    );
 }
 
 /// Inline review comments are a different collection and are never consulted for

@@ -28,7 +28,10 @@
 //! looking like it found none. Pages are followed while the response's `Link`
 //! header carries `rel="next"` — the only thing that actually says another page
 //! exists. Counting what came back does not: the API's page size is its choice
-//! and a short page is not an end.
+//! and a short page is not an end. Every RFC 8288 spelling of that relation is
+//! read as one, and a header [`has_a_next_page`] cannot interpret at all is
+//! reported as a further page rather than as an end — because the doubt has to
+//! resolve somewhere, and only one of the two answers is a failure anybody sees.
 //!
 //! The bound is [`read_conversation`]'s `max_pages`, and reaching it is an
 //! error rather than a truncation. "I read everything and found no approval"
@@ -45,6 +48,14 @@
 //! whole read. A partial list is the worst of the three: it is the shape that
 //! silently answers the question with the half of the conversation that
 //! happened to parse.
+//!
+//! And §5.6 is why it is the worst. The decision belongs to the *last*
+//! authorized reply, chosen so that an approval followed by "wait, no" does not
+//! mutate. Truncate between those two comments and the read succeeds carrying the
+//! approval alone, so the run acts on information already known to be superseded:
+//! the one case that rule exists to protect is the case a silent truncation
+//! defeats. Every choice about pagination here follows from that, including which
+//! way an ambiguous `Link` header is resolved.
 
 use crate::github::{GhCli, GhError};
 use fiddle_core::ActorRef;
@@ -223,24 +234,93 @@ pub async fn read_one_comment(
 /// `rel="first"`, so a client that followed pages while a header existed would
 /// walk to its own bound on every conversation longer than one page.
 ///
-/// Only the parameters of each segment are examined, never the URL inside the
+/// Only the parameters of each link-value are examined, never the URL inside the
 /// angle brackets. A page cursor is opaque text this client passes on rather
 /// than one it chose, and a URL containing the characters of a relation must
-/// not be able to claim to be one.
+/// not be able to claim to be one. For the same reason the parameter's name must
+/// be exactly `rel`, so a relation spelled inside some other parameter's value —
+/// `title="rel=next"` — is not a relation either.
+///
+/// # Every legal spelling of `next`, and which way to be wrong
+///
+/// RFC 8288 gives a relation more shapes than GitHub happens to send. The value
+/// is a space-separated *set* of relation types, so `rel="next last"` is a next;
+/// the quotes are optional, so `rel=next` is one; whitespace is legal around the
+/// `=`, so `rel = "next"` is one; and a relation need not be the first parameter.
+/// Each is read here by parsing the parameter — split at its first `=`, trim both
+/// halves, unquote the value, and look for `next` among the value's tokens —
+/// rather than by comparing the whole parameter against a single spelling, which
+/// is what this function used to do.
+///
+/// The direction of that old error is the point. Comparing against one spelling
+/// answered *"there are no more pages"* for every other legal one, and for this
+/// module that is the wrong way to be wrong. A header this parser cannot
+/// interpret means **"I could not read this"** and never "the conversation ends
+/// here": the first walks the read to [`read_conversation`]'s bound and fails
+/// there, which is a refusal an operator investigates, and the second is a silent
+/// successful truncation somebody acts on. So a header that is present but holds
+/// no link-value this function recognises is reported as a further page. A header
+/// GitHub never sent is still the end — an unpaginated response carries no
+/// `Link` at all, and that absence is GitHub saying so rather than this function
+/// failing to read something.
+///
+/// What makes the direction load-bearing rather than tidy is §5.6: the decision
+/// belongs to the *last* authorized reply, chosen exactly so that an approval
+/// followed by "wait, no" does not mutate. Truncate between the two — approval on
+/// page one, retraction on page two — and the read returns `Ok` carrying the
+/// approval alone and the run proceeds on information already known to be
+/// superseded. The one case §5.6 exists to protect is the case a truncation
+/// defeats. A module whose whole subject is completeness must not resolve doubt
+/// toward incompleteness.
 fn has_a_next_page(link: Option<&str>) -> bool {
-    link.unwrap_or_default().split(',').any(|segment| {
-        segment
-            .rsplit_once('>')
-            .map(|(_url, parameters)| parameters)
-            .unwrap_or(segment)
-            .split(';')
-            .any(|parameter| {
-                parameter
-                    .trim()
-                    .replace('"', "")
-                    .eq_ignore_ascii_case("rel=next")
-            })
-    })
+    let header = link.unwrap_or_default().trim();
+    if header.is_empty() {
+        // The one unambiguous end. GitHub omits the header entirely on a
+        // response it did not paginate, so nothing was misread here.
+        return false;
+    }
+    let mut read_a_link_value = false;
+    for segment in header.split(',') {
+        // The target ends at the last `>`, and only what follows it is
+        // parameters — so a cursor that spells a relation is inside the URL and
+        // never inspected. A segment with no target is a continuation of the
+        // previous link-value's parameter list, which is how a relation that
+        // follows another parameter is reached.
+        let parameters = match segment.rsplit_once('>') {
+            Some((_target, parameters)) => {
+                read_a_link_value = true;
+                parameters
+            }
+            None => segment,
+        };
+        if parameters.split(';').any(is_a_next_relation) {
+            return true;
+        }
+    }
+    // Present, and not one link-value in it. Not an end — unreadable.
+    !read_a_link_value
+}
+
+/// Whether one `Link` parameter is a relation set holding `next`.
+///
+/// Split at the *first* `=` so that a value containing one keeps it, and the name
+/// is compared whole so that `rel` is the parameter's name rather than a
+/// substring of a longer one. Unquoting with [`str::trim_matches`] accepts the
+/// unbalanced quote a stricter parser would reject, which is the same direction
+/// as everything else here: a relation half-legibly spelled `next` is a page this
+/// client should go and read.
+fn is_a_next_relation(parameter: &str) -> bool {
+    let Some((name, value)) = parameter.split_once('=') else {
+        return false;
+    };
+    if !name.trim().eq_ignore_ascii_case("rel") {
+        return false;
+    }
+    value
+        .trim()
+        .trim_matches('"')
+        .split_whitespace()
+        .any(|relation| relation.eq_ignore_ascii_case("next"))
 }
 
 #[cfg(test)]
@@ -276,5 +356,61 @@ mod tests {
         assert!(!has_a_next_page(Some(
             "<https://api.github.com/x?cursor=rel%3D%22next%22&z=;rel=\"next\">; rel=\"prev\""
         )));
+    }
+
+    /// The spellings RFC 8288 allows and GitHub does not happen to use. Each was
+    /// read as an end of pages by a parser that compared the whole parameter
+    /// against `rel=next`, which is a silent truncation of the conversation.
+    #[test]
+    fn every_legal_spelling_of_next_is_a_further_page() {
+        for header in [
+            // A relation list: the value is a set of relation types.
+            r#"<https://api.github.com/x?page=2>; rel="next last""#,
+            // Whitespace is legal around the '='.
+            r#"<https://api.github.com/x?page=2>; rel = "next""#,
+            // The quotes are optional on a single token.
+            r#"<https://api.github.com/x?page=2>; rel=next"#,
+            // Relation types are case-insensitive.
+            r#"<https://api.github.com/x?page=2>; rel="NEXT""#,
+            // And a relation need not come first.
+            r#"<https://api.github.com/x?page=2>; type="application/json"; rel="next""#,
+            // Nor need it be in the first link-value.
+            r#"<https://api.github.com/x?page=1>; rel="first", <https://api.github.com/x?page=2>; rel="prev next""#,
+        ] {
+            assert!(has_a_next_page(Some(header)), "{header:?} read as an end");
+        }
+    }
+
+    /// And widening what counts as a relation must not widen what counts as
+    /// `next`. A relation named inside another parameter's value is not one, a
+    /// longer token beginning with it is not one, and neither is a relation this
+    /// client has no interest in.
+    #[test]
+    fn a_relation_named_somewhere_else_is_not_a_further_page() {
+        for header in [
+            r#"<https://api.github.com/x?page=2>; title="rel=next""#,
+            r#"<https://api.github.com/x/next?page=2>; rel="prev""#,
+            r#"<https://api.github.com/x?page=2>; rel="nextish""#,
+            r#"<https://api.github.com/x?page=2>; relation="next""#,
+            r#"<https://api.github.com/x?page=2>; rel="prev first""#,
+        ] {
+            assert!(
+                !has_a_next_page(Some(header)),
+                "{header:?} read as a further page"
+            );
+        }
+    }
+
+    /// A header holding nothing this function recognises is not an end of pages.
+    /// The read walks to its bound and refuses there, because that refusal is a
+    /// thing an operator sees and a truncated conversation is not.
+    #[test]
+    fn a_header_that_cannot_be_read_is_not_an_end() {
+        assert!(has_a_next_page(Some("something else entirely")));
+        assert!(has_a_next_page(Some("https://api.github.com/x?page=2")));
+        // Whereas no header, and a header holding nothing at all, are the end:
+        // GitHub sends no `Link` on a response it did not paginate.
+        assert!(!has_a_next_page(None));
+        assert!(!has_a_next_page(Some("   ")));
     }
 }
