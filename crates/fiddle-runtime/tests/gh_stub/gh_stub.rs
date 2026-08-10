@@ -703,6 +703,16 @@ fn comment_answer(dir: &Path, path: &str) -> Option<(u16, String, String)> {
 /// because that is what GitHub sends and because a client that stopped on the
 /// header being *absent* rather than on `rel="next"` being absent would run past
 /// the end here rather than passing.
+///
+/// A page nobody scripted is a panic naming the file, and deliberately not an
+/// empty list. This route has no unscripted default at all, because the reads
+/// it serves are the ones whose whole subject is completeness: an empty answer
+/// is a legitimate conversation — nobody has replied yet — so a fixture that
+/// produced one for a file a test forgot to write would let that test assert
+/// "no approval was found" against a world it never built. A conversation that
+/// really is empty is scripted by writing `page-1.json` holding `[]`, which
+/// says so on purpose. The `graphql` route above still defaults to a silent
+/// success; that is `fiddle-e902`'s to fix and not a pattern to copy.
 fn comment_page(dir: &Path, collection: &str, path: &str) -> (u16, String, String) {
     if let Some(status) = unreadable(dir, &format!("{collection}-unreadable")) {
         return (
@@ -718,9 +728,12 @@ fn comment_page(dir: &Path, collection: &str, path: &str) -> (u16, String, Strin
     let bare_path = path.split('?').next().unwrap_or(path);
     let file = |k: u64| dir.join(collection).join(format!("page-{k}.json"));
 
-    // Past the end GitHub answers `200 []` rather than a 404: a page nobody
-    // wrote is a conversation that ended, not a collection that is missing.
-    let body = std::fs::read_to_string(file(page)).unwrap_or_else(|_| "[]".to_string());
+    let body = std::fs::read_to_string(file(page)).unwrap_or_else(|_| {
+        panic!(
+            "nothing scripted at {}; a comment page is answered from its file or not at all",
+            file(page).display()
+        )
+    });
     let link = |k: u64, rel: &str| {
         format!("<https://api.github.com{bare_path}?per_page=100&page={k}>; rel=\"{rel}\"")
     };
@@ -744,17 +757,25 @@ fn comment_page(dir: &Path, collection: &str, path: &str) -> (u16, String, Strin
 /// Only that collection has a by-id route here, because only that collection is
 /// ever read: the re-read exists to find out whether a comment changed since it
 /// was listed, and nothing lists a review comment.
+///
+/// Unscripted is a panic here as well, and for a sharper reason than on the
+/// listing. The tempting default is a 404 — a comment deleted between the two
+/// reads, which is a real thing the world does — but that is a *scenario*, and
+/// a fixture that produced it for a file a test forgot to write would answer a
+/// question nobody asked. When a bean needs a deletion it can be scripted; what
+/// it cannot be is the answer to an oversight.
 fn comment_by_id(dir: &Path, id: &str) -> (u16, String, String) {
     let file = dir
         .join("issue-comments")
         .join("by-id")
         .join(format!("{id}.json"));
-    match std::fs::read_to_string(file) {
-        Ok(body) => (200, String::new(), body),
-        // A comment that has been deleted since it was listed, which is a thing
-        // the world does between two reads.
-        Err(_) => (404, String::new(), r#"{"message":"Not Found"}"#.to_string()),
-    }
+    let body = std::fs::read_to_string(&file).unwrap_or_else(|_| {
+        panic!(
+            "nothing scripted at {}; a comment is answered from its file or not at all",
+            file.display()
+        )
+    });
+    (200, String::new(), body)
 }
 
 /// What a bare repository's `refs/heads/<branch>` points at, or `None` when it

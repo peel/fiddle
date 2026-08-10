@@ -57,6 +57,32 @@ pub struct DecisionBinding {
     pub head_sha: String,
 }
 
+/// Who did something, by the two names a forge gives them.
+///
+/// Here rather than in the adapter that reads one, because an authorization
+/// check is domain logic: the validation order compares an allowlist against
+/// this value, and a pure module that had to reach into the GitHub client for
+/// the type it compares would invert the boundary this workspace enforces
+/// mechanically.
+///
+/// **The `id` is what an allowlist matches, and the `login` is what a
+/// diagnostic prints.** They are not interchangeable, and that is the reason
+/// both are carried. A login can be changed by the person holding it,
+/// released, and then taken by somebody else; a numeric id cannot, and is
+/// never reissued. An allowlist checked against logins therefore grants the
+/// decision to whoever holds the name on the day the check runs, who may be a
+/// different person from the one that was authorized. The login stays because
+/// a refusal naming only a number is unreadable by the operator who has to act
+/// on it.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct ActorRef {
+    /// Immutable and never reissued. The half an authorization decision is made
+    /// against.
+    pub id: u64,
+    /// What the person is called today. For reading, never for deciding.
+    pub login: String,
+}
+
 /// What a person's reply amounts to, and the whole of what reading one may
 /// conclude.
 ///

@@ -25,7 +25,11 @@ pub use checks::{
     WorkflowRun,
 };
 pub use cli::{GhCli, GhError, GhResponse, RetryAdvice};
-pub use comments::{read_conversation, read_one_comment, ActorRef, HumanResponse};
+// `ActorRef` is deliberately not re-exported here. It is
+// [`fiddle_core::ActorRef`], and a second path to it through the GitHub adapter
+// would invite a consumer to reach for the domain's identity type by way of the
+// client that happens to read one.
+pub use comments::{read_conversation, read_one_comment, HumanResponse};
 pub use pulls::{pull_request_target, EnsurePullRequest, PullRequest};
 pub use refs::{branch_name, branch_target, BranchRef, EnsureBranchPublished};
 

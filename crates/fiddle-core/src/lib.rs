@@ -9,8 +9,9 @@
 //! recognises an external effect an earlier one performed, `policy` holds
 //! whether such an effect is permitted at all and who has to be asked first,
 //! `decision` holds the identity of the question put to that person, the
-//! marker by which a later process finds it again, and the four values their
-//! answer can amount to, `outcome` holds how
+//! marker by which a later process finds it again, the reference by which that
+//! person is recognised, and the four values their answer can amount to,
+//! `outcome` holds how
 //! the run ended, `published` holds the
 //! bound every piece of free text a run publishes is subject to, and `report`
 //! holds the document a run publishes to say all of that to a later reader.
@@ -30,7 +31,7 @@ pub use assessment::{
     PUBLISH_CHANGE, STUB_MARK,
 };
 pub use decision::{
-    decision_request_id, parse_marker, render_marker, DecisionBinding, DecisionRequestId,
+    decision_request_id, parse_marker, render_marker, ActorRef, DecisionBinding, DecisionRequestId,
     InterpretedHumanDecision, MarkerError, MARKER_VERSION,
 };
 pub use effect::{effect_id, payload_hash, EffectId, EffectKind, PayloadHash, ProposedEffect};

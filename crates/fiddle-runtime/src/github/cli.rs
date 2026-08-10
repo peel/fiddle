@@ -114,6 +114,17 @@ pub struct GhResponse {
     /// [`comments::read_conversation`](super::comments::read_conversation) is
     /// what reads it, and what it needs is `rel="next"`.
     ///
+    /// **A length check is cheaper and is wrong**, which is worth stating here
+    /// because the next reader will otherwise wonder why a header is carried
+    /// for something a comparison against `per_page` appears to answer. The
+    /// two disagree in both directions. A short page is not an end, so a client
+    /// that stopped on one would miss every comment after it; and a page that
+    /// happens to be exactly full is not a continuation, so a client that kept
+    /// going on one would fetch a page nobody has to answer.
+    /// `a_response_carries_actor_identity_and_edit_state_from_the_listing_alone`
+    /// pins the second half of that: one scripted page, and exactly one request
+    /// recorded.
+    ///
     /// Carried whole and unparsed, because the relations are the reader's
     /// business and a header this module reduced to a boolean would be one
     /// every later listing had to widen again.

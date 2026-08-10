@@ -47,6 +47,7 @@
 //! happened to parse.
 
 use crate::github::{GhCli, GhError};
+use fiddle_core::ActorRef;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
@@ -55,19 +56,6 @@ use tokio_util::sync::CancellationToken;
 /// It is not a bound on what is read — [`read_conversation`]'s `max_pages` is —
 /// and nothing here decides anything from a page's size.
 const PER_PAGE: u32 = 100;
-
-/// Who wrote something, by the two names GitHub gives them.
-///
-/// The numeric `id` is carried beside the `login` because only one of them is
-/// an identity. A login can be changed, released and taken by somebody else;
-/// the id cannot, and an authorization list checked against a login would grant
-/// a decision to whoever holds the name today. Both are here so that a
-/// diagnostic can say who it was while the check is made against the id.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ActorRef {
-    pub login: String,
-    pub id: u64,
-}
 
 /// One comment, as much of it as a decision needs.
 ///
@@ -87,6 +75,9 @@ pub struct ActorRef {
 pub struct HumanResponse {
     /// The comment's own id, which is what a re-read is addressed by.
     pub comment: u64,
+    /// Who wrote it, in the domain's own spelling rather than this adapter's.
+    /// [`ActorRef`] lives in `fiddle-core` because the allowlist that consults
+    /// it is domain logic; what this module does is fill it in from a listing.
     pub author: ActorRef,
     pub body: String,
     pub created_at: String,
