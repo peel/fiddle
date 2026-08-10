@@ -580,3 +580,17 @@ Two, both recorded read-only during planning and neither resolvable without a wr
   the operator must add. Until it exists, that lane is blocked rather than failing, and a bean is
   scored on having named the requirement precisely — not on having made a lane pass without a
   credential it cannot have.
+
+## all dimensions — Measurement gap, not a correction (2026-08-10)
+
+**M2 recorded no dimension scores at all.** Every evaluator across all 21 converged beans returned `"dimensions": {}` — the evidence-only shape — so `trend-eval-history.sh` reports M2's row blank where every other epic carries `code_quality`, `correctness` and `domain_spec_fidelity` averages. Exactly one scorecard in the milestone (Task 5, iteration 2) carried real dimension scores.
+
+Two consequences, and the second is the dangerous one.
+
+The invariant is that an explicitly-empty `dimensions` object signals single-pass convergence, which is deliberate and documented. But applied to a whole milestone it means **21 beans converged without dimensional scrutiny**, and the decay-detection machinery this file exists to feed received nothing from the largest epic in the history.
+
+And the trend numbers now mislead. M2 shows the **lowest dispatches-per-task (2.86) and lowest iterations (1.19) of any recorded epic** — which reads as the most efficient milestone ever run, and is in fact an artifact of single-pass convergence. A future reader comparing epics on those two columns would conclude M2 went unusually smoothly. It did not: nine planning defects, two blind spots in the mandatory proof, five remediation beans after a failed holistic review. The efficiency is in the convergence *rule*, not the work.
+
+This is not an anchor and corrects no score — there are no scores to correct. It is here because this file is what future evaluators read, and the thing worth carrying forward is: **an evidence-only scorecard buys a fast convergence at the price of contributing nothing to calibration.** A milestone that uses it exclusively should say so at delivery, which M2 is doing here.
+
+Also recorded: the **blind spot-check was deliberately skipped** for M2 at the operator's instruction. Four beans were sampled at the default rate of 5 — `fiddle-amol` (the mandatory proof), `fiddle-swgf`, `fiddle-6o8w` and `fiddle-ufv3` — and none was blind-reviewed, so the divergence between evaluator scoring and unanchored human judgment is unmeasured for this milestone. Combined with the absent dimension data, M2 contributes no calibration signal in either direction.
