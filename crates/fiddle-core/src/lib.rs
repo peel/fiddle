@@ -5,26 +5,37 @@
 //! filesystem, network, environment, or clock access, and no async runtime.
 //! `identity` holds the references a run is addressed by, `observation` holds
 //! what a run saw of the world, `assessment` holds what that world means and
-//! what to do about it, `outcome` holds how the run ended, `published` holds the
+//! what to do about it, `effect` holds the identity by which a later process
+//! recognises an external effect an earlier one performed, `policy` holds
+//! whether such an effect is permitted at all and who has to be asked first,
+//! `outcome` holds how
+//! the run ended, `published` holds the
 //! bound every piece of free text a run publishes is subject to, and `report`
 //! holds the document a run publishes to say all of that to a later reader.
 
 pub mod assessment;
+pub mod effect;
 pub mod identity;
 pub mod observation;
 pub mod outcome;
+pub mod policy;
 pub mod published;
 pub mod report;
 
 pub use assessment::{
     assess, correlation_key, derive_next, CapabilityAssessment, NextAction, FIXTURE_REPAIR,
-    STUB_MARK,
+    PUBLISH_CHANGE, STUB_MARK,
 };
+pub use effect::{effect_id, payload_hash, EffectId, EffectKind, PayloadHash, ProposedEffect};
 pub use identity::{
     AttemptId, CapabilityId, InvocationRef, InvocationRefError, InvocationScheme, WorkRef,
 };
-pub use observation::{ChangeSetState, Observation, SourceRef, WorkItemState, WorkStateView};
+pub use observation::{
+    ChangeSetState, Observation, Publication, ReviewState, SourceRef, VerificationState,
+    WorkItemState, WorkStateView,
+};
 pub use outcome::{Mode, RunOutcome, UnknownMode};
+pub use policy::{combine, DeploymentRule, HumanDecisionRequirement, PolicyDecision};
 pub use published::{Published, PUBLISHED_TEXT_LIMIT};
 pub use report::{
     CapabilityExecution, EvidenceRef, FiddleBuild, ProgressEntry, ReportBundle,

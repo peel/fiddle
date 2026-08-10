@@ -530,6 +530,7 @@ dependencies = [
 name = "fiddle-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "fiddle-core",
  "fiddle-runtime",
@@ -559,6 +560,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "fiddle-core",
+ "fiddle-runtime",
  "libc",
  "rig-agent",
  "rig-core",

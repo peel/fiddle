@@ -220,14 +220,14 @@ mod tests {
             next_action: NextAction::Complete,
             capability_executions: Vec::new(),
             progress: Vec::new(),
-            observations: WorkStateView {
-                work_item: Observation::NotApplicable {
+            observations: WorkStateView::without_publication(
+                Observation::NotApplicable {
                     reason: "fixture".to_string(),
                 },
-                changes: Observation::NotApplicable {
+                Observation::NotApplicable {
                     reason: "fixture".to_string(),
                 },
-            },
+            ),
         }
     }
 

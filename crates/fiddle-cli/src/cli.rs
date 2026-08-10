@@ -78,6 +78,12 @@ pub enum Command {
         // configuration table is required, so `inspect --capability
         // fixture_repair` still answers offline over an M0 document and stays
         // read-only.
+        //
+        // The same holds for `--capability publish_change`, and it has to hold
+        // for *every* value the flag takes rather than for the ones that happen
+        // to need nothing: a capability that reaches a forge is exactly the one
+        // whose selection could make a read-only command demand a credential,
+        // and it does not, because selecting still stops at the derivation.
         /// Report the plan for one capability id rather than for the default.
         /// The same ids `run --capability` takes; an unknown id is a usage
         /// error.

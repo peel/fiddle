@@ -21,15 +21,22 @@
 //! spawns processes, and branches a git worktree — and is therefore where the
 //! question of what may be *believed* becomes sharp. Its answer is stated in
 //! that module: the check decides, and the model's account of itself is carried
-//! as evidence and consulted nowhere.
+//! as evidence and consulted nowhere. [`publish`] holds [`PublishChange`], which
+//! is the first capability that changes something *outside* this machine — and
+//! is therefore the first one that holds no means of doing so. It proposes three
+//! effects to an [`Executor`](crate::effect::Executor) already bound to its own
+//! id and receives three receipts; the credential, the client and the
+//! authorization envelope are all on the other side of that seam.
 
+pub mod publish;
 pub mod repair;
 pub mod stub;
 
+pub use publish::{PublishChange, PublishConfig};
 pub use repair::{FixtureRepair, RepairConfig};
 pub use stub::StubMark;
 
-use fiddle_core::{AttemptId, CapabilityId, EvidenceRef, NextAction};
+use fiddle_core::{AttemptId, CapabilityId, EvidenceRef, NextAction, Publication};
 use std::path::PathBuf;
 
 /// Every capability this build can execute.
@@ -37,7 +44,11 @@ use std::path::PathBuf;
 /// The single source of the known-id list: the CLI validates `--capability`
 /// against it, so a build that gains a capability offers it and names it in a
 /// diagnostic without anyone remembering to update a second list.
-pub const CAPABILITIES: [CapabilityId; 2] = [fiddle_core::STUB_MARK, fiddle_core::FIXTURE_REPAIR];
+pub const CAPABILITIES: [CapabilityId; 3] = [
+    fiddle_core::STUB_MARK,
+    fiddle_core::FIXTURE_REPAIR,
+    fiddle_core::PUBLISH_CHANGE,
+];
 
 /// Proof that a derivation authorised an execution, as part of a named attempt.
 ///
@@ -195,6 +206,37 @@ pub trait Capability: Send + Sync {
     fn receipts(&self) -> Vec<EvidenceRef> {
         Vec::new()
     }
+
+    /// What this capability saw of a forge, if it reached one.
+    ///
+    /// # Why the capability answers this and not the orchestration
+    ///
+    /// Because the orchestration reaches no forge. [`crate::orchestration::observe`]
+    /// consults two *local* ports and is shared with the read-only `inspect`,
+    /// which is offline and credential-free for every value of `--capability`;
+    /// a review read made there would take that property away from a command
+    /// that only ever wanted to say what it would do. So the only participant in
+    /// a run that can honestly report a pull request is the one that opened it.
+    ///
+    /// [`fiddle_core::WorkStateView::without_publication`] already says this in
+    /// the other direction: a capability that publishes nothing has not looked
+    /// for a review and found none — the question does not apply — and "a
+    /// capability that *can* see a review builds the view itself". This method
+    /// is the channel it builds it through.
+    ///
+    /// `None` is the neutral answer, the same neutrality [`Capability::receipts`]
+    /// gets from the empty list: a capability that reached no forge says nothing,
+    /// the view keeps its `NotApplicable` pair, and M0's and M1's bundles are
+    /// byte-identical to what they were. It is deliberately not
+    /// `Some(Publication)` holding two `NotApplicable`s, because that would be
+    /// every capability answering a question only one of them can be asked.
+    ///
+    /// Read *after* the execution, on both arms, for the reason `receipts` is:
+    /// an execution that failed part-way is precisely when an operator most
+    /// needs to know what did reach the forge before it stopped.
+    fn publication(&self) -> Option<Publication> {
+        None
+    }
 }
 
 /// Why an execution did not produce evidence.
@@ -251,6 +293,77 @@ pub enum CapabilityError {
     /// The bounded attempt produced no report, so there is nothing to verify.
     #[error("the attempt produced no report: {0}")]
     Agent(#[from] crate::agent::AgentError),
+
+    /// An effect this capability proposed did not produce a receipt.
+    ///
+    /// Carried whole rather than flattened into a string, so the distinction the
+    /// whole of M2 turns on survives the trip out of a capability: a caller — or
+    /// a reader of the run's reason — can still tell
+    /// [`EffectError::PolicyDenied`](crate::effect::EffectError::PolicyDenied)
+    /// from [`EffectError::Unresolved`](crate::effect::EffectError::Unresolved),
+    /// and a lost answer from a refused write.
+    #[error("{0}")]
+    Effect(#[from] crate::effect::EffectError),
+
+    /// The executor a capability was built with names a different run than the
+    /// one asking it to execute.
+    ///
+    /// A capability that derives its effect identities from its executor — which
+    /// is the only way to be sure they match the ones the executor will derive —
+    /// would otherwise publish under one invocation's name while the bundle,
+    /// the journal and the change-set marker were filed under another's. There
+    /// is no run this is correct for, so it is refused before anything is
+    /// proposed rather than reconciled.
+    #[error("this executor is bound to `{bound}` and the run is `{asked}`")]
+    Misbound { bound: String, asked: String },
+}
+
+impl CapabilityError {
+    /// Which exit row a run that reached this failure belongs in.
+    ///
+    /// [`crate::orchestration::run`] turns a capability `Err` into a
+    /// [`fiddle_core::RunOutcome`], and until this existed it turned *every* one
+    /// of them into `Retryable`. That was right while the only ways to fail were
+    /// M1's — a write, a check, a workspace, a bounded attempt, all four of them
+    /// obstacles a repeat gets past — and M2 then added effect failures behind
+    /// the same arm without revisiting it. This is the revisit, and it is one
+    /// exhaustive `match` so that the next variant's author is asked the same
+    /// question by the compiler.
+    ///
+    /// Only [`CapabilityError::Effect`] delegates, because only an effect can
+    /// fail in more than one family; see
+    /// [`EffectError::recurrence`](crate::effect::EffectError::recurrence) for
+    /// the six-way table behind it.
+    pub fn recurrence(&self) -> crate::effect::Recurrence {
+        use crate::effect::Recurrence;
+        match self {
+            // M1's four, unchanged and deliberately so. A change set that could
+            // not be written, a check that did not pass, a workspace that could
+            // not be prepared and an attempt that produced no report are each an
+            // obstacle in front of the run: fix the permission, let the model
+            // try again, and the same invocation succeeds. `attempt.rs` and
+            // `repair_protocol.rs` pin all four, and none of them moves here.
+            CapabilityError::Write { .. }
+            | CapabilityError::CheckFailed { .. }
+            | CapabilityError::Workspace(_)
+            | CapabilityError::Agent(_) => Recurrence::Correctable,
+
+            // The two internal-consistency refusals. Neither is reachable
+            // through [`crate::orchestration::run`] — a grant is only ever
+            // issued for the capability the derivation named, and an executor is
+            // only ever bound to the run that built it — so this arm changes no
+            // observable behaviour. It is written the honest way regardless:
+            // both say, in their own documentation, that there is no run they
+            // are correct for, and a build that produced one would produce it
+            // again on every repeat.
+            CapabilityError::NotAuthorised { .. } | CapabilityError::Misbound { .. } => {
+                Recurrence::Permanent
+            }
+
+            // The variant M2 added, and the one with two families inside it.
+            CapabilityError::Effect(error) => error.recurrence(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -294,8 +407,15 @@ mod tests {
     /// The known-id list is the one source the CLI validates `--capability`
     /// against, so a build that can run a capability has to name it here.
     #[test]
-    fn both_capabilities_are_registered() {
-        assert_eq!(CAPABILITIES, [STUB_MARK, fiddle_core::FIXTURE_REPAIR]);
+    fn every_capability_this_build_has_is_registered() {
+        assert_eq!(
+            CAPABILITIES,
+            [
+                STUB_MARK,
+                fiddle_core::FIXTURE_REPAIR,
+                fiddle_core::PUBLISH_CHANGE
+            ]
+        );
     }
 
     /// The fail-closed rule, stated against the type rather than against a

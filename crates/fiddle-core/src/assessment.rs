@@ -30,6 +30,14 @@ pub const STUB_MARK: CapabilityId = CapabilityId("stub_mark");
 /// attempt.
 pub const FIXTURE_REPAIR: CapabilityId = CapabilityId("fixture_repair");
 
+/// The capability M2 adds: publish a change through authenticated effects.
+///
+/// Here beside the other two rather than in the runtime that executes it, for
+/// the reason the other two are: an id is a *name*, and naming something reaches
+/// nothing outside the process. It is what `derive_next` is told this run is
+/// about, so the pure core has to be able to say it.
+pub const PUBLISH_CHANGE: CapabilityId = CapabilityId("publish_change");
+
 /// What fiddle concludes about the capability this invocation is about.
 ///
 /// Serialized externally tagged, so the variant name is the observable
@@ -76,8 +84,17 @@ pub enum NextAction {
 /// The deterministic marker a satisfied change set must carry.
 ///
 /// `blake3(project + NUL + invocation_ref)`, rendered as the first 16 hex
-/// characters (design §4.3). The separator is a NUL byte so that no pair of
-/// project and reference can be re-split into another pair and collide.
+/// characters (design §4.3). The separator is a NUL byte, which stops the
+/// ordinary re-split collision — `("ab","c")` and `("a","bc")` hash differently.
+/// It does **not** make collision impossible in general: a NUL is valid UTF-8, so
+/// a caller passing one *inside* a field can still forge a pair, which
+/// [`crate::effect::effect_id`]'s own test demonstrates for the identical
+/// construction. That is why `effect_id` uses length-prefixed framing instead and
+/// this function does not: its value is written into fixture state on disk and
+/// compared by later runs, so re-basing it would break the cross-process
+/// recognition it exists to provide. `invocation_ref` is already constrained to a
+/// NUL-free grammar at its parse boundary; `project` is not, and BACKLOG records
+/// the milestone boundary at which re-framing this becomes acceptable.
 ///
 /// Deterministic across processes and machines, which is what makes the
 /// second-invocation stability proof checkable rather than merely plausible:
@@ -189,10 +206,10 @@ mod tests {
         work: Observation<WorkItemState>,
         changes: Observation<ChangeSetState>,
     ) -> WorkStateView {
-        WorkStateView {
-            work_item: work,
-            changes,
-        }
+        // The review and the verification are deliberately not varied here:
+        // `assess` reads the two local observations and nothing else, and a
+        // helper that let a caller set the other two would suggest otherwise.
+        WorkStateView::without_publication(work, changes)
     }
 
     fn avail_work() -> Observation<WorkItemState> {

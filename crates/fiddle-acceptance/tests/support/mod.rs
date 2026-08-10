@@ -73,7 +73,7 @@ pub fn fiddle_binary() -> &'static Path {
             "building the fiddle binary failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        executable_from(&out.stdout).unwrap_or_else(|| {
+        executable_from(&out.stdout, "fiddle").unwrap_or_else(|| {
             panic!(
                 "cargo built no `fiddle` executable: {}",
                 String::from_utf8_lossy(&out.stderr)
@@ -123,19 +123,88 @@ pub fn fiddle_command() -> Command {
     Command::new(fiddle_binary())
 }
 
-/// The `fiddle` executable path out of a `--message-format json` build log.
+/// The scripted `gh` the deterministic GitHub suite drives, built from the
+/// sources under test.
+///
+/// It is `fiddle-runtime`'s own fixture rather than a second one written here,
+/// and that is the point: the exactly-once property is stated once, and the
+/// world a black-box scenario asserts against is the same world the runtime's
+/// effect suites assert against. A shell script written here would be a second
+/// model of GitHub, free to disagree with the first — and two suites proving the
+/// same property against two subtly different worlds prove less than one does.
+///
+/// `[github] cli = { program, args }` is the product seam it arrives through, the
+/// one that exists for operators who must pin or wrap `gh`. Nothing fake enters
+/// the product to make that possible.
+pub fn gh_stub_binary() -> &'static Path {
+    static BINARY: OnceLock<PathBuf> = OnceLock::new();
+    BINARY.get_or_init(|| runtime_fixture("gh_stub", "gh-stub"))
+}
+
+/// The recording `git` the deterministic publish suite drives, built from the
+/// sources under test. Everything [`gh_stub_binary`] argues for applies here
+/// unchanged; `[github] git` is the seam.
+pub fn git_stub_binary() -> &'static Path {
+    static BINARY: OnceLock<PathBuf> = OnceLock::new();
+    BINARY.get_or_init(|| runtime_fixture("git_stub", "git-stub"))
+}
+
+/// Build one of `fiddle-runtime`'s scripted fixtures and hand back the path
+/// cargo reports for it.
+///
+/// The same mechanism as [`fiddle_binary`], for the same reason, and with one
+/// addition: each fixture is declared with `required-features`, so it does not
+/// exist unless the feature is asked for — which is what keeps it out of
+/// `cargo build --release`. The feature is therefore named here rather than
+/// assumed on, and asking for it in this nested build grants it to nothing else.
+fn runtime_fixture(name: &str, feature: &str) -> PathBuf {
+    let mut build = std::process::Command::new(env!("CARGO"));
+    build
+        .current_dir(repo_root())
+        .args([
+            "build",
+            "-p",
+            "fiddle-runtime",
+            "--bin",
+            name,
+            "--features",
+            feature,
+            "--message-format",
+            "json-render-diagnostics",
+        ])
+        .args(profile_args(
+            &std::env::current_exe().expect("could not locate this test binary"),
+        ));
+    let out = build
+        .output()
+        .unwrap_or_else(|e| panic!("could not run cargo to build the {name} fixture: {e}"));
+    assert!(
+        out.status.success(),
+        "building the {name} fixture failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    executable_from(&out.stdout, name).unwrap_or_else(|| {
+        panic!(
+            "cargo built no `{name}` executable: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+    })
+}
+
+/// The executable path for target `name` out of a `--message-format json` build
+/// log.
 ///
 /// Cargo emits one JSON object per line; the one worth having is the
-/// `compiler-artifact` for the `fiddle` binary, whose `executable` field is the
+/// `compiler-artifact` for the named binary, whose `executable` field is the
 /// path it landed at. Lines that are not JSON — a stray warning, a future
 /// message kind — are skipped rather than fatal, because the only thing this
 /// needs from the log is that one field.
-fn executable_from(build_log: &[u8]) -> Option<PathBuf> {
+fn executable_from(build_log: &[u8], name: &str) -> Option<PathBuf> {
     String::from_utf8_lossy(build_log)
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter(|message| message["reason"] == "compiler-artifact")
-        .filter(|message| message["target"]["name"] == "fiddle")
+        .filter(|message| message["target"]["name"] == name)
         .find_map(|message| Some(PathBuf::from(message["executable"].as_str()?)))
 }
 
@@ -215,7 +284,21 @@ impl Scenario {
     /// by accident: adding a command means inheriting the removals, and
     /// removing them means editing this one place.
     pub fn command(&self) -> Command {
-        let mut command = fiddle_command();
+        Command::from_std(self.std_command())
+    }
+
+    /// The same binary and the same removals, as a plain [`std::process::Command`].
+    ///
+    /// `assert_cmd::Command` can only run a child to completion, and one scenario
+    /// has to do something else with it: interrupt it while it is running. That
+    /// needs a pid, which needs `spawn`, which is not on the wrapper.
+    ///
+    /// This is the *lower* half of [`Scenario::command`] rather than a second
+    /// builder beside it, and deliberately so — the credential removals are the
+    /// guarantee every acceptance scenario inherits, and a sibling that applied
+    /// them from its own copy of the list is exactly how one of the two goes stale.
+    fn std_command(&self) -> std::process::Command {
+        let mut command = std::process::Command::new(fiddle_binary());
         for name in CREDENTIAL_VARS {
             command.env_remove(name);
         }
@@ -422,6 +505,62 @@ impl Scenario {
         std::fs::create_dir_all(self.report_dir().join(".attempts")).unwrap();
     }
 
+    /// Take away everything the runs so far recorded locally: every published
+    /// bundle *and* every attempt journal, since the journals live under
+    /// `<report.dir>/.attempts`.
+    ///
+    /// This is how "the identity is recomputed, not remembered" is made a claim
+    /// about the binary rather than about a code reading. A run that consulted
+    /// any local record of what an earlier attempt did would, after this, have
+    /// nothing to consult — so it either derives the same names from its
+    /// canonical inputs or it creates a second set of objects, and the world is
+    /// what says which.
+    ///
+    /// Tolerates an absent directory, so a scenario can call it before its first
+    /// run without having to know whether one happened.
+    pub fn remove_local_records(&self) {
+        match std::fs::remove_dir_all(self.report_dir()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("could not remove {} ({e})", self.report_dir().display()),
+        }
+        assert!(
+            !self.report_dir().exists(),
+            "no local record of an earlier attempt may survive"
+        );
+    }
+
+    /// Seal `<stub.root>/changes`, so a capability that reached the outside world
+    /// cannot record that it accounted for the work.
+    ///
+    /// The one failure that leaves an attempt having *changed something out
+    /// there* with nothing local saying so, reachable from outside the process:
+    /// the three effects commit, and the correlation marker they earn cannot be
+    /// written. That is the state a fresh retry has to survive without
+    /// duplicating anything, and it is the reason it is arranged rather than
+    /// hoped for.
+    #[cfg(unix)]
+    pub fn make_changes_dir_unwritable(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            self.stub_root().join("changes"),
+            std::fs::Permissions::from_mode(0o500),
+        )
+        .unwrap();
+    }
+
+    /// Put it back, so the retry can record what it accounted for — and so the
+    /// temporary directory can be removed on drop.
+    #[cfg(unix)]
+    pub fn make_changes_dir_writable(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            self.stub_root().join("changes"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+
     /// Every attempt record under `<report.dir>`, however deep.
     ///
     /// This is what "an executed capability is always recorded" is asserted
@@ -605,7 +744,19 @@ impl Scenario {
     /// environment. Every helper above builds its command through here, so the
     /// subcommand and the `--config` argument are spelled once.
     pub fn run_command(&self, invocation_ref: &str) -> Command {
-        let mut command = self.command();
+        Command::from_std(self.spawnable_run_command(invocation_ref))
+    }
+
+    /// The same invocation as [`Scenario::run_command`], spawnable.
+    ///
+    /// For the one scenario that interrupts a run in flight rather than waiting for
+    /// it: a `SIGINT` needs a pid, and a pid needs `spawn`. It is the lower half of
+    /// `run_command` rather than a copy of it, so the subcommand and the `--config`
+    /// argument stay spelled once — a second builder that drifted would let a
+    /// scenario interrupt a differently-configured run than the one it asserts
+    /// about.
+    pub fn spawnable_run_command(&self, invocation_ref: &str) -> std::process::Command {
+        let mut command = self.std_command();
         command.args([
             "run",
             invocation_ref,

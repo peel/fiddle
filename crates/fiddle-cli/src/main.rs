@@ -7,11 +7,13 @@ use config::ConfigError;
 use fiddle_core::{
     CapabilityId, FiddleBuild, InvocationRef, InvocationRefError, RunOutcome, WorkStateView,
 };
+use fiddle_runtime::effect::{EffectContext, Executor};
 use fiddle_runtime::{
-    AgentBudget, AttemptContext, Capability, FixtureRepair, GatewayError, RepairConfig,
-    StubChangePort, StubMark, StubWorkItemPort, WorkspaceCommand, CAPABILITIES,
+    AgentBudget, AttemptContext, AttemptTrace, Capability, FixtureRepair, GatewayError, GhCli,
+    GitCli, PublishChange, PublishConfig, RepairConfig, StubChangePort, StubMark, StubWorkItemPort,
+    WorkspaceCommand, CAPABILITIES,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use tokio_util::sync::CancellationToken;
 
@@ -89,6 +91,10 @@ enum CliError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     Gateway(#[from] GatewayUnavailable),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    PathUnusable(#[from] PathUnusable),
 }
 
 /// A `--capability` value naming nothing this build can execute.
@@ -124,6 +130,9 @@ enum Selection {
     /// One bounded agent attempt inside an ephemeral worktree, judged by the
     /// configured check.
     Repair,
+    /// One change published to a forge: a branch, a pull request and a requested
+    /// check, each proposed through the effect executor.
+    Publish,
 }
 
 impl Selection {
@@ -132,6 +141,7 @@ impl Selection {
         match self {
             Selection::Mark => fiddle_core::STUB_MARK,
             Selection::Repair => fiddle_core::FIXTURE_REPAIR,
+            Selection::Publish => fiddle_core::PUBLISH_CHANGE,
         }
     }
 
@@ -148,6 +158,8 @@ impl Selection {
             Ok(Selection::Mark)
         } else if requested == fiddle_core::FIXTURE_REPAIR.0 {
             Ok(Selection::Repair)
+        } else if requested == fiddle_core::PUBLISH_CHANGE.0 {
+            Ok(Selection::Publish)
         } else {
             Err(UnknownCapability {
                 requested: requested.to_string(),
@@ -216,6 +228,29 @@ struct CredentialAbsent {
     help("check the endpoint and the credential the document names")
 )]
 struct GatewayUnavailable(GatewayError);
+
+/// A path the document names could not be used for what it names it for.
+///
+/// A configuration failure rather than a run failure, and on the same exit row
+/// as the rest: the document is valid TOML and satisfies the schema, and what it
+/// describes is a deployment this machine does not have. The `key` is spelled
+/// the way the document spells it, because the reader's next move is to go and
+/// edit that line.
+///
+/// The reason is quoted from the underlying failure, which for a `git` that
+/// could not read a `HEAD` is that `git`'s own stderr — already redacted of the
+/// credential by the client that ran it.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("{key} names {path}, which could not be used: {reason}")]
+#[diagnostic(
+    code(fiddle::config::path_unusable),
+    help("check {key} in the configuration document")
+)]
+struct PathUnusable {
+    key: &'static str,
+    path: String,
+    reason: String,
+}
 
 /// Presentation for a rejected invocation reference.
 ///
@@ -292,7 +327,11 @@ fn exit_code_for(termination: &Termination) -> u8 {
             // your setup and try again", not three.
             | CliError::Unconfigured(_)
             | CliError::CredentialAbsent(_)
-            | CliError::Gateway(_),
+            | CliError::Gateway(_)
+            // And the fourth, for the same reason: a path the document names
+            // that this machine cannot supply is a setup to fix, not work that
+            // was attempted and failed.
+            | CliError::PathUnusable(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -336,15 +375,22 @@ fn build_identity() -> FiddleBuild {
 ///
 /// It takes the *name* of a variable, because that is all the configuration can
 /// hold — `config::EnvRef` has no `String` variant, so a document carrying a
-/// resolved secret does not parse. The value goes from here straight into the
-/// gateway client and nowhere else: it is not stored on a config type, not
-/// passed to a capability, not journaled, and not published. There is exactly
-/// one call to this function, and grepping for `std::env::var` in this binary
-/// is how that stays true.
+/// resolved secret does not parse. The value goes from here straight into a
+/// credential-carrying client and nowhere else: it is not stored on a config
+/// type, not passed to a capability, not journaled, and not published.
+/// Grepping for `std::env::var` in this binary is how that stays true.
+///
+/// There are exactly **two** call sites, and both are the same shape: the
+/// repairing arm of [`build_capability`] resolves the model credential, and
+/// [`resolve_forge`] resolves the forge credential. Each is reached only after
+/// its own selection has been made and only after the tables that selection
+/// needs have been found, so no command resolves a credential it has no use for
+/// — which is what keeps `config check`, `inspect`, and `run` over the
+/// deterministic capability credential-free.
 ///
 /// The absence of the variable is an error rather than an empty string, so a
 /// deployment that forgot to export it is told so instead of authenticating
-/// with nothing and being told by the gateway.
+/// with nothing and being told by the far end.
 fn resolve_credential(variable: &str) -> Result<String, CredentialAbsent> {
     std::env::var(variable).map_err(|_| CredentialAbsent {
         variable: variable.to_string(),
@@ -402,9 +448,125 @@ fn cancel_on_interrupt(token: &CancellationToken) {
     });
 }
 
+/// Everything a publication needs that has to **outlive** the capability.
+///
+/// This type exists because of one deliberate constraint in
+/// [`fiddle_runtime::PublishChange`]: it borrows its [`Executor`], which borrows
+/// the [`EffectContext`] holding the credential. An owned context would be a
+/// held credential, which is the arrangement the whole effect boundary exists to
+/// prevent — so the context is owned *here*, on `dispatch`'s stack, and lent to
+/// the capability for the length of the run.
+///
+/// The two scalars beside it are read at the same moment and for the same
+/// reason: both are resolved before the capability exists, so every refusal a
+/// misconfigured document earns happens before anything is built.
+struct Forge {
+    /// The clients, the worktree, and the run's cancellation.
+    ctx: EffectContext,
+    /// The commit `github.work` was sitting on when the run began, read once.
+    ///
+    /// Read here rather than by the capability, because
+    /// [`fiddle_runtime::github::EnsureBranchPublished`] takes the intended sha
+    /// rather than resolving `HEAD` itself: a capability that resolved it would
+    /// be free to publish a commit its own proposal never named, with the
+    /// payload hash still matching because the payload would never have
+    /// mentioned it.
+    head_sha: String,
+    /// The workflow a check is requested from, already refused by name if the
+    /// document did not carry one.
+    workflow: String,
+    /// Where the executor's step order goes: the journal of the attempt this run
+    /// turns out to be.
+    ///
+    /// It lives here for exactly the reason the context does — it has to outlive
+    /// the capability that borrows it — and it is *empty* when it is built,
+    /// because the attempt it belongs to has not been minted yet.
+    /// [`fiddle_runtime::attempt`] fills it in with the journal it creates; see
+    /// [`AttemptTrace`] for why the binding cannot go the other way round.
+    trace: AttemptTrace,
+}
+
+/// Build the forge this run publishes through, from `config` alone.
+///
+/// The order is the same one the repairing arm uses and it is the same
+/// argument: the tables and keys first, then the credential, then the clients.
+/// A deployment missing `github.work` is told about `github.work` rather than
+/// about a variable it would also have had to export.
+///
+/// Reached only when `--capability publish_change` was asked for. That is what
+/// keeps `run` over the other two capabilities — and `inspect` over any of the
+/// three — from resolving a forge credential it has no use for.
+async fn resolve_forge(
+    config: &config::Config,
+    config_path: &Path,
+    cancel: &CancellationToken,
+) -> Result<Forge, CliError> {
+    let missing = |missing: &'static str| Unconfigured {
+        capability: fiddle_core::PUBLISH_CHANGE,
+        missing,
+        path: config_path.display().to_string(),
+    };
+    let unusable = |key: &'static str, path: &Path, reason: String| PathUnusable {
+        key,
+        path: path.display().to_string(),
+        reason,
+    };
+
+    let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
+    let work = github.work.as_ref().ok_or_else(|| missing("github.work"))?;
+    let workflow = github
+        .workflow
+        .clone()
+        .ok_or_else(|| missing("github.workflow"))?;
+
+    // Only now, and only on this arm. Everything above could have failed for a
+    // deployment that never intended to reach a forge at all.
+    //
+    // **One resolution, two clients.** `gh` and `git push` are different
+    // programs with different environments, and they authenticate to the same
+    // forge as the same principal — so this arm resolves the variable once, and
+    // the value goes straight into the two clients that carry it and nowhere
+    // else. See [`resolve_credential`] for the other of this binary's two
+    // resolution sites and why there are exactly two.
+    let credential = resolve_credential(&github.token.env)?;
+    let timeout = github.timeout.as_duration();
+    let gh = GhCli::new(
+        PathBuf::from(&github.cli.program),
+        github.cli.args.clone(),
+        credential.clone(),
+        &github.token.env,
+        github.config_dir.clone(),
+        timeout,
+    );
+    let git = GitCli::new(github.git.clone(), credential, &github.token.env, timeout);
+
+    // `gh` is pinned to this directory so it cannot reach the operator's keyring
+    // or their logged-in account, which is what makes "the credential is the one
+    // the document named" provable rather than asserted. It has to exist for
+    // that to be what happens: `gh` pointed at a directory it cannot read is a
+    // different experiment.
+    std::fs::create_dir_all(&github.config_dir)
+        .map_err(|e| unusable("github.config_dir", &github.config_dir, e.to_string()))?;
+
+    // Before the context, because the context takes the `git` by value — and
+    // before anything is proposed, so a worktree that is not one is refused
+    // rather than discovered after a push.
+    let head_sha = git
+        .head_sha(work, cancel)
+        .await
+        .map_err(|e| unusable("github.work", work, e.to_string()))?;
+
+    Ok(Forge {
+        ctx: EffectContext::new(gh, git, work.clone(), cancel.clone()),
+        head_sha,
+        workflow,
+        trace: AttemptTrace::new(),
+    })
+}
+
 /// The capability `selection` names, built from `config`.
 ///
-/// Boxed as a trait object because the two arms are different types and the
+/// Boxed as a trait object because the three arms are different types and the
 /// orchestration takes a `&dyn Capability` — which is the seam that made this
 /// function possible to write at all.
 ///
@@ -413,12 +575,19 @@ fn cancel_on_interrupt(token: &CancellationToken) {
 /// "the credential is resolved lazily" true in a stronger sense than "only for
 /// this arm": a deployment missing its `[agent]` table is told about the table
 /// rather than about a variable it would also have had to set.
-fn build_capability(
+///
+/// A publication's equivalent resolution happens one step earlier, in
+/// [`resolve_forge`], for the reason [`Forge`] documents: what it produces has
+/// to outlive what is built here. The lifetime on the return type is that
+/// borrow, made visible.
+fn build_capability<'a>(
     selection: Selection,
-    config: &config::Config,
+    config: &'a config::Config,
     config_path: &Path,
     cancel: &CancellationToken,
-) -> Result<Box<dyn Capability>, CliError> {
+    reference: &InvocationRef,
+    forge: Option<&'a Forge>,
+) -> Result<Box<dyn Capability + 'a>, CliError> {
     let missing = |missing: &'static str| Unconfigured {
         capability: selection.id(),
         missing,
@@ -430,6 +599,80 @@ fn build_capability(
             &config.stub.root,
             &config.project.name,
         ))),
+        Selection::Publish => {
+            let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
+            // The caller resolves the forge, and only on this selection. `None`
+            // here means it did not, which no path in this binary produces —
+            // and it is answered by the same refusal the absent table earns
+            // rather than by a panic, because a total function is cheaper than
+            // an argument about which paths exist.
+            let forge = forge.ok_or_else(|| missing("[github]"))?;
+
+            // A `^C` reaches `gh` and `git push` only through the token, so the
+            // handler goes in beside the capability that will spawn them.
+            cancel_on_interrupt(cancel);
+
+            // The executor carries the run's identity, and the capability reads
+            // that pair back off it rather than holding a copy — see
+            // `capability::publish`'s module documentation for what a second
+            // copy would cost. `&github.policy` is the deployment's word, and
+            // this borrow is the whole path from the document to step 4.
+            //
+            // `&forge.trace` is the other borrow, and it is what makes the
+            // executor's step order a durable record rather than a test
+            // observation: `attempt` points it at this attempt's journal, so an
+            // attempt interrupted between an effect and its bundle leaves behind
+            // which step of which effect it had reached.
+            let executor = Executor::new(
+                fiddle_core::PUBLISH_CHANGE,
+                config.project.name.clone(),
+                reference.as_str(),
+                &github.policy,
+                &forge.ctx,
+                &forge.trace,
+                // The document's own bound on how long a postcondition read may
+                // wait for GitHub to agree with itself. Built from the table
+                // here rather than defaulted inside the executor, so that a
+                // deployment changing the numbers changes what the run does —
+                // and so there is exactly one place the document could fail to
+                // reach the walk from.
+                github.read_retry.as_read_retry(),
+            );
+
+            Ok(Box::new(PublishChange::new(
+                executor,
+                PublishConfig {
+                    repo: github.repo.to_string(),
+                    // The head lives under the repository's own owner: this
+                    // milestone publishes a branch to the repository it was
+                    // pointed at, and a head from a fork is not something it can
+                    // produce. Derived rather than configured, which is why
+                    // `repo` is refused at parse time unless it has an owner.
+                    head_owner: github.repo.owner.clone(),
+                    base: github.base.clone(),
+                    head_sha: forge.head_sha.clone(),
+                    // Payload, not identity: read by people, hashed for
+                    // detectability, matched on by nothing. Derived from the
+                    // run's own two names and from no clock or counter, because
+                    // a payload that varied between processes would make the
+                    // payload hash vary with it.
+                    title: format!("{}: {}", config.project.name, reference.as_str()),
+                    body: format!(
+                        "Opened by fiddle for {} in project {}.\n\n\
+                         This branch and this pull request are named after the \
+                         effect identity fiddle derives from that pair, so a \
+                         later attempt at the same work finds them rather than \
+                         creating a second set.\n",
+                        reference.as_str(),
+                        config.project.name,
+                    ),
+                    workflow: forge.workflow.clone(),
+                    required_checks: github.required_checks.clone(),
+                    stub_root: config.stub.root.clone(),
+                    project: config.project.name.clone(),
+                },
+            )))
+        }
         Selection::Repair => {
             let agent = config.agent.as_ref().ok_or_else(|| missing("[agent]"))?;
             let workspace = config
@@ -608,7 +851,24 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             // have to hand one back conditionally; only a capability that can
             // be interrupted installs a handler for it.
             let cancel = CancellationToken::new();
-            let selected = build_capability(selection, &config, &cli.config, &cancel)?;
+            // Owned here, on this stack frame, for the length of the run. That
+            // placement is the design and not a convenience: an owned
+            // `EffectContext` is a held credential, so it is held by the caller
+            // and *lent* to the capability — see `Forge`. Built only for the
+            // selection that has a forge to reach, so `stub_mark` and
+            // `fixture_repair` resolve no GitHub credential.
+            let forge = match selection {
+                Selection::Publish => Some(resolve_forge(&config, &cli.config, &cancel).await?),
+                Selection::Mark | Selection::Repair => None,
+            };
+            let selected = build_capability(
+                selection,
+                &config,
+                &cli.config,
+                &cancel,
+                &reference,
+                forge.as_ref(),
+            )?;
             // One call, because executing and recording are one transaction: the
             // runtime owns the whole attempt, including which outcome a failure
             // to record amounts to. Nothing here re-decides that — a second
@@ -623,6 +883,9 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 work_items: &work_items,
                 changes: &changes,
                 capability: selected.as_ref(),
+                // Only a publication has an executor, and therefore a step order
+                // to record; `stub_mark` and `fixture_repair` reach no forge.
+                trace: forge.as_ref().map(|forge| &forge.trace),
             })
             .await;
 
@@ -809,12 +1072,128 @@ mod tests {
         .unwrap();
         let loaded = config::load(&path).unwrap();
 
-        let Ok(built) =
-            build_capability(Selection::Mark, &loaded, &path, &CancellationToken::new())
-        else {
+        let Ok(built) = build_capability(
+            Selection::Mark,
+            &loaded,
+            &path,
+            &CancellationToken::new(),
+            &a_reference(),
+            None,
+        ) else {
             panic!("the deterministic capability needs nothing but the document")
         };
         assert_eq!(built.id(), fiddle_core::STUB_MARK);
+    }
+
+    /// A reference every builder test can be handed. The capability under test
+    /// in each of them does not read it; `build_capability` takes one because
+    /// the publishing arm's executor is bound to the run it will publish under.
+    fn a_reference() -> InvocationRef {
+        "beans:fiddle-m0-demo".parse().unwrap()
+    }
+
+    /// **A publication over a document that describes no forge is refused by
+    /// table, and nothing is built.**
+    ///
+    /// The counterpart of the repair assertion below, and the regression this
+    /// bean closes from the other side: the refusal must survive as the answer
+    /// for a document that genuinely has no `[github]`, now that a document
+    /// which *has* one is executed rather than refused.
+    #[test]
+    fn a_publication_over_a_document_with_no_forge_names_the_missing_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiddle.toml");
+        std::fs::write(
+            &path,
+            "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n",
+        )
+        .unwrap();
+        let loaded = config::load(&path).unwrap();
+
+        let Err(error) = build_capability(
+            Selection::Publish,
+            &loaded,
+            &path,
+            &CancellationToken::new(),
+            &a_reference(),
+            None,
+        ) else {
+            panic!("a publication needs a forge to publish to")
+        };
+        match error {
+            CliError::Unconfigured(unconfigured) => {
+                assert_eq!(unconfigured.missing, "[github]");
+                assert_eq!(unconfigured.capability, fiddle_core::PUBLISH_CHANGE);
+            }
+            other => panic!("expected a missing-table refusal, got {other:?}"),
+        }
+    }
+
+    /// **Each key a publication cannot invent is refused by its own name,
+    /// before the credential is reached.**
+    ///
+    /// The order is the property: an operator whose document has no
+    /// `github.work` has a key to write, and telling them about a variable they
+    /// would *also* need would be answering the second question first. The
+    /// document here names a variable nothing exports, so a resolution that
+    /// happened too early would surface as the wrong refusal.
+    #[tokio::test]
+    async fn a_publication_names_each_key_it_cannot_invent_before_the_credential() {
+        let forge = "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
+             [github]\nrepo=\"peel/fiddle\"\nbase=\"main\"\n\
+             token={env=\"FIDDLE_A_VARIABLE_NOTHING_EXPORTS\"}\n";
+        for (extra, expected) in [
+            ("", "github.work"),
+            ("work=\"/nonexistent\"\n", "github.workflow"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("fiddle.toml");
+            std::fs::write(&path, format!("{forge}{extra}")).unwrap();
+            let loaded = config::load(&path).unwrap();
+
+            // `expect_err` is deliberately not used here: it would require
+            // `Forge` to be `Debug`, and a `Debug` on a value that transitively
+            // holds two credential-carrying clients is exactly the derive M1
+            // shipped a leak through.
+            let Err(error) = resolve_forge(&loaded, &path, &CancellationToken::new()).await else {
+                panic!("the document is incomplete and must be refused");
+            };
+            match error {
+                CliError::Unconfigured(unconfigured) => {
+                    assert_eq!(unconfigured.missing, expected);
+                    assert_eq!(unconfigured.capability, fiddle_core::PUBLISH_CHANGE);
+                }
+                other => panic!("expected {expected} to be named, got {other:?}"),
+            }
+        }
+    }
+
+    /// And once the document is complete, the credential is what is missing —
+    /// which is the assertion that keeps the one above from being satisfiable by
+    /// a function that refuses everything.
+    #[tokio::test]
+    async fn a_complete_forge_without_its_credential_names_the_variable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiddle.toml");
+        std::fs::write(
+            &path,
+            "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
+             [github]\nrepo=\"peel/fiddle\"\nbase=\"main\"\n\
+             token={env=\"FIDDLE_A_VARIABLE_NOTHING_EXPORTS\"}\n\
+             work=\"/nonexistent\"\nworkflow=\"verify.yml\"\n",
+        )
+        .unwrap();
+        let loaded = config::load(&path).unwrap();
+
+        let Err(error) = resolve_forge(&loaded, &path, &CancellationToken::new()).await else {
+            panic!("nothing exports that variable and it must be refused");
+        };
+        match error {
+            CliError::CredentialAbsent(absent) => {
+                assert_eq!(absent.variable, "FIDDLE_A_VARIABLE_NOTHING_EXPORTS");
+            }
+            other => panic!("expected the variable to be named, got {other:?}"),
+        }
     }
 
     /// A repairing capability over a document that describes no deployment is
@@ -834,9 +1213,14 @@ mod tests {
         .unwrap();
         let loaded = config::load(&path).unwrap();
 
-        let Err(error) =
-            build_capability(Selection::Repair, &loaded, &path, &CancellationToken::new())
-        else {
+        let Err(error) = build_capability(
+            Selection::Repair,
+            &loaded,
+            &path,
+            &CancellationToken::new(),
+            &a_reference(),
+            None,
+        ) else {
             panic!("a repair needs a model and somewhere to work")
         };
         match error {
@@ -890,6 +1274,8 @@ mod tests {
             work_items: &work_items,
             changes: &changes,
             capability: &marking as &dyn Capability,
+            // A deterministic capability reaches no forge and has no executor.
+            trace: None,
         })
         .await;
 

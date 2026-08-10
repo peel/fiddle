@@ -384,3 +384,206 @@ of calling it the line that makes the tool loop happen.
 **What this does not close.** The underlying gap in each case is still open and still recorded above:
 no isolated per-mode measurement across the model table, and no typed signal for a spend-cap refusal.
 Only the documents lying about them are fixed.
+
+### 2026-08-09 — The develop loop re-derives the same orientation once per bean
+Measured across M2's nine completed beans: orientation averages 5.7 min of a 23.4 min bean and barely varies with bean size — one bean spent 8.0 min orienting to do 2.5 min of work. Every fresh implementer reads the same prior-task sources, the same epic `## Contracts`, and the same accumulated antipattern history, and re-derives the same understanding of them.
+
+The fresh context is deliberate and should not be traded away: `skills/develop-loop` dispatches a new implementer per bean precisely so that a previous bean's rationalisations do not carry forward, and the milestone's best catches — a NUL identity collision, a criterion naming a deleted API path, three separately self-caught vacuous tests — came from implementers reasoning from sources rather than from a summary. So "reuse the agent" is the wrong fix.
+
+What is worth trying instead, in rough order of expected value:
+- Have the *lead* distil each completed bean into the findings the next implementer needs, and hand those forward in the prompt, rather than pointing at source files and letting each one re-derive them. M2 did this ad hoc for antipatterns and it visibly worked — Task 6 caught the same vacuous-test hazard Task 5 had found, one bean later, because it was told about it.
+- Put the durable half in the epic's `## Contracts` section, which already exists for shared type names and is already read by every bean. It currently carries types and constraints but not findings.
+- Measure whether orientation shrinks when a bean's prompt names *what changed since the last bean* rather than *what exists*.
+
+Two process wastes found alongside it, both fixed the day this was written: named regression lanes were being re-run individually after a clean full-workspace run had already printed the same counts, and each verification issued ~18 separate `nix develop -c` entries. `scripts/gate.sh` now does the whole gate in one entry and prints the per-binary counts to parse.
+
+Origin: performance investigation during M2 implementation (epic fiddle-srrw), from nine implementer transcripts
+Tags: #debt #optimization #orchestrate
+
+### 2026-08-10 — Two identity derivations in one pure module use different framings
+`crates/fiddle-core/src/effect.rs`'s `effect_id` hashes a **length-prefixed** encoding of its four inputs, so the encoding is injective for every input: a field's contents can never be mistaken for structure. `crates/fiddle-core/src/assessment.rs`'s `correlation_key` still joins with a NUL separator, whose non-collision argument rests on a domain convention rather than on the encoding — NUL is valid UTF-8, and neither `project` nor `invocation_ref` reaches that function through a type that forbids one.
+
+The divergence is deliberate and is documented at `effect_id`. `correlation_key`'s value is written into fixture state on disk, compared by later runs, pinned by test to a published digest, and depended on by M0's acceptance lane, so re-basing it would break the very cross-process recognition it exists to provide — for an exposure M0 does not have, since a marker only ever has to be recomputed by fiddle from the same two values.
+
+What is not written down anywhere is **when re-basing would be acceptable**, which is the half a reader needs. It is acceptable at a milestone that is already invalidating on-disk markers for another reason — a change to the bundle layout, the report schema's shape, or the marker file's own location — because the cost is a one-time recognition break and the only way to pay it once is to pay it alongside something else. It is not acceptable on its own, and a milestone that re-bases it in isolation has spent M0's stability proof to remove an exposure nobody has demonstrated. Until then, the rule for anything *new* is `effect_id`'s: length-prefix, do not separate.
+Origin: implementation (epic fiddle-srrw, Task 0 — the evaluator proved an embedded NUL could give two distinct effects one identity)
+Tags: #debt #risk
+
+### 2026-08-10 — The publishing adapter runs a workspace-style command the PRD's ownership table assigns elsewhere
+M2's design considered publishing a change blob by blob through the Git Data API — create blobs, create a tree, create a commit, then `POST /git/refs` — which would have kept every mutation inside the `gh` adapter that `docs/technical/decisions/015-gh-cli-as-the-github-adapter.md` describes. It was rejected in favour of one `git push`, for a reason that is not a preference: a ref can only be created pointing at an object the remote already holds, so the blob-by-blob route is four ordered mutations where the push is one, and each of the four is separately capable of being lost — turning a single ambiguous write into four, in the milestone whose whole subject is ambiguous writes. `git push` to a named ref is also already idempotent, which is what let the design drop a bespoke branch identity scheme entirely.
+
+The price is that `crates/fiddle-runtime/src/git/publish.rs` spawns a subprocess against the *workspace* — a program invocation over a checkout — from inside the forge adapter, which the PRD's ownership table places on the workspace's side of the boundary. Nothing is wrong today: it is its own module, its own credential channel and its own environment, all three stated as invariants in `docs/technical/SYSTEM.md`, and `crates/fiddle-runtime/src/git/mod.rs` argues the separation at length. What is owed is a decision about where the boundary actually runs, taken by whichever milestone next adds a mutation that is neither an API call nor a push — because the current arrangement is defensible as an exception and not as a rule, and a second exception makes it neither.
+Origin: implementation (epic fiddle-srrw, Task 14 recording M2's design reduction §5.5)
+Tags: #debt
+
+### 2026-08-10 — The dispatch is the one effect GitHub protects nothing about, and its locator is checked by nothing that compiles
+`POST /repos/{owner}/{repo}/actions/workflows/{id}/dispatches` answers **204 No Content** — no body, no run id, no `Location` — and `GET .../actions/runs/{id}` does not carry the inputs a dispatch was made with (`has("inputs")` answers `false`; no key matches `/input|dispatch/i`). Both verified against real GitHub rather than assumed. So the obvious identity mechanism, filtering the runs listing on a dispatch input, does not exist, and a retried dispatch simply starts a second run: unlike the branch (`git push` to a named ref) and the pull request (GitHub refuses a second one for the same head and base), this effect has no server-side duplicate protection at all.
+
+The identity therefore goes **out** as the `fiddle_effect_id` input and comes **back** through the target workflow's own `run-name`, which the listing does return as `name`. That makes `crates/fiddle-runtime/src/github/checks.rs::run_name` and `.github/workflows/fiddle-check.yml` in `peel/fiddle-effects-acceptance` two halves of one contract that **no compiler and no gating test checks**. Rename the input, drop the prefix, or let the workflow interpolate something else into its title, and nothing fails loudly — the locator stops finding runs that exist, `inspect` reports an absence that is not real, and the dispatch happens again.
+
+Two things make this tolerable rather than urgent, and both should be read before anyone spends effort on it. No cheaper locator exists, because the runs listing is the only surface that returns anything a dispatch can be recognised by. And `scripts/live-github.sh` does check the round trip on every run, so the exposure is the window between an edit and the next live run rather than an unbounded one. The workflow's `concurrency: { group: fiddle-<id>, cancel-in-progress: false }` bounds the overlap a mistake can cause; it is a mitigation and not evidence, because a concurrency group says two runs will not execute at once, never that only one was requested.
+Origin: implementation (epic fiddle-srrw, Task 12 — the round trip nothing compiles together)
+Tags: #debt #risk
+
+### 2026-08-10 — fiddle observes and requests checks but can never author one
+Only GitHub Apps may create check runs, and M2's credential is a fine-grained personal access token. So `crates/fiddle-runtime/src/github/checks.rs` does two things and not a third: it *observes* checks by exact head sha, and where a workflow has to be started it *dispatches* it. There is no path by which fiddle publishes a check result of its own — no "fiddle verified this change" appearing beside CI's own checks on a pull request, which is the surface a reviewer actually reads.
+
+This is a capability ceiling rather than an omission, and closing it is not a code change: it means App authentication — signing a JWT with a private key and exchanging it for an installation token — which `gh` does not do, and which would put a private key outside the single credential-carrying construction ADR 015 exists to preserve. It is named there as the most likely trigger for reversing that decision. Until then, what a reader of a fiddle-published pull request sees about verification is whatever the dispatched workflow itself reports, and `required_checks` is fiddle's own private opinion about which of those matter.
+Origin: implementation (epic fiddle-srrw, Task 14 recording M2's boundary)
+Tags: #debt #risk
+
+### 2026-08-10 — The human-decision variant is defined, consumed and unreachable from any capability
+Extends **2026-08-09 — `RunOutcome::Suspended` is the one exit-code row never exercised end to end** above; that entry's finding stands unchanged and this adds the M2 half rather than restating it.
+
+`fiddle_core::PolicyDecision::RequireHumanDecision` now exists, is produced by `combine`, and is consumed at `crates/fiddle-runtime/src/effect/mod.rs`'s step 4, where it fails closed as `EffectError::HumanDecisionRequired` naming what would satisfy it. So it does not ship inert. But all three of M2's operations declare `HumanDecisionRequirement::Automatic`, which means the only way to reach the variant is a deployment document writing `require_human`, and the only thing that then happens is the run stopping. The cell the whole `combine` module was written for — a capability whose own minimum is `Human` — is asserted in `policy.rs`'s unit test and reached by nothing that runs.
+
+Both halves close in the same milestone and for the same reason: `Suspended` is the outcome an attended decision produces, and `RequireHumanDecision` is the thing that would produce it. M3 introduces the decision channel; whoever builds it should expect to be the first person to observe either.
+Origin: implementation (epic fiddle-srrw, Task 14)
+Tags: #debt #test
+
+### 2026-08-10 — Two things in the effect vocabulary a later consumer must not read as more than they are
+Both are deliberate, both are defensible, and neither is obvious from the type.
+
+**`EffectReceipt.outcome` is only ever `Committed`.** `crates/fiddle-runtime/src/effect/receipt.rs` declares three values and `crates/fiddle-runtime/src/effect/mod.rs` builds a receipt at exactly two sites, both with `EffectOutcome::Committed`. `NotCommitted` and `Unknown` drive the executor's step-8 branch but never land in a receipt, because a non-committed effect returns an `EffectError` instead. That is coherent — a receipt records an observed postcondition, and there is no postcondition to record for an effect that did not happen — but it makes the field near-constant on the success path. A later consumer that read it as a discriminator would be branching on a value that has one inhabitant. If that ever needs fixing, the honest shape is the outcome leaving the receipt rather than the receipt gaining the other two values.
+
+**`GitError::Push` is classified `Unknown`, and its commonest cause never reached the remote.** An unreachable remote, a credential the far end would not take, a connection that dropped — none of those moved the ref. `Push` is `Unknown` because git expressed no per-ref verdict: `git push --porcelain`'s `!` line is its refusal channel and its *absence* is not a refusal. The consequence is that a transport-failed push whose ref is genuinely absent reports `EffectError::Unresolved` rather than `EffectError::Adapter` — cautious rather than misleading, and it costs one `GET` to settle, but it is a real behavioural choice reversible in one match arm. Anyone reversing it should note it makes the classification depend on git's *stderr wording*, which is the surface `--porcelain` was chosen to avoid.
+
+**Correction, 2026-08-10 (remediation R1, bean fiddle-h055).** The sentence above used to add that "the analogous `GhError::Malformed` is `NotCommitted` for the parallel reason". That was the same defect one variant over, and it is now reversed: `Malformed` is `Unknown`. The rationale it recorded covered only one of that variant's producers — a process that ran to completion and produced garbage — while the spawn/wait failure and the missing status line were lost answers wearing a refusal's classification. What is `NotCommitted` there now is `GhError::NotSent`, whose only producer is a call this runtime refused to make. `Malformed` keeps the half of the old reading that was true of the runner rather than of the world: it is `Unknown` and still **not** worth reading again, because a program that is not `gh` will not become one.
+Origin: implementation (epic fiddle-srrw, Tasks 3 and 5 — judgment calls recorded only in bean summaries until now); corrected by remediation R1
+Tags: #debt
+
+### 2026-08-10 — Step 8's settling read does not happen on a cancelled run
+`EffectOutcome::Unknown` now reaches a cancellation that arrived with the child already running (remediation R1, bean fiddle-h055), so a `^C` during `POST .../pulls` is reported `EffectError::Unresolved` instead of as a settled failure — which is what stops the retry that duplicates. What it does *not* do is settle the ambiguity within that run, and the reason is worth writing down rather than rediscovering.
+
+Step 8 does call `read_until_settled`. Its single `inspect` is then refused *before spawning*, because the token it is handed is the cancelled one (`GhCli::api`'s own pre-spawn check), so the read that would settle the question never reaches GitHub. Two separate things could be changed and only one of them should be:
+
+- **`read_until_settled` returning immediately on cancel is right** and should stay. A cancelled run must not sit in a backoff loop, and this is what makes a `^C` prompt.
+- **One settling read escaping the cancellation is the arguable improvement.** It would need `EffectContext` to carry a second cancellation channel — reads and mutations answer to different tokens — plumbed through all three `inspect` implementations, plus a bound so a `^C` cannot hang on a read. It is not a retry (one read, no loop, no re-dispatch), so it does not touch the milestone's rule that the read retries and the mutation never does.
+
+R1 deliberately did not take it: the classification was the finding, the second token is a design change nobody has priced, and the cost of leaving it is one fresh process rather than a duplicate. Anyone taking it should note that the fresh process's own step-3 read is still subject to GitHub's listing lag, which is the residual risk on the check request and the reason this is debt rather than a closed question.
+Origin: implementation (remediation R1, epic fiddle-srrw, bean fiddle-h055)
+Tags: #debt
+
+### 2026-08-10 — On a 2xx, the rate-limit headers are parsed and dropped
+`crates/fiddle-runtime/src/github/cli.rs` reads `Retry-After` and `X-RateLimit-Remaining` off every `gh api -i` response and puts both on `GhResponse`. On the failure exit they are copied into `GhError::Http`'s `RetryAdvice` and reach `ReadRetry::delay`, which is the fix that stopped them being parsed for nothing. On the **success** exit they reach nobody: `GhResponse.retry_after` and `GhResponse.rate_limit_remaining` are read on no path a run takes. The only reader either has is `github_cli.rs`, which asserts they were parsed — a test that would keep passing if the fields were deleted from every consumer, because there is no consumer.
+
+So the client can be told `X-RateLimit-Remaining: 3` on a 200 and does nothing with it — it discovers the limit by being refused, and only then starts pacing. Over M2's volume (one capability per run, three effects, two reads each) this is invisible. It stops being invisible at the first deployment that publishes concurrently against one repository, which is exactly the herd `ReadRetry`'s jitter was written to decorrelate.
+
+Closing it is not "read the field": pacing on a successful response is a policy decision about whether a run should *slow down* before it is refused, and that interacts with `[github] timeout` — a run that paces itself into its own deadline has traded a 403 for a `Timeout`, which is classified `Unknown` and is strictly worse. Note also that `rate_limit_remaining` is consulted on the error path only as a *boolean* (`RetryAdvice::wants_a_wait`, distinguishing a secondary-rate-limit 403 from a permissions one), never as a number to budget against, so there is no existing pacing arithmetic to extend.
+Origin: implementation (epic fiddle-srrw, Task 14 — found reading the adapter against the committed record)
+Tags: #debt
+
+### 2026-08-10 — Additive keys are not a shape change: the schema constants stayed at v0, and this is the rule
+`crates/fiddle-core/src/report.rs` carries two doc comments that pull in opposite directions, and M2 had to pick one. `REPORT_SCHEMA`'s says that a bundle whose shape changes must change the string in the same edit; `RUN_SCHEMA`'s anticipates that M1 onward adds fields to these payloads. M2 added `review` and `verification` to `WorkStateView` and left `fiddle.report.v0`, `fiddle.run.v0` and `fiddle.inspect.v0` alone.
+
+The reading taken is that **an added key is not a shape change**. The argument is not aesthetic: bumping would break every acceptance lane asserting `fiddle.report.v0`, M0's included, and M0's lane is a hard constraint of every milestone since. A consumer that dispatches on the schema string and ignores keys it does not know is unaffected by an addition and is broken by a bump.
+
+What would change the answer, stated so nobody re-litigates it: **a removed key, a renamed key, or a changed type is a shape change and does require the bump** — because each of those breaks a consumer that was reading correctly. The next person to touch these constants should apply that sentence rather than re-reading the two doc comments, which remain in tension by themselves.
+Origin: implementation (epic fiddle-srrw, Task 8 — the evaluator was asked to rule and raised no objection)
+Tags: #debt #process
+
+### 2026-08-10 — The M2 effects credential can write to the repository M0's proof depends on being credential-free
+`docs/technical/effects-repository.md` records the probes, and the row worth acting on is the second: the fine-grained token that performs M2's effects has **two** repositories in its selection, not one. `peel/fiddle-effects-acceptance` is the intended target. `peel/fiddle-acceptance` is also selected — 200 on its `collaborators` endpoint — and that is the external M0 acceptance repository `docs/technical/acceptance-repository.md` describes.
+
+That document's whole argument is that the repository is public **so that reading it needs no credential**, that it holds no secrets and never will as a standing rule, and that M0's lane is therefore never gated on one. None of that is falsified — the repository still holds no secret, `.github/workflows/acceptance-repo.yml` still checks it out with no `token:` and no `ssh-key:`, and nothing in M2 writes to it. What has changed is that a credential now exists which *could* write to it, and it is held as a repository secret (`FIDDLE_EFFECTS_TOKEN`) in a repository the same token is deliberately excluded from. A mistake in `scripts/live-github.sh`'s `FIDDLE_EFFECTS_REPO` default, or a `gh` invocation with the wrong `--repo`, reaches M0's acceptance repository with write authority.
+
+The fix is narrowing the token's repository selection to `peel/fiddle-effects-acceptance` alone and re-running the probe table in `effects-repository.md`, which should then read 403 for both other rows. That is a settings change and a documentation edit, and it is worth doing before M3 adds more effects rather than after. Recorded rather than done here because rotating the credential invalidates a repository secret this milestone's lane depends on, and the two have to move together.
+
+**Closed 2026-08-10, both halves.** The operator narrowed the selection: `repos/peel/fiddle-acceptance/collaborators` now answers **403**, and a ref-create against it answers `403 Resource not accessible by personal access token`, so the credential is structurally incapable of the write rather than merely not pointed at it. The probe table in `effects-repository.md` is re-run and records 403 for both other rows, `acceptance-repository.md` discloses the episode from the other side, and `.env.example`, `docs/evaluator-calibration-general.md` and `.github/workflows/github-effects.yml` no longer assert a scope the table refutes.
+
+The second half mattered as much and this entry underrated it: **narrowing the credential alone would have left the lane one rotation away from the same exposure.** The `FIDDLE_EFFECTS_REPO` hazard named above was not a hazard of the *default* value — it was that no value was ever checked, and `scripts/live-github.sh` armed its `trap cleanup EXIT` ref-DELETE-and-close sweep *before* the only thing that incidentally noticed a wrong repository. The lane now refuses an inadmissible target before that trap is set and before any mutation, on a positive six-part predicate — see *The target guard* in `effects-repository.md`. Verified by running it: a wrong `FIDDLE_EFFECTS_REPO` refuses with no `cleaning up` line at all, where the pre-change script printed one and issued the whole sweep.
+Origin: implementation (epic fiddle-srrw, Task 14 — reading the probe table against acceptance-repository.md's standing rules); closed by remediation bean fiddle-xbnz
+Tags: #risk #security #debt #resolved
+
+### 2026-08-10 — M2's mandatory proof is carried by one test, and an inversion is what established that
+`crates/fiddle-acceptance/tests/exactly_once.rs` holds five tests and gates. Task 15 was required to invert its own rule — let the *mutation* retry rather than only the read — and confirm the lane fails. It does, and the shape of the failure is the finding: **4 passed, 1 failed.**
+
+The one that failed is `an_ambiguous_write_then_a_fresh_process_leaves_exactly_one_of_each`, at `assert_landed_under(world, "pulls", "commit_then_die")` — **left: 5, right: 1**: five identical `POST_repos_peel_r_pulls` records, one per allowed attempt, exactly the duplicate external effect the milestone exists to prevent. The other four passed under the inversion and are blind to it: `the_retry_carries_a_distinct_attempt_id_and_the_same_work_ref`, `the_github_token_appears_in_no_bundle_no_stdout_and_no_diagnostic`, `an_unreachable_github_publishes_nothing_and_reports_an_unread_forge`, and `the_effect_steps_of_a_real_run_reach_the_attempt_journal`. Each is sound and each is about something else.
+
+This is not a defect — the property is genuinely held and the test that holds it is correct. It is a fragility: weaken, skip or delete that one test and the lane still reports five passed while the milestone's central claim is gone, and no count anywhere would move. It is also now recorded in `docs/technical/SYSTEM.md`'s Known issues, so a reader meets it without reading this file.
+
+**The rule worth carrying, since M3 through M8 all add effects.** An inversion test is the only thing that distinguishes *a lane that proves a property* from *a lane that contains a test about it*, and it is cheap: break the property deliberately, run the lane, and read which tests notice. Two neighbouring practices came out of the same verification and belong beside it. A frozen lane count is not evidence on its own — `check_effect` reporting 14 proves nothing if one of the 14 was quietly weakened in the same commit, so an edit to a pre-existing test file is diffed by content and the diff is stated. And a diff tool's empty answer is a claim rather than a result: `git diff` returned empty under a hook in one implementer's context this milestone and took three attempts to notice, so an empty diff is cross-checked against a second method (`git show <base>:<path>` compared directly) before it is believed.
+Origin: implementation (epic fiddle-srrw, Task 15's inversion and Task 11's verification standard)
+Tags: #debt #test #process
+
+### 2026-08-10 — A branch exists only because a dispatch-only lane cannot run from anywhere else
+`.github/workflows/github-effects.yml` cannot be dispatched until it is on `main`, for the reason now stated as an invariant in `docs/technical/SYSTEM.md` and at length in the file's own header. The residue is operational: branch `ci/github-effects-dispatch-proof` on `peel/fiddle`, at `75d655c5`, is currently the only ref the lane could be dispatched from, and it was created for that purpose alone.
+
+It becomes redundant the moment the workflow file lands on `main`. Whoever merges M2 should delete it and dispatch the lane once with any `fiddle_effect_id`, which closes both this and the inertness itself — no code is owed for either.
+Origin: implementation (epic fiddle-srrw, Task 13)
+Tags: #debt #infrastructure
+Status: Half resolved 2026-08-10 — the inertness is gone and the branch is not. The file landed on `main` at `aa86c60`, the workflow entity is live (id `330906808`, active), and run **31374193249** dispatched it with no default-branch flip. The action this entry proposes is the half that does not hold: **do not delete the branch yet.** `actions/checkout@v4` in that workflow is bare, so the dispatched `--ref` decides which code is built, and a dispatch also needs the workflow file to exist *at that ref*. `main` carries the file but no Cargo workspace; `plan/agentic-factory-m0` and `plan/agentic-factory-m1` carry the workspace but not the file; `plan/agentic-factory-m2` is not pushed. `ci/github-effects-dispatch-proof` is therefore still the only ref on `peel/fiddle` where a dispatch both resolves and can succeed — load-bearing rather than residue. It becomes deletable when the milestone stack merges to `main`, and that merge is the operation that should delete it. See the entry below.
+
+### 2026-08-10 — The widened-payload check is intra-call; the cross-process half needs a durable record nobody has priced
+`crates/fiddle-core/src/effect.rs` argues that identity and payload are hashed separately so the executor can tell "this is the same effect, already performed" from "this is the same effect, but the request has been widened since it was approved". Remediation R4 implemented the half this milestone can actually observe: the envelope is minted at step 6 for the payload the *proposal* carried, and `Executor::execute` refuses with `EffectError::PayloadDiverged` before step 7 when the operation it was handed would apply a different one. Approval is minted and spent one step apart, and that gap is now checked rather than assumed — `payload_divergence.rs` pins it, and removing the comparison makes the mutation land.
+
+What is still not implemented is the **cross-process** reading, which is the one the phrase "since it was approved" most naturally suggests: a second attempt asking what payload the *first* was approved for. Nothing persists a prior payload hash. Not the attempt journal, which records `effect_step` lines carrying kind and step and no digest. Not the bundle, whose evidence is `receipt_evidence`'s rendered string — kind, effect id, outcome, external ref, postcondition, and no hash. Not the forge, which receives the identity in a branch name and a workflow run title and never the payload at all. So a fresh process has nothing to compare against, and no amount of reading the world produces one: `EnsurePullRequest`'s list read carries a title but no body, so even the observed object cannot reconstruct the canonical payload it was created for.
+
+Three things would have to be decided, and R4 declined to guess at any of them:
+
+- **Where the prior hash lives.** The attempt journal is the obvious candidate and R1 has just taught it to record effect steps. But a durable record's *absence* then has to mean something — an effect performed by a build before the record existed, or by a run whose journal was lost, must not read as "the payload changed".
+- **What happens when it has widened.** Refuse, report, or re-propose. The design states the failure ("would arrive looking like new work") and not the response, and the three are materially different: refusing strands a published branch, reporting needs a surface, and re-proposing is a second mutation on a path that already has one.
+- **What the record costs.** It is approval state that outlives a process, which is a different kind of object from `AuthorizedEffect` — whose doc comment is explicit that it is a runtime token and never written down. M3's decision channel is where durable approval arrives, and pairing the two is likely cheaper than building this alone.
+
+Note what the tree already does instead, because it changes how urgent this is: each operation decides for itself, in typed terms, what makes an observed object the postcondition. `EnsureBranchPublished::inspect` compares the intended sha and returns `Ok(None)` when the remote points elsewhere; `EnsureCheckRequested` filters by a run name derived from the identity. The payload's discriminating field is therefore already checked where it discriminates — the pull request's title and body being the deliberate exception, since matching on those is what opens a second pull request.
+Origin: implementation (remediation R4, epic fiddle-srrw, bean fiddle-mp53)
+Tags: #debt
+
+### 2026-08-10 — Two derives the `## Contracts` block pins are provably inert
+Both were found by remediation R4 while correcting doc comments that justified machinery nobody built. Neither is removed here, because the epic's `## Contracts` section pins the derive list of both types and a bean that reduces a pinned contract is changing a contract; both doc comments now say what is true of the tree instead.
+
+- **`EffectReceipt`'s `Serialize`.** Nothing serializes a receipt, and no receipt a *run* produces can be: none of the three `T`s production instantiates it with — `PublishedBranch`, `PullRequest`, `WorkflowRun` — is itself `Serialize`, so the derive's `where T: Serialize` bound is unsatisfiable for all three. (Two test-only observations use `String` and `()`, which would satisfy it; neither is serialized either.) A receipt reaches a bundle as `receipt_evidence`'s rendered `EvidenceRef`, which `capability/publish.rs` argues for at length. The two doc comments used to disagree about this in one epic.
+- **`EffectId`'s `Hash`.** There is no `HashMap`, `HashSet` or `BTreeMap` keyed on an `EffectId` anywhere. The executor recognises an effect by reading the world for that one effect, one operation at a time, and never by indexing a set of proposals — which the old comment claimed it did.
+
+Removing either is a two-line edit plus a line in the Contracts block of whatever plan supersedes M2's. Worth doing at the same time as the `PayloadHash` question above, since all three came from the same reading.
+Origin: implementation (remediation R4, epic fiddle-srrw, bean fiddle-mp53)
+Tags: #debt
+
+### 2026-08-10 — `RunOutcome` still carries no taxonomy, and M2 widened the set twice
+Names, and does not supersede, **2026-08-09 — the outer attempt bound has no consumer** and the entry above it that records ADR 013's pricing. ADR 013 said from M1 that `RunOutcome::Retryable` has several producers of which only one is "the capability tried and lost", so a retry loop "needs a taxonomy the outcome type does not carry". M2 then added three more producers — `EffectError::{PolicyDenied, HumanDecisionRequired, DuplicateState}` — plus a fourth from remediation R4, `PayloadDiverged`, and recorded nothing about having widened the gap. That omission is the finding; this entry closes the *recording* half of it and not the gap.
+
+Remediation R3 has since moved those four to `RunOutcome::Failed` and exit 20, per `docs/technical/decisions/016-a-permanent-refusal-is-not-retryable.md`, which makes the practical harm go away — automation retrying on 11 no longer loops on a denied effect — and makes the taxonomy problem *bigger*, not smaller. Exit 11 now has six distinct capability failures behind it beside its three other producers; exit 20 has four beside `assess → Blocked`'s three arms. Ten conditions across two integers, told apart only by prose in a `reason` field that a machine cannot key on. `CapabilityError::recurrence` is a two-valued answer to a question that has more than two answers, and it is deliberately two-valued because the exit table has two rows for a run that executed and did not complete.
+
+What a real taxonomy would have to decide, and what nobody has:
+
+- **Where it lives.** A `RunOutcome::Failed { error, class }` widens the `--json` payload every bundle consumer reads. A separate field beside `outcome` does not, and is then a second thing that can disagree with the first. `Published` bounds the text of the reason but says nothing about its shape.
+- **Whether the exit codes follow it.** Adding rows is the honest move and the expensive one — `exit_code_for` is realised once by design, and every acceptance lane asserting a number is a consumer. Not adding them means the class is machine-readable only through `--json`, which is a different contract from the exit code and one an operator scripting `fiddle run` in a shell does not have.
+- **What M3 takes with it.** `HumanDecisionRequired` moves from `Failed` to `Suspended` the moment a decision channel exists, and `required_checks` (below) wants the same *wait* mechanism. Two of the ten conditions leave the table at that point, which is an argument for pricing the taxonomy with M3's channel rather than before it.
+Origin: implementation (remediation R3, epic fiddle-srrw, bean fiddle-m3ql)
+Tags: #debt
+
+### 2026-08-10 — `github.required_checks` is disclosed as unenforced; enforcing it is still owed
+`[github] required_checks` is read, acted on, and decides nothing. The names reach `Executor::observe_checks`, which looks each one up against the published head and splits the answer into `VerificationState`'s `required_missing`, `failed` and `pending`; that value reaches the bundle as `observations.verification`. Then `fiddle_core::assess` matches on `work_item` and `changes` and on nothing else, so a required check that is missing, that failed, or that is still running leaves the outcome exactly where an all-green one does. A deployment naming `required_checks = ["build"]` requires nothing of CI.
+
+Remediation R3 took the disclosure side, per `docs/technical/decisions/017-required-checks-are-observed-not-enforced.md`: `config check` now reports the key the way it reports `agent.max_capability_attempts` — an object carrying `configured`, `enforced` (empty, whatever the document says), a `status`, and the decision — under the word `observed-not-enforced` rather than `accepted-not-enforced`, because the two are different and the older word promises less reading than actually happens.
+
+Enforcement is what is still owed, and it is three decisions rather than one, which is why R3 declined to guess:
+
+- **A `failed` required check is a conclusion.** `Blocked ⇒ Failed` fits it, and it is the only one of the three that does.
+- **A `pending` one resolves without anybody doing anything.** Neither `Failed` nor `Retryable` is honest about it; *wait* is, and *wait* is `Suspended`, which is M3's row. This is the same mechanism as waiting for a human, and pairing the two is almost certainly cheaper than building either alone.
+- **A `required_missing` one may only mean CI has not started.** Distinguishing "never going to run" from "has not run yet" needs a bound — a deadline, a poll budget — that nothing in `[github]` currently supplies.
+
+All three land in `fiddle_core::assess`, which is the pure core's decision function and whose `Blocked ⇒ Failed` rule M0's frozen acceptance lane depends on. Adding an arm there gives `RunOutcome` more producers, which is the entry directly above.
+Origin: implementation (remediation R3, epic fiddle-srrw, bean fiddle-m3ql)
+Tags: #debt
+
+### 2026-08-10 — The preflight that makes `--ref main` legible is not on `main`
+`.github/workflows/github-effects.yml` now refuses a ref carrying no Cargo workspace at a preflight step, before the toolchain install and the build, naming the reason and the milestone branch to pass instead. Proven by dispatching it against a throwaway ref built from `origin/main` plus that one file: run **31383731994**, `conclusion=failure`, failed at step 4 with the toolchain, the build and the walk all skipped — and by run **31383743533**, `conclusion=success`, the same workflow against `ci/github-effects-dispatch-proof` at `d52fc84`, walk confirmed to have run.
+
+The gap is which copy a dispatch uses. `workflow_dispatch` resolves the *entity* on the default branch but runs the file **from the dispatched ref**, so `--ref main` gets `main`'s copy, and `main`'s copy is `aa86c60`'s — without the preflight. The exact invocation the preflight exists to make legible is therefore still the one that gets `could not find Cargo.toml` forty lines into a build log, and will be until either the milestone stack merges or the operator lands this one file on `main` the way `aa86c60` was landed. Nothing else is owed: no repointing, no second entity, no branch.
+
+The same applies to `scripts/check-github-effects-lane.sh` and its fixtures, which run in `skill-quality.yml` from the ref being pushed. On `main` today that step does not exist, so the never-skip property is asserted on every milestone branch and not on `main` itself.
+Origin: implementation (remediation R5, epic fiddle-srrw, bean fiddle-ufv3)
+Tags: #debt #infrastructure
+
+### 2026-08-10 — Implementers never update their bean while working, and nothing asks them to
+Across M2's 21 beans, no implementer ticked a single `- [ ]` step and none was instructed to; all 20 completed beans closed with every box unticked (110 total, backfilled at close with a note saying so). `skills/develop-loop/dispatch-and-evidence.md` tells the lead to arm `.fiddle/active-bean`, initialise the eval log and dispatch, and `skills/develop/implementer-prompt.md` tells the implementer to implement, verify, commit, self-review and report — neither says to touch the bean. So the tracker holds an outcome and nothing about the hour that produced it.
+
+Two changes worth making, in `skills/develop/implementer-prompt.md` and the develop-loop reference beside it:
+- Instruct the implementer to tick its own `## Steps` boxes as it completes them, using `beans update <id> --body-replace-old/--body-replace-new`, and to append one line naming the phase it has entered (reading, implementing, verifying, inverting). The mechanism already exists and the CLI supports it; nothing in the prompts points at it.
+- Have the lead append a phase line when it polls, so a reader who is not the lead can answer "where is this" from the bean rather than from `ps`.
+
+Worth pricing against the measured cost of an implementer turn: the perf investigation in this repo found orientation is a near-fixed 5.7 minutes of a 23.4-minute bean and that model generation is 63% of wall clock, so a handful of extra `beans update` calls is not what makes a bean slow, and the visibility is what makes a stalled one detectable.
+
+Origin: operator feedback during M2 implementation (epic fiddle-srrw) — "beans are not updated with any progress reports and run for an hour"
+Tags: #debt #orchestrate #ux

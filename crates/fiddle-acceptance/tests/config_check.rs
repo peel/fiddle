@@ -76,8 +76,11 @@ fn check_with(text: &str, extra: &[&str]) -> std::process::Output {
         .args(["config", "check", "--config", path.to_str().unwrap()])
         .args(extra)
         // The credential is *named* by this document and must not be needed to
-        // validate it: an environment holding no key must still exit 0.
+        // validate it: an environment holding no key must still exit 0. Both
+        // names, because both tables carry an `EnvRef` and a helper that
+        // removed only one would prove the property for only one of them.
         .env_remove(CREDENTIAL)
+        .env_remove(FORGE_CREDENTIAL)
         .output()
         .unwrap()
 }
@@ -336,4 +339,284 @@ fn config_check_rejects_an_unknown_key_by_name() {
         stderr.contains("nickname = \"nope\"") || stderr.contains("fiddle.toml:3"),
         "diagnostic must locate the key in the source, got: {stderr}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The `[github]` deployment table.
+//
+// The same three properties `[agent]` already has, asserted again because two
+// `deny_unknown_fields` attributes and two `EnvRef` fields are two separate
+// chances to forget one: a credential is named and never written, an unknown
+// key is refused at its line, and validating a document reads no credential.
+// ---------------------------------------------------------------------------
+
+/// The variable [`FORGE`] names. Never a value.
+const FORGE_CREDENTIAL: &str = "FIDDLE_GITHUB_TOKEN";
+
+/// A document naming a forge, written the way an operator would write one.
+///
+/// Deliberately minimal: `repo`, `base` and `token` are the three keys with no
+/// defensible default, and everything else is left out so that each scenario
+/// below adds exactly the line it is about.
+const FORGE: &str = r#"[project]
+name = "icecube"
+
+[stub]
+root = "."
+
+[report]
+dir = "."
+
+[github]
+repo = "peel/fiddle-effects-acceptance"
+base = "main"
+token = { env = "FIDDLE_GITHUB_TOKEN" }
+"#;
+
+#[test]
+fn config_check_accepts_a_document_naming_a_forge() {
+    let out = check(FORGE);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// **The token deserializes only from `{ env = "NAME" }`.**
+///
+/// The same rule `agent.api_key` already follows, and for the same reason: a
+/// document that could hold a forge credential is a document that gets
+/// committed holding one.
+#[test]
+fn config_check_refuses_a_forge_credential_written_into_the_document() {
+    let out = check(&FORGE.replace(
+        r#"token = { env = "FIDDLE_GITHUB_TOKEN" }"#,
+        r#"token = "ghp_a_literal_secret""#,
+    ));
+    assert_eq!(out.status.code(), Some(2), "a literal token must exit 2");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("env"),
+        "the diagnostic must say what the schema wanted instead, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("fiddle.toml:13"),
+        "the diagnostic must point at the offending line, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("ghp_a_literal_secret"),
+        "the refusal repeated the credential it was refusing: {stderr}"
+    );
+}
+
+/// `deny_unknown_fields` is not relaxed for the new table.
+#[test]
+fn config_check_rejects_an_unknown_key_inside_the_github_table() {
+    let out = check(&FORGE.replace("base = \"main\"", "reviewers = [\"someone\"]"));
+    assert_eq!(out.status.code(), Some(2), "unknown key must exit 2");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("reviewers") && stderr.contains("unknown field"),
+        "the diagnostic must name the offending key and why, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("fiddle.toml:12"),
+        "the diagnostic must point at the offending line, got: {stderr}"
+    );
+}
+
+/// The same, one table deeper: `[github.policy]` is its own strict table.
+#[test]
+fn config_check_rejects_an_unknown_key_inside_the_policy_table() {
+    let out = check(&format!(
+        "{FORGE}\n[github.policy]\nensure_everything = \"deny\"\n"
+    ));
+    assert_eq!(out.status.code(), Some(2), "unknown key must exit 2");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("ensure_everything") && stderr.contains("unknown field"),
+        "the diagnostic must name the offending key and why, got: {stderr}"
+    );
+}
+
+/// A rule this build cannot honour is refused at its line rather than defaulted
+/// to something permissive.
+#[test]
+fn config_check_rejects_a_deployment_rule_it_does_not_know() {
+    let out = check(&format!(
+        "{FORGE}\n[github.policy]\nensure_pull_request = \"probably\"\n"
+    ));
+    assert_eq!(out.status.code(), Some(2), "an unknown rule must exit 2");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("probably") || stderr.contains("unknown variant"),
+        "the diagnostic must name what it could not read, got: {stderr}"
+    );
+}
+
+/// `repo` is `owner/name` and is refused at the line that is not, because the
+/// head a pull request is opened from is derived from the owner half — a value
+/// that cannot be derived is a run that fails after it has already pushed.
+#[test]
+fn config_check_rejects_a_repository_that_is_not_owner_and_name() {
+    for spelling in ["fiddle", "peel/", "/fiddle", "peel/fiddle/extra"] {
+        let out = check(&FORGE.replace(
+            r#"repo = "peel/fiddle-effects-acceptance""#,
+            &format!("repo = {spelling:?}"),
+        ));
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{spelling:?} is not owner/name and must be refused"
+        );
+        // Attributed to the key rather than merely rejected: without this the
+        // scenario would pass on a build where `[github]` itself is unknown.
+        assert!(
+            stderr.contains("owner/name") && stderr.contains("fiddle.toml:11"),
+            "{spelling:?} must be refused at the line `repo` is written on, \
+             saying what was wanted instead, got: {stderr}"
+        );
+    }
+}
+
+/// **Validating the document reads no credential.**
+///
+/// `config check` is the command that runs before work starts, on a machine
+/// that may legitimately not hold the token yet. A missing credential is not a
+/// configuration error — [`check`] removes both named variables from the
+/// subprocess, so this passes only if nothing resolved either.
+#[test]
+fn config_check_does_not_read_the_variable_the_forge_names() {
+    let out = check(FORGE);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a missing credential is not a configuration error: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The table is echoed back, defaults included, and the credential is echoed as
+/// the name the document wrote — with the value exported, which is the only
+/// state in which a leak is possible at all.
+#[test]
+fn config_check_reports_the_github_table_it_accepted() {
+    let github = checked(FORGE)["github"].clone();
+    assert_eq!(github["repo"], "peel/fiddle-effects-acceptance", "{github}");
+    assert_eq!(github["base"], "main", "{github}");
+    assert_eq!(github["token"]["env"], FORGE_CREDENTIAL, "{github}");
+    // Defaults reported as the values that will apply, the same way the agent
+    // bounds are.
+    assert_eq!(github["cli"]["program"], "gh", "{github}");
+    assert_eq!(github["cli"]["args"], serde_json::json!([]), "{github}");
+    assert_eq!(github["git"], "git", "{github}");
+    assert_eq!(github["timeout"], "5m", "{github}");
+    assert_eq!(
+        github["required_checks"]["configured"],
+        serde_json::json!([]),
+        "{github}"
+    );
+    // The two keys a publication refuses by name when they are absent, reported
+    // as `null` so an operator learns which refusal is waiting for them.
+    assert_eq!(github["work"], serde_json::Value::Null, "{github}");
+    assert_eq!(github["workflow"], serde_json::Value::Null, "{github}");
+    // Absent means allow, and it is reported rather than left to be inferred.
+    assert_eq!(github["policy"]["ensure_branch_published"], "allow");
+    assert_eq!(github["policy"]["ensure_pull_request"], "allow");
+    assert_eq!(github["policy"]["ensure_check_requested"], "allow");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fiddle.toml");
+    std::fs::write(&path, FORGE).unwrap();
+    for extra in [vec!["--json"], vec![]] {
+        let out = support::fiddle_command()
+            .args(["config", "check", "--config", path.to_str().unwrap()])
+            .args(&extra)
+            .env(FORGE_CREDENTIAL, SENTINEL)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        assert_eq!(out.status.code(), Some(0), "{extra:?}: stderr = {stderr}");
+        assert!(
+            !stdout.contains(SENTINEL) && !stderr.contains(SENTINEL),
+            "{extra:?} resolved the forge credential and printed it: {stdout}{stderr}"
+        );
+        assert!(
+            stdout.contains(FORGE_CREDENTIAL),
+            "{extra:?} must still name the variable: {stdout}"
+        );
+    }
+}
+
+/// The seam the deterministic suite substitutes through, echoed in the shape the
+/// document writes it — the same shape `[workspace] check` already uses.
+///
+/// It also carries **the second key that is reported and does not decide**.
+/// `github.required_checks` reaches `Executor::observe_checks` and populates
+/// `observations.verification`, and nothing branches on the answer:
+/// `fiddle_core::assess` matches on the work item and the change set alone. A
+/// list named `required_checks` that requires nothing is exactly the shape
+/// `agent.max_capability_attempts` shipped, so it is disclosed the same way —
+/// object rather than scalar, both values, a `status` a machine keys on, and the
+/// decision that explains it.
+#[test]
+fn config_check_reports_the_gh_program_the_document_pins() {
+    let document = format!(
+        "{FORGE}cli = {{ program = \"/opt/gh/bin/gh\", args = [\"--stub-dir\", \"/tmp/x\"] }}\n\
+         git = \"/opt/git/bin/git\"\nworkflow = \"verify.yml\"\n\
+         required_checks = [\"build\"]\ntimeout = \"90s\"\n"
+    );
+    let github = checked(&document)["github"].clone();
+    assert_eq!(github["cli"]["program"], "/opt/gh/bin/gh", "{github}");
+    assert_eq!(
+        github["cli"]["args"],
+        serde_json::json!(["--stub-dir", "/tmp/x"]),
+        "{github}"
+    );
+    assert_eq!(github["git"], "/opt/git/bin/git", "{github}");
+    assert_eq!(github["workflow"], "verify.yml", "{github}");
+    let checks = &github["required_checks"];
+    assert_eq!(
+        checks["configured"],
+        serde_json::json!(["build"]),
+        "{github}"
+    );
+    assert_eq!(
+        checks["enforced"],
+        serde_json::json!([]),
+        "a document naming a required check gets no check required of it, and \
+         this is where it finds that out: {github}"
+    );
+    assert_eq!(checks["status"], "observed-not-enforced", "{github}");
+    assert_eq!(
+        checks["decision"], "017-required-checks-are-observed-not-enforced",
+        "the surface must lead a reader to the decision: {github}"
+    );
+    // The discriminating half, and the same one the attempt bound's own scenario
+    // makes: a key that *does* decide is a plain scalar, so the shape alone
+    // tells the two kinds apart without reading any word.
+    assert!(
+        github["timeout"].is_string() && github["policy"]["ensure_pull_request"].is_string(),
+        "a value that fires is a plain scalar: {github}"
+    );
+    // And the human rendering says it too, since an operator running `config
+    // check` without `--json` is the reader this is for.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fiddle.toml");
+    std::fs::write(&path, &document).unwrap();
+    let out = support::fiddle_command()
+        .args(["config", "check", "--config", path.to_str().unwrap()])
+        .env(FORGE_CREDENTIAL, SENTINEL)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        stdout.contains("not enforced") && stdout.contains("017-required-checks"),
+        "the plain rendering must disclose it too: {stdout}"
+    );
+    assert_eq!(github["timeout"], "90s", "{github}");
 }

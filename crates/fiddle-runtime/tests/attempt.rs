@@ -17,11 +17,13 @@ use fiddle_core::{
     Observation, RunOutcome, STUB_MARK, UNKNOWN_REVISION,
 };
 use fiddle_runtime::{
-    attempt, journal, AttemptContext, Capability, CapabilityError, ChangePort, ExecutionGrant,
-    StubChangePort, StubMark, StubWorkItemPort, BUNDLE_FILE,
+    attempt, journal, AttemptContext, AttemptJournal, Capability, CapabilityError, ChangePort,
+    ExecutionGrant, StubChangePort, StubMark, StubWorkItemPort, BUNDLE_FILE,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+mod support;
 
 const WORK_ID: &str = "fiddle-m0-demo";
 const INVOCATION_REF: &str = "beans:fiddle-m0-demo";
@@ -155,6 +157,10 @@ async fn run_attempt_observing(
         work_items: &work_items,
         changes,
         capability,
+        // These scenarios drive a capability rather than an executor, so there
+        // is no step order to record. `the_executors_steps_reach_the_attempt_journal`
+        // below is where the trace's own sink is asserted.
+        trace: None,
     })
     .await
 }
@@ -712,4 +718,144 @@ async fn a_run_whose_effect_left_no_trace_reports_that_there_is_still_work_to_do
         ),
         other => panic!("an effect that left no trace is not a completed run, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The executor's step trace, and the journal that is its production sink
+// ---------------------------------------------------------------------------
+
+/// **The trace's sink is the journal, asserted against the file.**
+///
+/// `EffectTrace` used to have exactly one non-default implementor — the
+/// deterministic suite — and production passed a private sink that discarded
+/// everything. That made the executor's order a *test* observation, which is a
+/// weaker claim than one the journal watches. This asserts the wiring where it
+/// has to be true: an [`Executor`] whose trace is an
+/// [`AttemptTrace`](fiddle_runtime::AttemptTrace) attached to a real
+/// [`FileJournal`](fiddle_runtime::journal) leaves the whole walk in the file an
+/// operator would open.
+///
+/// It is asserted against the journal's own bytes rather than by counting calls
+/// to a spy, and that is the point: a spy would prove the trait was called,
+/// which was never in doubt. What was in doubt is whether anything durable is on
+/// the other end of it.
+#[tokio::test]
+async fn the_executors_steps_reach_the_attempt_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let attempt_id = fiddle_core::AttemptId("01STEPS".to_string());
+    let journal = std::sync::Arc::new(journal::FileJournal::new(
+        dir.path(),
+        SLUG,
+        &attempt_id,
+        INVOCATION_REF,
+    ));
+    // The intent first, exactly as `attempt` writes it: the step records are an
+    // addition to a record whose existence is already guaranteed, never a
+    // replacement for it.
+    journal
+        .record_intent(fiddle_core::PUBLISH_CHANGE)
+        .expect("the journal directory is writable");
+
+    let trace = fiddle_runtime::AttemptTrace::new();
+    trace.attach(journal.clone() as std::sync::Arc<dyn fiddle_runtime::AttemptJournal>);
+
+    // The ordinary path — absent, written, then observed — so all seven steps are
+    // walked. A world that already satisfied the postcondition would stop at step
+    // 3 and prove nothing about the four after it.
+    let harness = support::Harness::new(support::Script::AbsentThenWritten);
+    let receipt = harness
+        .executor_observed_by(&trace)
+        .execute(support::branch_effect(), harness.operation())
+        .await
+        .expect("the scripted world commits");
+    assert_eq!(
+        receipt.outcome,
+        fiddle_runtime::EffectOutcome::Committed,
+        "the effect must really have been walked end to end"
+    );
+
+    let recorded = read_journal(dir.path(), &attempt_id);
+    let steps: Vec<&str> = recorded
+        .iter()
+        .filter(|record| record["record"] == "effect_step")
+        .filter_map(|record| record["step"].as_str())
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            "validate_capability",
+            "derive_identity",
+            "inspect_postcondition",
+            "combine_policy",
+            "authorize",
+            "apply",
+            "observe_postcondition",
+        ],
+        "the journal must hold the whole authorization order, in order"
+    );
+    // The kind travels with the step, because seven anonymous steps repeated
+    // three times cannot tell a recovery *which* mutation `apply` was entered
+    // for — which is the only thing it needs to know.
+    assert!(
+        recorded
+            .iter()
+            .filter(|record| record["record"] == "effect_step")
+            .all(|record| record["kind"] == "ensure_branch_published"),
+        "every step must name the effect it belongs to: {recorded:?}"
+    );
+    // And the record the journal already existed for is untouched: an append
+    // cannot damage the line before it, and an `InterruptedAttempt` still reads
+    // the same.
+    assert_eq!(
+        journal::interrupted(dir.path(), SLUG),
+        vec![journal::InterruptedAttempt {
+            attempt_id: attempt_id.clone(),
+            capability: fiddle_core::PUBLISH_CHANGE.0.to_string(),
+            effect: None,
+        }],
+        "the step records must be invisible to the interrupted-attempt reading"
+    );
+}
+
+/// A trace with no attempt behind it discards, and does not panic.
+///
+/// The window between constructing one and `attempt` attaching the journal is a
+/// few statements long and no executor runs inside it — but "no path reaches
+/// this" is an argument, and a total function is cheaper than one.
+#[tokio::test]
+async fn an_unattached_trace_records_nothing_and_refuses_nothing() {
+    let trace = fiddle_runtime::AttemptTrace::new();
+    let harness = support::Harness::new(support::Script::AbsentThenWritten);
+    let receipt = harness
+        .executor_observed_by(&trace)
+        .execute(support::branch_effect(), harness.operation())
+        .await
+        .expect("an unobserved walk is still a walk");
+    assert_eq!(receipt.outcome, fiddle_runtime::EffectOutcome::Committed);
+    // The walk really happened; there was simply nowhere durable for its steps
+    // to go yet. Asserted on the world, because the trace is the thing under
+    // test and its whole behaviour here is to do nothing.
+    assert_eq!(
+        harness.world.mutations(),
+        1,
+        "the effect must still have been applied, exactly once"
+    );
+    assert!(
+        harness.world.steps().is_empty(),
+        "and this world was not the sink, so it must have seen no steps at all"
+    );
+}
+
+/// Every record one attempt's journal holds, parsed, in the order it was
+/// appended.
+fn read_journal(report_dir: &Path, attempt: &fiddle_core::AttemptId) -> Vec<serde_json::Value> {
+    let path = report_dir
+        .join(journal::JOURNAL_DIR)
+        .join(SLUG)
+        .join(format!("{}.jsonl", attempt.0));
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("could not read {} ({e})", path.display()))
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
 }

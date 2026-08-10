@@ -75,6 +75,28 @@ const ATTEMPT_BOUND_DECISION: &str = "013-one-attempt-bound-not-two";
 /// What a key that parses and fires nothing is reported as.
 const ACCEPTED_NOT_ENFORCED: &str = "accepted-not-enforced";
 
+/// What a key that is *read*, *acted on*, and still decides nothing is reported
+/// as.
+///
+/// A second word rather than a reuse of [`ACCEPTED_NOT_ENFORCED`], because the
+/// two are different and an operator debugging one would be misled by the
+/// other's promise. `agent.max_capability_attempts` is read by nothing at all:
+/// no code path anywhere consults the value. `github.required_checks` is
+/// consulted — it is handed to `Executor::observe_checks`, it decides which
+/// checks are looked up on the published head, and the answer reaches the
+/// bundle as `observations.verification`. What it does *not* do is change any
+/// outcome: `fiddle_core::assess` matches on the work item and the change set
+/// and never on the verification, so a required check that is missing, failed or
+/// pending leaves the run's conclusion exactly where an all-green one does.
+///
+/// Reported, in other words, and never required. See
+/// `decisions/017-required-checks-are-observed-not-enforced.md`.
+const OBSERVED_NOT_ENFORCED: &str = "observed-not-enforced";
+
+/// The decision a reader following the reported-but-unenforced check list is
+/// sent to.
+const REQUIRED_CHECKS_DECISION: &str = "017-required-checks-are-observed-not-enforced";
+
 /// The machine-readable `config check` payload.
 ///
 /// The shape is part of the CLI contract: `status` is `"valid"` and every
@@ -90,9 +112,13 @@ const ACCEPTED_NOT_ENFORCED: &str = "accepted-not-enforced";
 /// **Never the resolved credential — the variable's name only.** `api_key` is
 /// echoed as `{ "env": "NAME" }`, the shape the document itself writes, and
 /// there is nothing else it could be: `config::EnvRef` has no value to hold.
-/// This function is also not where a credential could be resolved — the one
-/// call to `std::env::var` in this binary is `main::resolve_credential`, on the
-/// repairing arm of `build_capability`, which `config check` never reaches.
+/// The same rule holds for `[github]`'s `token`, which is the schema's second
+/// `EnvRef` and is echoed the same way.
+///
+/// This function is also not where a credential could be resolved — the only
+/// reader of `std::env::var` in this binary is `main::resolve_credential`,
+/// called from the repairing arm of `build_capability` and from
+/// `main::resolve_forge`, neither of which `config check` reaches.
 ///
 /// **A table the document does not carry produces no key at all**, rather than
 /// a `null` one. A deployment that names no model has not left `[agent]` blank;
@@ -154,7 +180,64 @@ pub fn config_check_json(config: &Config) -> String {
             "cleanup": cleanup(workspace.cleanup),
         });
     }
+    if let Some(github) = &config.github {
+        body["github"] = serde_json::json!({
+            "repo": github.repo.to_string(),
+            "base": github.base,
+            // The name, never the value. See the rules above: this is the
+            // second `EnvRef` in the schema and it is echoed the same way.
+            "token": { "env": github.token.env },
+            "cli": { "program": github.cli.program, "args": github.cli.args },
+            "git": github.git,
+            // The two keys a publication refuses by name when they are absent,
+            // reported as `null` for the reason `workspace.fixture` is: an
+            // operator confirming a document should learn which refusal is
+            // waiting for them rather than having to notice a missing key.
+            "work": github.work,
+            "workflow": github.workflow,
+            // **A list that does not gate does not look like one that does.**
+            // The same object shape `max_capability_attempts` uses, for the same
+            // reason and with a status of its own: `enforced` is the empty list
+            // because no run outcome depends on any of these names, whatever the
+            // document says. See [`OBSERVED_NOT_ENFORCED`].
+            "required_checks": {
+                "configured": github.required_checks,
+                "enforced": Vec::<String>::new(),
+                "status": OBSERVED_NOT_ENFORCED,
+                "decision": REQUIRED_CHECKS_DECISION,
+            },
+            "config_dir": github.config_dir,
+            "timeout": github.timeout.to_string(),
+            // Echoed beside `timeout` because it is the same kind of thing: a
+            // wall-clock bound an operator set or inherited, and one they
+            // cannot otherwise confirm without reading this binary's defaults.
+            "read_retry": {
+                "attempts": github.read_retry.attempts,
+                "initial": github.read_retry.initial.to_string(),
+                "max": github.read_retry.max.to_string(),
+            },
+            "policy": {
+                "ensure_branch_published": rule(github.policy.ensure_branch_published),
+                "ensure_pull_request": rule(github.policy.ensure_pull_request),
+                "ensure_check_requested": rule(github.policy.ensure_check_requested),
+            },
+        });
+    }
     payload(CONFIG_CHECK_SCHEMA, body)
+}
+
+/// The spelling a document writes a deployment rule as.
+///
+/// Matched rather than derived through a `Serialize`, for the reason
+/// [`isolation`] is: [`fiddle_core::DeploymentRule`] deliberately has no
+/// `Serialize`, so a fourth rule has to be answered *here*, at the place that
+/// would otherwise report a new rule under an old name.
+fn rule(rule: fiddle_core::DeploymentRule) -> &'static str {
+    match rule {
+        fiddle_core::DeploymentRule::Allow => "allow",
+        fiddle_core::DeploymentRule::RequireHuman => "require_human",
+        fiddle_core::DeploymentRule::Deny => "deny",
+    }
 }
 
 /// The spelling a document writes an isolation mechanism as.
@@ -230,27 +313,81 @@ pub fn config_check_human(config: &Config) -> String {
              \n  workspace.cleanup = {}",
             workspace.root.display(),
             optional(workspace.fixture.as_ref().map(|p| p.display().to_string())),
-            optional(workspace.check.as_ref().map(|check| {
-                // Each token quoted separately, rather than joined into one
-                // space-separated line. `config::Check` is a program and its
-                // arguments *already separated* precisely because a shell
-                // string has to be split by somebody and every splitter is
-                // wrong about quoting somewhere; rendering one here would put
-                // that ambiguity back at the surface an operator reads, and
-                // an argument containing a space would be indistinguishable
-                // from two arguments.
-                std::iter::once(&check.program)
-                    .chain(check.args.iter())
-                    .map(|token| format!("{token:?}"))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })),
+            optional(
+                workspace
+                    .check
+                    .as_ref()
+                    .map(|check| { program_line(check) })
+            ),
             isolation(workspace.isolation),
             workspace.command_timeout,
             cleanup(workspace.cleanup),
         ));
     }
+    if let Some(github) = &config.github {
+        out.push_str(&format!(
+            "\n  github.repo = {}\
+             \n  github.base = {}\
+             \n  github.token.env = {}\
+             \n  github.cli = {}\
+             \n  github.git = {}\
+             \n  github.work = {}\
+             \n  github.workflow = {}\
+             \n  github.required_checks = {} \
+             (observed, not enforced: no outcome depends on them — see decision {})\
+             \n  github.config_dir = {}\
+             \n  github.timeout = {}\
+             \n  github.policy.ensure_branch_published = {}\
+             \n  github.policy.ensure_pull_request = {}\
+             \n  github.policy.ensure_check_requested = {}",
+            github.repo,
+            github.base,
+            // The name of the variable, never its value — there is none here to
+            // print, and `config check` never resolves one.
+            github.token.env,
+            program_line(&github.cli),
+            github.git.display(),
+            optional(github.work.as_ref().map(|p| p.display().to_string())),
+            optional(github.workflow.clone()),
+            // "none" rather than a blank, for the reason `optional` gives — and
+            // the word is accurate rather than a stand-in: a deployment that
+            // lists no required check requires nothing of CI, which is a
+            // deployment decision and not a missing key. Each name quoted
+            // separately, as `program_line` argues.
+            match github.required_checks.is_empty() {
+                true => "none".to_string(),
+                false => github
+                    .required_checks
+                    .iter()
+                    .map(|name| format!("{name:?}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            },
+            REQUIRED_CHECKS_DECISION,
+            github.config_dir.display(),
+            github.timeout,
+            rule(github.policy.ensure_branch_published),
+            rule(github.policy.ensure_pull_request),
+            rule(github.policy.ensure_check_requested),
+        ));
+    }
     out
+}
+
+/// A configured program and its arguments, each token quoted separately.
+///
+/// Rather than joined into one space-separated line: a [`crate::config::ProgramRef`]
+/// is a program and its arguments *already separated* precisely because a shell
+/// string has to be split by somebody and every splitter is wrong about quoting
+/// somewhere. Rendering one would put that ambiguity back at the surface an
+/// operator reads, and an argument containing a space would be
+/// indistinguishable from two arguments.
+fn program_line(program: &crate::config::ProgramRef) -> String {
+    std::iter::once(&program.program)
+        .chain(program.args.iter())
+        .map(|token| format!("{token:?}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A key a present table left out, said out loud.

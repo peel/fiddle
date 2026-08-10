@@ -43,30 +43,35 @@
 //! [`fiddle_core::published`].
 
 use crate::capability::{Capability, ExecutionGrant};
+use crate::effect::Recurrence;
 use crate::evidence::{mint_attempt_id, publish, EvidenceError};
-use crate::journal::{AttemptJournal, FileJournal};
+use crate::journal::{AttemptJournal, AttemptTrace, FileJournal};
 use crate::ports::{ChangePort, WorkItemPort};
 use fiddle_core::{
     correlation_key, derive_next, CapabilityExecution, EvidenceRef, FiddleBuild, InvocationRef,
     Mode, NextAction, ProgressEntry, Published, ReportBundle, RunOutcome, WorkRef, WorkStateView,
 };
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-/// Observe both sides of the world for one work item.
+/// Observe both local sides of the world for one work item.
 ///
 /// Nothing here can fail: a port that cannot read its source returns an
 /// `Unavailable` observation rather than an error, so an unobservable world is
 /// *reported* rather than aborting the caller. Shared by `run` and by the
 /// read-only `inspect`, so both commands see the world through the same call.
+///
+/// The review and the verification are
+/// [`NotApplicable`](fiddle_core::Observation::NotApplicable) here rather than
+/// empty, and [`WorkStateView::without_publication`] is where that is written
+/// down. Both ports are local: this call reaches no forge, so it has no standing
+/// to claim a forge holds nothing.
 pub fn observe(
     work_items: &dyn WorkItemPort,
     changes: &dyn ChangePort,
     work_id: &str,
 ) -> WorkStateView {
-    WorkStateView {
-        work_item: work_items.observe(work_id),
-        changes: changes.observe(work_id),
-    }
+    WorkStateView::without_publication(work_items.observe(work_id), changes.observe(work_id))
 }
 
 /// Everything one run acts on: who it is for, what it may touch, and what it
@@ -100,6 +105,30 @@ impl RunContext<'_> {
     /// What this run's ports say about the world right now.
     pub fn observe(&self) -> WorkStateView {
         observe(self.work_items, self.changes, self.work_id)
+    }
+
+    /// The same, plus whatever the capability saw of a forge.
+    ///
+    /// Two ports and one capability, rather than three ports, and the asymmetry
+    /// is the point: the ports are local and are read here, while a review and a
+    /// verification exist only if something reached a forge — and the only
+    /// participant in a run that can do that is the capability. Reading them
+    /// here instead would put a credentialled call inside [`observe`], which
+    /// `inspect` shares and which is credential-free for every value of
+    /// `--capability`.
+    ///
+    /// A capability that reached no forge answers `None` and the view keeps the
+    /// `NotApplicable` pair [`WorkStateView::without_publication`] gives it, so
+    /// M0's and M1's bundles are unchanged.
+    ///
+    /// Called on both arms of the execution, so a run that published a branch
+    /// and then failed still publishes what it observed. The two halves are then
+    /// from slightly different moments — the ports read now, the forge read
+    /// during the execution — which is the same arrangement
+    /// [`Capability::receipts`] already has, and the honest one: the alternative
+    /// is a bundle that says nothing about a branch that really is out there.
+    fn observe_with(&self, capability: &dyn Capability) -> WorkStateView {
+        with_publication(self.observe(), capability)
     }
 
     /// The marker a satisfied change set must carry for this invocation.
@@ -246,9 +275,12 @@ fn concluded(next_action: &NextAction) -> RunOutcome {
 
 /// Execute the M0 plan for one invocation.
 ///
-/// Total: every path returns a report. A capability failure becomes
-/// [`RunOutcome::Retryable`] rather than an `Err`, because "try this again"
-/// is a conclusion about the run, not an error the caller has to classify.
+/// Total: every path returns a report. A capability failure becomes an outcome
+/// rather than an `Err`, because "try this again" and "this will not work" are
+/// conclusions about the run, not errors the caller has to classify — and which
+/// of the two it is comes from
+/// [`CapabilityError::recurrence`](crate::capability::CapabilityError::recurrence)
+/// rather than from the arm it arrived on.
 pub async fn run(ctx: &RunContext<'_>) -> RunReport {
     let marker = ctx.expected_marker();
     let view = ctx.observe();
@@ -317,8 +349,9 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             // has nothing to say, which is what keeps M0's bundles unchanged.
             let observed = ctx.capability.receipts();
             // Re-observe and re-derive: the report must describe the state the
-            // run left behind, not the action it chose on entry.
-            let after = ctx.observe();
+            // run left behind, not the action it chose on entry — including
+            // what it left behind on a forge, which only the capability saw.
+            let after = ctx.observe_with(ctx.capability);
             let next_action = derive_next(&after, &marker, ctx.capability.id());
             RunReport {
                 // Derived from the re-derivation, never asserted to agree with
@@ -350,18 +383,42 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             // text and a bound applied to one of them would be a bound on
             // neither.
             let reason = Published::of(error.to_string());
+            // **Which row, asked of the failure rather than assumed of the
+            // arm.** This used to be `Retryable` unconditionally, and it was
+            // right for every way M1 could fail. M2 then routed three permanent
+            // refusals through here — a `[github.policy]` deny, a human decision
+            // no channel in this milestone can make, a duplicate remote state —
+            // and each inherited a promise it does not keep, so automation
+            // retrying on exit 11 looped on them forever while exit 20 stayed
+            // unreachable. The classification is
+            // [`CapabilityError::recurrence`], one exhaustive table per error
+            // type; the *consequence* of it is here, because this is where a run
+            // concludes. Neither adds a row to the exit-code table — the CLI's
+            // single `exit_code_for` maps these to 11 and 20 unchanged.
+            let outcome = match error.recurrence() {
+                Recurrence::Correctable => RunOutcome::Retryable {
+                    reason: reason.clone(),
+                },
+                Recurrence::Permanent => RunOutcome::Failed {
+                    error: reason.clone(),
+                },
+            };
             // Recorded too: "the capability tried and failed" and "the
             // capability's fate is unknown" are different things to recover
             // from, and only a record written here can tell them apart.
+            //
+            // The same word on both rows, and deliberately: the journal answers
+            // "did this attempt run and stop" for a later reader deciding
+            // whether the world may have moved, and a refusal and a lost
+            // connection are the same answer to that question. Which row the
+            // *run* ended on is the bundle's business, not the journal's.
             ctx.journal.record_effect(capability_id, "failed", &[]);
             // **The arm this exists for.** An execution that failed is when an
             // operator most needs to know what it did before it failed, and
             // until this line the answer published here was `[]`.
             let observed = ctx.capability.receipts();
             RunReport {
-                outcome: RunOutcome::Retryable {
-                    reason: reason.clone(),
-                },
+                outcome,
                 next_action: derived,
                 executions: vec![execution(capability_id, "failed", observed.clone())],
                 progress: vec![progress(
@@ -371,7 +428,12 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
                     reason,
                     observed,
                 )],
-                observations: view,
+                // The entry view, plus whatever the capability did reach before
+                // it failed. A run that published a branch and then lost its
+                // pull request has still put a commit somewhere a reader can go
+                // and look at, and a bundle that said nothing about it would be
+                // the same gap `receipts` exists to have closed.
+                observations: with_publication(view, ctx.capability),
                 evidence_failure: None,
             }
         }
@@ -401,6 +463,19 @@ pub struct AttemptContext<'a> {
     pub work_items: &'a dyn WorkItemPort,
     pub changes: &'a dyn ChangePort,
     pub capability: &'a dyn Capability,
+    /// The step trace the capability's executor was built with, if it has one, so
+    /// this attempt can point it at its own journal.
+    ///
+    /// `Option` rather than always present, and the shape is the honest one: only
+    /// a capability that reaches the outside world through an
+    /// [`Executor`](crate::effect::Executor) has a walk to record, and M0's
+    /// `stub_mark` and M1's `fixture_repair` have none. A trace supplied for
+    /// those would be a seam that could never be called, which is the class of
+    /// thing this bean was wiring up rather than adding to.
+    ///
+    /// See [`AttemptTrace`] for why the attaching happens here rather than where
+    /// the executor was built.
+    pub trace: Option<&'a AttemptTrace>,
 }
 
 /// What one attempt concluded, and what it managed to record.
@@ -461,7 +536,20 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
     let attempt_id = mint_attempt_id();
     let invocation = ctx.reference.as_str();
     let slug = ctx.reference.slug();
-    let journal = FileJournal::new(ctx.report_dir, &slug, &attempt_id, &invocation);
+    // Shared rather than owned, because the executor's trace outlives this frame
+    // and the journal does not — see [`AttemptTrace`]. The attaching happens
+    // before `run`, so the very first step of the very first effect is already
+    // recorded: a trace connected afterwards would be missing exactly the steps
+    // an interrupted attempt is asked about.
+    let journal: Arc<dyn AttemptJournal> = Arc::new(FileJournal::new(
+        ctx.report_dir,
+        &slug,
+        &attempt_id,
+        &invocation,
+    ));
+    if let Some(trace) = ctx.trace {
+        trace.attach(Arc::clone(&journal));
+    }
 
     let RunReport {
         outcome,
@@ -478,7 +566,7 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
         work_items: ctx.work_items,
         changes: ctx.changes,
         capability: ctx.capability,
-        journal: &journal,
+        journal: journal.as_ref(),
     })
     .await;
 
@@ -540,6 +628,21 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
                 evidence_failure: Some(failure),
             }
         }
+    }
+}
+
+/// `view`, with the review and the verification the capability observed folded
+/// in.
+///
+/// Written once rather than at each of its call sites, so the executing arm and
+/// the failing arm cannot come to disagree about whether a capability's
+/// observation of a forge is worth publishing. It is, on both.
+fn with_publication(view: WorkStateView, capability: &dyn Capability) -> WorkStateView {
+    match capability.publication() {
+        Some(publication) => {
+            WorkStateView::with_publication(view.work_item, view.changes, publication)
+        }
+        None => view,
     }
 }
 
@@ -732,6 +835,11 @@ mod tests {
             Ok(())
         }
 
+        fn record_step(&self, kind: fiddle_core::EffectKind, step: crate::effect::ExecutionStep) {
+            self.log
+                .record(format!("step:{}:{}", kind.as_str(), step.as_str()));
+        }
+
         fn record_effect(&self, _capability: CapabilityId, status: &str, _e: &[EvidenceRef]) {
             self.log.record(format!("effect:{status}"));
         }
@@ -810,6 +918,53 @@ mod tests {
             report.observations.changes.value().unwrap().marker,
             Some(correlation_key(PROJECT, INVOCATION_REF)),
             "the reported observations must be the post-execution ones"
+        );
+    }
+
+    /// **The production path, not only the constructor.** A run whose capability
+    /// publishes nothing reports the review and the verification as not
+    /// applicable in the bundle it publishes — never as an `Available` value.
+    /// Without this, [`WorkStateView::without_publication`] could be entirely
+    /// correct and never reached, and a run that spoke to no forge would be
+    /// publishing a clean review it never looked for.
+    #[tokio::test]
+    async fn a_run_that_publishes_nothing_reports_no_review_and_no_verification() {
+        let dir = fixture_root();
+        let capability = StubMark::new(dir.path(), PROJECT);
+        let work_items = StubWorkItemPort::new(dir.path());
+        let changes = StubChangePort::new(dir.path());
+
+        let report = run(&context(
+            &capability,
+            &work_items,
+            &changes,
+            &SpyJournal::default(),
+            &attempt_id(),
+        ))
+        .await;
+
+        let json = serde_json::to_value(&report.observations).unwrap();
+        for key in ["review", "verification"] {
+            assert!(
+                json[key]["available"].is_null(),
+                "a run that reached no forge must publish no {key} value: {}",
+                json[key]
+            );
+            assert!(
+                json[key]["not_applicable"]["reason"]
+                    .as_str()
+                    .is_some_and(|reason| !reason.is_empty()),
+                "{key} must say why the question does not apply: {}",
+                json[key]
+            );
+        }
+        // And the two observations M0's lane reads are still exactly where they
+        // were, still saying what the run left behind.
+        assert_eq!(json["work_item"]["available"]["value"]["status"], "open");
+        assert_eq!(
+            json["changes"]["available"]["value"]["marker"],
+            correlation_key(PROJECT, INVOCATION_REF),
+            "the two new observations must not have displaced the post-execution ones"
         );
     }
 
@@ -1010,5 +1165,113 @@ mod tests {
         // tell "the capability tried and failed" from "the capability's fate was
         // never recorded", which is the whole distinction the journal carries.
         assert_eq!(log.events(), ["intent", "effect:failed"]);
+    }
+
+    /// A capability that always fails, with a failure the scenario chooses.
+    ///
+    /// The two `CapabilityError`s below cannot be `Clone`d and cannot be handed
+    /// over by value from a `&self` method, so what is carried is the *choice*
+    /// and the error is built at the moment it is returned.
+    struct Refusing {
+        how: Refusal,
+        log: std::sync::Arc<Log>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum Refusal {
+        /// `[github.policy]` said `deny`. Permanent.
+        PolicyDenied,
+        /// The write's answer was lost and the settling read did not settle it.
+        /// Correctable.
+        Unresolved,
+    }
+
+    #[async_trait::async_trait]
+    impl Capability for Refusing {
+        fn id(&self) -> CapabilityId {
+            STUB_MARK
+        }
+
+        fn stage(&self) -> &'static str {
+            "refused"
+        }
+
+        async fn execute(
+            &self,
+            _grant: ExecutionGrant,
+            _work_id: &str,
+            _invocation_ref: &str,
+        ) -> Result<EvidenceRef, CapabilityError> {
+            self.log.record("execute");
+            let kind = fiddle_core::EffectKind::EnsurePullRequest;
+            Err(CapabilityError::Effect(match self.how {
+                Refusal::PolicyDenied => crate::effect::EffectError::PolicyDenied {
+                    kind,
+                    reason: "the deployment document denies this kind".to_string(),
+                },
+                Refusal::Unresolved => crate::effect::EffectError::Unresolved {
+                    kind,
+                    reason: "gh was killed before it answered".to_string(),
+                },
+            }))
+        }
+    }
+
+    /// **The finding, as one assertion pair.**
+    ///
+    /// Both runs execute, both fail, both are journaled `failed` and both
+    /// publish an execution that ran — everything except the row is identical.
+    /// A policy deny repeats identically forever and is
+    /// [`RunOutcome::Failed`](fiddle_core::RunOutcome::Failed); a lost answer is
+    /// settled by the read a repeat performs first, and stays
+    /// [`RunOutcome::Retryable`](fiddle_core::RunOutcome::Retryable).
+    ///
+    /// Written as a pair rather than as two tests because the *difference* is
+    /// the property. A build that mapped every capability failure to one row —
+    /// which is what this repairs — passes either assertion alone.
+    #[tokio::test]
+    async fn a_refused_effect_fails_and_an_unsettled_one_stays_retryable() {
+        for (how, expect_permanent) in [(Refusal::PolicyDenied, true), (Refusal::Unresolved, false)]
+        {
+            let dir = fixture_root();
+            let log = std::sync::Arc::<Log>::default();
+            let capability = Refusing {
+                how,
+                log: std::sync::Arc::clone(&log),
+            };
+            let work_items = StubWorkItemPort::new(dir.path());
+            let changes = StubChangePort::new(dir.path());
+            let journal = SpyJournal::watching(&log);
+
+            let report = run(&context(
+                &capability,
+                &work_items,
+                &changes,
+                &journal,
+                &attempt_id(),
+            ))
+            .await;
+
+            match (&report.outcome, expect_permanent) {
+                (RunOutcome::Failed { error }, true) => assert!(
+                    error.as_str().contains("policy denied"),
+                    "the row must be earned by the refusal it names: {error}"
+                ),
+                (RunOutcome::Retryable { reason }, false) => assert!(
+                    reason.as_str().contains("unresolved outcome"),
+                    "the row must be earned by the ambiguity it names: {reason}"
+                ),
+                (other, _) => panic!("wrong row for this failure: {other:?}"),
+            }
+
+            // Everything a bundle consumer reads about *what happened* is the
+            // same on both rows, which is what makes the row the only
+            // difference — and what makes the mapping observable rather than
+            // incidental to some other change in behaviour.
+            assert_eq!(report.executions.len(), 1);
+            assert_eq!(report.executions[0].status, "failed");
+            assert_eq!(report.progress[0].status, "failed");
+            assert_eq!(log.events(), ["intent", "execute", "effect:failed"]);
+        }
     }
 }
