@@ -96,9 +96,21 @@ use tokio_util::sync::CancellationToken;
 /// branch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CheckState {
-    /// No check run by this name at this head. Never produced by
-    /// [`classify`] — a state GitHub reported is not an absence — only by
-    /// [`observe_checks`] finding nothing to classify.
+    /// No check run by this name at this head.
+    ///
+    /// **Never constructed.** Not by [`classify`], because a state GitHub
+    /// reported is not an absence, and not by [`observe_checks`] either: when a
+    /// required name matches no run there is nothing to classify, so the name goes
+    /// into [`VerificationState::required_missing`] and no `CheckState` is
+    /// produced at all. This comment used to claim `observe_checks` produced it,
+    /// which was never true of the tree.
+    ///
+    /// It stays because it is the state [`classify`] must never *return*, and that
+    /// is what `check_effect` pins: an unreadable status is
+    /// [`CheckState::Unrecognized`] and specifically not this, because a check
+    /// that exists reported as a check that does not is how a head with a broken
+    /// CI reads as a head with a clean one. A rule of the form "never this" needs
+    /// the "this" to have a name.
     Absent,
     /// Accepted and not started. GitHub's `queued`, and also its `waiting`,
     /// `requested` and `pending`, which differ only in *why* it has not started.
@@ -410,17 +422,6 @@ impl EnsureCheckRequested {
         check_request_target(&self.repo, &self.workflow, &self.git_ref)
     }
 
-    /// The canonical payload: the whole dispatch request, order-stable.
-    pub fn payload(&self) -> String {
-        serde_json::json!({
-            "inputs": { "fiddle_effect_id": self.effect_id.0 },
-            "ref": self.git_ref,
-            "repo": self.repo,
-            "workflow": self.workflow,
-        })
-        .to_string()
-    }
-
     /// The title the dispatched run will carry, and the value the listing is
     /// filtered on.
     pub fn run_name(&self) -> String {
@@ -494,6 +495,23 @@ impl IntegrationOperation for EnsureCheckRequested {
     /// method's.
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Automatic
+    }
+
+    /// The canonical payload: the whole dispatch request, order-stable.
+    ///
+    /// The executor's step 6 compares it against the payload the proposal named,
+    /// so this operation carries the *payload* half of the same guard
+    /// [`EnsureCheckRequested::apply`](IntegrationOperation::apply) makes for the
+    /// identity — with the difference that the payload half is made once in the
+    /// executor for all three operations rather than once here.
+    fn payload(&self) -> String {
+        serde_json::json!({
+            "inputs": { "fiddle_effect_id": self.effect_id.0 },
+            "ref": self.git_ref,
+            "repo": self.repo,
+            "workflow": self.workflow,
+        })
+        .to_string()
     }
 
     /// Is there already a run for this effect?

@@ -517,6 +517,21 @@ impl Capability for PublishChange<'_> {
 /// run's status — are text somebody else wrote. A published document's size must
 /// be a property of fiddle rather than of whatever the forge was holding.
 fn receipt_evidence<T>(kind: EffectKind, receipt: &EffectReceipt<T>) -> EvidenceRef {
+    // **Only the first arm is reachable today, and the other two are here rather
+    // than collapsed into a `_`.** A receipt is built at exactly two places in
+    // `crate::effect`, both from a postcondition that was read back, and both
+    // with `Committed`; the other two outcomes leave as an `EffectError` and never
+    // reach a receipt, so `receipts()` carries `committed` for every entry a
+    // bundle has ever shown.
+    //
+    // Written out anyway because `EffectOutcome` is the *published* vocabulary —
+    // a bundle consumer matches on these three strings — and this match is the
+    // one place fiddle spells them. A wildcard here would render a future
+    // `Unknown` receipt as whatever the fallback said, which is the collapse the
+    // three-valued outcome exists to prevent; an `unreachable!()` would turn it
+    // into a panic in the run that first needed to report an ambiguity. Naming
+    // all three costs two lines and makes the *rendering* total whatever the
+    // constructors later do.
     let outcome = match receipt.outcome {
         EffectOutcome::Committed => "committed",
         EffectOutcome::NotCommitted => "not_committed",

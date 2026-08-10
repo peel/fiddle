@@ -512,3 +512,28 @@ Tags: #debt #test #process
 It becomes redundant the moment the workflow file lands on `main`. Whoever merges M2 should delete it and dispatch the lane once with any `fiddle_effect_id`, which closes both this and the inertness itself — no code is owed for either.
 Origin: implementation (epic fiddle-srrw, Task 13)
 Tags: #debt #infrastructure
+
+### 2026-08-10 — The widened-payload check is intra-call; the cross-process half needs a durable record nobody has priced
+`crates/fiddle-core/src/effect.rs` argues that identity and payload are hashed separately so the executor can tell "this is the same effect, already performed" from "this is the same effect, but the request has been widened since it was approved". Remediation R4 implemented the half this milestone can actually observe: the envelope is minted at step 6 for the payload the *proposal* carried, and `Executor::execute` refuses with `EffectError::PayloadDiverged` before step 7 when the operation it was handed would apply a different one. Approval is minted and spent one step apart, and that gap is now checked rather than assumed — `payload_divergence.rs` pins it, and removing the comparison makes the mutation land.
+
+What is still not implemented is the **cross-process** reading, which is the one the phrase "since it was approved" most naturally suggests: a second attempt asking what payload the *first* was approved for. Nothing persists a prior payload hash. Not the attempt journal, which records `effect_step` lines carrying kind and step and no digest. Not the bundle, whose evidence is `receipt_evidence`'s rendered string — kind, effect id, outcome, external ref, postcondition, and no hash. Not the forge, which receives the identity in a branch name and a workflow run title and never the payload at all. So a fresh process has nothing to compare against, and no amount of reading the world produces one: `EnsurePullRequest`'s list read carries a title but no body, so even the observed object cannot reconstruct the canonical payload it was created for.
+
+Three things would have to be decided, and R4 declined to guess at any of them:
+
+- **Where the prior hash lives.** The attempt journal is the obvious candidate and R1 has just taught it to record effect steps. But a durable record's *absence* then has to mean something — an effect performed by a build before the record existed, or by a run whose journal was lost, must not read as "the payload changed".
+- **What happens when it has widened.** Refuse, report, or re-propose. The design states the failure ("would arrive looking like new work") and not the response, and the three are materially different: refusing strands a published branch, reporting needs a surface, and re-proposing is a second mutation on a path that already has one.
+- **What the record costs.** It is approval state that outlives a process, which is a different kind of object from `AuthorizedEffect` — whose doc comment is explicit that it is a runtime token and never written down. M3's decision channel is where durable approval arrives, and pairing the two is likely cheaper than building this alone.
+
+Note what the tree already does instead, because it changes how urgent this is: each operation decides for itself, in typed terms, what makes an observed object the postcondition. `EnsureBranchPublished::inspect` compares the intended sha and returns `Ok(None)` when the remote points elsewhere; `EnsureCheckRequested` filters by a run name derived from the identity. The payload's discriminating field is therefore already checked where it discriminates — the pull request's title and body being the deliberate exception, since matching on those is what opens a second pull request.
+Origin: implementation (remediation R4, epic fiddle-srrw, bean fiddle-mp53)
+Tags: #debt
+
+### 2026-08-10 — Two derives the `## Contracts` block pins are provably inert
+Both were found by remediation R4 while correcting doc comments that justified machinery nobody built. Neither is removed here, because the epic's `## Contracts` section pins the derive list of both types and a bean that reduces a pinned contract is changing a contract; both doc comments now say what is true of the tree instead.
+
+- **`EffectReceipt`'s `Serialize`.** Nothing serializes a receipt, and no receipt a *run* produces can be: none of the three `T`s production instantiates it with — `PublishedBranch`, `PullRequest`, `WorkflowRun` — is itself `Serialize`, so the derive's `where T: Serialize` bound is unsatisfiable for all three. (Two test-only observations use `String` and `()`, which would satisfy it; neither is serialized either.) A receipt reaches a bundle as `receipt_evidence`'s rendered `EvidenceRef`, which `capability/publish.rs` argues for at length. The two doc comments used to disagree about this in one epic.
+- **`EffectId`'s `Hash`.** There is no `HashMap`, `HashSet` or `BTreeMap` keyed on an `EffectId` anywhere. The executor recognises an effect by reading the world for that one effect, one operation at a time, and never by indexing a set of proposals — which the old comment claimed it did.
+
+Removing either is a two-line edit plus a line in the Contracts block of whatever plan supersedes M2's. Worth doing at the same time as the `PayloadHash` question above, since all three came from the same reading.
+Origin: implementation (remediation R4, epic fiddle-srrw, bean fiddle-mp53)
+Tags: #debt

@@ -11,9 +11,25 @@
 //! Identity and payload are hashed separately, and that split is the point. An
 //! effect keeps its identity while its payload changes, so the executor can
 //! tell "this is the same effect, already performed" apart from "this is the
-//! same effect, but the request has been widened since it was approved". A
-//! single hash over both would collapse the two, and the second case would
-//! arrive looking like new work.
+//! same effect, but the request is not the one that was approved". A single hash
+//! over both would collapse the two, and the second case would arrive looking
+//! like new work.
+//!
+//! **What consumes the second half, and what does not.** The comparison is made
+//! at the executor's step 6, in `fiddle-runtime`: the envelope is minted for the
+//! payload the proposal carried, and the executor refuses before the mutation
+//! when the operation it was handed is about a different one. That is the
+//! "widened since it was approved" case as this milestone can actually observe
+//! it — approval is minted at step 6 and spent at step 7, and the two must be
+//! about the same request.
+//!
+//! What is **not** here is a comparison across processes. Nothing persists a
+//! prior payload hash — not the journal, not the bundle, not the forge, which
+//! carries the identity in a branch name and a run title but never the payload —
+//! so a second attempt cannot ask what payload the first was approved for. That
+//! version needs a durable record whose absence then has to mean something, and
+//! a policy for the answer, and the design states the failure rather than the
+//! response. It is recorded in `docs/BACKLOG.md` rather than guessed at here.
 
 use crate::identity::CapabilityId;
 
@@ -21,14 +37,29 @@ use crate::identity::CapabilityId;
 /// over the canonical inputs.
 ///
 /// Serialized transparently, so it appears on the wire as the bare string a
-/// consumer matches on. `Hash` because the executor indexes proposed effects by
-/// identity when it reads back what the world already contains.
+/// consumer matches on.
+///
+/// `Hash` is derived and **nothing in this milestone keys a collection on an
+/// identity**; there is no `HashMap`, `HashSet` or `BTreeMap` of effects
+/// anywhere. It is here because the value is a 16-character digest that is the
+/// natural key for one, and a consumer of this crate that wanted to index by it
+/// would otherwise have to wrap it. The claim this comment used to make — that
+/// the executor indexes proposed effects by identity when it reads back what the
+/// world already contains — was never true of the tree: the executor recognises
+/// an effect by *reading the world for that one effect*, one operation at a time,
+/// and never by looking one up in a set it built first. See `docs/BACKLOG.md`.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize)]
 #[serde(transparent)]
 pub struct EffectId(pub String);
 
 /// A digest of the canonical payload, carried beside — never folded into — the
 /// identity, so a changed request is visible against an unchanged effect.
+///
+/// The executor's step 6 is what looks: it compares the digest the envelope was
+/// minted for against the digest of the request the operation would actually
+/// apply, and refuses the mutation when they differ. No `Hash`, deliberately —
+/// unlike [`EffectId`] this value is only ever *compared*, and a derive nothing
+/// needs is what this type's neighbours are being corrected for.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(transparent)]
 pub struct PayloadHash(pub String);

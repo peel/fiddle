@@ -289,6 +289,13 @@ pub struct GitCli {
     /// What diagnostics name. An error can say which variable was empty without
     /// ever rendering what was in it, which is the whole reason the name is
     /// carried separately from the value.
+    ///
+    /// Read by this type's [`Debug`](std::fmt::Debug) and by nothing else. There
+    /// was an accessor beside it until M2's remediation and it had no caller
+    /// anywhere in the workspace, so it is gone; `{:?}` is the diagnostic channel
+    /// this name actually reaches, and this module's own
+    /// `debug_names_the_variable_and_never_its_value` pins that it carries the
+    /// name and never the token.
     variable: String,
     timeout: Duration,
 }
@@ -322,12 +329,6 @@ impl GitCli {
             variable: variable.to_string(),
             timeout,
         }
-    }
-
-    /// Which variable the credential came out of. A diagnostic may name this;
-    /// nothing may name its value.
-    pub fn variable(&self) -> &str {
-        &self.variable
     }
 
     /// Push `worktree`'s `HEAD` to `branch` on the remote, and report what the

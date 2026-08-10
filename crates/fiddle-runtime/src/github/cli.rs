@@ -457,6 +457,15 @@ impl GhCli {
 
     /// Which variable the credential came out of. A diagnostic may name this;
     /// nothing may name its value.
+    ///
+    /// **No production diagnostic names it yet.** The CLI reports a missing
+    /// credential from the configuration side, before a [`GhCli`] exists at all,
+    /// and the client's own errors quote `gh` rather than where the token came
+    /// from. What reads this is `github_cli`, which pins the name the client was
+    /// built with — and that assertion is the point of keeping it: it makes "the
+    /// credential's source is configuration, not a name hardcoded in this module"
+    /// checkable rather than asserted in prose. `GitCli` has no such reader and
+    /// therefore no such accessor; its `Debug` carries the name instead.
     pub fn variable(&self) -> &str {
         &self.variable
     }

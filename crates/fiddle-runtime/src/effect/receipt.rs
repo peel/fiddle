@@ -41,15 +41,36 @@ pub trait ObservedState {
 
 /// The verified result of one effect.
 ///
-/// `Serialize` because a receipt reaches a published bundle; there is no
-/// `Deserialize`, for the same reason [`fiddle_core::PolicyDecision`] has none —
-/// nothing reads a receipt back in as an authority. A later run re-derives the
-/// identity from canonical inputs and looks at the world again.
+/// **A receipt is not serialized, and `Serialize` is inert here.** It reaches a
+/// published bundle as a *rendered* [`EvidenceRef`](fiddle_core::EvidenceRef) —
+/// see `receipt_evidence` in `crate::capability::publish`, which states the
+/// case: the bundle's evidence is a list of strings and giving a
+/// structured receipt a home in the report schema would widen a published
+/// contract. This comment used to claim the opposite, and the two could not both
+/// be right.
+///
+/// The derive is unexercised rather than merely unused, and by more than
+/// omission: none of the three `T`s a *run* instantiates it with —
+/// `PublishedBranch`, `PullRequest`, `WorkflowRun` — is itself `Serialize`, so
+/// the derived bound is unsatisfiable for every receipt production can produce.
+/// It stays because the epic's `## Contracts` pins the derive;
+/// `docs/BACKLOG.md` records removing it.
+///
+/// There is no `Deserialize`, and that part was always true: for the same reason
+/// [`fiddle_core::PolicyDecision`] has none, nothing reads a receipt back in as
+/// an authority. A later run re-derives the identity from canonical inputs and
+/// looks at the world again.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct EffectReceipt<T> {
     pub effect_id: EffectId,
     pub payload_hash: PayloadHash,
     pub target: String,
+    /// Always [`EffectOutcome::Committed`](super::EffectOutcome::Committed) on
+    /// every path that builds one: a receipt is the *observed* result, and both
+    /// construction sites in [`super`] reach it from a postcondition that was
+    /// read back. The other two outcomes leave as an [`EffectError`] instead, and
+    /// the field is still the three-valued type because that vocabulary is what a
+    /// bundle consumer matches on.
     pub outcome: super::EffectOutcome,
     /// What was observed to be true after the operation, read back rather than
     /// assumed from the response.
@@ -81,6 +102,29 @@ pub enum EffectError {
     /// The result was unknown and the postcondition read did not settle it.
     #[error("{kind:?} left an unresolved outcome: {reason}")]
     Unresolved { kind: EffectKind, reason: String },
+    /// The envelope was minted for one payload and the operation would have
+    /// applied another.
+    ///
+    /// Its own variant rather than a [`EffectError::PolicyDenied`], because no
+    /// policy refused this: the proposal and the operation disagree about what
+    /// the request *is*, which is a defect in the caller rather than a rule about
+    /// what may be done. The identity is unchanged in this case — that is the
+    /// whole reason the payload is hashed separately — so without the digest the
+    /// mismatch would arrive looking like ordinary work.
+    ///
+    /// Both digests are carried because either one alone sends its reader to
+    /// recompute the other, and a diagnostic that named only what was refused
+    /// could not say what it was refused *against*.
+    #[error(
+        "{kind:?} was authorized for payload {} and would apply {}; nothing was performed",
+        approved.0,
+        applying.0
+    )]
+    PayloadDiverged {
+        kind: EffectKind,
+        approved: PayloadHash,
+        applying: PayloadHash,
+    },
     /// More than one object matched where exactly one was the postcondition.
     #[error("{kind:?} found {count} matching objects, expected at most one")]
     DuplicateState { kind: EffectKind, count: usize },

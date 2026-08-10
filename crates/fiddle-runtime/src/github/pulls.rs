@@ -136,22 +136,6 @@ impl EnsurePullRequest {
         pull_request_target(&self.repo, &self.head_owner, &self.head, &self.base)
     }
 
-    /// The canonical payload: the whole request, order-stable.
-    ///
-    /// The title and body are in here and in nothing else that decides
-    /// anything. That is what makes a reworded title *detectable* — the payload
-    /// hash moves — without making it a second pull request.
-    pub fn payload(&self) -> String {
-        serde_json::json!({
-            "base": self.base,
-            "body": self.body,
-            "head": self.head_label(),
-            "repo": self.repo,
-            "title": self.title,
-        })
-        .to_string()
-    }
-
     /// `owner:branch` — the one spelling of the head in this module.
     ///
     /// Both the lookup and the create use it, because a lookup that qualified
@@ -231,6 +215,32 @@ impl IntegrationOperation for EnsurePullRequest {
     /// rule, not this method's.
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Automatic
+    }
+
+    /// The canonical payload: the whole request, order-stable.
+    ///
+    /// The title and body are in here and in nothing else that decides
+    /// anything. That is what makes a reworded title *detectable* — the payload
+    /// hash moves — without making it a second pull request. What compares it is
+    /// the executor's step 6, against the payload the proposal named: a caller
+    /// that proposed one title and built this operation with another is refused
+    /// before the create.
+    ///
+    /// What it is **not** compared against is the pull request already out there.
+    /// The list read carries a title but no body, so the observed object cannot
+    /// reconstruct this payload; a run that finds an open pull request for its
+    /// head and base settles on it whatever it is titled, which is
+    /// [`EnsurePullRequest::inspect`](IntegrationOperation::inspect)'s deliberate
+    /// position and not an oversight here.
+    fn payload(&self) -> String {
+        serde_json::json!({
+            "base": self.base,
+            "body": self.body,
+            "head": self.head_label(),
+            "repo": self.repo,
+            "title": self.title,
+        })
+        .to_string()
     }
 
     /// Is there already an open pull request for this head and base?

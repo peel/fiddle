@@ -288,6 +288,15 @@ impl IntegrationOperation for ScriptedOperation<'_> {
         self.minimum
     }
 
+    /// The same payload [`proposed_by`] names, so the executor's step 6 finds the
+    /// proposal and the operation agreeing — which is what every scenario in
+    /// these suites is about something *other* than. `payload_divergence.rs` is
+    /// where they are made to disagree, and it overrides the proposal rather than
+    /// this, so the disagreement is visible in the test that is about it.
+    fn payload(&self) -> String {
+        PAYLOAD.to_string()
+    }
+
     async fn inspect(&self, _ctx: &EffectContext) -> Result<Option<BranchState>, GhError> {
         self.world.record("inspect");
         let present = || {

@@ -1524,6 +1524,13 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
             fiddle_core::HumanDecisionRequirement::Automatic
         }
 
+        /// The same payload the proposal above names. This test's subject is the
+        /// read budget, so it has to get past the executor's step 6 — and it does
+        /// so by agreeing with the proposal rather than by being exempt from it.
+        fn payload(&self) -> String {
+            "{}".to_string()
+        }
+
         async fn inspect(
             &self,
             _ctx: &fiddle_runtime::effect::EffectContext,

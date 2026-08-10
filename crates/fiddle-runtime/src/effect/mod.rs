@@ -377,6 +377,24 @@ pub trait IntegrationOperation: Send + Sync + Sized {
     /// Whether this operation will ever act unattended.
     fn minimum(&self) -> HumanDecisionRequirement;
 
+    /// The canonical payload this operation would apply — the full request,
+    /// normalized and order-stable, in the same spelling a
+    /// [`ProposedEffect`](fiddle_core::ProposedEffect) carries.
+    ///
+    /// This is the second half of the identity/payload split, and it is on the
+    /// trait rather than on each concrete operation so that step 6 can ask it of
+    /// *every* operation. A proposal names a payload and an operation performs
+    /// one, and until this existed nothing tied the two together: a capability
+    /// could have the executor derive, hash and authorize one request while the
+    /// adapter sent another, and the identity would be unchanged, so it would
+    /// arrive looking like the same work.
+    ///
+    /// **No default.** For the reason [`EffectTrace`] has no default sink: an
+    /// operation that answered "nothing in particular" by omission would opt
+    /// itself out of the step 6 check without anybody deciding to, and the check
+    /// would then hold for the operations somebody remembered.
+    fn payload(&self) -> String;
+
     /// Read the world. `Ok(None)` is knowledge — the postcondition is absent —
     /// and never a failure to look.
     async fn inspect(&self, ctx: &EffectContext) -> Result<Option<Self::State>, GhError>;
@@ -404,8 +422,13 @@ pub trait IntegrationOperation: Send + Sync + Sized {
 ///
 /// The three fields are the effect's identity, the digest of the payload it was
 /// approved for, and the operation itself. The payload hash is carried *beside*
-/// the identity rather than folded into it so that a request widened after
-/// approval is visible against an unchanged effect.
+/// the identity rather than folded into it so that a request that is not the one
+/// approved is visible against an unchanged effect — and
+/// [`Executor::execute`] is where it is looked at: immediately after this value
+/// is built, the digest it carries is compared against
+/// [`IntegrationOperation::payload`]'s, and a mismatch refuses the mutation. The
+/// "payload was checked" in the sentence above is that comparison and not a
+/// figure of speech.
 ///
 /// Nothing outside this module can build one. The path resolves —
 ///
@@ -440,6 +463,11 @@ impl<T> AuthorizedEffect<T> {
     }
 
     /// The digest of the exact payload that was approved.
+    ///
+    /// Read by [`Executor::execute`] at step 6, against the payload the operation
+    /// would actually apply. That is its only caller, and it is the point of the
+    /// field: a private field nothing reads would be a record of an approval
+    /// nobody checks.
     pub fn payload_hash(&self) -> &PayloadHash {
         &self.payload_hash
     }
@@ -498,14 +526,6 @@ impl<'a> Executor<'a> {
             trace,
             read_retry,
         }
-    }
-
-    /// The capability this executor proposes on behalf of.
-    ///
-    /// Readable so a caller can check the binding it was handed rather than
-    /// discover the mismatch at step 1; step 1 is still what refuses.
-    pub fn capability(&self) -> CapabilityId {
-        self.capability
     }
 
     /// The project half of this run's identity.
@@ -647,6 +667,39 @@ impl<'a> Executor<'a> {
             payload_hash: payload_hash.clone(),
             operation,
         };
+
+        // ...and "this exact payload" is checked rather than asserted. The
+        // envelope was minted for the payload the *proposal* carried; the
+        // operation about to be applied has a canonical payload of its own, and
+        // this is where the two are required to be the same request.
+        //
+        // This is the half of the identity/payload split that had no consumer.
+        // The identity is derived from the target and never from the payload —
+        // deliberately, so that rewording a pull request does not open a second
+        // one — which means a proposal and an operation that disagree about the
+        // request agree about the *identity*, and the disagreement arrives
+        // looking like the same work. Approval is minted at step 6 and spent at
+        // step 7; if the payload can change in between, then what step 4 allowed
+        // and what step 7 performs are two different things.
+        //
+        // Refused **before** step 7, so nothing reaches the outside world under
+        // an approval given for another request — the same shape as
+        // `EnsureCheckRequested::apply`'s identity guard, which refuses before
+        // dispatching for the same reason, and hoisted here so that all three
+        // operations get it and none of them has to remember to.
+        //
+        // Step 3's early return needs no such check and deliberately does not
+        // have one: it applies nothing. This exists to stop a *mutation* being
+        // performed under the wrong approval, and an effect the world already
+        // satisfies has no mutation to mis-authorize.
+        let applying = fiddle_core::payload_hash(&authorized.operation.payload());
+        if authorized.payload_hash() != &applying {
+            return Err(EffectError::PayloadDiverged {
+                kind,
+                approved: authorized.payload_hash().clone(),
+                applying,
+            });
+        }
 
         // 7. Delegate. This is the only line in the process that changes
         //    anything outside it, and it is reached exactly once per call.

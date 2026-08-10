@@ -30,7 +30,7 @@ mod support;
 use fiddle_core::{effect_id, payload_hash, EffectKind, ProposedEffect, FIXTURE_REPAIR};
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
-    ReadRetry,
+    IntegrationOperation, ReadRetry,
 };
 use fiddle_runtime::github::{branch_name, EnsurePullRequest, PullRequest};
 use fiddle_runtime::{GhCli, GhError};

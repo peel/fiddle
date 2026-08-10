@@ -35,7 +35,7 @@ use fiddle_core::{
 };
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
-    ReadRetry,
+    IntegrationOperation, ReadRetry,
 };
 use fiddle_runtime::github::{
     branch_name, check_request_target, classify, observe_checks, run_name, CheckState,
