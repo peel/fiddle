@@ -10,7 +10,17 @@
 //! `policy.rs`'s own table and produced by nothing that runs. Asserting it here,
 //! through the operation, makes it a fact about the build rather than about a
 //! table: an edit that quietly relaxed this minimum would still pass `policy.rs`
-//! and would fail here.
+//! and would fail here. That is a demonstration rather than a reading —
+//! `minimum()` relaxed to `Automatic` fails
+//! `this_is_the_first_operation_whose_own_minimum_requires_a_person` and
+//! `a_run_that_reaches_policy_is_refused_for_want_of_a_person`, and nothing
+//! else in the workspace notices.
+//!
+//! It is asserted twice, and the second is not a duplicate of the first. One
+//! calls `combine` directly, which pins the declaration; the other proposes the
+//! effect and lets the executor walk, which pins *where* the declaration is
+//! consulted — after step 3 and before anything is authorized — and that a
+//! refused walk reaches no adapter at all.
 //!
 //! **Its identity carries the head sha.** The target is `{repo}#{pr}@{head_sha}`,
 //! so a pull request whose head has moved is a different effect with a different
@@ -47,8 +57,12 @@
 //! Bean `fiddle-rvcu` adds it, in `crates/fiddle-runtime/src/effect/mod.rs`, and
 //! it is the prerequisite for the four tests owed here:
 //!
-//! - the mutation is GraphQL and carries the node id from the read, with the id
-//!   bound as `$id` and never spliced into the query text;
+//! - the mutation that a run really sent is GraphQL and carries the node id from
+//!   the read, with the id bound as `$id` and never spliced into the query text
+//!   — read out of the `argv` a scripted `gh` recorded. `github::ready`'s
+//!   `the_mutation_binds_its_input_rather_than_spelling_it` asserts the same
+//!   claim one step earlier, over the pair `apply` would hand the adapter, which
+//!   is as close to the wire as anything gets without a commit;
 //! - the mutation is dispatched exactly once, including on the path where its
 //!   answer was lost and the pull request had to be read back to settle it;
 //! - a mutation refused with 200 and a `FORBIDDEN`, against a world that still
@@ -58,11 +72,28 @@
 //!
 //! Together they are the whole of `m3-ready-mutation-is-graphql-and-once`'s
 //! dispatch half and of `m3-refusal-is-not-a-lost-write`. The gap is authorised
-//! rather than an omission, and it is named rather than approximated: a version
-//! of these that passed today would have to avoid the executor, and an assertion
-//! that avoids the mandatory authorization boundary is an assertion about
-//! something other than what this operation does — which reads as coverage
-//! while gating nothing.
+//! rather than an omission, and it is named rather than approximated: each of
+//! those four is a claim about a *committed* mutation — its recorded `argv`, its
+//! count across a lost answer, its classification when refused — so a version
+//! passing today would have to avoid the executor, and an assertion that avoids
+//! the mandatory authorization boundary is an assertion about something other
+//! than what this operation does.
+//!
+//! **That is a statement about those four and not about the boundary in
+//! general.** An earlier wording said any reachable version of the owed tests
+//! would have to avoid the executor, which was too wide, and three properties
+//! next to them are asserted here and in `github::ready`'s own tests without
+//! going near a committed mutation:
+//!
+//! - `a_run_that_reaches_policy_is_refused_for_want_of_a_person` drives the gate
+//!   *through* `Executor::execute` and pins the trace and a dispatch count of
+//!   zero, which is the refused half of exactly-once;
+//! - `an_already_ready_pull_request_is_the_postcondition` settles at step 3,
+//!   which is the no-mutation-needed half;
+//! - and `github::ready`'s `a_mutation_with_no_node_id_in_hand_is_not_sent`
+//!   pins the read-once handoff's own refusal — `NotSent`, so `NotCommitted` —
+//!   which is unreachable through the executor by construction, since step 3
+//!   fills the cell before step 7 on every path that gets there.
 
 mod support;
 
@@ -281,6 +312,67 @@ fn this_is_the_first_operation_whose_own_minimum_requires_a_person() {
         combine(op().minimum(), DeploymentRule::Allow),
         PolicyDecision::RequireHumanDecision { .. }
     ));
+}
+
+/// The same gate, on the path a run actually takes.
+///
+/// The case above asserts `combine` directly, which is one function call away
+/// from being another unit test of the policy table. This one proposes the
+/// effect and lets the executor walk, so what is asserted is that the minimum is
+/// consulted *where a run consults it* — after the postcondition inspection,
+/// before anything is authorized — and that the refusal a run gets back is the
+/// one that says a person is owed a question rather than one that says a rule
+/// forbade it.
+///
+/// The step trace is what pins the position, and the trace stopping at
+/// `combine_policy` is what makes `graphql_calls() == 0` mean something: not
+/// "nothing happened to mutate" but "the walk was refused, and a refused walk
+/// dispatches nothing". That is the half of exactly-once that is reachable
+/// today — the other half, one dispatch on the paths that do commit, is owed
+/// and named in this file's header.
+#[tokio::test]
+async fn a_run_that_reaches_policy_is_refused_for_want_of_a_person() {
+    let world = World::new();
+    world.pull(
+        PR,
+        json!({"number": PR, "draft": true, "node_id": NODE_ID, "state": "open"}),
+    );
+
+    let error = world
+        .execute(op())
+        .await
+        .expect_err("no person has agreed to this");
+
+    assert!(
+        matches!(
+            error,
+            EffectError::HumanDecisionRequired {
+                kind: EffectKind::EnsurePullRequestReady,
+                ..
+            }
+        ),
+        "got {error:?}"
+    );
+    assert_eq!(
+        world.steps(),
+        [
+            "validate_capability",
+            "derive_identity",
+            "inspect_postcondition",
+            "combine_policy"
+        ],
+        "refused at step 4, so nothing was authorized and nothing was applied"
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        0,
+        "a refused effect dispatches nothing"
+    );
+    assert_eq!(
+        world.recorded_paths(),
+        [format!("/repos/{REPO}/pulls/{PR}")],
+        "and the one read it made was the pre-mutation look, not a second one"
+    );
 }
 
 /// The revision is in the target, so a moved head is a different effect rather
