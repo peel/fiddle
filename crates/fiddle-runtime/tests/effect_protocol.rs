@@ -679,11 +679,23 @@ fn a_rate_limited_refusal_is_worth_reading_again_and_a_flat_refusal_is_not() {
 
     assert!(GhError::Timeout(Duration::from_secs(1)).is_worth_reading_again());
     assert!(GhError::Killed("signal".to_string()).is_worth_reading_again());
+    // The two cancellation provenances, and they answer this question
+    // differently for the same reason they classify differently: one of them
+    // has an answer that may exist to be read.
     assert!(
-        !GhError::Cancelled.is_worth_reading_again(),
-        "a cancelled run must stop, not wait"
+        !GhError::CancelledBeforeSpawn.is_worth_reading_again(),
+        "nothing was started, so there is nothing to look for"
+    );
+    assert!(
+        GhError::CancelledAfterSpawn.is_worth_reading_again(),
+        "a request that may already have landed is settled by looking — and \
+         `read_until_settled` still stops the run promptly, because it selects \
+         on the token rather than on this answer"
     );
     assert!(!GhError::Auth.is_worth_reading_again());
+    assert!(!GhError::NotSent(String::new()).is_worth_reading_again());
+    // `Unknown` and still not worth another read, which is a pair no other
+    // variant carries: a program that is not `gh` will not become one.
     assert!(!GhError::Malformed(String::new()).is_worth_reading_again());
     assert!(
         !GhError::Duplicate { count: 2 }.is_worth_reading_again(),

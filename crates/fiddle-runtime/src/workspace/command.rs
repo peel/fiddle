@@ -202,7 +202,12 @@ impl Workspace {
             })?;
 
         match bounded {
-            Bounded::Cancelled => Err(WorkspaceError::Cancelled),
+            // A check runner changes nothing outside this host, so the two
+            // cancellation provenances collapse into one variant here on purpose:
+            // there is no external write for the distinction to be *about*. The
+            // `gh` and `git push` sites are where it matters and they keep them
+            // apart — see [`crate::github::GhError::CancelledAfterSpawn`].
+            Bounded::CancelledAfterSpawn => Err(WorkspaceError::Cancelled),
             Bounded::TimedOut => Err(WorkspaceError::Timeout {
                 program: cmd.program.clone(),
                 timeout: cmd.timeout,

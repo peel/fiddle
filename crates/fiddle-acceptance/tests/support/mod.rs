@@ -284,7 +284,21 @@ impl Scenario {
     /// by accident: adding a command means inheriting the removals, and
     /// removing them means editing this one place.
     pub fn command(&self) -> Command {
-        let mut command = fiddle_command();
+        Command::from_std(self.std_command())
+    }
+
+    /// The same binary and the same removals, as a plain [`std::process::Command`].
+    ///
+    /// `assert_cmd::Command` can only run a child to completion, and one scenario
+    /// has to do something else with it: interrupt it while it is running. That
+    /// needs a pid, which needs `spawn`, which is not on the wrapper.
+    ///
+    /// This is the *lower* half of [`Scenario::command`] rather than a second
+    /// builder beside it, and deliberately so — the credential removals are the
+    /// guarantee every acceptance scenario inherits, and a sibling that applied
+    /// them from its own copy of the list is exactly how one of the two goes stale.
+    fn std_command(&self) -> std::process::Command {
+        let mut command = std::process::Command::new(fiddle_binary());
         for name in CREDENTIAL_VARS {
             command.env_remove(name);
         }
@@ -730,7 +744,19 @@ impl Scenario {
     /// environment. Every helper above builds its command through here, so the
     /// subcommand and the `--config` argument are spelled once.
     pub fn run_command(&self, invocation_ref: &str) -> Command {
-        let mut command = self.command();
+        Command::from_std(self.spawnable_run_command(invocation_ref))
+    }
+
+    /// The same invocation as [`Scenario::run_command`], spawnable.
+    ///
+    /// For the one scenario that interrupts a run in flight rather than waiting for
+    /// it: a `SIGINT` needs a pid, and a pid needs `spawn`. It is the lower half of
+    /// `run_command` rather than a copy of it, so the subcommand and the `--config`
+    /// argument stay spelled once — a second builder that drifted would let a
+    /// scenario interrupt a differently-configured run than the one it asserts
+    /// about.
+    pub fn spawnable_run_command(&self, invocation_ref: &str) -> std::process::Command {
+        let mut command = self.std_command();
         command.args([
             "run",
             invocation_ref,

@@ -37,9 +37,9 @@
 //! push that genuinely moved a ref and then genuinely failed to say so, and a
 //! fixture that only claimed to have pushed would leave the executor's
 //! postcondition read with nothing real to find. So `push_then_killed`,
-//! `never_answers` and `delegated` hand the work to the real `git`, against a
-//! real repository, and interpose only on how the invocation *ends* — which for
-//! `delegated` is not at all. The environment is passed through untouched, so
+//! `push_then_waits`, `never_answers` and `delegated` hand the work to the real
+//! `git`, against a real repository, and interpose only on how the invocation
+//! *ends* — which for `delegated` is not at all. The environment is passed through untouched, so
 //! the push that lands still runs under the seven names the product built.
 
 use std::io::Write;
@@ -138,6 +138,24 @@ fn main() {
             std::fs::write(dir.join("pushed_then_died"), "yes").unwrap();
             std::process::abort();
         }
+        // The same ambiguity as `push_then_killed`, lost to a *cancellation*
+        // rather than to a death — the provenance no fixture here could reach
+        // before, because a `git` that ended itself can only ever produce a
+        // killed child or a timeout.
+        //
+        // Nothing ends this mode: the ref is pushed by a real `git`, the marker
+        // records that it landed, and the process then waits to be killed. What
+        // kills it is the runtime's own cancellation token signalling the child's
+        // process group, which is the only channel a `^C` has to a bounded child.
+        "push_then_waits" => {
+            delegate(&args);
+            std::fs::write(dir.join("pushed_then_waited"), "yes").unwrap();
+            std::thread::sleep(FOREVER);
+            // Only reachable if nothing ever cancelled — a test that arranged an
+            // interrupt and failed to deliver it. Exiting non-zero rather than
+            // reporting a push keeps that from looking like a clean one.
+            std::process::exit(1);
+        }
         // The recording `git`, driving a real repository and interposing on
         // nothing. It exists for the suites whose subject is *another* object's
         // ambiguity: they need the branch to genuinely land, and they still need
@@ -157,7 +175,10 @@ fn main() {
 /// Whether a mode is driving a real repository rather than answering from the
 /// fixture's own constants.
 fn delegating(mode: &str) -> bool {
-    matches!(mode, "push_then_killed" | "never_answers" | "delegated")
+    matches!(
+        mode,
+        "push_then_killed" | "push_then_waits" | "never_answers" | "delegated"
+    )
 }
 
 /// Hand the invocation to the real `git`, unchanged.

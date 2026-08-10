@@ -21,6 +21,7 @@
 //! makes it honest to send the real one: the same environment the product builds
 //! is the one these pushes run under.
 
+use fiddle_runtime::effect::EffectOutcome;
 use fiddle_runtime::git::{GitCli, GitError};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -623,6 +624,12 @@ async fn a_diverged_push_is_refused_not_forced() {
 /// Cancellation has to *prevent* the effect, not merely stop waiting for it,
 /// which is the same check `Workspace::run` and `GhCli::api` make before their
 /// own spawns.
+///
+/// This is the **first** of the push's two cancellation provenances, and the
+/// classification is asserted here rather than only in the table beside
+/// [`GitError::outcome`]: no pushing child existed, so `NotCommitted` is
+/// knowledge about the ref rather than an assumption about it. The second
+/// provenance is the test after this one.
 #[tokio::test]
 async fn a_cancelled_publish_changes_nothing() {
     let dir = TempDir::new().unwrap();
@@ -636,6 +643,72 @@ async fn a_cancelled_publish_changes_nothing() {
         .await
         .expect_err("a cancelled attempt publishes nothing");
 
-    assert!(matches!(error, GitError::Cancelled), "{error:?}");
+    assert!(matches!(error, GitError::CancelledBeforePush), "{error:?}");
     assert!(branches(&remote).is_empty(), "no ref was created");
+    assert_eq!(
+        error.outcome(),
+        EffectOutcome::NotCommitted,
+        "nothing was pushed, and that is knowledge: {error:?}"
+    );
+}
+
+/// The **second** provenance, and the push's half of the defect M2's holistic
+/// review found: a cancellation that reaches a `git push` which is *already
+/// running*.
+///
+/// A push killed on the way back may have delivered its pack and moved the ref
+/// already — the identical reasoning [`GitError::Killed`] and
+/// [`GitError::Timeout`] are `Unknown` for. Cancellation was the one interruption
+/// left out of that group, and it is the only one of the three a `^C` can
+/// actually produce: `crate::process` gives every bounded child a process group
+/// of its own, so a terminal interrupt reaches it *only* through the token.
+///
+/// The premise is observed rather than assumed: the recording `git` writes down
+/// the invocation it received, so `push.json` existing is proof the pushing child
+/// really ran before the token cancelled. Without it this test would pass against
+/// the pre-spawn refusal above.
+#[tokio::test]
+async fn a_cancellation_after_the_push_was_spawned_is_an_ambiguous_write() {
+    let dir = TempDir::new().unwrap();
+    let remote = bare_repository(dir.path());
+    let work = worktree_with_one_commit(dir.path(), "work", &remote, "one");
+    // A `git push` that never answers, so the cancellation is what ends it
+    // rather than a child that had already finished.
+    let git = recording_git(&work, "ghp_whatever", "never_answers");
+
+    let cancel = CancellationToken::new();
+    let canceller = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        canceller.cancel();
+    });
+
+    let error = git
+        .publish(&work, "fiddle/abc", &cancel)
+        .await
+        .expect_err("a cancelled push is a failure");
+
+    assert!(
+        work.join("push.json").exists(),
+        "the pushing child must have run before the token cancelled, or this is \
+         the pre-spawn case wearing the other name"
+    );
+    assert!(matches!(error, GitError::CancelledMidPush), "{error:?}");
+    assert_eq!(
+        error.outcome(),
+        EffectOutcome::Unknown,
+        "a ref that may already have moved is not a refusal: {error:?}"
+    );
+    assert_ne!(
+        error.outcome(),
+        GitError::CancelledBeforePush.outcome(),
+        "the two provenances of one cancellation must not classify alike"
+    );
+    // And the verdict has to survive the trip into the executor's vocabulary,
+    // for the reason the exhaustive table beside `GitError::outcome` gives: a
+    // classification decided twice is decided by the second one.
+    assert_eq!(
+        fiddle_runtime::github::GhError::from(error).outcome(),
+        EffectOutcome::Unknown
+    );
 }

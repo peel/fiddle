@@ -20,6 +20,11 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Longer than any deadline a test sets, so a mode that waits to be cancelled is
+/// ended by the cancellation and by nothing else. The same constant, for the same
+/// reason, as `git_stub`'s.
+const FOREVER: std::time::Duration = std::time::Duration::from_secs(600);
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let dir = take_stub_dir(&mut args).expect("--stub-dir <path> must be passed through cli.args");
@@ -97,9 +102,9 @@ fn main() {
     // The ambiguous write, and the reason this whole stub exists: the effect
     // really lands and then the answer is really lost. Note the order — a stub
     // that exited first would be testing a failed write, which proves nothing.
-    if let Some(death) = mode.strip_prefix("commit_then_") {
+    if let Some(ending) = mode.strip_prefix("commit_then_") {
         apply_effect(&dir, &key, &body_in, mode);
-        match death {
+        match ending {
             // 128 + SIGKILL, the shell's spelling of a killed child, which some
             // wrappers pass on as their own exit code.
             "die" => std::process::exit(137),
@@ -107,7 +112,33 @@ fn main() {
             // adapter must classify both as `Unknown`, and this is the pair that
             // proves it does not depend on which one it got.
             "abort" => std::process::abort(),
-            other => panic!("unknown death mode {other}"),
+            // The **third** provenance of one ambiguous write, and the one the
+            // other two cannot reach: the mutation lands and then the answer is
+            // lost to a *cancellation* rather than to a death.
+            //
+            // This mode does not end itself. It records that the write landed
+            // and then waits to be killed, so what ends it is the runtime's own
+            // cancellation token — the channel a `^C` reaches a bounded child
+            // through, since the child has a process group of its own. A `gh`
+            // that exited on its own could only ever produce the killed-child
+            // provenance, which is the one the adapter already got right; the
+            // milestone's holistic review found that the harness had therefore
+            // never injected the one it got wrong.
+            //
+            // The marker is written *between* the mutation and the wait, for the
+            // same reason `git_stub`'s `pushed_then_died` is: it is the fixture's
+            // own record that the world really changed *before* the answer was
+            // lost, and it is what a test waits on before it interrupts.
+            "wait" => {
+                std::fs::write(dir.join("landed_and_waiting"), "yes").unwrap();
+                std::thread::sleep(FOREVER);
+                // Only reachable if nothing ever cancelled, which is a test that
+                // arranged an interrupt and failed to deliver it. Exiting
+                // non-zero rather than answering keeps that from looking like a
+                // successful write.
+                std::process::exit(1);
+            }
+            other => panic!("unknown ending mode {other}"),
         }
     }
 
@@ -476,6 +507,21 @@ fn world_answer(dir: &Path, key: &str, path: &str) -> (u16, String) {
     if key.starts_with("GET_repos") && key.contains("actions_workflows") {
         if let Some(status) = unreadable(dir, "runs_unreadable") {
             return (status, format!(r#"{{"message":"scripted {status}"}}"#));
+        }
+        // The same refusal, but only once a dispatch has actually landed — and
+        // that ordering is the whole reason the marker exists separately.
+        //
+        // A lost answer's *classification* is observable only when the read that
+        // would settle it cannot be made. If the read succeeds, the executor's
+        // step 8 finds the object and reports `Committed` whatever it thought the
+        // dispatch meant, so a suite whose reads always work cannot tell a
+        // correctly-classified lost answer from a misclassified one. The
+        // unconditional marker above cannot arrange this: it would refuse step
+        // 3's read too, and the effect would fail before dispatching anything.
+        if landed.iter().any(|w| landed_key(w, "dispatches")) {
+            if let Some(status) = unreadable(dir, "runs_unreadable_after_a_dispatch") {
+                return (status, format!(r#"{{"message":"scripted {status}"}}"#));
+            }
         }
         // Runs are located by run-name, because a workflow dispatch answers 204
         // with no run id and the runs listing does not expose dispatch inputs.

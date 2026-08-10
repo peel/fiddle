@@ -164,7 +164,12 @@ pub struct EffectContext {
     /// naming work this run never did.
     pub work: PathBuf,
     /// The run's cancellation. An operation passes it down so a cancelled run
-    /// stops before spawning rather than after.
+    /// stops before spawning **where it can** — and the "where it can" is not a
+    /// hedge, it is the distinction the whole classification rests on. A
+    /// cancellation noticed before a child exists is knowledge that nothing was
+    /// sent; one that arrives with the child already running is an ambiguous write.
+    /// Both adapters split those into separate error variants; see
+    /// [`GhError::CancelledAfterSpawn`](crate::github::GhError::CancelledAfterSpawn).
     pub cancel: CancellationToken,
 }
 
@@ -678,8 +683,8 @@ impl<'a> Executor<'a> {
         match settled.observed {
             // The world agrees, however the dispatch ended. This arm is what
             // turns a lost answer into a settled one, and it is reached by the
-            // 422 and the killed-`gh` paths alike. The mutation is not
-            // re-dispatched to get here; it is read.
+            // 422, the killed-`gh` and the cancelled-`gh` paths alike. The
+            // mutation is not re-dispatched to get here; it is read.
             Ok(Some(state)) => Ok(receipt(
                 effect_id,
                 payload_hash,
@@ -730,10 +735,28 @@ impl<'a> Executor<'a> {
                 // to settle it did not. This must stay its own leaf rather than
                 // degrading to `Committed` or `NotCommitted` — a caller told
                 // "failed" here retries a write that may have landed.
-                _ => Err(EffectError::Unresolved {
+                //
+                // **The dispatch failure is named beside the read failure**, and
+                // that is not decoration. This leaf is the only place where the
+                // classification of a lost answer is the whole of what the
+                // executor had left to reason from, so a diagnostic that quoted
+                // only the read would tell an operator that something is
+                // unresolved without telling them *what* may have landed — and a
+                // suite reading this field could not tell which ambiguity it was
+                // handed. That is how M2's harness came to inject a killed child
+                // four times over without ever observing how it was classified.
+                unsettled => Err(EffectError::Unresolved {
                     kind,
                     reason: format!(
-                        "the outcome was unknown and the postcondition could not be read{spent}: {read_error}"
+                        "the outcome was unknown{} and the postcondition could \
+                         not be read{spent}: {read_error}",
+                        match &unsettled {
+                            Err(error) => format!(" ({error})"),
+                            // The adapter claimed success and the read that would
+                            // have confirmed it failed. There is no second failure
+                            // to name.
+                            Ok(()) => String::new(),
+                        }
                     ),
                 }),
             },
@@ -783,10 +806,12 @@ impl<'a> Executor<'a> {
                     // its own number.
                     Settle::WhenThePostconditionAppears => RetryAdvice::default(),
                 },
-                // A refusal, a broken runner, a cancelled run or a second
-                // matching object. `is_worth_reading_again` is where each of
-                // those is judged; a `false` here is a settled answer that
-                // happens to be a failure.
+                // A refusal, a runner that will not repair itself, a read nothing
+                // was started for, or a second matching object.
+                // `is_worth_reading_again` is where each of those is judged, and
+                // it is a different question from `outcome`: a garbled answer is
+                // `Unknown` and still not worth another read. A `false` here is a
+                // settled answer that happens to be a failure.
                 Err(error) if !error.is_worth_reading_again() => {
                     return Settled { observed, reads }
                 }
@@ -802,6 +827,19 @@ impl<'a> Executor<'a> {
                 // A cancelled run must stop rather than finish waiting. It
                 // leaves with the last observation it has, which is an honest
                 // one: nobody looked again.
+                //
+                // **This is about how long a cancelled run may spend, not about
+                // what its failure meant.** A mutation whose answer was lost to
+                // the same cancellation is still `Unknown`
+                // ([`GhError::CancelledAfterSpawn`]), so the arms below report
+                // `Unresolved` rather than a settled failure, and the fresh
+                // process that follows settles it by reading. What this arm does
+                // cost is the *settling read on the cancelled path*: step 8's
+                // single `inspect` above is itself refused before spawning,
+                // because the token it is given is the cancelled one. Letting one
+                // read through would need a second cancellation channel in
+                // `EffectContext` and would make a `^C` non-prompt, so it is
+                // recorded in `docs/BACKLOG.md` rather than taken here.
                 _ = self.ctx.cancel.cancelled() => return Settled { observed, reads },
                 _ = self.read_retry.clock.wait(delay) => {}
             }

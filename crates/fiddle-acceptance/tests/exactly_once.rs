@@ -205,6 +205,110 @@ impl ScriptedWorld {
         )
     }
 
+    /// Make the mutation at `object` land and then lose its answer **to a
+    /// cancellation**, which is the other provenance one ambiguous write has.
+    ///
+    /// The two are not interchangeable, and the milestone's holistic review found
+    /// out how by finding the only one of them the code got right. Both arrive at
+    /// the same place — [`crate::process::run_bounded`] killing the child's process
+    /// group — but the runtime *chose* the death in one case and had it forced on
+    /// it in the other, and only the cancellation is reachable from a `^C`: every
+    /// bounded child is the leader of its own process group, so a terminal
+    /// interrupt reaches it solely through the token.
+    ///
+    /// The fixtures here do not end themselves. They apply the mutation, record
+    /// that it landed, and then wait to be killed:
+    ///
+    /// - the **branch** goes through the recording `git`'s `push_then_waits`;
+    /// - the **pull request** and the **check** go through the scripted `gh`'s
+    ///   `commit_then_wait`.
+    ///
+    /// So what ends the request is the interrupt this test delivers to the real
+    /// binary, through the real handler, on the real token — the production path
+    /// the finding named.
+    fn make_ambiguous_by_cancellation(&self, object: Object) {
+        match object {
+            Object::Branch => self.push_mode("push_then_waits"),
+            Object::PullRequest => {
+                self.push_mode("delegated");
+                self.script(&pulls_key(), "201 0 commit_then_wait");
+            }
+            Object::Check => {
+                self.push_mode("delegated");
+                self.script(&dispatch_key(), "204 0 commit_then_wait");
+            }
+        }
+    }
+
+    /// The marker a waiting fixture writes *between* the mutation and the wait.
+    ///
+    /// Waited on rather than slept past: it is the fixture's own record that the
+    /// world has already changed, so the interrupt cannot arrive before the write
+    /// it is supposed to make ambiguous.
+    fn landing_marker(&self, object: Object) -> PathBuf {
+        match object {
+            Object::Branch => self.work.join("pushed_then_waited"),
+            Object::PullRequest | Object::Check => self.stub.join("landed_and_waiting"),
+        }
+    }
+
+    /// Undo what [`ScriptedWorld::make_ambiguous_by_cancellation`] arranged, so the
+    /// retry meets a world that answers.
+    ///
+    /// The waiting fixtures cannot be left in place the way `recover_from` leaves
+    /// the dying ones: a second create against `commit_then_wait` would hang rather
+    /// than be seen. The counts are what catches a wrong retry instead — every mode
+    /// here still records the mutation it applies, and `pushes` still counts every
+    /// push dispatched, so a duplicate shows up as two.
+    fn recover_from_cancellation(&self, object: Object) {
+        let marker = self.landing_marker(object);
+        if marker.exists() {
+            std::fs::remove_file(&marker).unwrap();
+        }
+        match object {
+            Object::Branch => self.push_mode("delegated"),
+            Object::PullRequest => self.script(&pulls_key(), "201 0 normal"),
+            Object::Check => self.script(&dispatch_key(), "204 0 normal"),
+        }
+    }
+
+    /// Run the publication, wait for the mutation at `object` to land, and then
+    /// interrupt the **binary** with a real `SIGINT`.
+    ///
+    /// This is the one scenario in the suite that drives the signal rather than the
+    /// token, and it has to: `main::cancel_on_interrupt` is the production path the
+    /// finding named, and a test that cancelled a token directly would prove the
+    /// classification without proving anything reaches it. The child is signalled by
+    /// pid, so nothing else in this process's group is disturbed — and `gh` and
+    /// `git` are in process groups of their own, so the signal reaches them *only*
+    /// if the handler cancels the token.
+    fn publish_then_interrupt(&self, object: Object) -> std::process::Output {
+        let marker = self.landing_marker(object);
+        let child = self
+            .scenario
+            .spawnable_run_command(INVOCATION_REF)
+            .args(["--capability", "publish_change", "--json"])
+            .env(CREDENTIAL, SENTINEL)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{}: the fixture never recorded a landed mutation, so there was \
+                 nothing to make ambiguous",
+                object.as_str()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        interrupt(child.id());
+        child.wait_with_output().unwrap()
+    }
+
     /// Make the mutation at `object` land and then lose its answer.
     ///
     /// One call per object, and each arrangement is the fixture's own
@@ -272,6 +376,30 @@ impl ScriptedWorld {
             Object::Branch => self.script(&pulls_key(), "201 0 normal"),
             Object::PullRequest => self.script(&dispatch_key(), "204 0 normal"),
             Object::Check => self.scenario.make_changes_dir_writable(),
+        }
+    }
+
+    /// Make the runs listing answer `status` — but only once a dispatch has
+    /// landed, so step 3's read still succeeds and the effect is still dispatched.
+    ///
+    /// This is what makes a lost answer's *classification* observable at all. When
+    /// the postcondition read succeeds, step 8 finds the object and reports
+    /// `Committed` whatever the dispatch failure was taken to mean, so every count
+    /// in this file holds equally of a runtime that classified the lost answer
+    /// correctly and one that did not. Only a read that cannot be made forces the
+    /// executor to fall back on what the dispatch said.
+    fn make_the_settling_read_fail(&self, status: u16) {
+        std::fs::write(
+            self.stub.join("runs_unreadable_after_a_dispatch"),
+            status.to_string(),
+        )
+        .unwrap();
+    }
+
+    fn let_the_settling_read_succeed(&self) {
+        let marker = self.stub.join("runs_unreadable_after_a_dispatch");
+        if marker.exists() {
+            std::fs::remove_file(marker).unwrap();
         }
     }
 
@@ -662,6 +790,270 @@ fn assert_the_answer_was_lost(world: &ScriptedWorld, object: Object) {
     }
 }
 
+/// **The same mandatory proof, through the other provenance of one ambiguous
+/// write:** the answer is lost to a `^C` rather than to a killed child.
+///
+/// Until M2's holistic review this lane could not reach this case at all. Every
+/// ambiguity it injected was a fixture that exited 137 or aborted, which reaches
+/// `GhError::Killed` — the provenance the adapter classified *correctly* — while a
+/// cancellation reached a variant classified `NotCommitted` beside a pre-spawn
+/// refusal. So the one test carrying the milestone's mandatory proof was
+/// structurally blind to the one case the code got wrong, and both existing
+/// cancellation tests were pre-spawn.
+///
+/// The walk is the headline test's, with the interrupt in place of the injected
+/// failure — and the interrupt does both jobs at once, because a cancelled run
+/// also ends without accounting for the work:
+///
+/// 1. the mutation at this object lands, and the fixture records that it landed
+///    and then waits;
+/// 2. a real `SIGINT` reaches the real binary, whose real handler cancels the
+///    token — the only channel that reaches a child in its own process group;
+/// 3. the run must report the outcome as **unresolved** rather than as a settled
+///    adapter failure, which is the whole of the classification, observed through
+///    a published document;
+/// 4. every local record is deleted;
+/// 5. a fresh process runs the same invocation and completes, and the world holds
+///    exactly one of each object with exactly one mutation ever dispatched at it.
+///
+/// Step 3 is the assertion an inversion breaks. Steps 1 and 5 hold just as well of
+/// a misclassifying runtime here — the scripted world has no listing lag, so its
+/// step-3 read finds the object either way — and a lane that asserted only those
+/// would pass on the defect. What `Unknown` buys is that the interrupted run tells
+/// an operator *nobody knows* instead of *it did not happen*, and only the second
+/// of those licenses the retry that duplicates.
+#[test]
+fn a_cancellation_after_the_write_lands_is_unresolved_and_never_duplicated() {
+    for object in Object::ALL {
+        let at = object.as_str();
+        let world = ScriptedWorld::new();
+        world.make_ambiguous_by_cancellation(object);
+
+        // -- the interrupted attempt ----------------------------------------
+        let first = world.publish_then_interrupt(object);
+        let first_payload = payload_of(&first);
+        let first_stderr = String::from_utf8_lossy(&first.stderr).to_string();
+        assert_ne!(
+            first.status.code(),
+            Some(0),
+            "{at}: an interrupted attempt must not claim success: {first_payload}"
+        );
+
+        // The fault fired, it fired in the order that makes it an ambiguous write,
+        // and it fired for the *reason* this test is about. The last of those three
+        // is the one that needs its own assertion: the fixtures wait rather than
+        // die, so a signal that never arrived would leave the runtime's own deadline
+        // to end the request instead — which is `Timeout`, also `Unknown`, and would
+        // let every assertion below pass without a cancellation ever being
+        // classified.
+        assert!(
+            first_stderr.contains("interrupted; stopping the attempt"),
+            "{at}: the interrupt must have reached the binary's own handler, or the \
+             deadline ended this request and no cancellation was classified: \
+             {first_stderr}"
+        );
+        assert_the_answer_was_lost_to_a_cancellation(&world, object);
+
+        // -- what the run said about it -------------------------------------
+        //
+        // The classification, read off a published field. An `EffectOutcome::Unknown`
+        // reaches `EffectError::Unresolved`, whose rendering is "left an unresolved
+        // outcome"; a `NotCommitted` reaches `EffectError::Adapter`, whose rendering
+        // is "adapter failure for". The two are the fix and the defect, and this is
+        // where they are told apart.
+        let summary = summary_of(&first_payload);
+        assert!(
+            summary.contains("unresolved outcome"),
+            "{at}: a write whose answer was lost to a cancellation must be reported \
+             unresolved, never as a settled failure: {summary:?} in {first_payload}"
+        );
+        // And the ambiguity named is the *dispatch's*, not the read's. Both
+        // failures are cancellations here — the read that follows is refused
+        // before spawning, because the token it is handed is the cancelled one —
+        // so "cancelled" alone would match the wrong half and would hold even if
+        // the write had been classified as never having happened. The
+        // after-spawn provenance is the one that has to appear.
+        assert!(
+            summary.contains("cancelled after"),
+            "{at}: the unresolved write must be the one cancelled *after* it was \
+             started, not a deadline and not the pre-spawn refusal that followed \
+             it: {summary:?}"
+        );
+
+        // -- nothing local survives -----------------------------------------
+        world.scenario.remove_local_records();
+        world.recover_from_cancellation(object);
+
+        // -- the fresh process ----------------------------------------------
+        let second = world.publish();
+        let second_payload = payload_of(&second);
+        assert_eq!(
+            second.status.code(),
+            Some(0),
+            "{at}: the retry must complete: {second_payload}\nstderr = {}",
+            String::from_utf8_lossy(&second.stderr)
+        );
+
+        // -- exactly one of each, against the world -------------------------
+        let branches = world.branches();
+        assert_eq!(
+            branches.len(),
+            1,
+            "{at}: exactly one branch, got {branches:?}"
+        );
+        assert_eq!(
+            world.pull_requests().len(),
+            1,
+            "{at}: exactly one pull request, got {:?}",
+            world.pull_requests()
+        );
+        assert_eq!(
+            world.workflow_runs().len(),
+            1,
+            "{at}: exactly one requested check, got {:?}",
+            world.workflow_runs()
+        );
+        assert_eq!(
+            world.pushes(),
+            1,
+            "{at}: exactly one push was ever dispatched"
+        );
+    }
+}
+
+/// The **killed-child** provenance, asserted where its classification is actually
+/// observable: a dispatch that landed, an answer that was lost, and a settling read
+/// that cannot be made.
+///
+/// This test exists because inverting the killed-child rule deliberately — the
+/// technique Task 15 established — left the rest of this lane green. Every other
+/// scenario here arranges a postcondition read that *succeeds*, and step 8 reports
+/// `Committed` off a successful read whatever it thought the dispatch meant. So the
+/// lane injected the killed child four times over and could not have noticed it
+/// being classified as a refusal.
+///
+/// The gap is closed by taking away the read rather than by adding another count.
+/// With the listing unreadable *after* the dispatch has landed — step 3's read
+/// still works, so the effect really is dispatched — the executor has nothing left
+/// but the dispatch's own classification, and the two possible answers are the fix
+/// and the defect:
+///
+/// - `Unknown` → `EffectError::Unresolved`, "nobody knows, go and look";
+/// - `NotCommitted` → `EffectError::Adapter`, "it did not happen", which is the
+///   sentence that licenses the retry that dispatches a second workflow run.
+///
+/// The check is the object this is worst for, and the reason is
+/// `docs/specs`' own: a workflow dispatch answers 204 with no run id and the runs
+/// listing does not expose dispatch inputs, so nothing outside fiddle prevents a
+/// duplicate.
+#[test]
+fn a_killed_child_whose_settling_read_fails_is_unresolved_and_never_duplicated() {
+    let world = ScriptedWorld::new();
+    world.push_mode("delegated");
+    world.script(&dispatch_key(), "204 0 commit_then_die");
+    world.make_the_settling_read_fail(500);
+
+    // -- the attempt that changed the world and could not confirm it ----------
+    let first = world.publish();
+    let first_payload = payload_of(&first);
+    assert_ne!(
+        first.status.code(),
+        Some(0),
+        "an unsettled write must not be reported as success: {first_payload}"
+    );
+
+    // The premise, before any claim about what was *said* about it: the dispatch
+    // really landed, and it landed under a `gh` that then died without answering.
+    assert_landed_under(&world, "dispatches", "commit_then_die");
+
+    let summary = summary_of(&first_payload);
+    assert!(
+        summary.contains("unresolved outcome"),
+        "a write whose answer was lost and whose postcondition could not be read \
+         must be reported unresolved, never as a settled failure: {summary:?} in \
+         {first_payload}"
+    );
+    // And the ambiguity named is the *dispatch's* rather than the read's, which
+    // reported an HTTP 500. Without this the assertion above would hold of any
+    // unsettled effect at all.
+    assert!(
+        summary.contains("(gh was killed"),
+        "the unresolved write must be named as the killed child it was: {summary:?}"
+    );
+
+    // -- nothing local survives, and the world becomes readable again --------
+    world.scenario.remove_local_records();
+    world.script(&dispatch_key(), "204 0 normal");
+    world.let_the_settling_read_succeed();
+
+    // -- the fresh process ---------------------------------------------------
+    let second = world.publish();
+    let second_payload = payload_of(&second);
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "the retry must complete: {second_payload}\nstderr = {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    assert_eq!(world.branches().len(), 1, "exactly one branch");
+    assert_eq!(
+        world.pull_requests().len(),
+        1,
+        "exactly one pull request, got {:?}",
+        world.pull_requests()
+    );
+    assert_eq!(
+        world.workflow_runs().len(),
+        1,
+        "exactly one requested check, got {:?}",
+        world.workflow_runs()
+    );
+    assert_eq!(world.pushes(), 1, "exactly one push was ever dispatched");
+}
+
+/// The fixture's own record that the mutation landed and the answer was then lost
+/// to a cancellation.
+///
+/// The counterpart of [`assert_the_answer_was_lost`], and separate from the walk
+/// for the same reason: without it every count that follows is a count of a world
+/// no fault ever touched.
+fn assert_the_answer_was_lost_to_a_cancellation(world: &ScriptedWorld, object: Object) {
+    let at = object.as_str();
+    match object {
+        Object::Branch => {
+            assert_eq!(
+                world.branches().len(),
+                1,
+                "{at}: the ref must really be on the remote, or nothing was lost"
+            );
+            assert_eq!(
+                world.pushes(),
+                1,
+                "{at}: and the lost answer must not have been resolved by pushing \
+                 again"
+            );
+        }
+        Object::PullRequest => assert_landed_under(world, "pulls", "commit_then_wait"),
+        Object::Check => assert_landed_under(world, "dispatches", "commit_then_wait"),
+    }
+}
+
+/// Send one `SIGINT` to a pid.
+///
+/// Through `kill` rather than through a signalling crate, because this suite
+/// deliberately has no dependency that could reach the runtime: `fiddle-acceptance`
+/// drives the compiled binary and links neither `fiddle-core` nor `fiddle-runtime`,
+/// and adding a libc dependency to deliver one signal would be the first crack in
+/// that.
+fn interrupt(pid: u32) {
+    let status = std::process::Command::new("kill")
+        .args(["-INT", &pid.to_string()])
+        .status()
+        .expect("kill is on the PATH");
+    assert!(status.success(), "could not interrupt {pid}");
+}
+
 /// Exactly one mutation matching `needle` landed, and the scripted `gh` recorded
 /// that it landed under `mode` — which for `commit_then_die` means the world
 /// changed and the process then exited 137 without answering.
@@ -857,9 +1249,12 @@ fn an_unreachable_github_publishes_nothing_and_reports_an_unread_forge() {
     let world = ScriptedWorld::new();
     // Not a `gh` at all, and not a scripted status either: a connection that was
     // refused. `gh` answers that with a message on stderr and no HTTP response,
-    // which the adapter classifies `Malformed` — a broken runner rather than an
-    // ambiguous write, so no postcondition read is owed and nothing may be
-    // guessed about a world nobody saw.
+    // which the adapter classifies `Malformed`. That is `Unknown` rather than a
+    // refusal — a wrapper is free to deliver a request and then print something
+    // unreadable — and it changes nothing here, because the failure lands on the
+    // *first* read of the first effect, which is step 3. Nothing was dispatched to
+    // be ambiguous about, so no postcondition is owed and nothing may be guessed
+    // about a world nobody saw.
     world.use_gh(&unreachable_gh(world.scenario.dir()));
 
     let out = world.publish();

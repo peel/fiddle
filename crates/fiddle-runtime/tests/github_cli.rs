@@ -223,6 +223,14 @@ async fn a_successful_call_returns_the_parsed_status_and_body() {
 
 /// The two exit codes that mean something on their own, and the only two the
 /// adapter is allowed to read as answers.
+///
+/// Exit 2 reaches the **after-spawn** cancellation, and the assertion says so
+/// deliberately rather than naming whichever variant is spelled "cancelled". A
+/// `gh` that exited 2 is a `gh` this process started: it reached whatever it
+/// reached and then reported a cancellation instead of an answer, so it is an
+/// ambiguous write and not an absence of a request. Classifying it with the
+/// pre-spawn refusal would be reading the exit code as evidence about GitHub,
+/// which is the mistake this module's status-line parsing exists to avoid.
 #[tokio::test]
 async fn exit_four_is_authentication_and_exit_two_is_cancellation() {
     let dir = TempDir::new().unwrap();
@@ -232,12 +240,23 @@ async fn exit_four_is_authentication_and_exit_two_is_cancellation() {
         .await
         .unwrap_err();
     assert!(matches!(err, GhError::Auth), "got {err:?}");
+    assert_eq!(
+        err.outcome(),
+        EffectOutcome::NotCommitted,
+        "exit 4 is `gh` refusing before it dispatches: {err:?}"
+    );
 
     let dir = TempDir::new().unwrap();
     let err = post_scripted(dir.path(), "ghp_whatever", "200 2 normal")
         .await
         .unwrap_err();
-    assert!(matches!(err, GhError::Cancelled), "got {err:?}");
+    assert!(matches!(err, GhError::CancelledAfterSpawn), "got {err:?}");
+    assert_eq!(
+        err.outcome(),
+        EffectOutcome::Unknown,
+        "a child that ran and reported a cancellation instead of an answer is \
+         an ambiguous write: {err:?}"
+    );
 }
 
 /// A cancelled attempt does not start a mutating request. Checked before the
@@ -251,15 +270,89 @@ async fn a_cancelled_attempt_never_reaches_the_network() {
         .api("POST", "/repos/o/r/pulls", Some(&body()), &cancel)
         .await
         .unwrap_err();
-    assert!(matches!(err, GhError::Cancelled), "got {err:?}");
+    assert!(matches!(err, GhError::CancelledBeforeSpawn), "got {err:?}");
     assert!(
         !dir.path().join("requests").exists(),
         "a cancelled call must not have reached the child at all"
+    );
+    assert_eq!(
+        err.outcome(),
+        EffectOutcome::NotCommitted,
+        "nothing ran, so this is the one cancellation that is knowledge: {err:?}"
+    );
+    assert!(
+        !err.is_worth_reading_again(),
+        "and there is nothing to go and look for: {err:?}"
+    );
+}
+
+/// The **second** cancellation provenance, and the one no test reached until M2's
+/// holistic review: a cancellation that arrives while `gh` is *already running*.
+///
+/// [`run_bounded`](fiddle_runtime) answers both provenances the same way — it
+/// kills the child's process group — so they are indistinguishable in what the
+/// runtime *did*, which is precisely why they must be distinguishable in what it
+/// *says*. This one is an ambiguous write: the request may already be at GitHub
+/// and it is the reply that was lost. Classifying it `NotCommitted` beside the
+/// pre-spawn refusal turns a `^C` during `POST .../pulls` into a settled failure,
+/// and a settled failure is retried into a duplicate.
+///
+/// The premise is *observed* rather than arranged. The scripted `gh` records
+/// every request on arrival, so a recorded request is proof the child ran before
+/// the token cancelled — and without that, this test would pass just as well
+/// against the pre-spawn case it exists to be different from.
+#[tokio::test]
+async fn a_cancellation_after_the_child_was_spawned_is_an_ambiguous_write() {
+    let dir = TempDir::new().unwrap();
+    // A `gh` that will not answer on its own, so the cancellation is what ends
+    // it rather than a child that had already finished.
+    std::fs::write(dir.path().join("sleep_ms"), "10000").unwrap();
+    script(dir.path(), "POST_repos_o_r_pulls", "201 0 normal");
+
+    let cancel = CancellationToken::new();
+    let canceller = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        canceller.cancel();
+    });
+
+    let err = gh(dir.path(), "ghp_whatever", PATIENT)
+        .api("POST", "/repos/o/r/pulls", Some(&body()), &cancel)
+        .await
+        .expect_err("a cancelled call is a failure");
+
+    assert!(
+        dir.path().join("requests").join("0000.json").exists(),
+        "the child must have run before the token cancelled, or this is the \
+         pre-spawn case wearing the other name"
+    );
+    assert!(matches!(err, GhError::CancelledAfterSpawn), "got {err:?}");
+    assert_eq!(
+        err.outcome(),
+        EffectOutcome::Unknown,
+        "a request that may already have landed is not a refusal: {err:?}"
+    );
+    assert!(
+        err.is_worth_reading_again(),
+        "and the only thing that settles it is looking: {err:?}"
+    );
+    assert_ne!(
+        err.outcome(),
+        GhError::CancelledBeforeSpawn.outcome(),
+        "the two provenances of one cancellation must not classify alike"
     );
 }
 
 /// The classification the milestone turns on. A lost answer is `Unknown`; an
 /// explicit refusal is `NotCommitted`.
+///
+/// Every variant is here, and the reason to write it as a whole table is the same
+/// one `GitError`'s table gives: the failure this guards against is a variant
+/// added later and defaulted into whichever arm happened to be nearby. What M2's
+/// holistic review found was the version of that mistake a table cannot catch on
+/// its own — one variant with two provenances, one of which the classification was
+/// wrong for — so each provenance is *also* driven through the adapter in the two
+/// tests above this one.
 #[test]
 fn a_lost_answer_is_unknown_and_a_refusal_is_not_committed() {
     let http = |status| GhError::Http {
@@ -283,24 +376,60 @@ fn a_lost_answer_is_unknown_and_a_refusal_is_not_committed() {
     // can actually tell a refusal from a duplicate.
     assert_eq!(http(422).outcome(), EffectOutcome::Unknown);
 
-    assert_eq!(GhError::Auth.outcome(), EffectOutcome::NotCommitted);
-    assert_eq!(GhError::Cancelled.outcome(), EffectOutcome::NotCommitted);
+    assert_eq!(
+        GhError::Killed("137".to_string()).outcome(),
+        EffectOutcome::Unknown
+    );
     assert_eq!(
         GhError::Duplicate { count: 2 }.outcome(),
         EffectOutcome::Unknown
     );
+
+    // The three ways nothing left this process: `gh` refusing before it
+    // dispatches, this runtime refusing before it spawns, and this runtime
+    // refusing a call it decided was wrong. These are the only `NotCommitted`
+    // failures there are, and each of them is an absent *request* rather than an
+    // absent *answer*.
+    assert_eq!(GhError::Auth.outcome(), EffectOutcome::NotCommitted);
+    assert_eq!(
+        GhError::CancelledBeforeSpawn.outcome(),
+        EffectOutcome::NotCommitted
+    );
+    assert_eq!(
+        GhError::NotSent(String::new()).outcome(),
+        EffectOutcome::NotCommitted
+    );
+
+    // And its opposite number, which used to sit in the arm above: a cancellation
+    // that reached a running `gh`, and a `gh` whose answer could not be read at
+    // all. Both are lost answers, so both are `Unknown`.
+    assert_eq!(
+        GhError::CancelledAfterSpawn.outcome(),
+        EffectOutcome::Unknown
+    );
+    assert_eq!(
+        GhError::Malformed(String::new()).outcome(),
+        EffectOutcome::Unknown
+    );
 }
 
-/// The specific case the exactly-once harness depends on. A child killed on the
-/// way back is `Unknown`, and it must not be mistaken for a malformed response —
-/// which classifies `NotCommitted` and would report a landed write as failed,
-/// producing the duplicate on the next attempt.
+/// The specific case the exactly-once harness depends on: a child killed on the
+/// way back is `Unknown`, so a landed write is never reported as one that never
+/// happened and never performed a second time by the retry.
 ///
 /// Both spellings of a dead child are driven, because the adapter must not
 /// depend on which one it happens to get: an exit code at or above 128 is what a
 /// wrapper passes on, and `None` is what a real signal leaves behind.
+///
+/// The contrast this test used to draw — that a killed child must classify
+/// *differently* from a garbled response — is gone, and its removal is the point
+/// rather than a loosening. `Malformed` is now `Unknown` as well, because a
+/// wrapper is free to deliver the request and mangle what it prints afterwards, so
+/// the two really are the same fact about the world. What separates them is not
+/// the outcome but the variant, which is still distinct, still carries its own
+/// diagnostic, and is still not worth reading again.
 #[tokio::test]
-async fn a_child_that_died_before_answering_is_unknown_not_malformed() {
+async fn a_child_that_died_before_answering_is_unknown() {
     for mode in ["commit_then_die", "commit_then_abort"] {
         let dir = TempDir::new().unwrap();
         let err = post_scripted(dir.path(), "ghp_whatever", &format!("201 0 {mode}"))
@@ -309,12 +438,10 @@ async fn a_child_that_died_before_answering_is_unknown_not_malformed() {
 
         assert!(matches!(err, GhError::Killed(_)), "{mode}: got {err:?}");
         assert_eq!(err.outcome(), EffectOutcome::Unknown, "{mode}");
-        assert_ne!(
-            err.outcome(),
-            GhError::Malformed(String::new()).outcome(),
-            "{mode}: a killed child and a garbled response are different states, \
-             and classifying them alike is what turns a landed write into a \
-             duplicate on the retry"
+        assert!(
+            err.is_worth_reading_again(),
+            "{mode}: and the lost answer is settled by looking, which is what \
+             separates it from a runner that will not repair itself"
         );
 
         // The half that makes this a real ambiguity rather than a simulated one:
@@ -454,15 +581,25 @@ async fn the_retry_and_rate_limit_headers_are_read_by_name() {
     assert_eq!(response.rate_limit_remaining, Some(0));
 }
 
-/// Something that is not a response is the runner being wrong, not GitHub
-/// refusing — so it is `NotCommitted`, and it must stay distinguishable from the
-/// killed child above.
+/// Something that is not a response is a **lost answer**, not a refusal.
 ///
-/// The process ran to a normal completion and produced garbage, which is what
-/// `cli.program` pointing at something that is not `gh` looks like. That is a
-/// misconfiguration to fix, not an ambiguous write to go and investigate.
+/// This assertion is the reverse of what it was, and the reversal is the second
+/// half of what M2's holistic review found. The old reading was that a process
+/// which ran to a normal completion and produced garbage is a broken runner rather
+/// than an ambiguous write — true of the *runner* and false of the *world*.
+/// `cli.program` is an operator seam: what is on the far end of it may be a
+/// wrapper that delivered the request perfectly well and then printed something
+/// this client cannot read. §6.5's rule admits no exception for that case — a lost
+/// response is not evidence of a failed write — and reporting it `NotCommitted`
+/// is how the retry performs the write a second time.
+///
+/// What survives from the old reading is the half that was actually about the
+/// runner: a program that is not `gh` will not become one however often it is
+/// asked, so this is `Unknown` **and not worth reading again**, which is a pair no
+/// other variant carries. The misconfiguration is still named in the diagnostic
+/// for an operator to fix.
 #[tokio::test]
-async fn a_garbled_response_is_a_broken_runner_and_not_an_ambiguous_write() {
+async fn a_garbled_response_is_a_lost_answer_and_not_a_refusal() {
     const SENTINEL: &str = "ghp_sentinel_must_not_appear_anywhere";
     let dir = TempDir::new().unwrap();
     let err = post_scripted(dir.path(), SENTINEL, "200 1 garbage")
@@ -470,7 +607,16 @@ async fn a_garbled_response_is_a_broken_runner_and_not_an_ambiguous_write() {
         .unwrap_err();
 
     assert!(matches!(err, GhError::Malformed(_)), "got {err:?}");
-    assert_eq!(err.outcome(), EffectOutcome::NotCommitted);
+    assert_eq!(
+        err.outcome(),
+        EffectOutcome::Unknown,
+        "a client that cannot read the answer has not learned that the write \
+         failed: {err:?}"
+    );
+    assert!(
+        !err.is_worth_reading_again(),
+        "and a program that is not `gh` will not become one: {err:?}"
+    );
     // The diagnostic has to be actionable — stdout alone is silent about a
     // `program` that is not `gh`, so stderr is quoted — and quoting a second
     // stream is a second place the credential could escape.

@@ -860,6 +860,14 @@ async fn an_unreadable_runs_listing_is_never_an_absent_run() {
 /// find nothing and dispatch again — an unbounded supply of workflow runs, which
 /// is the worst version of the failure this task exists to prevent. It is
 /// refused before the request rather than after it.
+///
+/// The variant asserted below is `NotSent` rather than `Malformed`, and the change
+/// keeps this test asserting what it always meant. `Malformed` is now `Unknown` —
+/// a `gh` whose answer could not be read may still have delivered the request —
+/// while this guard's whole point is that **no request exists**, so the refusal is
+/// settled and no postcondition read is owed. The two facts are opposites and one
+/// variant cannot carry both; `EffectError::Adapter` here rather than
+/// `EffectError::Unresolved` is the observable half of that.
 #[tokio::test]
 async fn a_dispatch_whose_identity_would_not_round_trip_is_refused() {
     let ci = Ci::empty();
@@ -885,7 +893,7 @@ async fn a_dispatch_whose_identity_would_not_round_trip_is_refused() {
         matches!(
             error,
             EffectError::Adapter {
-                source: GhError::Malformed(_),
+                source: GhError::NotSent(_),
                 ..
             }
         ),

@@ -46,6 +46,21 @@
 //! not only a cost. A `gh` killed after it has dispatched a request is a real
 //! ambiguous write rather than a simulated one, and [`GhError::outcome`] is what
 //! keeps it from being reported as a failure.
+//!
+//! # The two provenances of one interruption
+//!
+//! Three of this module's failures describe a child that was already running when
+//! something ended it — the deadline, a signal, and a **cancellation** — and the
+//! third is the one a `^C` produces, because [`crate::process`] puts every bounded
+//! child in a process group of its own and the token is then the only channel that
+//! reaches it. All three are `Unknown`.
+//!
+//! A cancellation *refused before any child exists* is the opposite fact and has
+//! its own variant. Keeping the two apart is what
+//! [`GhError::CancelledBeforeSpawn`] and [`GhError::CancelledAfterSpawn`] are for,
+//! and merging them was a real defect this milestone shipped and had to repair:
+//! one variant carried both, was classified for the harmless one, and documented
+//! only that one.
 
 use crate::effect::EffectOutcome;
 use crate::git::GitError;
@@ -124,9 +139,39 @@ pub enum GhError {
     /// Exit 4. `gh` had no usable credential, so nothing was sent.
     #[error("gh could not authenticate (exit 4)")]
     Auth,
-    /// Exit 2, or a cancellation this runtime raised before spawning.
-    #[error("gh was cancelled (exit 2)")]
-    Cancelled,
+    /// A cancellation this runtime raised **before any child existed**, at the
+    /// check in [`GhCli::api`] — the one and only producer.
+    ///
+    /// This is the only cancellation that is *knowledge*: no process was started,
+    /// so no request left this one, so the world is untouched. It is therefore the
+    /// only one classified `NotCommitted`.
+    ///
+    /// Its sibling is [`GhError::CancelledAfterSpawn`], and the two must never be
+    /// merged back together. M2's holistic review found them merged: one variant
+    /// carried both provenances, was classified `NotCommitted` for the harmless
+    /// one, and its own documentation described only that one. A `^C` landing
+    /// during `POST .../pulls` was reported as a write that had definitely not
+    /// happened.
+    #[error("gh was cancelled before it was started")]
+    CancelledBeforeSpawn,
+    /// A cancellation that reached a `gh` which was **already running**. Two
+    /// producers, and they are the whole of the variant:
+    ///
+    /// 1. the run's token winning [`crate::process::run_bounded`]'s `select!`,
+    ///    which kills the child's process group — the same `reap` on the same
+    ///    already-spawned child that produces [`GhError::Timeout`];
+    /// 2. exit **2**, `gh`'s own spelling of "cancelled", from a child that ran
+    ///    and answered nothing.
+    ///
+    /// Both are ambiguous writes and both are classified `Unknown`, for exactly
+    /// the reason [`GhError::Killed`] is: the request may already be at GitHub and
+    /// it is the *reply* that was lost. A cancellation is also the only one of
+    /// this group a `^C` can produce — [`crate::process`] gives every bounded
+    /// child a process group of its own, so a terminal interrupt reaches it only
+    /// through the token — which makes this the reachable half of the pair rather
+    /// than the exotic one.
+    #[error("gh was cancelled after it had already been started")]
+    CancelledAfterSpawn,
     /// The runtime's own deadline passed and the process group was killed.
     #[error("gh exceeded its {0:?} timeout and was killed")]
     Timeout(Duration),
@@ -136,6 +181,20 @@ pub enum GhError {
     /// landed.
     #[error("gh was killed before it answered (status {0})")]
     Killed(String),
+    /// A request this runtime **refused to send**, having decided the call itself
+    /// was wrong.
+    ///
+    /// One producer today:
+    /// [`EnsureCheckRequested::apply`](crate::github::EnsureCheckRequested)'s
+    /// identity guard, which refuses a dispatch that would be *named* by one
+    /// identity and *looked up* by another. `NotCommitted` is the whole point of
+    /// the variant — nothing was sent, so no postcondition read is owed — and it
+    /// is separate from [`GhError::Malformed`] because that neighbour is now
+    /// `Unknown`: a guard that refuses before dispatching and a `gh` whose answer
+    /// could not be read are opposite facts about the world, and one variant
+    /// cannot carry both.
+    #[error("nothing was sent: {0}")]
+    NotSent(String),
     /// A response arrived and carried a status at or above 400.
     ///
     /// `advice` is what that response said about being asked again. It is not
@@ -148,9 +207,34 @@ pub enum GhError {
         message: String,
         advice: RetryAdvice,
     },
-    /// Something came back that is not a response. This is the runner or the
-    /// binary being wrong, not GitHub refusing — see [`GhError::outcome`] for
-    /// why the difference matters more than it looks.
+    /// **No readable answer came back from a child that may well have run.**
+    ///
+    /// Four producers, and naming all four is what the classification rests on:
+    ///
+    /// 1. [`crate::process::run_bounded`] returning an `io::Error` — either the
+    ///    spawn failing or the wait failing. Those two are *not* distinguishable
+    ///    at that call site, and the pair is classified together deliberately:
+    ///    the spawn half reached nothing, the wait half is a child this process
+    ///    lost hold of, and the conservative reading of the pair costs one `GET`
+    ///    while the confident one costs a duplicate. The same trade
+    ///    [`GitError::Push`](crate::git::GitError::Push) already makes.
+    /// 2. `stdout` carrying no `HTTP/` status line at all — `cli.program`
+    ///    pointing at something that is not `gh`, a wrapper that printed a
+    ///    warning first, a transport error on `stderr`.
+    /// 3. A status line whose second token is not a number, or a non-empty body
+    ///    that is not JSON.
+    /// 4. A response that parsed and did not carry the fields this client needs
+    ///    (`crate::github::pulls`, `crate::github::checks`, `crate::github::refs`).
+    ///
+    /// **This is `Unknown`, and it used to be `NotCommitted`.** The old reading
+    /// was that a process which ran to a normal completion and produced garbage
+    /// is a broken runner rather than an ambiguous write. That is true of the
+    /// *runner* and false of the *world*: a wrapper is free to deliver the
+    /// request and mangle what it prints afterwards, and §6.5's rule is that a
+    /// lost response is not evidence of a failed write. What stays true is that a
+    /// program which is not `gh` will not become one, so this is `Unknown`
+    /// *without* being worth reading again — see
+    /// [`GhError::is_worth_reading_again`].
     #[error("gh output could not be parsed: {0}")]
     Malformed(String),
     /// More objects matched than the postcondition allows. Reported, never
@@ -182,17 +266,26 @@ impl GhError {
     /// milestone turns on getting these two apart, because `Unknown` sends the
     /// caller to read the world and `NotCommitted` sends it to retry — and a
     /// landed write reported as `NotCommitted` is retried into a duplicate.
+    ///
+    /// **The test is "could this request have reached GitHub?", never "did this
+    /// runtime work properly?".** Those two questions have different answers for
+    /// a cancellation and for a garbled response, and answering the second one is
+    /// how M2's holistic review found a `^C` during `POST .../pulls` reported as a
+    /// write that had definitely not happened.
     pub fn outcome(&self) -> EffectOutcome {
         match self {
             // The answer was lost. The write may or may not have landed.
             //
             // `Killed` is the state the exactly-once harness deliberately
             // creates: the scripted `gh` applies its mutation and *then* exits
-            // as though killed. Classifying it with `Malformed` would report a
-            // write that really landed as a write that never happened, and the
-            // retry would perform it a second time — the exact duplicate this
-            // milestone exists to prevent.
-            GhError::Timeout(_) | GhError::Killed(_) => EffectOutcome::Unknown,
+            // as though killed. `CancelledAfterSpawn` is its sibling and the
+            // reachable one — `main`'s `^C` handler cancels the token, and the
+            // token is the only channel that reaches a child in its own process
+            // group. Both come out of a child that had already started, so both
+            // say the same thing about the world as the deadline does.
+            GhError::Timeout(_) | GhError::Killed(_) | GhError::CancelledAfterSpawn => {
+                EffectOutcome::Unknown
+            }
             // GitHub failed after receiving the request. Whether it got far
             // enough to act is not something a 5xx tells anyone.
             GhError::Http { status, .. } if *status >= 500 => EffectOutcome::Unknown,
@@ -208,12 +301,21 @@ impl GhError {
             // Two objects where one was expected means an earlier write is
             // unaccounted for; that is not a settled world.
             GhError::Duplicate { .. } => EffectOutcome::Unknown,
-            // Nothing was sent (`Auth`, `Cancelled`), or something came back
-            // that was never a response at all (`Malformed`) — which means the
-            // process ran to a normal completion and produced garbage, rather
-            // than dying mid-flight. That is a broken runner, not an ambiguous
-            // write.
-            GhError::Auth | GhError::Cancelled | GhError::Malformed(_) => {
+            // No answer came back that this client could read. `Unknown` and not
+            // `NotCommitted`, because "the runner is broken" is a fact about the
+            // runner: a wrapper is free to deliver the request and then mangle
+            // what it prints, and §6.5's rule is that a lost response is not
+            // evidence of a failed write. See the variant for all four of its
+            // producers, including the spawn failure that certainly reached
+            // nothing and is classified here anyway.
+            GhError::Malformed(_) => EffectOutcome::Unknown,
+            // Nothing left this process. `Auth` is `gh` refusing before it
+            // dispatches; `CancelledBeforeSpawn` is this runtime refusing before
+            // any child exists; `NotSent` is this runtime refusing a call it had
+            // decided was wrong. Each is an absence of a request rather than an
+            // absence of an answer, which is the whole distinction this function
+            // is for.
+            GhError::Auth | GhError::CancelledBeforeSpawn | GhError::NotSent(_) => {
                 EffectOutcome::NotCommitted
             }
             // Delegated rather than restated: git's refusal channel is the
@@ -248,7 +350,14 @@ impl GhError {
     pub fn is_worth_reading_again(&self) -> bool {
         match self {
             // The answer was lost on the way back. The next one may arrive.
-            GhError::Timeout(_) | GhError::Killed(_) => true,
+            //
+            // `CancelledAfterSpawn` belongs here for the same reason as the other
+            // two, and belongs here *in the type* even where the caller stops
+            // sooner: `read_until_settled` selects on the run's token, so a
+            // cancelled run takes its one observation and leaves rather than
+            // waiting out a backoff. This answers what the error means, not how
+            // long the caller may spend on it.
+            GhError::Timeout(_) | GhError::Killed(_) | GhError::CancelledAfterSpawn => true,
             // GitHub said so itself — either with a `Retry-After` or by
             // reporting the credential's allowance spent. This arm is ahead of
             // the status arms because it is the one that separates a
@@ -258,12 +367,20 @@ impl GhError {
             // 429 is the rate limit saying so without a header; 5xx is GitHub
             // failing at something that is not about this request.
             GhError::Http { status, .. } => *status == 429 || *status >= 500,
-            // Everything else is settled. A refusal stays refused, a cancelled
-            // run must stop rather than wait, a broken runner does not repair
-            // itself, and a second matching object does not become one object
-            // by being looked at again.
+            // Everything else is settled. A refusal stays refused; a request that
+            // was never started has nothing to look for; a program that is not
+            // `gh` will not become one however often it is asked, which is why
+            // `Malformed` is `Unknown` and still not worth another read; and a
+            // second matching object does not become one object by being looked
+            // at again.
+            //
+            // `Push` is `false` for a different reason than the rest, and it is
+            // worth naming rather than leaving to the reader: this question is
+            // asked **only of a read**, and a read is never a push. Delegating to
+            // `GitError` here would be a branch nothing can reach.
             GhError::Auth
-            | GhError::Cancelled
+            | GhError::CancelledBeforeSpawn
+            | GhError::NotSent(_)
             | GhError::Malformed(_)
             | GhError::Duplicate { .. }
             | GhError::Push(_) => false,
@@ -360,8 +477,13 @@ impl GhCli {
     ) -> Result<GhResponse, GhError> {
         // Checked before spawning, not only raced against: cancellation has to
         // prevent the effect, and this is the one moment where refusing is free.
+        //
+        // It is also the one moment where a cancellation is *knowledge* — no child
+        // exists, so no request left this process — which is why this returns a
+        // different variant from the `select!` arm below. The two used to share
+        // one, and the sharing is the defect M2's holistic review found.
         if cancel.is_cancelled() {
-            return Err(GhError::Cancelled);
+            return Err(GhError::CancelledBeforeSpawn);
         }
 
         let mut command = tokio::process::Command::new(&self.program);
@@ -406,7 +528,10 @@ impl GhCli {
             })?;
 
         match bounded {
-            Bounded::Cancelled => Err(GhError::Cancelled),
+            // The child was running when the token cancelled, so this request may
+            // be at GitHub already — the same thing the deadline arm beside it
+            // says, produced by the same kill on the same child.
+            Bounded::CancelledAfterSpawn => Err(GhError::CancelledAfterSpawn),
             Bounded::TimedOut => Err(GhError::Timeout(self.timeout)),
             Bounded::Finished(output) => self.parse(&output),
         }
@@ -423,7 +548,14 @@ impl GhCli {
     fn parse(&self, output: &std::process::Output) -> Result<GhResponse, GhError> {
         match output.status.code() {
             Some(0) => {}
-            Some(2) => return Err(GhError::Cancelled),
+            // Exit 2 is `gh`'s own "cancelled", and it comes from a child that
+            // *ran*. It therefore joins the after-spawn provenance rather than the
+            // pre-spawn one: this process started a `gh`, that `gh` reached
+            // whatever it reached, and then it reported a cancellation instead of
+            // an answer. Reading it as "nothing was sent" would be reading the
+            // exit code as evidence about GitHub, which is the mistake the whole
+            // of this module's status-line parsing exists to avoid.
+            Some(2) => return Err(GhError::CancelledAfterSpawn),
             Some(4) => return Err(GhError::Auth),
             // Nobody chose this one. `code()` is `None` when a signal ended the
             // process; a code at or above 128 is the shell's spelling of the

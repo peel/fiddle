@@ -564,10 +564,13 @@ impl IntegrationOperation for EnsureCheckRequested {
         authorized: &AuthorizedEffect<Self>,
     ) -> Result<(), GhError> {
         if authorized.effect_id() != &self.effect_id {
-            // `Malformed` for its classification, which is the half that
-            // matters: nothing was sent, so this is `NotCommitted` and no
-            // postcondition read is owed.
-            return Err(GhError::Malformed(format!(
+            // `NotSent` for its classification, which is the half that matters:
+            // nothing was sent, so this is `NotCommitted` and no postcondition
+            // read is owed. It was `Malformed` until that variant was corrected to
+            // `Unknown` — a guard that refuses before dispatching and a `gh` whose
+            // answer could not be read are opposite facts about the world, and one
+            // variant cannot carry both.
+            return Err(GhError::NotSent(format!(
                 "the run would be named {} and looked up as {}; nothing was dispatched",
                 run_name(authorized.effect_id()),
                 self.run_name(),

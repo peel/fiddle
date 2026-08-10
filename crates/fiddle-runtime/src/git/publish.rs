@@ -121,25 +121,84 @@ pub enum GitError {
     #[error("the remote rejected {branch}: {reason}")]
     Rejected { branch: String, reason: String },
 
-    /// The push failed without rejecting a ref: an unreachable remote, a
-    /// credential the far end would not take, a `git` that is not a `git`.
+    /// The push failed without rejecting a ref. Two producers:
+    ///
+    /// 1. the pushing child ran and exited non-zero with no `!` line in its
+    ///    porcelain block — an unreachable remote, a credential the far end would
+    ///    not take, a `git` that is not a `git`;
+    /// 2. [`crate::process::run_bounded`] returning an `io::Error` for that child,
+    ///    which is the spawn failing *or* the wait failing and is not
+    ///    distinguishable at the call site.
+    ///
+    /// Producer 2's spawn half certainly reached no remote, and it is classified
+    /// `Unknown` with the rest anyway — see [`GitError::outcome`], which makes the
+    /// same trade for producer 1.
     #[error("git push failed: {stderr}")]
     Push { stderr: String },
 
     /// The worktree's `HEAD` could not be read, so there is nothing to publish
-    /// and nothing to report a sha for.
+    /// and nothing to report a sha for. Two producers, both from the local
+    /// `rev-parse` in [`GitCli::head_sha`]: an `io::Error` starting or waiting on
+    /// that child, and a child that answered with something which is not a full
+    /// object name.
+    ///
+    /// `NotCommitted` for both, and safely: this read carries no credential,
+    /// reaches no remote, and `publish` awaits it before it builds the push.
     #[error("git rev-parse HEAD failed: {stderr}")]
     Head { stderr: String },
 
-    /// The runtime's own deadline passed and the process group was killed.
+    /// The runtime's own deadline passed and a process group was killed. Two
+    /// producers, and only one of them is an ambiguous write:
+    ///
+    /// 1. the **push** outrunning the deadline, which may have delivered its pack
+    ///    and moved the ref — the reason this variant is `Unknown`;
+    /// 2. the local `rev-parse` in [`GitCli::head_sha`] outrunning it, which
+    ///    reaches no remote and therefore says nothing about any ref.
+    ///
+    /// Producer 2 is `Unknown` too, and deliberately: it is the conservative
+    /// reading, it costs one `GET` to settle, and separating it would be a variant
+    /// nothing acts on differently. Contrast
+    /// [`GitError::CancelledBeforePush`]/[`GitError::CancelledMidPush`], where the
+    /// two provenances *are* split — because there a `^C` makes the push-side one
+    /// the common case rather than the exotic one, and getting it wrong was a
+    /// defect this milestone shipped.
     #[error("git exceeded its {0:?} timeout and was killed")]
     Timeout(Duration),
 
-    /// The attempt was cancelled, so nothing was published.
-    #[error("cancelled")]
-    Cancelled,
+    /// The attempt was cancelled **before any pushing child existed**, so nothing
+    /// was published. Two producers, and both are on the near side of the only
+    /// spawn that can move a ref:
+    ///
+    /// 1. the cancellation check in [`GitCli::publish`], before the push is even
+    ///    built;
+    /// 2. a cancellation that ended the local `rev-parse` in
+    ///    [`GitCli::head_sha`] — a child that runs with no credential, reads
+    ///    `HEAD` and talks to no remote, and which `publish` awaits *before* it
+    ///    constructs the push.
+    ///
+    /// The boundary in the name is the **push**, not the spawn, and that is the
+    /// honest one here: producer 2 did spawn a child, and that child could not
+    /// have written a ref. `crate::github::cli` names its own boundary after the
+    /// spawn because for `gh` the two coincide — every `gh` this runtime starts
+    /// can send a request.
+    #[error("cancelled before anything was pushed")]
+    CancelledBeforePush,
 
-    /// The child died without answering.
+    /// The attempt was cancelled while the **pushing child was already running**.
+    ///
+    /// A push killed on the way back may have delivered its pack and moved the ref
+    /// already, so this says exactly what [`GitError::Killed`] and
+    /// [`GitError::Timeout`] say and is classified with them. Cancellation was the
+    /// interruption left out of that group, and it is the only one of the three a
+    /// `^C` can produce: [`crate::process`] gives every bounded child a process
+    /// group of its own, so a terminal interrupt reaches this one only through the
+    /// token.
+    #[error("cancelled after the push had already been started")]
+    CancelledMidPush,
+
+    /// The child died without answering. Two producers, exactly as
+    /// [`GitError::Timeout`] has, and classified together for the same reason: the
+    /// **push** leaving no exit code behind, and the local `rev-parse` doing so.
     ///
     /// Note what this is *not*: git exits **128** for any ordinary fatal — an
     /// unknown remote, a repository that is not one — so the "a code at or above
@@ -166,20 +225,26 @@ impl GitError {
     /// alone. Everything else about a push is a statement about the *process*,
     /// not about the ref.
     ///
-    /// So the three groups below are: nothing was spawned that could write; the
-    /// remote refused this ref by name; or the ref's fate is simply not known.
+    /// So the three groups below are: nothing that could write the ref ever ran;
+    /// the remote refused this ref by name; or the ref's fate is simply not known.
     /// The last group is where a killed `git` goes, because a push killed on the
     /// way back may have delivered its pack and moved the ref already — the case
-    /// Task 4 left explicitly to whoever wired this up.
+    /// Task 4 left explicitly to whoever wired this up — and it is where a
+    /// cancellation that reached a running push goes, for the same reason.
     pub fn outcome(&self) -> EffectOutcome {
         match self {
             // Nothing reached the remote. `publish` validates the branch name,
             // checks cancellation and reads the local `HEAD` *before* it builds
             // the pushing child, so each of these three is a failure on the near
             // side of the only spawn that can change anything.
-            GitError::InvalidBranch { .. } | GitError::Cancelled | GitError::Head { .. } => {
-                EffectOutcome::NotCommitted
-            }
+            //
+            // `CancelledBeforePush` is only half of what one variant used to carry.
+            // The other half — a cancellation that reached a push already in
+            // flight — is `CancelledMidPush` below, and merging them back together
+            // would put a ref that may have moved in this arm.
+            GitError::InvalidBranch { .. }
+            | GitError::CancelledBeforePush
+            | GitError::Head { .. } => EffectOutcome::NotCommitted,
             // The remote named this ref and said no. A divergent ref is this
             // one, and it is the whole reason M2 needs no ownership trailer:
             // git refuses the non-fast-forward, so the branch is reported and
@@ -187,10 +252,14 @@ impl GitError {
             GitError::NonFastForward { .. } | GitError::Rejected { .. } => {
                 EffectOutcome::NotCommitted
             }
-            // The deadline passed, or a signal ended the child. Neither says
-            // anything about the ref, and both are the ambiguous write this
-            // milestone exists for.
-            GitError::Timeout(_) | GitError::Killed => EffectOutcome::Unknown,
+            // The deadline passed, a signal ended the child, or the run was
+            // cancelled with the push already running. None of the three says
+            // anything about the ref, and all three are the ambiguous write this
+            // milestone exists for. The third is the one a `^C` produces, and it
+            // was in the arm above until M2's holistic review.
+            GitError::Timeout(_) | GitError::Killed | GitError::CancelledMidPush => {
+                EffectOutcome::Unknown
+            }
             // A push that failed without rejecting a ref: an unreachable
             // remote, a credential the far end would not take, a connection
             // that dropped. Deliberately `Unknown` rather than `NotCommitted`,
@@ -279,8 +348,12 @@ impl GitCli {
         validate_branch(branch)?;
         // Checked before spawning, not only raced against: cancellation has to
         // prevent the effect, and this is the one moment where refusing is free.
+        //
+        // It is also the one moment where a cancellation is *knowledge* about the
+        // ref, which is why it returns a different variant from the `select!` arm
+        // that loses to the token once the push is running.
         if cancel.is_cancelled() {
-            return Err(GitError::Cancelled);
+            return Err(GitError::CancelledBeforePush);
         }
 
         // Read first, so that the sha reported is the commit that was pushed
@@ -317,7 +390,9 @@ impl GitCli {
                     self.program.display()
                 )),
             })? {
-            Bounded::Cancelled => return Err(GitError::Cancelled),
+            // The pushing child was running when the token cancelled, so the pack
+            // may already be delivered and the ref may already have moved.
+            Bounded::CancelledAfterSpawn => return Err(GitError::CancelledMidPush),
             Bounded::TimedOut => return Err(GitError::Timeout(self.timeout)),
             Bounded::Finished(output) => output,
         };
@@ -383,7 +458,12 @@ impl GitCli {
                     self.program.display()
                 )),
             })? {
-            Bounded::Cancelled => return Err(GitError::Cancelled),
+            // A cancelled `rev-parse` is still `CancelledBeforePush`: this child
+            // carries no credential and talks to no remote, and `publish` awaits
+            // it before it builds the push, so nothing that could write a ref has
+            // run. The variant is named after the push rather than after the spawn
+            // for exactly this case.
+            Bounded::CancelledAfterSpawn => return Err(GitError::CancelledBeforePush),
             Bounded::TimedOut => return Err(GitError::Timeout(self.timeout)),
             Bounded::Finished(output) => output,
         };
@@ -703,6 +783,11 @@ mod tests {
     /// it `NotCommitted` would send a caller to retry a write that landed. A
     /// non-fast-forward is git naming this ref and refusing it, which is the
     /// verdict the design leans on in place of the ownership trailer it dropped.
+    ///
+    /// The two **cancellation** rows are the pair M2's holistic review added, and
+    /// they are the reason a table over every variant is worth its length: they
+    /// are adjacent, they describe one interruption, and they must land in
+    /// different arms. One variant carrying both was the defect.
     #[test]
     fn a_push_failure_says_what_it_knows_about_the_ref() {
         for (error, expected) in [
@@ -713,7 +798,8 @@ mod tests {
                 },
                 EffectOutcome::NotCommitted,
             ),
-            (GitError::Cancelled, EffectOutcome::NotCommitted),
+            (GitError::CancelledBeforePush, EffectOutcome::NotCommitted),
+            (GitError::CancelledMidPush, EffectOutcome::Unknown),
             (
                 GitError::Head {
                     stderr: "s".to_string(),

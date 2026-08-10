@@ -53,6 +53,15 @@ use tokio_util::sync::CancellationToken;
 /// classifies `Unknown` because a request may already have reached GitHub.
 /// Deciding that here would put the interpretation in the one module that
 /// cannot know which of the two it is running for.
+///
+/// **Every variant here is reached only after `spawn` returned a running child**,
+/// and for the two interrupted ones that is the load-bearing fact rather than an
+/// implementation detail. A caller whose child can change something outside this
+/// process therefore knows, from the variant alone, that the change may already
+/// have happened — which is why [`Bounded::CancelledAfterSpawn`] is spelled the
+/// way it is. A cancellation *refused before* a spawn never comes through this
+/// type at all: each caller checks its token itself, and that check is the only
+/// place a cancellation is knowledge rather than an ambiguity.
 #[derive(Debug)]
 pub(crate) enum Bounded {
     /// The child ran to completion and this is what it left behind. A non-zero
@@ -61,8 +70,17 @@ pub(crate) enum Bounded {
     Finished(Output),
     /// The deadline passed and the whole process group was killed.
     TimedOut,
-    /// The attempt was cancelled and the whole process group was killed.
-    Cancelled,
+    /// The attempt was cancelled *while the child was running*, and the whole
+    /// process group was killed.
+    ///
+    /// The name carries the provenance because the classification depends on it
+    /// and nothing downstream can recover it: this arm and [`Bounded::TimedOut`]
+    /// are produced by the same `reap` on the same already-spawned child, so a
+    /// caller that treated the two differently with respect to *whether the
+    /// request reached the far side* would be inventing a distinction the runner
+    /// never made. M2's holistic review found exactly that — see
+    /// [`GhError::CancelledAfterSpawn`](crate::github::GhError::CancelledAfterSpawn).
+    CancelledAfterSpawn,
 }
 
 /// Spawn `command`, optionally feed it `stdin`, and wait for it under both a
@@ -126,9 +144,14 @@ pub(crate) async fn run_bounded(
     };
 
     tokio::select! {
+        // Reached only from here, which is *after* the `spawn` above returned a
+        // running child. That is the whole of the difference between this arm and
+        // a caller's own pre-spawn cancellation check, and it is a difference
+        // about the world rather than about the runner: whatever this child was
+        // asked to do, it had already started doing it.
         _ = cancel.cancelled() => {
             reap(group);
-            Ok(Bounded::Cancelled)
+            Ok(Bounded::CancelledAfterSpawn)
         },
         _ = tokio::time::sleep(timeout) => {
             reap(group);
