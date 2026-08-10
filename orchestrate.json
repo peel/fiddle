@@ -31,14 +31,16 @@
       "general": {
         "template": "evaluator-general",
         "providers": [
-          "claude"
+          "claude",
+          "codex"
         ],
         "calibration": "docs/evaluator-calibration-general.md"
       },
       "infrastructure": {
         "template": "evaluator-infrastructure",
         "providers": [
-          "claude"
+          "claude",
+          "codex"
         ]
       }
     },
