@@ -6,6 +6,10 @@ Living docs for product and technical decisions. Persistent knowledge that infor
 
 **Feedback loop:** `/feedback` (capture) → `/insights` (synthesize) → discover/brainstorm (consume) → features → `/feedback`
 
+## Contracts
+
+- [`fiddle-agentic-factory-prd.md`](fiddle-agentic-factory-prd.md) — the approved product and interface contract for the Agentic Factory V1 milestone series (M0 onward). It defines the V1 product scope, the typed capability and orchestration interfaces, the non-goals and boundaries, and the milestone acceptance criteria. Beans and plans in that series cite this file by path and commit (`docs/fiddle-agentic-factory-prd.md@<sha>`) rather than any machine-local copy; when implementation and this document disagree, this document is the contract and must be amended deliberately.
+
 ## Structure
 
 ```
@@ -29,6 +33,7 @@ docs/
 │   ├── decisions/
 │   │   └── NNN-title.md  — ADRs (append-only)
 │   └── RUNBOOKS.md       — deploy, rollback, common issues
+├── fiddle-agentic-factory-prd.md — approved product/interface contract, Agentic Factory V1
 └── BACKLOG.md            — pre-bean ideas and debt (append-only)
 ```
 

@@ -140,8 +140,10 @@ The final allowed holistic dispatch can still produce CONVERGED. If its result i
 On FAIL, read the `remediation_beans` array in the merged scorecard and create a child bean of the epic for each entry, traced back to its source (a spec coverage gap or a failing dimension):
 
 ```bash
-beans create --parent <epic-id> --title "Fix: ..." --body "<description>" --eval "<eval block>"
+beans create --parent <epic-id> --title "Fix: ..." --body "<description>" --eval "<eval block>" --tag remediation
 ```
+
+Tag every remediation bean `remediation`. `scripts/resolve-orchestrate-phase.sh` requires each non-planning child of a seed-aware epic to carry a `generated-by:<seed-id>` and a `plan-task:<position>` binding it to the seed that planned it. A remediation bean comes from a holistic scorecard rather than the plan, so it has no plan position to carry, and the tag exempts it the way `planning` is exempted. Without it the epic resolves INVALID for the rest of its life; with a back-dated `generated-by` it would resolve by recording a provenance that is false.
 
 Then run each through the per-task loop: use `fiddle:develop-loop` with `--bean <remediation-bean-id> --epic <epic-id>`.
 
