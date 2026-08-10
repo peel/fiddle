@@ -24,6 +24,31 @@
 //! all is [`MarkerError::Absent`] rather than an error, because that is what
 //! every other comment in the conversation looks like.
 //!
+//! # A parse that succeeds has authenticated nothing
+//!
+//! Strictness is worth having and is worth not overreading. A successful
+//! [`parse_marker`] establishes one fact: this body contains a well-formed
+//! marker. It does not establish that the marker is *this* run's request, that
+//! fiddle wrote it, or that a person did. A comment quoting a request comment
+//! parses, because a verbatim quote is byte-identical. A quotation somebody
+//! *edited* parses too, and yields a **different** binding — well-formedness is
+//! a property of the four fields' shapes, never of their values, so any four
+//! plausible digests satisfy it.
+//!
+//! This module cannot close that gap and is deliberately not asked to. It has no
+//! run to compare against and no forge to ask, and a rule invented here to guess
+//! at authorship would be a rule that could be satisfied by whoever knew it. The
+//! authentication happens in the continuation, which recomputes all four fields
+//! from canonical inputs and compares them, and which checks who wrote the
+//! comment against an allowlist of [`ActorRef::id`]. A caller that branched on
+//! `parse_marker(body).is_ok()` would have skipped every part of that, however
+//! strict the parser it called.
+//!
+//! The consequence for [`render_marker`] is that its output is a wire format:
+//! one build writes those bytes and a later build reads them, so the bytes are
+//! pinned by a test against a literal rather than by a round trip, which moves
+//! both halves together and would agree with any format at all.
+//!
 //! [`InterpretedHumanDecision`] is the far end of the same exchange, and it lives
 //! beside the marker for a reason the two share: both are what one process is
 //! willing to conclude from text another party wrote. The marker's answer to that
@@ -149,6 +174,16 @@ pub const MARKER_VERSION: &str = "v1";
 /// some other build, which a reader diagnoses by upgrading; and
 /// [`Malformed`](MarkerError::Malformed) means a body shaped like a marker that
 /// is not one, which is the case worth printing.
+///
+/// Because those three prescribe three different actions, which one a body earns
+/// is part of the contract and not a detail. In particular [`Version`] is
+/// reserved for a well-formed version token this build does not know: it tells
+/// an operator to upgrade, and a body that was merely reflowed, respaced or
+/// truncated must not tell them that, because there is no build to upgrade to.
+/// [`parse_marker`] therefore checks that the token is shaped like a version
+/// before it compares it.
+///
+/// [`Version`]: MarkerError::Version
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
 pub enum MarkerError {
     #[error("no fiddle decision marker in this body")]
@@ -178,6 +213,28 @@ const FIELDS: [(&str, usize); 4] = [
     ("payload", 16),
     ("head", 40),
 ];
+
+/// Whether a token could be a marker version at all: `v` and then at least one
+/// decimal digit.
+///
+/// The version's own spelling is the one part of the grammar that cannot change
+/// between versions, because every build has to read it *before* it knows
+/// whether it can read anything else. So a token of this shape which is not
+/// [`MARKER_VERSION`] really is a marker from another build, and
+/// [`MarkerError::Version`] tells its reader the true and actionable thing.
+///
+/// A token of any other shape is not a version. It is what a body that was
+/// reflowed, respaced or truncated leaves in the first position — an empty
+/// string from a doubled space, a whole field from a dropped token, a run of
+/// fields from a newline swallowing the separators — and none of those is
+/// diagnosed by upgrading. Checking the shape here is what keeps the version
+/// comparison from becoming the catch-all that the first token of a mangled
+/// body falls into.
+fn is_version_token(token: &str) -> bool {
+    token
+        .strip_prefix('v')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
 
 /// The identity of the question that gates one effect.
 ///
@@ -265,6 +322,14 @@ pub fn render_marker(binding: &DecisionBinding) -> String {
 /// counting its fields would report a malformed marker when the truth is a
 /// version this build cannot read. Refusing by version says the thing a reader
 /// can act on.
+///
+/// What *is* checked before that comparison is the version token's own shape,
+/// because the comparison is otherwise a catch-all: whatever a mangled body
+/// leaves in the first position is not `v1`, so a doubled space, an embedded
+/// newline or a dropped token would each be reported as a foreign version and
+/// send an operator to upgrade a build that is not the problem. See
+/// `is_version_token` for why that one token's spelling is fixed across
+/// versions while the rest of the grammar is not.
 pub fn parse_marker(body: &str) -> Result<DecisionBinding, MarkerError> {
     let mut openings = body.match_indices(OPENING);
     let Some((start, _)) = openings.next() else {
@@ -289,6 +354,11 @@ pub fn parse_marker(body: &str) -> Result<DecisionBinding, MarkerError> {
     // reflowed or assembled rather than one fiddle wrote.
     let mut tokens = inside.split(' ');
     let version = tokens.next().unwrap_or_default();
+    if !is_version_token(version) {
+        return Err(MarkerError::Malformed(format!(
+            "a marker opens with a version token like {MARKER_VERSION:?}, not {version:?}"
+        )));
+    }
     if version != MARKER_VERSION {
         return Err(MarkerError::Version(version.to_string()));
     }
@@ -343,12 +413,53 @@ mod tests {
         }
     }
 
-    /// The round trip is the whole contract: what is written is what is read.
+    /// The round trip is half the contract: what this build writes, this build
+    /// reads. Only half, because both halves move together — see
+    /// [`the_rendered_marker_is_pinned_byte_for_byte`].
     #[test]
     fn a_marker_round_trips_through_a_comment_body() {
         let b = binding();
         let body = format!("Some prose a person reads.\n\n{}\n", render_marker(&b));
         assert_eq!(parse_marker(&body).unwrap(), b);
+    }
+
+    /// The marker is a wire format read across builds as well as across a process
+    /// death: an earlier build writes it into a GitHub conversation and a later
+    /// one has to find it there. So the bytes are pinned against a literal. A
+    /// round trip cannot do this job — permute the field order or rename a key
+    /// and render and parse move together, leaving every marker already posted
+    /// unreadable with the suite still green.
+    ///
+    /// If this test fails, the format changed. That is allowed, and it costs a
+    /// [`MARKER_VERSION`] bump plus a decision about the markers already out
+    /// there. What is not allowed is for it to change without anybody noticing.
+    #[test]
+    fn the_rendered_marker_is_pinned_byte_for_byte() {
+        assert_eq!(
+            render_marker(&binding()),
+            "<!-- fiddle:decision v1 \
+             request=0123456789abcdef \
+             effect=fedcba9876543210 \
+             payload=00112233445566aa \
+             head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->",
+        );
+    }
+
+    /// The other half of the same contract: a marker an earlier build wrote is a
+    /// marker this one still reads, out of a body with prose around it.
+    ///
+    /// The literal below is a fixture typed by hand, not `render_marker`'s output
+    /// pasted in. Pasting would make this the round trip again, and it would then
+    /// agree with whatever format the renderer had drifted to.
+    #[test]
+    fn a_marker_from_an_earlier_build_still_parses() {
+        let body = "Looks fine to me, go ahead.\n\n\
+                    <!-- fiddle:decision v1 \
+                    request=0123456789abcdef \
+                    effect=fedcba9876543210 \
+                    payload=00112233445566aa \
+                    head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->\n";
+        assert_eq!(parse_marker(body), Ok(binding()));
     }
 
     /// It is an HTML comment so a reader of the conversation never sees it.
@@ -369,41 +480,130 @@ mod tests {
     /// Strictness, case by case. A body that half-matches is far more likely to
     /// be a person quoting the marker than a request comment, so each of these
     /// refuses rather than being interpreted.
+    ///
+    /// Each case asserts the message it earns rather than `Malformed(_)`.
+    /// `Malformed(_)` cannot say *which* check refused, so it passes just as
+    /// happily when some neighbouring check catches the case first and the one
+    /// under test is dead — and this module's refusals are a diagnosis an
+    /// operator reads and acts on, not an opaque no.
     #[test]
     fn a_half_matching_marker_is_refused_and_not_interpreted() {
         let ok = render_marker(&binding());
-        for (name, bad) in [
+        for (name, bad, expected) in [
             (
                 "truncated request",
                 ok.replace("0123456789abcdef", "0123456789abcde"),
+                r#"request must be 16 lowercase hex characters, not "0123456789abcde""#.to_string(),
             ),
             (
                 "uppercase hex",
                 ok.replace("fedcba9876543210", "FEDCBA9876543210"),
+                r#"effect must be 16 lowercase hex characters, not "FEDCBA9876543210""#.to_string(),
             ),
-            ("short head", ok.replace(&"a".repeat(40), &"a".repeat(39))),
+            (
+                "short head",
+                ok.replace(&"a".repeat(40), &"a".repeat(39)),
+                format!(
+                    "head must be 40 lowercase hex characters, not {:?}",
+                    "a".repeat(39)
+                ),
+            ),
             // Over-long as well as truncated. A width is checked with equality
             // rather than a minimum, so a field cannot be padded past its own
             // length and still be read as a digest this build produced.
             (
                 "over-long request",
                 ok.replace("0123456789abcdef", "0123456789abcdef0"),
+                r#"request must be 16 lowercase hex characters, not "0123456789abcdef0""#
+                    .to_string(),
             ),
-            ("long head", ok.replace(&"a".repeat(40), &"a".repeat(41))),
+            (
+                "long head",
+                ok.replace(&"a".repeat(40), &"a".repeat(41)),
+                format!(
+                    "head must be 40 lowercase hex characters, not {:?}",
+                    "a".repeat(41)
+                ),
+            ),
             (
                 "reordered keys",
                 ok.replace("request=", "zzz=")
                     .replace("effect=", "request="),
+                r#"expected request= where the marker has "zzz=0123456789abcdef""#.to_string(),
             ),
-            ("extra key", ok.replace(" -->", " extra=1 -->")),
+            (
+                "extra key",
+                ok.replace(" -->", " extra=1 -->"),
+                r#"a marker carries the four fields and nothing else, but this one has "extra=1""#
+                    .to_string(),
+            ),
             (
                 "non-hex",
                 ok.replace("00112233445566aa", "00112233445566zz"),
+                r#"payload must be 16 lowercase hex characters, not "00112233445566zz""#
+                    .to_string(),
             ),
         ] {
-            assert!(
-                matches!(parse_marker(&bad), Err(MarkerError::Malformed(_))),
-                "{name} was accepted: {bad}"
+            assert_eq!(
+                parse_marker(&bad),
+                Err(MarkerError::Malformed(expected)),
+                "{name}: {bad}"
+            );
+        }
+    }
+
+    /// The ways a body gets damaged between being written and being read again —
+    /// reflowed by an editor, respaced, truncated, its closing lost — and the
+    /// refusal each one earns.
+    ///
+    /// All four are [`MarkerError::Malformed`] and none is
+    /// [`MarkerError::Version`]. Three of them were `Version` before this test
+    /// existed, because a mangled body's first token is not `v1` either, and the
+    /// version comparison stood where anything unrecognised fell through. Nothing
+    /// unsafe was accepted; the refusal simply told an operator whose comment had
+    /// been reflowed to upgrade their build, which is a day spent on the wrong
+    /// thing. The message is asserted per case for that exact reason: the bug was
+    /// never *whether* these refuse.
+    #[test]
+    fn a_mangled_body_is_malformed_and_says_how() {
+        let ok = render_marker(&binding());
+        for (name, bad, expected) in [
+            (
+                "a doubled space before the version",
+                ok.replace("fiddle:decision v1", "fiddle:decision  v1"),
+                r#"a marker opens with a version token like "v1", not """#.to_string(),
+            ),
+            (
+                "a newline reflowed into the marker",
+                ok.replace("v1 request=", "v1\nrequest="),
+                r#"a marker opens with a version token like "v1", not "v1\nrequest=0123456789abcdef""#
+                    .to_string(),
+            ),
+            (
+                "the version token dropped",
+                ok.replace("v1 ", ""),
+                r#"a marker opens with a version token like "v1", not "request=0123456789abcdef""#
+                    .to_string(),
+            ),
+            (
+                "a trailing field truncated away",
+                ok.replace(&format!(" head={}", "a".repeat(40)), ""),
+                "no head field".to_string(),
+            ),
+            (
+                // The strictness argument cites this case and nothing exercised
+                // it: an opening with no closing is a fragment, and reading to
+                // the end of the body instead would let the four fields be
+                // gathered from arbitrary prose.
+                "an opening never closed",
+                ok.replace(" -->", ""),
+                r#"a marker opens and is never closed by " -->""#.to_string(),
+            ),
+        ] {
+            assert_eq!(
+                parse_marker(&bad),
+                Err(MarkerError::Malformed(expected)),
+                "{name}: {bad}"
             );
         }
     }
@@ -412,10 +612,47 @@ mod tests {
     /// not understand refuses rather than guessing — the argument
     /// [`DeploymentRule`](crate::DeploymentRule) makes for having no catch-all
     /// variant.
+    ///
+    /// The second case is the one that fixes the meaning of the first. A later
+    /// build's marker is entitled to a grammar this build cannot parse, so the
+    /// version is compared *before* the fields are counted, and a body carrying
+    /// nothing else this build understands still refuses by version rather than
+    /// as malformed. That is why the token's shape is what admits it to this
+    /// comparison, and why the mangled bodies above are not admitted to it.
     #[test]
     fn an_unknown_marker_version_is_refused_by_version() {
         let bad = render_marker(&binding()).replace("v1", "v2");
         assert_eq!(parse_marker(&bad), Err(MarkerError::Version("v2".into())));
+        assert_eq!(
+            parse_marker("<!-- fiddle:decision v10 whatever-a-later-build-writes -->"),
+            Err(MarkerError::Version("v10".into())),
+        );
+    }
+
+    /// What a successful parse does not mean, asserted rather than only written
+    /// down: an *edited* quotation of a request comment parses, and binds
+    /// somewhere else. Well-formedness is a property of the four fields' shapes
+    /// and never of their values, so any four plausible digests satisfy it.
+    ///
+    /// This is not a defect to fix here. A pure module has no run to compare
+    /// against and no forge to ask who wrote a comment, and a rule invented here
+    /// to guess at authorship would be satisfiable by whoever knew the rule. It
+    /// is recorded as a test because the safety of the continuation rests on
+    /// recomputing all four fields and comparing them, and a caller who read
+    /// `is_ok()` as "this is my request" would be handed whatever the editor
+    /// typed.
+    #[test]
+    fn an_edited_quotation_parses_and_binds_somewhere_else() {
+        let edited = render_marker(&binding()).replace("fedcba9876543210", "0000000000000001");
+        let parsed = parse_marker(&edited).expect("a well-formed marker parses, whoever wrote it");
+        assert_eq!(parsed.effect, EffectId("0000000000000001".into()));
+        assert_ne!(parsed, binding());
+        // And the verbatim quotation is not even distinguishable in principle:
+        // byte-identical input, identical binding.
+        assert_eq!(
+            parse_marker(&format!("> {}", render_marker(&binding()))),
+            Ok(binding()),
+        );
     }
 
     /// Two markers in one body is not a body to pick from.
@@ -423,7 +660,12 @@ mod tests {
     fn two_markers_in_one_body_are_malformed() {
         let m = render_marker(&binding());
         let bad = format!("{m}\n{m}");
-        assert!(matches!(parse_marker(&bad), Err(MarkerError::Malformed(_))));
+        assert_eq!(
+            parse_marker(&bad),
+            Err(MarkerError::Malformed(
+                "a body carrying two markers is not a body to choose between".to_string()
+            )),
+        );
     }
 
     /// The request id derives from the effect it gates, which is what makes it
