@@ -503,20 +503,33 @@ async fn a_run_that_reaches_policy_is_refused_for_want_of_a_person() {
 /// into the identity, so two ways of writing one target are two effects, and a
 /// process recomputing it from the same three facts has to arrive at the same
 /// string.
+///
+/// **The identity is asserted before the target, and the order is deliberate.**
+/// Two `EffectId`s is what the property *is*; a target carrying `@{head_sha}` is
+/// only how it is achieved. Asserted the other way round — as this was — dropping
+/// `@{head_sha}` from `pull_request_ready_target` failed on the target strings
+/// and the identity comparison below was never evaluated, so the diagnostic
+/// named the mechanism and the criterion's own claim went untested at the moment
+/// it broke. Measured: under that inversion the two identities collapse to one
+/// digest, and this line is what says so.
 #[test]
 fn the_revision_is_part_of_the_identity_and_not_only_of_the_payload() {
     let a = op_at_head("aaaa");
     let b = op_at_head("bbbb");
 
-    assert_ne!(a.target(), b.target());
-    assert_ne!(identity_of(&a), identity_of(&b));
-    assert!(a.target().contains("acme/r#7@"), "got {}", a.target());
+    assert_ne!(
+        identity_of(&a),
+        identity_of(&b),
+        "two revisions are two effects, and therefore two questions"
+    );
     assert_eq!(
         identity_of(&a),
         identity_of(&op_at_head("aaaa")),
         "and the same revision recomputes the same identity, which is what lets \
          a fresh process recognise work it really did"
     );
+    assert_ne!(a.target(), b.target(), "which is achieved by the target");
+    assert!(a.target().contains("acme/r#7@"), "got {}", a.target());
 }
 
 // ---------------------------------------------------------------------------
