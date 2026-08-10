@@ -986,6 +986,24 @@ async fn a_lost_answer_on_the_ready_transition_is_settled_by_reading() {
 /// a value GitHub chose and interpolation would let it rewrite the query it
 /// appears in.
 ///
+/// **The two fault-localise in opposite directions, and that is what makes them
+/// complementary rather than redundant.** Inherited reasoning, from the lane that
+/// wrote both — recorded here because it is the argument an evaluator used to
+/// overturn an instruction to delete one of them, and it would otherwise survive
+/// only in a message thread:
+///
+/// - the **unit** test's `assert_eq!(variables, [("id", …)])` is an *exact*
+///   comparison against a one-element array, so it is what catches a variable
+///   being **added** — a second input this operation has no business binding;
+/// - this test asserts only that `id` is *present* among the `-f` fields and that
+///   the query text omits the node id, so **it would sit green if a second `-f`
+///   appeared**. What it catches instead is everything the unit test cannot see:
+///   the whole path from `mutation()` to the child's `argv`, which is code that
+///   could splice.
+///
+/// Neither direction subsumes the other, so deleting either loses a property
+/// rather than a duplicate.
+///
 /// **The walk's ending is not this test's subject**, and the result is discarded
 /// rather than asserted for that reason. It ends `Committed` —
 /// `an_approved_ready_transition_commits` runs against this same world and is
