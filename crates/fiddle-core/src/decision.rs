@@ -477,6 +477,55 @@ mod tests {
         assert_eq!(parse_marker("looks good to me"), Err(MarkerError::Absent));
     }
 
+    /// Every case's refusal, gathered before any of them is asserted, paired with
+    /// what it should have been.
+    ///
+    /// A `for` loop of `assert_eq!` over a table stops at the earliest
+    /// divergence, so it can only ever observe its **first** case: the rest queue
+    /// behind one another, and rows two and three stay unobserved until somebody
+    /// fixes row one. That is not hypothetical here. The claim that three mangled
+    /// bodies each used to refuse as [`MarkerError::Version`] had to be checked by
+    /// hand in a scratch tree, because the loop that was supposed to be its
+    /// evidence could only ever show one of the three.
+    ///
+    /// To be exact about what the loop did and did not do: it *caught* any single
+    /// case that regressed, and either form does. What it could not do is
+    /// **report** a second one, so a claim about three bodies was not something
+    /// any one run could evidence — and the run that mattered was the one where
+    /// all three regressed together, which is the shape of a removed guard.
+    ///
+    /// So the whole table is compared in one [`assert_eq!`]: a run names every
+    /// case that moved, and no case can hide behind a case above it. The refusal
+    /// is reduced to the message a reader would see, and anything that is not a
+    /// [`MarkerError::Malformed`] is spelled out with `{:?}` instead, so a body
+    /// that started being accepted — or refused by a different variant — shows up
+    /// as itself in the diff rather than as a missing message.
+    /// One row of a refusal table: the case's name, the body to parse, and the
+    /// message the refusal should carry.
+    type Case = (&'static str, String, String);
+
+    /// A whole table's outcome, named per case so a diff says which row moved
+    /// rather than only that something did.
+    type Refusals = Vec<(&'static str, String)>;
+
+    fn refusals(cases: &[Case]) -> (Refusals, Refusals) {
+        let observed = cases
+            .iter()
+            .map(|(name, body, _)| {
+                let seen = match parse_marker(body) {
+                    Err(MarkerError::Malformed(why)) => why,
+                    other => format!("{other:?}"),
+                };
+                (*name, seen)
+            })
+            .collect();
+        let wanted = cases
+            .iter()
+            .map(|(name, _, want)| (*name, want.clone()))
+            .collect();
+        (observed, wanted)
+    }
+
     /// Strictness, case by case. A body that half-matches is far more likely to
     /// be a person quoting the marker than a request comment, so each of these
     /// refuses rather than being interpreted.
@@ -485,11 +534,12 @@ mod tests {
     /// `Malformed(_)` cannot say *which* check refused, so it passes just as
     /// happily when some neighbouring check catches the case first and the one
     /// under test is dead — and this module's refusals are a diagnosis an
-    /// operator reads and acts on, not an opaque no.
+    /// operator reads and acts on, not an opaque no. All eight are observed on
+    /// every run; see [`refusals`].
     #[test]
     fn a_half_matching_marker_is_refused_and_not_interpreted() {
         let ok = render_marker(&binding());
-        for (name, bad, expected) in [
+        let (observed, wanted) = refusals(&[
             (
                 "truncated request",
                 ok.replace("0123456789abcdef", "0123456789abcde"),
@@ -543,31 +593,30 @@ mod tests {
                 r#"payload must be 16 lowercase hex characters, not "00112233445566zz""#
                     .to_string(),
             ),
-        ] {
-            assert_eq!(
-                parse_marker(&bad),
-                Err(MarkerError::Malformed(expected)),
-                "{name}: {bad}"
-            );
-        }
+        ]);
+        assert_eq!(observed, wanted);
     }
 
     /// The ways a body gets damaged between being written and being read again —
     /// reflowed by an editor, respaced, truncated, its closing lost — and the
     /// refusal each one earns.
     ///
-    /// All four are [`MarkerError::Malformed`] and none is
-    /// [`MarkerError::Version`]. Three of them were `Version` before this test
+    /// All five are [`MarkerError::Malformed`] and none is
+    /// [`MarkerError::Version`]. The first three were `Version` before this test
     /// existed, because a mangled body's first token is not `v1` either, and the
     /// version comparison stood where anything unrecognised fell through. Nothing
     /// unsafe was accepted; the refusal simply told an operator whose comment had
     /// been reflowed to upgrade their build, which is a day spent on the wrong
     /// thing. The message is asserted per case for that exact reason: the bug was
     /// never *whether* these refuse.
+    ///
+    /// "The first three" is a claim about three separate bodies, so all three are
+    /// observed on every run rather than the first one shielding the others — see
+    /// [`refusals`] for why a `for` loop of assertions could not carry that claim.
     #[test]
     fn a_mangled_body_is_malformed_and_says_how() {
         let ok = render_marker(&binding());
-        for (name, bad, expected) in [
+        let (observed, wanted) = refusals(&[
             (
                 "a doubled space before the version",
                 ok.replace("fiddle:decision v1", "fiddle:decision  v1"),
@@ -599,13 +648,8 @@ mod tests {
                 ok.replace(" -->", ""),
                 r#"a marker opens and is never closed by " -->""#.to_string(),
             ),
-        ] {
-            assert_eq!(
-                parse_marker(&bad),
-                Err(MarkerError::Malformed(expected)),
-                "{name}: {bad}"
-            );
-        }
+        ]);
+        assert_eq!(observed, wanted);
     }
 
     /// The version is compared, not skipped. A build meeting a marker it does
