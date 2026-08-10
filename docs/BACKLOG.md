@@ -632,3 +632,53 @@ Four of the five are the same species: **the plan restating existing code and ge
 Worth noting what did *not* catch these, since both were paid for: a self-review pass by the plan's own author, and an external critique that returned ten findings and produced eight real fixes. The critique was worth its cost — it caught two leaking cleanups, an impossible follow-up comment, a missing exit row and a contradicting pagination test. It simply does not catch this species, because it reads the plan against the design rather than against the code.
 Origin: implementation (epic fiddle-eoqx, bean fiddle-hmho) — found by the implementer
 Tags: #process #debt
+
+### 2026-08-10 — The epic's Contracts block named a type no bean was told to build
+`ActorRef` appears in `fiddle-eoqx`'s `## Contracts` section, placed in `crates/fiddle-core/src/decision.rs`. Task 2 created that file and did not create the type, because Task 2's steps never mentioned it — they covered the two `EffectKind` variants, the marker's render and parse, and `decision_request_id`. So the contract described a type with no owner, and the first bean that needed it (Task 4, the conversation adapter) found it missing and asked where it should go.
+
+Sixth plan defect on this milestone, and the first of a new species: not a restatement that got the code wrong, but a **contract entry with no corresponding step**. The Contracts block is copied into every bean body so parallel implementers cannot make incompatible choices — which works only for types some bean is actually instructed to define. Nothing checked that every entry in it had a home.
+
+Cost: one question, answered in one message, because the implementer asked instead of guessing. Had it guessed, `ActorRef` would have landed in `github/comments.rs`, and then both `human/` and the pure decision logic would depend on the GitHub adapter for a domain identity — inverting the crate boundary `crate_boundary.rs` exists to hold, and not failing any test, because nothing forbids a runtime module owning a domain type.
+
+The check worth adding for M4 onward, and it is mechanical: **every type named in a Contracts block must be greppable to a step that creates it.** A contract entry no step owns is either a type that will be defined twice by whoever needs it first, or defined in the wrong crate by whoever needs it soonest. Both are silent.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-127g) — found by the implementer asking rather than guessing
+Tags: #process #debt
+
+### 2026-08-10 — A drafting run accepts an already-readied pull request, and that is a decision rather than an accident
+`EnsurePullRequest::inspect` matches on head, base and `state=open`. With M3's `draft: bool` added, a drafting run that finds an existing pull request therefore treats its postcondition as satisfied **even when that pull request has already been marked ready for review** — and it performs no mutation.
+
+Task 6's implementer noticed this while writing the tests and flagged that it is currently "an accident of the type rather than a decision", because `gh_stub` models a pull request as `{head, base, title}` with no `draft` field at all, so the case cannot even be expressed in the fixture.
+
+The behaviour is right, and the reasons are worth having on record before somebody "fixes" it:
+
+- The effect is *a pull request exists for this head and base*. `draft` is a property of **creation**, not of the postcondition — the same reasoning that makes `inspect` match on head and base and deliberately not on title or body, since matching on those is what opens a second pull request.
+- Re-drafting a pull request a person had readied would **undo human progress**. A run whose local record was lost must never walk back a human's action; that is the failure mode this whole milestone is built against.
+- It composes: if the pull request is already ready, `EnsurePullRequestReady::inspect` returns the postcondition and nothing mutates. The two operations agree rather than fighting.
+
+Assigned to `fiddle-pwyi` (Task 13a), which builds the scripted world the acceptance walk needs and must model `draft` for the walk to be expressible at all. It should assert the case directly: a readied pull request is not re-drafted.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-yg9c) — found while writing a test the fixture could not support
+Tags: #debt #decision
+
+### 2026-08-10 — The lead ruled three times on one type, and the churn was the lead's alone
+`ActorRef` was placed by three successive rulings in one hour: into `fiddle-core` (asked for by Task 4's implementer, answered by the lead), then into `fiddle-runtime` (the lead retracting after seeing the implementer had already put it there), then back into `fiddle-core` (an agent acting on the first ruling before the retraction reached it, which the lead then accepted as final). It compiles and its tests pass in the final position, and no work was lost — but two agents were told opposite things about one type inside the same round.
+
+The failure is not the placement, it is the lead answering an architectural question at message speed. Each ruling was reasoned; none was reasoned *enough*, and the second was the worst because it retracted a correct answer using the wrong test: "nothing in `fiddle-core` names it" is true and irrelevant. The right test is whether the type is domain vocabulary, and it plainly is — `EffectId`, `CapabilityId`, `WorkRef` and `InvocationRef` all live there, and M6's attended mode will have actors who are not GitHub comment authors.
+
+What this costs and what to do about it. Two agents received contradictory instructions, a type moved crates twice, and the bean that consumes it (`fiddle-v5bm`) accumulated three notes of which two are wrong — which is worse than no note, because a reader cannot tell which is current without the git history of a bean body. The rule worth adopting: **a question about where a type lives is answered once, in writing, against the vocabulary already in the tree — and if the answer changes, the superseded note is marked superseded rather than followed by a contradicting one.** The final note on `fiddle-v5bm` does that; the two above it should have been amended rather than left standing.
+
+Recorded here rather than only on the bean because the pattern is about lead behaviour under concurrency, and it will recur every round that has four agents asking questions at once.
+Origin: lead (epic fiddle-eoqx) — three rulings on one type during the parallel round
+Tags: #process #orchestrate
+
+### 2026-08-10 — Three lead errors in one round, each corrected by the agent it was about
+Recorded together because they share a cause: the lead answering fast, from a stale read of a tree four agents were changing.
+
+**1. `ActorRef`'s placement, and who moved it.** The lead ruled it into `fiddle-core`, retracted on seeing it in `github/comments.rs`, then accepted `fiddle-core` again — and told Task 4's implementer, in its shutdown note, that it had *left* the type in the adapter and had been right to. It had not: it followed the first ruling and moved the type in `d11a47e`, also removing the `github/mod.rs` re-export with a comment on why a second path to it would invite a dependency on the wrong crate. The implementer corrected the record before shutting down, specifically so the consuming bean would not be pointed at a type that is not there. Ground truth: one definition, `crates/fiddle-core/src/decision.rs:78`, not re-exported through the adapter.
+
+**2. "The build break was unfounded" was itself unfounded.** Task 8 reported that `HEAD` did not build because its commit declared `pub mod interpret;` while `human/interpret.rs` was untracked. By the time the lead checked, Task 9's `f02cffa` had healed it, and the lead called the alarm unfounded. It was accurate when raised. The implementer's own point is the one worth keeping: an implementer who finds a half-landed cross-lane dependency should report it and leave the other agent's file alone, and that will sometimes mean the branch tip is briefly broken through nobody's fault — **treating that report as a false alarm afterwards discourages the next one.**
+
+**3. `crate_boundary` passing was cited as evidence about placement, and is not.** Its two `fiddle-core` tests are a resolved-closure denylist and a source grep for impure names. A pure struct of a `u64` and a `String` trips neither, wherever it lives. So the gate was green before and after the move and says nothing about which crate should own the type. Noticed by the implementer, which had checked the grep's banned list before writing its doc comment for exactly that reason.
+
+**And one structural observation about the round rather than about the lead.** Three agents wrote to `crates/fiddle-core/src/decision.rs` in one round — `f02cffa` (`InterpretedHumanDecision`), `d11a47e` (`ActorRef`), and the lead's rulings that sent them there — none of it in any bean's declared `## Files`. The parallel round was planned by checking that the four beans' declared files were disjoint, and they were. What made a pure-core file a shared surface was the lead's own mid-round rulings, issued per-agent, each locally reasonable. **A concurrency plan that only checks declared scope does not survive a lead that widens scope by message.**
+Origin: lead (epic fiddle-eoqx), corrected by fiddle-127g's and fiddle-kgr7's implementers
+Tags: #process #orchestrate
