@@ -10,11 +10,11 @@
 //! The marker in that comment is not evidence, and this module's shape is what
 //! keeps it from becoming evidence. Every field it carries — the request id, the
 //! gated [`EffectId`], the [`PayloadHash`] and the head sha — is a value the
-//! later process recomputes from canonical inputs and then compares. A marker
-//! that was edited, or written by somebody else, fails that comparison; it is
-//! never believed because it was read. What the marker actually supplies is
-//! narrower and cannot be derived: which question this comment is, so the
-//! continuation knows what to recompute in the first place.
+//! later process obtains for itself, from its own canonical inputs or from the
+//! forge, and then compares; none of them is believed because it was read. What
+//! the marker actually supplies is narrower and cannot be derived: which question
+//! this comment is, so the continuation knows what to recompute in the first
+//! place.
 //!
 //! [`parse_marker`] is therefore strict to the point of refusing anything it
 //! does not recognise exactly. The bodies it runs against are ordinary
@@ -38,11 +38,31 @@
 //! This module cannot close that gap and is deliberately not asked to. It has no
 //! run to compare against and no forge to ask, and a rule invented here to guess
 //! at authorship would be a rule that could be satisfied by whoever knew it. The
-//! authentication happens in the continuation, which recomputes all four fields
-//! from canonical inputs and compares them, and which checks who wrote the
-//! comment against an allowlist of [`ActorRef::id`]. A caller that branched on
+//! authentication happens in the continuation, and its shape matters here because
+//! it is what a successful parse is not: three of the marker's four fields are
+//! compared against values recomputed from the run's own canonical inputs — the
+//! request id as a *sieve*, answering which comment this is and authenticating
+//! nothing, since it can be copied off the visible conversation; the gated
+//! [`EffectId`] as the authentication itself, being the one field the
+//! conversation cannot supply; the [`PayloadHash`] as the separate claim that the
+//! work has not moved under an approval. The fourth, the head sha, is compared
+//! against the head observed from the forge, and that is a recomputation on
+//! neither side. Authorship is a check of its own: an allowlist of numeric
+//! [`ActorRef::id`], reached only for comments that are not bot- or
+//! app-attributed, so a bot carrying an allowlisted id is refused before the
+//! allowlist is consulted. A caller that branched on
 //! `parse_marker(body).is_ok()` would have skipped every part of that, however
 //! strict the parser it called.
+//!
+//! The paragraph above describes another crate — `fiddle-runtime`'s
+//! `human::validate`, where `resolve` holds the field comparisons and
+//! `select_candidates` the authorship rule — and it is stated knowing that
+//! nothing in this file can keep it true. `fiddle-core` does not depend on
+//! `fiddle-runtime` and must not, so no test here fails when that walk changes.
+//! An earlier version of this text called all four fields recomputed and
+//! presented the request-id sieve as an authentication, and it survived because
+//! there was nothing here able to contradict it. Read those two functions rather
+//! than this paragraph if the difference matters.
 //!
 //! The consequence for [`render_marker`] is that its output is a wire format:
 //! one build writes those bytes and a later build reads them, so the bytes are
@@ -52,7 +72,8 @@
 //! [`InterpretedHumanDecision`] is the far end of the same exchange, and it lives
 //! beside the marker for a reason the two share: both are what one process is
 //! willing to conclude from text another party wrote. The marker's answer to that
-//! is to carry only values that get recomputed and compared. This enum's answer
+//! is to carry only values its reader compares against ones it obtained for
+//! itself, rather than values a reader has to take on trust. This enum's answer
 //! is to have nowhere to put anything else — see its own documentation.
 
 use crate::effect::{length_prefixed, truncated_digest, EffectId, PayloadHash};
@@ -682,9 +703,10 @@ mod tests {
     /// against and no forge to ask who wrote a comment, and a rule invented here
     /// to guess at authorship would be satisfiable by whoever knew the rule. It
     /// is recorded as a test because the safety of the continuation rests on
-    /// recomputing all four fields and comparing them, and a caller who read
-    /// `is_ok()` as "this is my request" would be handed whatever the editor
-    /// typed.
+    /// comparing every field against a value it obtained for itself — and, for
+    /// the effect id, on that comparison alone — never on a body having parsed. A
+    /// caller who read `is_ok()` as "this is my request" would be handed whatever
+    /// the editor typed.
     #[test]
     fn an_edited_quotation_parses_and_binds_somewhere_else() {
         let edited = render_marker(&binding()).replace("fedcba9876543210", "0000000000000001");
