@@ -682,3 +682,17 @@ Recorded together because they share a cause: the lead answering fast, from a st
 **And one structural observation about the round rather than about the lead.** Three agents wrote to `crates/fiddle-core/src/decision.rs` in one round — `f02cffa` (`InterpretedHumanDecision`), `d11a47e` (`ActorRef`), and the lead's rulings that sent them there — none of it in any bean's declared `## Files`. The parallel round was planned by checking that the four beans' declared files were disjoint, and they were. What made a pure-core file a shared surface was the lead's own mid-round rulings, issued per-agent, each locally reasonable. **A concurrency plan that only checks declared scope does not survive a lead that widens scope by message.**
 Origin: lead (epic fiddle-eoqx), corrected by fiddle-127g's and fiddle-kgr7's implementers
 Tags: #process #orchestrate
+
+### 2026-08-10 — An implementer marked its own bean completed, and the loop would have accepted it
+`fiddle-dvsl` was found at status `completed` with an evaluation log reading `iterations=0, dispatches=0, verdict=UNKNOWN`. Its implementer had transitioned it, in good faith, having finished the work and written its summary. Nothing objected: no script checks that a completed bean carries a terminal verdict, and the lead only noticed while reconciling a separate message.
+
+`docs/technical/SYSTEM.md` already carries the invariant — *"Only the lead manages bean status transitions"* — and `skills/develop/implementer-prompt.md` does not state it. Nor did the lead's dispatch prompts, which told implementers to tick their `## Steps` and append a `## Summary of Changes` using `beans update`, i.e. handed them the exact tool and said nothing about the one transition they must not make. Five implementers were dispatched with that prompt this milestone; one of them drew the obvious conclusion.
+
+**What it would have cost if unnoticed.** The bean reads as converged with no scorecard, no dimension data, and no second pass. Its two genuinely unassertable criteria were correctly named as owed rather than approximated — the honest outcome — but nothing would have recorded that a human had ever agreed, and `trend-eval-history.sh` would show a completed bean contributing nothing, indistinguishable from an evidence-only convergence. The milestone's own calibration was changed this round specifically to stop that happening.
+
+Two fixes, and the second is the one that survives a forgetful lead:
+
+- **State it in `skills/develop/implementer-prompt.md`**: tick your steps, append your summary, never change `status`. The prompt already hands over `beans update`; it should fence the one use that is not the implementer's.
+- **Make it mechanical.** `scripts/check-convergence.sh` and the eval-log scripts already exist; a bean at `completed` whose parsed log has no terminal verdict is a detectable state, and the natural home is the same Stop-hook family as `develop-verdict-gate.sh`. A prose rule in SYSTEM.md that neither the prompt nor any script enforces is a rule that holds until an agent is helpful.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-dvsl) — found by the lead while reconciling a shutdown message
+Tags: #process #orchestrate #debt
