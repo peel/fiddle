@@ -80,6 +80,41 @@ pub struct EffectReceipt<T> {
     pub value: T,
 }
 
+/// What repeating the *same* invocation against the *same* deployment document
+/// would do to a failure.
+///
+/// The question [`fiddle_core::RunOutcome::Retryable`] documents as its own
+/// test — *would repeating this invocation, once someone has fixed what the
+/// reason names, succeed?* — asked of one failure rather than left for a caller
+/// to guess from a message. It is the discriminator between exit **11** and exit
+/// **20**, and it is a two-valued question because the exit table has exactly
+/// two rows for a run that executed and did not complete.
+///
+/// **"Fixed" is narrower than "somebody could do something about it",** and the
+/// codebase already draws the line where this type draws it. A change set
+/// carrying a foreign correlation marker is fixable — somebody settles whose
+/// change set it is — and `crate::orchestration::concluded` maps it to
+/// [`fiddle_core::RunOutcome::Failed`] anyway, because repeating *re-derives the
+/// same verdict from the same observation*. That is the test: not whether a
+/// human could intervene, but whether the failure is an **obstacle in front of**
+/// the request or a **conclusion about** it. Read the loose way, every failure
+/// is correctable and exit 20 becomes unreachable — which is the reading that
+/// had automation looping on a denied effect forever.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Recurrence {
+    /// Something incidental got in the way, and the same invocation succeeds
+    /// once it is gone: a network comes back, a rate limit lifts, a lost answer
+    /// is settled by a read that works. Nothing here contradicts what the
+    /// invocation asked for. [`fiddle_core::RunOutcome::Retryable`].
+    Correctable,
+
+    /// The same invocation, against the same document, reaches the same answer
+    /// — because the answer *is* the conclusion, drawn from inputs that repeat
+    /// unchanged. [`fiddle_core::RunOutcome::Failed`], whose promise is exactly
+    /// *this will not succeed by being repeated as invoked*.
+    Permanent,
+}
+
 /// Every way an effect can fail to produce a receipt.
 ///
 /// Each variant carries the [`EffectKind`] because a refusal reaches a person
@@ -92,6 +127,10 @@ pub struct EffectReceipt<T> {
 /// did not". Collapsing it into [`EffectError::Adapter`] would tell a caller a
 /// write failed when it may well have landed, and the retry would perform it
 /// twice.
+///
+/// The variants split two ways, and the split is [`EffectError::recurrence`]
+/// rather than an ordering of the enum: four of them are permanent under
+/// repetition and reach exit 20, two are correctable and reach exit 11.
 #[derive(Debug, thiserror::Error)]
 pub enum EffectError {
     #[error("policy denied {kind:?}: {reason}")]
@@ -130,4 +169,187 @@ pub enum EffectError {
     DuplicateState { kind: EffectKind, count: usize },
     #[error("adapter failure for {kind:?}: {source}")]
     Adapter { kind: EffectKind, source: GhError },
+}
+
+impl EffectError {
+    /// Which exit row this failure belongs in, decided per variant and in one
+    /// visible table.
+    ///
+    /// Exhaustive by construction — no wildcard arm — so a seventh variant
+    /// cannot be added without its author being made to answer this question.
+    /// That is the point: the three permanent refusals below were added by M2
+    /// *without* the question being asked, every one of them inherited exit 11
+    /// from the arm that catches a capability `Err`, and automation retrying on
+    /// 11 looped on a denied effect indefinitely.
+    ///
+    /// See `docs/technical/decisions/016-a-permanent-refusal-is-not-retryable.md`.
+    pub fn recurrence(&self) -> Recurrence {
+        match self {
+            // A `[github.policy]` rule is a property of the document, and the
+            // document is an input to the invocation rather than a thing in its
+            // way. Repeating hands `policy::combine` the same pair and gets the
+            // same `Deny` back, forever. An operator who edits `fiddle.toml` is
+            // not repeating this invocation; they are describing a different
+            // deployment and running against that.
+            EffectError::PolicyDenied { .. } => Recurrence::Permanent,
+
+            // The same, one step weaker in the document and one step stronger in
+            // consequence: `RequireHuman` is a rule that resolves through a
+            // decision channel, and M2 has none. Nothing a repeat can reach will
+            // answer it, so a repeat re-derives the same requirement.
+            //
+            // **Not `Suspended`,** which is the shape it will take in M3 and is
+            // the wrong word here. `Suspended` says a run is *waiting* — it
+            // promises something can arrive and resume it. In M2 nothing can,
+            // and a run that exited 10 on a decision no channel exists to make
+            // would be telling an operator to wait for something that is never
+            // coming. M2's epic contract reserves that row for M3 for exactly
+            // this reason; when the channel exists, this arm moves there and the
+            // move is a behaviour change with a decision behind it rather than a
+            // code quietly meaning something new.
+            EffectError::HumanDecisionRequired { .. } => Recurrence::Permanent,
+
+            // A defect in the caller, not a condition in the world: the
+            // proposal and the operation disagree about what the request *is*,
+            // and they are both this build's own code. Every repeat of this
+            // build disagrees identically. Fixing it means shipping a different
+            // fiddle.
+            EffectError::PayloadDiverged { .. } => Recurrence::Permanent,
+
+            // **Considered separately from the two refusals above, and it lands
+            // here by a different argument.** Nothing refused this: two objects
+            // matched where the postcondition allows one, so the world holds an
+            // ambiguity fiddle is not entitled to resolve — picking the first is
+            // precisely what `GhError::Duplicate` exists to have refused.
+            //
+            // That is `Blocked`'s family rather than a refusal's, and `Blocked ⇒
+            // Failed` is already this codebase's rule, argued at length in
+            // `crate::orchestration::concluded` for the closest available
+            // precedent: a change set carrying a *different* invocation's
+            // correlation marker. That case is fixable too — somebody settles
+            // whose change set it is — and it is `Failed` anyway, because
+            // repeating re-derives the same verdict from the same observation
+            // and keeps doing so until a human intervenes in the world. A second
+            // pull request open on one head is the same shape, so it gets the
+            // same row for the same stated reason.
+            EffectError::DuplicateState { .. } => Recurrence::Permanent,
+
+            // The variant the whole milestone is about, and the one place
+            // `Retryable` is the *only* honest answer. Nobody knows whether the
+            // write landed, and `Unknown` is resolved by reading the world — the
+            // first thing a repeat does, at the executor's step 3, before it
+            // proposes anything. `fiddle-cli`'s `read_retry` documentation
+            // already states this route: exhausting the budget reaches
+            // `Unresolved` → `Retryable` → exit 11.
+            EffectError::Unresolved { .. } => Recurrence::Correctable,
+
+            // A forge that would not answer, a credential that was refused, a
+            // rate limit, a wrapper that printed something unreadable. Every one
+            // of them is an obstacle in front of the request rather than an
+            // answer to it, and every one satisfies `Retryable`'s test directly:
+            // fix what the reason names — the host, the token, the wait — and
+            // the same invocation succeeds. Pinned by
+            // `exactly_once::an_unreachable_github_publishes_nothing_and_reports_an_unread_forge`.
+            EffectError::Adapter { .. } => Recurrence::Correctable,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KIND: EffectKind = EffectKind::EnsurePullRequest;
+
+    fn reason() -> String {
+        "because".to_string()
+    }
+
+    /// **The table, asserted rather than described.** Every variant, both
+    /// families, in one place — so a change to any arm shows up as a failing
+    /// assertion naming the variant rather than as a silently different exit
+    /// code three crates away.
+    #[test]
+    fn every_effect_failure_declares_which_exit_row_it_belongs_in() {
+        let cases: [(&str, EffectError, Recurrence); 6] = [
+            (
+                "a deployment rule denies the kind",
+                EffectError::PolicyDenied {
+                    kind: KIND,
+                    reason: reason(),
+                },
+                Recurrence::Permanent,
+            ),
+            (
+                "a decision channel M2 does not have",
+                EffectError::HumanDecisionRequired {
+                    kind: KIND,
+                    reason: reason(),
+                },
+                Recurrence::Permanent,
+            ),
+            (
+                "the caller's own two halves disagree",
+                EffectError::PayloadDiverged {
+                    kind: KIND,
+                    approved: PayloadHash("a".into()),
+                    applying: PayloadHash("b".into()),
+                },
+                Recurrence::Permanent,
+            ),
+            (
+                "the world holds an ambiguity fiddle may not resolve",
+                EffectError::DuplicateState {
+                    kind: KIND,
+                    count: 2,
+                },
+                Recurrence::Permanent,
+            ),
+            (
+                "nobody knows, and a read settles it",
+                EffectError::Unresolved {
+                    kind: KIND,
+                    reason: reason(),
+                },
+                Recurrence::Correctable,
+            ),
+            (
+                "the forge would not answer",
+                EffectError::Adapter {
+                    kind: KIND,
+                    source: GhError::Auth,
+                },
+                Recurrence::Correctable,
+            ),
+        ];
+
+        for (what, error, expected) in cases {
+            assert_eq!(
+                error.recurrence(),
+                expected,
+                "{what}: {error} was classified {:?}",
+                error.recurrence()
+            );
+        }
+    }
+
+    /// The discriminating half. A classification with every variant on one side
+    /// would satisfy the table above by accident, and the whole finding is that
+    /// exactly that had happened: all six were exit 11.
+    #[test]
+    fn the_two_families_are_both_inhabited() {
+        assert_ne!(
+            EffectError::PolicyDenied {
+                kind: KIND,
+                reason: reason(),
+            }
+            .recurrence(),
+            EffectError::Unresolved {
+                kind: KIND,
+                reason: reason(),
+            }
+            .recurrence(),
+            "a refused effect and an unsettled one must not share an exit row"
+        );
+    }
 }

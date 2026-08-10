@@ -318,6 +318,54 @@ pub enum CapabilityError {
     Misbound { bound: String, asked: String },
 }
 
+impl CapabilityError {
+    /// Which exit row a run that reached this failure belongs in.
+    ///
+    /// [`crate::orchestration::run`] turns a capability `Err` into a
+    /// [`fiddle_core::RunOutcome`], and until this existed it turned *every* one
+    /// of them into `Retryable`. That was right while the only ways to fail were
+    /// M1's — a write, a check, a workspace, a bounded attempt, all four of them
+    /// obstacles a repeat gets past — and M2 then added effect failures behind
+    /// the same arm without revisiting it. This is the revisit, and it is one
+    /// exhaustive `match` so that the next variant's author is asked the same
+    /// question by the compiler.
+    ///
+    /// Only [`CapabilityError::Effect`] delegates, because only an effect can
+    /// fail in more than one family; see
+    /// [`EffectError::recurrence`](crate::effect::EffectError::recurrence) for
+    /// the six-way table behind it.
+    pub fn recurrence(&self) -> crate::effect::Recurrence {
+        use crate::effect::Recurrence;
+        match self {
+            // M1's four, unchanged and deliberately so. A change set that could
+            // not be written, a check that did not pass, a workspace that could
+            // not be prepared and an attempt that produced no report are each an
+            // obstacle in front of the run: fix the permission, let the model
+            // try again, and the same invocation succeeds. `attempt.rs` and
+            // `repair_protocol.rs` pin all four, and none of them moves here.
+            CapabilityError::Write { .. }
+            | CapabilityError::CheckFailed { .. }
+            | CapabilityError::Workspace(_)
+            | CapabilityError::Agent(_) => Recurrence::Correctable,
+
+            // The two internal-consistency refusals. Neither is reachable
+            // through [`crate::orchestration::run`] — a grant is only ever
+            // issued for the capability the derivation named, and an executor is
+            // only ever bound to the run that built it — so this arm changes no
+            // observable behaviour. It is written the honest way regardless:
+            // both say, in their own documentation, that there is no run they
+            // are correct for, and a build that produced one would produce it
+            // again on every repeat.
+            CapabilityError::NotAuthorised { .. } | CapabilityError::Misbound { .. } => {
+                Recurrence::Permanent
+            }
+
+            // The variant M2 added, and the one with two families inside it.
+            CapabilityError::Effect(error) => error.recurrence(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

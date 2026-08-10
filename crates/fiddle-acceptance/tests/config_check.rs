@@ -514,7 +514,11 @@ fn config_check_reports_the_github_table_it_accepted() {
     assert_eq!(github["cli"]["args"], serde_json::json!([]), "{github}");
     assert_eq!(github["git"], "git", "{github}");
     assert_eq!(github["timeout"], "5m", "{github}");
-    assert_eq!(github["required_checks"], serde_json::json!([]), "{github}");
+    assert_eq!(
+        github["required_checks"]["configured"],
+        serde_json::json!([]),
+        "{github}"
+    );
     // The two keys a publication refuses by name when they are absent, reported
     // as `null` so an operator learns which refusal is waiting for them.
     assert_eq!(github["work"], serde_json::Value::Null, "{github}");
@@ -550,14 +554,23 @@ fn config_check_reports_the_github_table_it_accepted() {
 
 /// The seam the deterministic suite substitutes through, echoed in the shape the
 /// document writes it — the same shape `[workspace] check` already uses.
+///
+/// It also carries **the second key that is reported and does not decide**.
+/// `github.required_checks` reaches `Executor::observe_checks` and populates
+/// `observations.verification`, and nothing branches on the answer:
+/// `fiddle_core::assess` matches on the work item and the change set alone. A
+/// list named `required_checks` that requires nothing is exactly the shape
+/// `agent.max_capability_attempts` shipped, so it is disclosed the same way —
+/// object rather than scalar, both values, a `status` a machine keys on, and the
+/// decision that explains it.
 #[test]
 fn config_check_reports_the_gh_program_the_document_pins() {
-    let github = checked(&format!(
+    let document = format!(
         "{FORGE}cli = {{ program = \"/opt/gh/bin/gh\", args = [\"--stub-dir\", \"/tmp/x\"] }}\n\
          git = \"/opt/git/bin/git\"\nworkflow = \"verify.yml\"\n\
          required_checks = [\"build\"]\ntimeout = \"90s\"\n"
-    ))["github"]
-        .clone();
+    );
+    let github = checked(&document)["github"].clone();
     assert_eq!(github["cli"]["program"], "/opt/gh/bin/gh", "{github}");
     assert_eq!(
         github["cli"]["args"],
@@ -566,10 +579,44 @@ fn config_check_reports_the_gh_program_the_document_pins() {
     );
     assert_eq!(github["git"], "/opt/git/bin/git", "{github}");
     assert_eq!(github["workflow"], "verify.yml", "{github}");
+    let checks = &github["required_checks"];
     assert_eq!(
-        github["required_checks"],
+        checks["configured"],
         serde_json::json!(["build"]),
         "{github}"
+    );
+    assert_eq!(
+        checks["enforced"],
+        serde_json::json!([]),
+        "a document naming a required check gets no check required of it, and \
+         this is where it finds that out: {github}"
+    );
+    assert_eq!(checks["status"], "observed-not-enforced", "{github}");
+    assert_eq!(
+        checks["decision"], "017-required-checks-are-observed-not-enforced",
+        "the surface must lead a reader to the decision: {github}"
+    );
+    // The discriminating half, and the same one the attempt bound's own scenario
+    // makes: a key that *does* decide is a plain scalar, so the shape alone
+    // tells the two kinds apart without reading any word.
+    assert!(
+        github["timeout"].is_string() && github["policy"]["ensure_pull_request"].is_string(),
+        "a value that fires is a plain scalar: {github}"
+    );
+    // And the human rendering says it too, since an operator running `config
+    // check` without `--json` is the reader this is for.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fiddle.toml");
+    std::fs::write(&path, &document).unwrap();
+    let out = support::fiddle_command()
+        .args(["config", "check", "--config", path.to_str().unwrap()])
+        .env(FORGE_CREDENTIAL, SENTINEL)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        stdout.contains("not enforced") && stdout.contains("017-required-checks"),
+        "the plain rendering must disclose it too: {stdout}"
     );
     assert_eq!(github["timeout"], "90s", "{github}");
 }

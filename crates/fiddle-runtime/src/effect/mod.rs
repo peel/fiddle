@@ -31,7 +31,7 @@
 
 pub mod receipt;
 
-pub use receipt::{EffectError, EffectReceipt, ObservedState};
+pub use receipt::{EffectError, EffectReceipt, ObservedState, Recurrence};
 
 use crate::git::GitCli;
 use crate::github::{GhCli, GhError, RetryAdvice};

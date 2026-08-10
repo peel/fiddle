@@ -75,6 +75,28 @@ const ATTEMPT_BOUND_DECISION: &str = "013-one-attempt-bound-not-two";
 /// What a key that parses and fires nothing is reported as.
 const ACCEPTED_NOT_ENFORCED: &str = "accepted-not-enforced";
 
+/// What a key that is *read*, *acted on*, and still decides nothing is reported
+/// as.
+///
+/// A second word rather than a reuse of [`ACCEPTED_NOT_ENFORCED`], because the
+/// two are different and an operator debugging one would be misled by the
+/// other's promise. `agent.max_capability_attempts` is read by nothing at all:
+/// no code path anywhere consults the value. `github.required_checks` is
+/// consulted — it is handed to `Executor::observe_checks`, it decides which
+/// checks are looked up on the published head, and the answer reaches the
+/// bundle as `observations.verification`. What it does *not* do is change any
+/// outcome: `fiddle_core::assess` matches on the work item and the change set
+/// and never on the verification, so a required check that is missing, failed or
+/// pending leaves the run's conclusion exactly where an all-green one does.
+///
+/// Reported, in other words, and never required. See
+/// `decisions/017-required-checks-are-observed-not-enforced.md`.
+const OBSERVED_NOT_ENFORCED: &str = "observed-not-enforced";
+
+/// The decision a reader following the reported-but-unenforced check list is
+/// sent to.
+const REQUIRED_CHECKS_DECISION: &str = "017-required-checks-are-observed-not-enforced";
+
 /// The machine-readable `config check` payload.
 ///
 /// The shape is part of the CLI contract: `status` is `"valid"` and every
@@ -173,7 +195,17 @@ pub fn config_check_json(config: &Config) -> String {
             // waiting for them rather than having to notice a missing key.
             "work": github.work,
             "workflow": github.workflow,
-            "required_checks": github.required_checks,
+            // **A list that does not gate does not look like one that does.**
+            // The same object shape `max_capability_attempts` uses, for the same
+            // reason and with a status of its own: `enforced` is the empty list
+            // because no run outcome depends on any of these names, whatever the
+            // document says. See [`OBSERVED_NOT_ENFORCED`].
+            "required_checks": {
+                "configured": github.required_checks,
+                "enforced": Vec::<String>::new(),
+                "status": OBSERVED_NOT_ENFORCED,
+                "decision": REQUIRED_CHECKS_DECISION,
+            },
             "config_dir": github.config_dir,
             "timeout": github.timeout.to_string(),
             // Echoed beside `timeout` because it is the same kind of thing: a
@@ -301,7 +333,8 @@ pub fn config_check_human(config: &Config) -> String {
              \n  github.git = {}\
              \n  github.work = {}\
              \n  github.workflow = {}\
-             \n  github.required_checks = {}\
+             \n  github.required_checks = {} \
+             (observed, not enforced: no outcome depends on them — see decision {})\
              \n  github.config_dir = {}\
              \n  github.timeout = {}\
              \n  github.policy.ensure_branch_published = {}\
@@ -330,6 +363,7 @@ pub fn config_check_human(config: &Config) -> String {
                     .collect::<Vec<_>>()
                     .join(" "),
             },
+            REQUIRED_CHECKS_DECISION,
             github.config_dir.display(),
             github.timeout,
             rule(github.policy.ensure_branch_published),

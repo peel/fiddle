@@ -220,11 +220,18 @@ fn run_constructs_and_executes_the_publishing_capability() {
         !stderr.contains("[github]"),
         "the capability is configured and must no longer be refused: {stderr}"
     );
-    // Row 11 and not row 2: a capability that ran and failed is `Retryable`,
-    // which is the mapping every capability failure has had since M1. Row 2 is
-    // what a *refused invocation* exits on, and it is what this scenario exited
-    // on before the table existed — so the number itself is evidence that the
-    // capability was built rather than declined.
+    // Row 11 and not row 2. Row 2 is what a *refused invocation* exits on, and
+    // it is what this scenario exited on before the table existed — so the
+    // number itself is evidence that the capability was built rather than
+    // declined.
+    //
+    // Row 11 rather than 20, and that is no longer the default it once was:
+    // since `decisions/016-a-permanent-refusal-is-not-retryable.md` the row is
+    // decided per failure. Nothing on the far end of `git push` is an obstacle
+    // in front of the request — put a forge there and the same invocation
+    // succeeds — so it stays retryable, which is what makes this scenario the
+    // discriminator for the policy deny's 20 below. A build that mapped every
+    // capability failure to one row fails one of the two.
     assert_eq!(
         out.status.code(),
         Some(11),
@@ -253,14 +260,27 @@ fn a_deployment_rule_in_the_document_refuses_the_effect_it_names() {
     let payload = payload_of(&out);
     let summary = summary_of(&payload);
 
-    // The capability ran and its first effect was refused, which is a capability
-    // failure and therefore row 11 — not row 2, which is the row a document
-    // fiddle *declined to act on* exits with. The distinction is the point: the
-    // deployment's rule was applied by the executor rather than by the CLI.
+    // **Row 20, and the comparison is against 11 as well as against 2.**
+    //
+    // Not row 2: the capability ran, and row 2 is what a document fiddle
+    // *declined to act on* exits with — so the number still says the deployment's
+    // rule was applied by the executor rather than by the CLI. That was the only
+    // comparison this assertion originally made, and it left the run on 11.
+    //
+    // Not row 11 either, which is what it used to be. `RunOutcome::Retryable`
+    // promises that repeating this invocation succeeds once the named thing is
+    // fixed; a `[github.policy]` deny hands `policy::combine` the same pair on
+    // every repeat and gets the same refusal back, so automation retrying on 11
+    // loops on it forever. `RunOutcome::Failed` promises exactly what is true
+    // here — *this will not succeed by being repeated as invoked*. See
+    // `decisions/016-a-permanent-refusal-is-not-retryable.md`;
+    // `run_constructs_and_executes_the_publishing_capability` above is the
+    // discriminator that keeps a transient failure on 11.
     assert_eq!(
         out.status.code(),
-        Some(11),
-        "a refused effect fails the run"
+        Some(20),
+        "a refused effect will not succeed by being repeated, so it is not \
+         retryable: {payload}"
     );
     assert_eq!(payload["capability_executions"][0]["status"], "failed");
     assert!(

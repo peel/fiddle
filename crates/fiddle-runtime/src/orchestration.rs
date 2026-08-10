@@ -43,6 +43,7 @@
 //! [`fiddle_core::published`].
 
 use crate::capability::{Capability, ExecutionGrant};
+use crate::effect::Recurrence;
 use crate::evidence::{mint_attempt_id, publish, EvidenceError};
 use crate::journal::{AttemptJournal, AttemptTrace, FileJournal};
 use crate::ports::{ChangePort, WorkItemPort};
@@ -274,9 +275,12 @@ fn concluded(next_action: &NextAction) -> RunOutcome {
 
 /// Execute the M0 plan for one invocation.
 ///
-/// Total: every path returns a report. A capability failure becomes
-/// [`RunOutcome::Retryable`] rather than an `Err`, because "try this again"
-/// is a conclusion about the run, not an error the caller has to classify.
+/// Total: every path returns a report. A capability failure becomes an outcome
+/// rather than an `Err`, because "try this again" and "this will not work" are
+/// conclusions about the run, not errors the caller has to classify — and which
+/// of the two it is comes from
+/// [`CapabilityError::recurrence`](crate::capability::CapabilityError::recurrence)
+/// rather than from the arm it arrived on.
 pub async fn run(ctx: &RunContext<'_>) -> RunReport {
     let marker = ctx.expected_marker();
     let view = ctx.observe();
@@ -379,18 +383,42 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             // text and a bound applied to one of them would be a bound on
             // neither.
             let reason = Published::of(error.to_string());
+            // **Which row, asked of the failure rather than assumed of the
+            // arm.** This used to be `Retryable` unconditionally, and it was
+            // right for every way M1 could fail. M2 then routed three permanent
+            // refusals through here — a `[github.policy]` deny, a human decision
+            // no channel in this milestone can make, a duplicate remote state —
+            // and each inherited a promise it does not keep, so automation
+            // retrying on exit 11 looped on them forever while exit 20 stayed
+            // unreachable. The classification is
+            // [`CapabilityError::recurrence`], one exhaustive table per error
+            // type; the *consequence* of it is here, because this is where a run
+            // concludes. Neither adds a row to the exit-code table — the CLI's
+            // single `exit_code_for` maps these to 11 and 20 unchanged.
+            let outcome = match error.recurrence() {
+                Recurrence::Correctable => RunOutcome::Retryable {
+                    reason: reason.clone(),
+                },
+                Recurrence::Permanent => RunOutcome::Failed {
+                    error: reason.clone(),
+                },
+            };
             // Recorded too: "the capability tried and failed" and "the
             // capability's fate is unknown" are different things to recover
             // from, and only a record written here can tell them apart.
+            //
+            // The same word on both rows, and deliberately: the journal answers
+            // "did this attempt run and stop" for a later reader deciding
+            // whether the world may have moved, and a refusal and a lost
+            // connection are the same answer to that question. Which row the
+            // *run* ended on is the bundle's business, not the journal's.
             ctx.journal.record_effect(capability_id, "failed", &[]);
             // **The arm this exists for.** An execution that failed is when an
             // operator most needs to know what it did before it failed, and
             // until this line the answer published here was `[]`.
             let observed = ctx.capability.receipts();
             RunReport {
-                outcome: RunOutcome::Retryable {
-                    reason: reason.clone(),
-                },
+                outcome,
                 next_action: derived,
                 executions: vec![execution(capability_id, "failed", observed.clone())],
                 progress: vec![progress(
@@ -1137,5 +1165,113 @@ mod tests {
         // tell "the capability tried and failed" from "the capability's fate was
         // never recorded", which is the whole distinction the journal carries.
         assert_eq!(log.events(), ["intent", "effect:failed"]);
+    }
+
+    /// A capability that always fails, with a failure the scenario chooses.
+    ///
+    /// The two `CapabilityError`s below cannot be `Clone`d and cannot be handed
+    /// over by value from a `&self` method, so what is carried is the *choice*
+    /// and the error is built at the moment it is returned.
+    struct Refusing {
+        how: Refusal,
+        log: std::sync::Arc<Log>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum Refusal {
+        /// `[github.policy]` said `deny`. Permanent.
+        PolicyDenied,
+        /// The write's answer was lost and the settling read did not settle it.
+        /// Correctable.
+        Unresolved,
+    }
+
+    #[async_trait::async_trait]
+    impl Capability for Refusing {
+        fn id(&self) -> CapabilityId {
+            STUB_MARK
+        }
+
+        fn stage(&self) -> &'static str {
+            "refused"
+        }
+
+        async fn execute(
+            &self,
+            _grant: ExecutionGrant,
+            _work_id: &str,
+            _invocation_ref: &str,
+        ) -> Result<EvidenceRef, CapabilityError> {
+            self.log.record("execute");
+            let kind = fiddle_core::EffectKind::EnsurePullRequest;
+            Err(CapabilityError::Effect(match self.how {
+                Refusal::PolicyDenied => crate::effect::EffectError::PolicyDenied {
+                    kind,
+                    reason: "the deployment document denies this kind".to_string(),
+                },
+                Refusal::Unresolved => crate::effect::EffectError::Unresolved {
+                    kind,
+                    reason: "gh was killed before it answered".to_string(),
+                },
+            }))
+        }
+    }
+
+    /// **The finding, as one assertion pair.**
+    ///
+    /// Both runs execute, both fail, both are journaled `failed` and both
+    /// publish an execution that ran — everything except the row is identical.
+    /// A policy deny repeats identically forever and is
+    /// [`RunOutcome::Failed`](fiddle_core::RunOutcome::Failed); a lost answer is
+    /// settled by the read a repeat performs first, and stays
+    /// [`RunOutcome::Retryable`](fiddle_core::RunOutcome::Retryable).
+    ///
+    /// Written as a pair rather than as two tests because the *difference* is
+    /// the property. A build that mapped every capability failure to one row —
+    /// which is what this repairs — passes either assertion alone.
+    #[tokio::test]
+    async fn a_refused_effect_fails_and_an_unsettled_one_stays_retryable() {
+        for (how, expect_permanent) in [(Refusal::PolicyDenied, true), (Refusal::Unresolved, false)]
+        {
+            let dir = fixture_root();
+            let log = std::sync::Arc::<Log>::default();
+            let capability = Refusing {
+                how,
+                log: std::sync::Arc::clone(&log),
+            };
+            let work_items = StubWorkItemPort::new(dir.path());
+            let changes = StubChangePort::new(dir.path());
+            let journal = SpyJournal::watching(&log);
+
+            let report = run(&context(
+                &capability,
+                &work_items,
+                &changes,
+                &journal,
+                &attempt_id(),
+            ))
+            .await;
+
+            match (&report.outcome, expect_permanent) {
+                (RunOutcome::Failed { error }, true) => assert!(
+                    error.as_str().contains("policy denied"),
+                    "the row must be earned by the refusal it names: {error}"
+                ),
+                (RunOutcome::Retryable { reason }, false) => assert!(
+                    reason.as_str().contains("unresolved outcome"),
+                    "the row must be earned by the ambiguity it names: {reason}"
+                ),
+                (other, _) => panic!("wrong row for this failure: {other:?}"),
+            }
+
+            // Everything a bundle consumer reads about *what happened* is the
+            // same on both rows, which is what makes the row the only
+            // difference — and what makes the mapping observable rather than
+            // incidental to some other change in behaviour.
+            assert_eq!(report.executions.len(), 1);
+            assert_eq!(report.executions[0].status, "failed");
+            assert_eq!(report.progress[0].status, "failed");
+            assert_eq!(log.events(), ["intent", "execute", "effect:failed"]);
+        }
     }
 }

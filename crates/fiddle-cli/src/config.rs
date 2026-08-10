@@ -435,6 +435,19 @@ pub struct GitHub {
     /// Defaulted empty, and that is not a permissive default: a check nobody
     /// required is not consulted, so an empty list is a deployment that requires
     /// nothing of CI rather than one that has been let off.
+    ///
+    /// **Observed, and not enforced — the key is reported as such.** The names
+    /// reach `Executor::observe_checks`, which looks each of them up against the
+    /// published head and splits what it finds into
+    /// [`fiddle_core::VerificationState`]'s three lists, and that value reaches
+    /// the bundle as `observations.verification`. Nothing then branches on it:
+    /// `fiddle_core::assess` matches on the work item and the change set alone,
+    /// so a required check that is missing, failed or still pending leaves the
+    /// run's outcome exactly where an all-green one does. `config check` says so
+    /// in both renderings rather than leaving an operator to infer it from the
+    /// word "required"; see
+    /// `decisions/017-required-checks-are-observed-not-enforced.md` for why the
+    /// disclosure was the move and enforcement was not.
     #[serde(default)]
     pub required_checks: Vec<String>,
 
