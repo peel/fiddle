@@ -613,3 +613,22 @@ So the defect cost nothing, and the reason it cost nothing is worth more than th
 The practice that follows, for M4 onward: where a plan step describes existing behaviour, it should **cite the file and let the implementer read it** rather than restating it. A restatement is a copy that can be wrong, and a plan is exactly the kind of document nobody re-checks against the code once it has been reviewed once.
 Origin: implementation (epic fiddle-eoqx, bean fiddle-7j2p, Step 7) — found by the implementer, confirmed by evaluation
 Tags: #process #debt
+
+### 2026-08-10 — A fifth plan defect, and this one was a method that does not exist
+`fiddle-hmho`'s test sketch called `err.worth_another_read()`. The method is `is_worth_reading_again()`, at `crates/fiddle-runtime/src/github/cli.rs:407`. The wrong name was in the bean **and** in the lead's dispatch prompt, so a bean written later against either would have inherited it.
+
+It cost nothing: the implementer read `cli.rs`, used the real name, and reported the discrepancy. Same as the four before it.
+
+The pattern is now firm enough to state as a measurement rather than an impression. Five plan defects on this milestone, none caught by the plan's own self-review, none caught by a full codex critique pass, all five caught by an implementer reading the code the plan claimed to describe:
+
+- the comment-write assumption five beans depend on, scheduled to be proven by the last of twenty-four;
+- a second wildcard-free `EffectKind` match, which made a bean's declared scope non-compiling;
+- a Task 12 criterion requiring policy rows to be mandatory, contradicting a documented decision in the same file;
+- an identity framing described as `u64` little-endian where the code writes `<byte-len>:<field>`, which would have forked the encoding;
+- and now a method name that was never real.
+
+Four of the five are the same species: **the plan restating existing code and getting it wrong.** The fifth (ordering by cost) is different in kind. So the practice recorded against the fourth stands and is worth repeating here because this entry is the evidence for it: where a plan step describes existing behaviour, cite the file and let the implementer read it. A restatement is a copy that can be wrong, in a document nobody re-checks against the source after its single review.
+
+Worth noting what did *not* catch these, since both were paid for: a self-review pass by the plan's own author, and an external critique that returned ten findings and produced eight real fixes. The critique was worth its cost — it caught two leaking cleanups, an impossible follow-up comment, a missing exit row and a contradicting pagination test. It simply does not catch this species, because it reads the plan against the design rather than against the code.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-hmho) — found by the implementer
+Tags: #process #debt
