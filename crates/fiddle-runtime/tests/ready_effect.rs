@@ -42,84 +42,68 @@
 //!
 //! # What is not asserted here yet, and why
 //!
-//! Four of this operation's properties are implemented and asserted nowhere, and
-//! the reason is no longer one reason.
+//! Two of this operation's properties are implemented and asserted nowhere, and
+//! the thing they wait on is the **fixture**, not the executor.
 //!
-//! It was, until bean `fiddle-rvcu` landed `Executor::execute_decided`. An
-//! operation whose `minimum()` is `Human` could not commit anything:
-//! `combine(Human, _)` is `RequireHumanDecision` unconditionally, step 4 turned
-//! that into `EffectError::HumanDecisionRequired` and returned, and
-//! `AuthorizedEffect` is unforgeable outside `crate::effect`, so `apply` had no
-//! second route to reach. Step 4 now takes the RFC's third input — *"and, when
-//! needed, resolve a matching contextual human decision"* — so a walk carrying a
-//! resolved approval reaches `apply`, and the blanket claim that these four
-//! cannot exist has stopped being true of any of them. What is left is two
-//! different situations, and citing the landed bean for all four would hide both.
+//! It was the executor until bean `fiddle-rvcu` landed
+//! `Executor::execute_decided`, and four properties waited on it. An operation
+//! whose `minimum()` is `Human` could not commit anything: `combine(Human, _)` is
+//! `RequireHumanDecision` unconditionally, step 4 turned that into
+//! `EffectError::HumanDecisionRequired` and returned, and `AuthorizedEffect` is
+//! unforgeable outside `crate::effect`, so `apply` had no second route to reach.
+//! Step 4 now takes the RFC's third input — *"and, when needed, resolve a
+//! matching contextual human decision"* — so a walk carrying a resolved approval
+//! reaches `apply`, and two of the four were written against it:
+//! `a_refused_mutation_is_not_reported_as_a_lost_write` and
+//! `the_mutation_the_child_received_binds_the_node_id_from_the_read`.
 //!
-//! **Two are blocked, and on the fixture rather than on the executor.** The
-//! scripted `gh`'s GraphQL route answers a scripted status and body and does
+//! What is left needs a `gh` that can **mutate and then fail**, and the scripted
+//! one cannot. Its GraphQL route answers a scripted status and body and does
 //! nothing else: it short-circuits ahead of the `script`/`commit_then_*`
-//! machinery, which is keyed on the REST write path, so a scripted mutation can
+//! machinery, which is keyed on the REST write path. So a scripted mutation can
 //! neither change the world it was sent to nor die after sending. Bean
-//! `fiddle-8vpm` is that route's fault injection, and it is the prerequisite for:
+//! `fiddle-8vpm` is that route's fault injection, and it is the prerequisite for
+//! the two owed here:
 //!
-//! - the mutation is dispatched exactly once, including on the path where its
-//!   answer was lost and the pull request had to be read back to settle it —
-//!   which needs a `gh` that mutates and *then* dies;
-//! - and, with a decision resolved, the transition commits at all — which needs
-//!   the post-mutation read to answer `draft: false`, where today both of a
-//!   walk's reads are served from the same `pulls_by_number/{n}.json`.
+//! - the mutation is dispatched exactly once **on the path where its answer was
+//!   lost** and the pull request had to be read back to settle it, which needs a
+//!   `gh` that mutates and *then* dies. The two halves of exactly-once that do
+//!   not need one are asserted:
+//!   `a_run_that_reaches_policy_is_refused_for_want_of_a_person` (a refused walk
+//!   dispatches nothing), `an_already_ready_pull_request_is_the_postcondition`
+//!   (an effect the world satisfies dispatches nothing), and one call on both of
+//!   the decided walks above;
+//! - and, with a decision resolved, the transition **commits at all** — a
+//!   receipt whose outcome is `Committed`. That needs the post-mutation read to
+//!   answer `draft: false`, where today both of a walk's reads are served from the
+//!   same `pulls_by_number/{n}.json`, so the mutation cannot be made to have
+//!   happened.
 //!
-//! **Two are blocked on nothing, and are simply owed.** They were deferred
-//! alongside the other two and are named separately so that a reader does not
-//! inherit a prerequisite they no longer have:
+//! Together they are what is left of `m3-ready-mutation-is-graphql-and-once`'s
+//! dispatch half; `m3-refusal-is-not-a-lost-write` is asserted in full.
 //!
-//! - the mutation a run really sent is GraphQL and carries the node id from the
-//!   read, with the id bound as `$id` and never spliced into the query text, read
-//!   out of the `argv` a scripted `gh` recorded. Reachable on a walk that ends
-//!   `Unresolved`, since the request is recorded whatever the postcondition then
-//!   says about it. `github::ready`'s
-//!   `the_mutation_binds_its_input_rather_than_spelling_it` asserts the same
-//!   claim one step earlier, over the pair `apply` hands the adapter, which is as
-//!   close to the wire as anything gets without a dispatch;
-//! - a mutation refused with 200 and a `FORBIDDEN`, against a world that still
-//!   shows a draft, reports the adapter's refusal rather than `Unresolved` and
-//!   rather than "the adapter reported success". The GraphQL route already
-//!   scripts a status and a body independently, which is exactly what a 200
-//!   carrying `errors[]` needs, and a world that stays a draft is the one the
-//!   case above it already builds.
-//!
-//! Together the four are the whole of `m3-ready-mutation-is-graphql-and-once`'s
-//! dispatch half and of `m3-refusal-is-not-a-lost-write`.
-//!
-//! **Nothing was approximated in their absence.** No weaker version that avoids
+//! **Nothing is approximated in their absence.** No weaker version that avoids
 //! the executor was written, because an assertion that avoids the mandatory
 //! authorization boundary is an assertion about something other than what this
-//! operation does — which reads as coverage while gating nothing. Three
-//! properties beside them are asserted here and in `github::ready`'s own tests,
-//! and they are the three that can be without a committed mutation:
-//!
-//! - `a_run_that_reaches_policy_is_refused_for_want_of_a_person` drives the gate
-//!   *through* `Executor::execute` and pins the trace and a dispatch count of
-//!   zero, which is the refused half of exactly-once;
-//! - `an_already_ready_pull_request_is_the_postcondition` settles at step 3,
-//!   which is the no-mutation-needed half;
-//! - and `github::ready`'s `a_mutation_with_no_node_id_in_hand_is_not_sent`
-//!   pins the read-once handoff's own refusal — `NotSent`, so `NotCommitted` —
-//!   which is unreachable through the executor by construction, since step 3
-//!   fills the cell before step 7 on every path that gets there.
+//! operation does — which reads as coverage while gating nothing. The one
+//! property asserted below the executor rather than through it is
+//! `github::ready`'s `a_mutation_with_no_node_id_in_hand_is_not_sent`, which pins
+//! the read-once handoff's own refusal — `NotSent`, so `NotCommitted` — and is
+//! there because that case is unreachable through the executor *by construction*:
+//! step 3 fills the cell before step 7 on every path that gets there.
 
 mod support;
 
 use fiddle_core::{
-    combine, effect_id, DeploymentRule, EffectKind, HumanDecisionRequirement, PolicyDecision,
-    ProposedEffect, FIXTURE_REPAIR,
+    combine, decision_request_id, effect_id, payload_hash, DecisionBinding, DeploymentRule,
+    EffectKind, HumanDecisionRequirement, InterpretedHumanDecision, PolicyDecision, ProposedEffect,
+    FIXTURE_REPAIR,
 };
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
-    IntegrationOperation, ReadRetry,
+    IntegrationOperation, ReadRetry, ResolvedDecision,
 };
-use fiddle_runtime::github::{EnsurePullRequestReady, ReadyPullRequest};
+use fiddle_runtime::github::{EnsurePullRequestReady, GhError, ReadyPullRequest};
 use fiddle_runtime::GhCli;
 use serde_json::json;
 use std::path::PathBuf;
@@ -145,8 +129,15 @@ const NODE_ID: &str = "PR_kwDOabcdef";
 /// the deadline; `github_cli` owns the process bounds.
 const PATIENT: Duration = Duration::from_secs(60);
 
+/// The revision every case that is not about staleness runs at.
+///
+/// Named because the decided walk has to state it twice — once in the operation
+/// and once in the binding the approval carries — and two spellings of one
+/// revision would make an approval fail to match for a reason no test intended.
+const HEAD_SHA: &str = "aaaa";
+
 fn op() -> EnsurePullRequestReady {
-    op_at_head("aaaa")
+    op_at_head(HEAD_SHA)
 }
 
 fn op_at_head(head_sha: &str) -> EnsurePullRequestReady {
@@ -211,6 +202,72 @@ impl World {
         let dir = self.dir.path().join("pulls_by_number");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(format!("{number}.json")), body.to_string()).unwrap();
+    }
+
+    /// Script the answer to GraphQL call `n`, status and body separately.
+    ///
+    /// The two are separate arguments because for GraphQL they are separate
+    /// facts: a refusal arrives as **200** with an `errors[]`, so a fixture that
+    /// derived one from the other could not express the case
+    /// `a_refused_mutation_is_not_reported_as_a_lost_write` is about.
+    fn script_graphql(&self, n: usize, status: u16, body: serde_json::Value) {
+        let dir = self.dir.path().join("graphql");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{n}.json")),
+            json!({"status": status, "body": body}).to_string(),
+        )
+        .unwrap();
+    }
+
+    /// The `argv` of the one GraphQL call the world received.
+    ///
+    /// Read out of the request record the stub writes for *every* invocation
+    /// before it routes, so this is the command line the child really got rather
+    /// than anything this process believes it sent. That is the whole point of
+    /// asserting here as well as over
+    /// [`EnsurePullRequestReady`]'s own `mutation`: one is what the operation
+    /// would hand the adapter, this is what the adapter then spawned.
+    ///
+    /// [`World::recorded_paths`] cannot answer this, and deliberately is not
+    /// changed to: it looks for an argument beginning with `/`, which a REST call
+    /// has and a GraphQL call does not.
+    fn graphql_argv(&self) -> Vec<String> {
+        let dir = self.dir.path().join("requests");
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .map(|entries| entries.filter_map(Result::ok).map(|e| e.path()).collect())
+            .unwrap_or_else(|_| Vec::new());
+        files.sort();
+        let mut calls = files.iter().filter_map(|file| {
+            let recorded: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+            let argv: Vec<String> = recorded["argv"]
+                .as_array()?
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect();
+            argv.iter().any(|a| a == "graphql").then_some(argv)
+        });
+        let argv = calls.next().expect("no GraphQL call was recorded");
+        assert!(
+            calls.next().is_none(),
+            "more than one GraphQL call was recorded"
+        );
+        argv
+    }
+
+    /// The one `-f name=value` the mutation binds, by name.
+    ///
+    /// `gh` spells a GraphQL variable and a form field the same way, which is why
+    /// the query itself arrives as `query=…` in this same list; ADR 018 records
+    /// that `-f id=…` really does reach GitHub as a variable.
+    fn graphql_field(&self, name: &str) -> String {
+        let prefix = format!("{name}=");
+        self.graphql_argv()
+            .into_iter()
+            .find_map(|arg| arg.strip_prefix(&prefix).map(str::to_string))
+            .unwrap_or_else(|| panic!("no -f {name}=… was passed"))
     }
 
     /// A context whose `gh` is the scripted one and whose `git` cannot be run.
@@ -281,6 +338,33 @@ impl World {
         &self,
         operation: EnsurePullRequestReady,
     ) -> Result<EffectReceipt<ReadyPullRequest>, EffectError> {
+        self.walk(operation, false).await
+    }
+
+    /// The same walk, with an approval in hand.
+    ///
+    /// This is the only way an operation whose `minimum()` is `Human` commits
+    /// anything, and it is the executor's own entry point rather than a way
+    /// around it: step 4 still calls `combine`, still answers
+    /// `RequireHumanDecision`, and still refuses unless the decision it is handed
+    /// names *this* effect and carries *this* payload digest.
+    async fn execute_decided(
+        &self,
+        operation: EnsurePullRequestReady,
+    ) -> Result<EffectReceipt<ReadyPullRequest>, EffectError> {
+        self.walk(operation, true).await
+    }
+
+    /// Both entry points, so the two differ in the decision alone.
+    ///
+    /// Written once rather than twice because a second copy could drift into
+    /// proposing a different effect, and then a test about the decided path
+    /// would be about two changes rather than one.
+    async fn walk(
+        &self,
+        operation: EnsurePullRequestReady,
+        decided: bool,
+    ) -> Result<EffectReceipt<ReadyPullRequest>, EffectError> {
         let ctx = self.ctx();
         let deployment = Deployment(DeploymentRule::Allow);
         let proposed = ProposedEffect {
@@ -289,7 +373,7 @@ impl World {
             target: operation.target(),
             payload: operation.payload(),
         };
-        Executor::new(
+        let executor = Executor::new(
             FIXTURE_REPAIR,
             PROJECT.to_string(),
             INVOCATION_REF.to_string(),
@@ -299,9 +383,32 @@ impl World {
             // One read and no waiting: this suite's subject is the operation,
             // not the postcondition read's budget.
             ReadRetry::none(),
+        );
+
+        if !decided {
+            return executor.execute(proposed, operation).await;
+        }
+
+        // The approval a person gave, recomputed from canonical inputs the way
+        // the continuation that read it back out of a comment would have to.
+        // Nothing here is a shortcut past step 4's comparisons — the identity and
+        // the digest are derived from the same three facts the executor derives
+        // them from, so an operation built at another revision would not match.
+        let effect = identity_of(&operation);
+        let decision = ResolvedDecision::approved(
+            DecisionBinding {
+                request: decision_request_id(PROJECT, INVOCATION_REF, &effect),
+                effect,
+                payload: payload_hash(&operation.payload()),
+                head_sha: HEAD_SHA.to_string(),
+            },
+            &InterpretedHumanDecision::Approve,
         )
-        .execute(proposed, operation)
-        .await
+        .expect("an approval is what becomes a ResolvedDecision");
+
+        executor
+            .execute_decided(proposed, operation, &decision)
+            .await
     }
 }
 
@@ -497,6 +604,140 @@ async fn an_already_ready_pull_request_is_the_postcondition() {
             "inspect_postcondition"
         ],
         "settled at step 3, so policy was never asked and nothing was applied"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What a person's approval actually spends
+// ---------------------------------------------------------------------------
+
+/// A mutation GitHub refused is a refusal, and never a write whose answer was
+/// lost.
+///
+/// The distinction is the whole of M2 and this is the one operation that can get
+/// it wrong in a new way, because a refused GraphQL mutation arrives as **200
+/// with an `errors[]`** rather than as a status a transport check would notice.
+/// A client that read the status line would see success; the world still shows a
+/// draft, so step 8's `Ok(None)` would then be reported either as "the adapter
+/// reported success and the postcondition was not observed" — which sends
+/// somebody to investigate a settled failure — or as `Unresolved`, which is worse
+/// still: it says the write *may* have landed, and the next run resolves that by
+/// looking rather than by asking why it was refused.
+///
+/// So the absences are asserted, not only the presence. `Adapter` is the right
+/// answer, but a test that checked only for it would pass on a regression into a
+/// neighbouring variant carrying the same word, and the two things this must
+/// never be are the two the criterion names.
+#[tokio::test]
+async fn a_refused_mutation_is_not_reported_as_a_lost_write() {
+    let world = World::new();
+    world.pull(
+        PR,
+        json!({"number": PR, "draft": true, "node_id": NODE_ID, "state": "open"}),
+    );
+    // 200, because that is what GitHub answers. The refusal is in the body.
+    world.script_graphql(
+        0,
+        200,
+        json!({"data": null, "errors": [{"type": "FORBIDDEN", "message": "no"}]}),
+    );
+
+    let error = world
+        .execute_decided(op())
+        .await
+        .expect_err("a refused mutation did not make the pull request ready");
+
+    // What it is: the adapter's own refusal, carried out of the body.
+    let EffectError::Adapter { source, .. } = &error else {
+        panic!("expected the adapter's refusal to stand, got {error:?}");
+    };
+    assert!(
+        matches!(source, GhError::GraphQl { kind, .. } if kind == "FORBIDDEN"),
+        "and to name what refused it, got {source:?}"
+    );
+    assert_eq!(
+        source.outcome(),
+        EffectOutcome::NotCommitted,
+        "a refusal in these terms leaves no room for the write having happened"
+    );
+
+    // What it is not, which is the half the criterion exists for.
+    assert!(
+        !matches!(error, EffectError::Unresolved { .. }),
+        "a refusal is settled; calling it unresolved would send somebody to look \
+         for a write that was refused"
+    );
+    assert!(
+        !error.to_string().contains("reported success"),
+        "and the mutation's own 200 is not a success: {error}"
+    );
+
+    // Once, on the refused path too. The executor retries the read and never the
+    // write, and a refusal is not the exception to that.
+    assert_eq!(world.graphql_calls(), 1);
+    assert_eq!(
+        world.steps(),
+        [
+            "validate_capability",
+            "derive_identity",
+            "inspect_postcondition",
+            "combine_policy",
+            "resolve_decision",
+            "authorize",
+            "apply",
+            "observe_postcondition"
+        ],
+        "and the refusal came from the adapter, after the whole order ran"
+    );
+}
+
+/// The mutation the child was really spawned with: GraphQL, the node id from the
+/// read, bound as a variable.
+///
+/// `github::ready`'s `the_mutation_binds_its_input_rather_than_spelling_it` makes
+/// the same claim about the pair `apply` hands the adapter. This one makes it
+/// about the `argv` the process received, which is a different claim: everything
+/// between the two — `GhCli::graphql`'s `-f query=…`, `-f id=…` — is code that
+/// could splice, and the whole reason the id travels as a variable is that it is
+/// a value GitHub chose and interpolation would let it rewrite the query it
+/// appears in.
+///
+/// **The walk's ending is not this test's subject.** The world still shows a
+/// draft after the mutation, so it ends `Unresolved` — correctly, because a
+/// scripted `gh` that says `data` and changes nothing is exactly the case step 8
+/// exists to disbelieve. The request is recorded before any of that is decided,
+/// which is what makes the assertion available without a world the fixture cannot
+/// yet build; see this file's header on `fiddle-8vpm`.
+#[tokio::test]
+async fn the_mutation_the_child_received_binds_the_node_id_from_the_read() {
+    let world = World::new();
+    world.pull(
+        PR,
+        json!({"number": PR, "draft": true, "node_id": NODE_ID, "state": "open"}),
+    );
+
+    let _ = world.execute_decided(op()).await;
+
+    assert_eq!(world.graphql_calls(), 1, "one mutation, dispatched once");
+
+    let query = world.graphql_field("query");
+    assert!(
+        query.contains("markPullRequestReadyForReview"),
+        "the transition exists only as this mutation: {query}"
+    );
+    assert!(
+        query.contains("mutation($id: ID!)"),
+        "declared as taking a variable: {query}"
+    );
+    assert_eq!(
+        world.graphql_field("id"),
+        NODE_ID,
+        "bound to the node id the postcondition read returned"
+    );
+    assert!(
+        !query.contains(NODE_ID),
+        "and absent from the query text, so a node id cannot rewrite the query \
+         it is passed to: {query}"
     );
 }
 

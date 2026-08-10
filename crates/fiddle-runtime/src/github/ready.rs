@@ -410,10 +410,14 @@ mod tests {
     /// id is a value GitHub chose, and interpolated into a query it could
     /// rewrite the query it appears in.
     ///
-    /// What is still owed, and cannot be written until the executor can commit
-    /// an operation whose minimum is `Human`, is the same claim about the
-    /// *recorded request* — the `argv` a scripted `gh` really received.
-    /// `ready_effect.rs` names it.
+    /// The same claim about the *recorded request* — the `argv` a scripted `gh`
+    /// really received — is
+    /// `the_mutation_the_child_received_binds_the_node_id_from_the_read` in
+    /// `ready_effect.rs`, and the pair is not a duplication. This one is what the
+    /// operation hands the adapter; that one is what the adapter then spawned,
+    /// and everything between the two is code that could splice. When this one
+    /// fails alone, `mutation` is at fault; when that one fails alone,
+    /// [`GhCli::graphql`](super::GhCli::graphql) is.
     #[test]
     fn the_mutation_binds_its_input_rather_than_spelling_it() {
         let ready = ready_at("aaaa");
