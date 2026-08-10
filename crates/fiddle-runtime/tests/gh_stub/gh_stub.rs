@@ -531,6 +531,13 @@ fn world_answer(dir: &Path, key: &str, path: &str) -> (u16, String) {
             None => (404, r#"{"message":"Not Found"}"#.to_string()),
         };
     }
+    // Ahead of the listing, because the listing's condition matches any key
+    // containing `pulls` and would answer a by-number read with an *array* — a
+    // 200 carrying the wrong shape, which a client reads as a malformed answer
+    // rather than as the missing route it is.
+    if let Some(answer) = pull_request_by_number(dir, path) {
+        return answer;
+    }
     if key.starts_with("GET_repos") && key.contains("pulls") {
         // The list endpoint filters, and the filtering is the fixture's real
         // work. A stub that answered every pull request it held whatever it was
@@ -660,6 +667,45 @@ fn world_answer(dir: &Path, key: &str, path: &str) -> (u16, String) {
         );
     }
     (404, r#"{"message":"Not Found"}"#.to_string())
+}
+
+/// One pull request, by its own number, from a collection of its own.
+///
+/// A separate collection here because it is a separate answer at GitHub. The
+/// listing's entries carry the head, the base and the title; the by-number read
+/// carries `draft` and `node_id` as well, and those two are the whole reason
+/// `EnsurePullRequestReady` addresses this endpoint rather than the listing —
+/// one read that answers both of its questions.
+///
+/// Matched on the raw path rather than on [`script_key`], for the reason
+/// [`comment_answer`] gives: a key whose separators have all become underscores
+/// cannot tell `/pulls/{n}` from `/pulls?head={n}`. The last segment has to
+/// parse as a number, so nothing named rather than numbered is taken from the
+/// routes it belongs to.
+///
+/// Unscripted is a panic naming the file. The tempting default is a 404 — a pull
+/// request nobody opened, which is a real thing the world does — but that is a
+/// *scenario*, and a fixture that produced it for a file a test forgot to write
+/// would answer a question nobody asked. A test that wants the 404 can script
+/// one; what it cannot be is the answer to an oversight.
+///
+/// `None` means this is not a by-number path, and the world answers it.
+fn pull_request_by_number(dir: &Path, path: &str) -> Option<(u16, String)> {
+    let bare = path.split('?').next().unwrap_or(path);
+    let segments: Vec<&str> = bare.split('/').filter(|s| !s.is_empty()).collect();
+    let ["repos", _, _, "pulls", number] = segments.as_slice() else {
+        return None;
+    };
+    number.parse::<u64>().ok()?;
+
+    let file = dir.join("pulls_by_number").join(format!("{number}.json"));
+    let body = std::fs::read_to_string(&file).unwrap_or_else(|_| {
+        panic!(
+            "nothing scripted at {}; a pull request is answered from its file or not at all",
+            file.display()
+        )
+    });
+    Some((200, body))
 }
 
 /// The two comment collections, each answered from a directory of its own.
