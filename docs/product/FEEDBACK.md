@@ -32,3 +32,19 @@ The lead's own hypothesis, that `nix develop` shell entry dominated, was **refut
 **Confidence:** high for the phase split and the nix refutation (measured directly); medium for the reasoning-token share (derived by subtraction, ±15%, since thinking content is not retained in transcripts).
 
 Tags: #performance #orchestrate #develop-loop
+
+### 2026-08-10 — The tracker recorded nothing for the hour a bean was being worked
+
+**Who:** Lifecycle lead running `fiddle:develop` over milestone M2 (epic fiddle-srrw), 21 beans across 16 planned tasks and 5 holistic remediations.
+
+**Context:** Each bean is implemented by a fresh subagent taking 20–60 minutes. The operator asked for status seven times over the run and each answer came from the lead polling `ps` for CPU and `git status` for modified paths, because the tracker held nothing else.
+
+**Observation:** Every bean body carries a `## Steps` checklist in `- [ ]` form, and **not one checkbox was ticked by anybody, on any bean, at any point.** All 20 completed beans finished with 100% of their steps unchecked — 110 boxes in total. The project's own instructions say to keep todo items current *as it happens*; the lead never did it and never instructed an implementer to. The only durable record of progress was a `## Summary of Changes` appended at close, so a bean read identically at minute 2 and minute 55 of its implementation, and a reader who was not the lead had no way to distinguish "started" from "nearly done" from "stuck".
+
+Two consequences beyond the missing visibility. The lead answered "status?" with process CPU percentages and file lists — inferring phase from whether `cargo` was running — which is guesswork dressed as reporting. And when the operator asked for detail, the lead had to message the agent and wait, rather than reading it, which is the same latency the polling was meant to avoid.
+
+**Implication:** A loop whose unit of work runs for an hour needs the work-in-progress record to be written *by the worker as it goes*, not reconstructed by the coordinator from process state — otherwise the tracker documents outcomes and nothing about the run, and the coordinator becomes a bottleneck for a question the tracker should answer.
+
+**Confidence:** high — the 110 unticked boxes are directly observable, and the seven status exchanges are in the session record.
+
+Tags: #orchestrate #develop-loop #ux #confusion

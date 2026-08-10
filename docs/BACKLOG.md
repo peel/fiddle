@@ -575,3 +575,15 @@ The gap is which copy a dispatch uses. `workflow_dispatch` resolves the *entity*
 The same applies to `scripts/check-github-effects-lane.sh` and its fixtures, which run in `skill-quality.yml` from the ref being pushed. On `main` today that step does not exist, so the never-skip property is asserted on every milestone branch and not on `main` itself.
 Origin: implementation (remediation R5, epic fiddle-srrw, bean fiddle-ufv3)
 Tags: #debt #infrastructure
+
+### 2026-08-10 — Implementers never update their bean while working, and nothing asks them to
+Across M2's 21 beans, no implementer ticked a single `- [ ]` step and none was instructed to; all 20 completed beans closed with every box unticked (110 total, backfilled at close with a note saying so). `skills/develop-loop/dispatch-and-evidence.md` tells the lead to arm `.fiddle/active-bean`, initialise the eval log and dispatch, and `skills/develop/implementer-prompt.md` tells the implementer to implement, verify, commit, self-review and report — neither says to touch the bean. So the tracker holds an outcome and nothing about the hour that produced it.
+
+Two changes worth making, in `skills/develop/implementer-prompt.md` and the develop-loop reference beside it:
+- Instruct the implementer to tick its own `## Steps` boxes as it completes them, using `beans update <id> --body-replace-old/--body-replace-new`, and to append one line naming the phase it has entered (reading, implementing, verifying, inverting). The mechanism already exists and the CLI supports it; nothing in the prompts points at it.
+- Have the lead append a phase line when it polls, so a reader who is not the lead can answer "where is this" from the bean rather than from `ps`.
+
+Worth pricing against the measured cost of an implementer turn: the perf investigation in this repo found orientation is a near-fixed 5.7 minutes of a 23.4-minute bean and that model generation is 63% of wall clock, so a handful of extra `beans update` calls is not what makes a bean slow, and the visibility is what makes a stalled one detectable.
+
+Origin: operator feedback during M2 implementation (epic fiddle-srrw) — "beans are not updated with any progress reports and run for an hour"
+Tags: #debt #orchestrate #ux
