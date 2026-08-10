@@ -714,3 +714,24 @@ Two mitigations, and the second is the one worth adopting:
 Worth stating the general shape, because it will recur wherever this project parallelises: **a shared mutable artifact between concurrent lanes turns a verification result into a race.** The evidence pack is only as trustworthy as the isolation of the run that produced it.
 Origin: implementation (epic fiddle-eoqx, bean fiddle-9krm) — observed by an implementer that distrusted its own failing suite
 Tags: #process #infrastructure #debt
+
+### 2026-08-10 — A plan's test snippet would have compiled, passed, and proven nothing
+The ninth plan defect of this milestone and the subtlest. The others were wrong names, absent types, or harnesses that never existed — all of which fail loudly the moment an implementer tries them. This one would have shipped green.
+
+`fiddle-rvcu`'s bean asked for a test proving that a resolved decision does not license a widened payload. Its snippet built the case by widening the **operation's** payload:
+
+```rust
+let widened = op.with_payload("something else");
+let err = world.execute_decided(widened, &decision).await.unwrap_err();
+assert!(matches!(err, EffectError::PayloadDiverged { .. }));
+```
+
+`Executor::execute`'s **step 6** already refuses exactly that — it compares the envelope's digest against `IntegrationOperation::payload()` and has done since M2. So the assertion would have passed with step 4's new decision-payload comparison **deleted**: a test about a check that was not running, guarding a property nobody was checking.
+
+The implementer caught it while running the bean's own required inversion and rewrote the case to move the **decision's** payload, leaving proposal and operation agreeing so that only step 4 can refuse. Same property, correct isolation, and the doc comment now records why so nobody simplifies it back. It is also the realistic case: the person approved request A, the continuation built request B, and the identity is unchanged because identity derives from the target rather than the payload.
+
+**What made this one detectable was the inversion, not review.** The bean required three inversions and named what each must break; running them is what exposed that one broke nothing. A reviewer reading the snippet against the design would have seen a correct-looking assertion of a real property — which is precisely what a full external critique pass did see, having read this plan without noticing it.
+
+The rule this sharpens, beyond the standing inversion requirement: **a test written against a property that a neighbouring check already enforces cannot distinguish the two.** When a plan asserts a new guard, the snippet has to arrange a state that *only* the new guard can refuse — and the way to find out whether it does is to delete the new guard and watch. That is cheap, mechanical, and it caught something six other kinds of review did not.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-rvcu) — found by running the bean's own required inversion
+Tags: #process #debt
