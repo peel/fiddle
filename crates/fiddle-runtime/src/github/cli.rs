@@ -104,6 +104,20 @@ pub struct GhResponse {
     pub retry_after: Option<Duration>,
     /// `X-RateLimit-Remaining`, when the response carried one.
     pub rate_limit_remaining: Option<u64>,
+    /// `Link`, when the response carried one.
+    ///
+    /// The third header this client reads, and the only one that is about the
+    /// *answer* rather than about the credential. A listing says how much of
+    /// itself it returned nowhere else: the page size is GitHub's choice, so a
+    /// short page is not an end, and a client counting what came back cannot
+    /// tell a complete conversation from the first hundredth of one.
+    /// [`comments::read_conversation`](super::comments::read_conversation) is
+    /// what reads it, and what it needs is `rel="next"`.
+    ///
+    /// Carried whole and unparsed, because the relations are the reader's
+    /// business and a header this module reduced to a boolean would be one
+    /// every later listing had to widen again.
+    pub link: Option<String>,
 }
 
 /// What a response said about being asked the same question again.
@@ -756,6 +770,7 @@ impl GhCli {
 
         let mut retry_after = None;
         let mut rate_limit_remaining = None;
+        let mut link = None;
         for line in lines {
             let Some((name, value)) = line.split_once(':') else {
                 continue;
@@ -767,6 +782,7 @@ impl GhCli {
             match name.trim().to_ascii_lowercase().as_str() {
                 "retry-after" => retry_after = value.parse().ok().map(Duration::from_secs),
                 "x-ratelimit-remaining" => rate_limit_remaining = value.parse().ok(),
+                "link" => link = Some(value.to_string()),
                 _ => {}
             }
         }
@@ -784,6 +800,7 @@ impl GhCli {
             body,
             retry_after,
             rate_limit_remaining,
+            link,
         };
 
         if response.status >= 400 {

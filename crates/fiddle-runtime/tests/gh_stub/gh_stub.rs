@@ -106,7 +106,14 @@ fn main() {
         // useless for answering a filtered read: a list endpoint's answer
         // depends on the parameters, and a stub that could not read them back
         // would answer the same thing whatever it was asked.
-        let (status, body) = world_answer(&dir, &key, &request_path(&args));
+        let path = request_path(&args);
+        // The comment collections come first, and they answer with headers,
+        // which is what the rest of the world route has never needed.
+        if let Some((status, headers, body)) = comment_answer(&dir, &path) {
+            print!("HTTP/2.0 {status} \r\n{headers}\r\n{body}");
+            std::process::exit(if status < 400 { 0 } else { 1 });
+        }
+        let (status, body) = world_answer(&dir, &key, &path);
         print!("HTTP/2.0 {status} \r\n\r\n{body}");
         std::process::exit(if status < 400 { 0 } else { 1 });
     }
@@ -653,6 +660,101 @@ fn world_answer(dir: &Path, key: &str, path: &str) -> (u16, String) {
         );
     }
     (404, r#"{"message":"Not Found"}"#.to_string())
+}
+
+/// The two comment collections, each answered from a directory of its own.
+///
+/// They are separate collections at GitHub and they are separate here, because
+/// the property under test is that a work-level decision is read from the
+/// conversation and from nowhere else. A fixture that served both out of one
+/// directory could only demonstrate that a review comment was *filtered out*,
+/// and the claim is stronger than that: the endpoint is never asked.
+///
+/// Routed off the raw path rather than off [`script_key`], for two reasons. The
+/// collections differ by *where* the number sits — `/issues/{n}/comments`
+/// against `/issues/comments/{id}` — and a key whose separators have all become
+/// underscores has thrown that distinction away. And this runs ahead of
+/// [`world_answer`] rather than inside it because that function's pull-request
+/// route matches any key containing `pulls`, so `/pulls/{n}/comments` would be
+/// answered with a listing of pull requests rather than with the decoy a test
+/// put there.
+///
+/// `None` means this is not a comment path, and the world answers it.
+fn comment_answer(dir: &Path, path: &str) -> Option<(u16, String, String)> {
+    let bare = path.split('?').next().unwrap_or(path);
+    let segments: Vec<&str> = bare.split('/').filter(|s| !s.is_empty()).collect();
+    match segments.as_slice() {
+        ["repos", _, _, "issues", "comments", id] => Some(comment_by_id(dir, id)),
+        ["repos", _, _, "issues", _, "comments"] => Some(comment_page(dir, "issue-comments", path)),
+        ["repos", _, _, "pulls", _, "comments"] => Some(comment_page(dir, "review-comments", path)),
+        _ => None,
+    }
+}
+
+/// One page of a collection, and the header that says whether there is another.
+///
+/// The `Link` header is the fixture's real work. A page holding one comment and
+/// a page holding a hundred look the same to a client that counts what it got,
+/// so a scripted conversation of three single-comment pages is only readable by
+/// a client that follows the header — which is exactly the shape the suite
+/// scripts.
+///
+/// The last page carries a `Link` too, holding `rel="first"` and `rel="prev"`,
+/// because that is what GitHub sends and because a client that stopped on the
+/// header being *absent* rather than on `rel="next"` being absent would run past
+/// the end here rather than passing.
+fn comment_page(dir: &Path, collection: &str, path: &str) -> (u16, String, String) {
+    if let Some(status) = unreadable(dir, &format!("{collection}-unreadable")) {
+        return (
+            status,
+            String::new(),
+            format!(r#"{{"message":"scripted {status}"}}"#),
+        );
+    }
+    // GitHub's own default: a listing nobody paginated is page one.
+    let page: u64 = query_param(path, "page")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
+    let bare_path = path.split('?').next().unwrap_or(path);
+    let file = |k: u64| dir.join(collection).join(format!("page-{k}.json"));
+
+    // Past the end GitHub answers `200 []` rather than a 404: a page nobody
+    // wrote is a conversation that ended, not a collection that is missing.
+    let body = std::fs::read_to_string(file(page)).unwrap_or_else(|_| "[]".to_string());
+    let link = |k: u64, rel: &str| {
+        format!("<https://api.github.com{bare_path}?per_page=100&page={k}>; rel=\"{rel}\"")
+    };
+    let mut rels = Vec::new();
+    if file(page + 1).exists() {
+        rels.push(link(page + 1, "next"));
+    }
+    if page > 1 {
+        rels.push(link(page - 1, "prev"));
+        rels.push(link(1, "first"));
+    }
+    let headers = match rels.is_empty() {
+        true => String::new(),
+        false => format!("Link: {}\r\n", rels.join(", ")),
+    };
+    (200, headers, body)
+}
+
+/// One comment by its own id, from the conversation collection.
+///
+/// Only that collection has a by-id route here, because only that collection is
+/// ever read: the re-read exists to find out whether a comment changed since it
+/// was listed, and nothing lists a review comment.
+fn comment_by_id(dir: &Path, id: &str) -> (u16, String, String) {
+    let file = dir
+        .join("issue-comments")
+        .join("by-id")
+        .join(format!("{id}.json"));
+    match std::fs::read_to_string(file) {
+        Ok(body) => (200, String::new(), body),
+        // A comment that has been deleted since it was listed, which is a thing
+        // the world does between two reads.
+        Err(_) => (404, String::new(), r#"{"message":"Not Found"}"#.to_string()),
+    }
 }
 
 /// What a bare repository's `refs/heads/<branch>` points at, or `None` when it

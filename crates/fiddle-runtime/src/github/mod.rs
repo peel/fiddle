@@ -4,8 +4,9 @@
 //! by reading one directory rather than by grepping for a hostname. Today it
 //! holds [`cli`], the single credential-carrying `gh` construction, and the
 //! operations built on top of it: [`refs`] for the branch, [`pulls`] for the
-//! pull request and [`checks`] for CI. All of them go through that one
-//! construction rather than spawning their own.
+//! pull request, [`checks`] for CI and [`comments`] for the conversation a
+//! person answers in. All of them go through that one construction rather than
+//! spawning their own.
 //!
 //! [`refs`] is the exception that proves it: its *read* is a `gh` call like
 //! every other, and its *write* is the one `git push` in [`crate::git`], because
@@ -15,6 +16,7 @@
 
 pub mod checks;
 pub mod cli;
+pub mod comments;
 pub mod pulls;
 pub mod refs;
 
@@ -23,6 +25,7 @@ pub use checks::{
     WorkflowRun,
 };
 pub use cli::{GhCli, GhError, GhResponse, RetryAdvice};
+pub use comments::{read_conversation, read_one_comment, ActorRef, HumanResponse};
 pub use pulls::{pull_request_target, EnsurePullRequest, PullRequest};
 pub use refs::{branch_name, branch_target, BranchRef, EnsureBranchPublished};
 
