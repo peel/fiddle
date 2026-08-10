@@ -10,6 +10,7 @@
 //! the decision walk, whose whole output is one enum and one string.
 
 pub mod interpret;
+pub mod validate;
 
 /// The conversation a question was put on, and where an answer will be found.
 ///
