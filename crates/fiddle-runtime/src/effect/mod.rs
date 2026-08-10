@@ -272,11 +272,6 @@ impl ReadRetry {
         self.attempts
     }
 
-    /// The ceiling on any single wait.
-    pub fn max(&self) -> Duration {
-        self.max
-    }
-
     /// How long to wait before read number `attempt + 1`.
     ///
     /// `attempt` is 1 for the wait after the first read, so the un-jittered

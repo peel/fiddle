@@ -1387,7 +1387,20 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
 
         let retry = github.read_retry.as_read_retry();
         assert_eq!(retry.attempts(), 3);
-        assert_eq!(retry.max(), Duration::from_secs(60));
+        // The ceiling, asserted through what it *does* rather than through an
+        // accessor: a `Retry-After` longer than `max` is capped at `max`, so a
+        // wait of exactly a minute is the document's `"1m"` and nothing else.
+        assert_eq!(
+            retry.delay(
+                1,
+                fiddle_runtime::RetryAdvice {
+                    retry_after: Some(Duration::from_secs(3600)),
+                    rate_limit_remaining: None,
+                },
+                &fiddle_core::EffectId("0".repeat(16)),
+            ),
+            Duration::from_secs(60)
+        );
     }
 
     /// Strictness reaches one table deeper. `deny_unknown_fields` on `[github]`
