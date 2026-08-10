@@ -139,8 +139,12 @@ cargo test -p fiddle-runtime --test effect_protocol --test github_cli \
 cargo build --release
 FIDDLE_BIN="$PWD/target/release/fiddle" scripts/live-github.sh   # + FIDDLE_GITHUB_TOKEN
 
-# the same script from a real runner, dispatch-only
-gh workflow run github-effects.yml --repo peel/fiddle
+# the same script from a real runner, dispatch-only. `--ref` is required and must
+# name a branch carrying the Rust workspace: the workflow entity resolves from
+# the default branch, but `actions/checkout` takes the dispatched ref, and `main`
+# has no `Cargo.toml` until the milestone stack merges. Omitting `--ref` resolves
+# to `main` and is refused by the lane's own preflight step, by name.
+gh workflow run github-effects.yml --repo peel/fiddle --ref plan/agentic-factory-m2
 ```
 
 Both write to `peel/fiddle-effects-acceptance`, the standing disposable repository `docs/technical/effects-repository.md` describes; neither asserts that GitHub cooperated, only the object count and the absence of residue. Neither skips when its credential is absent — `live-github.sh` uses `:?` and `.github/workflows/github-effects.yml` tests for emptiness in its first step and exits non-zero, because a silently skipped lane is indistinguishable from a passing one.
