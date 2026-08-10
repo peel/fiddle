@@ -6,11 +6,16 @@
 # ## READ THIS FIRST: how to dispatch it, and why the ref is the whole question
 #
 # This file is on `main` as of `aa86c60`, so the workflow entity exists (id
-# 330906808, state active) and dispatch works. Pass a ref that carries the Rust
-# workspace:
+# 330906808, state active) and dispatch works. Pass a ref that carries **both**
+# the Rust workspace and this file — which is a smaller set than it sounds,
+# because `main` has this file and no workspace while `plan/agentic-factory-m0`
+# and `-m1` have the workspace and not this file. Today it is exactly one ref:
 #
 #     $ gh workflow run github-effects.yml --repo peel/fiddle \
-#         --ref plan/agentic-factory-m2
+#         --ref ci/github-effects-dispatch-proof
+#
+# Once the milestone stack merges, `main` carries both and `--ref main` is the
+# right thing to pass; that branch exists only until then.
 #
 # **The entity's branch and the dispatched ref are two different things.**
 # `workflow_dispatch` resolves the *entity* on the default branch only — that is
@@ -219,14 +224,19 @@ jobs:
             echo "  argument. One entity on main therefore serves every milestone and this"
             echo "  file never needs repointing."
             echo
-            echo "  What to pass instead: a ref that carries the Rust workspace — a"
-            echo "  milestone branch."
+            echo "  What to pass instead: a ref carrying BOTH the Rust workspace and this"
+            echo "  workflow file. That is a smaller set than it sounds — main has this file"
+            echo "  and no workspace, plan/agentic-factory-m0 and -m1 have the workspace and"
+            echo "  not this file — and today it is exactly one ref:"
             echo
             echo "    gh workflow run github-effects.yml --repo ${GITHUB_REPOSITORY} \\"
-            echo "      --ref plan/agentic-factory-m2"
+            echo "      --ref ci/github-effects-dispatch-proof"
             echo
-            echo "  main will not carry a Cargo workspace until the milestone stack merges;"
-            echo "  after that merge --ref main works and is the right thing to pass."
+            echo "  main will not carry a Cargo workspace until the milestone stack merges."
+            echo "  After that merge --ref main works, is the right thing to pass, and the"
+            echo "  branch above can go. Before it, that branch is the only thing that works,"
+            echo "  which is why it is named here rather than a milestone branch that is not"
+            echo "  pushed: a command offered in an error message has to be one that runs."
           } >&2
           exit 1
       - uses: dtolnay/rust-toolchain@master
