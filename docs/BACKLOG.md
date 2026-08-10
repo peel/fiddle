@@ -889,3 +889,27 @@ The corollary, also from that lane, is to resist collapsing the two tests: `cons
 That is the whole finding in one lane: **a lane running an inversion in a shared checkout simultaneously generates and consumes unattributable failures, and from inside the two are indistinguishable.** It cannot tell its own noise from anyone else's, and neither can anyone reading its report. Two of the three phantom-failure reports chased earlier in the day are accounted for here.
 
 One correction went the other way and is worth noting for calibration: its `minimum()` → `Automatic` inversion was **526 / 3**, not the 523 / 2 first reported, the extra failure being a test that did not exist at the time of the first run. So the claim that a relaxed minimum "would fail here" is carried by three tests rather than two. **A recorded count that moves upward for a nameable reason is stronger evidence than the original**, and re-measurement is what surfaced it — the same discipline that corrected the two errors also strengthened the third row.
+
+**Correction to the rule above, proved rather than asserted.** The entry says a fail-fast test "can only ever evidence its first case". The lane that supplied the finding then corrected the lead's wording, which had overstated it:
+
+> The fail-fast loop *did* catch any single case that regressed — either form does. What it could not do is **report** a second one.
+
+So the defect is not insensitivity, it is **unreportability**, and it bites exactly when several cases regress together — which is the run that matters for a quantified claim. It demonstrated the distinction instead of arguing it, weakening the guard four ways against the restructured table:
+
+| guard weakened for | passed | failed | cases the one failing run reported |
+|---|---|---|---|
+| the empty token | 555 | 1 | 1 |
+| a token containing a newline | 555 | 1 | 1 |
+| a token starting `request=` | 555 | 1 | 1 |
+| **whole guard removed (all three regress at once)** | 555 | 1 | **3, all named** |
+
+The same production defect reported **one** case under the fail-fast loop and **three** under the collected table. It explicitly declined to claim the first three rows as evidence for the restructure, since they pass under either form. So the corrected rule is: **a claim quantified over N inputs needs a test that can report N failures, not merely detect one.** A loop that stops at the first is sufficient to *notice* a regression and insufficient to *evidence a count*.
+
+### 2026-08-11 — `cargo test` green and `cargo clippy` red on a test-only change
+Small, mechanical, and it would have handed up a red gate. A lane restructuring an assertion table — **tests only, no production code** — had the workspace suite pass at 556 while `cargo clippy --workspace --all-targets --all-features -- -D warnings` exited **101** on `clippy::type_complexity` in the new helper's return type. Fixed with two type aliases, which read better anyway.
+
+The general fact: **a test-only change is not clippy-safe by construction.** `--all-targets` lints test code, so a helper signature introduced in a `#[cfg(test)]` module is as capable of failing the gate as production code is, and the test suite passing says nothing about it. A lane that reasoned "I only touched tests, the suite is green, the gate is fine" would have reported success on a red gate.
+
+This is the fourth distinct way in this milestone that **a green signal has stood in for an unrun check** — after an exit code read through a pipe reporting `tail`'s status, a clippy line swallowed by an `&&` chain, and a test filter that matched nothing and reported `0 passed; 15 filtered out`. The pattern is durable enough to state as a rule: **every gate command runs, and its own exit code is captured, on every change — no change is exempt by category.**
+Origin: implementation (epic fiddle-eoqx, bean fiddle-ayqd) — found by a lane that ran clippy on a test-only change instead of assuming
+Tags: #process #infrastructure
