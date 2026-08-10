@@ -40,50 +40,54 @@
 //! credential-free; the `git` in every context is a path that does not exist, so
 //! an operation that grew a second mutation channel would fail loudly.
 //!
-//! # What is not asserted here yet, and why
+//! # How the decided path came to be assertable, and what it took
 //!
-//! Two of this operation's properties are implemented and asserted nowhere, and
-//! the thing they wait on is the **fixture**, not the executor.
+//! Four of this operation's properties were implemented and asserted nowhere, and
+//! they fell in that state for two different reasons — first the executor, then
+//! the fixture. Both are now closed, and the history is kept because it is what
+//! says why the cases below are shaped the way they are.
 //!
-//! It was the executor until bean `fiddle-rvcu` landed
-//! `Executor::execute_decided`, and four properties waited on it. An operation
-//! whose `minimum()` is `Human` could not commit anything: `combine(Human, _)` is
+//! **The executor was the first obstacle.** An operation whose `minimum()` is
+//! `Human` could not commit anything: `combine(Human, _)` is
 //! `RequireHumanDecision` unconditionally, step 4 turned that into
 //! `EffectError::HumanDecisionRequired` and returned, and `AuthorizedEffect` is
 //! unforgeable outside `crate::effect`, so `apply` had no second route to reach.
-//! Step 4 now takes the RFC's third input — *"and, when needed, resolve a
-//! matching contextual human decision"* — so a walk carrying a resolved approval
-//! reaches `apply`, and two of the four were written against it:
+//! Bean `fiddle-rvcu` landed `Executor::execute_decided`, so step 4 now takes the
+//! RFC's third input — *"and, when needed, resolve a matching contextual human
+//! decision"* — and a walk carrying a resolved approval reaches `apply`. Two of
+//! the four were written against it immediately:
 //! `a_refused_mutation_is_not_reported_as_a_lost_write` and
 //! `the_mutation_the_child_received_binds_the_node_id_from_the_read`.
 //!
-//! What is left needs a `gh` that can **mutate and then fail**, and the scripted
-//! one cannot. Its GraphQL route answers a scripted status and body and does
-//! nothing else: it short-circuits ahead of the `script`/`commit_then_*`
-//! machinery, which is keyed on the REST write path. So a scripted mutation can
-//! neither change the world it was sent to nor die after sending. Bean
-//! `fiddle-8vpm` is that route's fault injection, and it is the prerequisite for
-//! the two owed here:
+//! **The fixture was the second, and the remaining two waited on it rather than on
+//! any product code.** The scripted `gh`'s GraphQL route answered a status and a
+//! body and did nothing else: it returned above the `script`/`commit_then_*`
+//! machinery, which is keyed on the REST write path, so a scripted mutation could
+//! neither change the world it was sent to nor die after sending. And both of a
+//! walk's reads address one path, `GET /repos/{repo}/pulls/{pr}`, which answered
+//! its seed verbatim — so no second read could show that the world had changed,
+//! and every decided walk ended `Unresolved` whatever the mutation did. Bean
+//! `fiddle-8vpm` closed all three halves of that: the route applies its mutation
+//! to the world, an ending rides in a `"mode"` key inside `graphql/{n}.json`, and
+//! the by-number read answers its seed with the transitions that have since
+//! landed applied over it. The two owed cases are now
+//! `an_approved_ready_transition_commits` — the transition commits at all, a
+//! receipt whose outcome is `Committed` — and
+//! `a_lost_answer_on_the_ready_transition_is_settled_by_reading`, the mutation
+//! dispatched exactly once **on the path where its answer was lost** and the pull
+//! request read back to settle it. With them,
+//! `m3-ready-mutation-is-graphql-and-once` is asserted in full, alongside
+//! `m3-refusal-is-not-a-lost-write`.
 //!
-//! - the mutation is dispatched exactly once **on the path where its answer was
-//!   lost** and the pull request had to be read back to settle it, which needs a
-//!   `gh` that mutates and *then* dies. The two halves of exactly-once that do
-//!   not need one are asserted:
-//!   `a_run_that_reaches_policy_is_refused_for_want_of_a_person` (a refused walk
-//!   dispatches nothing), `an_already_ready_pull_request_is_the_postcondition`
-//!   (an effect the world satisfies dispatches nothing), and one call on both of
-//!   the decided walks above;
-//! - and, with a decision resolved, the transition **commits at all** — a
-//!   receipt whose outcome is `Committed`. That needs the post-mutation read to
-//!   answer `draft: false`, where today both of a walk's reads are served from the
-//!   same `pulls_by_number/{n}.json`, so the mutation cannot be made to have
-//!   happened.
+//! The three halves of exactly-once that never needed the fault injection are
+//! asserted separately and still are:
+//! `a_run_that_reaches_policy_is_refused_for_want_of_a_person` (a refused walk
+//! dispatches nothing), `an_already_ready_pull_request_is_the_postcondition` (an
+//! effect the world satisfies dispatches nothing), and one call on each of the
+//! decided walks.
 //!
-//! Together they are what is left of `m3-ready-mutation-is-graphql-and-once`'s
-//! dispatch half; `m3-refusal-is-not-a-lost-write` is asserted in full.
-//!
-//! **Nothing is approximated in their absence.** No weaker version that avoids
-//! the executor was written, because an assertion that avoids the mandatory
+//! **Nothing was approximated while they were absent.** No weaker version that
+//! avoids the executor was written, because an assertion that avoids the mandatory
 //! authorization boundary is an assertion about something other than what this
 //! operation does — which reads as coverage while gating nothing. The one
 //! property asserted below the executor rather than through it is
@@ -218,6 +222,54 @@ impl World {
             json!({"status": status, "body": body}).to_string(),
         )
         .unwrap();
+    }
+
+    /// Script GraphQL call `n` to apply its mutation and then end without
+    /// answering.
+    ///
+    /// A third key in the same per-call file, and independent of the other two
+    /// rather than a spelling of them: a call that dies never prints a status or a
+    /// body at all, so this scripts *how the answer was lost* and not what it
+    /// would have been. That is also why it cannot ride on the REST route's
+    /// `<status> <exit> <mode>` script — see `gh_stub`'s `graphql_answer`.
+    fn script_graphql_ending(&self, n: usize, mode: &str) {
+        let dir = self.dir.path().join("graphql");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{n}.json")),
+            json!({ "mode": mode }).to_string(),
+        )
+        .unwrap();
+    }
+
+    /// How many ready transitions actually changed this world, read out of the
+    /// log the stub writes when a mutation lands.
+    ///
+    /// [`World::graphql_calls`] counts what was *asked*; this counts what
+    /// *happened*. The pair is the whole of the ambiguity: one call, one landed
+    /// mutation, and no answer.
+    fn landed_transitions(&self) -> usize {
+        self.landed_matching(|_| true)
+    }
+
+    /// How many of them landed and then took their answer with them.
+    ///
+    /// Asserted of the world the test is making its claims about, rather than
+    /// demonstrated on some other directory and assumed to have happened here
+    /// too. Without it a `Committed` receipt would be reached by a mutation that
+    /// simply succeeded — a different property, and a much easier one — so this is
+    /// what makes the case a test of the *lost* answer. The mode is on the world
+    /// line because `gh_stub`'s `apply_effect` records it there for exactly this.
+    fn transitions_whose_answer_was_lost(&self) -> usize {
+        self.landed_matching(|line| line.contains(r#""mode":"commit_then_"#))
+    }
+
+    fn landed_matching(&self, keep: impl Fn(&str) -> bool) -> usize {
+        std::fs::read_to_string(self.dir.path().join("world"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains("markPullRequestReadyForReview") && keep(line))
+            .count()
     }
 
     /// The `argv` of the one GraphQL call the world received.
@@ -704,6 +756,225 @@ async fn a_refused_mutation_is_not_reported_as_a_lost_write() {
     );
 }
 
+/// With a person's approval spent, the transition **commits**.
+///
+/// The plainest thing this operation does, and it was assertable nowhere: an
+/// operation whose `minimum()` is `Human` needed `Executor::execute_decided` to
+/// reach `apply` at all, and then it needed a fixture whose GraphQL route changed
+/// the world it was sent to and whose by-number read could say so. Both of a
+/// walk's reads address one path, so while that path answered its seed verbatim
+/// the mutation could not be made to have happened and every decided walk ended
+/// `Unresolved` — correctly, and uninformatively.
+///
+/// `the_mutation_the_child_received_binds_the_node_id_from_the_read` runs against
+/// the same world and is not the same claim: it asserts what the child was spawned
+/// with and says in as many words that the walk's ending is not its subject. This
+/// asserts the ending. Measured, and the reason it is written rather than assumed:
+/// with the GraphQL route's `apply_effect` on the answered path removed, this is
+/// the only test in the workspace that fails — so without it that line would be
+/// fixture nothing observed.
+///
+/// The contrast with the case below is the point of the last assertion. Here the
+/// mutation landed *and* answered; there it landed and the answer was lost. Both
+/// reach `Committed`, and only the world log distinguishes them — which is why the
+/// lost-answer case asserts on it rather than on the outcome alone.
+#[tokio::test]
+async fn an_approved_ready_transition_commits() {
+    let world = World::new();
+    world.pull(
+        PR,
+        json!({"number": PR, "draft": true, "node_id": NODE_ID, "state": "open"}),
+    );
+    // Scripted rather than left to the route's unscripted default, even though the
+    // default is this. The subject here is a mutation that landed *and answered*,
+    // so the answer is stated; and `fiddle-e902` is going to take that silent
+    // success away, which would otherwise leave this case resting on a courtesy
+    // that bean exists to withdraw.
+    world.script_graphql(
+        0,
+        200,
+        json!({"data": {"markPullRequestReadyForReview": {"pullRequest": {"isDraft": false}}}}),
+    );
+
+    let receipt = world
+        .execute_decided(op())
+        .await
+        .expect("an approved transition against a draft commits");
+
+    assert_eq!(
+        receipt.outcome,
+        EffectOutcome::Committed,
+        "and the postcondition was read back rather than taken from the mutation's \
+         own 200"
+    );
+    assert_eq!(
+        receipt.value,
+        ReadyPullRequest {
+            number: PR,
+            node_id: NODE_ID.to_string(),
+        },
+        "carrying what the second read observed"
+    );
+    assert_eq!(receipt.external_ref.as_deref(), Some("7"));
+    assert_eq!(world.graphql_calls(), 1, "one approval, one mutation");
+    assert_eq!(world.landed_transitions(), 1, "which really landed");
+    assert_eq!(
+        world.transitions_whose_answer_was_lost(),
+        0,
+        "and answered, which is what separates this case from the next one"
+    );
+    assert_eq!(
+        world.steps(),
+        [
+            "validate_capability",
+            "derive_identity",
+            "inspect_postcondition",
+            "combine_policy",
+            "resolve_decision",
+            "authorize",
+            "apply",
+            "observe_postcondition"
+        ],
+        "through the whole authorization order, and the decision resolved once"
+    );
+}
+
+/// **The milestone's central property, for its one GraphQL mutation.** The
+/// mutation lands, its answer is lost, and the effect is settled by *reading the
+/// world* rather than by spending the approval a second time.
+///
+/// This is the composition the two halves either side of it could not make. The
+/// executor's half is asserted in `effect_protocol.rs`
+/// (`a_decided_mutation_whose_answer_was_lost_is_settled_by_reading`) against a
+/// scripted operation that never reaches a process, and the adapter's half — a
+/// killed `gh` classifying `Unknown` — in `github_cli.rs`
+/// (`a_child_that_died_before_answering_is_unknown`) against a REST write. Neither
+/// runs this operation, and the drift that falls between them is an `apply` that
+/// retried its own GraphQL call after a lost answer: nothing else instantiates
+/// `EnsurePullRequestReady` on a path that dispatches, and its only other asserted
+/// GraphQL failure is a `FORBIDDEN` refusal, where a retry would already be
+/// caught. Measured, and recorded on bean `fiddle-8vpm`: with `apply` retrying,
+/// this is the only test in the workspace that fails.
+///
+/// **The witness at the top is what makes this a test rather than a coincidence.**
+/// A mutation that simply succeeded would also reach `Committed` with one call, so
+/// both halves of the ambiguity are shown to be real: the adapter cannot tell what
+/// happened, and the transition happened anyway. The same is then asserted of the
+/// executor's *own* world through `transitions_whose_answer_was_lost`, so the
+/// claim is not that the fixture can lose an answer somewhere but that it lost
+/// this one.
+#[tokio::test]
+async fn a_lost_answer_on_the_ready_transition_is_settled_by_reading() {
+    // The mutation is spelled here rather than borrowed from `ready`'s private
+    // const because this half's subject is the *fixture*: does a GraphQL call
+    // that lands and then dies leave the world changed and the answer gone? The
+    // name is what the stub keys the world change off, and the executor's half
+    // below sends the real one.
+    const MUTATION: &str = "mutation($id: ID!) { markPullRequestReadyForReview(input: \
+                            {pullRequestId: $id}) { pullRequest { isDraft } } }";
+
+    let witness = World::new();
+    witness.pull(
+        PR,
+        json!({"number": PR, "draft": true, "node_id": NODE_ID, "state": "open"}),
+    );
+    witness.script_graphql_ending(0, "commit_then_die");
+
+    let lost = witness
+        .ctx()
+        .gh
+        .graphql(MUTATION, &[("id", NODE_ID)], &CancellationToken::new())
+        .await
+        .expect_err("the fixture must really lose the answer, or this proves nothing");
+    assert!(
+        matches!(lost, GhError::Killed(_)),
+        "expected a child that died without answering, got {lost:?}"
+    );
+    assert_eq!(
+        lost.outcome(),
+        EffectOutcome::Unknown,
+        "and it must classify Unknown, or the executor would never go and look"
+    );
+    assert_eq!(
+        witness.landed_transitions(),
+        1,
+        "and the mutation must really have landed, or the answer was all that was lost"
+    );
+
+    // The walk, in a world of its own and scripted the same way.
+    let world = World::new();
+    world.pull(
+        PR,
+        json!({"number": PR, "draft": true, "node_id": NODE_ID, "state": "open"}),
+    );
+    world.script_graphql_ending(0, "commit_then_die");
+
+    let receipt = world
+        .execute_decided(op())
+        .await
+        .expect("the answer was lost, not the transition");
+
+    assert_eq!(
+        receipt.outcome,
+        EffectOutcome::Committed,
+        "step 8 read the pull request back and found it out of draft"
+    );
+    assert_eq!(
+        receipt.value,
+        ReadyPullRequest {
+            number: PR,
+            node_id: NODE_ID.to_string(),
+        },
+        "and the receipt names what was observed rather than what was requested"
+    );
+    assert_eq!(
+        receipt.external_ref.as_deref(),
+        Some("7"),
+        "and the object a person would look up"
+    );
+
+    // The property itself, and the reason the bean exists.
+    assert_eq!(
+        world.graphql_calls(),
+        1,
+        "one approval buys one dispatch, and a lost answer does not buy another"
+    );
+    assert_eq!(
+        world.landed_transitions(),
+        1,
+        "and it landed exactly once, so `Committed` is not covering for two writes"
+    );
+    assert_eq!(
+        world.transitions_whose_answer_was_lost(),
+        1,
+        "in this very world: the one that landed is the one whose answer was lost, \
+         so this is not a mutation that simply succeeded"
+    );
+    assert_eq!(
+        world.recorded_paths(),
+        [
+            format!("/repos/{REPO}/pulls/{PR}"),
+            format!("/repos/{REPO}/pulls/{PR}")
+        ],
+        "settled by looking: two reads of the same pull request around one \
+         mutation, and the second is what resolved the unknown"
+    );
+    assert_eq!(
+        world.steps(),
+        [
+            "validate_capability",
+            "derive_identity",
+            "inspect_postcondition",
+            "combine_policy",
+            "resolve_decision",
+            "authorize",
+            "apply",
+            "observe_postcondition"
+        ],
+        "and the decision was resolved exactly once, before the single dispatch"
+    );
+}
+
 /// The mutation the child was really spawned with: GraphQL, the node id from the
 /// read, bound as a variable.
 ///
@@ -715,12 +986,12 @@ async fn a_refused_mutation_is_not_reported_as_a_lost_write() {
 /// a value GitHub chose and interpolation would let it rewrite the query it
 /// appears in.
 ///
-/// **The walk's ending is not this test's subject.** The world still shows a
-/// draft after the mutation, so it ends `Unresolved` — correctly, because a
-/// scripted `gh` that says `data` and changes nothing is exactly the case step 8
-/// exists to disbelieve. The request is recorded before any of that is decided,
-/// which is what makes the assertion available without a world the fixture cannot
-/// yet build; see this file's header on `fiddle-8vpm`.
+/// **The walk's ending is not this test's subject**, and the result is discarded
+/// rather than asserted for that reason. It ends `Committed` —
+/// `an_approved_ready_transition_commits` runs against this same world and is
+/// where that is claimed. What makes the assertion here independent of the ending
+/// is that the stub records every request *before* it routes, so the `argv` is on
+/// disk whatever the walk went on to do with the answer.
 #[tokio::test]
 async fn the_mutation_the_child_received_binds_the_node_id_from_the_read() {
     let world = World::new();
