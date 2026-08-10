@@ -3,31 +3,43 @@
 # conclusion rather than claimed from a file. It invokes that script rather than
 # repeating it — one lane, two places it can be started from.
 #
-# ## READ THIS FIRST IF YOU CANNOT DISPATCH THIS WORKFLOW
+# ## READ THIS FIRST: how to dispatch it, and why the ref is the whole question
 #
-# `workflow_dispatch` resolves workflows on the repository's **default branch
-# only**. Until this file is on `main`, GitHub creates no workflow entity for it
-# at all, and every way of starting it fails identically:
+# This file is on `main` as of `aa86c60`, so the workflow entity exists (id
+# 330906808, state active) and dispatch works. Pass a ref that carries the Rust
+# workspace:
 #
-#     $ gh workflow run github-effects.yml --repo peel/fiddle --ref <any-branch>
-#     HTTP 404: workflow github-effects.yml not found on the default branch
+#     $ gh workflow run github-effects.yml --repo peel/fiddle \
+#         --ref plan/agentic-factory-m2
 #
-#     $ gh api repos/peel/fiddle/actions/workflows --jq '.workflows[].path'
-#     ... this file absent from the list ...
+# **The entity's branch and the dispatched ref are two different things.**
+# `workflow_dispatch` resolves the *entity* on the default branch only — that is
+# why this file had to land on `main` — but `actions/checkout@v4` below is bare,
+# so the *code* the job builds comes from whatever `--ref` names. The ref is a
+# dispatch-time argument, not state in this file. One entity on `main` therefore
+# serves every milestone: `--ref plan/agentic-factory-m3` for M3, `--ref main`
+# once the stack merges. Three runs against this one entity id with different
+# refs settled it, with the outcomes tracking the code and not the workflow.
 #
-# Note what that does *not* mean. `workflow_dispatch` **is** the manual trigger,
-# so "just run it by hand" is the same mechanism and is equally blocked — the
-# Actions UI button does not appear either, because the workflow does not exist
-# as far as GitHub is concerned. There is no ref you can pass to work around it.
+# So there is never any repointing to do, and there is exactly one way to get
+# this wrong: dispatching a ref that carries no Cargo workspace. `main` is such a
+# ref today — it predates M0 and has no `Cargo.toml` and no `crates/` — and run
+# 31374051935 is what that used to look like: an opaque `could not find
+# Cargo.toml` forty lines into a build log. The second step in the job below now
+# refuses that case by name, before the toolchain and the build.
 #
-# So a dispatch-only lane living on a feature branch is not slow or awkward, it
-# is **inert**, and it stays inert for everyone until the file merges. That is
-# the only reason M2 shipped with this lane's run evidence obtained under a
-# temporarily flipped default branch (run 31364842113, event workflow_dispatch,
-# conclusion success, `main` restored immediately and asserted): the mechanism
-# was proven, the lane was not yet live. Once this file is on `main`, dispatch it
-# once with any `fiddle_effect_id` and that gap closes on its own — no code
-# change is owed.
+# ### The history, because the shape recurs
+#
+# Until this file was on `main` the lane was not slow or awkward, it was
+# **inert**: GitHub created no entity for it, `gh workflow run` answered `HTTP
+# 404: workflow github-effects.yml not found on the default branch` for every
+# ref, and the Actions UI button did not appear either, because
+# `workflow_dispatch` *is* the manual trigger and there is no ref that works
+# around a missing entity. That is why M2 first shipped this lane's evidence from
+# a run obtained under a temporarily flipped default branch (31364842113). The
+# reproducible replacement is **31374193249**: `event=workflow_dispatch`,
+# `conclusion=success`, credentialed walk confirmed to have run rather than
+# skipped, dispatched with no default-branch flip.
 #
 # The lesson generalises past this file: any future dispatch-only lane inherits
 # the same property, and a milestone that plans one on a feature branch has
@@ -77,6 +89,18 @@
 # needs. The script it eventually calls holds the same line with `:?` on
 # `FIDDLE_GITHUB_TOKEN`; this step is the earlier and louder of the two, not a
 # replacement for it.
+#
+# That property used to be held by this paragraph and by whoever remembered to
+# grep. It is now held by `scripts/check-github-effects-lane.sh`, which fails if
+# an `if:` or a `continue-on-error:` key appears anywhere in this file, if the
+# credential guard is not the first step, or if the workspace preflight does not
+# precede the toolchain and the build. `scripts/test-check-github-effects-lane.sh`
+# proves that checker discriminates by injecting each of those defects into a
+# copy of this file and requiring a non-zero exit, and it executes this file's
+# own preflight shell against a tree with and without a `Cargo.toml`. Both run in
+# `.github/workflows/skill-quality.yml`, beside the repository's other
+# repository-shape validators. Do not restore the prose-and-grep arrangement:
+# an absence is only evidence when something would otherwise notice its return.
 name: github-effects
 # Echoes the input back, so a dispatch can be found again in the runs listing —
 # the same trick, for the same reason, as the `run-name` the dispatch target in
@@ -146,6 +170,65 @@ jobs:
           fi
           echo "FIDDLE_EFFECTS_TOKEN is present. Its value is never printed or logged."
       - uses: actions/checkout@v4
+      # Second, and for the same reason the credential guard is first: a
+      # dispatch that cannot possibly succeed should say why in seconds rather
+      # than forty lines into a build log.
+      #
+      # `actions/checkout@v4` is bare here, so the **dispatched `--ref` decides
+      # which code this job builds** — the workflow entity lives on `main`
+      # because `workflow_dispatch` resolves entities there, but the ref is a
+      # dispatch-time argument and is not state in this file. That is why one
+      # entity on `main` serves every milestone and why no repointing is ever
+      # owed. It is also why `--ref main` fails today: `main` predates M0 and
+      # carries no `Cargo.toml` and no `crates/` at all, so `cargo build
+      # --release` dies with `could not find Cargo.toml in
+      # /home/runner/work/fiddle/fiddle` — a legitimate invocation answered by
+      # an opaque error about the wrong thing. Run 31374051935 is that failure.
+      #
+      # This runs *after* checkout rather than before it because the precondition
+      # is a property of the checked-out tree, which is the same object
+      # `cargo build` will read; asserting it against anything else (a contents
+      # API probe at a ref, say) would assert over a different object and could
+      # disagree with the one that fails. Checkout of this repository costs
+      # seconds. The toolchain install and the release build, which this step
+      # precedes, cost minutes — so guarding here saves essentially all of it.
+      - name: Require a Cargo workspace on the dispatched ref — fail before the build
+        run: |
+          if [ -f Cargo.toml ]; then
+            echo "Cargo workspace manifest present at the checkout root for ${GITHUB_REF} (${GITHUB_SHA}). Continuing."
+            exit 0
+          fi
+          echo "::error title=github-effects: the dispatched ref carries no Cargo workspace::This lane builds the fiddle binary, so a ref with no Cargo.toml at its root cannot run it. Re-dispatch with --ref <milestone-branch>."
+          {
+            echo "github-effects was dispatched against a ref that has no Cargo.toml at its root."
+            echo
+            echo "  Ref:        ${GITHUB_REF}"
+            echo "  Commit:     ${GITHUB_SHA}"
+            echo "  Checkout:   ${GITHUB_WORKSPACE}"
+            echo
+            echo "  Why this fails: this lane runs the M2 GitHub-effect walk through the"
+            echo "  compiled binary, so it must build the Rust workspace first. Without a"
+            echo "  Cargo.toml at the checkout root there is nothing to build, and cargo"
+            echo "  would answer 'could not find Cargo.toml in ${GITHUB_WORKSPACE}' forty"
+            echo "  lines into a build log instead of naming the actual problem here."
+            echo
+            echo "  Why the ref and not this file: actions/checkout above is bare, so the"
+            echo "  ref you dispatch decides which code is checked out. The workflow entity"
+            echo "  has to live on the default branch because that is where"
+            echo "  workflow_dispatch resolves entities, but the ref is a dispatch-time"
+            echo "  argument. One entity on main therefore serves every milestone and this"
+            echo "  file never needs repointing."
+            echo
+            echo "  What to pass instead: a ref that carries the Rust workspace — a"
+            echo "  milestone branch."
+            echo
+            echo "    gh workflow run github-effects.yml --repo ${GITHUB_REPOSITORY} \\"
+            echo "      --ref plan/agentic-factory-m2"
+            echo
+            echo "  main will not carry a Cargo workspace until the milestone stack merges;"
+            echo "  after that merge --ref main works and is the right thing to pass."
+          } >&2
+          exit 1
       - uses: dtolnay/rust-toolchain@master
         # Kept in lockstep with rust-toolchain.toml, rust.yml and
         # acceptance-repo.yml: dtolnay/rust-toolchain requires an explicit
