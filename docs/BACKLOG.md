@@ -913,3 +913,23 @@ The general fact: **a test-only change is not clippy-safe by construction.** `--
 This is the fourth distinct way in this milestone that **a green signal has stood in for an unrun check** — after an exit code read through a pipe reporting `tail`'s status, a clippy line swallowed by an `&&` chain, and a test filter that matched nothing and reported `0 passed; 15 filtered out`. The pattern is durable enough to state as a rule: **every gate command runs, and its own exit code is captured, on every change — no change is exempt by category.**
 Origin: implementation (epic fiddle-eoqx, bean fiddle-ayqd) — found by a lane that ran clippy on a test-only change instead of assuming
 Tags: #process #infrastructure
+
+### 2026-08-11 — An earlier assertion can short-circuit the one that carries the property
+The seventh dressing, and a new mechanism: not a property a neighbour already enforced, not a wrong explanation, not a fail-fast count, not a cross-crate claim, not an undiscriminating fixture. Here the test **fails correctly** and the assertion carrying the criterion **is never evaluated**.
+
+Task 7's `the_revision_is_part_of_the_identity_and_not_only_of_the_payload` asserted the *target strings* first and the two `EffectId`s second. Under the inversion that drops `@{head_sha}` from the target, the run failed on the string comparison — `left: "acme/r#7", right: "acme/r#7"` — and execution stopped there. So the test noticed the break, but its diagnostic named the **mechanism** (the target's spelling) while the **property** (two revisions derive two identities) went untested at the exact moment it broke.
+
+The lead had predicted a different failure: that both sides of the identity comparison might derive through one code path, collapse together, and satisfy the assertion. That was wrong in mechanism — the assertion is `assert_ne!`, so a collapse makes it fail. The consequence was the same, reached by assertion **order** instead. The implementer proved the identity half is independently load-bearing with a throwaway probe asserting nothing but the inequality:
+
+```
+unmutated:       identity(aaaa) = 3ec6f2ec9d777a35 / identity(bbbb) = 8bf86e9eb29943b9  -> passes
+under inversion: both collapse to 4c87b686e7dd354b                                      -> fails
+```
+
+Reordering so the identity is asserted first — both halves still assert, only the order changed — makes the inversion report the property instead of the spelling.
+
+The rule: **when one test asserts both a mechanism and the property that mechanism serves, the property goes first.** An assertion that fires earlier consumes the failure, and the one that matters is never reached. A green suite hides nothing here; what is hidden is *which* claim a red run establishes, and that only becomes visible when someone deliberately breaks the thing and reads the diagnostic rather than the exit code.
+
+Second thing from the same run, worth keeping as method: the inversion failed **two** tests and the implementer counted **one witness**. The other, `a_mutation_with_no_node_id_in_hand_is_not_sent`, fails only because it asserts a refusal message containing `acme/r#7@aaaa` — sensitivity to the target's spelling, which is that assertion's job, but not independent evidence for the identity property. **Two tests failing is not two witnesses**, and a lane that counted rows rather than distinct properties would have over-claimed its own coverage.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-dvsl) — an inversion asked for three times, which found a defect once it ran
+Tags: #process #testing
