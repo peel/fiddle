@@ -4,7 +4,8 @@
 //! by reading one directory rather than by grepping for a hostname. Today it
 //! holds [`cli`], the single credential-carrying `gh` construction, and the
 //! operations built on top of it: [`refs`] for the branch, [`pulls`] for the
-//! pull request, [`checks`] for CI and [`comments`] for the conversation a
+//! pull request, [`ready`] for the transition out of draft that a person has to
+//! have agreed to, [`checks`] for CI and [`comments`] for the conversation a
 //! person answers in. All of them go through that one construction rather than
 //! spawning their own.
 //!
@@ -18,6 +19,7 @@ pub mod checks;
 pub mod cli;
 pub mod comments;
 pub mod pulls;
+pub mod ready;
 pub mod refs;
 
 pub use checks::{
@@ -31,6 +33,7 @@ pub use cli::{GhCli, GhError, GhResponse, RetryAdvice};
 // client that happens to read one.
 pub use comments::{read_conversation, read_one_comment, HumanResponse};
 pub use pulls::{pull_request_target, EnsurePullRequest, PullRequest};
+pub use ready::{pull_request_ready_target, EnsurePullRequestReady, ReadyPullRequest};
 pub use refs::{branch_name, branch_target, BranchRef, EnsureBranchPublished};
 
 /// Percent-encode one query parameter value.
