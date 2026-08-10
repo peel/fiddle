@@ -754,7 +754,11 @@ The general shape, stated to sit beside the `target/` finding: **an evidence pac
 Origin: implementation (epic fiddle-eoqx, bean fiddle-rvcu) — found by the lead while building an evidence pack, after an evaluator had flagged the same exit-code class in the previous one
 Tags: #process #infrastructure #debt
 
-**Addendum, same day — there is a third axis, and it invalidated the corrected run too.** With the toolchain pinned and `CARGO_TARGET_DIR` isolated, the verification still came back **525 passed / 2 failed**, and both failures were in `github::comments` and `human_comments` — a *different* bean's files, being edited by a live agent at that moment. `effect_protocol` read 50 where the bean under evaluation had measured 48, because two uncommitted tests from a third agent were sitting in the tree.
+**Addendum, same day — there is a third axis, and it invalidated the corrected run too.** With the toolchain pinned and `CARGO_TARGET_DIR` isolated, the verification still came back **525 passed / 2 failed**, and both failures were in `github::comments` and `human_comments` — a *different* bean's files, being edited by a live agent at that moment. `effect_protocol` read 50 where the bean under evaluation had measured 48.
+
+**Correction, entered after that bean's evaluator refuted the attribution.** The two extra tests were *not* a third agent's contamination. `git log 4622f05..400e4d0 -- crates/fiddle-runtime/tests/effect_protocol.rs` returns exactly one commit, `400e4d0`, which is **the evaluated bean's own work** — two tests and a fourth inversion its implementer landed 33 seconds before this entry was written. They were uncommitted at the moment of measurement, so the isolation lesson stands unchanged; what was wrong was the story told about them. The count 50 was not noise, it was the bean's own next state — and treating it as contamination is precisely how the evidence pack came to be pinned a commit behind the bean it was evaluating, which the same evaluator also caught. The two *failures* in that run were genuinely another lane's inversion, and that half of the entry holds.
+
+The lesson underneath the lesson: **an unexpected number is a question, not a defect.** Attributing it to a known failure mode without running `git log` on the file is the same move as accepting a claim without evidence — and here it went into a permanent record 33 seconds after the commit that would have explained it.
 
 So the isolation has three axes, not two:
 
