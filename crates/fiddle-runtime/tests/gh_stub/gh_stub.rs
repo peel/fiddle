@@ -73,6 +73,27 @@ fn main() {
         std::fs::write(dir.join("survived_the_deadline"), "yes").unwrap();
     }
 
+    // GraphQL is answered from its own script, because it cannot share the REST
+    // one. A REST request is keyed by method and path and it has neither: every
+    // call is `POST /graphql` and what was asked lives in a field. Its verdict is
+    // in the body rather than on the status line, so the two halves of an answer
+    // — the status and the body — have to be scriptable independently, which is
+    // exactly what the `<status> <exit> <mode>` script cannot express.
+    if endpoint(&args) == Some("graphql") {
+        let (status, body) = graphql_answer(&dir);
+        // Exit 1 on a refusal and 0 on a mutation that landed, which is what the
+        // real `gh` was measured doing: a refused mutation answers 200 and exits
+        // 1. It is written this way so that an adapter which consulted the exit
+        // code, or the status line, instead of the body would fail here rather
+        // than pass on a stub that agreed with it.
+        let refused = status >= 400
+            || body["errors"]
+                .as_array()
+                .is_some_and(|errors| !errors.is_empty());
+        print!("HTTP/2.0 {status} \r\n\r\n{body}");
+        std::process::exit(i32::from(refused));
+    }
+
     // The stub is *stateful*: a GET is answered from the world previous writes
     // built, not from a fixed script. A static script could not express the only
     // question that matters here — "after the write landed and the answer was
@@ -252,6 +273,62 @@ fn script_key(args: &[String]) -> String {
         "{method}_{}",
         path.trim_start_matches('/')
             .replace(['/', '?', '&', '=', '%'], "_")
+    )
+}
+
+/// What `gh api` was pointed at: the first argument after `api` that is neither
+/// a flag nor a flag's value.
+///
+/// Written as a scan rather than as "the argument that is not `-i`", because a
+/// GraphQL call carries `-f query=…` whose value would otherwise look like an
+/// endpoint. For a REST call this is the path, which [`script_key`] reads for
+/// itself; the one caller here only asks whether it is `graphql`.
+fn endpoint(args: &[String]) -> Option<&str> {
+    let mut rest = args.iter().skip_while(|a| a.as_str() != "api");
+    rest.next()?;
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            // Flags that take a value, so the value is not an endpoint.
+            "--method" | "-X" | "-f" | "-F" | "--input" => {
+                rest.next();
+            }
+            flag if flag.starts_with('-') => {}
+            other => return Some(other),
+        }
+    }
+    None
+}
+
+/// The next scripted GraphQL answer, in call order.
+///
+/// Each `graphql/<n>.json` holds `{"status": <code>, "body": <value>}`. The two
+/// are scripted separately on purpose: for GraphQL they are independent facts,
+/// since a refusal arrives as 200 with `errors[]`, and a fixture that derived
+/// one from the other could not express the case this route exists for.
+///
+/// The counter is a file rather than a count of recorded requests because a test
+/// may script a sequence — a refusal, then a success — and each call is its own
+/// process, so there is nowhere else for the position to live.
+fn graphql_answer(dir: &Path) -> (u16, serde_json::Value) {
+    let counter = dir.join("graphql_calls");
+    let n: usize = std::fs::read_to_string(&counter)
+        .ok()
+        .and_then(|seen| seen.trim().parse().ok())
+        .unwrap_or(0);
+    std::fs::write(&counter, (n + 1).to_string()).unwrap();
+
+    // Unscripted answers a plain success, the same courtesy the REST route's
+    // `201 0 normal` default extends: a test whose subject is the request rather
+    // than the answer should not have to script one.
+    let Ok(scripted) = std::fs::read_to_string(dir.join("graphql").join(format!("{n}.json")))
+    else {
+        return (200, serde_json::json!({ "data": {} }));
+    };
+    let scripted: serde_json::Value =
+        serde_json::from_str(&scripted).expect("a scripted GraphQL answer must be JSON");
+    (
+        scripted["status"].as_u64().unwrap_or(200) as u16,
+        scripted["body"].clone(),
     )
 }
 
