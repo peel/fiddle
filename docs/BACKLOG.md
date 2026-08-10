@@ -784,3 +784,19 @@ Neither is fixable by widening the doubt direction — doing so sends every legi
 The bean's implementer flagged this against its own work, unprompted, having been scoped to correct a record rather than to touch the file — and declined to touch it. That is the correct boundary and the reason this note exists rather than an unrequested edit.
 Origin: implementation (epic fiddle-eoqx, bean fiddle-9krm) — volunteered by the implementer against its own lane
 Tags: #debt #docs
+
+### 2026-08-10 — A bean marked in-progress with zero dispatches is indistinguishable from work in flight
+`fiddle-v5bm` (Task 5) sat in the lead's status table as a live lane for most of a milestone session. It was not. Its `## Evaluation Log` read **`total_dispatches: 0`**, zero of five steps were ticked, none of its three declared files had a commit, and no implementer report was ever received.
+
+The mechanism is a gap in the loop, not merely an oversight. **The lead sets a bean to `in-progress` when it intends to dispatch**, and the status field is the same afterwards whether the dispatch happened, died at birth, or was never sent. So `in-progress` means "the lead once intended this" rather than "an implementer is working on this", and nothing in the loop notices the difference. The lead then reports the bean as in flight, sequences other work behind it, and — in this case — routes two handoffs from another bean to an implementer that does not exist.
+
+The tell was present the entire time and free to read: `total_dispatches: 0` on a bean claimed to be in progress is a contradiction. So is zero ticked steps on a bean that has been live for hours, which is why the earlier finding about implementers never updating their bean while working matters more than it looked — **it removed the only other signal that would have caught this.**
+
+Two mitigations, and the second is the real one:
+
+- **Cross-check `in-progress` against `total_dispatches` and against `git log` on the bean's declared files** before reporting a lane as live. Cheap, and it is what finally found this.
+- **Derive lane liveness from artifacts rather than from status.** A bean is being worked on if and only if there are commits on its declared files, or dirty state in them, or a dispatch recorded in its log. The status field is the lead's intent and should never be read as evidence of an agent. This is the same rule the milestone already applies to implementer claims — a claim is not evidence — applied to the lead's own bookkeeping, which had been exempt.
+
+Worth stating the shape, because it is the third time this milestone: **the lead's own records were held to a weaker standard than the agents' were.** An implementer that reported "in progress" with no commits would have been challenged immediately.
+Origin: process (epic fiddle-eoqx, bean fiddle-v5bm) — found by checking a bean's eval log after noticing it had no commits
+Tags: #process #debt
