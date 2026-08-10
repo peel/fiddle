@@ -1,0 +1,1255 @@
+//! The four tools the model is given, and the host context they read from.
+//!
+//! Read a file, write a file, list the files, run the check. That is the whole
+//! of what a model can do here, and the smallness is the point: a tool set is a
+//! grant of authority, and every tool added is a grant that has to be argued
+//! for rather than assumed.
+//!
+//! Three rules hold across all four, in this order, before anything else
+//! happens:
+//!
+//! 1. **The host context is required, not defaulted.** [`ToolContext::require`]
+//!    rather than `get`, because the fallback a `get` invites is the process's
+//!    own working directory — which is the repository fiddle is *running from*,
+//!    not the one it is repairing. A tool that cannot tell which tree it is
+//!    pointed at must refuse to act, not guess.
+//! 2. **Cancellation is checked before resolution and before IO.** A guard that
+//!    ran afterwards would end the future without preventing the effect, and a
+//!    cancelled attempt whose last write still landed is worse than one that
+//!    never started.
+//! 3. **A requested path is proven, never joined.** [`WorkspacePath::parse`] is
+//!    the syntactic half and [`Workspace::resolve`], reached through the
+//!    workspace's own `read`/`write`, is the half that knows about symlinks.
+//!
+//! # What goes back to the model
+//!
+//! A tool result is a message to the model, so it is subject to the same
+//! discipline as the schema: it may carry what the model already knows and what
+//! it needs to act, and nothing about the host. [`ToolError`] therefore states
+//! its own diagnostics without absolute paths and keeps the underlying
+//! [`WorkspaceError`] — which names the *resolved* path on the operator's
+//! filesystem — as an unrendered source. [`Tool::map_error`] is overridden for
+//! the same reason: the default classifies every domain error as opaque, which
+//! is safe but tells a model that mistyped a path nothing it can use.
+
+use super::{ToolReceipt, ToolReceipts};
+use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
+use rig_agent::tool::{Tool, ToolContext, ToolExecutionError};
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use tokio_util::sync::CancellationToken;
+
+/// The host-only values a tool may reach. Never a tool argument.
+///
+/// Everything here is a fact about the attempt that the model has no standing
+/// to choose: which checkout is being repaired, whether the attempt is still
+/// live, and which program the check runs. It travels through Rig's
+/// [`ToolContext`], which is host-populated and never serialized towards the
+/// provider, so there is no representation of any of it that a model could
+/// author.
+///
+/// `Clone` because `ToolContext` clones its inbound values once per dispatch.
+/// The `Arc`s are what make that clone mean *shared*: two tool calls in the same
+/// attempt must see one workspace and append to one set of receipts, not to
+/// private copies that are discarded when the call ends.
+#[derive(Clone)]
+pub struct ToolHost {
+    pub workspace: Arc<Workspace>,
+    pub cancel: CancellationToken,
+    pub check: WorkspaceCommand,
+    pub receipts: Arc<Mutex<ToolReceipts>>,
+}
+
+impl ToolHost {
+    /// The host context, or a refusal.
+    ///
+    /// Cloned out of the context rather than borrowed from it so that a tool may
+    /// hold it across an `await` without borrowing the context for the whole
+    /// call; the clone is two `Arc` bumps and a token.
+    fn from_context(ctx: &ToolContext) -> Result<Self, ToolError> {
+        // `require`, not `get`: the missing case is a host misconfiguration, and
+        // the only safe response to it is to do nothing at all.
+        ctx.require::<ToolHost>()
+            .cloned()
+            .map_err(|_| ToolError::NoHostContext)
+    }
+
+    /// Checked at the top of every tool, before any resolution or IO.
+    fn guard(&self) -> Result<(), ToolError> {
+        if self.cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        Ok(())
+    }
+
+    /// Record what a tool body did and hand its result back to the caller.
+    ///
+    /// The result is taken *by value* and returned, rather than inspected
+    /// through a reference, so that the recording sits on the tool's return path
+    /// rather than beside it. That does not make omission impossible — a body
+    /// could still return early and skip this — but it removes the failure this
+    /// is actually written against, which is a tool that records its success and
+    /// forgets its refusal. There is one call site per tool and every arm of the
+    /// body flows through it, so success, refusal, cancellation and fault are
+    /// recorded by the same line or by none.
+    ///
+    /// The one call this cannot cover is a tool that never found a [`ToolHost`]
+    /// at all. There is no receipts store to write to in that case; the refusal
+    /// is recorded by [`ToolError::NoHostContext`] reaching Rig, and by nothing
+    /// else. That is a host misconfiguration rather than an attempt, and an
+    /// attempt is what receipts describe.
+    fn recorded<T>(
+        &self,
+        tool: &'static str,
+        started: Instant,
+        result: Result<T, ToolError>,
+    ) -> Result<T, ToolError> {
+        // `as u64` cannot wrap in any realistic sense: it would take half a
+        // billion years of one tool call, and every command here is already
+        // bounded by its own timeout.
+        let receipt = ToolReceipt {
+            tool: tool.to_string(),
+            outcome: outcome_of(&result),
+            duration_ms: started.elapsed().as_millis() as u64,
+        };
+        // Poison is recovered from rather than propagated. A panic in one tool
+        // call must not make the *record of every later call* unwritable, which
+        // is what an `unwrap()` here would arrange.
+        self.receipts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .calls
+            .push(receipt);
+        result
+    }
+
+    /// A snapshot of what this attempt has recorded so far.
+    ///
+    /// Cloned out from under the lock so that a reader — an evidence bundle
+    /// being written while the agent is still running, say — never holds it.
+    pub fn receipts(&self) -> ToolReceipts {
+        self.receipts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+/// Which class of thing happened, for an operator reading the bundle later.
+///
+/// Four classes, and the distinction that earns them is *who decided*. `refused`
+/// is the runtime declining before the filesystem was touched; `cancelled` is
+/// the attempt being stopped from outside; `failed` is the tool having been
+/// allowed to act and the world not cooperating. Collapsing any pair of them
+/// would make the bundle unable to answer the first question anyone asks of it,
+/// which is whether a bound fired or something broke.
+///
+/// A timeout is `failed` rather than `cancelled`: the check ran, the host's own
+/// deadline killed it, and nobody cancelled the attempt. The attempt may well
+/// continue afterwards, which a `cancelled` receipt would misdescribe.
+///
+/// Two further classes exist on [`ToolReceipt`] — `malformed` and
+/// `unknown_tool` — and neither is reachable from here, which is the point of
+/// them being separate. Both name a call that never reached a tool body, so
+/// there is no `Result<T, ToolError>` to classify;
+/// [`AuditHook`](super::AuditHook) writes those.
+fn outcome_of<T>(result: &Result<T, ToolError>) -> &'static str {
+    match result {
+        Ok(_) => "ok",
+        Err(ToolError::NoHostContext) | Err(ToolError::Rejected { .. }) => "refused",
+        Err(ToolError::Cancelled) => "cancelled",
+        Err(ToolError::Timeout { .. }) | Err(ToolError::Failed { .. }) => "failed",
+    }
+}
+
+/// Why a tool did not do what it was asked.
+///
+/// Each variant's message is written to be shown to a model: it names the
+/// model's own input where that helps it recover, and never names the host's
+/// filesystem. The [`WorkspaceError`] that caused it is carried as a `source`,
+/// which `thiserror` does not render into the `Display` output, so the operator
+/// keeps the resolved path and the model does not see it.
+#[derive(Debug, thiserror::Error)]
+pub enum ToolError {
+    /// No [`ToolHost`] was in the context, so the tool has no tree to act on.
+    #[error("this tool is not configured and will not act")]
+    NoHostContext,
+
+    /// The attempt was cancelled before the tool did anything.
+    #[error("the attempt was cancelled")]
+    Cancelled,
+
+    /// The requested path was refused before it reached the filesystem.
+    ///
+    /// Both fields are safe to show: `path` is the model's own string, and
+    /// `reason` is one of a fixed set of English phrases naming the rule that
+    /// fired.
+    #[error("the path `{path}` was refused: {reason}")]
+    Rejected {
+        path: String,
+        reason: String,
+        #[source]
+        source: WorkspaceError,
+    },
+
+    /// The check did not finish inside its bound and was killed.
+    ///
+    /// Deliberately anonymous. Naming the program would tell the model which
+    /// command the host chose to run, which is exactly the fact `run_check`
+    /// exists to keep out of its hands.
+    #[error("the check did not finish within its time limit")]
+    Timeout {
+        #[source]
+        source: WorkspaceError,
+    },
+
+    /// The operation was permitted but did not succeed.
+    #[error("{operation} did not succeed")]
+    Failed {
+        operation: &'static str,
+        #[source]
+        source: WorkspaceError,
+    },
+}
+
+impl ToolError {
+    /// Turn a workspace failure into one a model may be shown.
+    ///
+    /// The interesting arm is the last one. [`WorkspaceError::Io`] renders the
+    /// *resolved absolute* path and [`WorkspaceError::Git`] carries git's stderr
+    /// verbatim, and both of those describe the operator's machine; they are
+    /// collapsed into a single `operation did not succeed`, with the original
+    /// kept as the source for whoever is reading logs rather than prompts.
+    fn from_workspace(operation: &'static str, source: WorkspaceError) -> Self {
+        match source {
+            // Two refusals with one rendering, and deliberately so: from where
+            // the model sits, "that path leaves the project" and "that path is
+            // not in the project" call for the same next move, and both fields
+            // are safe — the path is the model's own string and the reason is
+            // one of a fixed set of English phrases. The distinction between
+            // them is for the operator, and it survives in the `source`.
+            WorkspaceError::Escape {
+                ref path,
+                ref reason,
+            }
+            | WorkspaceError::NotProject {
+                ref path,
+                ref reason,
+            } => ToolError::Rejected {
+                path: path.clone(),
+                reason: reason.clone(),
+                source,
+            },
+            WorkspaceError::Cancelled => ToolError::Cancelled,
+            WorkspaceError::Timeout { .. } => ToolError::Timeout { source },
+            WorkspaceError::Io { .. } | WorkspaceError::Git { .. } => {
+                ToolError::Failed { operation, source }
+            }
+        }
+    }
+
+    /// Classify this failure for Rig, keeping the message model-visible.
+    ///
+    /// Rig's default [`Tool::map_error`] redacts the message on the assumption
+    /// that a domain error may be carrying secrets. These messages are written
+    /// not to, so they are published deliberately: a refusal a model cannot read
+    /// is a turn spent learning nothing, and the budget is finite.
+    fn into_execution_error(self) -> ToolExecutionError {
+        let message = self.to_string();
+        let classified = match &self {
+            // `refused` rather than `other` so a telemetry reader can tell a
+            // deliberate decline from a fault. The model is told only that the
+            // tool will not act; there is nothing it could do with more.
+            ToolError::NoHostContext => ToolExecutionError::refused(message),
+            ToolError::Cancelled => ToolExecutionError::cancelled(message),
+            ToolError::Rejected { .. } => ToolExecutionError::invalid_args(message),
+            ToolError::Timeout { .. } => ToolExecutionError::timeout(message),
+            ToolError::Failed { .. } => ToolExecutionError::other(message),
+        };
+        // The whole chain, including the workspace error that names the resolved
+        // path, is kept downcastable for the operator. It is not the model-
+        // visible output, which is `message` and only `message`.
+        classified.with_source(self)
+    }
+}
+
+/// Arguments for a tool that takes none.
+///
+/// A named type rather than `()` because Rig deserializes arguments from the
+/// provider's JSON object, and because the *absence* of fields is the security
+/// property: unknown keys are ignored by serde, so a model that invents
+/// `{"program": "..."}` has its invention dropped on the floor rather than
+/// honoured or turned into an error it can probe.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct NoArgs {}
+
+/// The schema of a tool that takes no arguments.
+///
+/// `"properties": {}` is written explicitly rather than left out. An absent
+/// `properties` key is a schema that says nothing about what may be passed;
+/// an empty one says there is nothing to pass, which is the claim being made.
+fn no_parameters() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+    })
+}
+
+/// Read one file from the project under repair.
+pub struct ReadFile;
+
+/// The path to read, relative to the project.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ReadFileArgs {
+    pub path: String,
+}
+
+impl Tool for ReadFile {
+    const NAME: &'static str = "read_file";
+    type Args = ReadFileArgs;
+    type Output = String;
+    type Error = ToolError;
+
+    fn description(&self) -> String {
+        "Read one file from the project you are repairing, by its relative path.".into()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative path of the file, for example src/lib.rs."
+                }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        })
+    }
+
+    async fn call(&self, ctx: &mut ToolContext, args: Self::Args) -> Result<String, ToolError> {
+        let host = ToolHost::from_context(ctx)?;
+        let started = Instant::now();
+        // The guard is inside the recorded body, not outside it: an attempt that
+        // was stopped is still an attempt, and a receipt that only appears when
+        // the tool succeeded is a record of the happy path rather than of what
+        // happened.
+        let result = async {
+            host.guard()?;
+            let path = parse(&args.path)?;
+            host.workspace
+                .read(&path)
+                .map_err(|source| ToolError::from_workspace("reading the file", source))
+        }
+        .await;
+        host.recorded(Self::NAME, started, result)
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        error.into_execution_error()
+    }
+}
+
+/// Replace the contents of one file in the project under repair.
+pub struct WriteFile;
+
+/// The path to write and what to put in it.
+#[derive(Clone, Debug, Deserialize)]
+pub struct WriteFileArgs {
+    pub path: String,
+    pub contents: String,
+}
+
+/// What a write did, in terms the model can check.
+#[derive(Clone, Debug, Serialize)]
+pub struct WriteReceipt {
+    /// The normalised relative path, echoing back what was actually written to.
+    pub path: String,
+    pub bytes: usize,
+}
+
+impl Tool for WriteFile {
+    const NAME: &'static str = "write_file";
+    type Args = WriteFileArgs;
+    type Output = WriteReceipt;
+    type Error = ToolError;
+
+    fn description(&self) -> String {
+        // The second sentence is the whole reason the resolution below walks to
+        // the deepest existing ancestor. A model that does not know it may name
+        // a path whose directories are absent will not try, and there is nothing
+        // else in its context that would tell it.
+        "Replace one file in the project you are repairing with the contents you supply. \
+         The file is created if it does not exist, along with any directories on the way to it."
+            .into()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative path of the file, for example src/lib.rs."
+                },
+                "contents": {
+                    "type": "string",
+                    "description": "The complete new contents of the file."
+                }
+            },
+            "required": ["path", "contents"],
+            "additionalProperties": false
+        })
+    }
+
+    async fn call(
+        &self,
+        ctx: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<WriteReceipt, ToolError> {
+        let host = ToolHost::from_context(ctx)?;
+        let started = Instant::now();
+        let result = async {
+            // Before the parse and before the write, both. A guard placed after
+            // either would let a cancelled attempt leave a file behind.
+            host.guard()?;
+            let path = parse(&args.path)?;
+            host.workspace
+                .write(&path, &args.contents)
+                .map_err(|source| ToolError::from_workspace("writing the file", source))?;
+            Ok(WriteReceipt {
+                path: path.as_str().to_string(),
+                bytes: args.contents.len(),
+            })
+        }
+        .await;
+        host.recorded(Self::NAME, started, result)
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        error.into_execution_error()
+    }
+}
+
+/// Name every file in the project under repair.
+pub struct ListFiles;
+
+impl Tool for ListFiles {
+    const NAME: &'static str = "list_files";
+    type Args = NoArgs;
+    type Output = Vec<String>;
+    type Error = ToolError;
+
+    fn description(&self) -> String {
+        "List the files of the project you are repairing, as relative paths.".into()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        no_parameters()
+    }
+
+    async fn call(&self, ctx: &mut ToolContext, _args: NoArgs) -> Result<Vec<String>, ToolError> {
+        let host = ToolHost::from_context(ctx)?;
+        let started = Instant::now();
+        let result = async {
+            host.guard()?;
+            let listed = host
+                .workspace
+                .list()
+                .map_err(|source| ToolError::from_workspace("listing the files", source))?;
+            Ok(listed
+                .into_iter()
+                .map(|path| path.as_str().to_string())
+                .collect())
+        }
+        .await;
+        host.recorded(Self::NAME, started, result)
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        error.into_execution_error()
+    }
+}
+
+/// Run the host's check over the project under repair.
+pub struct RunCheck;
+
+/// What the check said.
+///
+/// A non-zero `exit_code` is a result rather than an error, for the same reason
+/// [`crate::workspace::CommandResult`] treats it that way: a failing check is
+/// the observation the repair loop exists to consume.
+#[derive(Clone, Debug, Serialize)]
+pub struct CheckOutcome {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl Tool for RunCheck {
+    const NAME: &'static str = "run_check";
+    type Args = NoArgs;
+    type Output = CheckOutcome;
+    type Error = ToolError;
+
+    fn description(&self) -> String {
+        "Run the project's build and test check and return what it printed.".into()
+    }
+
+    /// No parameters, and that is the security property rather than a
+    /// simplification. A tool that took the program to run would be arbitrary
+    /// code execution wearing a tool's name; which command constitutes "the
+    /// check" is a host decision, and it arrives through [`ToolHost::check`].
+    fn parameters(&self) -> serde_json::Value {
+        no_parameters()
+    }
+
+    async fn call(&self, ctx: &mut ToolContext, _args: NoArgs) -> Result<CheckOutcome, ToolError> {
+        let host = ToolHost::from_context(ctx)?;
+        let started = Instant::now();
+        let result = async {
+            host.guard()?;
+            let result = host
+                .workspace
+                .run(&host.check)
+                .await
+                .map_err(|source| ToolError::from_workspace("running the check", source))?;
+            // Handed over as it arrives. `Workspace::run` has already rewritten
+            // its own root out of both streams — see
+            // [`crate::workspace::command`] — so there is nothing left for this
+            // call site to remember, which is the point: it was one of exactly
+            // two that did remember, and the capability's own check was not one
+            // of them.
+            Ok(CheckOutcome {
+                exit_code: result.exit_code,
+                stdout: result.stdout,
+                stderr: result.stderr,
+            })
+        }
+        .await;
+        host.recorded(Self::NAME, started, result)
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        error.into_execution_error()
+    }
+}
+
+/// Parse a requested path, mapping the refusal into a model-visible one.
+fn parse(raw: &str) -> Result<WorkspacePath, ToolError> {
+    WorkspacePath::parse(raw)
+        .map_err(|source| ToolError::from_workspace("reading the path", source))
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::agent::ToolReceipts;
+    use crate::workspace::{Workspace, WorkspaceCommand};
+    use fiddle_core::AttemptId;
+    use rig_agent::tool::{Tool, ToolContext};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    /// A host context over a throwaway one-commit repository.
+    ///
+    /// The `TempDir` comes back with it because dropping it would take the
+    /// workspace with it; a test that let it fall would be reading a tree that
+    /// no longer exists.
+    pub(crate) fn test_host() -> (ToolHost, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let repo = dir.path().join("fixture");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+        std::fs::write(repo.join(".gitignore"), "target/\n").unwrap();
+        for args in [
+            &["init", "-q", "."][..],
+            &["add", "-A"][..],
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "fixture",
+            ][..],
+        ] {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        let cancel = CancellationToken::new();
+        let workspace = Workspace::create(
+            &repo,
+            &dir.path().join("ws"),
+            &AttemptId("01JQZX0000000000000000000".to_string()),
+            cancel.clone(),
+        )
+        .expect("a workspace");
+
+        let host = ToolHost {
+            workspace: Arc::new(workspace),
+            cancel,
+            check: WorkspaceCommand {
+                program: "git".to_string(),
+                args: vec!["rev-parse".to_string(), "--is-inside-work-tree".to_string()],
+                timeout: Duration::from_secs(30),
+            },
+            receipts: Arc::new(Mutex::new(ToolReceipts::default())),
+        };
+        (host, dir)
+    }
+
+    #[tokio::test]
+    async fn a_tool_reads_its_workspace_from_host_context_not_from_arguments() {
+        let (host, _g) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+        assert!(ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "src/lib.rs".into()
+                }
+            )
+            .await
+            .unwrap()
+            .contains("pub fn"));
+
+        let schema = ReadFile.parameters().to_string();
+        assert!(schema.contains("path"));
+        assert!(
+            !schema.contains("workspace") && !schema.contains("root") && !schema.contains("cancel"),
+            "the host context must not be model-visible: {schema}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tool_without_host_context_fails_rather_than_defaulting() {
+        let mut ctx = ToolContext::new(); // deliberately empty
+        assert!(
+            ReadFile
+                .call(
+                    &mut ctx,
+                    ReadFileArgs {
+                        path: "src/lib.rs".into()
+                    }
+                )
+                .await
+                .is_err(),
+            "a missing host context must fail closed, never fall back to the process cwd"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_file_refuses_a_path_that_leaves_the_workspace() {
+        let (host, _g) = test_host();
+        let outside = host
+            .workspace
+            .root()
+            .parent()
+            .expect("the workspace has a parent to escape into")
+            .join("escape.txt");
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+        assert!(WriteFile
+            .call(
+                &mut ctx,
+                WriteFileArgs {
+                    path: "../escape.txt".into(),
+                    contents: "x".into()
+                }
+            )
+            .await
+            .is_err());
+        // An `Err` alone would be satisfied by a tool that wrote the file and
+        // then reported a problem. The refusal has to have happened before the
+        // filesystem was touched, and this is the only way to see that from
+        // outside.
+        assert!(
+            !outside.exists(),
+            "the refusal came after the write: {}",
+            outside.display()
+        );
+    }
+
+    #[tokio::test]
+    async fn write_file_can_add_a_file_in_a_directory_the_project_does_not_have_yet() {
+        // The model-visible half of the workspace's deepest-existing-ancestor
+        // resolution, and the reason it is worth having: "extract this into its
+        // own module" is the ordinary shape of a repair, and it names a
+        // directory that is not there. This tool could not express it — the
+        // write failed on the absent parent and the model was told `writing the
+        // file did not succeed`, with the missing directory behind a `#[source]`
+        // no prompt ever carries. A capability that cannot be told what went
+        // wrong cannot recover from it, and the turn budget is finite.
+        let (host, _g) = test_host();
+        let root = host.workspace.root().to_path_buf();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let receipt = WriteFile
+            .call(
+                &mut ctx,
+                WriteFileArgs {
+                    path: "src/newmod/deep/a.rs".into(),
+                    contents: "pub fn a() {}\n".into(),
+                },
+            )
+            .await
+            .expect("a new directory is the workspace's to make, not the model's to work around");
+
+        assert_eq!(receipt.path, "src/newmod/deep/a.rs");
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/newmod/deep/a.rs")).unwrap(),
+            "pub fn a() {}\n",
+            "the receipt has to describe a file that is there"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_between_inspection_and_mutation_prevents_the_write() {
+        // The interleaving that matters: the agent has already read, and the
+        // token is cancelled before it writes. The mutation must not happen.
+        let (host, _g) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "src/lib.rs".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let before = std::fs::read_to_string(host.workspace.root().join("src/lib.rs")).unwrap();
+        host.cancel.cancel();
+
+        assert!(WriteFile
+            .call(
+                &mut ctx,
+                WriteFileArgs {
+                    path: "src/lib.rs".into(),
+                    contents: "mutated".into()
+                }
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            std::fs::read_to_string(host.workspace.root().join("src/lib.rs")).unwrap(),
+            before,
+            "cancellation must prevent the effect, not merely end the future"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_check_executes_the_host_command_not_a_model_supplied_one() {
+        // RunCheckArgs has no fields at all: a model-chosen command would be
+        // arbitrary code execution wearing a tool's name.
+        assert_eq!(RunCheck.parameters()["properties"], serde_json::json!({}));
+    }
+
+    #[tokio::test]
+    async fn a_model_supplied_program_is_ignored_and_the_host_command_runs() {
+        // The schema having no properties is a claim made to the provider. This
+        // is the claim made to the code: arguments that name a program arrive,
+        // deserialize, and change nothing about what executes.
+        let (host, _g) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let smuggled: NoArgs =
+            serde_json::from_str(r#"{"program":"rm","args":["-rf","/"]}"#).expect("ignored");
+        let outcome = RunCheck.call(&mut ctx, smuggled).await.unwrap();
+        assert_eq!(outcome.exit_code, 0);
+        assert!(
+            outcome.stdout.contains("true"),
+            "the host's own check ran, not the smuggled one: {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_checks_own_output_does_not_carry_the_host_layout_to_the_model() {
+        // A check runner announces where it is working — `cargo` prints the
+        // package's absolute directory on every `Compiling` line — so a result
+        // returned verbatim hands the model the operator's filesystem without
+        // anybody having decided to. `--show-toplevel` is that behaviour in one
+        // deterministic line.
+        let (mut host, _g) = test_host();
+        host.check = WorkspaceCommand {
+            program: "git".to_string(),
+            args: vec!["rev-parse".to_string(), "--show-toplevel".to_string()],
+            timeout: Duration::from_secs(30),
+        };
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        let outcome = RunCheck.call(&mut ctx, NoArgs::default()).await.unwrap();
+        assert_eq!(outcome.exit_code, 0);
+        for root in roots(&host) {
+            assert!(
+                !outcome.stdout.contains(&root),
+                "the workspace's absolute path reached the model: {outcome:?}"
+            );
+        }
+        assert!(
+            outcome.stdout.trim() == ".",
+            "what is left must still be a usable path: {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_files_names_the_project_and_not_what_a_build_leaves_behind() {
+        let (host, _g) = test_host();
+        std::fs::create_dir_all(host.workspace.root().join("target/debug")).unwrap();
+        std::fs::write(host.workspace.root().join("target/debug/junk"), "x").unwrap();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let listed = ListFiles.call(&mut ctx, NoArgs::default()).await.unwrap();
+        assert!(listed.contains(&"src/lib.rs".to_string()), "{listed:?}");
+        assert!(
+            !listed.iter().any(|p| p.starts_with("target/")),
+            "an ignored build tree would drown the model's context: {listed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_tool_advertises_a_host_fact() {
+        // The generalisation of the schema assertion above: the *values* the
+        // host holds are what must not appear, and they must not appear in the
+        // description either, which is model-visible too.
+        let (host, _g) = test_host();
+        let root = host.workspace.root().display().to_string();
+        let surfaces = [
+            (ReadFile.parameters().to_string(), ReadFile.description()),
+            (WriteFile.parameters().to_string(), WriteFile.description()),
+            (ListFiles.parameters().to_string(), ListFiles.description()),
+            (RunCheck.parameters().to_string(), RunCheck.description()),
+        ];
+        for (schema, description) in surfaces {
+            for text in [&schema, &description] {
+                assert!(!text.contains(&root), "a host path is advertised: {text}");
+                assert!(
+                    !text.contains(&host.check.program),
+                    "the check program is advertised: {text}"
+                );
+                for banned in ["workspace", "root", "cancel"] {
+                    assert!(
+                        !text.contains(banned),
+                        "`{banned}` names a host fact the model must not be invited to supply: {text}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refusal_tells_the_model_its_own_path_and_nothing_of_the_host() {
+        let (host, _g) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        let refused = WriteFile
+            .call(
+                &mut ctx,
+                WriteFileArgs {
+                    path: "../escape.txt".into(),
+                    contents: "x".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        let seen = WriteFile.map_error(refused);
+        let text = seen
+            .model_output()
+            .as_text()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            text.contains("../escape.txt"),
+            "a refusal the model cannot act on is a wasted turn: {text}"
+        );
+        for root in roots(&host) {
+            assert!(
+                !text.contains(&root),
+                "a host path leaked in a refusal: {text}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_read_never_hands_the_model_a_host_path() {
+        // `Workspace` reports IO failures against the *resolved absolute* path,
+        // which names the operator's filesystem. That diagnostic is for the
+        // operator; what goes back to the model is a different string.
+        let (host, _g) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        let failed = ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "src/absent.rs".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        for text in [
+            failed.to_string(),
+            ReadFile
+                .map_error(failed)
+                .model_output()
+                .as_text()
+                .unwrap_or_default()
+                .to_string(),
+        ] {
+            for root in roots(&host) {
+                assert!(
+                    !text.contains(&root),
+                    "the host's filesystem layout leaked to the model: {text}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_runtime_records_every_tool_call_without_the_hook() {
+        // Receipts are written by the tools themselves. A hook that silently
+        // stops firing must not silently empty the evidence.
+        let (host, _g) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "src/lib.rs".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let _ = WriteFile
+            .call(
+                &mut ctx,
+                WriteFileArgs {
+                    path: "../nope".into(),
+                    contents: "x".into(),
+                },
+            )
+            .await;
+
+        let receipts = host.receipts();
+        assert_eq!(
+            receipts.calls.len(),
+            2,
+            "both the success and the refusal are evidence"
+        );
+        assert_eq!(receipts.calls[0].tool, "read_file");
+        assert_eq!(receipts.calls[0].outcome, "ok");
+        assert_eq!(receipts.calls[1].tool, "write_file");
+        assert_eq!(receipts.calls[1].outcome, "refused");
+    }
+
+    #[tokio::test]
+    async fn a_receipt_records_how_long_the_call_took() {
+        // A duration that is always zero is not a measurement, so the check is
+        // run against a command whose length is known: anything below the sleep
+        // means the clock was never started.
+        let (mut host, _g) = test_host();
+        host.check = WorkspaceCommand {
+            program: "sleep".to_string(),
+            args: vec!["0.2".to_string()],
+            timeout: Duration::from_secs(30),
+        };
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        RunCheck.call(&mut ctx, NoArgs::default()).await.unwrap();
+
+        let receipts = host.receipts();
+        assert_eq!(receipts.calls.len(), 1);
+        assert_eq!(receipts.calls[0].tool, "run_check");
+        assert!(
+            receipts.calls[0].duration_ms >= 150,
+            "the receipt did not time the call it describes: {:?}",
+            receipts.calls[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_call_is_recorded_because_a_stopped_attempt_is_still_an_attempt() {
+        let (host, _g) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+        host.cancel.cancel();
+
+        assert!(ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "src/lib.rs".into()
+                }
+            )
+            .await
+            .is_err());
+
+        let receipts = host.receipts();
+        assert_eq!(
+            receipts.calls.len(),
+            1,
+            "a call the guard stopped still happened: {receipts:?}"
+        );
+        assert_eq!(receipts.calls[0].outcome, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn a_check_that_outruns_its_bound_is_a_failure_and_not_a_refusal() {
+        // The classes exist to be told apart. A timeout is the host's own bound
+        // firing on a tool that was allowed to act, which is nothing like a path
+        // that was declined before it reached the filesystem.
+        let (mut host, _g) = test_host();
+        host.check = WorkspaceCommand {
+            program: "sleep".to_string(),
+            args: vec!["30".to_string()],
+            timeout: Duration::from_millis(50),
+        };
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        assert!(RunCheck.call(&mut ctx, NoArgs::default()).await.is_err());
+
+        let receipts = host.receipts();
+        assert_eq!(receipts.calls.len(), 1);
+        assert_eq!(receipts.calls[0].outcome, "failed");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn receipts_survive_being_read_while_they_are_being_written() {
+        // The `Arc<Mutex<_>>` inside a `Clone`d `ToolHost` is the whole claim:
+        // every clone appends to one record, and reading it never races with
+        // appending to it.
+        let (host, _g) = test_host();
+
+        let reader = {
+            let host = host.clone();
+            tokio::spawn(async move {
+                let mut seen = 0;
+                for _ in 0..500 {
+                    seen = seen.max(host.receipts().calls.len());
+                    tokio::task::yield_now().await;
+                }
+                seen
+            })
+        };
+
+        let writers: Vec<_> = (0..8)
+            .map(|_| {
+                let host = host.clone();
+                tokio::spawn(async move {
+                    let mut ctx = ToolContext::new();
+                    ctx.insert(host);
+                    for _ in 0..10 {
+                        ReadFile
+                            .call(
+                                &mut ctx,
+                                ReadFileArgs {
+                                    path: "src/lib.rs".into(),
+                                },
+                            )
+                            .await
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for writer in writers {
+            writer.await.expect("a writer finished");
+        }
+        let observed = reader.await.expect("the reader finished");
+
+        assert_eq!(
+            host.receipts().calls.len(),
+            80,
+            "eight clones must append to one record, not to eight private ones"
+        );
+        assert!(observed <= 80, "a reader saw more calls than were made");
+    }
+
+    #[tokio::test]
+    async fn a_receipt_carries_nothing_of_the_host_filesystem() {
+        // Receipts end up in the evidence bundle, which is published. They name
+        // the tool, how it went and how long it took — never a path, and never
+        // an argument the model authored.
+        let (host, _g) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "src/lib.rs".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let _ = ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "src/absent.rs".into(),
+                },
+            )
+            .await;
+
+        let published = serde_json::to_string(&host.receipts()).expect("receipts serialize");
+        for root in roots(&host) {
+            assert!(
+                !published.contains(&root),
+                "the host's filesystem layout reached the evidence bundle: {published}"
+            );
+        }
+        assert!(
+            !published.contains("absent.rs"),
+            "a receipt echoed a model-authored argument: {published}"
+        );
+    }
+
+    /// **A tool's success output is a model-visible surface too.**
+    ///
+    /// Every other leak assertion in this file looks at a schema, a description
+    /// or a refusal. This one looks at the channel that carries the most bytes
+    /// and had the least said about it: what a tool returns when it *works*.
+    ///
+    /// Two files make the point, and they are two members of one class rather
+    /// than two special cases. In a linked worktree — which is what every
+    /// attempt runs in — `.git` is a regular **file** whose entire contents are
+    /// `gitdir: <absolute host path>`, so one `read_file(".git")` hands over the
+    /// operator's directory layout, the fixture repository's location and the
+    /// attempt id in a single string. A build tree is the same class one step
+    /// along: cargo writes its dependency files with absolute paths in them, and
+    /// they are inside the workspace and syntactically innocent.
+    ///
+    /// Neither is part of the project under repair — one is the repository's own
+    /// bookkeeping and the other is what a build produced — which is the line
+    /// the fix draws, rather than a denylist of the two names below.
+    #[tokio::test]
+    async fn a_tools_success_output_never_carries_the_host_layout() {
+        let (host, dir) = test_host();
+        let root = host.workspace.root().to_path_buf();
+
+        // The leak has to be real before refusing it proves anything: if `.git`
+        // in a worktree stopped being a file naming the fixture, this test would
+        // otherwise pass over a `read_file` that had never been fixed.
+        let metadata = std::fs::read_to_string(root.join(".git")).expect(".git is a file here");
+        assert!(
+            metadata.contains("gitdir:") && metadata.contains("fixture"),
+            "the premise is gone: .git no longer names the host's filesystem: {metadata}"
+        );
+        // The build-artefact half, written the way cargo writes a `.d` file.
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        std::fs::write(
+            root.join("target/debug/fixture.d"),
+            format!(
+                "{}/src/lib.rs: {}/src/lib.rs\n",
+                root.display(),
+                root.display()
+            ),
+        )
+        .unwrap();
+
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+        for path in [".git", ".git/config", "target/debug/fixture.d"] {
+            let result = ReadFile
+                .call(
+                    &mut ctx,
+                    ReadFileArgs {
+                        path: path.to_string(),
+                    },
+                )
+                .await;
+            let refusal = match result {
+                Ok(contents) => panic!("`{path}` was served to the model: {contents}"),
+                Err(refusal) => refusal,
+            };
+            let text = ReadFile
+                .map_error(refusal)
+                .model_output()
+                .as_text()
+                .unwrap_or_default()
+                .to_string();
+            for secret in layout(&host, &dir) {
+                assert!(
+                    !text.contains(&secret),
+                    "reading `{path}` put {secret:?} in front of the model: {text}"
+                );
+            }
+        }
+
+        // And the tool still does its job, or the assertions above would be
+        // satisfied by a `read_file` that refused everything.
+        assert!(ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "src/lib.rs".into()
+                }
+            )
+            .await
+            .unwrap()
+            .contains("pub fn"));
+    }
+
+    /// Every spelling of the workspace root this platform might produce.
+    ///
+    /// macOS hands out temporary directories under `/var`, which is itself a
+    /// symlink to `/private/var`, so a leak can wear either spelling and a check
+    /// against only one of them would miss half of them.
+    fn roots(host: &ToolHost) -> Vec<String> {
+        let root = host.workspace.root();
+        let mut spellings = vec![root.display().to_string()];
+        if let Ok(canonical) = root.canonicalize() {
+            spellings.push(canonical.display().to_string());
+        }
+        spellings
+    }
+
+    /// Everything about where this attempt is running that the model must never
+    /// be told: the workspace, the fixture repository it branched from, the
+    /// directory holding both, and the attempt's own identity.
+    ///
+    /// Wider than [`roots`] on purpose. The `.git` of a linked worktree names
+    /// the *fixture's* git directory rather than the workspace's, so a check
+    /// against the workspace root alone would watch the wrong string go past.
+    fn layout(host: &ToolHost, dir: &tempfile::TempDir) -> Vec<String> {
+        let mut secrets = roots(host);
+        for path in [dir.path().to_path_buf(), dir.path().join("fixture")] {
+            secrets.push(path.display().to_string());
+            if let Ok(canonical) = path.canonicalize() {
+                secrets.push(canonical.display().to_string());
+            }
+        }
+        secrets.push("01JQZX0000000000000000000".to_string());
+        secrets
+    }
+}

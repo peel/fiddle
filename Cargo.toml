@@ -22,3 +22,19 @@ blake3 = "1"
 assert_cmd = "2"
 regex = "1"
 tempfile = "3"
+
+# Rig is pinned exactly, not caret-ranged: it ships breaking agent and tool API
+# changes across minor releases, so moving off 0.41.0 must be a deliberate
+# review rather than something `cargo update` does on its way past. rig-agent is
+# a separate crate because 0.41 moved Agent/AgentBuilder/AgentRun out of
+# rig-core; both belong to fiddle-runtime and to no other crate.
+rig-core = { version = "=0.41.0", features = ["derive", "test-utils"] }
+rig-agent = "=0.41.0"
+async-trait = "0.1"
+# "signal" is what lets the CLI turn a terminal `^C` into a cancellation. It
+# has to be here rather than only in the binary because the feature set is
+# unified across the workspace anyway, and a feature enabled in one member
+# silently for another is how a dependency becomes load-bearing by accident.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "signal", "sync", "time"] }
+tokio-util = "0.7"
+schemars = "1"

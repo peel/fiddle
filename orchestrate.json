@@ -4,17 +4,12 @@
       "command": "codex exec",
       "flags": "--json -s read-only"
     },
-    "gemini": {
-      "command": "gemini",
-      "flags": "-o json --approval-mode auto_edit"
-    },
     "phases": {
       "discover": [
         "codex"
       ],
       "define": [
-        "codex",
-        "gemini"
+        "codex"
       ],
       "develop": [],
       "develop_holistic": [
@@ -53,7 +48,7 @@
       "providers": [
         "claude"
       ],
-      "max_iterations": 4
+      "max_iterations": 8
     }
   },
   "models": {

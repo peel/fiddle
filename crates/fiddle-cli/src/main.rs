@@ -8,18 +8,35 @@ use fiddle_core::{
     CapabilityId, FiddleBuild, InvocationRef, InvocationRefError, RunOutcome, WorkStateView,
 };
 use fiddle_runtime::{
-    AttemptContext, Capability, StubChangePort, StubMark, StubWorkItemPort, CAPABILITIES,
+    AgentBudget, AttemptContext, Capability, FixtureRepair, GatewayError, RepairConfig,
+    StubChangePort, StubMark, StubWorkItemPort, WorkspaceCommand, CAPABILITIES,
 };
+use std::path::Path;
 use std::process::ExitCode;
+use tokio_util::sync::CancellationToken;
 
 /// Usage error or invalid input — row `2` of the exit-code table. Clap already
 /// exits with this code for usage errors, so the constant exists to keep every
 /// half of the row visibly the same number.
 const EXIT_INVALID_INPUT: u8 = 2;
 
-fn main() -> ExitCode {
+/// What a process that was interrupted twice leaves behind.
+///
+/// Not a row of design §4.5's table, and deliberately so: every row there is a
+/// conclusion fiddle *reached* about the work, and a process killed on the spot
+/// reached none. 128 + `SIGINT` is what a shell reports for a process that took
+/// the signal's default disposition, which is exactly what the second interrupt
+/// is asking for — see [`cancel_on_interrupt`].
+const EXIT_INTERRUPTED: i32 = 130;
+
+/// The binary drives an async runtime because [`fiddle_runtime::attempt`] is a
+/// future: a capability may wait on a model turn or a subprocess. Nothing about
+/// what this process *prints* or *exits with* changes — the whole command is one
+/// `block_on`, and every command remains a single sequential path through it.
+#[tokio::main]
+async fn main() -> ExitCode {
     let cli = cli::Cli::parse();
-    let termination = match dispatch(&cli) {
+    let termination = match dispatch(&cli).await {
         Ok(outcome) => Termination::Ran(outcome),
         Err(error) => {
             eprintln!("{}", render::diagnostic(&error));
@@ -60,6 +77,18 @@ enum CliError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     UnknownCapability(#[from] UnknownCapability),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Unconfigured(#[from] Unconfigured),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    CredentialAbsent(#[from] CredentialAbsent),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Gateway(#[from] GatewayUnavailable),
 }
 
 /// A `--capability` value naming nothing this build can execute.
@@ -79,23 +108,114 @@ struct UnknownCapability {
     known: String,
 }
 
-/// The capability `--capability` names, or a rejection listing what exists.
+/// The capability this invocation will run.
 ///
-/// The known-id list comes from [`CAPABILITIES`], so the diagnostic cannot fall
-/// out of step with what the binary can actually run.
-fn resolve_capability(requested: &str) -> Result<CapabilityId, UnknownCapability> {
-    CAPABILITIES
-        .into_iter()
-        .find(|candidate| candidate.0 == requested)
-        .ok_or_else(|| UnknownCapability {
-            requested: requested.to_string(),
-            known: CAPABILITIES
-                .iter()
-                .map(|capability| capability.0)
-                .collect::<Vec<_>>()
-                .join(", "),
-        })
+/// An enum rather than a bare [`CapabilityId`], because the id is only half the
+/// question: the other half is what it takes to *build* the thing, and the two
+/// arms need entirely different material. Making that a type is what turns
+/// `--capability` from a value the CLI validates into a value the CLI acts on —
+/// the defect this closes was precisely that the flag was checked against
+/// [`CAPABILITIES`] and then thrown away, leaving `stub_mark` to run whatever
+/// had been asked for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Selection {
+    /// The deterministic capability: no model, no worktree, no credential.
+    Mark,
+    /// One bounded agent attempt inside an ephemeral worktree, judged by the
+    /// configured check.
+    Repair,
 }
+
+impl Selection {
+    /// The id this selection is derived, executed, and reported under.
+    fn id(self) -> CapabilityId {
+        match self {
+            Selection::Mark => fiddle_core::STUB_MARK,
+            Selection::Repair => fiddle_core::FIXTURE_REPAIR,
+        }
+    }
+
+    /// The selection `requested` names, or a rejection listing what exists.
+    ///
+    /// Matched against the ids themselves rather than against
+    /// [`CAPABILITIES`]'s ordering, so registering a capability this binary
+    /// cannot build lands in the error arm rather than silently selecting a
+    /// neighbour. `every_registered_capability_can_be_selected` is what makes
+    /// that a loud failure at build time rather than a quiet one at a
+    /// customer's shell.
+    fn parse(requested: &str) -> Result<Self, UnknownCapability> {
+        if requested == fiddle_core::STUB_MARK.0 {
+            Ok(Selection::Mark)
+        } else if requested == fiddle_core::FIXTURE_REPAIR.0 {
+            Ok(Selection::Repair)
+        } else {
+            Err(UnknownCapability {
+                requested: requested.to_string(),
+                known: CAPABILITIES
+                    .iter()
+                    .map(|capability| capability.0)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            })
+        }
+    }
+}
+
+/// A capability was asked for that the configuration does not describe.
+///
+/// The table is named, not merely reported missing, because the fix is to write
+/// it: an operator reading this has a document in front of them and needs to
+/// know what to add to it. It is a configuration error and exits on the same
+/// row as any other, because that is what it is — the document is valid TOML
+/// and satisfies the schema; it just does not describe the deployment the
+/// invocation asked for.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("`{capability}` needs {missing}, and {path} does not have it")]
+#[diagnostic(
+    code(fiddle::config::capability_unconfigured),
+    help("add {missing} to {path}, or run a capability that does not need one")
+)]
+struct Unconfigured {
+    capability: CapabilityId,
+    /// What is absent, spelled the way it is written in the document — a table
+    /// as `[agent]`, a key as `workspace.fixture`.
+    missing: &'static str,
+    /// The document as the caller named it, already rendered: a diagnostic is
+    /// text, and a `PathBuf` in one has to be displayed somewhere anyway.
+    path: String,
+}
+
+/// The environment does not hold the credential the configuration names.
+///
+/// The **only** failure in this binary that is about a credential, because
+/// [`resolve_credential`] is the only place one is read. It names the variable
+/// and never its value — there is none to name, which is the point: the lookup
+/// failed.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("the model credential {variable} is not set")]
+#[diagnostic(
+    code(fiddle::config::credential_absent),
+    help("export {variable}, or set it as a repository secret, before running a capability that needs a model")
+)]
+struct CredentialAbsent {
+    variable: String,
+}
+
+/// A model client could not be built from what the configuration named.
+///
+/// Wraps the runtime's [`GatewayError`] rather than restating it, and carries
+/// no source chain onward: the underlying failure is about an endpoint or a
+/// credential that cannot become an HTTP header, and the only one of those two
+/// that is safe to render is the endpoint. `GatewayError` already keeps to
+/// names — the base URL and the variable — so what reaches an operator here is
+/// exactly what they can act on.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error(transparent)]
+#[diagnostic(
+    code(fiddle::gateway::unavailable),
+    help("check the endpoint and the credential the document names")
+)]
+struct GatewayUnavailable(GatewayError);
 
 /// Presentation for a rejected invocation reference.
 ///
@@ -164,7 +284,15 @@ fn exit_code_for(termination: &Termination) -> u8 {
         Termination::Rejected(
             CliError::Config(ConfigError::NotFound(_) | ConfigError::Invalid(_))
             | CliError::InvocationRef(_)
-            | CliError::UnknownCapability(_),
+            | CliError::UnknownCapability(_)
+            // All three of the new rejections are the same row and the same
+            // kind of thing: the invocation described a deployment its
+            // configuration and environment do not provide, and nothing was
+            // attempted. A caller scripting fiddle needs one number for "fix
+            // your setup and try again", not three.
+            | CliError::Unconfigured(_)
+            | CliError::CredentialAbsent(_)
+            | CliError::Gateway(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -204,7 +332,187 @@ fn build_identity() -> FiddleBuild {
     FiddleBuild::new(env!("CARGO_PKG_VERSION"), env!("FIDDLE_SOURCE_REVISION"))
 }
 
-fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
+/// **The one place a credential is read.**
+///
+/// It takes the *name* of a variable, because that is all the configuration can
+/// hold — `config::EnvRef` has no `String` variant, so a document carrying a
+/// resolved secret does not parse. The value goes from here straight into the
+/// gateway client and nowhere else: it is not stored on a config type, not
+/// passed to a capability, not journaled, and not published. There is exactly
+/// one call to this function, and grepping for `std::env::var` in this binary
+/// is how that stays true.
+///
+/// The absence of the variable is an error rather than an empty string, so a
+/// deployment that forgot to export it is told so instead of authenticating
+/// with nothing and being told by the gateway.
+fn resolve_credential(variable: &str) -> Result<String, CredentialAbsent> {
+    std::env::var(variable).map_err(|_| CredentialAbsent {
+        variable: variable.to_string(),
+    })
+}
+
+/// Cancel `token` when the operator interrupts this process.
+///
+/// # Why this exists at all
+///
+/// `Workspace::run` puts every workspace command in a process group of its own,
+/// so that a timed-out `cargo test` is reaped along with the test binaries it
+/// spawned. The cost of that, written down at the place it is paid, is that the
+/// check no longer shares this process's group — so a terminal `^C` does not
+/// reach it, and a runner that simply died on the signal would leave a build
+/// running over a worktree that is about to be deleted underneath it.
+/// Cancellation is the only channel left, and this is what connects the two.
+///
+/// # Why the second interrupt is different
+///
+/// Installing a handler replaces `SIGINT`'s default disposition for the whole
+/// process, so an operator who presses `^C` and sees nothing happen has lost
+/// the ability to stop fiddle at all. The first interrupt asks for an orderly
+/// stop — the token cancels, the attempt's `select!` arms lose, the check's
+/// process group is signalled, and the worktree comes down through its `Drop`
+/// guard. The second says the first did not work, and takes the disposition it
+/// replaced: immediate exit, on [`EXIT_INTERRUPTED`].
+///
+/// Exiting from a spawned task while the main one is publishing is safe for the
+/// same reason a power cut is: `fiddle_runtime::evidence::publish` builds the
+/// attempt directory under a temporary name and moves it into place with one
+/// `rename`, so what a second interrupt can leave behind is an unnoticed
+/// temporary directory, never a bundle a reader could mistake for a whole one.
+///
+/// # Why it is installed here rather than in `main`
+///
+/// It is installed only on the path that has something to cancel. The
+/// deterministic capability writes one file and never yields, so a handler
+/// during *its* run could only ever delay a `^C` that would otherwise have
+/// worked — and M0's lane, which runs nothing else, keeps the signal behaviour
+/// it has always had.
+fn cancel_on_interrupt(token: &CancellationToken) {
+    let token = token.clone();
+    tokio::spawn(async move {
+        // A platform that cannot deliver the signal leaves the token
+        // uncancelled, which is the same position as having no handler at all.
+        if tokio::signal::ctrl_c().await.is_err() {
+            return;
+        }
+        eprintln!("interrupted; stopping the attempt (interrupt again to exit immediately)");
+        token.cancel();
+        if tokio::signal::ctrl_c().await.is_ok() {
+            std::process::exit(EXIT_INTERRUPTED);
+        }
+    });
+}
+
+/// The capability `selection` names, built from `config`.
+///
+/// Boxed as a trait object because the two arms are different types and the
+/// orchestration takes a `&dyn Capability` — which is the seam that made this
+/// function possible to write at all.
+///
+/// Everything a repairing capability needs is resolved here, in this order:
+/// the tables, then the credential, then the client. That order is what makes
+/// "the credential is resolved lazily" true in a stronger sense than "only for
+/// this arm": a deployment missing its `[agent]` table is told about the table
+/// rather than about a variable it would also have had to set.
+fn build_capability(
+    selection: Selection,
+    config: &config::Config,
+    config_path: &Path,
+    cancel: &CancellationToken,
+) -> Result<Box<dyn Capability>, CliError> {
+    let missing = |missing: &'static str| Unconfigured {
+        capability: selection.id(),
+        missing,
+        path: config_path.display().to_string(),
+    };
+
+    match selection {
+        Selection::Mark => Ok(Box::new(StubMark::new(
+            &config.stub.root,
+            &config.project.name,
+        ))),
+        Selection::Repair => {
+            let agent = config.agent.as_ref().ok_or_else(|| missing("[agent]"))?;
+            let workspace = config
+                .workspace
+                .as_ref()
+                .ok_or_else(|| missing("[workspace]"))?;
+            let fixture = workspace
+                .fixture
+                .as_ref()
+                .ok_or_else(|| missing("workspace.fixture"))?;
+            let check = workspace
+                .check
+                .as_ref()
+                .ok_or_else(|| missing("workspace.check"))?;
+
+            // Only now, and only on this arm. Everything above could have
+            // failed for a deployment that never intended to talk to a model.
+            let credential = resolve_credential(&agent.api_key.env)?;
+            let model = fiddle_runtime::completion_model(
+                &agent.base_url,
+                credential,
+                &agent.api_key.env,
+                &agent.model,
+            )
+            .map_err(GatewayUnavailable)?;
+
+            // A `^C` reaches the check only through the token, so the handler
+            // goes in beside the capability that holds one.
+            cancel_on_interrupt(cancel);
+
+            // Two axes the schema admits exactly one value of each on. Matched
+            // rather than ignored, so that adding a variant is a compile error
+            // here — at the one place that would have to honour it — instead of
+            // a document that loads and quietly means something else.
+            let config::Isolation::GitWorktree = workspace.isolation;
+            let config::Cleanup::Always = workspace.cleanup;
+
+            Ok(Box::new(FixtureRepair::new(
+                model,
+                RepairConfig {
+                    fixture: fixture.clone(),
+                    workspace_root: workspace.root.clone(),
+                    stub_root: config.stub.root.clone(),
+                    project: config.project.name.clone(),
+                    // **No attempt id is minted here**, and the seam no longer
+                    // has a place to put one. It used to: this binary minted an
+                    // id for `RepairConfig` while `fiddle_runtime::attempt`
+                    // minted the bundle's separately, so `repair:<n>:<attempt>`
+                    // named an attempt that appeared in no bundle and on no
+                    // disk. Both ids were real and unique, and they did not name
+                    // each other.
+                    //
+                    // The id now travels to the capability on its
+                    // `ExecutionGrant` — the value that already means "this
+                    // attempt authorises this execution" — so it is still minted
+                    // exactly once, in `attempt`, where no caller can hand in a
+                    // duplicate and collide two bundles on one path. Everything
+                    // left in this struct is a deployment decision an operator
+                    // configured; the attempt belongs to the run.
+                    check: WorkspaceCommand {
+                        program: check.program.clone(),
+                        args: check.args.clone(),
+                        timeout: workspace.command_timeout.as_duration(),
+                    },
+                    // Handed over as configured rather than pre-tightened
+                    // against the command timeout: `fiddle_runtime::agent::attempt`
+                    // takes the `min` of the two itself, so doing it here as
+                    // well would be a second implementation of one rule.
+                    budget: AgentBudget {
+                        max_turns: agent.max_turns,
+                        max_tokens: agent.max_tokens,
+                        deadline: agent.deadline.as_duration(),
+                        max_changed_files: agent.max_changed_files,
+                        tool_timeout: agent.tool_timeout.as_duration(),
+                    },
+                    cancel: cancel.clone(),
+                },
+            )))
+        }
+    }
+}
+
+async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
     match &cli.command {
         cli::Command::Config { action } => match action {
             cli::ConfigCommand::Check { json } => {
@@ -219,6 +527,7 @@ fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
         },
         cli::Command::Inspect {
             invocation_ref,
+            capability,
             json,
         } => {
             // Parsed through `fiddle-core` rather than re-implemented here: the
@@ -230,6 +539,14 @@ fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             // rather than about a document they never mentioned.
             let reference: InvocationRef =
                 invocation_ref.parse().map_err(InvalidInvocationRef::from)?;
+            // Resolved through the very same two lines `run` uses, and that is
+            // the point rather than an economy: a second spelling of "absent
+            // means `stub_mark`" is exactly how the two commands would drift
+            // apart again.
+            let selection = match capability {
+                Some(requested) => Selection::parse(requested)?,
+                None => Selection::Mark,
+            };
             let config = config::load(&cli.config)?;
             let observed = observe(&config, &reference);
             // The CLI owns the configuration, so the CLI computes the marker
@@ -239,7 +556,17 @@ fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             let expected_marker =
                 fiddle_core::correlation_key(&config.project.name, &reference.as_str());
             let assessment = fiddle_core::assess(&observed, &expected_marker);
-            let next_action = fiddle_core::derive_next(&observed, &expected_marker);
+            // The capability under consideration, named by the caller. Naming it
+            // here rather than in the core is the point of `derive_next`'s
+            // argument — the caller that knows which capability is under
+            // consideration is the one that says so — and `inspect` is a caller
+            // that now knows, instead of a caller that passed a constant.
+            //
+            // **Selected, and not built.** `run` follows its identical
+            // `Selection` into `build_capability`; this line takes the id and
+            // stops, which is what keeps `inspect` read-only, offline and
+            // credential-free for every value of the flag.
+            let next_action = fiddle_core::derive_next(&observed, &expected_marker, selection.id());
             if *json {
                 println!(
                     "{}",
@@ -262,22 +589,26 @@ fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
         } => {
             // Same order as `inspect`, and for the same reason: a caller who
             // mistyped an argument is told about the argument rather than about
-            // a document they never mentioned. `--capability` is validated here
+            // a document they never mentioned. `--capability` is resolved here
             // too, before anything is observed and long before anything could
             // be executed, so a rejected invocation provably did nothing.
             let reference: InvocationRef =
                 invocation_ref.parse().map_err(InvalidInvocationRef::from)?;
-            if let Some(requested) = capability {
-                // M0 knows exactly one capability, so a valid selection can only
-                // ever name the capability the derivation would choose anyway.
-                // The flag's job here is to reject an unknown id loudly rather
-                // than to narrow a plan that cannot be narrowed.
-                resolve_capability(requested)?;
-            }
+            // Absent means `stub_mark`, unchanged. The default did not move when
+            // a second capability was registered, which is what keeps M0's
+            // acceptance lane byte-identical without being modified.
+            let selection = match capability {
+                Some(requested) => Selection::parse(requested)?,
+                None => Selection::Mark,
+            };
             let config = config::load(&cli.config)?;
 
             let (work_items, changes) = ports(&config);
-            let marking = StubMark::new(&config.stub.root, &config.project.name);
+            // The token exists on both arms so the capability builder does not
+            // have to hand one back conditionally; only a capability that can
+            // be interrupted installs a handler for it.
+            let cancel = CancellationToken::new();
+            let selected = build_capability(selection, &config, &cli.config, &cancel)?;
             // One call, because executing and recording are one transaction: the
             // runtime owns the whole attempt, including which outcome a failure
             // to record amounts to. Nothing here re-decides that — a second
@@ -291,8 +622,9 @@ fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 report_dir: &config.report.dir,
                 work_items: &work_items,
                 changes: &changes,
-                capability: &marking as &dyn Capability,
-            });
+                capability: selected.as_ref(),
+            })
+            .await;
 
             if let Some(failure) = &record.evidence_failure {
                 eprintln!("{}", render::evidence_failure(&config.report.dir, failure));
@@ -319,7 +651,7 @@ fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fiddle_core::{ChangeSetState, NextAction, Observation};
+    use fiddle_core::{ChangeSetState, NextAction, Observation, Published};
     use fiddle_runtime::ChangePort;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -338,19 +670,19 @@ mod tests {
             (RunOutcome::Completed, 0),
             (
                 RunOutcome::Suspended {
-                    reason: "awaiting a decision".into(),
+                    reason: Published::of("awaiting a decision"),
                 },
                 10,
             ),
             (
                 RunOutcome::Retryable {
-                    reason: "try again".into(),
+                    reason: Published::of("try again"),
                 },
                 11,
             ),
             (
                 RunOutcome::Failed {
-                    error: "will not succeed".into(),
+                    error: Published::of("will not succeed"),
                 },
                 20,
             ),
@@ -378,6 +710,142 @@ mod tests {
             ))),
             EXIT_INVALID_INPUT
         );
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(CliError::CredentialAbsent(
+                CredentialAbsent {
+                    variable: "LITELLM_API_KEY".into()
+                }
+            ))),
+            EXIT_INVALID_INPUT
+        );
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(CliError::Unconfigured(
+                Unconfigured {
+                    capability: fiddle_core::FIXTURE_REPAIR,
+                    missing: "[agent]",
+                    path: "fiddle.toml".to_string(),
+                }
+            ))),
+            EXIT_INVALID_INPUT
+        );
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(CliError::Gateway(
+                GatewayUnavailable(fiddle_runtime::GatewayError {
+                    base_url: "https://gateway.invalid/v1".into(),
+                    variable: "LITELLM_API_KEY".into(),
+                })
+            ))),
+            EXIT_INVALID_INPUT
+        );
+    }
+
+    /// **Every id this build advertises can actually be selected.**
+    ///
+    /// [`CAPABILITIES`] is what the `--capability` diagnostic lists, so it is a
+    /// promise to a caller about what they may ask for. [`Selection::parse`]
+    /// matches ids one at a time, which means a capability registered in the
+    /// runtime and not wired here would be advertised, requested, and then
+    /// rejected as unknown. This is the assertion that turns that into a build
+    /// failure — and it is the same class of mistake as the one this task
+    /// exists to fix, where the flag was checked against this very list and
+    /// then discarded.
+    #[test]
+    fn every_registered_capability_can_be_selected() {
+        for registered in CAPABILITIES {
+            let selection = Selection::parse(registered.0).unwrap_or_else(|error| {
+                panic!(
+                    "`{registered}` is advertised by CAPABILITIES and cannot be \
+                     selected: {error}"
+                )
+            });
+            assert_eq!(
+                selection.id(),
+                registered,
+                "a selection must run the capability it was asked for"
+            );
+        }
+    }
+
+    /// The flag rejects what this build cannot run, and says what it can.
+    #[test]
+    fn an_unknown_capability_is_refused_with_the_known_list() {
+        let error = Selection::parse("nope").unwrap_err();
+        assert!(error.known.contains("stub_mark"), "{}", error.known);
+        assert!(error.known.contains("fixture_repair"), "{}", error.known);
+    }
+
+    /// The credential is read from the variable the document names, and its
+    /// absence is reported as that variable rather than as a generic failure.
+    ///
+    /// Deliberately not asserting on a *present* variable: this process's
+    /// environment is shared by every test in the binary, and a test that set
+    /// one would be reaching into the others.
+    #[test]
+    fn an_absent_credential_is_reported_under_the_name_that_was_asked_for() {
+        let error = resolve_credential("FIDDLE_A_VARIABLE_NOTHING_EXPORTS").unwrap_err();
+        assert_eq!(error.variable, "FIDDLE_A_VARIABLE_NOTHING_EXPORTS");
+        let rendered = render::diagnostic(&error);
+        assert!(
+            rendered.contains("FIDDLE_A_VARIABLE_NOTHING_EXPORTS"),
+            "an operator must learn which variable to export: {rendered}"
+        );
+    }
+
+    /// The deterministic capability is built from the configuration alone, with
+    /// no environment consulted, which is the property M0's credential-free
+    /// acceptance lane rests on.
+    #[test]
+    fn the_deterministic_capability_is_built_without_a_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiddle.toml");
+        // A document that names a credential nothing exports: if selecting
+        // `stub_mark` resolved one, this would fail.
+        std::fs::write(
+            &path,
+            "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
+             [agent]\nmodel=\"m\"\nbase_url=\"http://127.0.0.1:9/v1\"\n\
+             api_key={env=\"FIDDLE_A_VARIABLE_NOTHING_EXPORTS\"}\n",
+        )
+        .unwrap();
+        let loaded = config::load(&path).unwrap();
+
+        let Ok(built) =
+            build_capability(Selection::Mark, &loaded, &path, &CancellationToken::new())
+        else {
+            panic!("the deterministic capability needs nothing but the document")
+        };
+        assert_eq!(built.id(), fiddle_core::STUB_MARK);
+    }
+
+    /// A repairing capability over a document that describes no deployment is
+    /// refused by table, before the credential is ever reached.
+    ///
+    /// The order matters: an operator whose document has no `[agent]` table has
+    /// a table to write, and telling them about a variable they would *also*
+    /// need would be answering the second question first.
+    #[test]
+    fn a_repair_over_an_m0_document_names_the_missing_table_not_the_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiddle.toml");
+        std::fs::write(
+            &path,
+            "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n",
+        )
+        .unwrap();
+        let loaded = config::load(&path).unwrap();
+
+        let Err(error) =
+            build_capability(Selection::Repair, &loaded, &path, &CancellationToken::new())
+        else {
+            panic!("a repair needs a model and somewhere to work")
+        };
+        match error {
+            CliError::Unconfigured(unconfigured) => {
+                assert_eq!(unconfigured.missing, "[agent]");
+                assert_eq!(unconfigured.capability, fiddle_core::FIXTURE_REPAIR);
+            }
+            other => panic!("expected a missing-table refusal, got {other:?}"),
+        }
     }
 
     /// **A race must not leave a code the table does not have.**
@@ -393,8 +861,8 @@ mod tests {
     /// `"next_action":{"blocked":…}` in release, and aborted with 101 — a row of
     /// no table — in debug. Both halves are pinned shut here: one code, from the
     /// table, in either profile.
-    #[test]
-    fn a_race_after_executing_still_exits_on_the_table() {
+    #[tokio::test]
+    async fn a_race_after_executing_still_exits_on_the_table() {
         let root = tempfile::tempdir().unwrap();
         let stub_root = root.path().join("stub-state");
         std::fs::create_dir_all(stub_root.join("work")).unwrap();
@@ -422,7 +890,8 @@ mod tests {
             work_items: &work_items,
             changes: &changes,
             capability: &marking as &dyn Capability,
-        });
+        })
+        .await;
 
         assert!(
             matches!(record.bundle.next_action, NextAction::Blocked { .. }),

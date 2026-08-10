@@ -27,3 +27,10 @@ disagreements*.json
 # devenv shell state
 .devenv/
 .devenv.flake.nix
+
+# Local credentials, loaded by direnv's dotenv_if_exists in .envrc. Never
+# committed and never referenced from fiddle.toml, which holds the name of an
+# environment variable rather than a resolved value.
+.env
+.env.*
+!.env.example

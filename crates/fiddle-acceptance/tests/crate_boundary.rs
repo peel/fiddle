@@ -2,6 +2,12 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Crates that must never appear anywhere in `fiddle-core`'s resolved closure.
+///
+/// Naming the crates rather than the capabilities is deliberate: the boundary is
+/// checked against the resolved graph, and the graph speaks package names.
+const FORBIDDEN: &[&str] = &["tokio", "rig-core", "rig-agent", "reqwest", "hyper", "mio"];
+
 /// Every `*.rs` path under `root`, recursively.
 fn walkdir_rs_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -59,6 +65,31 @@ fn resolved_closure(meta: &serde_json::Value, root_name: &str) -> HashSet<String
     seen
 }
 
+/// The denylist's *contents* are themselves under test, so weakening the
+/// boundary by deleting an entry fails here rather than passing silently: the
+/// closure walk below cannot tell "nothing forbidden is reachable" apart from
+/// "nothing was forbidden".
+#[test]
+fn the_denylist_names_every_agent_crate() {
+    // rig-core alone is not enough: rig 0.41 moved Agent/AgentBuilder/AgentRun
+    // into rig-agent, so a denylist naming only rig-core would let the model
+    // reach the pure domain through the crate that actually carries the agent
+    // runtime.
+    assert!(
+        FORBIDDEN.contains(&"rig-core"),
+        "denylist lost rig-core; FORBIDDEN = {FORBIDDEN:?}"
+    );
+    assert!(
+        FORBIDDEN.contains(&"rig-agent"),
+        "denylist lost rig-agent, which carries Agent/AgentBuilder/AgentRun in \
+         rig 0.41; FORBIDDEN = {FORBIDDEN:?}"
+    );
+    assert!(
+        FORBIDDEN.contains(&"tokio"),
+        "denylist lost tokio; FORBIDDEN = {FORBIDDEN:?}"
+    );
+}
+
 #[test]
 fn fiddle_core_has_no_runtime_or_io_dependencies_anywhere_in_its_closure() {
     let out = Command::new(env!("CARGO"))
@@ -73,9 +104,9 @@ fn fiddle_core_has_no_runtime_or_io_dependencies_anywhere_in_its_closure() {
     );
     let meta: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let closure = resolved_closure(&meta, "fiddle-core");
-    for banned in ["tokio", "rig-core", "reqwest", "hyper", "mio"] {
+    for banned in FORBIDDEN {
         assert!(
-            !closure.contains(banned),
+            !closure.contains(*banned),
             "fiddle-core's resolved closure must not contain {banned}; closure = {closure:?}"
         );
     }
