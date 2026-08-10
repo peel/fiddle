@@ -801,5 +801,28 @@ Two, both recorded read-only during planning.
 
   Score the live-lane bean on whether it *proves* the write against real GitHub and cleans up after
   itself, and treat a 403 there as that bean's finding rather than as an obstacle to work around by
-  widening the token unasked. Do not score sibling beans as though the write were already proven,
-  and do not accept a successful public read as evidence of a grant from any bean.
+  widening the token unasked. Do not accept a successful public read as evidence of a grant from any
+  bean.
+
+  **Resolved 2026-08-10, before implementation reached any bean that depends on it.** The write was
+  probed directly: `POST /repos/peel/fiddle-effects-acceptance/issues/19/comments` answered **201
+  Created** with the effects credential, `GET /issues/comments/{id}` read it back, and `DELETE`
+  answered **204**, leaving zero comments, zero open pull requests and `main` alone. So
+  `Pull requests: read and write` does cover a conversation comment on a pull request and no `Issues`
+  grant is needed — which is the measurement the surface choice in the design's §5.1 was betting on.
+  This is no longer a blocked criterion, and a bean must not be scored as though it were. A 403 in the
+  live lane would now be a **regression** to investigate rather than a discovery.
+
+  The read-back carried `id`, `user.login`, `user.id`, `user.type`, `author_association`,
+  `performed_via_github_app`, `created_at` and `updated_at`, with `created_at == updated_at` on a
+  fresh comment — which is what makes "edited since it was listed" detectable at all rather than a
+  property nobody can observe.
+
+  **One hazard found by making the mistake, and it belongs to whoever writes shell against this
+  payload.** `user.id` appears *before* `.id` in a comment object, so scraping the first id-shaped
+  field yields the **author's** user id and not the comment's. The probe's own cleanup did exactly
+  that, deleted nothing, 404'd, and left the comment behind until it was read properly. A typed
+  adapter that names the two fields separately is immune by construction; a lane written in bash is
+  not, and a cleanup that cannot fail loudly is how residue survives a passing run. Score a shell
+  bean that handles comment ids on whether it selects the field by name (`.[].id`) rather than by
+  pattern.

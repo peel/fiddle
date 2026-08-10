@@ -587,3 +587,18 @@ Worth pricing against the measured cost of an implementer turn: the perf investi
 
 Origin: operator feedback during M2 implementation (epic fiddle-srrw) — "beans are not updated with any progress reports and run for an hour"
 Tags: #debt #orchestrate #ux
+
+### 2026-08-10 — M3's plan assigned its most load-bearing unproven assumption to its last bean
+The M3 design left one thing deliberately unproven: whether the effects credential may **write** a conversation comment. Three read probes had answered 200 and proved nothing, because `peel/fiddle-effects-acceptance` is public — the same trap that let a two-repository token selection survive all of M2. So far so good; the design named it, priced it, and refused to assume it.
+
+What it then did with it is the finding. The proof was assigned to **Task 16b, the last of 24 beans**, while Tasks 5, 11a, 13, 14 and 15 are all built on that surface being writable. Had it 403'd, the answer would have arrived after roughly twenty beans of work resting on it, and the fix is not a code change — it is `Issues: read and write` added to a credential the operator had narrowed that same day, or a different gated effect, which is §5.1 re-opened.
+
+This is precisely the ordering §5.7 of the same document argues *for*, applied to the GraphQL contract (Task 1, first) and not applied to this. The plan's own self-review and a full codex critique pass both missed it; it was caught by the operator asking "should we check the comments part?" while Task 1 was still running.
+
+**Settled the moment it was asked, at a cost that makes the omission worse rather than better.** A closed pull request accepts comments, so no branch and no new pull request were needed: `POST /repos/peel/fiddle-effects-acceptance/issues/19/comments` → **201 Created**, `GET /issues/comments/{id}` → the full payload, `DELETE` → **204**, residue zero. Two calls. That is the entire cost of the thing that was scheduled twenty beans late.
+
+The rule worth carrying, since M4 through M8 all add external surfaces: **order the external-contract proofs by what a refutation would cost, not by where the work naturally falls in the plan.** A proof whose failure re-opens a design decision belongs in the first bean; a proof whose failure is a bug in one adapter can wait for the lane that owns it. Task 1 was correctly first because ADR 018 depended on it. This one was more load-bearing and went last, because it happened to belong to the live lane, and "which bean does this naturally live in" won over "what does being wrong cost".
+
+A second, smaller finding from the same probe, which belongs to whoever writes bash against a comment payload. `user.id` appears **before** `.id` in a comment object, so scraping the first id-shaped field yields the *author's* user id rather than the comment's. The probe's own cleanup did exactly that, issued a DELETE against `505401`, got a 404, and left the comment behind until it was read properly. A typed adapter naming the two fields separately is immune; `scripts/live-github.sh` and Task 16b's phase are bash and are not. The rule: select by name, and make a cleanup that deleted nothing fail loudly, because a cleanup that cannot fail is how residue survives a passing run.
+Origin: planning (epic fiddle-eoqx, seed fiddle-a9y5) — caught by operator question during Task 1's implementation
+Tags: #process #debt
