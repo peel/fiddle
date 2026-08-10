@@ -44,8 +44,8 @@
 //! is "combine the capability's minimum effect rule with deployment policy *and,
 //! when needed, resolve a matching contextual human decision*", and the third
 //! input does not exist: a resolved decision has no way to reach the executor.
-//! The bean that adds it owns `crates/fiddle-runtime/src/effect/mod.rs`, and it
-//! is a prerequisite for the four tests owed here:
+//! Bean `fiddle-rvcu` adds it, in `crates/fiddle-runtime/src/effect/mod.rs`, and
+//! it is the prerequisite for the four tests owed here:
 //!
 //! - the mutation is GraphQL and carries the node id from the read, with the id
 //!   bound as `$id` and never spliced into the query text;
@@ -56,10 +56,13 @@
 //!   rather than "the adapter reported success";
 //! - and, with a decision resolved, the transition commits at all.
 //!
-//! They are named rather than written because a version of them that passes
-//! today would have to avoid the executor, and an assertion that avoids the
-//! mandatory authorization boundary is an assertion about something other than
-//! what this operation does.
+//! Together they are the whole of `m3-ready-mutation-is-graphql-and-once`'s
+//! dispatch half and of `m3-refusal-is-not-a-lost-write`. The gap is authorised
+//! rather than an omission, and it is named rather than approximated: a version
+//! of these that passed today would have to avoid the executor, and an assertion
+//! that avoids the mandatory authorization boundary is an assertion about
+//! something other than what this operation does — which reads as coverage
+//! while gating nothing.
 
 mod support;
 
