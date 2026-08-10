@@ -696,3 +696,21 @@ Two fixes, and the second is the one that survives a forgetful lead:
 - **Make it mechanical.** `scripts/check-convergence.sh` and the eval-log scripts already exist; a bean at `completed` whose parsed log has no terminal verdict is a detectable state, and the natural home is the same Stop-hook family as `develop-verdict-gate.sh`. A prose rule in SYSTEM.md that neither the prompt nor any script enforces is a rule that holds until an agent is helpful.
 Origin: implementation (epic fiddle-eoqx, bean fiddle-dvsl) — found by the lead while reconciling a shutdown message
 Tags: #process #orchestrate #debt
+
+### 2026-08-10 — Concurrent lanes sharing one `target/` produce false test failures, which is an evidence-integrity problem
+`fiddle-9krm`'s implementer reported four `config_check` failures during a workspace run, caused by `target/debug/fiddle` being **relinked by a concurrent lane mid-run**. Re-run in isolation, that binary passed 20/0. Confirmed: all agents in this round share `/Users/peel/wrk/fiddle/.worktrees/agentic-factory-m3/target`, and the acceptance lanes resolve the binary under test through that path.
+
+The obvious cost of a shared `target/` is slowness — cargo's build lock serialises compilation, which is why the parallel round's speedup was smaller than projected. **The cost that matters more is that a suite can report failures that are not real.**
+
+Acceptance lanes here launch the compiled binary as a subprocess. If another agent relinks it between the launch and the assertion, the lane fails for a reason that has nothing to do with the code under review. And the evidence pack an evaluator scores is a *captured* suite run: a false failure inside it is indistinguishable, to the evaluator, from a real one. So the failure mode is not "a lane flakes and somebody re-runs it" — it is **a bean scored down for another bean's link step**, with the evaluator reasoning carefully about evidence that was never true.
+
+Nothing was mis-scored this round: the implementer noticed the pattern, re-ran the affected binary in isolation, and reported both results. That depended on an implementer being careful enough to distrust its own red suite.
+
+Two mitigations, and the second is the one worth adopting:
+
+- **Re-run a failing binary in isolation before believing it**, and say so in the report. Cheap, and it is what happened here — but it relies on judgment every time.
+- **Give each concurrent agent its own `CARGO_TARGET_DIR`.** Costs a cold build per agent, genuinely parallel rather than serialised on the build lock, and removes the interference entirely. It also recovers the parallel speedup the shared lock was eating. The lead should set it in the dispatch prompt for any round with more than one implementer.
+
+Worth stating the general shape, because it will recur wherever this project parallelises: **a shared mutable artifact between concurrent lanes turns a verification result into a race.** The evidence pack is only as trustworthy as the isolation of the run that produced it.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-9krm) — observed by an implementer that distrusted its own failing suite
+Tags: #process #infrastructure #debt
