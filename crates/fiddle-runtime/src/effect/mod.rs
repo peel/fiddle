@@ -16,6 +16,19 @@
 //! matters in the other direction too: an effect the world already satisfies is
 //! never put to policy, so it cannot be refused for a rule it no longer needs.
 //!
+//! **Step 4 takes three inputs, and the third arrives from outside the process.**
+//! The RFC always said so — *"combine the capability's minimum effect rule with
+//! deployment policy **and, when needed, resolve a matching contextual human
+//! decision**"* — and until [`ResolvedDecision`] existed this module took two of
+//! them. An operation whose [`IntegrationOperation::minimum`] is `Human` could
+//! therefore never commit anything: `combine(Human, _)` is
+//! [`PolicyDecision::RequireHumanDecision`], step 4 turned that into
+//! [`EffectError::HumanDecisionRequired`] and returned, and
+//! [`AuthorizedEffect`] cannot be built outside this module, so
+//! [`IntegrationOperation::apply`] had no second route to it.
+//! [`Executor::execute_decided`] supplies the third input;
+//! [`Executor::execute`] is the same walk without one, and still refuses.
+//!
 //! **Step 8 is its mirror.** The postcondition is read *back* rather than
 //! inferred from the response, because a response that never arrived is exactly
 //! the case this exists for. An `Unknown` is settled by looking, and by looking
@@ -36,9 +49,9 @@ pub use receipt::{EffectError, EffectReceipt, ObservedState, Recurrence};
 use crate::git::GitCli;
 use crate::github::{GhCli, GhError, RetryAdvice};
 use fiddle_core::{
-    combine, effect_id, payload_hash, CapabilityId, DeploymentRule, EffectId, EffectKind,
-    HumanDecisionRequirement, Observation, PayloadHash, PolicyDecision, ProposedEffect,
-    VerificationState,
+    combine, effect_id, payload_hash, CapabilityId, DecisionBinding, DeploymentRule, EffectId,
+    EffectKind, HumanDecisionRequirement, InterpretedHumanDecision, Observation, PayloadHash,
+    PolicyDecision, ProposedEffect, VerificationState,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -82,6 +95,20 @@ pub enum ExecutionStep {
     InspectPostcondition,
     /// 4. Capability minimum combined with deployment policy.
     CombinePolicy,
+    /// 4, second half. A resolved human decision, matched against *this* effect
+    /// and *this* payload.
+    ///
+    /// Announced only when there is a decision to resolve — that is, when
+    /// [`combine`] answered [`PolicyDecision::RequireHumanDecision`] and
+    /// [`Executor::execute_decided`] was handed one. A walk that needed no
+    /// decision never emits it, and neither does one that refused for want of
+    /// it: nothing was resolved in either case, and a step announcing work that
+    /// did not happen is the failure [`EffectTrace`] exists to prevent.
+    ///
+    /// It is the second half of step 4 rather than a step of its own because
+    /// that is what the RFC's step 4 says it is. Numbering it separately would
+    /// claim the order grew a step, when what it grew is an input.
+    ResolveDecision,
     /// 6. The envelope for this exact payload.
     Authorize,
     /// 7. Delegate to the adapter.
@@ -98,6 +125,7 @@ impl ExecutionStep {
             ExecutionStep::DeriveIdentity => "derive_identity",
             ExecutionStep::InspectPostcondition => "inspect_postcondition",
             ExecutionStep::CombinePolicy => "combine_policy",
+            ExecutionStep::ResolveDecision => "resolve_decision",
             ExecutionStep::Authorize => "authorize",
             ExecutionStep::Apply => "apply",
             ExecutionStep::ObservePostcondition => "observe_postcondition",
@@ -409,11 +437,72 @@ pub trait IntegrationOperation: Send + Sync + Sized {
     ) -> Result<(), GhError>;
 }
 
+/// An approval a person actually gave, carrying the question it answered.
+///
+/// Step 4's third input, and the one that arrives from outside this process. The
+/// run that asked the question published it and stopped; the run that acts on the
+/// answer is a different process holding no workspace, no journal and no memory
+/// of the first, so what it has is a [`DecisionBinding`] it read back out of the
+/// conversation and recomputed against canonical inputs. This type is that
+/// binding once a verdict has been read from it, and [`Executor::execute_decided`]
+/// is the only thing that consumes one.
+///
+/// # Why the decision is an input to the executor rather than a field on the operation
+///
+/// The rejected alternative was to let an operation carry its own approval and
+/// answer [`IntegrationOperation::minimum`] as `Automatic` once it had one. It
+/// reads as tidier and it **disarms the gate**: `combine(Automatic, Allow)` is
+/// [`PolicyDecision::Allow`], so step 4 would return before looking at any
+/// binding, and both comparisons below — the effect, the payload — would be
+/// skipped for any operation somebody had *constructed* with an approval.
+/// [`AuthorizedEffect`]'s unforgeability would buy nothing, because what it
+/// stands in front of would no longer run.
+///
+/// It also conflates two different things. `minimum()` is a **static
+/// declaration** of what an operation requires, written in Rust by whoever wrote
+/// the operation and readable without running anything; whether that requirement
+/// has been **met** is run state that arrives from outside. So
+/// [`EnsurePullRequestReady`](crate::github::EnsurePullRequestReady) declares
+/// `Human` unconditionally, whatever anybody approved, and the executor is where
+/// the two are put together.
+///
+/// # Why only an approval becomes one of these
+///
+/// [`ResolvedDecision::approved`] is the only constructor and it takes the
+/// verdict, so a [`Reject`](InterpretedHumanDecision::Reject), a
+/// [`Redirect`](InterpretedHumanDecision::Redirect) and an
+/// [`Unclear`](InterpretedHumanDecision::Unclear) have no spelling that reaches
+/// step 4. A function taking a bare [`DecisionBinding`] would accept the
+/// **question** as though it were the answer — a binding is what the marker in a
+/// request comment carries, and rendering one requires nobody's agreement.
+pub struct ResolvedDecision {
+    binding: DecisionBinding,
+}
+
+impl ResolvedDecision {
+    /// An approval, and nothing else, bound to the question it answered.
+    ///
+    /// `None` for the other three verdicts, and a `None` here is not a failure to
+    /// report: a rejection is a question that *was* answered, and the caller that
+    /// resolved it holds the reason to say so. What this refuses is narrower —
+    /// the conversion of a non-approval into something step 4 would spend.
+    pub fn approved(binding: DecisionBinding, verdict: &InterpretedHumanDecision) -> Option<Self> {
+        matches!(verdict, InterpretedHumanDecision::Approve).then_some(Self { binding })
+    }
+
+    /// What the approval was addressed to: the question's id, the effect it
+    /// gates, the payload digest and the revision.
+    pub fn binding(&self) -> &DecisionBinding {
+        &self.binding
+    }
+}
+
 /// A runtime capability token: proof that identity, policy and payload were
 /// checked for this exact request.
 ///
 /// Every field is private and no constructor is offered, so the only place a
-/// value of this type comes into existence is [`Executor::execute`], inside this
+/// value of this type comes into existence is the one walk behind
+/// [`Executor::execute`] and [`Executor::execute_decided`], inside this
 /// module — the same construction [`crate::capability::ExecutionGrant`] uses to
 /// make "the capability is never executed from a blocked derivation" a property
 /// of the types rather than of somebody's control flow. It is a runtime token
@@ -423,8 +512,8 @@ pub trait IntegrationOperation: Send + Sync + Sized {
 /// The three fields are the effect's identity, the digest of the payload it was
 /// approved for, and the operation itself. The payload hash is carried *beside*
 /// the identity rather than folded into it so that a request that is not the one
-/// approved is visible against an unchanged effect — and
-/// [`Executor::execute`] is where it is looked at: immediately after this value
+/// approved is visible against an unchanged effect — and the executor's walk is
+/// where it is looked at: immediately after this value
 /// is built, the digest it carries is compared against
 /// [`IntegrationOperation::payload`]'s, and a mismatch refuses the mutation. The
 /// "payload was checked" in the sentence above is that comparison and not a
@@ -464,7 +553,7 @@ impl<T> AuthorizedEffect<T> {
 
     /// The digest of the exact payload that was approved.
     ///
-    /// Read by [`Executor::execute`] at step 6, against the payload the operation
+    /// Read by the executor's walk at step 6, against the payload the operation
     /// would actually apply. That is its only caller, and it is the point of the
     /// field: a private field nothing reads would be a record of an approval
     /// nobody checks.
@@ -581,16 +670,81 @@ impl<'a> Executor<'a> {
             .await
     }
 
-    /// Walk the authorization order for one proposed effect.
+    /// Walk the authorization order for one proposed effect, with nobody's
+    /// decision in hand.
+    ///
+    /// Step 4 therefore fails closed on [`PolicyDecision::RequireHumanDecision`],
+    /// which is the correct behaviour and not a limitation: a run that was given
+    /// no decision must not silently acquire one. An operation whose
+    /// [`IntegrationOperation::minimum`] is `Human` cannot commit through this
+    /// entry point, and [`Executor::execute_decided`] is the one that can.
+    pub async fn execute<O>(
+        &self,
+        proposed: ProposedEffect,
+        operation: O,
+    ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, EffectError>
+    where
+        O: IntegrationOperation,
+    {
+        self.walk(proposed, operation, None).await
+    }
+
+    /// The same walk, with a resolved human decision available to step 4.
+    ///
+    /// The decision is **checked here**, against the identity and payload this
+    /// call derived for itself, rather than believed because it was handed over.
+    /// Two comparisons, and each is load-bearing:
+    ///
+    /// - It must name **this** [`EffectId`]. This is what the
+    ///   revision-in-the-target design rests on: a moved head derives a different
+    ///   identity, so an approval given for the old revision is not an answer to
+    ///   the new question, and this is where that is enforced rather than
+    ///   trusted.
+    /// - It must carry **this** [`PayloadHash`]. The identity deliberately does
+    ///   not cover the payload — so that rewording a pull request does not open a
+    ///   second one — which means an approval and a request can agree about the
+    ///   identity while disagreeing about what is being done. Step 6 catches that
+    ///   disagreement within one call; this catches it across the process
+    ///   boundary the decision crossed.
+    ///
+    /// [`PolicyDecision::Deny`] is still absolute, and it is absolute by
+    /// *ordering* rather than by an extra rule: [`combine`] answers `Deny` for
+    /// any denied kind whatever the minimum, so the arm below returns before the
+    /// decision is looked at. An approval cannot buy a denied effect.
+    ///
+    /// A decision handed to a walk that needed none is unused, and that is not a
+    /// bug: `combine` answered [`PolicyDecision::Allow`], nothing was gated, and
+    /// there is nothing for an approval to satisfy.
+    pub async fn execute_decided<O>(
+        &self,
+        proposed: ProposedEffect,
+        operation: O,
+        decision: &ResolvedDecision,
+    ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, EffectError>
+    where
+        O: IntegrationOperation,
+    {
+        self.walk(proposed, operation, Some(decision)).await
+    }
+
+    /// The one authorization order, walked once, whichever entry point was used.
     ///
     /// The comments below are numbered with the PRD's steps, and the order they
     /// appear in is the contract. Each step is announced to the trace *before*
     /// the work behind it, so a recorded order that reaches `combine_policy`
     /// really did get past the postcondition inspection first.
-    pub async fn execute<O>(
+    ///
+    /// **One private walk rather than two public ones**, and the reason is the
+    /// order itself. Two functions each spelling out seven steps would be two
+    /// orders that agree today, and the contract this module publishes is that
+    /// there is exactly one. The only thing the decided path may change is what
+    /// step 4 does with a third input, which is why `decision` is a parameter
+    /// here and not a second copy of the walk.
+    async fn walk<O>(
         &self,
         proposed: ProposedEffect,
         operation: O,
+        decision: Option<&ResolvedDecision>,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, EffectError>
     where
         O: IntegrationOperation,
@@ -640,23 +794,72 @@ impl<'a> Executor<'a> {
             Err(error) => return Err(adapter_failure(kind, error)),
         }
 
-        // 4. Capability minimum combined with deployment policy. The document
-        //    may strengthen this and may never weaken it; `combine` owns that
-        //    rule and this is where its answer is acted on.
+        // 4. Capability minimum combined with deployment policy, and — when the
+        //    combination asks for one — a resolved human decision matched
+        //    against this exact effect. The document may strengthen the minimum
+        //    and may never weaken it; `combine` owns that rule and this is where
+        //    its answer is acted on.
         self.trace.step(kind, ExecutionStep::CombinePolicy);
         match combine(operation.minimum(), self.deployment.rule_for(kind)) {
             PolicyDecision::Allow => {}
+            // First, and before the decision is so much as looked at. `combine`
+            // answers `Deny` for a denied kind whatever the minimum was, so a
+            // denied effect leaves here with an approval sitting unread in the
+            // caller's hand. That ordering is the whole of "an approval cannot
+            // buy a denied effect", and it is why this arm stays above the one
+            // below rather than being guarded by a condition.
             PolicyDecision::Deny { reason } => {
                 return Err(EffectError::PolicyDenied { kind, reason })
             }
-            // M2 defines the variant and consumes it here. The channel that
-            // would answer it is M3's; until then this fails closed and says
-            // so, which is the correct behaviour for a decision channel that
-            // does not exist yet — and it is what keeps the variant from
-            // shipping inert.
-            PolicyDecision::RequireHumanDecision { reason } => {
-                return Err(EffectError::HumanDecisionRequired { kind, reason })
-            }
+            PolicyDecision::RequireHumanDecision { reason } => match decision {
+                // No decision, so the requirement stands unmet. This is M2's
+                // behaviour and it is kept deliberately rather than inherited:
+                // a run handed no decision must not silently acquire one, and
+                // `Executor::execute` reaching this arm is the only reason a
+                // `Human` minimum still refuses at all.
+                None => return Err(EffectError::HumanDecisionRequired { kind, reason }),
+                Some(decision) => {
+                    // Announced before the comparisons, like every other step.
+                    // A step that resolves an approval and cannot be seen
+                    // resolving it is the one step an auditor most wants.
+                    self.trace.step(kind, ExecutionStep::ResolveDecision);
+                    let binding = decision.binding();
+
+                    // The approval must be addressed to *this* question. A
+                    // decision naming another effect is not a rejection of this
+                    // one; it is not an answer to it, because this question was
+                    // never put to whoever gave it. So the effect stays awaiting
+                    // a decision — which is `Awaiting` and exit 10, telling an
+                    // operator to go and answer the current question rather than
+                    // that something has concluded.
+                    if binding.effect != effect_id {
+                        return Err(EffectError::HumanDecisionRequired {
+                            kind,
+                            reason: format!(
+                                "the decision in hand answers effect {} and this is {}, \
+                                 so nothing has answered it yet: {reason}",
+                                binding.effect.0, effect_id.0
+                            ),
+                        });
+                    }
+
+                    // And it must be addressed to *this request*. The identity
+                    // is derived from the target and never from the payload, so
+                    // a decision and a proposal that disagree about what is being
+                    // done still agree about the identity, and the disagreement
+                    // arrives looking like the same work. `PayloadDiverged` is
+                    // the same failure step 6 reports within one call; this is
+                    // its reading across the process boundary the decision
+                    // crossed, and `approved` is the digest the person was shown.
+                    if binding.payload != payload_hash {
+                        return Err(EffectError::PayloadDiverged {
+                            kind,
+                            approved: binding.payload.clone(),
+                            applying: payload_hash.clone(),
+                        });
+                    }
+                }
+            },
         }
 
         // 5-6. The adapter handle is already resolved (`ctx.gh`); the envelope
@@ -831,10 +1034,11 @@ impl<'a> Executor<'a> {
     /// lost is precisely how a duplicate branch, a duplicate pull request or a
     /// second workflow run is born, and `Unknown` exists in
     /// [`EffectOutcome`] so that the ambiguity is resolved by *looking*.
-    /// [`IntegrationOperation::apply`] is called exactly once per
-    /// [`Executor::execute`], on every path, and no branch in this function
-    /// changes that — it cannot, because it is not given anything that could
-    /// dispatch one.
+    /// [`IntegrationOperation::apply`] is called exactly once per walk, whether
+    /// it was entered through [`Executor::execute`] or
+    /// [`Executor::execute_decided`], on every path, and no branch in this
+    /// function changes that — it cannot, because it is not given anything that
+    /// could dispatch one.
     ///
     /// Running out of attempts returns the *last* observation unchanged, so the
     /// caller's own reasoning decides what it means. Exhaustion never invents an
