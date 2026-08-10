@@ -144,7 +144,8 @@ FIDDLE_BIN="$PWD/target/release/fiddle" scripts/live-github.sh   # + FIDDLE_GITH
 # the default branch, but `actions/checkout` takes the dispatched ref, and `main`
 # has no `Cargo.toml` until the milestone stack merges. Omitting `--ref` resolves
 # to `main` and is refused by the lane's own preflight step, by name.
-gh workflow run github-effects.yml --repo peel/fiddle --ref plan/agentic-factory-m2
+gh workflow run github-effects.yml --repo peel/fiddle \
+  --ref ci/github-effects-dispatch-proof   # the only pushed ref with both, until the stack merges
 ```
 
 Both write to `peel/fiddle-effects-acceptance`, the standing disposable repository `docs/technical/effects-repository.md` describes; neither asserts that GitHub cooperated, only the object count and the absence of residue. Neither skips when its credential is absent — `live-github.sh` uses `:?` and `.github/workflows/github-effects.yml` tests for emptiness in its first step and exits non-zero, because a silently skipped lane is indistinguishable from a passing one.
