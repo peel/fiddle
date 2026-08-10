@@ -539,34 +539,6 @@ Removing either is a two-line edit plus a line in the Contracts block of whateve
 Origin: implementation (remediation R4, epic fiddle-srrw, bean fiddle-mp53)
 Tags: #debt
 
-### 2026-08-10 — `RunOutcome` still carries no taxonomy, and M2 widened the set twice
-Names, and does not supersede, **2026-08-09 — the outer attempt bound has no consumer** and the entry above it that records ADR 013's pricing. ADR 013 said from M1 that `RunOutcome::Retryable` has several producers of which only one is "the capability tried and lost", so a retry loop "needs a taxonomy the outcome type does not carry". M2 then added three more producers — `EffectError::{PolicyDenied, HumanDecisionRequired, DuplicateState}` — plus a fourth from remediation R4, `PayloadDiverged`, and recorded nothing about having widened the gap. That omission is the finding; this entry closes the *recording* half of it and not the gap.
-
-Remediation R3 has since moved those four to `RunOutcome::Failed` and exit 20, per `docs/technical/decisions/016-a-permanent-refusal-is-not-retryable.md`, which makes the practical harm go away — automation retrying on 11 no longer loops on a denied effect — and makes the taxonomy problem *bigger*, not smaller. Exit 11 now has six distinct capability failures behind it beside its three other producers; exit 20 has four beside `assess → Blocked`'s three arms. Ten conditions across two integers, told apart only by prose in a `reason` field that a machine cannot key on. `CapabilityError::recurrence` is a two-valued answer to a question that has more than two answers, and it is deliberately two-valued because the exit table has two rows for a run that executed and did not complete.
-
-What a real taxonomy would have to decide, and what nobody has:
-
-- **Where it lives.** A `RunOutcome::Failed { error, class }` widens the `--json` payload every bundle consumer reads. A separate field beside `outcome` does not, and is then a second thing that can disagree with the first. `Published` bounds the text of the reason but says nothing about its shape.
-- **Whether the exit codes follow it.** Adding rows is the honest move and the expensive one — `exit_code_for` is realised once by design, and every acceptance lane asserting a number is a consumer. Not adding them means the class is machine-readable only through `--json`, which is a different contract from the exit code and one an operator scripting `fiddle run` in a shell does not have.
-- **What M3 takes with it.** `HumanDecisionRequired` moves from `Failed` to `Suspended` the moment a decision channel exists, and `required_checks` (below) wants the same *wait* mechanism. Two of the ten conditions leave the table at that point, which is an argument for pricing the taxonomy with M3's channel rather than before it.
-Origin: implementation (remediation R3, epic fiddle-srrw, bean fiddle-m3ql)
-Tags: #debt
-
-### 2026-08-10 — `github.required_checks` is disclosed as unenforced; enforcing it is still owed
-`[github] required_checks` is read, acted on, and decides nothing. The names reach `Executor::observe_checks`, which looks each one up against the published head and splits the answer into `VerificationState`'s `required_missing`, `failed` and `pending`; that value reaches the bundle as `observations.verification`. Then `fiddle_core::assess` matches on `work_item` and `changes` and on nothing else, so a required check that is missing, that failed, or that is still running leaves the outcome exactly where an all-green one does. A deployment naming `required_checks = ["build"]` requires nothing of CI.
-
-Remediation R3 took the disclosure side, per `docs/technical/decisions/017-required-checks-are-observed-not-enforced.md`: `config check` now reports the key the way it reports `agent.max_capability_attempts` — an object carrying `configured`, `enforced` (empty, whatever the document says), a `status`, and the decision — under the word `observed-not-enforced` rather than `accepted-not-enforced`, because the two are different and the older word promises less reading than actually happens.
-
-Enforcement is what is still owed, and it is three decisions rather than one, which is why R3 declined to guess:
-
-- **A `failed` required check is a conclusion.** `Blocked ⇒ Failed` fits it, and it is the only one of the three that does.
-- **A `pending` one resolves without anybody doing anything.** Neither `Failed` nor `Retryable` is honest about it; *wait* is, and *wait* is `Suspended`, which is M3's row. This is the same mechanism as waiting for a human, and pairing the two is almost certainly cheaper than building either alone.
-- **A `required_missing` one may only mean CI has not started.** Distinguishing "never going to run" from "has not run yet" needs a bound — a deadline, a poll budget — that nothing in `[github]` currently supplies.
-
-All three land in `fiddle_core::assess`, which is the pure core's decision function and whose `Blocked ⇒ Failed` rule M0's frozen acceptance lane depends on. Adding an arm there gives `RunOutcome` more producers, which is the entry directly above.
-Origin: implementation (remediation R3, epic fiddle-srrw, bean fiddle-m3ql)
-Tags: #debt
-
 ### 2026-08-10 — The preflight that makes `--ref main` legible is not on `main`
 `.github/workflows/github-effects.yml` now refuses a ref carrying no Cargo workspace at a preflight step, before the toolchain install and the build, naming the reason and the milestone branch to pass instead. Proven by dispatching it against a throwaway ref built from `origin/main` plus that one file: run **31383731994**, `conclusion=failure`, failed at step 4 with the toolchain, the build and the walk all skipped — and by run **31383743533**, `conclusion=success`, the same workflow against `ci/github-effects-dispatch-proof` at `d52fc84`, walk confirmed to have run.
 
