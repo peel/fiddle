@@ -666,8 +666,9 @@ impl<'de> Deserialize<'de> for Repo {
 /// Exhaustive rather than a map, and that is the point of the type: a map would
 /// admit a key for an effect kind this build has never heard of and accept it
 /// silently, which is precisely how a rule an operator believed they had written
-/// comes to apply to nothing. Three fields, three kinds, and adding a fourth
-/// kind is a compile error in [`PolicyTable::rule_for`].
+/// comes to apply to nothing. One field per kind, and adding a kind without a
+/// field is a compile error in [`PolicyTable::rule_for`] — which is how the two
+/// kinds M3 introduced arrived here rather than being forgotten.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyTable {
@@ -677,6 +678,10 @@ pub struct PolicyTable {
     pub ensure_pull_request: DeploymentRule,
     #[serde(default = "allow")]
     pub ensure_check_requested: DeploymentRule,
+    #[serde(default = "allow")]
+    pub publish_decision_request: DeploymentRule,
+    #[serde(default = "allow")]
+    pub ensure_pull_request_ready: DeploymentRule,
 }
 
 /// What an absent rule means.
@@ -696,6 +701,8 @@ impl Default for PolicyTable {
             ensure_branch_published: allow(),
             ensure_pull_request: allow(),
             ensure_check_requested: allow(),
+            publish_decision_request: allow(),
+            ensure_pull_request_ready: allow(),
         }
     }
 }
@@ -703,14 +710,17 @@ impl Default for PolicyTable {
 /// **The key is consumed here, and this is the only place it is read.**
 ///
 /// The executor asks this question once per effect, at its step 4, and acts on
-/// the answer `combine` gives. A `match` rather than a lookup so that the three
-/// keys cannot be cross-wired without the mapping being visible in five lines.
+/// the answer `combine` gives. A `match` rather than a lookup so that the keys
+/// cannot be cross-wired without the mapping being visible in as many lines as
+/// there are kinds.
 impl DeploymentPolicy for PolicyTable {
     fn rule_for(&self, kind: EffectKind) -> DeploymentRule {
         match kind {
             EffectKind::EnsureBranchPublished => self.ensure_branch_published,
             EffectKind::EnsurePullRequest => self.ensure_pull_request,
             EffectKind::EnsureCheckRequested => self.ensure_check_requested,
+            EffectKind::PublishDecisionRequest => self.publish_decision_request,
+            EffectKind::EnsurePullRequestReady => self.ensure_pull_request_ready,
         }
     }
 }
