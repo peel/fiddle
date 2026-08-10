@@ -735,3 +735,21 @@ The implementer caught it while running the bean's own required inversion and re
 The rule this sharpens, beyond the standing inversion requirement: **a test written against a property that a neighbouring check already enforces cannot distinguish the two.** When a plan asserts a new guard, the snippet has to arrange a state that *only* the new guard can refuse — and the way to find out whether it does is to delete the new guard and watch. That is cheap, mechanical, and it caught something six other kinds of review did not.
 Origin: implementation (epic fiddle-eoqx, bean fiddle-rvcu) — found by running the bean's own required inversion
 Tags: #process #debt
+
+### 2026-08-10 — The lead's verification shell has no toolchain, and the nearest one compiles a different language
+A sibling of the shared-`target/` finding above, and it bit the lead rather than an implementer. Building `fiddle-rvcu`'s evidence pack, `cargo` was **not on the verification shell's `PATH` at all** — the toolchain arrives through the worktree's devenv/direnv environment, which implementer agents load per-cwd and the lead's shell does not.
+
+Two things then went wrong in sequence, and the second is the dangerous one.
+
+**The captured exit code was the wrong process's.** The verification script read `cargo fmt --all --check 2>&1 | tail -5; echo "exit: $?"` — so `$?` was `tail`'s status. `cargo` was missing, every command printed `command not found`, and the log recorded `fmt exit: 0`. A clean bill of health for three checks that never ran. This is the same defect an evaluator had just found in the previous pack, where a `&&` chain silently swallowed the clippy line; a pipeline swallows it just as quietly, so fixing the `&&` did not fix the class.
+
+**The obvious repair would have measured the wrong compiler.** A `cargo` *does* exist in the sibling `m0` worktree's devenv profile, and reaching for it looks harmless. But `flake.nix` differs between the two worktrees at exactly one line — the Fenix hash of `rust-toolchain.toml` — because **m3 pins 1.97.1 where m0 pins 1.85.0**. Verifying m3's tree with m0's `cargo` would have run `clippy -D warnings` under a compiler twelve minor versions old, on a lane whose entire evidentiary value is that clippy is clean. A pass would have meant nothing and nothing in the log would have said so.
+
+Both mitigations are mechanical:
+
+- **Never infer an exit code through a pipe.** Redirect to a file, capture `$?` from the command itself, then summarise the file. Applies to `&&`, `|`, and `tee` equally.
+- **Resolve the toolchain from the worktree under test**, via `rust-toolchain.toml` rather than from whatever `cargo` is reachable. A stacked-branch project will have worktrees on different pins, and the neighbouring one is always the closest wrong answer.
+
+The general shape, stated to sit beside the `target/` finding: **an evidence pack is only as trustworthy as the provenance of the tools that produced it.** Isolation covers *where* the build wrote; provenance covers *what* did the building. A verification run has to pin both, and the lead's own pack is not exempt from the standard the lead asks evaluators to enforce.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-rvcu) — found by the lead while building an evidence pack, after an evaluator had flagged the same exit-code class in the previous one
+Tags: #process #infrastructure #debt
