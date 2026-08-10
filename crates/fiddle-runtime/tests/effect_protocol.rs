@@ -35,11 +35,11 @@ use fiddle_core::{
 };
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
-    IntegrationOperation, ObservedState,
+    IntegrationOperation, ObservedState, ReadRetry,
 };
 use fiddle_runtime::git::{GitCli, GitError};
 use fiddle_runtime::github::{branch_name, EnsureBranchPublished};
-use fiddle_runtime::{GhCli, GhError};
+use fiddle_runtime::{GhCli, GhError, RetryAdvice};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -283,6 +283,411 @@ async fn more_than_one_matching_object_is_a_duplicate_state_error() {
         harness.world.mutation_requests(),
         0,
         "an unaccounted-for object is never written over"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Waiting for the read, and never for the write
+// ---------------------------------------------------------------------------
+//
+// Real GitHub produces this milestone's central ambiguity unprompted, and it
+// was measured rather than reasoned about: `GET .../actions/workflows/<f>/runs`
+// reliably does not list a run immediately after the dispatch that created it,
+// and `GET .../git/ref/heads/<b>` has answered 404 straight after the push that
+// created the branch, with the branch and the sha verified correct moments
+// later.
+//
+// Every case below is therefore a claim about the *read*. The one thing none of
+// them may show is a second `apply`, which is why each asserts the dispatch
+// count directly rather than inferring it from an outcome.
+
+/// The scripted budget: enough attempts to settle, and waits that are recorded
+/// rather than spent, so a case asserting a two-second wait costs no seconds.
+const BUDGET: (u32, Duration, Duration) = (5, Duration::from_millis(10), Duration::from_secs(30));
+
+/// A postcondition that arrives late is waited for, not re-dispatched.
+///
+/// The case the whole bean exists for: the write landed, the answer came back,
+/// and the world took one more look to admit it. The dispatch count and the read
+/// count move in opposite directions, which is the only way to tell "it waited"
+/// from "it wrote again".
+#[tokio::test]
+async fn a_postcondition_that_arrives_late_is_waited_for_not_redispatched() {
+    let harness = Harness::new(Script::PostconditionSurfacesLate)
+        .with_read_retry(BUDGET.0, BUDGET.1, BUDGET.2);
+    let receipt = harness
+        .executor()
+        .execute(branch_effect(), harness.operation())
+        .await
+        .unwrap();
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(
+        harness.world.mutation_requests(),
+        1,
+        "the mutation was never re-sent"
+    );
+    assert_eq!(harness.world.mutations(), 1, "and it landed exactly once");
+    assert_eq!(
+        harness.world.calls(),
+        ["inspect", "apply", "inspect", "inspect"],
+        "the read was retried, and only the read"
+    );
+    assert_eq!(
+        harness.waits().len(),
+        1,
+        "exactly one wait, between the two post-dispatch reads"
+    );
+}
+
+/// The same lateness on top of a lost answer — both ambiguities at once, which
+/// is the shape real GitHub hands over when a `gh` is killed mid-flight.
+///
+/// The criterion the bean turns on, asserted directly rather than inferred:
+/// `apply` is dispatched exactly once, and the walk is counted whole so a second
+/// one could not hide in it.
+#[tokio::test]
+async fn an_unknown_outcome_still_never_redispatches_the_mutation() {
+    let harness = Harness::new(Script::WriteLandsAnswerLostAndSurfacesLate)
+        .with_read_retry(BUDGET.0, BUDGET.1, BUDGET.2);
+    let receipt = harness
+        .executor()
+        .execute(branch_effect(), harness.operation())
+        .await
+        .unwrap();
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(harness.world.mutation_requests(), 1);
+    assert_eq!(harness.world.mutations(), 1);
+    assert_eq!(
+        harness
+            .world
+            .calls()
+            .iter()
+            .filter(|call| **call == "apply")
+            .count(),
+        1,
+        "a lost answer plus a late read is still exactly one dispatch"
+    );
+}
+
+/// The budget is bounded, and exhausting it is still `Unresolved`.
+///
+/// A read-retry that waited indefinitely would turn "the write did not land"
+/// into "wait longer, then claim success" — worse than the ambiguity it
+/// replaces, because the ambiguity at least sends somebody to look.
+#[tokio::test]
+async fn a_read_that_never_settles_exhausts_its_budget_and_stays_unresolved() {
+    let harness = Harness::new(Script::SuccessWithoutPostcondition)
+        .with_read_retry(BUDGET.0, BUDGET.1, BUDGET.2);
+    let error = harness
+        .executor()
+        .execute(branch_effect(), harness.operation())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, EffectError::Unresolved { .. }),
+        "a spent budget never becomes a success, got {error:?}"
+    );
+    assert_eq!(harness.world.mutation_requests(), 1);
+    let attempts = harness.read_retry().attempts() as usize;
+    assert_eq!(
+        harness.world.reads(),
+        // One look before the mutation, and the whole budget after it.
+        1 + attempts,
+        "the read is bounded by the budget it was given"
+    );
+    assert_eq!(harness.waits().len(), attempts - 1);
+    assert!(
+        error.to_string().contains("over 5 reads"),
+        "the diagnostic must say that waiting was tried, got {error}"
+    );
+}
+
+/// A read that keeps *failing* is bounded by the same budget, and stays
+/// unresolved for the same reason.
+#[tokio::test]
+async fn a_read_that_keeps_failing_exhausts_its_budget_and_stays_unresolved() {
+    let harness =
+        Harness::new(Script::WriteLostReadFails).with_read_retry(BUDGET.0, BUDGET.1, BUDGET.2);
+    let error = harness
+        .executor()
+        .execute(branch_effect(), harness.operation())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, EffectError::Unresolved { .. }),
+        "expected Unresolved, got {error:?}"
+    );
+    assert_eq!(
+        harness.world.mutation_requests(),
+        1,
+        "an unreadable world is never answered by writing again"
+    );
+    assert_eq!(
+        harness.world.reads(),
+        1 + harness.read_retry().attempts() as usize
+    );
+}
+
+/// `Retry-After` is honoured rather than parsed and dropped.
+///
+/// The header is the only wait in this system GitHub chose rather than fiddle,
+/// and until this bean it reached nothing. The assertion is on the *first* wait
+/// specifically: the backoff's own first step here is 10ms, so a two-second wait
+/// cannot have come from anywhere but the header.
+#[tokio::test]
+async fn a_retry_after_header_sets_the_wait() {
+    let harness =
+        Harness::new(Script::RateLimitedThenSettles).with_read_retry(BUDGET.0, BUDGET.1, BUDGET.2);
+    let receipt = harness
+        .executor()
+        .execute(branch_effect(), harness.operation())
+        .await
+        .unwrap();
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(harness.waits(), [support::SCRIPTED_RETRY_AFTER]);
+    assert_eq!(
+        harness.world.mutation_requests(),
+        1,
+        "a rate limit is answered by waiting, never by writing again"
+    );
+}
+
+/// A `Retry-After` longer than the deployment's ceiling does not sleep past it.
+///
+/// `max` is the operator's bound on how long one read may block a run. A server
+/// asking for longer is answered by spending the budget and reporting
+/// `Unresolved` — a caller who can decide — rather than by honouring a number
+/// the document never agreed to.
+#[tokio::test]
+async fn a_retry_after_longer_than_the_ceiling_is_capped_at_it() {
+    let ceiling = Duration::from_millis(250);
+    assert!(
+        support::SCRIPTED_RETRY_AFTER > ceiling,
+        "this proves nothing unless the header really asks for longer"
+    );
+    let harness = Harness::new(Script::RateLimitedThenSettles).with_read_retry(
+        BUDGET.0,
+        Duration::from_millis(10),
+        ceiling,
+    );
+    harness
+        .executor()
+        .execute(branch_effect(), harness.operation())
+        .await
+        .unwrap();
+
+    assert_eq!(harness.waits(), [ceiling]);
+}
+
+/// An absence *before* the mutation is knowledge, and is never waited on.
+///
+/// This is the asymmetry between the two read sites, and it is worth a case of
+/// its own: `Ok(None)` at step 3 means the postcondition is not there yet and
+/// the mutation is what fixes it. Waiting for it to change would put the whole
+/// budget in front of every effect that has never run — a backoff that made the
+/// ordinary path slower and nothing safer.
+#[tokio::test]
+async fn an_absence_before_the_mutation_is_not_waited_for() {
+    let harness =
+        Harness::new(Script::AbsentThenWritten).with_read_retry(BUDGET.0, BUDGET.1, BUDGET.2);
+    let receipt = harness
+        .executor()
+        .execute(branch_effect(), harness.operation())
+        .await
+        .unwrap();
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(
+        harness.world.calls(),
+        ["inspect", "apply", "inspect"],
+        "one look before, one after, and no waiting for either"
+    );
+    assert!(
+        harness.waits().is_empty(),
+        "an effect that has never run must not pay the budget, got {:?}",
+        harness.waits()
+    );
+}
+
+/// The schedule doubles, stays inside its ceiling, and never goes backwards.
+///
+/// Jitter is derived from the effect identity rather than from a random source —
+/// it exists to decorrelate concurrent fiddle processes, and a backoff nobody
+/// can reproduce is a backoff nobody can assert. The window is the lower half of
+/// each step, which is what keeps the series non-decreasing.
+#[tokio::test]
+async fn the_backoff_doubles_within_its_ceiling() {
+    let initial = Duration::from_millis(100);
+    let ceiling = Duration::from_millis(400);
+    let harness =
+        Harness::new(Script::SuccessWithoutPostcondition).with_read_retry(6, initial, ceiling);
+    harness
+        .executor()
+        .execute(branch_effect(), harness.operation())
+        .await
+        .unwrap_err();
+
+    let waits = harness.waits();
+    assert_eq!(waits.len(), 5, "one wait between each pair of reads");
+    for (n, wait) in waits.iter().enumerate() {
+        let step = (initial * 2u32.pow(n as u32)).min(ceiling);
+        assert!(
+            *wait >= step / 2 && *wait <= step,
+            "wait {n} of {waits:?} must sit in the lower half of {step:?}"
+        );
+    }
+    assert!(
+        waits.windows(2).all(|pair| pair[1] >= pair[0]),
+        "the series must never go backwards, got {waits:?}"
+    );
+    assert!(
+        waits.iter().all(|wait| *wait <= ceiling),
+        "nothing may exceed the ceiling, got {waits:?}"
+    );
+    assert!(
+        *waits.last().unwrap() > waits[0],
+        "and it must really have grown rather than stayed flat, got {waits:?}"
+    );
+}
+
+/// `Script::ALL` really is all of them.
+///
+/// The sweep below is only worth as much as this: a world that escaped the array
+/// would be a path nobody checked the dispatch count of. `Script::index` is an
+/// exhaustive match, so a new variant cannot compile without a position, and
+/// this asserts the positions are a bijection onto the array — which is what
+/// stops a new variant being handed a number that already belongs to another.
+#[test]
+fn every_scripted_world_is_listed() {
+    let mut seen = vec![false; Script::ALL.len()];
+    for script in Script::ALL {
+        let at = script.index();
+        assert!(
+            !std::mem::replace(&mut seen[at], true),
+            "{script:?} shares position {at} with another world"
+        );
+        assert_eq!(
+            Script::ALL[at].index(),
+            at,
+            "{script:?} is not at the position it claims"
+        );
+    }
+    assert!(seen.into_iter().all(|listed| listed));
+}
+
+/// **The criterion the bean turns on, over every path there is.**
+///
+/// The cases above each assert the dispatch count for the situation they are
+/// about. This one asserts it of *every* scripted world, with the budget
+/// switched on for all of them, so a retry that slipped into an arm nobody wrote
+/// a case for is caught by the sweep rather than by production.
+///
+/// The expected count is per-world rather than a blanket "at most one": two of
+/// these worlds are settled before the mutation and must dispatch **zero**, so a
+/// world that wrote when it should not have fails here rather than passing a
+/// weaker bound.
+#[tokio::test]
+async fn every_path_dispatches_at_most_one_mutation() {
+    for script in Script::ALL {
+        let harness = Harness::new(script).with_read_retry(BUDGET.0, BUDGET.1, BUDGET.2);
+        let _ = harness
+            .executor()
+            .execute(branch_effect(), harness.operation())
+            .await;
+
+        let expected = match script {
+            // Nothing to do, or nothing that may be written over.
+            Script::AlreadySatisfied | Script::TwoMatch => 0,
+            _ => 1,
+        };
+        assert_eq!(
+            harness.world.mutation_requests(),
+            expected,
+            "{script:?} dispatched the wrong number of mutations"
+        );
+        assert!(
+            harness.world.mutations() <= 1,
+            "{script:?} changed the world {} times",
+            harness.world.mutations()
+        );
+    }
+
+    // The two refusal paths, which no script reaches: a mutation policy stopped
+    // must be dispatched zero times, and the read that runs before policy must
+    // not have started a backoff on the way there either.
+    for (minimum, rule) in [
+        (HumanDecisionRequirement::Human, DeploymentRule::Allow),
+        (HumanDecisionRequirement::Automatic, DeploymentRule::Deny),
+    ] {
+        let harness = Harness::new(Script::AbsentThenWritten)
+            .with_read_retry(BUDGET.0, BUDGET.1, BUDGET.2)
+            .with_policy(minimum, rule);
+        harness
+            .executor()
+            .execute(branch_effect(), harness.operation())
+            .await
+            .expect_err("a refused effect must not succeed");
+        assert_eq!(harness.world.mutation_requests(), 0);
+        assert!(harness.waits().is_empty());
+    }
+}
+
+/// Which failures are worth looking past, and which are the answer.
+///
+/// This is where `rate_limit_remaining` earns its keep. A permissions 403 and a
+/// secondary-rate-limit 403 wear the same number, and the only thing that tells
+/// them apart is what the response said about waiting: a spent allowance
+/// refills, a missing permission does not.
+#[test]
+fn a_rate_limited_refusal_is_worth_reading_again_and_a_flat_refusal_is_not() {
+    let http = |status, advice| GhError::Http {
+        status,
+        message: String::new(),
+        advice,
+    };
+    let nothing_said = RetryAdvice::default();
+    let allowance_spent = RetryAdvice {
+        retry_after: None,
+        rate_limit_remaining: Some(0),
+    };
+    let asked_to_wait = RetryAdvice {
+        retry_after: Some(Duration::from_secs(1)),
+        rate_limit_remaining: None,
+    };
+
+    assert!(
+        !http(403, nothing_said).is_worth_reading_again(),
+        "a permissions refusal is the answer"
+    );
+    assert!(
+        http(403, allowance_spent).is_worth_reading_again(),
+        "the same status with the allowance spent is `not just now`"
+    );
+    assert!(
+        http(403, asked_to_wait).is_worth_reading_again(),
+        "and so is one that named its own remedy"
+    );
+    assert!(http(429, nothing_said).is_worth_reading_again());
+    assert!(http(500, nothing_said).is_worth_reading_again());
+    assert!(!http(404, nothing_said).is_worth_reading_again());
+    assert!(!http(422, nothing_said).is_worth_reading_again());
+
+    assert!(GhError::Timeout(Duration::from_secs(1)).is_worth_reading_again());
+    assert!(GhError::Killed("signal".to_string()).is_worth_reading_again());
+    assert!(
+        !GhError::Cancelled.is_worth_reading_again(),
+        "a cancelled run must stop, not wait"
+    );
+    assert!(!GhError::Auth.is_worth_reading_again());
+    assert!(!GhError::Malformed(String::new()).is_worth_reading_again());
+    assert!(
+        !GhError::Duplicate { count: 2 }.is_worth_reading_again(),
+        "a second object does not become one object by being looked at again"
     );
 }
 
@@ -678,6 +1083,10 @@ where
         &deployment,
         ctx,
         remote,
+        // One read and no waiting. The branch half's subject is the operation
+        // against a real repository; the budget is the protocol half's, and it
+        // says so at each of these three sites rather than inheriting one.
+        ReadRetry::none(),
     )
     .execute(proposed, operation)
     .await
@@ -1259,6 +1668,7 @@ async fn publish_attempt(
         deployment,
         &ctx,
         remote,
+        ReadRetry::none(),
     );
     let capability = fiddle_runtime::PublishChange::new(executor, publish_config(remote, local));
 
@@ -1699,6 +2109,7 @@ async fn a_capability_cannot_publish_through_another_capabilitys_executor() {
         &deployment,
         &ctx,
         &remote,
+        ReadRetry::none(),
     );
     let capability = fiddle_runtime::PublishChange::new(executor, publish_config(&remote, &local));
 

@@ -35,6 +35,7 @@ use fiddle_core::{
 };
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
+    ReadRetry,
 };
 use fiddle_runtime::github::{
     branch_name, check_request_target, classify, observe_checks, run_name, CheckState,
@@ -346,6 +347,9 @@ async fn request_the_check(
         &deployment,
         ctx,
         ci,
+        // One read and no waiting: this suite's subject is the check operation,
+        // not the postcondition read's budget.
+        ReadRetry::none(),
     )
     .execute(proposed, operation)
     .await

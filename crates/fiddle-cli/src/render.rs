@@ -176,6 +176,14 @@ pub fn config_check_json(config: &Config) -> String {
             "required_checks": github.required_checks,
             "config_dir": github.config_dir,
             "timeout": github.timeout.to_string(),
+            // Echoed beside `timeout` because it is the same kind of thing: a
+            // wall-clock bound an operator set or inherited, and one they
+            // cannot otherwise confirm without reading this binary's defaults.
+            "read_retry": {
+                "attempts": github.read_retry.attempts,
+                "initial": github.read_retry.initial.to_string(),
+                "max": github.read_retry.max.to_string(),
+            },
             "policy": {
                 "ensure_branch_published": rule(github.policy.ensure_branch_published),
                 "ensure_pull_request": rule(github.policy.ensure_pull_request),

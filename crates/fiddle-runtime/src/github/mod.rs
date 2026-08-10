@@ -22,7 +22,7 @@ pub use checks::{
     check_request_target, classify, observe_checks, run_name, CheckState, EnsureCheckRequested,
     WorkflowRun,
 };
-pub use cli::{GhCli, GhError, GhResponse};
+pub use cli::{GhCli, GhError, GhResponse, RetryAdvice};
 pub use pulls::{pull_request_target, EnsurePullRequest, PullRequest};
 pub use refs::{branch_name, branch_target, BranchRef, EnsureBranchPublished};
 

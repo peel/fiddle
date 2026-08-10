@@ -24,13 +24,13 @@ use fiddle_core::{
 };
 use fiddle_runtime::effect::{
     AuthorizedEffect, DeploymentPolicy, EffectContext, EffectTrace, ExecutionStep, Executor,
-    IntegrationOperation, ObservedState,
+    IntegrationOperation, ObservedState, ReadClock, ReadRetry,
 };
 use fiddle_runtime::git::GitCli;
-use fiddle_runtime::{GhCli, GhError};
+use fiddle_runtime::{GhCli, GhError, RetryAdvice};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -69,6 +69,84 @@ pub enum Script {
     /// The adapter reported success and the world does not show it. Neither
     /// half is evidence enough on its own.
     SuccessWithoutPostcondition,
+    /// The write lands, the answer comes back, and the world takes one more
+    /// look to admit it. GitHub's measured behaviour rather than a hypothetical
+    /// one: a ref read has answered 404 straight after the push that created
+    /// the branch.
+    PostconditionSurfacesLate,
+    /// The same lateness on top of a lost answer — both of the ambiguities this
+    /// milestone is about, in the order real GitHub produces them.
+    WriteLandsAnswerLostAndSurfacesLate,
+    /// The first look after the write is rate-limited, with a `Retry-After`
+    /// naming how long to wait, and the look after that succeeds.
+    RateLimitedThenSettles,
+}
+
+impl Script {
+    /// Every scripted world there is.
+    ///
+    /// Exists so that "the mutation is dispatched at most once" can be asserted
+    /// of *every* path rather than of the paths somebody remembered, and
+    /// [`Script::index`] is what keeps it honest: the match there is exhaustive,
+    /// so a new variant cannot be added without being given a position, and
+    /// `every_scripted_world_is_listed` checks that the positions are a
+    /// bijection onto this array.
+    pub const ALL: [Script; 10] = [
+        Script::AlreadySatisfied,
+        Script::AbsentThenWritten,
+        Script::WriteLandsAnswerLost,
+        Script::WriteLostReadFails,
+        Script::TwoMatch,
+        Script::ConfidentRefusal,
+        Script::SuccessWithoutPostcondition,
+        Script::PostconditionSurfacesLate,
+        Script::WriteLandsAnswerLostAndSurfacesLate,
+        Script::RateLimitedThenSettles,
+    ];
+
+    /// This script's position in [`Script::ALL`].
+    pub fn index(self) -> usize {
+        match self {
+            Script::AlreadySatisfied => 0,
+            Script::AbsentThenWritten => 1,
+            Script::WriteLandsAnswerLost => 2,
+            Script::WriteLostReadFails => 3,
+            Script::TwoMatch => 4,
+            Script::ConfidentRefusal => 5,
+            Script::SuccessWithoutPostcondition => 6,
+            Script::PostconditionSurfacesLate => 7,
+            Script::WriteLandsAnswerLostAndSurfacesLate => 8,
+            Script::RateLimitedThenSettles => 9,
+        }
+    }
+}
+
+/// What GitHub asks for when it rate-limits the read in
+/// [`Script::RateLimitedThenSettles`].
+pub const SCRIPTED_RETRY_AFTER: Duration = Duration::from_secs(2);
+
+/// A clock that spends nothing and remembers everything.
+///
+/// The schedule the executor computes is a decision, and a decision that can
+/// only be observed by spending it cannot be asserted — so the suite substitutes
+/// here, at the [`ReadClock`] seam, exactly as it substitutes a scripted `gh` at
+/// the `cli.program` seam. A test asserting a two-second wait takes no longer
+/// than one asserting none.
+#[derive(Debug, Default)]
+pub struct RecordingClock(Mutex<Vec<Duration>>);
+
+#[async_trait]
+impl ReadClock for RecordingClock {
+    async fn wait(&self, delay: Duration) {
+        self.0.lock().unwrap().push(delay);
+    }
+}
+
+impl RecordingClock {
+    /// Every wait the executor asked for, in order.
+    pub fn waits(&self) -> Vec<Duration> {
+        self.0.lock().unwrap().clone()
+    }
 }
 
 /// Everything that happened out there, recorded in order.
@@ -119,6 +197,29 @@ impl World {
         match calls.iter().position(|call| *call == "apply") {
             Some(at) => calls[at + 1..].contains(&"inspect"),
             None => false,
+        }
+    }
+
+    /// How many times the world was *looked at*. The number a postcondition
+    /// read moves and a retried mutation would not — the mirror of
+    /// [`World::mutation_requests`], and the pair is what separates "it waited"
+    /// from "it wrote again".
+    pub fn reads(&self) -> usize {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| **call == "inspect")
+            .count()
+    }
+
+    /// Looks taken since the mutation was dispatched, counting the one in
+    /// progress. `0` before any dispatch.
+    fn looks_since_the_write(&self) -> usize {
+        let calls = self.calls.lock().unwrap();
+        match calls.iter().rposition(|call| *call == "apply") {
+            Some(at) => calls[at + 1..].iter().filter(|c| **c == "inspect").count(),
+            None => 0,
         }
     }
 
@@ -205,6 +306,7 @@ impl IntegrationOperation for ScriptedOperation<'_> {
                 true => Err(GhError::Http {
                     status: 500,
                     message: "the postcondition could not be read".to_string(),
+                    advice: RetryAdvice::default(),
                 }),
             },
             Script::ConfidentRefusal | Script::SuccessWithoutPostcondition => Ok(None),
@@ -214,6 +316,35 @@ impl IntegrationOperation for ScriptedOperation<'_> {
                     true => present(),
                 }
             }
+            // The write is in the world and the world has not caught up with
+            // itself yet. The first look after the dispatch is the one that
+            // 404s; the next one tells the truth.
+            Script::PostconditionSurfacesLate | Script::WriteLandsAnswerLostAndSurfacesLate => {
+                match self.world.landed.load(Ordering::SeqCst) {
+                    false => Ok(None),
+                    true => match self.world.looks_since_the_write() {
+                        1 => Ok(None),
+                        _ => present(),
+                    },
+                }
+            }
+            // A refusal that names its own remedy. Both halves are set: the
+            // header says how long, and the spent allowance is what makes a
+            // 403-shaped refusal temporary rather than final.
+            Script::RateLimitedThenSettles => match self.world.landed.load(Ordering::SeqCst) {
+                false => Ok(None),
+                true => match self.world.looks_since_the_write() {
+                    1 => Err(GhError::Http {
+                        status: 429,
+                        message: "API rate limit exceeded".to_string(),
+                        advice: RetryAdvice {
+                            retry_after: Some(SCRIPTED_RETRY_AFTER),
+                            rate_limit_remaining: Some(0),
+                        },
+                    }),
+                    _ => present(),
+                },
+            },
         }
     }
 
@@ -243,13 +374,13 @@ impl IntegrationOperation for ScriptedOperation<'_> {
             world.writes.fetch_add(1, Ordering::SeqCst);
         };
         match self.world.script {
-            Script::AbsentThenWritten => {
+            Script::AbsentThenWritten | Script::PostconditionSurfacesLate => {
                 land(self.world);
                 Ok(())
             }
             // Both halves of an ambiguous write, in one place: the world really
             // changed and the answer really did not come back.
-            Script::WriteLandsAnswerLost => {
+            Script::WriteLandsAnswerLost | Script::WriteLandsAnswerLostAndSurfacesLate => {
                 land(self.world);
                 Err(GhError::Killed("signal".to_string()))
             }
@@ -257,9 +388,17 @@ impl IntegrationOperation for ScriptedOperation<'_> {
                 self.world.landed.store(true, Ordering::SeqCst);
                 Err(GhError::Killed("signal".to_string()))
             }
+            Script::RateLimitedThenSettles => {
+                land(self.world);
+                Ok(())
+            }
             Script::ConfidentRefusal => Err(GhError::Http {
                 status: 403,
                 message: "resource not accessible".to_string(),
+                // A permissions 403 and a rate-limit 403 wear the same number.
+                // This one says nothing about waiting, which is what makes it
+                // the final answer it is.
+                advice: RetryAdvice::default(),
             }),
             Script::SuccessWithoutPostcondition => Ok(()),
             Script::AlreadySatisfied | Script::TwoMatch => {
@@ -277,6 +416,12 @@ pub struct Harness {
     deployment: Deployment,
     capability: CapabilityId,
     minimum: HumanDecisionRequirement,
+    /// One read and no waiting, unless a scenario says otherwise. Chosen rather
+    /// than inherited: a suite whose every case silently acquired a backoff
+    /// would be asserting the protocol against a world that quietly retried
+    /// under it.
+    read_retry: ReadRetry,
+    clock: Arc<RecordingClock>,
 }
 
 impl Harness {
@@ -287,6 +432,8 @@ impl Harness {
             deployment: Deployment(DeploymentRule::Allow),
             capability: FIXTURE_REPAIR,
             minimum: HumanDecisionRequirement::Automatic,
+            read_retry: ReadRetry::none(),
+            clock: Arc::new(RecordingClock::default()),
         }
     }
 
@@ -294,6 +441,25 @@ impl Harness {
         self.minimum = minimum;
         self.deployment = Deployment(rule);
         self
+    }
+
+    /// Give the postcondition read a budget, spent against this harness's
+    /// recording clock rather than against a real one.
+    pub fn with_read_retry(mut self, attempts: u32, initial: Duration, max: Duration) -> Self {
+        self.read_retry = ReadRetry::served_by(attempts, initial, max, self.clock.clone());
+        self
+    }
+
+    /// Every wait the executor asked for, in order.
+    pub fn waits(&self) -> Vec<Duration> {
+        self.clock.waits()
+    }
+
+    /// The budget this harness hands the executor, so a test can bound what it
+    /// asserts by the same number the executor was given rather than by a
+    /// constant that could drift away from it.
+    pub fn read_retry(&self) -> &ReadRetry {
+        &self.read_retry
     }
 
     pub fn executor(&self) -> Executor<'_> {
@@ -304,6 +470,7 @@ impl Harness {
             &self.deployment,
             &self.ctx,
             &self.world,
+            self.read_retry.clone(),
         )
     }
 
@@ -321,6 +488,7 @@ impl Harness {
             &self.deployment,
             &self.ctx,
             trace,
+            self.read_retry.clone(),
         )
     }
 

@@ -35,3 +35,8 @@ tokio-util.workspace = true
 # produces, rather than one hand-written beside the mapping it is checking.
 [dev-dependencies]
 tempfile.workspace = true
+# `[github] read_retry` is only worth having if the document reaches the
+# executor, and the only way to assert that is to build one and count what it
+# does. `IntegrationOperation` is an async trait, so the minimal world that test
+# holds needs the same attribute the runtime's own operations are written with.
+async-trait.workspace = true

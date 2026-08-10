@@ -77,6 +77,43 @@ pub struct GhResponse {
     pub rate_limit_remaining: Option<u64>,
 }
 
+/// What a response said about being asked the same question again.
+///
+/// The two headers were parsed off `gh api -i` from the first day of this
+/// milestone and read by nobody, which is the defect ADR 013 had to price for
+/// `agent.max_capability_attempts`: a value that parses, defaults and reaches
+/// nothing looks like a feature and behaves like a comment. This type is the
+/// channel that carries them somewhere — out of [`GhResponse`], into
+/// [`GhError::Http`], and from there into the postcondition read's wait.
+///
+/// It is carried on the *error* as well as on the response because that is
+/// where it matters: a 429, or a secondary-rate-limit 403, is a response the
+/// client is being told to ask for again later, and the client only ever sees
+/// those as a [`GhError`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RetryAdvice {
+    /// `Retry-After`, when the response carried one. An instruction with a
+    /// number attached, and the only wait in this system that GitHub chose
+    /// rather than fiddle.
+    pub retry_after: Option<Duration>,
+    /// `X-RateLimit-Remaining`, when the response carried one.
+    pub rate_limit_remaining: Option<u64>,
+}
+
+impl RetryAdvice {
+    /// Whether the response asked to be left alone for a while.
+    ///
+    /// A `Retry-After` says so outright. A remaining budget of zero says the
+    /// same thing without a number: the refusal is about the *credential's
+    /// allowance*, which refills, rather than about the request, which does
+    /// not. Both make a 403 that would otherwise be final into one worth
+    /// looking past — and that distinction is this field's only job, so a
+    /// deployment can tell "you may not" from "not just now".
+    pub fn wants_a_wait(&self) -> bool {
+        self.retry_after.is_some() || self.rate_limit_remaining == Some(0)
+    }
+}
+
 /// Everything a `gh` invocation can fail as.
 ///
 /// The variants exist to be *classified*, not merely reported: see
@@ -100,8 +137,17 @@ pub enum GhError {
     #[error("gh was killed before it answered (status {0})")]
     Killed(String),
     /// A response arrived and carried a status at or above 400.
+    ///
+    /// `advice` is what that response said about being asked again. It is not
+    /// in the [`std::fmt::Display`] rendering on purpose: the message is what
+    /// reaches an operator and a published bundle, and "wait two seconds" is an
+    /// instruction to the client rather than a description of the failure.
     #[error("HTTP {status}: {message}")]
-    Http { status: u16, message: String },
+    Http {
+        status: u16,
+        message: String,
+        advice: RetryAdvice,
+    },
     /// Something came back that is not a response. This is the runner or the
     /// binary being wrong, not GitHub refusing — see [`GhError::outcome`] for
     /// why the difference matters more than it looks.
@@ -174,6 +220,53 @@ impl GhError {
             // porcelain report, and only `GitError` knows which of its variants
             // came from one.
             GhError::Push(error) => error.outcome(),
+        }
+    }
+
+    /// What the response said about being asked again, if it said anything.
+    ///
+    /// Total over the variants rather than a match at each call site: every
+    /// failure has to answer "how long should I wait", and the ones that never
+    /// carried a header answer it with [`RetryAdvice::default`] — which is not
+    /// silence, it is "nothing was said", and the backoff supplies its own
+    /// number for that case.
+    pub fn advice(&self) -> RetryAdvice {
+        match self {
+            GhError::Http { advice, .. } => *advice,
+            _ => RetryAdvice::default(),
+        }
+    }
+
+    /// Whether asking the same question again could plausibly answer it
+    /// differently.
+    ///
+    /// **This is asked only of a read.** Nothing consults it about a mutation,
+    /// and the reason is the rule the whole milestone rests on: a read is
+    /// idempotent, so looking again costs nothing, while re-dispatching a write
+    /// whose answer was lost is how a duplicate external effect is born. See
+    /// [`Executor::execute`](crate::effect::Executor::execute).
+    pub fn is_worth_reading_again(&self) -> bool {
+        match self {
+            // The answer was lost on the way back. The next one may arrive.
+            GhError::Timeout(_) | GhError::Killed(_) => true,
+            // GitHub said so itself — either with a `Retry-After` or by
+            // reporting the credential's allowance spent. This arm is ahead of
+            // the status arms because it is the one that separates a
+            // secondary-rate-limit 403, which passes, from a permissions 403,
+            // which does not.
+            GhError::Http { advice, .. } if advice.wants_a_wait() => true,
+            // 429 is the rate limit saying so without a header; 5xx is GitHub
+            // failing at something that is not about this request.
+            GhError::Http { status, .. } => *status == 429 || *status >= 500,
+            // Everything else is settled. A refusal stays refused, a cancelled
+            // run must stop rather than wait, a broken runner does not repair
+            // itself, and a second matching object does not become one object
+            // by being looked at again.
+            GhError::Auth
+            | GhError::Cancelled
+            | GhError::Malformed(_)
+            | GhError::Duplicate { .. }
+            | GhError::Push(_) => false,
         }
     }
 }
@@ -400,27 +493,39 @@ impl GhCli {
 
         let body = parse_body(body).map_err(|reason| GhError::Malformed(self.redact(&reason)))?;
 
-        if status >= 400 {
+        // Assembled before the status is judged, so that both exits carry the
+        // same parsed headers. The failure exit reads them straight back off
+        // this value — which is the whole point: until this line the two header
+        // fields were parsed and dropped, and a response a client is told to
+        // retry is precisely the one that never reached the `Ok` arm where they
+        // lived.
+        let response = GhResponse {
+            status,
+            body,
+            retry_after,
+            rate_limit_remaining,
+        };
+
+        if response.status >= 400 {
             return Err(GhError::Http {
-                status,
+                status: response.status,
                 // GitHub's error envelope, when there is one. The whole body is
                 // deliberately not carried: it is the surface that reaches a
                 // published bundle, and M1 already shipped one defect of that
                 // shape.
                 message: self.redact(
-                    body["message"]
+                    response.body["message"]
                         .as_str()
                         .unwrap_or("no message in the response body"),
                 ),
+                advice: RetryAdvice {
+                    retry_after: response.retry_after,
+                    rate_limit_remaining: response.rate_limit_remaining,
+                },
             });
         }
 
-        Ok(GhResponse {
-            status,
-            body,
-            retry_after,
-            rate_limit_remaining,
-        })
+        Ok(response)
     }
 
     /// Remove the credential from anything about to become a diagnostic.
@@ -450,6 +555,99 @@ fn parse_body(body: &str) -> Result<serde_json::Value, String> {
         return Ok(serde_json::Value::Null);
     }
     serde_json::from_str(body).map_err(|error| format!("body is not JSON ({error})"))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    /// A finished `gh`, as the parser sees one. Exit 1 rather than 0, because
+    /// that is what `gh` really exits with for every HTTP failure and the
+    /// status must come off the status line regardless.
+    fn answered(head: &str, body: &str) -> std::process::Output {
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: format!("{head}\r\n\r\n{body}").into_bytes(),
+            stderr: Vec::new(),
+        }
+    }
+
+    fn client() -> GhCli {
+        GhCli::new(
+            PathBuf::from("/nonexistent/gh"),
+            Vec::new(),
+            String::new(),
+            "GH_TOKEN",
+            PathBuf::from("/nonexistent"),
+            Duration::from_secs(1),
+        )
+    }
+
+    /// The two headers were parsed from the first day of this milestone and
+    /// read by nobody. This is the half of their first consumer that can be
+    /// asserted against a real response: a rate-limited read is precisely the
+    /// one that never reaches the `Ok` arm the fields lived on, so a client
+    /// that only carried them on success carried them nowhere.
+    #[test]
+    fn a_rate_limited_response_carries_its_headers_into_the_error() {
+        let error = client()
+            .parse(&answered(
+                "HTTP/2.0 429 Too Many Requests\r\n\
+                 Retry-After: 2\r\n\
+                 X-RateLimit-Remaining: 0",
+                r#"{"message":"API rate limit exceeded"}"#,
+            ))
+            .expect_err("a 429 is a failure");
+
+        assert_eq!(
+            error.advice(),
+            RetryAdvice {
+                retry_after: Some(Duration::from_secs(2)),
+                rate_limit_remaining: Some(0),
+            },
+            "got {error:?}"
+        );
+        assert!(
+            error.is_worth_reading_again(),
+            "and the advice must be what makes it worth another look"
+        );
+    }
+
+    /// A refusal that said nothing about waiting says nothing about waiting.
+    ///
+    /// The contrast is the point: without it, an implementation that reported
+    /// every failure as retryable would pass the case above.
+    #[test]
+    fn a_refusal_with_no_headers_advises_nothing() {
+        let error = client()
+            .parse(&answered(
+                "HTTP/2.0 403 Forbidden",
+                r#"{"message":"Resource not accessible by integration"}"#,
+            ))
+            .expect_err("a 403 is a failure");
+
+        assert_eq!(error.advice(), RetryAdvice::default(), "got {error:?}");
+        assert!(!error.is_worth_reading_again());
+    }
+
+    /// The headers still reach a successful response, unchanged. `Retry-After`
+    /// on a 2xx is GitHub asking a client to come back for an answer it is
+    /// still preparing, and dropping it here would move the defect rather than
+    /// fix it.
+    #[test]
+    fn a_successful_response_still_carries_its_headers() {
+        let response = client()
+            .parse(&answered(
+                "HTTP/2.0 202 Accepted\r\nRetry-After: 5\r\nX-RateLimit-Remaining: 4999",
+                "",
+            ))
+            .expect("a 202 is a response");
+
+        assert_eq!(response.status, 202);
+        assert_eq!(response.retry_after, Some(Duration::from_secs(5)));
+        assert_eq!(response.rate_limit_remaining, Some(4999));
+    }
 }
 
 /// A bounded quotation of something unparseable, so a diagnostic can be

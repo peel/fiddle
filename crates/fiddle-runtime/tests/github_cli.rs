@@ -14,7 +14,7 @@
 //! answer produces a duplicate external effect.
 
 use fiddle_runtime::effect::EffectOutcome;
-use fiddle_runtime::github::{GhCli, GhError};
+use fiddle_runtime::github::{GhCli, GhError, RetryAdvice};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -265,6 +265,7 @@ fn a_lost_answer_is_unknown_and_a_refusal_is_not_committed() {
     let http = |status| GhError::Http {
         status,
         message: String::new(),
+        advice: RetryAdvice::default(),
     };
 
     assert_eq!(

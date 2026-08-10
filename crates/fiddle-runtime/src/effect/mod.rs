@@ -34,13 +34,15 @@ pub mod receipt;
 pub use receipt::{EffectError, EffectReceipt, ObservedState};
 
 use crate::git::GitCli;
-use crate::github::{GhCli, GhError};
+use crate::github::{GhCli, GhError, RetryAdvice};
 use fiddle_core::{
     combine, effect_id, payload_hash, CapabilityId, DeploymentRule, EffectId, EffectKind,
     HumanDecisionRequirement, Observation, PayloadHash, PolicyDecision, ProposedEffect,
     VerificationState,
 };
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 /// The three-valued result an ambiguous write forces.
@@ -177,6 +179,186 @@ impl EffectContext {
     }
 }
 
+/// Where a wait is actually spent.
+///
+/// A seam for the same reason [`EffectTrace`] is one: the schedule this module
+/// computes is a *decision*, and a decision that can only be observed by
+/// spending it cannot be asserted. Production sleeps ([`SleepingClock`]); the
+/// deterministic suite records the sequence and returns immediately, so the
+/// backoff can be pinned without a test that takes as long as the backoff does.
+///
+/// Nothing fake enters the product to make that possible — this is the same
+/// arrangement as `[github] cli = { program, args }`, a real seam a real
+/// deployment could substitute at.
+#[async_trait::async_trait]
+pub trait ReadClock: Send + Sync + std::fmt::Debug {
+    /// Wait `delay` before the postcondition is read again.
+    async fn wait(&self, delay: Duration);
+}
+
+/// The clock a deployment runs on.
+#[derive(Debug)]
+pub struct SleepingClock;
+
+#[async_trait::async_trait]
+impl ReadClock for SleepingClock {
+    async fn wait(&self, delay: Duration) {
+        tokio::time::sleep(delay).await;
+    }
+}
+
+/// The bounded budget a postcondition read may spend settling.
+///
+/// # Why this exists at all, and why it is only about the read
+///
+/// Real GitHub does not answer its own writes immediately. A dispatched
+/// workflow run is reliably absent from `GET .../actions/workflows/<f>/runs`
+/// for a moment after the dispatch that created it, and `GET
+/// .../git/ref/heads/<b>` has answered **404 right after the push that created
+/// the branch**, with the branch and the sha verified correct seconds later.
+/// Both were measured against real GitHub rather than reasoned about.
+///
+/// Without a budget both reach [`EffectError::Unresolved`], which is *correct*
+/// but pushes the wait onto the caller as an entire fresh process. With one,
+/// the read waits for the answer it already has good reason to expect.
+///
+/// **The budget is bounded, and exhausting it is still `Unresolved`.** A read
+/// that waited indefinitely would turn "the write did not land" into "wait
+/// longer, then claim success", which is worse than the ambiguity it replaces:
+/// the ambiguity at least sends somebody to look.
+#[derive(Clone, Debug)]
+pub struct ReadRetry {
+    attempts: u32,
+    initial: Duration,
+    max: Duration,
+    clock: Arc<dyn ReadClock>,
+}
+
+impl ReadRetry {
+    /// A budget served by the deployment's own clock.
+    ///
+    /// `attempts` counts *reads*, not waits, and is floored at one: a budget of
+    /// zero reads is not a stricter policy, it is a postcondition that is never
+    /// observed, which would make every effect unresolved.
+    pub fn bounded(attempts: u32, initial: Duration, max: Duration) -> Self {
+        Self::served_by(attempts, initial, max, Arc::new(SleepingClock))
+    }
+
+    /// A budget of one read: look once, and take the answer.
+    ///
+    /// The behaviour every effect had before this existed, kept nameable so a
+    /// caller that wants it says so rather than getting it by forgetting.
+    pub fn none() -> Self {
+        Self::bounded(1, Duration::ZERO, Duration::ZERO)
+    }
+
+    /// The same budget, spending its waits somewhere other than a real clock.
+    pub fn served_by(
+        attempts: u32,
+        initial: Duration,
+        max: Duration,
+        clock: Arc<dyn ReadClock>,
+    ) -> Self {
+        Self {
+            attempts: attempts.max(1),
+            initial,
+            max,
+            clock,
+        }
+    }
+
+    /// How many reads this budget allows in total.
+    pub fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
+    /// The ceiling on any single wait.
+    pub fn max(&self) -> Duration {
+        self.max
+    }
+
+    /// How long to wait before read number `attempt + 1`.
+    ///
+    /// `attempt` is 1 for the wait after the first read, so the un-jittered
+    /// series is `initial`, `2 × initial`, `4 × initial`, … capped at [`max`].
+    ///
+    /// **A `Retry-After` wins.** It is the only wait in this system GitHub
+    /// chose rather than fiddle, and guessing over an explicit instruction is
+    /// how a client earns a secondary rate limit. It is still capped at `max`,
+    /// because `max` is the operator's bound on how long one read may block a
+    /// run — a server asking for longer than that is answered by spending the
+    /// budget and reporting `Unresolved`, which is a caller who can decide,
+    /// rather than by sleeping past the bound the document set.
+    ///
+    /// [`max`]: ReadRetry::max
+    pub fn delay(&self, attempt: u32, advice: RetryAdvice, effect: &EffectId) -> Duration {
+        if let Some(asked) = advice.retry_after {
+            return asked.min(self.max);
+        }
+        let doublings = 1u32
+            .checked_shl(attempt.saturating_sub(1))
+            .unwrap_or(u32::MAX);
+        let step = self
+            .initial
+            .checked_mul(doublings)
+            .unwrap_or(self.max)
+            .min(self.max);
+        jitter(step, effect)
+    }
+}
+
+/// Spread the wait over the lower half of its step, deterministically.
+///
+/// Jitter is here to decorrelate *concurrent fiddle processes*, which is a real
+/// herd: many attempts against one repository, each having just written and
+/// each about to read back on the same schedule. It is derived from the effect
+/// identity rather than from a random source, so two processes working
+/// different effects wait differently while the same effect is reproducible —
+/// a backoff nobody can reproduce is a backoff nobody can assert.
+///
+/// The window is `[step/2, step]`, and the factor is drawn **once per effect**
+/// rather than once per wait. Both halves of that matter: a factor that also
+/// varied with the attempt would make the series go *backwards* once the
+/// ceiling caps the step — two consecutive waits of `max × 0.9` and `max × 0.6`
+/// — which is a backoff that backs off less the longer it waits. Held constant,
+/// the schedule is `f × initial`, `2f × initial`, … capped, and so is
+/// non-decreasing by construction, whatever `f` turned out to be.
+fn jitter(step: Duration, effect: &EffectId) -> Duration {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in effect.0.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let half = step.as_nanos() / 2;
+    let extra = half.saturating_mul(u128::from(hash % 1_001)) / 1_000;
+    Duration::from_nanos(u64::try_from(half + extra).unwrap_or(u64::MAX))
+}
+
+/// What counts as a settled read at one of the two places the executor looks.
+///
+/// The two are deliberately not the same predicate, and that asymmetry is the
+/// difference between a useful backoff and one that slows every run down.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Settle {
+    /// **Step 3.** `Ok(None)` here is *knowledge* — the postcondition is absent
+    /// and the mutation is what fixes it — so waiting for it to change would
+    /// delay every effect that has never run by the whole budget, to no end.
+    /// Only a failed *look* is worth waiting on.
+    WhenTheLookSucceeds,
+    /// **Step 8.** `Ok(None)` here may be a write that landed and has not
+    /// surfaced yet, which is exactly what GitHub was measured doing. Absence
+    /// is retried, and so is a failed look.
+    WhenThePostconditionAppears,
+}
+
+/// One postcondition read, and how many looks it took.
+struct Settled<S> {
+    observed: Result<Option<S>, GhError>,
+    /// Reads performed, always at least one. Carried so a diagnostic can say
+    /// that waiting was tried rather than leaving an operator to wonder.
+    reads: u32,
+}
+
 /// One concrete external result, in the two halves the executor needs from it.
 ///
 /// `inspect` and `apply` are separate methods rather than one `execute` because
@@ -277,6 +459,9 @@ pub struct Executor<'a> {
     deployment: &'a dyn DeploymentPolicy,
     ctx: &'a EffectContext,
     trace: &'a dyn EffectTrace,
+    /// What a postcondition read may spend settling. See [`ReadRetry`], and
+    /// note that nothing in this struct is a budget for the *mutation*.
+    read_retry: ReadRetry,
 }
 
 impl<'a> Executor<'a> {
@@ -289,6 +474,12 @@ impl<'a> Executor<'a> {
     ///
     /// `trace` is required rather than defaulted — see [`EffectTrace`] for why an
     /// optional sink was the wrong shape.
+    ///
+    /// `read_retry` is required for that same reason. A defaulted budget would
+    /// be a wall-clock policy nobody wrote down: a caller that wanted one read
+    /// would get a backoff by omission, and a caller that wanted the backoff
+    /// would get one read by omission. [`ReadRetry::none`] is the name for the
+    /// first, so choosing it is a line of code somebody wrote.
     pub fn new(
         capability: CapabilityId,
         project: String,
@@ -296,6 +487,7 @@ impl<'a> Executor<'a> {
         deployment: &'a dyn DeploymentPolicy,
         ctx: &'a EffectContext,
         trace: &'a dyn EffectTrace,
+        read_retry: ReadRetry,
     ) -> Self {
         Self {
             capability,
@@ -304,6 +496,7 @@ impl<'a> Executor<'a> {
             deployment,
             ctx,
             trace,
+            read_retry,
         }
     }
 
@@ -409,7 +602,11 @@ impl<'a> Executor<'a> {
         //    and before policy: an effect the world already satisfies is not a
         //    request to act on, so there is nothing left to authorize.
         self.trace.step(kind, ExecutionStep::InspectPostcondition);
-        match operation.inspect(self.ctx).await {
+        match self
+            .read_until_settled(&operation, &effect_id, Settle::WhenTheLookSucceeds)
+            .await
+            .observed
+        {
             Ok(Some(state)) => {
                 return Ok(receipt(
                     effect_id,
@@ -453,16 +650,37 @@ impl<'a> Executor<'a> {
 
         // 7. Delegate. This is the only line in the process that changes
         //    anything outside it, and it is reached exactly once per call.
+        //
+        //    There is no loop around this line and there must never be one. The
+        //    read below retries; the write does not, because a read is
+        //    idempotent and a write whose answer was lost is not. Making the two
+        //    symmetric would manufacture exactly the duplicate external effect
+        //    this milestone exists to prevent — see `read_until_settled`.
         self.trace.step(kind, ExecutionStep::Apply);
         let dispatched = authorized.operation.apply(self.ctx, &authorized).await;
 
         // 8. Observe the postcondition. Whatever the dispatch said, the world is
         //    the authority — a response that never arrived cannot be believed,
         //    and a response that claimed success cannot be either.
+        //
+        //    This is where the budget is spent, because this is the read that
+        //    can be racing a write that really landed: GitHub does not list a
+        //    dispatched run, or answer for a just-pushed ref, the instant it
+        //    accepted either.
         self.trace.step(kind, ExecutionStep::ObservePostcondition);
-        let observed = authorized.operation.inspect(self.ctx).await;
+        let settled = self
+            .read_until_settled(
+                &authorized.operation,
+                &effect_id,
+                Settle::WhenThePostconditionAppears,
+            )
+            .await;
+        // Named once so both unresolved leaves say the same thing about the
+        // budget. A diagnostic that read as though the executor looked once and
+        // gave up would send an operator to add a wait that is already there.
+        let spent = spent(settled.reads);
 
-        match observed {
+        match settled.observed {
             // The world agrees, however the dispatch ended. This arm is what
             // turns a lost answer into a settled one, and it is reached by the
             // 422 and the killed-`gh` paths alike. The mutation is not
@@ -491,16 +709,20 @@ impl<'a> Executor<'a> {
                 Err(error) => Err(EffectError::Unresolved {
                     kind,
                     reason: format!(
-                        "the write was not observed and its answer was lost: {error}"
+                        "the write was not observed{spent} and its answer was lost: {error}"
                     ),
                 }),
                 // The adapter claimed success and the world does not show it.
                 // Believing the response over the world is precisely what step 8
-                // exists to prevent.
+                // exists to prevent — and so is believing the *budget*: a read
+                // that has run out of attempts has not turned an absence into a
+                // success, it has only stopped asking.
                 Ok(()) => Err(EffectError::Unresolved {
                     kind,
-                    reason: "the adapter reported success and the postcondition was not observed"
-                        .to_string(),
+                    reason: format!(
+                        "the adapter reported success and the postcondition was \
+                         not observed{spent}"
+                    ),
                 }),
             },
             Err(read_error) => match dispatched {
@@ -516,11 +738,90 @@ impl<'a> Executor<'a> {
                 _ => Err(EffectError::Unresolved {
                     kind,
                     reason: format!(
-                        "the outcome was unknown and the postcondition could not be read: {read_error}"
+                        "the outcome was unknown and the postcondition could not be read{spent}: {read_error}"
                     ),
                 }),
             },
         }
+    }
+
+    /// Read the world until it settles, or until the budget runs out.
+    ///
+    /// # Retry the READ. Never the mutation.
+    ///
+    /// This asymmetry is the milestone's central rule, and this function is
+    /// where it is enforced rather than merely believed. The next person here
+    /// will be tempted to make it symmetric — a failed `apply` looks like the
+    /// same kind of transient problem a failed `inspect` does — so:
+    ///
+    /// A read is idempotent by nature. Asking again costs a request and risks
+    /// nothing, so waiting for a consistent answer is free in the only currency
+    /// that matters. A mutation is not. Re-dispatching a write whose answer was
+    /// lost is precisely how a duplicate branch, a duplicate pull request or a
+    /// second workflow run is born, and `Unknown` exists in
+    /// [`EffectOutcome`] so that the ambiguity is resolved by *looking*.
+    /// [`IntegrationOperation::apply`] is called exactly once per
+    /// [`Executor::execute`], on every path, and no branch in this function
+    /// changes that — it cannot, because it is not given anything that could
+    /// dispatch one.
+    ///
+    /// Running out of attempts returns the *last* observation unchanged, so the
+    /// caller's own reasoning decides what it means. Exhaustion never invents an
+    /// answer, and in particular never turns an absence into a success.
+    async fn read_until_settled<O: IntegrationOperation>(
+        &self,
+        operation: &O,
+        effect: &EffectId,
+        settle: Settle,
+    ) -> Settled<O::State> {
+        let mut reads: u32 = 0;
+        loop {
+            let observed = operation.inspect(self.ctx).await;
+            reads += 1;
+
+            let advice = match &observed {
+                // Settled: the world says the postcondition holds.
+                Ok(Some(_)) => return Settled { observed, reads },
+                Ok(None) => match settle {
+                    Settle::WhenTheLookSucceeds => return Settled { observed, reads },
+                    // Nothing was said about waiting, so the backoff supplies
+                    // its own number.
+                    Settle::WhenThePostconditionAppears => RetryAdvice::default(),
+                },
+                // A refusal, a broken runner, a cancelled run or a second
+                // matching object. `is_worth_reading_again` is where each of
+                // those is judged; a `false` here is a settled answer that
+                // happens to be a failure.
+                Err(error) if !error.is_worth_reading_again() => {
+                    return Settled { observed, reads }
+                }
+                Err(error) => error.advice(),
+            };
+
+            if reads >= self.read_retry.attempts() {
+                return Settled { observed, reads };
+            }
+
+            let delay = self.read_retry.delay(reads, advice, effect);
+            tokio::select! {
+                // A cancelled run must stop rather than finish waiting. It
+                // leaves with the last observation it has, which is an honest
+                // one: nobody looked again.
+                _ = self.ctx.cancel.cancelled() => return Settled { observed, reads },
+                _ = self.read_retry.clock.wait(delay) => {}
+            }
+        }
+    }
+}
+
+/// How the budget was spent, phrased for the end of an unresolved diagnostic.
+///
+/// Empty for a single read, so the ordinary message is unchanged and only a run
+/// that really waited says it did.
+fn spent(reads: u32) -> String {
+    match reads {
+        0 | 1 => String::new(),
+        reads => format!(" over {reads} reads"),
     }
 }
 

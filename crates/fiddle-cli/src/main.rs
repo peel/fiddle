@@ -630,6 +630,13 @@ fn build_capability<'a>(
                 &github.policy,
                 &forge.ctx,
                 &forge.trace,
+                // The document's own bound on how long a postcondition read may
+                // wait for GitHub to agree with itself. Built from the table
+                // here rather than defaulted inside the executor, so that a
+                // deployment changing the numbers changes what the run does —
+                // and so there is exactly one place the document could fail to
+                // reach the walk from.
+                github.read_retry.as_read_retry(),
             );
 
             Ok(Box::new(PublishChange::new(

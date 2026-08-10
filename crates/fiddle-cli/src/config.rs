@@ -458,6 +458,17 @@ pub struct GitHub {
     #[serde(default = "default_effect_timeout")]
     pub timeout: HumanDuration,
 
+    /// How long a postcondition read may spend waiting for GitHub to agree with
+    /// itself.
+    ///
+    /// A bound, like `timeout`, so it is defaulted like one. What it bounds is
+    /// the **read** and only the read: there is no key here for retrying a
+    /// mutation, and that absence is deliberate rather than an omission — see
+    /// [`fiddle_runtime::effect::ReadRetry`], which is where the reason is
+    /// written down.
+    #[serde(default)]
+    pub read_retry: ReadRetryTable,
+
     /// The deployment's rule per effect kind.
     ///
     /// Absent means `allow`, because a document that says nothing must not be
@@ -466,6 +477,125 @@ pub struct GitHub {
     /// [`fiddle_core::combine`]'s job rather than this table's.
     #[serde(default)]
     pub policy: PolicyTable,
+}
+
+/// `[github] read_retry = { attempts, initial, max }`.
+///
+/// Real GitHub does not answer its own writes immediately: a dispatched
+/// workflow run is reliably missing from the runs listing for a moment, and a
+/// ref read has answered 404 straight after the push that created the branch.
+/// This table is how long a deployment is willing to wait for that to resolve
+/// before the run reports an unresolved outcome and hands the decision back.
+///
+/// It is a strict table of its own, because `deny_unknown_fields` on the parent
+/// does not reach into a child — and a mistyped `attempt = 8` that parsed as
+/// nothing would be a bound an operator believes they set. The strictness lives
+/// on [`ReadRetryDocument`], which is what serde actually deserializes; this
+/// type is only ever reached through the conversion below, so a value of it
+/// that has not been checked cannot be parsed into existence.
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "ReadRetryDocument")]
+pub struct ReadRetryTable {
+    /// Total reads, not waits. One means "look once and take the answer",
+    /// which is the behaviour that existed before this key did.
+    pub attempts: u32,
+    /// The first wait. Doubles after each unsettled read, up to `max`.
+    pub initial: HumanDuration,
+    /// The ceiling on any single wait, including one GitHub asked for with a
+    /// `Retry-After`.
+    pub max: HumanDuration,
+}
+
+/// An absent table is the same document as an empty one.
+///
+/// Written through the same three functions the per-key defaults use, so a
+/// document with no `read_retry` and a document with `read_retry = {}` cannot
+/// drift into meaning different things.
+impl Default for ReadRetryTable {
+    fn default() -> Self {
+        Self {
+            attempts: default_read_attempts(),
+            initial: default_read_initial(),
+            max: default_read_max(),
+        }
+    }
+}
+
+impl ReadRetryTable {
+    /// The bound as the runtime's own type, on the deployment's own clock.
+    ///
+    /// This is the whole path from the document to the executor, and it is one
+    /// function so that there is nowhere for the document's numbers to be
+    /// replaced by somebody's constants on the way.
+    pub fn as_read_retry(&self) -> fiddle_runtime::effect::ReadRetry {
+        fiddle_runtime::effect::ReadRetry::bounded(
+            self.attempts,
+            self.initial.as_duration(),
+            self.max.as_duration(),
+        )
+    }
+}
+
+/// Four reads, so three waits: `1s`, `2s` and `4s`, for **7 seconds at the
+/// outside** and about half that once the jitter is applied.
+///
+/// The number it has to cover is the one that was measured, not the one that
+/// would be safest in the abstract: real GitHub took roughly two seconds to
+/// list a dispatched run and to answer for a just-pushed ref, and
+/// `scripts/live-github.sh` re-runs on a four-second cadence. Seven seconds
+/// covers both with room over.
+///
+/// The cost of a *larger* budget is paid by the runs that are never going to
+/// settle, and they are the ones that most need to hand the decision back:
+/// exhausting reaches `Unresolved` → `RunOutcome::Retryable` → exit 11, and a
+/// caller sitting behind a long budget is a caller that cannot act on it.
+const DEFAULT_READ_ATTEMPTS: u32 = 4;
+
+/// The same table before its own constraints have been applied.
+///
+/// The constraints are applied here, at the parse boundary, rather than where
+/// the value is used: `attempts = 0` is a document that says every
+/// postcondition goes unobserved, and `initial` above `max` is a document whose
+/// first wait would be silently shortened to a number nobody wrote. Both are
+/// mistakes an operator can only fix in the file, so the file is where they are
+/// refused.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadRetryDocument {
+    #[serde(default = "default_read_attempts")]
+    attempts: u32,
+    #[serde(default = "default_read_initial")]
+    initial: HumanDuration,
+    #[serde(default = "default_read_max")]
+    max: HumanDuration,
+}
+
+impl TryFrom<ReadRetryDocument> for ReadRetryTable {
+    type Error = String;
+
+    fn try_from(document: ReadRetryDocument) -> Result<Self, String> {
+        if document.attempts == 0 {
+            return Err(
+                "a postcondition read must happen at least once; `attempts = 0` \
+                 would leave every effect unobserved, and `attempts = 1` is how \
+                 a document asks for no waiting"
+                    .to_string(),
+            );
+        }
+        if document.initial.as_duration() > document.max.as_duration() {
+            return Err(format!(
+                "the first wait ({}) is longer than the ceiling on any wait ({}), \
+                 so `initial` could never be honoured — raise `max` or lower \
+                 `initial`",
+                document.initial, document.max
+            ));
+        }
+        Ok(Self {
+            attempts: document.attempts,
+            initial: document.initial,
+            max: document.max,
+        })
+    }
 }
 
 /// A repository, as `owner/name`.
@@ -748,6 +878,18 @@ fn default_gh_config_dir() -> PathBuf {
 
 fn default_effect_timeout() -> HumanDuration {
     HumanDuration::secs(5 * 60)
+}
+
+fn default_read_attempts() -> u32 {
+    DEFAULT_READ_ATTEMPTS
+}
+
+fn default_read_initial() -> HumanDuration {
+    HumanDuration::secs(1)
+}
+
+fn default_read_max() -> HumanDuration {
+    HumanDuration::secs(4)
 }
 
 /// A document that failed the strict schema, carrying enough context to point
@@ -1216,6 +1358,218 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
         // moment they are needed.
         assert_eq!(github.work, None);
         assert_eq!(github.workflow, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // `[github] read_retry`
+    // -----------------------------------------------------------------------
+
+    /// Absent means the documented budget, and it is pinned here rather than
+    /// left to whatever three `default_*` functions happened to return.
+    #[test]
+    fn the_read_retry_defaults_are_the_ones_documented() {
+        let github = github(FORGE);
+        assert_eq!(github.read_retry.attempts, 4);
+        assert_eq!(
+            github.read_retry.initial.as_duration(),
+            Duration::from_secs(1)
+        );
+        assert_eq!(github.read_retry.max.as_duration(), Duration::from_secs(4));
+    }
+
+    /// The document's numbers, and the same numbers on the runtime's own type.
+    #[test]
+    fn a_written_read_retry_reaches_the_runtime_type() {
+        let github = github(&format!(
+            "{FORGE}read_retry = {{ attempts = 3, initial = \"2s\", max = \"1m\" }}\n"
+        ));
+        assert_eq!(github.read_retry.attempts, 3);
+
+        let retry = github.read_retry.as_read_retry();
+        assert_eq!(retry.attempts(), 3);
+        assert_eq!(retry.max(), Duration::from_secs(60));
+    }
+
+    /// Strictness reaches one table deeper. `deny_unknown_fields` on `[github]`
+    /// does not reach into a child, so a mistyped `attempt = 8` would otherwise
+    /// parse as nothing and leave an operator believing they had set a bound.
+    #[test]
+    fn an_unknown_key_inside_the_read_retry_table_is_refused() {
+        let bad = format!("{FORGE}read_retry = {{ attempt = 8 }}\n");
+        assert!(toml::from_str::<Config>(&bad)
+            .unwrap_err()
+            .message()
+            .contains("attempt"));
+    }
+
+    /// A budget of zero reads is not a stricter policy — it is a postcondition
+    /// that is never observed, so every effect would be unresolved. Refused in
+    /// the file, which is the only place an operator can fix it.
+    #[test]
+    fn a_budget_of_no_reads_at_all_is_refused() {
+        let bad = format!("{FORGE}read_retry = {{ attempts = 0 }}\n");
+        let message = toml::from_str::<Config>(&bad)
+            .unwrap_err()
+            .message()
+            .to_string();
+        assert!(
+            message.contains("at least once"),
+            "the refusal must say what is wrong, got {message}"
+        );
+
+        // And one read is the way to ask for no waiting, so it must be legal.
+        let fine = format!("{FORGE}read_retry = {{ attempts = 1 }}\n");
+        assert_eq!(github(&fine).read_retry.attempts, 1);
+    }
+
+    /// A first wait longer than the ceiling on any wait is a document whose
+    /// `initial` could never be honoured. Refused rather than silently
+    /// shortened to a number nobody wrote.
+    #[test]
+    fn a_first_wait_above_the_ceiling_is_refused() {
+        let bad = format!("{FORGE}read_retry = {{ initial = \"30s\", max = \"4s\" }}\n");
+        let message = toml::from_str::<Config>(&bad)
+            .unwrap_err()
+            .message()
+            .to_string();
+        assert!(message.contains("longer than the ceiling"), "got {message}");
+    }
+
+    /// The whole point of the key: the document changes what a run *does*.
+    ///
+    /// Two documents, two read counts, one executor built the way `main` builds
+    /// it. A test that only asserted the numbers survived deserialization would
+    /// pass on a build where nothing downstream ever looked at them — which is
+    /// exactly the defect this key was added to stop repeating.
+    #[tokio::test]
+    async fn the_document_decides_how_many_times_the_postcondition_is_read() {
+        async fn reads_under(document: &str) -> usize {
+            let github = github(&format!("{FORGE}{document}"));
+            let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let ctx = unreachable_effect_context();
+            let deployment = AllowEverything;
+            let executor = fiddle_runtime::effect::Executor::new(
+                fiddle_core::PUBLISH_CHANGE,
+                "p".to_string(),
+                "beans:w-1".to_string(),
+                &deployment,
+                &ctx,
+                &DiscardTheWalk,
+                github.read_retry.as_read_retry(),
+            );
+            let proposed = fiddle_core::ProposedEffect {
+                capability: fiddle_core::PUBLISH_CHANGE,
+                kind: fiddle_core::EffectKind::EnsureBranchPublished,
+                target: "refs/heads/fiddle/abc".to_string(),
+                payload: "{}".to_string(),
+            };
+            executor
+                .execute(proposed, NeverSettles(counter.clone()))
+                .await
+                .expect_err("a postcondition that never appears is never a success");
+            counter.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        // One look before the mutation, then the budget after it.
+        assert_eq!(
+            reads_under("read_retry = { attempts = 1 }\n").await,
+            2,
+            "one attempt is one post-mutation read"
+        );
+        assert_eq!(
+            reads_under("read_retry = { attempts = 3, initial = \"1s\", max = \"1s\" }\n").await,
+            4,
+            "and three is three — the document, not a constant in the executor"
+        );
+    }
+
+    /// An operation whose postcondition never appears, counting its looks.
+    ///
+    /// Deliberately not the runtime suite's scripted world: this test is about
+    /// the path from *this file's* document to the executor, so it holds its own
+    /// minimal world rather than reaching into another crate's fixtures.
+    struct NeverSettles(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    struct NeverObserved;
+
+    impl fiddle_runtime::effect::ObservedState for NeverObserved {
+        type Value = ();
+        fn describe(&self) -> String {
+            unreachable!("this postcondition is never observed")
+        }
+        fn reference(&self) -> Option<String> {
+            None
+        }
+        fn into_value(self) {}
+    }
+
+    #[async_trait::async_trait]
+    impl fiddle_runtime::effect::IntegrationOperation for NeverSettles {
+        type State = NeverObserved;
+
+        fn minimum(&self) -> fiddle_core::HumanDecisionRequirement {
+            fiddle_core::HumanDecisionRequirement::Automatic
+        }
+
+        async fn inspect(
+            &self,
+            _ctx: &fiddle_runtime::effect::EffectContext,
+        ) -> Result<Option<NeverObserved>, fiddle_runtime::GhError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(None)
+        }
+
+        async fn apply(
+            &self,
+            _ctx: &fiddle_runtime::effect::EffectContext,
+            _authorized: &fiddle_runtime::effect::AuthorizedEffect<Self>,
+        ) -> Result<(), fiddle_runtime::GhError> {
+            Ok(())
+        }
+    }
+
+    struct AllowEverything;
+
+    impl fiddle_runtime::effect::DeploymentPolicy for AllowEverything {
+        fn rule_for(&self, _kind: fiddle_core::EffectKind) -> fiddle_core::DeploymentRule {
+            fiddle_core::DeploymentRule::Allow
+        }
+    }
+
+    struct DiscardTheWalk;
+
+    impl fiddle_runtime::effect::EffectTrace for DiscardTheWalk {
+        fn step(
+            &self,
+            _kind: fiddle_core::EffectKind,
+            _step: fiddle_runtime::effect::ExecutionStep,
+        ) {
+        }
+    }
+
+    /// A context nothing above reaches: the operation ignores it, and both
+    /// program paths are ones that do not exist, so a change that made the
+    /// executor talk to GitHub behind the operation's back would fail loudly
+    /// rather than quietly acquire a network.
+    fn unreachable_effect_context() -> fiddle_runtime::effect::EffectContext {
+        fiddle_runtime::effect::EffectContext::new(
+            fiddle_runtime::GhCli::new(
+                PathBuf::from("/nonexistent/gh"),
+                Vec::new(),
+                String::new(),
+                "GH_TOKEN",
+                PathBuf::from("/nonexistent"),
+                Duration::from_secs(1),
+            ),
+            fiddle_runtime::git::GitCli::new(
+                PathBuf::from("/nonexistent/git"),
+                String::new(),
+                "FIDDLE_GITHUB_TOKEN",
+                Duration::from_secs(1),
+            ),
+            PathBuf::from("/nonexistent"),
+            tokio_util::sync::CancellationToken::new(),
+        )
     }
 
     /// A resolved forge credential must not parse, for the reason a resolved

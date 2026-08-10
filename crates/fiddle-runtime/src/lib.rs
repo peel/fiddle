@@ -76,7 +76,7 @@ pub use github::{
     check_request_target, observe_checks, CheckState, EnsureCheckRequested, WorkflowRun,
 };
 pub use github::{pull_request_target, EnsurePullRequest, PullRequest};
-pub use github::{GhCli, GhError, GhResponse};
+pub use github::{GhCli, GhError, GhResponse, RetryAdvice};
 pub use journal::{AttemptJournal, AttemptTrace};
 pub use orchestration::{
     attempt, observe, run, AttemptContext, AttemptRecord, RunContext, RunReport,

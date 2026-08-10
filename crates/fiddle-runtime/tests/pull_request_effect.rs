@@ -30,6 +30,7 @@ mod support;
 use fiddle_core::{effect_id, payload_hash, EffectKind, ProposedEffect, FIXTURE_REPAIR};
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
+    ReadRetry,
 };
 use fiddle_runtime::github::{branch_name, EnsurePullRequest, PullRequest};
 use fiddle_runtime::{GhCli, GhError};
@@ -284,6 +285,9 @@ async fn open_the_pull_request(
         &deployment,
         ctx,
         forge,
+        // One read and no waiting: this suite's subject is the pull-request
+        // operation, not the postcondition read's budget.
+        ReadRetry::none(),
     )
     .execute(proposed, operation)
     .await
@@ -530,6 +534,7 @@ async fn a_422_for_a_pull_request_that_already_exists_is_not_a_false_failure() {
             GhError::Http {
                 status: 422,
                 ref message,
+                ..
             } if message == "scripted 422"
         ),
         "expected a 422 whose message says nothing, got {refusal:?}"
