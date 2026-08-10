@@ -865,3 +865,18 @@ The four earlier dressings were all failures of the *assertion* or the *explanat
 The rule: **for any property about order, selection, or identity, at least one test must supply an input where the correct answer and the lazy answer differ.** If every fixture is sorted, "last", "greatest", "first match" and "the one with the largest id" are the same value, and a test cannot distinguish which one the code computed. A passing test whose fixture cannot separate the candidate implementations is a test of nothing, and it will read as the property's guard to everyone who comes after.
 Origin: implementation (epic fiddle-eoqx, bean fiddle-n8fs) — a null inversion result that changed the production code
 Tags: #process #testing
+
+**Amendment — the cheap inversion driver, stated so the wrong half is not what propagates.** A lane that ran 21 inversions found the per-inversion worktree prescribed above is more granularity than the problem needs, and the lead initially wrote that up in a way that invited exactly the wrong reading. Precisely:
+
+- **The saving is one worktree for N inversions. It is not permission to skip isolation.** The run must still happen in a **detached worktree pinned at the commit under inversion**. What is unnecessary is a *fresh* worktree per inversion — a single pinned worktree can host all N rounds, mutating and restoring in place, for one cold build instead of N. Someone who reads "single build, mutate in place" and runs it in the shared checkout has made the original mistake, which is the one this whole entry exists to prevent.
+- **In-place mutate-and-restore is only safe with two guards, and both are required.** Copy the file to a pristine path *before* the first mutation, and *after* the run diff the working file against that copy and assert byte-identity. Run the restore in a `finally`. Without both, an interrupted or crashed round leaves the tree mutated and red — reintroducing the phantom-failure problem *inside* the isolation meant to prevent it, and somewhere far less visible than the shared checkout, where at least other lanes notice.
+
+The lane that supplied this used both guards and verified the restored file byte-identical to the commit before removing the worktree. That is the standard, not the optional extra.
+
+**Amendment to the fixture rule above — the mitigation fails when applied in the obvious place.** The rule as recorded ("at least one fixture must make the correct answer and the lazy answer differ") is right and incomplete. The lane that found it added the part that makes it usable:
+
+> **That discriminating fixture usually has to live in a *different test* from the one named for the property.**
+
+In this case the sorted fixture sat in `the_last_authorized_reply_decides_and_the_earlier_ones_are_evidence` — the test named for the rule — and could never fail under a position-based reading. The discriminating fixture lives in `a_scrambled_listing_reaches_the_same_decision_as_a_sorted_one`. So **someone applying the rule by strengthening the property's own test would not reach it**, because the fixture that test needs is the one it already has for every other assertion it makes. The fifth dressing survives a mitigation applied in the obvious place, which is what makes it the worst of the five.
+
+The corollary, also from that lane, is to resist collapsing the two tests: `considered` order and which reply decides are separate claims, and keeping them as separate assertions is what made two of the inversions individually visible rather than one indistinguishable failure.
