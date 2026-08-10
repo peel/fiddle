@@ -3,6 +3,36 @@
 # conclusion rather than claimed from a file. It invokes that script rather than
 # repeating it — one lane, two places it can be started from.
 #
+# ## READ THIS FIRST IF YOU CANNOT DISPATCH THIS WORKFLOW
+#
+# `workflow_dispatch` resolves workflows on the repository's **default branch
+# only**. Until this file is on `main`, GitHub creates no workflow entity for it
+# at all, and every way of starting it fails identically:
+#
+#     $ gh workflow run github-effects.yml --repo peel/fiddle --ref <any-branch>
+#     HTTP 404: workflow github-effects.yml not found on the default branch
+#
+#     $ gh api repos/peel/fiddle/actions/workflows --jq '.workflows[].path'
+#     ... this file absent from the list ...
+#
+# Note what that does *not* mean. `workflow_dispatch` **is** the manual trigger,
+# so "just run it by hand" is the same mechanism and is equally blocked — the
+# Actions UI button does not appear either, because the workflow does not exist
+# as far as GitHub is concerned. There is no ref you can pass to work around it.
+#
+# So a dispatch-only lane living on a feature branch is not slow or awkward, it
+# is **inert**, and it stays inert for everyone until the file merges. That is
+# the only reason M2 shipped with this lane's run evidence obtained under a
+# temporarily flipped default branch (run 31364842113, event workflow_dispatch,
+# conclusion success, `main` restored immediately and asserted): the mechanism
+# was proven, the lane was not yet live. Once this file is on `main`, dispatch it
+# once with any `fiddle_effect_id` and that gap closes on its own — no code
+# change is owed.
+#
+# The lesson generalises past this file: any future dispatch-only lane inherits
+# the same property, and a milestone that plans one on a feature branch has
+# planned something it cannot exercise.
+#
 # ## This lane never gates
 #
 # `workflow_dispatch` is its only trigger. No `push`, no `pull_request`, no
