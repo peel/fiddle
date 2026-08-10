@@ -951,3 +951,28 @@ Two smaller rules fall out of the same episode:
 - **A shutdown reason is not a state assertion.** The lead's shutdown message described the bean as complete at a commit that was missing a piece. Accepting a bean and retiring its lane are separate acts, and the first needs the bean read, not the conversation recalled.
 Origin: process (epic fiddle-eoqx, beans fiddle-dvsl and fiddle-ayqd) — named by an implementer after the fourth crossed instruction
 Tags: #process
+
+### 2026-08-11 — A lint fix inserted between a doc comment and its item silently reattaches the documentation
+The eighth dressing, and the first with a purely mechanical cause. Nobody wrote a false sentence; a correct sentence was moved away from what it describes by a fix to an unrelated lint.
+
+`fiddle-ayqd`'s restructure carried a long doc comment explaining why a `for` loop of `assert_eq!` cannot evidence a claim about three cases. Its first version tripped `clippy::type_complexity` on the helper's return type, and the fix — two type aliases — was inserted **between the comment and the function**:
+
+```
+lines 501-525   /// the essay about collect-then-compare
+line  526       type Case = (&'static str, String, String);
+line  530       type Refusals = Vec<(&'static str, String)>;
+line  532       fn refusals(cases: &[Case]) -> (Refusals, Refusals) { … }
+```
+
+Rustdoc attaches a doc comment to whatever item follows it, so **the essay now documents `type Case`**, `fn refusals` is undocumented, and both `see [refusals]` links (`:559`, `:636`) lead a reader to a function with no prose. Worse, the bean *and* the lead's evidence pack both assert that the distinction is "written into `refusals`' documentation" — a claim that is not true of the artifact as committed. The record contradicts the code again, and this time neither the implementer nor the lead wrote the contradiction: the lint fix did.
+
+Nothing can fail here. `cargo doc` builds, clippy is clean, the suite is green, and the essay reads correctly in isolation — it is simply attached to the wrong item. `cargo doc` would render it under `type Case`, which is the only place the defect is visible, and nobody reads rendered docs during a gate.
+
+Two rules, and the second is the general one:
+
+- **When a fix inserts an item, check what the doc comment above the insertion point now documents.** Adding a type alias, a `const`, or a `#[cfg]` block between a comment and its function is a silent reattachment.
+- **An intra-file `see [x]` link is only as good as `x` having prose.** A link into an undocumented item is a dead end that reads, in the source, exactly like a live one.
+
+Also found in the same pass, both worth keeping as calibration for how precise a corrected claim has to be: a pointer that **under-names the function holding the comparison it corrects** — the corrected sentence is about the head-sha comparison, which lives in `observe`, not in the `resolve` the pointer names — and a claim **compressed past the point it stays true**: "the one field the conversation cannot supply" holds for a *forged* effect id but not for a *verbatim copy* of the marker, which supplies it and is refused as `DuplicateRequest` instead. The accurate form already existed one crate away.
+Origin: evaluation (epic fiddle-eoqx, bean fiddle-ayqd, iteration 2) — all three found by an evaluator reading the committed artifact rather than the diff
+Tags: #process #docs
