@@ -41,6 +41,7 @@ pub mod evidence;
 pub mod gateway;
 pub mod git;
 pub mod github;
+pub mod human;
 pub mod journal;
 pub mod orchestration;
 pub mod ports;
@@ -77,6 +78,7 @@ pub use github::{
 };
 pub use github::{pull_request_target, EnsurePullRequest, PullRequest};
 pub use github::{GhCli, GhError, GhResponse, RetryAdvice};
+pub use human::InteractionRef;
 pub use journal::{AttemptJournal, AttemptTrace};
 pub use orchestration::{
     attempt, observe, run, AttemptContext, AttemptRecord, RunContext, RunReport,

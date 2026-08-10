@@ -922,11 +922,18 @@ mod tests {
     /// Every row of design §4.5's table, in one place.
     ///
     /// The rest of the exit-code coverage is black-box, in `fiddle-acceptance`,
-    /// and it can only reach the rows this build can be driven into. `Suspended`
-    /// is not one of them — M0 has no decision point, so nothing outside this
-    /// test can pin row 10 at all, and a variant whose code is written down but
-    /// never checked is exactly how a code drifts before the milestone that
-    /// starts producing it.
+    /// and it can only reach the rows this build can be driven into. Row 10 was
+    /// not one of them until M3: nothing outside this test could pin it, so it
+    /// was pinned here against a hand-built outcome, on the argument that a code
+    /// written down and never checked is exactly how a code drifts before the
+    /// milestone that starts producing it.
+    ///
+    /// **That argument has been retired by the milestone it was waiting for.**
+    /// `run_outcome.rs`'s `a_run_awaiting_a_decision_exits_ten_and_says_what_it
+    /// _waits_for` drives the row through the compiled binary, so this test is
+    /// no longer row 10's only evidence and is back to being what the other
+    /// three rows have always used it for: the whole table asserted in one
+    /// place, where a reader can see that no two outcomes share a number.
     #[test]
     fn every_outcome_maps_to_the_row_the_table_documents() {
         let rows: [(RunOutcome, u8); 4] = [

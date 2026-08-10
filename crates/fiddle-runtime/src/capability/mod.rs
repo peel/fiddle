@@ -36,7 +36,10 @@ pub use publish::{PublishChange, PublishConfig};
 pub use repair::{FixtureRepair, RepairConfig};
 pub use stub::StubMark;
 
-use fiddle_core::{AttemptId, CapabilityId, EvidenceRef, NextAction, Publication};
+use crate::human::InteractionRef;
+use fiddle_core::{
+    AttemptId, CapabilityId, DecisionRequestId, EvidenceRef, NextAction, Publication,
+};
 use std::path::PathBuf;
 
 /// Every capability this build can execute.
@@ -305,6 +308,46 @@ pub enum CapabilityError {
     #[error("{0}")]
     Effect(#[from] crate::effect::EffectError),
 
+    /// The capability published a question and stopped. Not a failure: the run
+    /// is waiting, which is what [`fiddle_core::RunOutcome::Suspended`]
+    /// promises.
+    ///
+    /// # Why a wait is an `Err` at all
+    ///
+    /// Because this type's own sentence is *why an execution did not produce
+    /// evidence*, and "it is waiting for a person" belongs to that set — an
+    /// execution that put a question on a conversation has no
+    /// [`EvidenceRef`] for the thing it was asked to do, because that thing has
+    /// not been done. The cleaner shape is to widen the success arm to
+    /// `Evidence | Suspended`, since waiting is not failing; it was rejected on
+    /// cost, because that signature is the seam all four capabilities and the
+    /// orchestration's success path are built on and M0's and M1's lanes both
+    /// drive it. What makes the chosen shape safe is
+    /// [`crate::effect::Recurrence`]: the wait gets its own value there rather
+    /// than borrowing a failure's, and every match on it is exhaustive.
+    ///
+    /// # Why the whole [`InteractionRef`] and not the request id
+    ///
+    /// Because [`crate::orchestration`] files the progress entry that tells a
+    /// reader *where to look*, and it can only do that from a value it was
+    /// given. A [`DecisionRequestId`] identifies the question to a later
+    /// process re-deriving it; it does not tell a person which pull request to
+    /// open. Both are carried, and the rendering is
+    /// [`InteractionRef`]'s single [`Display`](std::fmt::Display), so the
+    /// bundle, this diagnostic and the human line cannot disagree about how one
+    /// conversation is named.
+    ///
+    /// The message names the conversation for that reason, rather than
+    /// deferring it to whichever caller happens to render one: the outcome's
+    /// `reason` is built from this text, and a reason that named only the
+    /// question would leave a reader of the `--json` payload with nowhere to go.
+    #[error("awaiting a human decision at {interaction} on request {}: {question}", request.0)]
+    AwaitingDecision {
+        request: DecisionRequestId,
+        interaction: InteractionRef,
+        question: String,
+    },
+
     /// The executor a capability was built with names a different run than the
     /// one asking it to execute.
     ///
@@ -360,7 +403,17 @@ impl CapabilityError {
                 Recurrence::Permanent
             }
 
-            // The variant M2 added, and the one with two families inside it.
+            // **The variant that is not a failure.** Everything else in this
+            // table answers "would repeating get past this"; this one answers
+            // that there is nothing to get past. The run asked a person and
+            // stopped, which is what it was built to do, and neither of the
+            // other two rows describes it: 11 invites a repeat that would ask
+            // the same question again, and 20 tells a caller to give up on a
+            // run an answer would finish. See [`Recurrence::Awaiting`].
+            CapabilityError::AwaitingDecision { .. } => Recurrence::Awaiting,
+
+            // The variant M2 added, and the one with three families inside it
+            // since `HumanDecisionRequired` moved to the row above.
             CapabilityError::Effect(error) => error.recurrence(),
         }
     }
