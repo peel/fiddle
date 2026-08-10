@@ -72,6 +72,14 @@ use std::sync::OnceLock;
 const READY_FOR_REVIEW: &str = "mutation($id: ID!) { markPullRequestReadyForReview(input: \
                                 {pullRequestId: $id}) { pullRequest { isDraft } } }";
 
+/// One GraphQL call, in the two halves [`GhCli::graphql`](super::GhCli::graphql)
+/// takes: the query, and the variables bound to it.
+///
+/// Named so that the split between them is a type rather than a tuple somebody
+/// has to read twice. The array is sized at one because this operation has one
+/// input and would be a different operation with two.
+type Mutation<'a> = (&'static str, [(&'a str, &'a str); 1]);
+
 /// A pull request observed to be out of draft.
 ///
 /// The `node_id` is carried because it is what was read, and because a receipt
@@ -157,6 +165,37 @@ impl EnsurePullRequestReady {
     /// The one read this operation makes, addressed by number.
     fn lookup_path(&self) -> String {
         format!("/repos/{}/pulls/{}", self.repo, self.pr)
+    }
+
+    /// The mutation this operation would dispatch: the query, and the node id
+    /// bound to it as a variable.
+    ///
+    /// A method rather than three lines inside
+    /// [`EnsurePullRequestReady::apply`], because it is the only part of the
+    /// dispatch anything in this build can reach. `apply` needs an
+    /// [`AuthorizedEffect`], which is unforgeable outside [`crate::effect`], so
+    /// no test calls it directly; and the empty cell below is unreachable
+    /// *through* the executor by construction, since step 3's `inspect` runs
+    /// before step 7 and fills the cell on every path that gets there. Left
+    /// inline, both the refusal and the choice to pass the node id as a variable
+    /// would be facts nothing that runs could observe.
+    ///
+    /// This is not a seam an implementation could drift behind: `apply` has no
+    /// other route to the node id, and a version that stopped calling this would
+    /// leave a private method with no callers, which does not compile under the
+    /// workspace's `-D warnings`.
+    ///
+    /// An empty cell is refused rather than repaired by fetching — see `apply`
+    /// for why — and refused as [`GhError::NotSent`], which is `NotCommitted`:
+    /// nothing left this process, so no postcondition is owed.
+    fn mutation(&self) -> Result<Mutation<'_>, GhError> {
+        let node_id = self.node_id.get().ok_or_else(|| {
+            GhError::NotSent(format!(
+                "the node id of {} was not read before the mutation",
+                self.target()
+            ))
+        })?;
+        Ok((READY_FOR_REVIEW, [("id", node_id.as_str())]))
     }
 
     /// Read the two fields this operation needs out of one pull request.
@@ -260,7 +299,10 @@ impl IntegrationOperation for EnsurePullRequestReady {
     /// nowhere else. An empty cell is refused rather than repaired by fetching:
     /// this operation is spending an approval a person gave for one pull request
     /// at one revision, and a fetch inside `apply` is a second chance to decide
-    /// which object that was.
+    /// which object that was. Both the refusal and the binding are
+    /// [`EnsurePullRequestReady::mutation`]'s, which is where they are reachable
+    /// by a test — this function is not, for want of an
+    /// [`AuthorizedEffect`] anything outside [`crate::effect`] could build.
     ///
     /// The response is discarded, `data` and all. It is what GitHub said about
     /// its own mutation, and the executor's next act is to read the pull request
@@ -271,15 +313,10 @@ impl IntegrationOperation for EnsurePullRequestReady {
         ctx: &EffectContext,
         _authorized: &AuthorizedEffect<Self>,
     ) -> Result<(), GhError> {
-        let node_id = self.node_id.get().ok_or_else(|| {
-            GhError::NotSent(format!(
-                "the node id of {} was not read before the mutation",
-                self.target()
-            ))
-        })?;
+        let (query, variables) = self.mutation()?;
 
         ctx.gh
-            .graphql(READY_FOR_REVIEW, &[("id", node_id)], &ctx.cancel)
+            .graphql(query, &variables, &ctx.cancel)
             .await
             .map(|_data| ())
     }
@@ -288,18 +325,73 @@ impl IntegrationOperation for EnsurePullRequestReady {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::effect::EffectOutcome;
     use fiddle_core::payload_hash;
 
     fn ready_at(head_sha: &str) -> EnsurePullRequestReady {
         EnsurePullRequestReady::new("acme/r".to_string(), 7, head_sha.to_string())
     }
 
-    /// The query is what makes the node id a value rather than syntax.
+    /// A mutation with nothing in the cell is a call this process refuses to
+    /// make, and says so in those terms.
+    ///
+    /// Asserted rather than assumed precisely because it is the case the
+    /// read-once handoff exists to make impossible: nothing that runs can reach
+    /// it, so nothing that runs would notice the guard being dropped or refusing
+    /// with a variant that meant something else. `NotSent` is `NotCommitted` —
+    /// no request exists, so no postcondition is owed — while a `Malformed` here
+    /// would be `Unknown`, which reports fiddle's own refusal to call as a lost
+    /// answer and sends somebody to look for a write that was never attempted.
     #[test]
-    fn the_mutation_names_its_input_as_a_variable() {
-        assert!(READY_FOR_REVIEW.contains("markPullRequestReadyForReview"));
-        assert!(READY_FOR_REVIEW.contains("$id"));
-        assert!(READY_FOR_REVIEW.contains("mutation($id: ID!)"));
+    fn a_mutation_with_no_node_id_in_hand_is_not_sent() {
+        let refusal = ready_at("aaaa")
+            .mutation()
+            .expect_err("a node id that was never read is not an input");
+
+        assert!(matches!(refusal, GhError::NotSent(_)), "got {refusal:?}");
+        assert_eq!(
+            refusal.outcome(),
+            EffectOutcome::NotCommitted,
+            "nothing was sent, so there is nothing to go and look for"
+        );
+        assert!(
+            refusal.to_string().contains("acme/r#7@aaaa"),
+            "and it names the effect at the revision it refused: {refusal}"
+        );
+    }
+
+    /// The node id goes out as a variable bound to the query, and never as part
+    /// of the query.
+    ///
+    /// Stated over what `apply` would really dispatch rather than over the text
+    /// of [`READY_FOR_REVIEW`]. The const's spelling was what this asserted
+    /// until now, and that version would have survived an `apply` that took the
+    /// id out of the cell and spliced it in at dispatch time — the failure it
+    /// exists to catch. The negative assertion is the load-bearing one: a node
+    /// id is a value GitHub chose, and interpolated into a query it could
+    /// rewrite the query it appears in.
+    ///
+    /// What is still owed, and cannot be written until the executor can commit
+    /// an operation whose minimum is `Human`, is the same claim about the
+    /// *recorded request* — the `argv` a scripted `gh` really received.
+    /// `ready_effect.rs` names it.
+    #[test]
+    fn the_mutation_binds_its_input_rather_than_spelling_it() {
+        let ready = ready_at("aaaa");
+        // The cell as step 3 leaves it. `inspect` is what writes it in a run,
+        // and `ready_effect.rs` asserts that against a real read; here the
+        // subject is what `apply` does with a cell that has been written.
+        ready.node_id.set("PR_kwDOabcdef".to_string()).unwrap();
+
+        let (query, variables) = ready.mutation().unwrap();
+
+        assert_eq!(variables, [("id", "PR_kwDOabcdef")]);
+        assert!(query.contains("markPullRequestReadyForReview"));
+        assert!(query.contains("mutation($id: ID!)"));
+        assert!(
+            !query.contains("PR_kwDOabcdef"),
+            "the id is bound, not spelled: {query}"
+        );
     }
 
     /// A read that answered half the question is not an answer this operation
