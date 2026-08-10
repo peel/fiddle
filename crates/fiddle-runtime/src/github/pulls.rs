@@ -110,6 +110,14 @@ pub struct EnsurePullRequest {
     title: String,
     /// Payload, as above.
     body: String,
+    /// Open it as a draft.
+    ///
+    /// Payload rather than identity: a draft is the same proposal for the same
+    /// head and base, and what distinguishes it is what the request asks for
+    /// rather than which object it is about. The transition out of draft is the
+    /// gated act — it is the moment the change enters a review queue — and this
+    /// field is only the state it starts in.
+    draft: bool,
 }
 
 impl EnsurePullRequest {
@@ -120,6 +128,7 @@ impl EnsurePullRequest {
         base: String,
         title: String,
         body: String,
+        draft: bool,
     ) -> Self {
         Self {
             repo,
@@ -128,7 +137,24 @@ impl EnsurePullRequest {
             base,
             title,
             body,
+            draft,
         }
+    }
+
+    /// The `draft` key, present only when this run is drafting.
+    ///
+    /// Written once and rendered by both the canonical payload and the create,
+    /// because a payload that claimed a key the request never sent would be a
+    /// record of something that did not happen.
+    ///
+    /// Absent rather than `false` when not drafting, and that is the load-bearing
+    /// half. The API omits the parameter when it is not asked for, so omitting is
+    /// the honest rendering — and because [`serde_json::Map`] is sorted, an
+    /// omitted key moves no other byte, which leaves every payload written before
+    /// this field existed hashing exactly as it did.
+    fn draft_key(&self) -> Option<(String, serde_json::Value)> {
+        self.draft
+            .then(|| ("draft".to_string(), serde_json::Value::Bool(true)))
     }
 
     /// The canonical target identity to propose this effect under.
@@ -232,15 +258,20 @@ impl IntegrationOperation for EnsurePullRequest {
     /// head and base settles on it whatever it is titled, which is
     /// [`EnsurePullRequest::inspect`](IntegrationOperation::inspect)'s deliberate
     /// position and not an oversight here.
+    ///
+    /// The `draft` key is here only when it is asked for — see
+    /// [`draft_key`](EnsurePullRequest::draft_key) for why the absent spelling is
+    /// both the honest one and the one that leaves earlier payloads untouched.
     fn payload(&self) -> String {
-        serde_json::json!({
-            "base": self.base,
-            "body": self.body,
-            "head": self.head_label(),
-            "repo": self.repo,
-            "title": self.title,
-        })
-        .to_string()
+        let mut request = serde_json::Map::from_iter([
+            ("base".to_string(), self.base.clone().into()),
+            ("body".to_string(), self.body.clone().into()),
+            ("head".to_string(), self.head_label().into()),
+            ("repo".to_string(), self.repo.clone().into()),
+            ("title".to_string(), self.title.clone().into()),
+        ]);
+        request.extend(self.draft_key());
+        serde_json::Value::Object(request).to_string()
     }
 
     /// Is there already an open pull request for this head and base?
@@ -299,17 +330,18 @@ impl IntegrationOperation for EnsurePullRequest {
         ctx: &EffectContext,
         _authorized: &AuthorizedEffect<Self>,
     ) -> Result<(), GhError> {
-        let body = serde_json::json!({
-            "title": self.title,
-            "body": self.body,
-            "head": self.head_label(),
-            "base": self.base,
-        });
+        let mut body = serde_json::Map::from_iter([
+            ("title".to_string(), self.title.clone().into()),
+            ("body".to_string(), self.body.clone().into()),
+            ("head".to_string(), self.head_label().into()),
+            ("base".to_string(), self.base.clone().into()),
+        ]);
+        body.extend(self.draft_key());
         ctx.gh
             .api(
                 "POST",
                 &format!("/repos/{}/pulls", self.repo),
-                Some(&body),
+                Some(&serde_json::Value::Object(body)),
                 &ctx.cancel,
             )
             .await
@@ -329,6 +361,7 @@ mod tests {
             base.to_string(),
             title.to_string(),
             "the body".to_string(),
+            false,
         )
     }
 

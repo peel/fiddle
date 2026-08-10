@@ -160,8 +160,13 @@ impl Forge {
         )
     }
 
-    /// Every request the scripted `gh` recorded, in arrival order.
-    fn requests(&self) -> Vec<Vec<String>> {
+    /// Every request the scripted `gh` recorded, in arrival order, as the stub
+    /// wrote it: the argv beside the body it was given on stdin.
+    ///
+    /// Both halves are read from the same records so that a test asking what was
+    /// *sent* and a test asking where it was sent are asking about one request
+    /// rather than about two lists that could drift apart.
+    fn recorded(&self) -> Vec<serde_json::Value> {
         let dir = self.dir.path().join("requests");
         let mut files: Vec<_> = std::fs::read_dir(&dir)
             .map(|entries| entries.filter_map(Result::ok).map(|e| e.path()).collect())
@@ -169,9 +174,15 @@ impl Forge {
         files.sort();
         files
             .iter()
-            .filter_map(|file| {
-                let recorded: serde_json::Value =
-                    serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+            .filter_map(|file| serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok())
+            .collect()
+    }
+
+    /// The argv of every recorded request, in arrival order.
+    fn requests(&self) -> Vec<Vec<String>> {
+        self.recorded()
+            .iter()
+            .filter_map(|recorded| {
                 Some(
                     recorded["argv"]
                         .as_array()?
@@ -183,20 +194,47 @@ impl Forge {
             .collect()
     }
 
-    /// The API path of the *n*th request made with `method`.
-    fn path_of(&self, method: &str, nth: usize) -> String {
-        self.requests()
+    /// The *n*th request made with `method`, argv and body together.
+    fn nth_request(&self, method: &str, nth: usize) -> serde_json::Value {
+        self.recorded()
             .into_iter()
-            .filter(|argv| {
+            .filter(|recorded| {
+                let argv: Vec<&str> = recorded["argv"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
+                    .unwrap_or_default();
                 argv.iter()
-                    .position(|a| a == "--method")
+                    .position(|a| *a == "--method")
                     .and_then(|at| argv.get(at + 1))
-                    .map(String::as_str)
+                    .copied()
                     == Some(method)
             })
             .nth(nth)
-            .and_then(|argv| argv.iter().find(|a| a.starts_with('/')).cloned())
             .unwrap_or_else(|| panic!("no {method} request number {nth} was recorded"))
+    }
+
+    /// The API path of the *n*th request made with `method`.
+    fn path_of(&self, method: &str, nth: usize) -> String {
+        self.nth_request(method, nth)["argv"]
+            .as_array()
+            .and_then(|argv| {
+                argv.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .find(|a| a.starts_with('/'))
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| panic!("the {method} request number {nth} named no path"))
+    }
+
+    /// The body the *n*th request made with `method` carried, read back as JSON.
+    ///
+    /// What was really sent, rather than what the operation says it would send:
+    /// a field that reached only the payload hash and never the request would
+    /// pass an assertion against the former and fail here.
+    fn body_of(&self, method: &str, nth: usize) -> serde_json::Value {
+        let recorded = self.nth_request(method, nth);
+        serde_json::from_str(recorded["body"].as_str().unwrap_or_default())
+            .unwrap_or(serde_json::Value::Null)
     }
 
     /// How many times a create was *dispatched*, landed or not. The number a
@@ -249,8 +287,8 @@ impl Forge {
     }
 }
 
-/// The operation under test, proposing `title`.
-fn ensure_titled(title: &str) -> EnsurePullRequest {
+/// The operation under test, proposing `title` and drafting or not.
+fn ensure_drafting_titled(title: &str, draft: bool) -> EnsurePullRequest {
     EnsurePullRequest::new(
         REPO.to_string(),
         OWNER.to_string(),
@@ -258,11 +296,21 @@ fn ensure_titled(title: &str) -> EnsurePullRequest {
         BASE.to_string(),
         title.to_string(),
         "opened by fiddle".to_string(),
+        draft,
     )
+}
+
+fn ensure_titled(title: &str) -> EnsurePullRequest {
+    ensure_drafting_titled(title, false)
 }
 
 fn ensure() -> EnsurePullRequest {
     ensure_titled(TITLE)
+}
+
+/// The same operation, opening the pull request as a draft.
+fn ensure_drafting() -> EnsurePullRequest {
+    ensure_drafting_titled(TITLE, true)
 }
 
 /// Walk the authorization order for one pull request effect.
@@ -690,6 +738,140 @@ async fn a_lost_create_response_does_not_produce_a_second_pull_request() {
         forge.steps().iter().filter(|s| **s == "apply").count(),
         1,
         "the executor agrees it dispatched once"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Drafting, and the bytes it must not move
+// ---------------------------------------------------------------------------
+
+/// The constraint this field was added under, stated as a test.
+///
+/// A run that does not draft must produce the payload it produced before the
+/// field existed, to the byte: the recorded digests of the milestone before this
+/// one are derived from it, and a capability that reached its own guarantee by
+/// invalidating the previous one has replaced a capability rather than added to
+/// it. So `draft` renders only when it is true.
+///
+/// Asserted against a literal rather than against a recomputed payload, and
+/// built from literals rather than from this file's constants, because a round
+/// trip against a value this test also computes moves whenever the code moves
+/// and cannot see the drift it exists to catch.
+#[test]
+fn omitting_draft_leaves_the_canonical_payload_byte_identical() {
+    let plain = EnsurePullRequest::new(
+        "acme/r".to_string(),
+        "acme".to_string(),
+        "fiddle/x".to_string(),
+        "main".to_string(),
+        "t".to_string(),
+        "b".to_string(),
+        false,
+    );
+
+    assert_eq!(
+        plain.payload(),
+        r#"{"base":"main","body":"b","head":"acme:fiddle/x","repo":"acme/r","title":"t"}"#,
+        "the payload of a run that is not drafting is the one it was before the \
+         field existed, so nothing recorded against it has to be re-derived"
+    );
+}
+
+/// A draft is a different request, so it is a different payload — and the same
+/// pull request, so it is the same identity.
+///
+/// The pairing is the point. The payload hash is what makes a widened request
+/// visible to the approval it was authorized under, and opening as a draft
+/// rather than ready for review is exactly such a widening; the target is what a
+/// fresh process recomputes, and drafting the same head into the same base
+/// proposes the same object.
+#[test]
+fn a_draft_is_a_different_payload_and_the_same_identity() {
+    let plain = ensure();
+    let draft = ensure_drafting();
+
+    assert_ne!(plain.payload(), draft.payload());
+    assert!(
+        draft.payload().contains(r#""draft":true"#),
+        "the drafting payload says so: {}",
+        draft.payload()
+    );
+    assert_ne!(
+        payload_hash(&plain.payload()),
+        payload_hash(&draft.payload()),
+        "so the difference is detectable against the payload that was approved"
+    );
+    assert_eq!(
+        plain.target(),
+        draft.target(),
+        "but a draft is the same pull request, not a second one"
+    );
+}
+
+/// The field reaches the request, and not only the digest.
+///
+/// A `draft` that was rendered into the canonical payload and left out of the
+/// create would hash as though the pull request were a draft and open one that
+/// was ready for review — the payload would be a record of something that never
+/// happened, which is the failure this asserts against the body the stub
+/// actually received.
+#[tokio::test]
+async fn a_draft_pull_request_is_created_as_a_draft() {
+    let forge = Forge::empty();
+    let ctx = forge.context();
+
+    let receipt = open_the_pull_request(&forge, &ctx, ensure_drafting())
+        .await
+        .expect("nothing was open, so the pull request is opened");
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(forge.creation_requests(), 1);
+    assert_eq!(
+        forge.body_of("POST", 0)["draft"],
+        serde_json::json!(true),
+        "the create asks for a draft"
+    );
+}
+
+/// A draft pull request is an open one, so the lookup that finds an open pull
+/// request finds it, with no parameter added and none removed.
+///
+/// Asserted because the alternative is silent and expensive: a drafting run that
+/// failed to recognise the pull request already open for its head and base would
+/// dispatch a second create, which is the one outcome this operation exists to
+/// prevent.
+///
+/// What this cannot show is a *seeded* draft, because the scripted world models a
+/// pull request by head, base and title and has no draft of its own to hand back.
+/// The half that is observable is the half that decides: the query is unchanged,
+/// and the drafting run settles on the object the world already held.
+#[tokio::test]
+async fn an_open_pull_request_is_found_by_the_unchanged_lookup_when_drafting() {
+    let forge = Forge::empty();
+    forge.open_pull_request(&head_label(), BASE, "opened by another run");
+    let ctx = forge.context();
+
+    let receipt = open_the_pull_request(&forge, &ctx, ensure_drafting())
+        .await
+        .expect("the pull request is already open");
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(receipt.external_ref.as_deref(), Some("7"));
+    assert_eq!(
+        receipt.value.title, "opened by another run",
+        "the object settled on is the one the world already held"
+    );
+    assert_eq!(
+        forge.creation_requests(),
+        0,
+        "drafting is not a reason to open a second pull request"
+    );
+    assert_eq!(forge.open_pull_requests(), 1);
+
+    let lookup = forge.path_of("GET", 0);
+    assert!(
+        lookup.contains("state=open") && !lookup.contains("draft"),
+        "drafting adds nothing to the query and takes nothing out of it: {lookup}"
     );
 }
 
