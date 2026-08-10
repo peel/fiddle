@@ -129,7 +129,11 @@ impl RetryAdvice {
     }
 }
 
-/// Everything a `gh` invocation can fail as.
+/// How a `gh` invocation, or the push delegated beside it, can fail.
+///
+/// Not only `gh`: [`GhError::Push`] carries a [`crate::git::GitError`] so a push
+/// failure crosses the executor boundary with git's own verdict intact, rather
+/// than being given a fabricated HTTP status nobody sent.
 ///
 /// The variants exist to be *classified*, not merely reported: see
 /// [`GhError::outcome`], which is where each one commits to whether the request
