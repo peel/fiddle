@@ -40,17 +40,32 @@
 //! thing to lose: the follow-up comment a person reads says the answer was not
 //! understood, which is true whichever of these it was.
 //!
-//! # Why the reply is text and the request is not
+//! # Why the question arrives as text, and why widening that gives the property
+//! away
 //!
-//! [`interpret`] takes the question as a `&str` rather than taking the whole
-//! decision request. Handing it the request would hand it the [`EffectId`], the
-//! payload digest and the binding — precisely the values the paragraph above says
-//! a reading must not reach. Passing only the question's text makes putting one
-//! in the prompt impossible rather than merely wrong, which is the same argument
-//! [`ToolHost`](crate::agent::ToolHost) makes for keeping a workspace root out of
-//! an advertised schema.
+//! [`interpret`] takes the question as a `&str` rather than taking the decision
+//! request it came from. That request carries the [`EffectId`], the
+//! [`PayloadHash`], the head sha and the whole binding — precisely the values the
+//! section above says a reading must never reach.
+//!
+//! A function that never receives an identity cannot leak one. That is the whole
+//! of the argument, and it is worth stating in those terms because the
+//! alternative is not merely wordier: taking the request and declining to put its
+//! fields in the prompt would make the property depend on this implementation's
+//! discipline, and then on the discipline of every edit after it. Narrowing the
+//! parameter moves the guarantee out of what the code happens to do and into what
+//! the signature permits, which is where a guarantee outlives the people
+//! maintaining it.
+//!
+//! So widening this parameter back to a request type — for a diagnostic, for a
+//! log line, for a field that seems harmless — gives the property away however
+//! carefully the new code avoids reading the extra fields. It is the argument
+//! [`ToolHost`](crate::agent::ToolHost) already makes for keeping a workspace root
+//! out of an advertised schema: what a caller can reach is decided by what it is
+//! handed, not by what it intends.
 //!
 //! [`EffectId`]: fiddle_core::EffectId
+//! [`PayloadHash`]: fiddle_core::PayloadHash
 
 use fiddle_core::decision::InterpretedHumanDecision;
 use fiddle_core::Published;
@@ -186,6 +201,10 @@ enum Verdict {
 }
 
 /// Read `reply` as an answer to `question`, in one bounded model call.
+///
+/// `question` is text and not the request it came from, deliberately: see this
+/// module's documentation before widening it, because the parameter list is what
+/// holds the property rather than the body.
 ///
 /// Generic over Rig's own
 /// [`CompletionModel`](rig_core::completion::CompletionModel) rather than over a
