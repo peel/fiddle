@@ -933,3 +933,21 @@ The rule: **when one test asserts both a mechanism and the property that mechani
 Second thing from the same run, worth keeping as method: the inversion failed **two** tests and the implementer counted **one witness**. The other, `a_mutation_with_no_node_id_in_hand_is_not_sent`, fails only because it asserts a refusal message containing `acme/r#7@aaaa` — sensitivity to the target's spelling, which is that assertion's job, but not independent evidence for the identity property. **Two tests failing is not two witnesses**, and a lane that counted rows rather than distinct properties would have over-claimed its own coverage.
 Origin: implementation (epic fiddle-eoqx, bean fiddle-dvsl) — an inversion asked for three times, which found a defect once it ran
 Tags: #process #testing
+
+### 2026-08-11 — Lead instructions and implementer reports crossed four times on one bean, and the bean body was the fix
+Four round trips on `fiddle-dvsl` were spent on work that was already done. Each time, the lead wrote an instruction while the implementer's report on that same item was already in flight — the lead asked for the `@{head_sha}` inversion after it had run, asked for a refusal test after it had landed, and accepted a different bean at a commit that did not contain the fix it was accepting.
+
+The implementer named the mechanism and the remedy, and the remedy is free:
+
+> my reports and your instructions have crossed every time, because I commit and report while your next message is already in flight. Check the bean's `## Summary of Changes` tail before writing the next instruction — I append there before I send, so it is the one place that is never stale.
+
+That is right, and it generalises past this lane. **A message is a snapshot of what its author knew when they started writing it; the bean is the current state.** So the rule for the lead is: **read the bean's `## Summary of Changes` tail immediately before dispatching any instruction to a live lane** — not the last report received, which is by construction older than the bean.
+
+The cost of not doing it is not only wasted round trips. It produced a worse error on a second bean: the lead built an evidence pack, dispatched an evaluator against `d8ebbd6`, and accepted the bean at a commit that **did not contain the restructure the pack's own findings turned on** — the fix was sitting unlanded in the implementer's worktree, and it landed afterwards as `c9a5a50`. The evaluator's failing verdict on `m3-refusals-classified-honestly` was therefore against a tree missing the fix for that exact criterion. Reading the bean tail before building the pack would have caught it; reading the last report could not, because the report predated the commit.
+
+Two smaller rules fall out of the same episode:
+
+- **An implementer holding verified work whose lane is being shut down should land it rather than let it die**, and say so — this one did, judging a revertible commit better than losing work the lead had explicitly asked for, and flagged that an evaluation might be mid-flight against the older commit. That is the right trade and the right disclosure.
+- **A shutdown reason is not a state assertion.** The lead's shutdown message described the bean as complete at a commit that was missing a piece. Accepting a bean and retiring its lane are separate acts, and the first needs the bean read, not the conversation recalled.
+Origin: process (epic fiddle-eoqx, beans fiddle-dvsl and fiddle-ayqd) — named by an implementer after the fourth crossed instruction
+Tags: #process
