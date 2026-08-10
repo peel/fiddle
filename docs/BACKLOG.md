@@ -804,3 +804,20 @@ Two mitigations, and the second is the real one:
 Worth stating the shape, because it is the third time this milestone: **the lead's own records were held to a weaker standard than the agents' were.** An implementer that reported "in progress" with no commits would have been challenged immediately.
 Origin: process (epic fiddle-eoqx, bean fiddle-v5bm) — found by checking a bean's eval log after noticing it had no commits
 Tags: #process #debt
+
+### 2026-08-10 — The isolation policy that fixed evidence integrity filled the disk to 100%
+The three-axis isolation rule recorded above — a private `CARGO_TARGET_DIR` per agent, plus a detached worktree per inversion — works, and it has a cost nobody priced. Each cold build directory is **1.5–3.6 GB**. With four implementer lanes, two evaluators taking independent measurements, and the lead building evidence packs, the root filesystem reached **100% (3.6 GB free of 461 GB)**. Reclaiming four directories belonging to converged beans freed **9.2 GB** immediately.
+
+Why this is an evidence-integrity problem rather than mere housekeeping: **a build that fails for want of disk does not announce itself as a disk problem.** It surfaces as a link error, a truncated artifact, or a test binary that will not run — indistinguishable at a glance from the failures the isolation was introduced to eliminate, and arriving in exactly the same reports. The fix for false failures is capable of manufacturing false failures.
+
+An evaluator flagged it unprompted while shutting down, having noticed `/private/tmp` at 99% and correctly identified the sibling target directories as the bulk.
+
+The missing half of the policy is a disposal rule, so state it with the policy:
+
+- **A per-inversion worktree is removed as soon as its measurement is recorded** — `git worktree remove --force` in the same step that writes the counts, not at the end of the lane.
+- **A lane's `CARGO_TARGET_DIR` is deleted when its bean converges**, by the lead, in the same action that sets the bean `completed`.
+- **Check free space before dispatching a parallel round.** Six concurrent lanes need roughly 20 GB of build directories, and the round should be sized against what is actually available rather than against the pane ceiling.
+
+Worth pairing with the earlier finding about `git worktree list` accumulating detached checkouts: the same discipline covers both, since a stray worktree and a stray target directory are the same species of leak and only the target directory is large enough to stop the machine.
+Origin: process (epic fiddle-eoqx) — surfaced by an evaluator during shutdown, after the lead mandated the isolation without a disposal rule
+Tags: #process #infrastructure #debt
