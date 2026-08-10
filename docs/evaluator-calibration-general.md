@@ -640,6 +640,13 @@ What an approval is bound to, and what takes it away.
   from canonical inputs and required to match before the mutation. A pull request that was closed, a
   head that advanced, and a payload that changed each refuse. The refusals are distinct enough that
   a reader knows which one fired.
+  One mechanism is worth naming because the plausible answer is wrong: an approval reply carries no
+  marker and names no effect, so a stale approval cannot be refused by comparing identities. What
+  excludes a reply given to an earlier question is **ordering** — candidates are the comments after
+  the *current* request — while identity is what stops the earlier question being found as the
+  current one. Score a bean's *stated* mechanism, not only its passing test: a bean claiming an
+  identity comparison refuses a stale approval has described something that cannot fire, and its
+  test is passing for a different reason than the one it gives.
 - **Excellent (8–10).** All of the above, plus the binding is **durable in the world rather than in
   local state** — nothing on disk has to survive for a fresh process to know what was approved, so
   there is no question about what a missing record means. The payload comparison happens twice
