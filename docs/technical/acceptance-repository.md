@@ -43,6 +43,46 @@ credential helper and succeeds:
 git -c credential.helper= clone https://github.com/peel/fiddle-acceptance.git
 ```
 
+### A credential able to write here existed, and no longer does
+
+Between 2026-08-09 and 2026-08-10 the fine-grained token M2's live effects lane
+runs with had this repository in its selection as well as its own disposable
+target. `repos/peel/fiddle-acceptance/collaborators` answered **200**, and a
+ref-create against it would have succeeded. Nothing in M2 ever pointed at this
+repository — but nothing mechanically prevented it either, and the exposure was
+real rather than theoretical: `scripts/live-github.sh` took its target from an
+unvalidated `FIDDLE_EFFECTS_REPO`, and its cleanup — a pull-request-close and
+ref-DELETE sweep — was armed before the target was checked at all.
+
+What that would have cost is specific. The residue rules below include
+`gh pr list --repo peel/fiddle-acceptance --state all` being **empty**, and GitHub
+has no API that deletes a *closed* pull request. So one wrong value would have
+falsified a standing rule of this repository permanently, with no remedy.
+
+The operator narrowed the token's selection on 2026-08-10, and the write is now
+refused rather than merely unused:
+
+```console
+$ gh api repos/peel/fiddle-acceptance/collaborators -i | head -1
+HTTP/2.0 403 Forbidden
+$ gh api repos/peel/fiddle-acceptance/git/refs --method POST -f ref=refs/heads/scope-probe \
+    -f sha="$(gh api repos/peel/fiddle-acceptance/git/ref/heads/main --jq .object.sha)"
+{"message":"Resource not accessible by personal access token","status":"403"}
+$ gh api repos/peel/fiddle-acceptance/branches --jq '.[].name'
+main
+```
+
+Two things changed, and both were needed. The credential can no longer reach this
+repository, and the live lane now refuses a target it was not built for *before*
+arming its cleanup — see
+[effects-repository.md](effects-repository.md#the-target-guard). The first alone
+would have left the lane one credential rotation away from the same exposure; the
+second alone would have left the credential holding authority nothing uses.
+
+This section stays after the fact. The rule that this repository is reached
+credential-free is only worth what its worst case is worth, and for two days its
+worst case was worse than this document said.
+
 ## Running it
 
 ```sh

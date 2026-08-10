@@ -101,24 +101,90 @@ A fine-grained personal access token, held in `FIDDLE_GITHUB_TOKEN` — the same
 environment variable name the `[github]` table names, so the lane and the product
 read the credential from one place. It expires 2026-11-07.
 
-What was verified, read-only, rather than assumed:
+Its permissions, and what each one is for:
+
+| Permission | | For |
+| --- | --- | --- |
+| Contents | read and write | pushing the branch |
+| Pull requests | read and write | opening the pull request |
+| Actions | read and write | `POST .../actions/workflows/<file>/dispatches` — **the dispatch** |
+| Metadata | read | mandatory on every fine-grained token, and what answers the selection probe below |
+| Secrets | none | asserted on every run — see *How rule 1 is established* |
+
+`Actions: write` is the permission the dispatch requires, so a 403 on the dispatch
+is that permission missing. It is **not** `Workflows`, which is a different
+permission governing pushes that touch `.github/workflows/**` — that is how this
+repository's own `fiddle-check.yml` was installed (commit `73b480a`), and it is
+not something the lane ever does: the only file the lane pushes is a one-line
+probe at the repository root. A credential granted `Workflows` in place of
+`Actions` still 403s on the dispatch *and* can rewrite the target's CI, which is
+the worst of both. `.env.example` and `.github/workflows/github-effects.yml`'s
+remediation text name this same list.
+
+### The selection, verified by probe rather than assumed
+
+Re-run 2026-08-10, after the selection was narrowed:
 
 | Probe | Result |
 | --- | --- |
-| `repos/peel/fiddle-effects-acceptance/collaborators` | 200 — the repository is in the token's selection |
-| `repos/peel/fiddle-acceptance/collaborators` | 200 — **also** in the token's selection |
+| `repos/peel/fiddle-effects-acceptance/collaborators` | **200** — the repository is in the token's selection |
+| `repos/peel/fiddle-acceptance/collaborators` | **403** — M0's acceptance repository is not |
 | `repos/peel/fiddle/collaborators` | **403** — the product repository is not |
 | `repos/*/actions/secrets` | **403** for all three — no `Secrets` permission anywhere |
+| `repos/*/keys` | **403** for all three — same reason |
 
-The third row is the one the design needed: the token that performs M2's effects
-cannot reach `peel/fiddle`'s permission-gated surface, so a live lane cannot
-damage the product repository however wrong it goes. The second row is wider than
-the design assumed and is recorded rather than smoothed over — `peel/fiddle-acceptance`
-holds no secret either (its own standing rules say so) and nothing in M2 writes
-to it, but the token's selection is two repositories and not one.
+```console
+$ gh api repos/peel/fiddle-effects-acceptance/collaborators -i | head -1
+HTTP/2.0 200 OK
+$ gh api repos/peel/fiddle-acceptance/collaborators -i | head -1
+HTTP/2.0 403 Forbidden
+$ gh api repos/peel/fiddle/collaborators -i | head -1
+HTTP/2.0 403 Forbidden
+```
 
-Public-repository *reads* work regardless of selection, which is why row three is
-a Metadata-gated endpoint rather than a `GET` of the repository.
+So the selection is **one repository**. The token that performs M2's effects
+cannot reach the permission-gated surface of either other repository, and a live
+lane cannot damage them however wrong it goes.
+
+Public-repository *reads* work regardless of selection, which is why every row is
+a Metadata-gated endpoint rather than a `GET` of the repository. `/collaborators`
+is the row that carries the weight precisely because it **discriminates**: 200 for
+one repository, 403 for two. `/actions/secrets` answers 403 for all three, so on
+its own it could not tell them apart — it is evidence of an absent permission, not
+of a selection, and a probe that cannot discriminate is not evidence of the thing
+it is offered for.
+
+`scripts/live-github.sh` re-reads that 200 on every run and refuses a target the
+selection does not include — see *The target guard*.
+
+### The second row read 200 until 2026-08-10
+
+Recorded rather than smoothed over, because for the length of M2's implementation
+the selection was **two** repositories wide while four documents said it was one.
+The credential performing M2's effects could write to `peel/fiddle-acceptance` —
+M0's external acceptance repository, whose whole argument is that reading it needs
+no credential, and whose standing rules include
+`gh pr list --repo peel/fiddle-acceptance --state all` being empty. A closed pull
+request cannot be deleted, so residue there would have falsified that rule
+permanently. Nothing in M2 ever wrote to it, and nothing mechanically stopped it
+from doing so.
+
+The operator narrowed the selection on 2026-08-10, and the write that was
+permitted is now refused:
+
+```console
+$ gh api repos/peel/fiddle-acceptance/git/refs --method POST -f ref=refs/heads/scope-probe \
+    -f sha="$(gh api repos/peel/fiddle-acceptance/git/ref/heads/main --jq .object.sha)"
+{"message":"Resource not accessible by personal access token","status":"403"}
+$ gh api repos/peel/fiddle-acceptance/branches --jq '.[].name'
+main
+```
+
+That is the discriminating form: a *write* attempt against the exact endpoint the
+danger ran through, refused. The credential is now structurally incapable of it
+rather than merely not pointed at it — the difference between a rule and a habit.
+[acceptance-repository.md](acceptance-repository.md) records the same episode from
+the other side.
 
 The credential never reaches an `argv`. `git push` carries it in
 `http.https://github.com/.extraHeader` through `GIT_CONFIG_*`, `gh` carries it in
@@ -223,8 +289,9 @@ set -a; . ./.env; set +a          # or export FIDDLE_GITHUB_TOKEN yourself
 FIDDLE_BIN="$PWD/target/release/fiddle" scripts/live-github.sh
 ```
 
-`FIDDLE_EFFECTS_REPO` overrides the target. On success the lane prints
-`live-github: PASS` and exits 0; on failure it prints
+`FIDDLE_EFFECTS_REPO` overrides the target, and a target the lane was not built
+for is refused before anything destructive is armed — see *The target guard*. On
+success the lane prints `live-github: PASS` and exits 0; on failure it prints
 `live-github: FAIL: <what was expected>` on stderr and exits non-zero.
 
 **It never gates.** Nothing in `.github/workflows` invokes it, and it is not a
@@ -242,9 +309,9 @@ One ordered walk, each step observing the world its predecessor left. Every coun
 is read out of GitHub with `gh`; the run's own report is consulted only to
 cross-check an *identity* against what the remote answered.
 
-1. **Preconditions.** The repository is public; the dispatch target carries the
-   `run-name` echo; the credential cannot enumerate secrets; and the remote holds
-   **zero** `fiddle/` branches, zero open `fiddle/` pull requests and zero
+1. **Preconditions.** The target is the one this lane was built for — see *The
+   target guard*, which runs before the cleanup trap is armed — and the remote
+   holds **zero** `fiddle/` branches, zero open `fiddle/` pull requests and zero
    `fiddle-` runs. Zero-then-one is what makes the walk unfakeable: a lane that
    did nothing at all and then asserted "exactly `main`, no open pull requests"
    would otherwise **pass**.
@@ -303,6 +370,77 @@ worth noticing what these two cases *are*: the ambiguity `exactly_once.rs`
 arranges with a fixture that applies a mutation and then dies is not a contrived
 shape. GitHub produces it for free.
 
+## The target guard
+
+`FIDDLE_EFFECTS_REPO` overrides the target, and cleanup below performs a
+pull-request-close and ref-DELETE sweep. Until 2026-08-10 the override was free
+text and the trap arming that sweep was set **before** the first thing that
+happened to notice a wrong repository — the incidental fetch of the dispatch
+target's workflow file. Between those two points a mistyped or hostile value had a
+destructive sweep armed against a repository nobody had checked. The file's own
+comment said the knob was "never so it can be pointed at a repository somebody
+works in"; the code did not say it.
+
+It says it now. Before the traps are set, and before the `git push` that is this
+lane's first write anywhere, the target must answer all six of these — every one a
+read:
+
+1. **The name is a bare `owner/name`.** The value is interpolated into URL paths,
+   so `a/b/../../c` addresses a repository other than the one the operator wrote,
+   and the sweep would follow it there. Each half must begin with an alphanumeric,
+   which is what refuses `..` as a path component.
+2. **It is public.** The lane's committed argument is that reading its target
+   needs no credential — it clones with `credential.helper=` disabled — and a
+   private repository is by construction one somebody was trusted with.
+3. **Its default branch is `main`**, the branch the push must fast-forward.
+4. **It holds no branch that is neither `main` nor under `fiddle/`.** Standing
+   rule 2 is what makes a ref-DELETE sweep here defensible, so it is checked on
+   the way *in* and not only asserted on the way out. Branches under `fiddle/`
+   are deliberately tolerated: they are this lane's own residue from an
+   interrupted run, the preconditions still refuse to *start* on them, and
+   refusing them here would strand them forever — cleanup would never arm to
+   sweep them.
+5. **The credential's repository selection includes it**, read as 200 on
+   `/collaborators`. This is the probe that discriminates (200/403/403 above), and
+   the rule it enforces is that the lane may only arm a sweep against a repository
+   somebody deliberately selected for the credential — a stronger statement than
+   "the write turned out to be permitted".
+6. **It carries the dispatch target, echoing the effect id through `run-name`.**
+   A repository without `fiddle-check.yml` is not one this lane can complete
+   against at all. This check is not new; it is the one that used to sit *after*
+   the trap and do this job by accident.
+
+The guard is the **conjunction**, not any single line, and it is deliberately not
+a denylist. "Not `peel/fiddle`" would be worth nothing: the value this
+milestone's review found dangerous was `peel/fiddle-acceptance`, which is not the
+product repository and is still somebody's, and the next dangerous value is one
+nobody has thought of. `peel/fiddle` fails 4 and 5; `peel/fiddle-acceptance`
+passes 2, 3 and 4 and fails 5 and 6; a typo fails 2, because no such repository
+can be read; a traversal fails 1.
+
+A refusal removes the scratch directory itself, since the trap that would have
+removed it does not exist yet, and says which side of the trap it is on:
+
+```console
+$ FIDDLE_EFFECTS_REPO=peel/fiddle-acceptance scripts/live-github.sh
+live-github: target repository: peel/fiddle-acceptance
+live-github: visibility=public default_branch=main
+live-github: no branch outside main and fiddle/… at the remote
+live-github: FAIL: peel/fiddle-acceptance is not in this credential's repository selection (/collaborators is not 200); this lane only sweeps a repository its credential was deliberately given
+live-github: refused before arming cleanup and before any mutation; nothing was created, nothing was deleted
+```
+
+Note what is **absent** from that transcript: no `cleaning up (exit 1)` line, no
+`residue after cleanup` line. Those come from `cleanup`, and `cleanup` is not armed
+when the guard refuses — which is the whole point, and is why the refusal is
+checked by running it rather than asserted in prose.
+
+The pre-change script, run against a nonexistent repository so its sweep could
+delete nothing, printed the opposite and is why this section exists: it reported
+`cleaning up (exit 1)` and then issued the whole close-and-DELETE sweep at a
+target it had just failed to read. Against a repository that *did* exist under a
+mistyped name, those calls would not have 404'd.
+
 ## Cleanup and residue
 
 Cleanup hangs off a `trap` and runs on **every** exit path — pass, fail, `INT`,
@@ -354,8 +492,8 @@ that is never reused. That is a property of the forge, not of the lane, and it i
 a large part of why this repository is disposable rather than shared: a growing
 list of closed pull requests — one per run, all of them fiddle publishing the same
 one-line change and then having it closed underneath it — is expected, and is not
-residue anyone needs to act on. There were thirteen, all closed, when this
-document was written.
+residue anyone needs to act on. There were sixteen, all closed, when the target
+guard above was added.
 
 So "zero residue" means precisely: **no `fiddle/` branch, no open pull request,
 no `fiddle-` workflow run, and `main` the only branch.** Not "no pull request has

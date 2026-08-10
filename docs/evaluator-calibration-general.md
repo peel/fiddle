@@ -536,10 +536,21 @@ Two, both recorded read-only during planning and neither resolvable without a wr
   the write and cleans up; do not score sibling beans as though the repository were already there.
 
   **Resolved 2026-08-09, before implementation began.** The repository exists, is public, and holds
-  zero secrets and zero deploy keys. A fine-grained token scoped to it alone created and deleted
-  `refs/heads/probe`, leaving branches at exactly `main`. So this is no longer a blocked criterion
-  and a bean must not be scored as though it were. Two things the probe settled that the anchors
-  above now depend on:
+  zero secrets and zero deploy keys. A fine-grained token created and deleted `refs/heads/probe` in
+  it, leaving branches at exactly `main`. So this is no longer a blocked criterion and a bean must
+  not be scored as though it were.
+
+  **This entry said "scoped to it alone" and that was false when it was written.** The token's
+  repository selection was two repositories wide — `peel/fiddle-effects-acceptance` *and*
+  `peel/fiddle-acceptance`, M0's external acceptance repository — and
+  `repos/peel/fiddle-acceptance/collaborators` answered **200** for a full day of M2's
+  implementation. The operator narrowed the selection on 2026-08-10; the probe table in
+  `docs/technical/effects-repository.md` now records 200 for the effects repository and 403 for both
+  others, and a ref-create against `peel/fiddle-acceptance` answers
+  `403 Resource not accessible by personal access token`. **Score against that table, not against
+  this paragraph** — a document restating a scope is a claim, and the table is the measurement.
+
+  Four things the probes settled that the anchors above now depend on:
 
   - **The duplicate create returns exactly `422 "Reference already exists"`**, observed rather than
     predicted. `m2-branch-422-resolved-by-reading` is therefore scored against a known response
@@ -550,6 +561,19 @@ Two, both recorded read-only during planning and neither resolvable without a wr
     isolation evidence is a successful public read has asserted nothing, and `.permissions` on the
     repository payload is worse than nothing — it reports the *user's* rights, reading
     `admin=true` on a repository the token cannot write.
+  - **A probe that cannot discriminate is not evidence.** This is how the two-repository selection
+    survived a milestone: `/actions/secrets` answers 403 for *every* repository, so a 403 there says
+    only that the `Secrets` permission is absent — nothing about which repositories are selected.
+    `/collaborators` answers 200 for the selected one and 403 for the others, so it can tell the
+    cases apart. Score a scope claim on whether its probe could have come out the other way; a probe
+    whose result is the same for the repository in question and for one plainly out of scope is
+    decoration. This applies to the evaluator's own reasoning as much as to the bean's.
+  - **`Actions: write` is what a `workflow_dispatch` requires**, not `Workflows: write`, which
+    governs pushes touching `.github/workflows/**`. Both exist and both are real, so a bean naming
+    the wrong one is wrong specifically about the dispatch: the credential it provisions 403s where
+    it matters *and* gains the authority to rewrite the target's CI. `.env.example`,
+    `.github/workflows/github-effects.yml` and `docs/technical/effects-repository.md` name the same
+    list; a bean that disagrees with all three has not checked one of them.
 - **No repository secret exists.** `gh secret list --repo peel/fiddle` is empty, and the default
   `GITHUB_TOKEN` is scoped to `peel/fiddle` and cannot write to the disposable repository whatever
   its `permissions:` block says. The `workflow_dispatch` lane therefore needs a cross-repository PAT

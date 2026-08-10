@@ -49,10 +49,17 @@
 # another repository whatever the `permissions:` block below says — that block
 # can only *narrow* the job token, never widen its reach past `peel/fiddle`.
 # Hence `FIDDLE_EFFECTS_TOKEN`, a fine-grained personal access token whose
-# repository selection deliberately **excludes** `peel/fiddle`;
-# `docs/technical/effects-repository.md` records the probes that establish both
-# halves of that, including the 403 proving it cannot enumerate any repository's
-# secrets.
+# repository selection is `peel/fiddle-effects-acceptance` and nothing else — so
+# it excludes `peel/fiddle`, and it excludes `peel/fiddle-acceptance` too.
+# `docs/technical/effects-repository.md` records the probe table that establishes
+# it: 200 on the effects repository's `/collaborators`, **403 on both others**,
+# and 403 on `/actions/secrets` for all three, which is the row proving it cannot
+# enumerate any repository's secrets.
+#
+# That second row read 200 until 2026-08-10 — the selection really was two
+# repositories wide, and this header asserted otherwise for a while. The table is
+# the authority: if it and a sentence ever disagree again, the sentence is the
+# thing that is wrong.
 #
 # This is the mirror image of `.github/workflows/acceptance-repo.yml`, whose
 # header explains at equal length why *no* secret appears in it: that lane only
@@ -113,8 +120,18 @@ jobs:
               echo "github-effects needs the repository secret FIDDLE_EFFECTS_TOKEN."
               echo
               echo "  What it must be: a fine-grained personal access token whose repository"
-              echo "  selection is peel/fiddle-effects-acceptance, with Contents, Pull requests"
-              echo "  and Workflows at read and write, and no Secrets permission at all."
+              echo "  selection is peel/fiddle-effects-acceptance and nothing else, with"
+              echo "  Metadata at read, Contents, Pull requests and Actions at read and write,"
+              echo "  and no Secrets permission at all."
+              echo
+              echo "  Actions is the one that is easy to get wrong. Contents pushes the branch,"
+              echo "  Pull requests opens the pull request, and Actions: write is what"
+              echo "  POST /repos/{repo}/actions/workflows/{file}/dispatches requires — so a 403"
+              echo "  on the dispatch is Actions missing. It is NOT Workflows: that permission"
+              echo "  governs pushes touching .github/workflows/**, which is how the target's"
+              echo "  own fiddle-check.yml was installed and is something this lane never does."
+              echo "  Granting Workflows in place of Actions leaves the dispatch still 403 and"
+              echo "  hands the credential the authority to rewrite the target's CI."
               echo "  See docs/technical/effects-repository.md."
               echo
               echo "  Where it goes: Settings -> Secrets and variables -> Actions on this"

@@ -77,8 +77,11 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 # Overridable so the lane can be pointed at a different disposable repository,
-# never so it can be pointed at a repository somebody works in: cleanup below is
-# scoped to the `fiddle/` namespace precisely because this value is a knob.
+# never so it can be pointed at a repository somebody works in — and that second
+# half is now enforced rather than asserted: see *The target this lane was built
+# for* below, which refuses an inadmissible target before the cleanup trap is
+# armed and before anything is written. Cleanup is additionally scoped to the
+# `fiddle/` namespace, precisely because this value is a knob.
 REPO="${FIDDLE_EFFECTS_REPO:-peel/fiddle-effects-acceptance}"
 WORKFLOW="fiddle-check.yml"
 BASE="main"
@@ -172,6 +175,138 @@ our_runs() {
 # How many non-empty lines arrived. `grep -c` exits 1 on no match, which `set -e`
 # would take for a failure, so the count is printed and the status discarded.
 lines() { grep -c . || true; }
+
+# ---------------------------------------------------------------------------
+# The target this lane was built for — refused before anything is armed
+# ---------------------------------------------------------------------------
+#
+# `FIDDLE_EFFECTS_REPO` is a knob, and it used to be free text interpolated
+# straight into every `gh api` path below. The trap that arms `cleanup` — a
+# pull-request-close and ref-DELETE sweep — was set *before* the first thing that
+# happened to notice a wrong repository, which was the incidental fetch of the
+# dispatch target's workflow file. So a mistyped or hostile value had a
+# destructive sweep armed against a repository nobody had checked, and the comment
+# at the top of this file claiming the knob is "never so it can be pointed at a
+# repository somebody works in" was a claim the code did not make. This block is
+# where the code makes it. It runs **before the traps below and before the first
+# byte this lane writes anywhere**, which is the `git push` much further down.
+#
+# The predicate is positive, not a denylist. "Not `peel/fiddle`" is worth nothing:
+# the value this milestone's review actually found dangerous was
+# `peel/fiddle-acceptance` — not the product repository, and still somebody's —
+# and the next dangerous value is one nobody has thought of yet. So the question
+# asked here is the one that makes deleting `fiddle/*` refs defensible: *is this a
+# repository built to be dirtied by this lane, and one this credential was
+# deliberately given?* Six things answer it, ordered cheapest first, and every one
+# of them is a read:
+#
+#   1. **The name is `owner/name` and nothing else.** The value is interpolated
+#      into a URL path, so `a/b/../../c` addresses a repository other than the one
+#      the operator wrote — and the sweep would follow it there. Each half must
+#      start with an alphanumeric, which is what refuses `..` as a component.
+#   2. **It is public**, and **3. its default branch is `$BASE`.** The lane's
+#      committed argument is that reading the target needs no credential — it
+#      clones with `credential.helper=` disabled — and a private repository is by
+#      construction one somebody was trusted with. `$BASE` is the branch the push
+#      must be a fast-forward on top of.
+#   4. **It holds no branch that is not `$BASE` or ours.** The target's standing
+#      rule is that `main` is its only permanent branch, and that rule is the
+#      whole reason a ref-DELETE sweep here is defensible. A repository holding a
+#      branch outside `$REF_NAMESPACE` is one where somebody keeps work. Branches
+#      *inside* it are deliberately tolerated: they are this lane's own residue
+#      from an interrupted run, the preconditions below still refuse to start on
+#      them, and refusing them *here* would strand them forever — cleanup would
+#      never arm to sweep them.
+#   5. **The credential's repository selection includes it**, read as 200 on
+#      `/collaborators`. This one discriminates by measurement rather than by
+#      hope: on the credential this lane is run with, that endpoint answers 200
+#      for `peel/fiddle-effects-acceptance` and 403 for both
+#      `peel/fiddle-acceptance` and `peel/fiddle` — see the probe table in
+#      docs/technical/effects-repository.md. Contrast `/actions/secrets`, which
+#      403s for all three and so could not tell them apart; a probe that cannot
+#      discriminate is not evidence. The rule it enforces is that this lane may
+#      only arm a sweep against a repository somebody deliberately selected for
+#      the credential, which is a stronger statement than "the write happened to
+#      be permitted".
+#   6. **It carries the dispatch target, echoing the effect id through
+#      `run-name`.** A repository without `$WORKFLOW` is not one this lane can
+#      complete against at all. This check is not new — it is the check that used
+#      to sit *after* the trap and do this job by accident. It now sits where it
+#      can prevent harm rather than report it, and for `peel/fiddle-acceptance`,
+#      which passes 2, 3 and 4, it and check 5 are what refuse.
+#
+# No single check is the guard; the conjunction is. `peel/fiddle` fails 4 and 5,
+# `peel/fiddle-acceptance` fails 5 and 6, a typo fails 2 (no such repository), and
+# a traversal fails 1.
+
+# Refusal before the traps exist, so the scratch directory `cleanup` would have
+# removed is removed here instead. The second line is the claim under test: a
+# refusal that happened after the sweep was armed would not be worth making.
+#
+# No trap covers this window on purpose. A `trap 'rm -rf "$TMP"' INT` does not
+# exit after its handler, so a SIGINT during the guard would be swallowed and the
+# lane would carry on into the walk with its scratch directory deleted — worse
+# than the thing it fixes. The whole cost of the gap is one `mktemp -d` left under
+# `$TMPDIR` if the operator interrupts the guard's handful of reads.
+refuse_target() {
+  echo "live-github: FAIL: $*" >&2
+  echo "live-github: refused before arming cleanup and before any mutation; nothing was created, nothing was deleted" >&2
+  rm -rf "$TMP"
+  exit 1
+}
+
+note "target repository: $REPO"
+
+[[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+  || refuse_target "FIDDLE_EFFECTS_REPO must be a bare owner/name, and this is not one: $REPO"
+
+# One call for both facts. Assigned rather than piped, because under `pipefail` a
+# `gh api ... | sed` that failed would take `set -e` out through a path that has
+# no cleanup at all rather than through the refusal above.
+target_facts=$(gh api "repos/$REPO" --jq '"\(.visibility) \(.default_branch)"' 2>/dev/null) \
+  || refuse_target "$REPO cannot be read; it does not exist or this credential cannot see it"
+read -r target_visibility target_default <<<"$target_facts"
+note "visibility=$target_visibility default_branch=$target_default"
+
+[ "$target_visibility" = public ] \
+  || refuse_target "$REPO is $target_visibility; this lane only runs against a public disposable repository, because reading its target must need no credential"
+[ "$target_default" = "$BASE" ] \
+  || refuse_target "$REPO's default branch is $target_default, not $BASE; this lane publishes on top of $BASE"
+
+foreign_branches=$(all_branches | { grep -v -e "^$BASE\$" -e "^$REF_NAMESPACE" || true; } | paste -sd, -) \
+  || refuse_target "$REPO's branches cannot be read"
+[ -z "$foreign_branches" ] \
+  || refuse_target "$REPO holds branches that are neither $BASE nor ${REF_NAMESPACE}…: $foreign_branches — somebody works here, and this lane will not arm a ref-DELETE sweep in a repository that is not disposable"
+note "no branch outside $BASE and ${REF_NAMESPACE}… at the remote"
+
+gh api "repos/$REPO/collaborators" >/dev/null 2>&1 \
+  || refuse_target "$REPO is not in this credential's repository selection (/collaborators is not 200); this lane only sweeps a repository its credential was deliberately given"
+note "$REPO is in the credential's repository selection (200 on /collaborators)"
+
+# The repository holds no secret this credential could read: the token has no
+# `Secrets` permission at all, which is stronger evidence than a zero count would
+# be — a credential that cannot enumerate secrets cannot leak one either. Unlike
+# check 5 above this says nothing about *which* repository is addressed, which is
+# exactly why it is not the selection probe.
+if gh api "repos/$REPO/actions/secrets" >/dev/null 2>&1; then
+  refuse_target "the lane's credential can enumerate $REPO's secrets; it is scoped too broadly"
+fi
+note "the lane's credential cannot enumerate secrets (403), so it cannot leak one"
+
+WORKFLOW_YAML=$(gh api "repos/$REPO/contents/.github/workflows/$WORKFLOW" \
+  -H "Accept: application/vnd.github.raw" 2>/dev/null) \
+  || refuse_target "the dispatch target workflow .github/workflows/$WORKFLOW is not installed in $REPO; this is not a repository this lane was built for"
+
+# The echo is the whole identity channel: `POST .../dispatches` answers 204 with
+# no run id and the runs listing carries no `inputs`, so `run-name` is the only
+# place the effect id can come back from. Checked in the file here, and *observed*
+# in the runs listing further down.
+grep -q 'run-name: fiddle-${{ inputs.fiddle_effect_id }}' <<<"$WORKFLOW_YAML" \
+  || refuse_target "$WORKFLOW must echo the effect id through run-name; got:
+$WORKFLOW_YAML"
+note "run-name echo present in $WORKFLOW"
+
+note "target accepted; arming cleanup"
 
 # ---------------------------------------------------------------------------
 # Cleanup, on every exit path, scoped to what this lane made
@@ -273,35 +408,6 @@ interrupted() {
 trap cleanup EXIT
 trap 'interrupted INT 130' INT
 trap 'interrupted TERM 143' TERM
-
-# ---------------------------------------------------------------------------
-# The target repository and the identity channel it carries
-# ---------------------------------------------------------------------------
-
-note "target repository: $REPO"
-gh api "repos/$REPO" --jq '"visibility=\(.visibility) default_branch=\(.default_branch)"' \
-  | sed 's/^/live-github: /'
-
-WORKFLOW_YAML=$(gh api "repos/$REPO/contents/.github/workflows/$WORKFLOW" \
-  -H "Accept: application/vnd.github.raw") \
-  || fail "the dispatch target workflow .github/workflows/$WORKFLOW is not installed in $REPO"
-
-# The echo is the whole identity channel: `POST .../dispatches` answers 204 with
-# no run id and the runs listing carries no `inputs`, so `run-name` is the only
-# place the effect id can come back from. Checked in the file here, and *observed*
-# in the runs listing further down.
-grep -q 'run-name: fiddle-${{ inputs.fiddle_effect_id }}' <<<"$WORKFLOW_YAML" \
-  || fail "$WORKFLOW must echo the effect id through run-name; got:
-$WORKFLOW_YAML"
-note "run-name echo present in $WORKFLOW"
-
-# The repository holds no secret this credential could read: the token has no
-# `Secrets` permission at all, which is stronger evidence than a zero count would
-# be — a credential that cannot enumerate secrets cannot leak one either.
-if gh api "repos/$REPO/actions/secrets" >/dev/null 2>&1; then
-  fail "the lane's credential can enumerate $REPO's secrets; it is scoped too broadly"
-fi
-note "the lane's credential cannot enumerate secrets (403), so it cannot leak one"
 
 # ---------------------------------------------------------------------------
 # Preconditions: zero of each, before anything is published
