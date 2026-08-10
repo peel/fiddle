@@ -42,48 +42,62 @@
 //!
 //! # What is not asserted here yet, and why
 //!
-//! Four of this operation's properties are implemented and cannot be gated from
-//! this file today, because every one of them needs an `apply` to run and
-//! nothing in this build can execute an operation whose `minimum()` is `Human`:
-//! `combine(Human, _)` is `RequireHumanDecision` unconditionally, and
-//! `Executor::execute`'s step 4 turns that into `EffectError::HumanDecisionRequired`
-//! and returns. `AuthorizedEffect` is unforgeable outside `crate::effect`, so
-//! `apply` is reachable from `execute` and from nowhere else.
+//! Four of this operation's properties are implemented and asserted nowhere, and
+//! the reason is no longer one reason.
 //!
-//! That is a gap in the executor rather than in this operation. The RFC's step 4
-//! is "combine the capability's minimum effect rule with deployment policy *and,
-//! when needed, resolve a matching contextual human decision*", and the third
-//! input does not exist: a resolved decision has no way to reach the executor.
-//! Bean `fiddle-rvcu` adds it, in `crates/fiddle-runtime/src/effect/mod.rs`, and
-//! it is the prerequisite for the four tests owed here:
+//! It was, until bean `fiddle-rvcu` landed `Executor::execute_decided`. An
+//! operation whose `minimum()` is `Human` could not commit anything:
+//! `combine(Human, _)` is `RequireHumanDecision` unconditionally, step 4 turned
+//! that into `EffectError::HumanDecisionRequired` and returned, and
+//! `AuthorizedEffect` is unforgeable outside `crate::effect`, so `apply` had no
+//! second route to reach. Step 4 now takes the RFC's third input — *"and, when
+//! needed, resolve a matching contextual human decision"* — so a walk carrying a
+//! resolved approval reaches `apply`, and the blanket claim that these four
+//! cannot exist has stopped being true of any of them. What is left is two
+//! different situations, and citing the landed bean for all four would hide both.
 //!
-//! - the mutation that a run really sent is GraphQL and carries the node id from
-//!   the read, with the id bound as `$id` and never spliced into the query text
-//!   — read out of the `argv` a scripted `gh` recorded. `github::ready`'s
-//!   `the_mutation_binds_its_input_rather_than_spelling_it` asserts the same
-//!   claim one step earlier, over the pair `apply` would hand the adapter, which
-//!   is as close to the wire as anything gets without a commit;
+//! **Two are blocked, and on the fixture rather than on the executor.** The
+//! scripted `gh`'s GraphQL route answers a scripted status and body and does
+//! nothing else: it short-circuits ahead of the `script`/`commit_then_*`
+//! machinery, which is keyed on the REST write path, so a scripted mutation can
+//! neither change the world it was sent to nor die after sending. Bean
+//! `fiddle-8vpm` is that route's fault injection, and it is the prerequisite for:
+//!
 //! - the mutation is dispatched exactly once, including on the path where its
-//!   answer was lost and the pull request had to be read back to settle it;
+//!   answer was lost and the pull request had to be read back to settle it —
+//!   which needs a `gh` that mutates and *then* dies;
+//! - and, with a decision resolved, the transition commits at all — which needs
+//!   the post-mutation read to answer `draft: false`, where today both of a
+//!   walk's reads are served from the same `pulls_by_number/{n}.json`.
+//!
+//! **Two are blocked on nothing, and are simply owed.** They were deferred
+//! alongside the other two and are named separately so that a reader does not
+//! inherit a prerequisite they no longer have:
+//!
+//! - the mutation a run really sent is GraphQL and carries the node id from the
+//!   read, with the id bound as `$id` and never spliced into the query text, read
+//!   out of the `argv` a scripted `gh` recorded. Reachable on a walk that ends
+//!   `Unresolved`, since the request is recorded whatever the postcondition then
+//!   says about it. `github::ready`'s
+//!   `the_mutation_binds_its_input_rather_than_spelling_it` asserts the same
+//!   claim one step earlier, over the pair `apply` hands the adapter, which is as
+//!   close to the wire as anything gets without a dispatch;
 //! - a mutation refused with 200 and a `FORBIDDEN`, against a world that still
 //!   shows a draft, reports the adapter's refusal rather than `Unresolved` and
-//!   rather than "the adapter reported success";
-//! - and, with a decision resolved, the transition commits at all.
+//!   rather than "the adapter reported success". The GraphQL route already
+//!   scripts a status and a body independently, which is exactly what a 200
+//!   carrying `errors[]` needs, and a world that stays a draft is the one the
+//!   case above it already builds.
 //!
-//! Together they are the whole of `m3-ready-mutation-is-graphql-and-once`'s
-//! dispatch half and of `m3-refusal-is-not-a-lost-write`. The gap is authorised
-//! rather than an omission, and it is named rather than approximated: each of
-//! those four is a claim about a *committed* mutation — its recorded `argv`, its
-//! count across a lost answer, its classification when refused — so a version
-//! passing today would have to avoid the executor, and an assertion that avoids
-//! the mandatory authorization boundary is an assertion about something other
-//! than what this operation does.
+//! Together the four are the whole of `m3-ready-mutation-is-graphql-and-once`'s
+//! dispatch half and of `m3-refusal-is-not-a-lost-write`.
 //!
-//! **That is a statement about those four and not about the boundary in
-//! general.** An earlier wording said any reachable version of the owed tests
-//! would have to avoid the executor, which was too wide, and three properties
-//! next to them are asserted here and in `github::ready`'s own tests without
-//! going near a committed mutation:
+//! **Nothing was approximated in their absence.** No weaker version that avoids
+//! the executor was written, because an assertion that avoids the mandatory
+//! authorization boundary is an assertion about something other than what this
+//! operation does — which reads as coverage while gating nothing. Three
+//! properties beside them are asserted here and in `github::ready`'s own tests,
+//! and they are the three that can be without a committed mutation:
 //!
 //! - `a_run_that_reaches_policy_is_refused_for_want_of_a_person` drives the gate
 //!   *through* `Executor::execute` and pins the trace and a dispatch count of
