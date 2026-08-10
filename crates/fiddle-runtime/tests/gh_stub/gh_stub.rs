@@ -80,7 +80,26 @@ fn main() {
     // — the status and the body — have to be scriptable independently, which is
     // exactly what the `<status> <exit> <mode>` script cannot express.
     if endpoint(&args) == Some("graphql") {
-        let (status, body) = graphql_answer(&dir);
+        let (status, body, mode) = graphql_answer(&dir);
+        let request = graphql_request(&args).to_string();
+
+        // The ambiguous *mutation*, and this route's own half of what the
+        // `commit_then_*` block below does for a REST write. Checked before the
+        // answer is printed and applied before the ending runs, in that order and
+        // for that reason: a route that ended first would be testing a mutation
+        // that never landed.
+        //
+        // The ending rides in `graphql/{n}.json` rather than in the `<status>
+        // <exit> <mode>` script because this route cannot reach that script and
+        // must not. It returns above it deliberately — every GraphQL call is one
+        // `POST /graphql`, so [`script_key`] derives one key for all of them and
+        // could not tell a refusal from a lost answer, and the script's single
+        // status field cannot express a verdict that lives in the body.
+        if let Some(ending) = mode.strip_prefix("commit_then_") {
+            apply_effect(&dir, GRAPHQL_KEY, &request, &mode);
+            end_without_answering(&dir, ending);
+        }
+
         // Exit 1 on a refusal and 0 on a mutation that landed, which is what the
         // real `gh` was measured doing: a refused mutation answers 200 and exits
         // 1. It is written this way so that an adapter which consulted the exit
@@ -90,6 +109,19 @@ fn main() {
             || body["errors"]
                 .as_array()
                 .is_some_and(|errors| !errors.is_empty());
+        // A mutation nothing refused really lands, which is this route's
+        // equivalent of the `status < 400` test the REST write makes at the bottom
+        // of this function — read off the *body*, because that is where a GraphQL
+        // verdict is. Without this the route answered and changed nothing, so no
+        // mutation through it could ever be observed to have happened and there
+        // was no committed GraphQL path at all.
+        //
+        // A refusal deliberately lands nothing: `errors[]` against a world that
+        // still shows a draft is what makes the refusal stand as the answer
+        // rather than as a write that might be in flight.
+        if !refused {
+            apply_effect(&dir, GRAPHQL_KEY, &request, &mode);
+        }
         print!("HTTP/2.0 {status} \r\n\r\n{body}");
         std::process::exit(i32::from(refused));
     }
@@ -132,42 +164,7 @@ fn main() {
     // that exited first would be testing a failed write, which proves nothing.
     if let Some(ending) = mode.strip_prefix("commit_then_") {
         apply_effect(&dir, &key, &body_in, mode);
-        match ending {
-            // 128 + SIGKILL, the shell's spelling of a killed child, which some
-            // wrappers pass on as their own exit code.
-            "die" => std::process::exit(137),
-            // A real signal death, so `ExitStatus::code()` is `None`. The
-            // adapter must classify both as `Unknown`, and this is the pair that
-            // proves it does not depend on which one it got.
-            "abort" => std::process::abort(),
-            // The **third** provenance of one ambiguous write, and the one the
-            // other two cannot reach: the mutation lands and then the answer is
-            // lost to a *cancellation* rather than to a death.
-            //
-            // This mode does not end itself. It records that the write landed
-            // and then waits to be killed, so what ends it is the runtime's own
-            // cancellation token — the channel a `^C` reaches a bounded child
-            // through, since the child has a process group of its own. A `gh`
-            // that exited on its own could only ever produce the killed-child
-            // provenance, which is the one the adapter already got right; the
-            // milestone's holistic review found that the harness had therefore
-            // never injected the one it got wrong.
-            //
-            // The marker is written *between* the mutation and the wait, for the
-            // same reason `git_stub`'s `pushed_then_died` is: it is the fixture's
-            // own record that the world really changed *before* the answer was
-            // lost, and it is what a test waits on before it interrupts.
-            "wait" => {
-                std::fs::write(dir.join("landed_and_waiting"), "yes").unwrap();
-                std::thread::sleep(FOREVER);
-                // Only reachable if nothing ever cancelled, which is a test that
-                // arranged an interrupt and failed to deliver it. Exiting
-                // non-zero rather than answering keeps that from looking like a
-                // successful write.
-                std::process::exit(1);
-            }
-            other => panic!("unknown ending mode {other}"),
-        }
+        end_without_answering(&dir, ending);
     }
 
     // Not a response at all — the shape of `cli.program` pointing at something
@@ -201,6 +198,57 @@ fn main() {
         response_body(status, mode)
     );
     std::process::exit(exit);
+}
+
+/// End the process the way a `gh` whose answer was lost ends: without one.
+///
+/// Called from both write routes — the REST script's `commit_then_*` and the
+/// GraphQL per-call file's — and that sharing is the point. The two routes
+/// disagree about how an ending is *scripted*, because one is keyed by method and
+/// path and the other has neither, but "the mutation landed and then the answer
+/// was lost" is one fact with one set of provenances, and a second copy of these
+/// three arms would be a second fixture that could drift from this one. The
+/// caller applies the effect first; this function only loses the answer.
+///
+/// Diverging returns rather than a value, so the caller cannot accidentally carry
+/// on and print a response after the answer was supposed to have been lost.
+fn end_without_answering(dir: &Path, ending: &str) -> ! {
+    match ending {
+        // 128 + SIGKILL, the shell's spelling of a killed child, which some
+        // wrappers pass on as their own exit code.
+        "die" => std::process::exit(137),
+        // A real signal death, so `ExitStatus::code()` is `None`. The adapter
+        // must classify both as `Unknown`, and this is the pair that proves it
+        // does not depend on which one it got.
+        "abort" => std::process::abort(),
+        // The **third** provenance of one ambiguous write, and the one the other
+        // two cannot reach: the mutation lands and then the answer is lost to a
+        // *cancellation* rather than to a death.
+        //
+        // This mode does not end itself. It records that the write landed and
+        // then waits to be killed, so what ends it is the runtime's own
+        // cancellation token — the channel a `^C` reaches a bounded child
+        // through, since the child has a process group of its own. A `gh` that
+        // exited on its own could only ever produce the killed-child provenance,
+        // which is the one the adapter already got right; the milestone's
+        // holistic review found that the harness had therefore never injected the
+        // one it got wrong.
+        //
+        // The marker is written *after* the caller's mutation and *before* the
+        // wait, for the same reason `git_stub`'s `pushed_then_died` is: it is the
+        // fixture's own record that the world really changed before the answer
+        // was lost, and it is what a test waits on before it interrupts.
+        "wait" => {
+            std::fs::write(dir.join("landed_and_waiting"), "yes").unwrap();
+            std::thread::sleep(FOREVER);
+            // Only reachable if nothing ever cancelled, which is a test that
+            // arranged an interrupt and failed to deliver it. Exiting non-zero
+            // rather than answering keeps that from looking like a successful
+            // write.
+            std::process::exit(1);
+        }
+        other => panic!("unknown ending mode {other}"),
+    }
 }
 
 /// The header block, CRLF-terminated as a real `gh -i` writes it.
@@ -306,17 +354,37 @@ fn endpoint(args: &[String]) -> Option<&str> {
     None
 }
 
-/// The next scripted GraphQL answer, in call order.
+/// The world key a GraphQL mutation lands under.
 ///
-/// Each `graphql/<n>.json` holds `{"status": <code>, "body": <value>}`. The two
-/// are scripted separately on purpose: for GraphQL they are independent facts,
-/// since a refusal arrives as 200 with `errors[]`, and a fixture that derived
-/// one from the other could not express the case this route exists for.
+/// `POST_graphql`, because that is the request: every GraphQL call is a `POST` to
+/// `/graphql`. Stated here rather than derived by [`script_key`], which cannot
+/// produce it — a GraphQL call carries no path argument at all, so the key that
+/// function derives is `GET_`, and [`apply_effect`] reads a `GET` as a read and
+/// drops it. The mangling is right for REST and this route is the one place a key
+/// has to be named instead of parsed.
+const GRAPHQL_KEY: &str = "POST_graphql";
+
+/// The next scripted GraphQL answer, in call order, and how the call should end.
+///
+/// Each `graphql/<n>.json` holds `{"status": <code>, "body": <value>}` and may
+/// hold a `"mode"` beside them. The status and the body are scripted separately
+/// on purpose: for GraphQL they are independent facts, since a refusal arrives as
+/// 200 with `errors[]`, and a fixture that derived one from the other could not
+/// express the case this route exists for.
+///
+/// The mode is a **third** independent fact and is why it is a key here rather
+/// than a fourth word in the REST route's `<status> <exit> <mode>` script. That
+/// script is looked up by [`script_key`], which is one key for every GraphQL call
+/// ever made, so a sequence of calls could not be given different endings; and
+/// this route returns before that script is read, deliberately, because a single
+/// status field cannot carry a verdict that lives in the body. `page-{k}.link`
+/// beside a comment page is the same shape — a per-response-unit sidecar for the
+/// one fact the shared script cannot express.
 ///
 /// The counter is a file rather than a count of recorded requests because a test
 /// may script a sequence — a refusal, then a success — and each call is its own
 /// process, so there is nowhere else for the position to live.
-fn graphql_answer(dir: &Path) -> (u16, serde_json::Value) {
+fn graphql_answer(dir: &Path) -> (u16, serde_json::Value, String) {
     let counter = dir.join("graphql_calls");
     let n: usize = std::fs::read_to_string(&counter)
         .ok()
@@ -329,14 +397,44 @@ fn graphql_answer(dir: &Path) -> (u16, serde_json::Value) {
     // than the answer should not have to script one.
     let Ok(scripted) = std::fs::read_to_string(dir.join("graphql").join(format!("{n}.json")))
     else {
-        return (200, serde_json::json!({ "data": {} }));
+        return (200, serde_json::json!({ "data": {} }), "normal".to_string());
     };
     let scripted: serde_json::Value =
         serde_json::from_str(&scripted).expect("a scripted GraphQL answer must be JSON");
     (
         scripted["status"].as_u64().unwrap_or(200) as u16,
         scripted["body"].clone(),
+        // The REST script's own default, spelled the same way: a call whose
+        // subject is the answer should not have to say how it ended.
+        scripted["mode"].as_str().unwrap_or("normal").to_string(),
     )
+}
+
+/// The `-f name=value` pairs a GraphQL call carries, as one object.
+///
+/// This is the request in everything but transport, and it is what a world entry
+/// records: `gh` turns these into the query and the variables bound to it, so
+/// `{"query": "mutation($id: ID!) { markPullRequestReadyForReview…", "id":
+/// "PR_kwD…"}` is the whole of what was asked. The REST route reads its body off
+/// stdin; a GraphQL call has none, because `GhCli::graphql` passes no `--input`.
+///
+/// Recorded flat, exactly as the child received it, rather than reshaped into
+/// `{"query": …, "variables": {…}}`. `gh` spells a GraphQL variable and a form
+/// field identically — that is ADR 018's measurement — so which of these is a
+/// variable is not a fact this process has, and a fixture that guessed would be
+/// modelling `gh` where it can simply record it.
+fn graphql_request(args: &[String]) -> serde_json::Value {
+    let mut fields = serde_json::Map::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg != "-f" && arg != "-F" {
+            continue;
+        }
+        if let Some((name, value)) = it.next().and_then(|field| field.split_once('=')) {
+            fields.insert(name.to_string(), value.into());
+        }
+    }
+    serde_json::Value::Object(fields)
 }
 
 /// The API path exactly as it was asked for, query string included.
@@ -690,6 +788,20 @@ fn world_answer(dir: &Path, key: &str, path: &str) -> (u16, String) {
 /// one; what it cannot be is the answer to an oversight.
 ///
 /// `None` means this is not a by-number path, and the world answers it.
+///
+/// The file is the pull request as it was *seeded*, and the answer is that seed
+/// with the mutations that have since landed applied over it — the same
+/// two-sources-one-answer shape [`pull_requests`] uses for the listing, and for
+/// the same reason. Both of a walk's reads address this one path, so a route that
+/// answered the file verbatim answered the pre-mutation world twice, and no read
+/// could ever show that the transition had happened. That is what left the
+/// GraphQL route with no committed path to observe at all.
+///
+/// Note where the change comes from: the **world log**, which holds only mutations
+/// that really landed, and not a per-call index. A counter would make the second
+/// read differ from the first whether or not anything had happened, which is a
+/// fixture that agrees with the property under test rather than one that measures
+/// it — a refused mutation would then read as committed.
 fn pull_request_by_number(dir: &Path, path: &str) -> Option<(u16, String)> {
     let bare = path.split('?').next().unwrap_or(path);
     let segments: Vec<&str> = bare.split('/').filter(|s| !s.is_empty()).collect();
@@ -705,7 +817,59 @@ fn pull_request_by_number(dir: &Path, path: &str) -> Option<(u16, String)> {
             file.display()
         )
     });
-    Some((200, body))
+    Some((200, landed_transitions_applied(dir, body)))
+}
+
+/// One seeded pull request, brought up to date with the ready transitions that
+/// have landed against it.
+///
+/// The seed is returned **byte for byte** when nothing applies, which is not
+/// tidiness: a test may script a body deliberately missing `draft` or `node_id` to
+/// ask what a client does with an answer it cannot read, and a route that
+/// round-tripped every read through `serde_json` would quietly repair or reorder
+/// what that test wrote.
+///
+/// Matched on the node id rather than on the number, because the node id is what
+/// `markPullRequestReadyForReview` is addressed by. A mutation for some other
+/// pull request therefore does not take this one out of draft, which is the
+/// distinction a fixture keyed on "a mutation happened" would lose.
+fn landed_transitions_applied(dir: &Path, body: String) -> String {
+    let mut pull_request = parse(&body);
+    let node_id = pull_request["node_id"].as_str().unwrap_or_default();
+    if node_id.is_empty() || !readied_node_ids(dir).iter().any(|id| id == node_id) {
+        return body;
+    }
+    // `draft` and nothing else. The transition takes a pull request out of draft;
+    // a fixture that also rewrote the state or the head would be answering
+    // questions this mutation does not ask.
+    pull_request["draft"] = serde_json::Value::Bool(false);
+    pull_request.to_string()
+}
+
+/// The node ids a landed `markPullRequestReadyForReview` took out of draft.
+///
+/// Read out of the world log, so these are the mutations that really happened —
+/// including, and this is the whole point, the ones whose answer was lost on the
+/// way back. Keyed off the query text because that is what says which mutation
+/// was sent: `gh` addresses every GraphQL call to one endpoint, so the request is
+/// the only thing that distinguishes a ready transition from anything else this
+/// route may one day carry.
+fn readied_node_ids(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("world"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|landed| landed["key"].as_str() == Some(GRAPHQL_KEY))
+        .filter_map(|landed| {
+            let request = parse(landed["body"].as_str().unwrap_or_default());
+            let id = request["id"].as_str()?.to_string();
+            request["query"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("markPullRequestReadyForReview")
+                .then_some(id)
+        })
+        .collect()
 }
 
 /// The two comment collections, each answered from a directory of its own.
