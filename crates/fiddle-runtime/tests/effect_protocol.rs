@@ -1088,6 +1088,118 @@ async fn a_decision_changes_nothing_for_an_automatic_operation() {
     );
 }
 
+/// **Where this bean's rule and the milestone's central rule meet.** A decision
+/// permits a mutation, the mutation lands, its answer is lost, and the effect is
+/// settled by *reading* rather than by spending the approval a second time.
+///
+/// Worth its own case because it is the one place the two rules could contradict
+/// each other. "An unknown outcome is resolved by reading the world, never by
+/// retrying the mutation" was asserted across this file for `execute` only, and a
+/// decided walk that re-dispatched on an ambiguous answer would spend one
+/// approval on two external effects — which is strictly worse than the duplicate
+/// M2 exists to prevent, because a person authorized one of them and not the
+/// other.
+///
+/// It needs no fault injection beyond what the scripted world already does: the
+/// operation lands the write and then returns `Killed`, so both halves of the
+/// ambiguity are real without a process, a credential or a network.
+#[tokio::test]
+async fn a_decided_mutation_whose_answer_was_lost_is_settled_by_reading() {
+    let harness = Harness::new(Script::WriteLandsAnswerLost)
+        .with_policy(HumanDecisionRequirement::Human, DeploymentRule::Allow);
+    let decision = approval(proposed_effect_id(), payload_hash(PAYLOAD));
+
+    let receipt = harness
+        .executor()
+        .execute_decided(branch_effect(), harness.operation(), &decision)
+        .await
+        .expect("the answer was lost, not the write");
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(
+        harness.world.mutation_requests(),
+        1,
+        "one approval buys one dispatch, and a lost answer does not buy another"
+    );
+    assert_eq!(harness.world.mutations(), 1, "and it landed exactly once");
+    assert!(
+        harness.world.read_after_unknown(),
+        "the executor went and looked rather than writing again"
+    );
+    assert_eq!(
+        harness.world.calls(),
+        ["inspect", "apply", "inspect"],
+        "a read settled it; no second dispatch appears anywhere in the walk"
+    );
+    assert_eq!(
+        harness.world.steps(),
+        [
+            "validate_capability",
+            "derive_identity",
+            "inspect_postcondition",
+            "combine_policy",
+            "resolve_decision",
+            "authorize",
+            "apply",
+            "observe_postcondition",
+        ],
+        "and the decision was resolved exactly once, before the single dispatch"
+    );
+}
+
+/// **The dispatch bound, over every scripted world, on the decided path too.**
+///
+/// `every_path_dispatches_at_most_one_mutation` asserts this of `execute` and
+/// says why: a retry that slipped into an arm nobody wrote a case for is caught
+/// by the sweep rather than by production. That argument applies unchanged to
+/// `execute_decided`, which had no sweep of its own — so the guarantee held for
+/// the paths somebody remembered, which is the shape of gap the original sweep
+/// exists to close.
+///
+/// The expected count is per-world rather than a blanket "at most one", because
+/// two of these worlds settle before the mutation and must dispatch **zero**: a
+/// decided walk that wrote where the undecided one would not have is a decision
+/// path that changed more than step 4.
+#[tokio::test]
+async fn every_decided_path_dispatches_at_most_one_mutation() {
+    let decision = approval(proposed_effect_id(), payload_hash(PAYLOAD));
+    for script in Script::ALL {
+        let harness = Harness::new(script)
+            .with_read_retry(BUDGET.0, BUDGET.1, BUDGET.2)
+            .with_policy(HumanDecisionRequirement::Human, DeploymentRule::Allow);
+        let _ = harness
+            .executor()
+            .execute_decided(branch_effect(), harness.operation(), &decision)
+            .await;
+
+        let expected = match script {
+            // Nothing to do, or nothing that may be written over. Both settle at
+            // step 3, so neither is ever put to policy and neither resolves a
+            // decision — which is the ordering `an_already_satisfied_effect_is\
+            // _never_put_to_policy` pins for the undecided walk.
+            Script::AlreadySatisfied | Script::TwoMatch => 0,
+            _ => 1,
+        };
+        assert_eq!(
+            harness.world.mutation_requests(),
+            expected,
+            "{script:?} dispatched the wrong number of mutations on the decided path"
+        );
+        assert!(
+            harness.world.mutations() <= 1,
+            "{script:?} changed the world {} times",
+            harness.world.mutations()
+        );
+        if expected == 0 {
+            assert!(
+                !harness.world.steps().contains(&"resolve_decision"),
+                "{script:?} settles before policy, so no decision may be resolved: {:?}",
+                harness.world.steps()
+            );
+        }
+    }
+}
+
 /// The two entry points walk one order, and the decision is the only difference.
 ///
 /// Asserted as a pair rather than left to the two cases above, because the claim
