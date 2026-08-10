@@ -265,6 +265,45 @@ impl IntegrationOperation for EnsurePullRequestReady {
     /// because re-drafting one a person had readied would undo human progress.
     /// The two operations therefore never fight over the same object.
     ///
+    /// # A *closed* pull request that is not a draft is still this postcondition
+    ///
+    /// This read is deliberately not constrained to `state=open`, and the
+    /// difference from [`EnsurePullRequest`](super::EnsurePullRequest) — which
+    /// constrains its lookup exactly that way — is not an inconsistency. The two
+    /// are asking different questions:
+    ///
+    /// - `EnsurePullRequest` is deciding whether to **create**. A closed pull
+    ///   request must not suppress a create that is still needed, so it has to
+    ///   ignore one.
+    /// - This operation is deciding whether a **transition already happened**.
+    ///   "This pull request is not a draft" stays true after it is closed,
+    ///   because closing does not re-draft it.
+    ///
+    /// Constraining this one to `state=open` would make it unable to recognise
+    /// its own completed effect: a readied-then-closed pull request would read as
+    /// postcondition-absent, and a fresh process would then attempt
+    /// `markPullRequestReadyForReview` against a closed object — a mutation that
+    /// fails or reopens, which is strictly worse than reporting an effect that
+    /// genuinely did happen. Recorded here so the next reader does not "fix" this
+    /// into a re-attempt.
+    ///
+    /// # Step 3 runs before step 4, so this read is never gated on a decision
+    ///
+    /// The executor inspects the postcondition *before* it combines policy, so an
+    /// already-ready pull request settles here and no human decision is required
+    /// to observe a completed effect — even though
+    /// [`EnsurePullRequestReady::minimum`] is `Human`. That is the correct
+    /// behaviour rather than an accident of ordering: an effect the world already
+    /// satisfies is not a request to act on, so there is nothing left to
+    /// authorize.
+    ///
+    /// It is also the reason one of this operation's properties is assertable at
+    /// all without a resolved decision, which is why it is written down here.
+    /// Somebody reordering the executor's steps would silently break it, and the
+    /// test that would fail — `an_already_ready_pull_request_is_the_postcondition`
+    /// in `ready_effect.rs` — asserts the step trace rather than the outcome
+    /// precisely so that the reordering is what fails rather than nothing.
+    ///
     /// No arm turns a failed read into an absence. A pull request addressed by
     /// number either exists or answers 404, so an error here is a repository
     /// this process cannot read rather than a draft — and reading an outage as
