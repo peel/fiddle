@@ -821,3 +821,16 @@ The missing half of the policy is a disposal rule, so state it with the policy:
 Worth pairing with the earlier finding about `git worktree list` accumulating detached checkouts: the same discipline covers both, since a stray worktree and a stray target directory are the same species of leak and only the target directory is large enough to stop the machine.
 Origin: process (epic fiddle-eoqx) — surfaced by an evaluator during shutdown, after the lead mandated the isolation without a disposal rule
 Tags: #process #infrastructure #debt
+
+### 2026-08-10 — A claim about N cases needs N observations, and a fail-fast test can only make one
+A sharpening of the `effect/mod.rs:806-810` finding, generalised to a different shape by the implementer of `fiddle-ayqd` — who applied it to its own already-committed work, unprompted, on the strength of another bean's evaluation.
+
+It had committed a sentence asserting that **three** mangled marker bodies previously refused as `Version`. Its inversion run directly observed **one** of them, because the test fails fast on the first case. The other two follow deterministically from reading a two-line function — which is inference, not observation, and therefore the same species as a doc comment naming a mechanism nobody measured.
+
+The structural point is the part worth keeping. Re-observing the other two by hand corrects the *claim* and leaves the *hole*: a fail-fast test can only ever observe its first case, so the next reflow is free to break cases two and three silently, and the sentence keeps standing on one observation. The durable fix is to make the test unable to pass while any case is unobserved — **collect the outcome for each case and assert on the collection**, so a run reports which case diverged instead of stopping at the earliest one.
+
+Stated as a rule, because it generalises past this file: **a claim quantified over N inputs is evidenced only by N observations.** A test that stops at the first failure evidences exactly one, however many cases its body enumerates. When a comment or a bean says "all three", "every kind", or "each variant", the test behind it must be able to fail on any one of them individually and say which.
+
+This is the third distinct dressing of one underlying error this milestone: a stated mechanism standing in for a measured one. The first was a test whose property a neighbouring check already enforced; the second a comment crediting match-arm order over disjoint variants; this one a quantified claim behind a fail-fast assertion. All three read as correct, and none of the three could notice being wrong.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-ayqd) — self-audit of committed work, prompted by fiddle-rvcu's evaluation
+Tags: #process #testing
