@@ -767,3 +767,20 @@ So the isolation has three axes, not two:
 Only the third one produces numbers that are *attributable*. `git worktree add --detach <scratch> <sha>` gives a checkout with zero dirty files, and every count taken there belongs to the commits under evaluation and nothing else. Re-run that way, the same tree verified clean.
 
 This is the method `fiddle-rvcu`'s implementer used unprompted — it measured its delta in a scratch worktree at BASE_SHA with only its two files applied, *because* two other implementers were editing the shared tree — and the lead praised it without adopting it. Adopting it: **an evidence pack for a bean is built from a detached worktree pinned at that bean's last commit**, never from the shared branch checkout, whenever any other agent is live. The shared checkout is only safe when nothing else is running, which in this milestone has been almost never.
+
+**Second addendum — an inversion run is a uniquely bad neighbour, and the three axes are not interchangeable.** The lane that caused the phantom red made the distinction precisely, and it is worth keeping: a private `CARGO_TARGET_DIR` isolated its *artifacts* from concurrent relinks, but did nothing to isolate the *source tree it was mutating* — which is the failure two other agents and the lead then hit. Only the third axis prevents that.
+
+What makes inversions special is that **they deliberately break the tree, and unlike an ordinary edit there is no window in which the intermediate state is meant to be green.** A normal in-progress edit is transiently red by accident and its author is trying to get back to green; an inversion is red *on purpose*, for as long as the measurement takes, and its author will revert rather than repair. Any other agent reading the workspace during that window gets a true-but-expired failure with no signal that it is expired — and, worse, one that looks exactly like a real regression in a file they do not own.
+
+So the rule is not "isolate your build directory", it is: **run inversions in a detached worktree pinned at the commit under evaluation, never in the shared checkout.** The lead's implementer dispatch prompt currently mandates the private target directory and should mandate this too. Cost is a cold build per inversion round; the alternative is that every concurrent lane's test run becomes unreliable for the duration, which has now happened three times in one afternoon and consumed more time than the builds would have.
+
+### 2026-08-10 — `comments.rs:262` claims more relation recognition than one character buys
+Recorded here because it is owed by a bean that is about to converge, and an owed item on a closed bean is a lost item.
+
+`read_a_link_value`'s notion of "readable" is the **presence of a `>`**. That is enough to keep an unparseable header from being read as an end of pages, which is the property `fiddle-9krm` exists to establish, but the doc comment at `crates/fiddle-runtime/src/github/comments.rs:262` describes a stronger recognition than one character delivers. Two residuals follow from it: `<url>; rel="ne` still reads as an end, and a single valid link-value marks a mixed header readable.
+
+Neither is fixable by widening the doubt direction — doing so sends every legitimate last page to its bound, which is a worse failure than the one being prevented. So the code is right and the comment overclaims. **Soften the comment whenever that file is next touched**; do not change the behaviour to match the comment.
+
+The bean's implementer flagged this against its own work, unprompted, having been scoped to correct a record rather than to touch the file — and declined to touch it. That is the correct boundary and the reason this note exists rather than an unrequested edit.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-9krm) — volunteered by the implementer against its own lane
+Tags: #debt #docs
