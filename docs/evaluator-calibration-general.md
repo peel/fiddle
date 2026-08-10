@@ -598,8 +598,21 @@ Also recorded: the **blind spot-check was deliberately skipped** for M2 at the o
 ## M3 — Suspension and human direction
 
 Anchors for the milestone that gives fiddle its first decision it is not entitled to make. Every M3
-bean declares `thresholds: {}` and every M3 bean changes code, so the 2026-07-29 doc-only correction
-does not apply to any of them.
+bean changes code, so the 2026-07-29 doc-only correction does not apply to any of them.
+
+**M3 scores dimensions, unlike M0 through M2.** Its eval blocks set the general template's defaults
+explicitly — `correctness: 7`, `domain_spec_fidelity: 8`, `code_quality: 6` — rather than the
+`thresholds: {}` every earlier milestone declared. That is a deliberate reversal, taken on 2026-08-10
+at the operator's decision, and the reason is the measurement gap recorded at the foot of this file:
+M2's twenty-one beans all converged evidence-only, so the largest epic in the history contributed
+nothing to the calibration this file exists to hold, while showing the lowest dispatches-per-task and
+iterations of any epic — a number that reads as efficiency and is an artifact of single-pass
+convergence.
+
+The cost is paid per bean and is worth stating so nobody reads M3's dispatch counts as a regression:
+scored convergence needs **two consecutive passes with no regressions**, so every bean carries at
+least one more evaluator dispatch than an M2 bean did. A higher dispatch count in M3's trend row is
+the price of the row having data in it at all.
 
 **The scope rule for this milestone, stated once.** M3 is scored on what the deterministic shell
 *verifies* before it acts, never on whether the model read the person correctly. A comment that was
