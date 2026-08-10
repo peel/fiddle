@@ -753,3 +753,17 @@ Both mitigations are mechanical:
 The general shape, stated to sit beside the `target/` finding: **an evidence pack is only as trustworthy as the provenance of the tools that produced it.** Isolation covers *where* the build wrote; provenance covers *what* did the building. A verification run has to pin both, and the lead's own pack is not exempt from the standard the lead asks evaluators to enforce.
 Origin: implementation (epic fiddle-eoqx, bean fiddle-rvcu) — found by the lead while building an evidence pack, after an evaluator had flagged the same exit-code class in the previous one
 Tags: #process #infrastructure #debt
+
+**Addendum, same day — there is a third axis, and it invalidated the corrected run too.** With the toolchain pinned and `CARGO_TARGET_DIR` isolated, the verification still came back **525 passed / 2 failed**, and both failures were in `github::comments` and `human_comments` — a *different* bean's files, being edited by a live agent at that moment. `effect_protocol` read 50 where the bean under evaluation had measured 48, because two uncommitted tests from a third agent were sitting in the tree.
+
+So the isolation has three axes, not two:
+
+| axis | what it pins | how it fails silently |
+|---|---|---|
+| `CARGO_TARGET_DIR` | where the build wrote | a concurrent lane relinks the binary under test mid-run |
+| `rust-toolchain.toml` | what did the building | a sibling worktree's cargo is a different compiler |
+| **a detached worktree at the commit under evaluation** | **what was built** | **uncommitted work from other agents is measured as the bean's** |
+
+Only the third one produces numbers that are *attributable*. `git worktree add --detach <scratch> <sha>` gives a checkout with zero dirty files, and every count taken there belongs to the commits under evaluation and nothing else. Re-run that way, the same tree verified clean.
+
+This is the method `fiddle-rvcu`'s implementer used unprompted — it measured its delta in a scratch worktree at BASE_SHA with only its two files applied, *because* two other implementers were editing the shared tree — and the lead praised it without adopting it. Adopting it: **an evidence pack for a bean is built from a detached worktree pinned at that bean's last commit**, never from the shared branch checkout, whenever any other agent is live. The shared checkout is only safe when nothing else is running, which in this milestone has been almost never.
