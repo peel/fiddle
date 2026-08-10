@@ -1,5 +1,5 @@
-//! The identity of a question put to a person, and the marker that carries it
-//! across a process boundary.
+//! The identity of a question put to a person, the marker that carries it across
+//! a process boundary, and the four values an answer can amount to.
 //!
 //! A run that needs a human decision publishes the question and stops. The run
 //! that acts on the answer is a *different* process, started later, holding no
@@ -23,8 +23,15 @@
 //! half-matches is refused rather than repaired, and a body with no marker at
 //! all is [`MarkerError::Absent`] rather than an error, because that is what
 //! every other comment in the conversation looks like.
+//!
+//! [`InterpretedHumanDecision`] is the far end of the same exchange, and it lives
+//! beside the marker for a reason the two share: both are what one process is
+//! willing to conclude from text another party wrote. The marker's answer to that
+//! is to carry only values that get recomputed and compared. This enum's answer
+//! is to have nowhere to put anything else — see its own documentation.
 
 use crate::effect::{length_prefixed, truncated_digest, EffectId, PayloadHash};
+use crate::published::Published;
 
 /// The identity of one question put to a person: 16 hex characters of a blake3
 /// digest over the run and the effect the question gates.
@@ -48,6 +55,61 @@ pub struct DecisionBinding {
     /// word-for-word what it was while the branch beneath it has moved, and an
     /// approval given for one revision is not an approval of another.
     pub head_sha: String,
+}
+
+/// What a person's reply amounts to, and the whole of what reading one may
+/// conclude.
+///
+/// # Why this type is the milestone's blast radius
+///
+/// A reply is ordinary language and is read by a model, so the reading can be
+/// wrong. What this enum guarantees is that being wrong cannot *widen* anything:
+/// the effect's identity, the payload digest, the actor and the target all come
+/// from the deterministic shell, which read them from the world and compares them
+/// against it. A wrong reading picks the wrong one of four branches. There is no
+/// field here for it to pick a different effect through.
+///
+/// That is a property of the shape rather than of any rule, which is what makes
+/// it hold against a hostile model as well as a mistaken one. A variant added
+/// later that carried an [`EffectId`], an actor or a policy would give a reading
+/// somewhere to put one, so the guarantee is worth stating as the reason the
+/// shape is closed: two of the four variants carry nothing at all, and the other
+/// two carry text.
+///
+/// # Why the text is [`Published`] and not [`String`]
+///
+/// Because it is authored outside this process — by a person, relayed by a model
+/// reading that person — and it lands on
+/// [`RunOutcome`](crate::RunOutcome)'s reason, which is a field somebody reads.
+/// [`Published::of`] is the only way to fill such a field, so a caller cannot
+/// forward an unbounded reply by writing the assignment correctly. A `String`
+/// here would accept anything.
+///
+/// # Why [`Unclear`](InterpretedHumanDecision::Unclear) rather than an error
+///
+/// Because everything that is not an answer has to arrive as the same value, and
+/// an error is a value callers treat differently. A timeout, a refusal, empty
+/// output, malformed JSON, an unknown spelling — each of those is a reply nobody
+/// gave, and the right response to all of them is the follow-up
+/// `Unclear` produces. Returning a `Result` would offer a caller an `unwrap_or`,
+/// and the only default an approval-shaped API has is an approval.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub enum InterpretedHumanDecision {
+    /// The person approved this request, unconditionally.
+    ///
+    /// It carries nothing, and that is the point: an approval is an approval of
+    /// the question that was asked, which the shell already holds. Anything this
+    /// variant could carry would be something a reading got to choose about an
+    /// effect it did not author.
+    Approve,
+    /// The person declined. The reason is theirs, quoted.
+    Reject { reason: Published },
+    /// The person asked for something else. The instruction reaches a later
+    /// prompt, so whatever produces one bounds it before it gets here.
+    Redirect { instruction: Published },
+    /// No answer was read — including because none was given, and including
+    /// because reading failed.
+    Unclear,
 }
 
 /// The only marker version this build writes, and the only one it reads.
