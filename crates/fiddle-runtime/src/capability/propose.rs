@@ -113,8 +113,25 @@
 //! run has not earned that: the work is a question nobody has answered, and a
 //! marker written here would make the very process that was supposed to read the
 //! answer derive [`NextAction::Complete`](fiddle_core::NextAction) and never run.
-//! The marker belongs after the transition a person approved, which is the
-//! continuation's business.
+//!
+//! That was once the whole of it, and the sentence that followed said the marker
+//! belonged after the transition a person approved — *the continuation's business*.
+//! The continuation is now written and **still records nothing**, so the heading
+//! above remains literally true and its reason has changed. Two things are worth
+//! saying rather than leaving the old sentence to imply something false:
+//!
+//! - **What replaces it.** [`super::publish`] writes one when its effects
+//!   complete, in its own `record_change_set`, and the approve path here has the
+//!   same claim to one. It is not written because
+//!   `the_capability_holds_no_credential_and_accounts_for_no_work` asserts this
+//!   file names none of that machinery **on any path**, and that is a property
+//!   another bean's evaluation already passed. Making it false as a side effect of
+//!   this one would leave that bean converged on something no longer true. It is
+//!   debt with a bean, not an oversight.
+//! - **Why the absence is survivable.** Without a marker, a later invocation of a
+//!   run whose transition already landed walks the whole thing again. It completes
+//!   rather than failing; `ProposeChange::already_ready` is where that is arranged
+//!   and argued.
 
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::{attempt, AgentBudget, ToolHost, ToolReceipts};
@@ -1148,12 +1165,18 @@ where
         }
     }
 
-    /// Pair what reached the forge with what CI says, for a reader of a run that
-    /// stopped part-way.
+    /// Pair what reached the forge with what CI says.
     ///
-    /// Called on both arms — and for this capability *every* arm is one that
-    /// stopped part-way, because a run that did everything asked of it still ends
-    /// in an `Err`.
+    /// Called on both arms of [`Capability::execute`], and both arms are now
+    /// reachable: a run that asks a question ends in `Err(AwaitingDecision)` and a
+    /// run that finds an approval ends in `Ok`. Until the continuation existed
+    /// every arm this capability had stopped part-way, and this comment said so;
+    /// the approve path is what made that false.
+    ///
+    /// Which is why the read stays on both arms rather than moving to the failure
+    /// path: what reached the forge is what a reader has to be told either way, and
+    /// a `Publication` observed only when something went wrong would leave the one
+    /// run that completed unable to say what it published.
     fn observe(&self) -> Publication {
         let source = || SourceRef(format!("github:{}", self.config.repo));
         let (branch, head_sha, pull_request, failure) = {
