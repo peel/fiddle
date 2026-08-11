@@ -696,19 +696,25 @@ mod tests {
     }
 
     /// The ways a body gets damaged between being written and being read again —
-    /// reflowed by an editor, respaced, truncated, its closing lost — and the
-    /// refusal each one earns.
+    /// respaced, reflowed by an editor, its version token dropped, truncated, its
+    /// closing lost — and the refusal each one earns. Five kinds, listed in the
+    /// order the table below runs them.
     ///
     /// All five are [`MarkerError::Malformed`] and none is
-    /// [`MarkerError::Version`]. The first three were `Version` before this test
-    /// existed, because a mangled body's first token is not `v1` either, and the
-    /// version comparison stood where anything unrecognised fell through. Nothing
-    /// unsafe was accepted; the refusal simply told an operator whose comment had
-    /// been reflowed to upgrade their build, which is a day spent on the wrong
-    /// thing. The message is asserted per case for that exact reason: the bug was
-    /// never *whether* these refuse.
+    /// [`MarkerError::Version`]. **Three** were `Version` before this test
+    /// existed: the respacing, the reflow and the dropped token — the three that
+    /// corrupt whatever lands in the version token's position — because such a
+    /// body's first token is not `v1` either, and the version comparison stood
+    /// where anything unrecognised fell through. The other two were already
+    /// `Malformed`, because they damage the marker somewhere the version check
+    /// never looks: the truncation leaves `v1` intact and runs out of fields, and
+    /// the lost closing refuses before there is anything to tokenise. Nothing
+    /// unsafe was accepted either way; the refusal simply told an operator whose
+    /// comment had been reflowed to upgrade their build, which is a day spent on
+    /// the wrong thing. The message is asserted per case for that exact reason:
+    /// the bug was never *whether* these refuse.
     ///
-    /// "The first three" is a claim about three separate bodies, so all three are
+    /// That "three" is a claim about three separate bodies, so all three are
     /// observed on every run rather than the first one shielding the others — see
     /// [`refusals`] for why a `for` loop of assertions could not carry that claim.
     #[test]
