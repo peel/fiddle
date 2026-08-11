@@ -977,6 +977,16 @@ async fn a_suspended_run_still_reports_what_it_did_reach() {
 /// world really received and required to name the id the run is waiting on — and
 /// every field of it is recomputed here from canonical inputs, so this cannot pass
 /// on a build that invented an identity and then wrote it down consistently.
+///
+/// **Why agreement is the assertion.** A single derivation has no direct
+/// observable — nothing outside the capability can see how many times an id was
+/// computed. What it *does* have is a consequence: two values built from one
+/// derivation cannot disagree, and two built from two derivations have no reason
+/// to agree. So the only honest way to test "the id came from one place" is to
+/// take the two places it surfaces — the marker on the conversation and the
+/// request the error names — and require them to be the same string. Twenty-four
+/// tests passed over this bug elsewhere because every one of them built the two
+/// ids agreeing; this one takes them from the world instead.
 #[tokio::test]
 async fn the_suspended_run_waits_on_the_question_the_comment_carries() {
     let world = World::fresh();

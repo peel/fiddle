@@ -152,6 +152,20 @@ const FOREIGN_TOOL: &str = "unregistered";
 /// name cannot come to disagree with it, while a second derivation could. It is
 /// `fiddle-` followed by 16 lowercase hex characters, so it is a legal directory
 /// name for every possible input rather than for the well-behaved ones.
+///
+/// # This resolves a tension rather than working around one
+///
+/// [`EffectContext::work`] already says what it is, in its own words:
+///
+/// > The worktree whose `HEAD` is published. **One per run**, because an attempt
+/// > works in one checkout; an operation that could name another would be naming
+/// > work this run never did.
+///
+/// *Per run* — which is what this function derives, and what
+/// [`Workspace::create`]'s `<root>/<attempt-id>` is not. The field's claim and
+/// the workspace's path disagreed, and the field was the aspirational half:
+/// there was no run-scoped path for a caller to point it at. This is that path,
+/// so the sentence above is now true of the value it describes.
 pub fn attempt_worktree(workspace_root: &Path, project: &str, invocation_ref: &str) -> PathBuf {
     workspace_root.join(branch_name(project, invocation_ref).replace('/', "-"))
 }
