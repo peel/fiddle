@@ -77,7 +77,9 @@
 //! is to have nowhere to put anything else — see its own documentation.
 
 use crate::effect::{length_prefixed, truncated_digest, EffectId, PayloadHash};
+use crate::identity::{CapabilityId, WorkRef};
 use crate::published::Published;
+use crate::report::EvidenceRef;
 
 /// The identity of one question put to a person: 16 hex characters of a blake3
 /// digest over the run and the effect the question gates.
@@ -182,6 +184,78 @@ pub enum InterpretedHumanDecision {
     /// No answer was read — including because none was given, and including
     /// because reading failed.
     Unclear,
+}
+
+/// The question itself: what a person is being asked, and everything they need
+/// in order to answer it.
+///
+/// A description and not a channel. *Where* the question is put — a pull request
+/// conversation today, something else later — is `fiddle-runtime`'s
+/// `PublishDecisionRequest`, which renders one of these into a body and publishes
+/// it. What lives here is the content, because the content is what the run
+/// derived and is the same question whichever conversation ends up carrying it.
+///
+/// # The fields a person reads, and why they are all required
+///
+/// [`question`](HumanDecisionRequest::question),
+/// [`rationale`](HumanDecisionRequest::rationale),
+/// [`risks`](HumanDecisionRequest::risks),
+/// [`alternatives`](HumanDecisionRequest::alternatives) and
+/// [`evidence`](HumanDecisionRequest::evidence) are one set rather than five
+/// options, because the person answering has *only* what this type carries: they
+/// are reading a comment, not sitting beside the run. A request that named its
+/// question and left out what it rests on would be asking for an approval of
+/// something the approver cannot see, and the three [`Vec`]s being empty is the
+/// honest way to say a run found no risk, weighed no alternative or cited
+/// nothing — which is a statement, and different from the field not being there.
+///
+/// # Why the free text is [`String`] and not [`Published`]
+///
+/// Because this text is authored *inside* this process: it is what the run
+/// concluded about its own work, from its own canonical inputs. [`Published`] is
+/// the bound on text that arrived from somewhere else — a person, or a model
+/// relaying one — and [`InterpretedHumanDecision`] is where it is applied, on the
+/// way back. Bounding the outbound half as well would read as symmetry while
+/// actually being a bound against the wrong party.
+///
+/// [`invocation_ref`](HumanDecisionRequest::invocation_ref) is a [`String`] for a
+/// narrower reason: it is the same spelling [`decision_request_id`] hashes, and a
+/// value of this type is built by a run that already parsed its own reference at
+/// the boundary where a defect in one is reportable.
+///
+/// # Why the binding is carried rather than derived here
+///
+/// Not one of [`DecisionBinding`]'s four fields is this type's to compute. They
+/// belong to the effect the question gates — its identity, its payload digest,
+/// the revision it was asked about — which the caller holds and this type only
+/// describes. Carrying it is also what makes the rendered body self-sufficient:
+/// [`render_marker`] over this one field is the whole of what a later process
+/// needs to recognise this question again.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct HumanDecisionRequest {
+    /// Which question this is, as [`decision_request_id`] derived it.
+    pub request: DecisionRequestId,
+    /// The request that reached the asking run. For a reader, and for the
+    /// identity above, which is derived over it.
+    pub invocation_ref: String,
+    /// The work the question is about, when the run is addressed to work at all.
+    pub work_ref: Option<WorkRef>,
+    /// Which capability is asking.
+    pub capability: CapabilityId,
+    /// What an answer to this question would be an answer *to*.
+    pub binding: DecisionBinding,
+    /// The one thing being asked, phrased so that yes and no both mean
+    /// something.
+    pub question: String,
+    /// Why the run wants to do it.
+    pub rationale: String,
+    /// What could go wrong if the answer is yes.
+    pub risks: Vec<String>,
+    /// What else the run considered and did not propose.
+    pub alternatives: Vec<String>,
+    /// What the rationale rests on, so the approver can check it rather than
+    /// take it.
+    pub evidence: Vec<EvidenceRef>,
 }
 
 /// The only marker version this build writes, and the only one it reads.

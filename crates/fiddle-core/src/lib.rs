@@ -32,7 +32,7 @@ pub use assessment::{
 };
 pub use decision::{
     decision_request_id, parse_marker, render_marker, ActorRef, DecisionBinding, DecisionRequestId,
-    InterpretedHumanDecision, MarkerError, MARKER_VERSION,
+    HumanDecisionRequest, InterpretedHumanDecision, MarkerError, MARKER_VERSION,
 };
 pub use effect::{effect_id, payload_hash, EffectId, EffectKind, PayloadHash, ProposedEffect};
 pub use identity::{
