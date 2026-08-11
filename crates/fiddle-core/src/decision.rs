@@ -43,11 +43,15 @@
 //! compared against values recomputed from the run's own canonical inputs — the
 //! request id as a *sieve*, answering which comment this is and authenticating
 //! nothing, since it can be copied off the visible conversation; the gated
-//! [`EffectId`] as the authentication itself, being the one field the
-//! conversation cannot supply; the [`PayloadHash`] as the separate claim that the
-//! work has not moved under an approval. The fourth, the head sha, is compared
-//! against the head observed from the forge, and that is a recomputation on
-//! neither side. Authorship is a check of its own: an allowlist of numeric
+//! [`EffectId`] as the authentication itself — not because the conversation
+//! cannot carry it, since a verbatim quotation of the request comment carries it
+//! exactly and is refused one step earlier, as a second comment naming this
+//! request id, but because nobody without the run's canonical inputs can
+//! *derive* it, so a marker somebody composed names an effect this run does not
+//! derive; the [`PayloadHash`] as the separate claim that the work has not moved
+//! under an approval. The fourth, the head sha, is compared against the head
+//! observed from the forge, and that is a recomputation on neither side.
+//! Authorship is a check of its own: an allowlist of numeric
 //! [`ActorRef::id`], reached only for comments that are not bot- or
 //! app-attributed, so a bot carrying an allowlisted id is refused before the
 //! allowlist is consulted. A caller that branched on
@@ -55,14 +59,16 @@
 //! strict the parser it called.
 //!
 //! The paragraph above describes another crate — `fiddle-runtime`'s
-//! `human::validate`, where `resolve` holds the field comparisons and
-//! `select_candidates` the authorship rule — and it is stated knowing that
-//! nothing in this file can keep it true. `fiddle-core` does not depend on
-//! `fiddle-runtime` and must not, so no test here fails when that walk changes.
-//! An earlier version of this text called all four fields recomputed and
-//! presented the request-id sieve as an authentication, and it survived because
-//! there was nothing here able to contradict it. Read those two functions rather
-//! than this paragraph if the difference matters.
+//! `human::validate`, where `resolve` holds the request-id sieve and the effect
+//! and payload comparisons, `observe` — which `resolve` calls — holds the head
+//! sha comparison against the forge, and `select_candidates` holds the
+//! authorship rule — and it is stated knowing that nothing in this file can keep
+//! it true. `fiddle-core` does not depend on `fiddle-runtime` and must not, so no
+//! test here fails when that walk changes. An earlier version of this text called
+//! all four fields recomputed and presented the request-id sieve as an
+//! authentication, and it survived because there was nothing here able to
+//! contradict it. Read those functions rather than this paragraph if the
+//! difference matters.
 //!
 //! The consequence for [`render_marker`] is that its output is a wire format:
 //! one build writes those bytes and a later build reads them, so the bytes are
@@ -572,6 +578,14 @@ mod tests {
         assert_eq!(parse_marker("looks good to me"), Err(MarkerError::Absent));
     }
 
+    /// One row of a refusal table: the case's name, the body to parse, and the
+    /// message the refusal should carry.
+    type Case = (&'static str, String, String);
+
+    /// A whole table's outcome, named per case so a diff says which row moved
+    /// rather than only that something did.
+    type Refusals = Vec<(&'static str, String)>;
+
     /// Every case's refusal, gathered before any of them is asserted, paired with
     /// what it should have been.
     ///
@@ -595,14 +609,6 @@ mod tests {
     /// [`MarkerError::Malformed`] is spelled out with `{:?}` instead, so a body
     /// that started being accepted — or refused by a different variant — shows up
     /// as itself in the diff rather than as a missing message.
-    /// One row of a refusal table: the case's name, the body to parse, and the
-    /// message the refusal should carry.
-    type Case = (&'static str, String, String);
-
-    /// A whole table's outcome, named per case so a diff says which row moved
-    /// rather than only that something did.
-    type Refusals = Vec<(&'static str, String)>;
-
     fn refusals(cases: &[Case]) -> (Refusals, Refusals) {
         let observed = cases
             .iter()
