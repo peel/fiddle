@@ -1293,3 +1293,51 @@ authority would have produced a weaker claim than a correction verified.
 Recorded alongside the earlier entry on absence-inference. Same family, inverted: there, a check that
 could not evaluate was read as a negative result; here, a commit that had not happened yet was evaluated
 as though it had. **Both are the lead treating a state it had not observed as the state that holds.**
+
+### A lane had the correct measurement and published the lead's wrong number
+
+The most consequential finding of this milestone about the orchestration rather than the code, and it was
+volunteered by the lane rather than caught by review.
+
+The lead told a lane that `grep -rn 'Command::new' crates/fiddle-runtime/src/` returns **six** hits. It
+returns **seven**. The lead's six came from an invocation piped through `| grep -i git`, and **the one
+line that filter drops is `workspace/command.rs:178`** — the program seam the entire argument turned on.
+So a filtered count was published as the unfiltered command's output, inside the one sentence written
+specifically to survive an evaluator's grep, having filtered out the very line it cited. An evaluator
+found the discrepancy and the conclusion was unaffected, the seam being independently verified.
+
+**That is the boring half. The lane's disclosure is the finding:**
+
+> *"I ran the unfiltered grep myself and my terminal printed seven lines, and I wrote six because your
+> message said six."*
+
+It had the correct measurement on screen and published the lead's number instead. Nothing was missing —
+not the tooling, not the skill, not the diligence. **Authority overrode measurement**, in a lane that had
+spent the day verifying every other claim it was handed, on this same bean, including four line citations
+the lead had given it.
+
+**So every figure the lead puts in a dispatch is a potential contaminant that can overwrite a lane's own
+correct observation.** This inverts the usual worry. The concern has been lanes reporting things the lead
+cannot check; the actual failure was a lane declining to report something it *had* checked because the
+lead had already said otherwise. A lead who states numbers freely is not merely risking being wrong — it
+is suppressing the measurements that would have caught it.
+
+Three changes follow, and the third is the only structural one:
+
+1. **Do not put measurements in dispatch messages when the command can be named instead.** "Run
+   `grep -rn 'Command::new' crates/fiddle-runtime/src/` and use what it prints" cannot be deferred to
+   incorrectly.
+2. **When a figure must be stated, mark its provenance as the lead's and ask to be contradicted.** "My
+   count was N — verify it, and tell me if yours differs" restores the lane's licence to report what it
+   sees. Unmarked, a number in a lead's message reads as settled.
+3. **Cite the line, not the tally.** `command.rs:178` either exists and says what it is cited for, or it
+   does not, and it does not change when a neighbour commits. A count is a claim about a whole tree at an
+   instant, goes stale silently, and — as here — can be produced by an invocation that does not match the
+   sentence around it. The tally was deleted rather than corrected, because it was never load-bearing:
+   the line was always the whole claim. **This also dissolves the deference problem for counts, since
+   there is no number left to defer about.**
+
+Recorded with the lane's closing observation, which is the right frame for all three antipatterns this
+bean produced: every one was **a true statement that a neighbour's change made false**, and each was
+caught by a reader who had the means to check and used it. That is a healthy failure mode. The one that
+nearly escaped was the one where the reader had the means, used them, got the right answer, and deferred.
