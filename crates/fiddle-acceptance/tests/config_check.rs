@@ -449,11 +449,16 @@ fn config_check_rejects_an_unknown_key_inside_the_policy_table() {
 /// which is the property the schema enforces by type.
 const DECIDER: u64 = 505_401;
 
-/// What the channel's `status` reports today, and it is deliberately not
-/// `"enforced"`: nothing in this build reads either key yet, because the
-/// capability that would — `propose_change` — is not constructible from a
-/// document. See `render.rs`'s `DECISION_STATUS` for the argument, and the bean's
-/// own record for what has to land before the word changes.
+/// Which word of the disclosure taxonomy this channel is reported under.
+///
+/// The build has two, and they are not interchangeable: `accepted-not-enforced`
+/// for a key no code path consults, `observed-not-enforced` for one that is read
+/// and acted on and still decides nothing. `[github.decision]` is the first —
+/// nothing reads either key while `propose_change` is not constructible from a
+/// document — so it is disclosed the way `agent.max_capability_attempts` is, which
+/// is what makes this scenario the same scenario that one already has rather than
+/// a new kind of claim. `render.rs`'s `DECISION_STATUS` carries the argument and
+/// is the one line that changes when a capability starts reading the keys.
 const DECISION_STATUS: &str = "accepted-not-enforced";
 
 /// [`FORGE`] with a `[github.decision]` table carrying `body`.
