@@ -599,12 +599,13 @@ mod tests {
     /// them. And the run that mattered was the one where all three regressed
     /// together, which is the shape of a removed guard.
     ///
-    /// So the whole table is compared in one [`assert_eq!`]: a run names every
-    /// case that moved rather than only the earliest one to move. The refusal
-    /// is reduced to the message a reader would see, and anything that is not a
-    /// [`MarkerError::Malformed`] is spelled out with `{:?}` instead, so a body
-    /// that started being accepted — or refused by a different variant — shows up
-    /// as itself in the diff rather than as a missing message.
+    /// So the whole table is compared in one [`assert_eq!`]: a run prints every
+    /// case, named, so a reader can see which ones moved rather than only the
+    /// earliest one to move. The refusal is reduced to the reason a
+    /// [`MarkerError::Malformed`] carries, and anything that is not one is
+    /// spelled out with `{:?}` instead, so a body that started being accepted —
+    /// or refused by a different variant — shows up as itself in the diff rather
+    /// than as a missing reason.
     fn refusals(cases: &[Case]) -> (Refusals, Refusals) {
         let observed = cases
             .iter()
