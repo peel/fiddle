@@ -970,7 +970,119 @@ fn comment_page(dir: &Path, collection: &str, path: &str) -> (u16, String, Strin
             false => format!("Link: {}\r\n", rels.join(", ")),
         },
     };
-    (200, headers, body)
+    let last = !file(page + 1).exists();
+    (
+        200,
+        headers,
+        with_posted_comments(dir, collection, last, bare_path, body),
+    )
+}
+
+/// The conversation collection: the one comments are *posted* to, and therefore
+/// the only one whose listing has anything to merge.
+///
+/// Nothing in this build writes an inline review comment, so `review-comments`
+/// stays a purely scripted decoy — which is what
+/// `inline_review_comments_are_never_read` is about.
+const CONVERSATION: &str = "issue-comments";
+
+/// The id the first comment a `POST` created in this world is listed under.
+///
+/// Well clear of the small ids the suites seed by hand, and not a number that
+/// could be an index, a count or a page — [`pull_requests`]' reason for starting
+/// its numbering at 7 and the runs listing's for starting at 4200.
+const FIRST_POSTED_COMMENT: u64 = 3001;
+
+/// A page of the conversation with the comments this world's own `POST`s created
+/// appended to it.
+///
+/// This is the comment collection's half of what [`pull_requests`] does for the
+/// pull request listing, and it exists for the same reason: a read has to be
+/// answered from the world the writes built, or the only question this fixture
+/// exists to answer — *after the write landed and the answer was lost, what does
+/// the next process see?* — cannot be asked. Without it a posted comment was
+/// recorded in the world log and never listed, so a postcondition read taken
+/// after a `commit_then_die` found nothing and a walk that had really published
+/// its question looked like one that had not.
+///
+/// Appended to the **last** page and to no other, because the client follows
+/// `rel="next"` to the end and GitHub returns a conversation oldest first: a
+/// comment created now belongs after everything already there. A merge onto page
+/// one would put it before comments that predate it and, worse, would repeat it
+/// on every page of a paginated read.
+///
+/// The page is returned **byte for byte** when nothing applies, for
+/// [`landed_transitions_applied`]'s reason: a test may script a body deliberately
+/// missing a field to ask what the client does with an answer it cannot read, and
+/// a route that round-tripped every read through `serde_json` would quietly
+/// repair what that test wrote.
+fn with_posted_comments(
+    dir: &Path,
+    collection: &str,
+    last_page: bool,
+    bare_path: &str,
+    body: String,
+) -> String {
+    if collection != CONVERSATION || !last_page {
+        return body;
+    }
+    let posted = posted_comments(dir, bare_path);
+    if posted.is_empty() {
+        return body;
+    }
+    let serde_json::Value::Array(mut listed) = parse(&body) else {
+        return body;
+    };
+    listed.extend(posted);
+    serde_json::Value::Array(listed).to_string()
+}
+
+/// The comments that landed on one conversation, in the order they were posted,
+/// each in the shape the listing returns.
+///
+/// Read out of the world log, so these are the writes that really happened —
+/// including the ones whose answer was lost on the way back, which is the whole
+/// point. Keyed on the exact path rather than on "a comment was posted": a
+/// question published on one pull request must not appear in another's
+/// conversation, and a fixture that could not tell them apart would answer a
+/// duplicate-detection test either way.
+///
+/// The author is a `User` with no app attribution, which is what a comment
+/// written through a personal access token looks like — the credential every
+/// `GhCli` in the deterministic suite carries. The Actions shape is a `Bot` and is
+/// a different world; a test that needs one seeds a page instead.
+fn posted_comments(dir: &Path, bare_path: &str) -> Vec<serde_json::Value> {
+    // [`script_key`]'s mangling, for a path that carries no query — which a
+    // comment `POST` never does. Derived here rather than matched loosely so the
+    // key is the one `apply_effect` recorded and not a substring of it.
+    let key = format!(
+        "POST_{}",
+        bare_path.trim_start_matches('/').replace('/', "_")
+    );
+    std::fs::read_to_string(dir.join("world"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|landed| landed["key"].as_str() == Some(key.as_str()))
+        .enumerate()
+        .map(|(i, landed)| {
+            let request = parse(landed["body"].as_str().unwrap_or_default());
+            serde_json::json!({
+                "id": FIRST_POSTED_COMMENT + i as u64,
+                // The body as it was *sent*. A fixture that re-rendered it would
+                // make the bytes posted and the bytes read back agree by
+                // construction, and whether they agree is a property under test.
+                "body": request["body"].as_str().unwrap_or_default(),
+                // Equal, which is what says a comment nobody has edited since —
+                // true of one this very run created.
+                "created_at": "2026-08-11T00:00:00Z",
+                "updated_at": "2026-08-11T00:00:00Z",
+                "author_association": "OWNER",
+                "user": { "login": "fiddle", "id": 1_000_001, "type": "User" },
+                "performed_via_github_app": serde_json::Value::Null,
+            })
+        })
+        .collect()
 }
 
 /// One comment by its own id, from the conversation collection.
