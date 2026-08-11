@@ -1128,8 +1128,10 @@ Two consequences, and the second is the one that has actually misled this sessio
 
 The lane that found this did the right thing in the right order: it noticed foreign dirty files, kept them out with `--only`, committed, and **then verified they were still there**. That last step is the one nobody else has been taking, including the lead — 150 hook windows, and the first check that anything survived them was made by a lane committing two documentation files.
 
-### 2026-08-11 — Correcting the entry above: ADR 018 does not enumerate the grant, and RUNBOOKS enumerates a different one
-Acts on *The effects credential's grant is wider than four documents describe*, immediately above. That entry's text stays as written, per this file's rule; this entry corrects two of its claims.
+### 2026-08-11 — Correcting the grant entry: ADR 018 does not enumerate the grant, and RUNBOOKS enumerates a different one
+Acts on *2026-08-11 — The effects credential's grant is wider than four documents describe, in an unknown direction*. That entry's text stays as written, per this file's rule; this entry corrects two of its claims.
+
+**Named rather than pointed at, and that is a rule worth stating.** This entry originally said the one it acts on was *"immediately above"*. It was not, even when written — *Every commit briefly removes every other lane's uncommitted work from disk* had already been appended between the two. **In an append-only file every positional reference decays the moment anybody else appends**, and the decay is silent: nothing rereads the sentence, and the reader who follows it lands on an unrelated finding with no sign they have. So reference an entry by its heading, never by its position. The heading is stable because this file's own rule makes it stable.
 
 **ADR 018 is not one of the documents describing the grant.** The entry above names `docs/technical/decisions/018-a-graphql-200-is-not-a-success.md` as a fourth source enumerating Contents/Pull requests/Actions/Metadata/Secrets-none. It does not: `grep -ci permission docs/technical/decisions/018-*.md` returns **0**, and the ADR enumerates no permission anywhere. Its only contact with the subject is quoting a `FORBIDDEN` response body whose message is *"Resource not accessible by personal access token"*. The claim came from the bean body and I carried it forward without opening the file to check — the same class of defect the entry itself is about, committed in the act of recording it.
 
@@ -1174,3 +1176,23 @@ Three things to carry:
 - **An invocation from another project, missing `--beans-path`, can stall this one.** Worth knowing before someone spends an hour tidying their own tracker, as happened here.
 
 A smaller note, since it cost two commands: `hooks/archive-guard.sh` rejects any command whose *text* matches the archived-directory path, to stop readers pulling stale artifacts back in. It fires on an `ls` of that path — and, as this entry discovered, on a `BACKLOG` entry that merely quotes the path while explaining the guard. Writing about the guard trips the guard.
+
+### 2026-08-11 — The isolation policy multiplied build cost by the number of lanes, and the standardised command line made a targeted kill impossible
+Two failures with one root, and both are the lead's.
+
+**Load average 81, five concurrent cargo runs, and no target directory written in two minutes** — the builds were thrashing rather than progressing. One lane reported a single test binary unfinished after fifteen minutes; the tracker CLI's stalls almost certainly share this cause.
+
+**Why.** This file records, at length, that concurrent lanes sharing one `target/` turn a verification result into a race, and prescribes a private `CARGO_TARGET_DIR` per lane. That prescription is right about correctness and was never priced for cost: **a private target directory means no shared compilation cache**, so every lane rebuilds the entire dependency graph independently. With five lanes live, the machine does five full builds of the same tree. The fix for artifact races bought a load problem larger than the races it prevented.
+
+**The disposal rule recorded earlier — delete a lane's target directory when its bean converges — addresses disk and not load.** Disk was the visible symptom because it fails loudly at 100%; load fails quietly, as slowness that looks like something else. It was diagnosed here only after a lane reported a fifteen-minute test binary.
+
+What should have been prescribed alongside the isolation:
+
+- **Targeted runs by default.** `cargo test -p <crate> --test <binary>` for the lane's own work, with the full workspace run **once**, at the end, for the attributable figure — and the record saying which counts came from which. For an inversion this is usually *better* evidence: a workspace figure buries which binary noticed, while the record needs the failing test **names**. The one claim a targeted run cannot make is that nothing outside the lane noticed.
+- **A concurrency ceiling on lanes that build.** Two or three full-workspace builders on this machine, not five. The pane ceiling was lifted for parallelism and nothing replaced it with a build-aware limit.
+
+**The second failure, and it is a pure own-goal.** Every lane was told to run the same command line — `cargo test --workspace --all-features --no-fail-fast` — for consistency of evidence. A lane whose own run had stalled ran `pkill -f` on that exact string and **killed up to four other lanes' runs**, because the standardisation had made the pattern match everyone. Five matching processes before, zero after.
+
+Its report was immediate, precise about the blast radius, and included the detail that mattered most: the victims would see a **signal** exit rather than a test failure, so anyone investigating a failure would be investigating a kill. Nothing was written to a working tree and no other target directory was touched. It also said it would not use `pkill` again, and switched to per-binary runs unprompted.
+
+**The general shape: standardising a command for evidential consistency also makes every instance of it indistinguishable to process tools.** If a command line is to be shared verbatim across lanes, then no lane may pattern-kill it — and the way to make that safe is for a lane's runs to be distinguishable, by target directory in the argv or by wrapping, rather than by asking everyone to be careful.
