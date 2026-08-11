@@ -21,7 +21,7 @@ in order to be dirtied.
 | Visibility | **public** |
 | Default branch | `main` — its only permanent branch |
 | Contents | `README.md` and `.github/workflows/fiddle-check.yml`, and nothing else |
-| Dispatch target | `.github/workflows/fiddle-check.yml`, installed by commit `73b480a` |
+| Dispatch target | `.github/workflows/fiddle-check.yml`, installed by commit `73b480a` — **a commit in that repository, not in `peel/fiddle`**, so `git rev-parse` fails on it here by construction |
 | Lane | `scripts/live-github.sh`, opt-in, never part of the gate |
 | Contract | `FIDDLE_BIN` names the compiled `fiddle`; `FIDDLE_GITHUB_TOKEN` holds the credential; `gh`, `git` and `jq` must be on `PATH` |
 | Secrets | none — and the lane's credential could not read one if there were |
@@ -76,20 +76,31 @@ contents.
    `.github/workflows/github-effects.yml` is a *caller* of the first script
    (line 262) rather than a third writer: it sets no target of its own.
 
-   **Exactly two things violate this rule, and both are checkable.** One: a third
-   default — `grep -rn 'FIDDLE_EFFECTS_REPO:-'` outside `docs/` must return those
-   two lines and no other. The `:-` is load-bearing, not decoration: the bare name
-   `FIDDLE_EFFECTS_REPO` also appears at `live-github.sh:183` and `:261`, in a
-   comment and in a `refuse_target` message, so a grep without it answers **four**
-   and this clause would be false as stated. Two: an occurrence of this
-   repository's name under `crates/` that is *neither* in a file under a `tests/`
-   directory, *nor* between the braces of a `#[cfg(test)]` module, *nor* on a
-   comment line — that is product code holding the name, which is what *"no
-   product code points at it"* forbids. "Between the braces" and not "after the
-   `#[cfg(test)]` line", because a file whose test module is *declared* near the
-   top — `#[cfg(test)] mod tests;` — would otherwise exempt everything below it,
-   which is the whole file. See *Rule 4 was false from `253a7de`* for both checks
-   run at this commit and what they found.
+   **A writer reaches this repository either through a `FIDDLE_EFFECTS_REPO`
+   default or by naming it outright, so the name itself is what gets policed** —
+   `grep -rn peel/fiddle-effects-acceptance` over the two trees a writer can live
+   in, with every line it returns having to fall into an allowed class:
+
+   - **In `scripts/`**, each occurrence must be one of the two
+     `FIDDLE_EFFECTS_REPO:-` defaults or a comment. A script naming this
+     repository anywhere else is a third writer **whether or not it carries a
+     default** — a hardcoded target is the likelier mistake, and it is the case a
+     grep for `FIDDLE_EFFECTS_REPO` alone cannot see.
+   - **Under `crates/`**, each occurrence must be in a file under a `tests/`
+     directory, between the braces of a `#[cfg(test)]` module, or on a comment
+     line. Anything else is product code holding the name, which is what *"no
+     product code points at it"* forbids. "Between the braces" and not "after the
+     `#[cfg(test)]` line", because a file whose test module is *declared* near the
+     top — `#[cfg(test)] mod tests;` — would otherwise exempt everything below it,
+     which is the whole file.
+
+   **Those two greps are this rule's coverage and not a proof of its
+   exhaustiveness.** They police the two trees a writer lives in today; a writer
+   introduced elsewhere — a workflow step that pushes, a new top-level
+   directory — would pass both and still break the rule. The rule is the sentence;
+   the greps are how it is currently enforced, and extending them is part of
+   admitting a new writer. See *Rule 4 was false from `253a7de`* for what they
+   found when the rule was corrected.
 5. **Nobody works in it.** If that ever stops being true, rule 2's scoping is
    what protects them — see *Cleanup and residue*.
 
@@ -133,18 +144,23 @@ the rest of the rule, which is why this is stated separately — the first claus
 was falsified by a change, the second was **never true** in the form it was
 written.
 
-Those 20 break down as the two `FIDDLE_EFFECTS_REPO` defaults, **11** occurrences
-under `crates/`, and 7 in `.env.example`, `github-effects.yml` and the two
-scripts' own comments. Running the rule's boundary check over the 11 at this
-commit: `orchestration.rs:1228` and `human/mod.rs:580`, `:593`, `:604` are inside
-`#[cfg(test)]` modules that open at `:725` and `:574` and, in both files, extend to
-the end of the file — so the occurrences are between the braces and not merely
-below the attribute, which is the form the clause requires;
-`github/checks.rs:41` is a `//!` doc comment; and the remaining six are in
+Those 20, **counted when the rule was corrected and stated as history rather than
+as a description of the current tree**, broke down as the two
+`FIDDLE_EFFECTS_REPO` defaults, 11 occurrences under `crates/`, and 7 in
+`.env.example`, `github-effects.yml` and the two scripts' own comments. The
+boundary check over the `crates/` occurrences found `orchestration.rs` and
+`human/mod.rs` holding theirs inside `#[cfg(test)]` modules that open at `:725` and
+`:574` and, in both files, run to the end of the file — so between the braces and
+not merely below the attribute, which is the form the clause requires;
+`github/checks.rs` holding one in a `//!` doc comment; and the rest in
 `crates/fiddle-acceptance/tests/`, where the whole file is a test target.
-**Zero are product code**, so the *"no product code points at it"* half survives
+**Zero were product code**, so the *"no product code points at it"* half survived
 intact — which is the half worth keeping, and the reason the clause was narrowed to
 "as a target" rather than deleted.
+
+The figures above are deliberately past-tense and tied to that correction. Run the
+two greps for the current answer; a count written into a standing rule is a stale
+figure waiting to happen, and this document has produced several.
 
 The counts above are a measurement at this commit and are not themselves the
 rule — the boundary check is. A count in a standing rule goes stale the first time
@@ -187,8 +203,9 @@ Its permissions, and what each one is for:
 `Actions: write` is the permission the dispatch requires, so a 403 on the dispatch
 is that permission missing. It is **not** `Workflows`, which is a different
 permission governing pushes that touch `.github/workflows/**` — that is how this
-repository's own `fiddle-check.yml` was installed (commit `73b480a`), and it is
-not something the lane ever does: the only file the lane pushes is a one-line
+repository's own `fiddle-check.yml` was installed (commit `73b480a`, in
+`peel/fiddle-effects-acceptance` and so not resolvable from this checkout), and it
+is not something the lane ever does: the only file the lane pushes is a one-line
 probe at the repository root. A credential granted `Workflows` in place of
 `Actions` still 403s on the dispatch *and* can rewrite the target's CI, which is
 the worst of both. `.env.example` and `.github/workflows/github-effects.yml`'s
@@ -241,8 +258,9 @@ from it.** It is worth quoting rather than answering: *"`Actions` and `Workflows
 are different grants and both are needed: `Actions` dispatches a workflow,
 `Workflows` writes a workflow *file*. `Contents: write` alone returns 403 for any
 path under `.github/workflows/**`."* That is correct, and this document confirms
-it elsewhere — installing this repository's own `fiddle-check.yml` at `73b480a`
-took exactly that grant.
+it elsewhere — installing this repository's own `fiddle-check.yml` took exactly
+that grant, in the commit the table above cites and marks as unresolvable from
+this checkout.
 
 So the honest statement of the disagreement is narrow: **the lane has no use for
 `Workflows`**, because the only file it pushes is a one-line probe at the
