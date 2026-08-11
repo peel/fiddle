@@ -1209,3 +1209,49 @@ Second, that in-place rewrite **reached a commit belonging to a different lane**
 **So the pathology is a chain, and each link is cheap to break.** A positional reference nothing checks; a correction that broke the file's own rule while quoting it; and a path-wide commit that moved someone else's uncommitted edit into the wrong commit. The first is fixed by naming headings. The second by using the file's two permitted moves even when the change looks too small to deserve an entry — *especially* then, because that is when rewriting feels harmless. The third by `git commit --only` being understood as *"the whole path's working tree"* and not *"my changes to that path"*, which is the distinction its name does not carry.
 Origin: iteration-4 evaluation of `fiddle-gund`; the in-place rewrite and the sweep were found by the evaluator and the lead respectively
 Tags: #debt #infrastructure
+
+### A liveness check that could not evaluate reported idle, and the lead killed a live build
+
+Asked to kill idle agent processes, the lead inventoried, classified four processes as stalled, killed
+them by PID, and destroyed a **live, progressing** build. Measured after the fact: **1,429 files
+written into that lane's target directory in the five minutes before the kill, 2,597 in ten.** It was
+compiling at hundreds of files per minute.
+
+Two independent errors combined, and the second is the general one.
+
+**First, the wrong vital sign.** The parent `cargo` process showed `%cpu 0.0`, which was read as hung.
+A parent `cargo` at 0% CPU is its *normal* state while `rustc` children compile — the work appears on
+the children. A `rustc` at 41% CPU was visible in the same output and dismissed as belonging to
+someone else. **For a build, the liveness signal is bytes landing in the target directory, never CPU
+on the parent.**
+
+**Second, a check that could not evaluate was scored as a check that found nothing.** The guard
+against exactly this error was a scan for target directories written to within 90 seconds. It printed
+its "(none listed = no build is progressing)" line and nothing else, and that was taken as evidence of
+idleness. The scan silently produced no rows — `-newermt` did not evaluate as intended — so the output
+distinguishing *"I looked and found no writes"* from *"I could not look"* was **the same output**. The
+kill followed from the second while being read as the first.
+
+**The rule this earns: a negative check must be able to fail loudly.** Any check whose absence-of-output
+is load-bearing prints its own denominator — how many candidates it examined — so that an
+unevaluated check is visibly distinct from a negative one. `found 0 writes across 3 target dirs` and
+`examined 0 target dirs` are different sentences and only one of them licenses a kill.
+
+**This is the fifth instance of the same inference on this milestone** and the first that cost work.
+The prior four cost only time: a missing bean section read as a stalled lane, pushing one task three
+times while it was measuring; a liveness check blind to ~1,250 uncommitted lines, dispatching three
+lanes onto one branch; and two others. Every one of them read *absence of a signal I knew how to see*
+as *absence of the thing*.
+
+**The load was never the agents.** It was OrbStack at 78%, SkyLight at 68%, and Defender at 20% on a
+machine running 678 processes — so the kill was not merely wrong in its target, it was aimed at a
+problem the agents were not causing. Load average with idle CPU means blocked, and the first question
+is *blocked on what*, asked before anything is killed. Disk at 94% with 30G free was checked and
+cleared; the four processes killed contributed nothing measurable, and load **rose** from 177 to 184
+afterwards, which was itself the disconfirming evidence and arrived too late to matter.
+
+Recorded alongside the earlier `pkill -f` own-goal, where a standardised command line meant one lane's
+kill matched four other lanes. Same family: **process-level intervention across lanes needs positive
+identification of the owner, and killing another lane's work needs its consent, not the lead's
+inference.** The lane was told the failure was external so it would not debug a phantom, and told to
+keep its 853M target directory rather than start cold.
