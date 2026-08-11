@@ -976,3 +976,16 @@ Two rules, and the second is the general one:
 Also found in the same pass, both worth keeping as calibration for how precise a corrected claim has to be: a pointer that **under-names the function holding the comparison it corrects** — the corrected sentence is about the head-sha comparison, which lives in `observe`, not in the `resolve` the pointer names — and a claim **compressed past the point it stays true**: "the one field the conversation cannot supply" holds for a *forged* effect id but not for a *verbatim copy* of the marker, which supplies it and is refused as `DuplicateRequest` instead. The accurate form already existed one crate away.
 Origin: evaluation (epic fiddle-eoqx, bean fiddle-ayqd, iteration 2) — all three found by an evaluator reading the committed artifact rather than the diff
 Tags: #process #docs
+
+**Addendum — a correction appended rather than folded in leaves the error in place, and the milestone's own rule already said so.** `fiddle-ayqd`'s confirming pass **failed** `m3-refusals-classified-honestly` on precisely this, and the wording it failed on was the lead's.
+
+The lead wrote that a fail-fast test "can only ever observe its first case". The implementer put that into a doc comment, then **corrected the lead** with the sharper distinction — unreportability, not insensitivity — and recorded the correction in a **later paragraph of the same comment**. So the essay now reads: the false claim at lines 593 and 598, then *"To be exact about what the loop did and did not do…"* at 600 setting it right.
+
+The confirming pass's verdict: *"The later paragraph corrects this distinction, but the contradictory wording remains in the same documentation and prevents an honest classification."* That is correct. A reader meeting line 593 first learns something false, and the criterion is specifically about honest classification.
+
+**This is the "replace, don't append" rule — already standing for bean records — applied to code comments.** Two beans in this milestone were told to replace stale inversion figures in place rather than leave a number with a correction beneath it, and both did. Nobody thought to apply the same rule to prose, where the failure is worse: a stale *number* beneath a correction is obviously superseded, while a stale *sentence* three paragraphs above one reads as the author's actual position.
+
+Two things worth carrying:
+
+- **A correction to a comment belongs where the claim is, not after it.** If the original wording survives anywhere in the same comment, the comment says both things and a reader takes whichever they reach first.
+- **The lead's wording propagates into artifacts.** This one travelled from a dispatch message into a committed doc comment and then survived being refuted by the implementer, because the refutation was written as an addendum to the lead's framing rather than a replacement of it. When an implementer corrects the lead, the lead should ask where the *original* wording now lives.
