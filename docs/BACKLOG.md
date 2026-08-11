@@ -1142,3 +1142,16 @@ This does **not** explain the issue and does not resolve anything: `Workflows` i
 One thing worth generalising, because it is the second time today the same move caught something: the fix for a wrong cross-file citation is not a more careful reading of the citing file, it is opening the cited one. Both defects here — the ADR that documents no permissions, and the runbook that documents different ones — were invisible from `effects-repository.md` and took one `grep` each in the other file.
 Origin: iteration-2 evaluation of `fiddle-gund`; defect found by the lead, second half found while fixing it
 Tags: #debt #infrastructure #security
+
+**Correction to the forward-warning above — it was right about the coupling and wrong about the symptom, and the reason generalises.** The warning predicted that removing `gh_stub`'s silent-success-on-unscripted-graphql default would break `the_mutation_the_child_received_binds_the_node_id_from_the_read`. **It did not.** The lane that removed the default reports why:
+
+> The stub records the request and increments `graphql_calls` **before** it routes, so every assertion in that test — `argv`, the query text, the bound `id` — still held with the route panicking.
+
+What actually broke was invisible: the test began asserting against a world whose fixture had died, and its own doc comment claims it *"runs against the same world"* as a neighbouring test and ends `Committed`. **Withdrawing the default would have made that paragraph false without failing anything.** The edit was still made, for that reason alone.
+
+The general lesson, in the lane's words: **a fixture that records before it routes will absorb this class of change silently.** Any assertion made against what the fixture *recorded* survives the fixture ceasing to *work*, so a test can keep passing while the world it describes no longer exists. That is a distinct member of the family this file has been cataloguing — not a fixture that cannot distinguish two implementations, but a fixture whose bookkeeping outlives its behaviour.
+
+Two smaller things from the same lane worth keeping:
+
+- **It pre-empted its own null result.** Its planned inversion was *"restore the silent default and see what notices"*, and it worked out in advance that the answer would be **nothing** — so the criterion "a test that forgets to script a response cannot pass" would have been a property asserted nowhere. It wrote `an_unscripted_graphql_call_cannot_pass_for_an_answer` first, so the inversion had a witness. That is the null-result discipline applied *before* the measurement rather than as a confession after it.
+- **It measured a diagnostic's usefulness rather than assuming it.** The filename is `eprintln!`'d before the panic because the client quotes `stderr` through a 120-character bound and a panic's own `thread … panicked at <file>:<line>` prefix consumes about 78 of them — so the name the diagnostic exists to carry would have been truncated out of the one place a test author reads it. Measured before it was written.
