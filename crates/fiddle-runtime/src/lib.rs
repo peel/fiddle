@@ -60,9 +60,14 @@ pub use capability::{
 // heard of. [`attempt`] mints exactly one and hands it to the capability through
 // its [`ExecutionGrant`]. It stays reachable as `evidence::mint_attempt_id`;
 // what it is no longer is the front door.
+// [`effect::ResolvedDecision`] is here beside [`AuthorizedEffect`] deliberately.
+// The two are the executor's two capability tokens — one the caller cannot forge
+// and one the caller cannot fabricate an approval into — and a type reachable
+// only by its full module path while its sibling is not reads as an oversight
+// somebody would later "fix" without knowing it had been decided.
 pub use effect::{
     AuthorizedEffect, DeploymentPolicy, EffectContext, EffectError, EffectOutcome, EffectReceipt,
-    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ObservedState,
+    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ObservedState, ResolvedDecision,
 };
 pub use evidence::{EvidenceError, BUNDLE_FILE};
 pub use fiddle_core as core;
