@@ -1026,3 +1026,19 @@ Not one was catchable by `cargo fmt`, `cargo clippy -D warnings`, the test suite
 **What this says about the loop, stated plainly.** Convergence is two consecutive passing evaluations, and it is a real gate for behaviour — inversions make behavioural claims falsifiable. **It is not a gate for prose.** There is no mechanical check on documentation, so the only thing standing between a comment and a false statement is whether a reader happened to look at that sentence. Five readers looked at this one and the fifth defect still survived them all.
 
 The honest conclusion is not "evaluate documentation harder". It is that **a prose claim about code should be written so that something can fail** — the byte pin, the inversion, the per-case table — and where that is impossible, the claim should be a reference rather than an assertion. That is the same rule already recorded for cross-crate claims, generalised: **the reason to prefer a pointer over a statement is not modesty, it is that a pointer cannot go stale in a way nothing notices.**
+
+**Addendum — a third way, and the tally.** The lane reports that the lead's direct status question *never arrived*: *"I have no record of one, and I sent you three unprompted messages."* Those three did arrive. So the channel appears to be lossy in one direction at least once, and the lead read the absence of an answer as confirmation the lane was dead.
+
+That makes **three independent ways a working lane looks silent**, all of which fired on one bean:
+
+| mechanism | what the lead saw | what was true |
+|---|---|---|
+| liveness check blind to detached worktrees | no commits, no dirty files, `total_dispatches: 0`, no ticked steps | ~1250 lines in a worktree named for the bean |
+| report-file instruction subagents cannot follow | no report | a lane reporting inline, or not at all |
+| a status question that did not arrive | no answer to a direct question | a lane that never received it |
+
+Any one of these is recoverable. Together they produced three duplicate dispatches onto one bean, two lanes colliding in one file, and a lead confidently reporting a bean as stalled while it was being implemented.
+
+**The correction is not more channels, it is fewer inferences.** Every one of these failures has the same shape: the lead concluded something from an *absence*. No commit, no report, no reply. An absence is the weakest possible evidence in a concurrent system, because every mechanism that could carry the signal is also a mechanism that can drop it. What survived contact was **positive evidence only** — a worktree that exists, a commit that exists, a symbol present in `HEAD`. So: **never conclude a lane is dead from an absence; require a positive observation that it is gone** (a terminated notification, an approved shutdown), and until then treat it as live and check the artifacts harder.
+
+Applied concretely, before dispatching onto a bean: `git worktree list` and check each tree's status; `git log -S<symbol>` for the work the bean would produce; and read the bean tail. All three are cheap and all three return positive evidence.
