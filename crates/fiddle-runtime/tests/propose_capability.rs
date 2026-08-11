@@ -1833,8 +1833,21 @@ async fn a_redirect_waits_and_names_the_instruction_it_received() {
 /// a workspace at all still completes it — which is the property that makes the
 /// deleted-workspace lane in Task 13 possible.
 ///
-/// Three witnesses rather than a count, because `Workspace` reaches the ambient
-/// `git` through `Command::new("git")` and there is no program seam to record on:
+/// # Three witnesses rather than a count, and why a count is not available here
+///
+/// A program seam does exist: `Workspace::run` spawns
+/// `Command::new(&cmd.program)`, which is how the scripted `gh` and the recording
+/// `git_stub` are reached elsewhere in this crate. What is missing is an
+/// *interception point a fixture can reach*. `Workspace` is a concrete struct with
+/// no trait over its runner, and `ProposeChange` takes `&Workspace` concretely, so
+/// there is no implementation to substitute; the one call site that goes through
+/// the seam hardcodes `program: "git"`; and `Workspace::create` and
+/// `changed_files` do not go through it at all, spawning `Command::new("git")`
+/// directly. So a count is unavailable to this test rather than absent from the
+/// product, and making it available is a port question — a trait on the workspace
+/// runner — rather than a change to this suite.
+///
+/// What is asserted instead makes an invocation impossible or loud:
 ///
 /// - the workspace root is a **file**, so `Workspace::create` could not have
 ///   produced a worktree under it, and this run reports success anyway;
