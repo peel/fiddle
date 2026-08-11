@@ -72,11 +72,15 @@ contents.
    `scripts/verify-graphql-ready.sh`, ADR 018's probe. Each carries its own
    `FIDDLE_EFFECTS_REPO` default naming this repository
    (`live-github.sh:85`, `verify-graphql-ready.sh:68`), and those two defaults
-   are the only places the name appears **as a target**. No product code points
-   at it: every other occurrence in the tree is inside a `#[cfg(test)]` module,
-   an acceptance fixture string, or a doc comment citing what was measured here,
-   and none of those can write to anything. A third default, or one outside
-   `#[cfg(test)]`, violates this rule — see *Rule 4 was false from `253a7de`*.
+   are the only places the name appears **as a target** —
+   `grep -rn FIDDLE_EFFECTS_REPO` outside `docs/` returns those two lines and no
+   other assignment. No product code points at it: every other occurrence of the
+   name in the tree is inside a `#[cfg(test)]` module, an acceptance fixture
+   string, a doc comment, or CI prose citing what was measured here, and none of
+   those can write to anything. `.github/workflows/github-effects.yml` is a
+   *caller* of the first script (line 262) rather than a third writer: it sets no
+   target of its own. A third default, or one outside `#[cfg(test)]`, violates
+   this rule — see *Rule 4 was false from `253a7de`*.
 5. **Nobody works in it.** If that ever stops being true, rule 2's scoping is
    what protects them — see *Cleanup and residue*.
 
@@ -152,10 +156,12 @@ remediation text name this same list.
 On 2026-08-10, during `fiddle-w0xt`, a GraphQL `createIssue` against this
 repository **succeeded** under this credential and opened issue #25. Nothing in
 the list above grants it. `.env.example`, this table,
-`docs/evaluator-calibration-general.md` and
-[ADR 018](decisions/018-a-graphql-200-is-not-a-success.md) all describe the same
-five-permission grant, under which that mutation should have been refused, and
-four documents agreeing is not evidence when the wire disagrees with all four.
+`docs/evaluator-calibration-general.md`,
+[ADR 018](decisions/018-a-graphql-200-is-not-a-success.md) and
+`.github/workflows/github-effects.yml`'s remediation text (line 152) all describe
+the same five-permission grant, under which that mutation should have been
+refused. Five sources agreeing is not evidence when the wire disagrees with all
+five — it is a measure of how often one was copied.
 
 Every issue-*modifying* operation was refused in the same session — 403 on REST
 `PATCH state=closed`, `FORBIDDEN` on both `closeIssue` and `deleteIssue`, as
@@ -178,8 +184,9 @@ re-running the probe table against it — both operator actions, on a credential
 this document does not widen and no lane should. `docs/BACKLOG.md`'s
 2026-08-11 entry carries it. Until then, treat the effective grant as **wider than
 this table in an unknown direction**, and note that this is the second time in
-this milestone that four agreeing documents were wrong about this credential — the
-first is *The second row read 200 until 2026-08-10* below.
+this milestone that a set of agreeing documents was wrong about this credential —
+the first is *The second row read 200 until 2026-08-10* below, where four of them
+said the selection was one repository while it was two.
 
 ### The selection, verified by probe rather than assumed
 
