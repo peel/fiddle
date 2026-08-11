@@ -989,3 +989,20 @@ Two things worth carrying:
 
 - **A correction to a comment belongs where the claim is, not after it.** If the original wording survives anywhere in the same comment, the comment says both things and a reader takes whichever they reach first.
 - **The lead's wording propagates into artifacts.** This one travelled from a dispatch message into a committed doc comment and then survived being refuted by the implementer, because the refutation was written as an addendum to the lead's framing rather than a replacement of it. When an implementer corrects the lead, the lead should ask where the *original* wording now lives.
+
+### 2026-08-11 — The liveness check missed a whole worktree, and the report channel the beans specify cannot be used
+Two process defects with one consequence: the lead declared a lane dead twice while it was working, and dispatched duplicate implementers onto one bean three times.
+
+**1. `git worktree list` was never part of the artifact check.** An earlier entry established that lane liveness comes from artifacts rather than from a bean's `status` field — commits, dirty state, a recorded dispatch. That rule was applied to the **shared branch checkout only**. An implementer working in its own detached worktree is invisible to it: `git log` on the branch shows nothing, `git status` in the shared tree shows nothing, `total_dispatches` reads 0, and no step is ticked, because none of that happens until it commits.
+
+`fiddle-v5bm` had **~1250 uncommitted lines** in `scratchpad/dev-v5bm` — a full `PublishDecisionRequest` with its `IntegrationOperation` impl, `render_request`, `decision_request_target`, and a 839-line test file with 20 cases — while the lead was reporting the bean as stalled and dispatching replacements. Both files had been modified **three minutes** before the lane that found it wrote its report.
+
+The lane that found it named the shape exactly: *"`total_dispatches: 0` and the unticked steps are consistent with a live implementer that has not committed yet — the same trap as reading in-progress status as evidence, one layer down."*
+
+So the check is: **enumerate worktrees, and check each one's status, not only the branch checkout.** A detached worktree named for a bean is the strongest possible evidence that bean is being worked on, and it costs one command to see.
+
+**2. The report channel the bean templates specify does not exist.** Bean bodies and dispatch prompts have been telling implementers to write a report to `scratchpad/report-<task>.md`. **Subagents here cannot write report files** — the harness refuses. Several lanes discovered this independently and worked around it by reporting inline, each noting the refusal. One put it plainly: *"Any implementer told to report that way will fail to, silently, and you will read the silence as no work."*
+
+That is the same failure as (1) with a different cause, and together they are why a live lane read as a dead one. The fix is to stop specifying a file: **ask for the report inline in the final message**, which is what every successful lane has done anyway. Remove the file instruction from the bean template and from every dispatch prompt.
+
+**The compounding cost, stated plainly.** Three lanes were dispatched onto one bean. Two of them collided in `crates/fiddle-runtime/src/human/mod.rs`, and the second one's first edit was rejected as changed-under-it, with a hook naming the other worktree. The protection built up all milestone — `git commit --only <explicit paths>`, checking `git status` before committing — does not help here, and the lane that hit it said why: **the collision is in the file, not the index.** Two agents editing one file defeats every index-level safeguard, so the only real protection is not dispatching two agents into one file, which requires knowing the first one exists.
