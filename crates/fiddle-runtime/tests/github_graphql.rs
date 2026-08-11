@@ -297,10 +297,10 @@ async fn a_200_whose_body_cannot_be_interpreted_is_unknown_and_not_a_success() {
 /// Deliberately close to `a_200_with_data_and_no_errors_returns_the_data`, and
 /// not the same subject: that one is about what a success *returns*, this one is
 /// the boundary of the shape check — the smallest body GitHub would send for a
-/// mutation that was not refused. Measured: with the check inverted to reject
-/// every body, both fail, so this one adds no fault localisation the suite did
-/// not have. It is here because the boundary is worth stating beside the case
-/// that motivated it, not because it is load-bearing.
+/// mutation that was not refused. **Measured, and it is not load-bearing**: with
+/// the check inverted to reject every body, nine tests fail and this is one of
+/// them, so it localises nothing the suite could not already see. It is here
+/// because the boundary is worth stating beside the case that motivated it.
 #[tokio::test]
 async fn a_200_with_data_is_still_a_claimed_success() {
     let world = World::new();
@@ -325,9 +325,10 @@ async fn a_200_with_data_is_still_a_claimed_success() {
 /// past, too.
 ///
 /// Written as a test rather than left to the fixture's own good behaviour because
-/// nothing else can notice it: with the silent default restored, every case in
-/// this file and in `ready_effect.rs` still passes, so the property was asserted
-/// nowhere. Measured, not assumed — that inversion was run.
+/// nothing else can notice it. Measured, not assumed: with the silent default
+/// restored, this is the **only** test in the workspace that fails — so until it
+/// existed the property was asserted nowhere, and withdrawing the default broke
+/// nothing precisely because nothing was looking.
 ///
 /// It asserts the *filename* reaches the diagnostic, which is the whole of what
 /// makes the failure actionable: the panic leaves stdout empty, so the client
