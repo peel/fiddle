@@ -403,6 +403,10 @@ const GRAPHQL_KEY: &str = "POST_graphql";
 /// The counter is a file rather than a count of recorded requests because a test
 /// may script a sequence — a refusal, then a success — and each call is its own
 /// process, so there is nowhere else for the position to live.
+///
+/// **There is no unscripted default**, and the reason is inline below: a route
+/// whose omission answers a success is a route where forgetting to script one
+/// looks exactly like meaning it.
 fn graphql_answer(dir: &Path) -> (u16, serde_json::Value, String) {
     let counter = dir.join("graphql_calls");
     let n: usize = std::fs::read_to_string(&counter)
@@ -411,13 +415,37 @@ fn graphql_answer(dir: &Path) -> (u16, serde_json::Value, String) {
         .unwrap_or(0);
     std::fs::write(&counter, (n + 1).to_string()).unwrap();
 
-    // Unscripted answers a plain success, the same courtesy the REST route's
-    // `201 0 normal` default extends: a test whose subject is the request rather
-    // than the answer should not have to script one.
-    let Ok(scripted) = std::fs::read_to_string(dir.join("graphql").join(format!("{n}.json")))
-    else {
-        return (200, serde_json::json!({ "data": {} }), "normal".to_string());
-    };
+    // A call nobody scripted is a panic naming the file, and deliberately not the
+    // silent 200 this route used to extend as a courtesy. The courtesy made an
+    // omission indistinguishable from a deliberate case: a test that forgot to
+    // script an answer still passed, and passed *through the success path*, which
+    // for this route means applying a mutation to the world. The same argument
+    // [`comment_page`] makes about an empty conversation, and sharper here — a
+    // GraphQL 200 is the one answer whose verdict lives in the body, so a
+    // fabricated one is a fabricated verdict.
+    //
+    // The REST route's `201 0 normal` default is not this and stays: it answers a
+    // status line, where a test whose subject is the request really does not have
+    // to say what came back, and a REST verdict is not something the fixture has
+    // to invent.
+    //
+    // Loud enough to be diagnosable: the panic leaves stdout empty, so the client
+    // reads no status line and reports `GhError::Malformed` — which is the one
+    // failure that quotes `stderr`, so the missing filename reaches whoever is
+    // looking at the test output.
+    let file = dir.join("graphql").join(format!("{n}.json"));
+    let scripted = std::fs::read_to_string(&file).unwrap_or_else(|_| {
+        // Printed before the panic rather than only inside it, and that is not
+        // belt and braces: the client quotes `stderr` through a 120-character
+        // bound, and a panic's own `thread … panicked at <file>:<line>` prefix
+        // eats most of it — so the filename this diagnostic exists to name would
+        // be truncated out of the one place a test author reads it.
+        eprintln!(
+            "nothing scripted at {}; a GraphQL call is answered from its file or not at all",
+            file.display()
+        );
+        panic!("no scripted GraphQL answer");
+    });
     let scripted: serde_json::Value =
         serde_json::from_str(&scripted).expect("a scripted GraphQL answer must be JSON");
     (
@@ -947,8 +975,9 @@ fn comment_answer(dir: &Path, path: &str) -> Option<(u16, String, String)> {
 /// produced one for a file a test forgot to write would let that test assert
 /// "no approval was found" against a world it never built. A conversation that
 /// really is empty is scripted by writing `page-1.json` holding `[]`, which
-/// says so on purpose. The `graphql` route above still defaults to a silent
-/// success; that is `fiddle-e902`'s to fix and not a pattern to copy.
+/// says so on purpose. The `graphql` route above now answers the same way, for
+/// the same reason — it used to default to a silent success, which `fiddle-e902`
+/// withdrew.
 fn comment_page(dir: &Path, collection: &str, path: &str) -> (u16, String, String) {
     if let Some(status) = unreadable(dir, &format!("{collection}-unreadable")) {
         return (

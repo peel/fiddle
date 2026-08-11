@@ -248,6 +248,111 @@ async fn an_errors_field_that_is_not_an_array_is_a_refusal_and_unknown() {
     assert_eq!(err.outcome(), EffectOutcome::Unknown, "got {err:?}");
 }
 
+/// **And the same rule for a 200 that is not an object at all**, which is the
+/// asymmetry this case exists to close: a wrongly-shaped `errors` field above
+/// already cost a read, while a `null`, an array, a string or a number came back
+/// as `Ok(Null)` — a claimed success. Both are the same situation, a response
+/// that did not say what happened, and only one of them was treated as one.
+///
+/// `Unknown` is the honest answer and the direction ADR 018 argues for: being
+/// wrong this way costs one postcondition read, and being wrong the other way
+/// costs a duplicate external effect. Classified alongside the unreadable
+/// `errors` field rather than as `GhError::Malformed`, and the difference is not
+/// cosmetic — `Malformed` is `Unknown` and deliberately *not* worth reading
+/// again, on the reasoning that a program which is not `gh` will not become one.
+/// That reasoning does not hold here: `gh` answered, with a readable status line
+/// and a body that parsed as JSON, and the next answer to the same question may
+/// well be readable.
+///
+/// A `null` body is where an **empty** 200 lands too — `parse_body` reads a body
+/// that is not there as `Null`, since a 204 from a workflow dispatch is the
+/// ordinary case — so the two are one case by the time the verdict is read, and
+/// the fixture scripts the one it can express.
+#[tokio::test]
+async fn a_200_whose_body_cannot_be_interpreted_is_unknown_and_not_a_success() {
+    for body in ["null", "[]", r#""a string""#, "42", "true"] {
+        let world = World::new();
+        world.script_graphql(200, body);
+
+        let Err(err) = world.gh().graphql(MUTATION, &[], &uncancelled()).await else {
+            panic!("body {body} must not read as a success");
+        };
+
+        assert_eq!(
+            err.outcome(),
+            EffectOutcome::Unknown,
+            "body {body} is a lost answer, not a mutation that did not happen: {err:?}"
+        );
+        assert!(
+            err.is_worth_reading_again(),
+            "body {body} left the question open, so asking it again may answer it: {err:?}"
+        );
+    }
+}
+
+/// And the neighbouring case stays where it is: a 200 that *is* an object is
+/// read for its verdict, never rejected for its shape. Fixing the hole above
+/// must not turn a legitimate answer into an error.
+///
+/// Deliberately close to `a_200_with_data_and_no_errors_returns_the_data`, and
+/// not the same subject: that one is about what a success *returns*, this one is
+/// the boundary of the shape check — the smallest body GitHub would send for a
+/// mutation that was not refused. Measured: with the check inverted to reject
+/// every body, both fail, so this one adds no fault localisation the suite did
+/// not have. It is here because the boundary is worth stating beside the case
+/// that motivated it, not because it is load-bearing.
+#[tokio::test]
+async fn a_200_with_data_is_still_a_claimed_success() {
+    let world = World::new();
+    world.script_graphql(200, r#"{"data":{"x":1}}"#);
+
+    let value = world
+        .gh()
+        .graphql(MUTATION, &[], &uncancelled())
+        .await
+        .expect("an object carrying data and no errors is a claimed success");
+    assert_eq!(value["x"], 1);
+}
+
+/// **The fixture cannot answer a call nobody scripted**, and this is the case
+/// that keeps that true.
+///
+/// The route used to answer an unscripted call with a silent `200 {"data":{}}`,
+/// which made a test that forgot to script an answer indistinguishable from one
+/// that meant that answer — and for this route the omission is worse than
+/// elsewhere, because a GraphQL verdict lives in the body, so a fabricated 200 is
+/// a fabricated verdict. It applied a mutation to the stub's world on the way
+/// past, too.
+///
+/// Written as a test rather than left to the fixture's own good behaviour because
+/// nothing else can notice it: with the silent default restored, every case in
+/// this file and in `ready_effect.rs` still passes, so the property was asserted
+/// nowhere. Measured, not assumed — that inversion was run.
+///
+/// It asserts the *filename* reaches the diagnostic, which is the whole of what
+/// makes the failure actionable: the panic leaves stdout empty, so the client
+/// reports `GhError::Malformed` — the one failure that quotes `stderr` — and the
+/// stub prints the missing path ahead of the panic so that the client's
+/// 120-character bound does not truncate it away.
+#[tokio::test]
+async fn an_unscripted_graphql_call_cannot_pass_for_an_answer() {
+    let world = World::new();
+
+    let Err(err) = world.gh().graphql(MUTATION, &[], &uncancelled()).await else {
+        panic!("a call the fixture never scripted must not read as an answer");
+    };
+
+    assert!(
+        matches!(err, GhError::Malformed(_)),
+        "an unanswered call is a fixture fault and not a classified refusal: {err:?}"
+    );
+    let reported = err.to_string();
+    assert!(
+        reported.contains("nothing scripted at") && reported.contains("0.json"),
+        "the diagnostic has to name the file a test forgot to write: {reported}"
+    );
+}
+
 /// A success returns the data and nothing else. It is still only a claim — the
 /// executor's step 8 decides — and this asserts the method does not pretend
 /// otherwise by returning a receipt or an outcome of its own.

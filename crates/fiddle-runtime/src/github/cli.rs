@@ -252,7 +252,17 @@ pub enum GhError {
         message: String,
         advice: RetryAdvice,
     },
-    /// **A GraphQL request GitHub refused while answering 200.**
+    /// **A 200 from GraphQL that was not a success.**
+    ///
+    /// Two producers, and the second is why this is not named for a refusal:
+    ///
+    /// 1. a request GitHub **refused while answering 200**, which is the ordinary
+    ///    case and the one the fields are named for;
+    /// 2. a 200 [`GhCli::graphql`] **could not interpret at all** — a body that is
+    ///    not an object, so it carried neither `data` nor `errors`. `kind` is
+    ///    `"UNKNOWN"` there, which is the same answer this variant already gives a
+    ///    refusal whose type it could not read, and lands in the same `Unknown`
+    ///    arm for the same reason.
     ///
     /// The status line says nothing here, and neither does the exit code: a
     /// refused mutation is `HTTP/2.0 200` with `data.<field>` null and an
@@ -375,7 +385,9 @@ impl GhError {
             // `Unknown` for a different reason: GitHub's error-type set is
             // GitHub's to extend, and `NotCommitted` is the claim that permits a
             // retry, so a name this build has never seen must cost a second read
-            // rather than a second write.
+            // rather than a second write. The 200 that could not be interpreted at
+            // all arrives as `UNKNOWN` and is carried by that same default, which
+            // is the third thing it is load-bearing for.
             GhError::GraphQl { kind, .. } => match kind.as_str() {
                 "NOT_FOUND" | "FORBIDDEN" => EffectOutcome::NotCommitted,
                 _ => EffectOutcome::Unknown,
@@ -606,6 +618,21 @@ impl GhCli {
     /// What comes back on success is `data`, and it is a *claim*: nothing here
     /// makes the mutation's own answer authoritative, and the executor's step 8
     /// reads the postcondition exactly as it does for every other operation.
+    ///
+    /// **A 200 this method cannot interpret is `Unknown`, not a success.** A body
+    /// that is not an object — `null`, an empty response, an array, a string, a
+    /// number — did not say what happened, and that is the same situation as an
+    /// `errors` field of the wrong shape, which `refusal` already costs a read
+    /// for. It used to be the one place this classification erred toward
+    /// believing an outcome: `response.body["data"]` is `Null` for every one of
+    /// those bodies, so each returned `Ok(Null)` and read as a mutation that
+    /// succeeded and had nothing to report.
+    ///
+    /// ADR 018's direction-of-error argument decides it. An uninterpretable
+    /// answer is not evidence that the mutation did not happen — it is the lost
+    /// answer §6.5 is about — so the caller is sent to *read the world*: being
+    /// wrong this way costs one postcondition read, and being wrong the other way
+    /// costs a duplicate external effect.
     pub async fn graphql(
         &self,
         query: &str,
@@ -625,6 +652,26 @@ impl GhCli {
         // `GhError::Http`, decided by the shared parse: nothing about GraphQL
         // changes what a 502 means. Only the 2xx needs a second look.
         let response = self.dispatch(&mut command, None, cancel).await?;
+
+        // Read before `refusal`, because a body that is not an object has no
+        // `errors` field to be shaped wrongly and would otherwise fall through as
+        // a success. `GraphQl` with an unreadable kind rather than `Malformed`:
+        // both are `Unknown`, and only this one is worth reading again, which is
+        // the half that matters. `Malformed`'s `false` rests on "a program that is
+        // not `gh` will not become one" — and this `gh` answered, with a readable
+        // status line and a body that parsed, so the next answer to the same
+        // question may well be interpretable.
+        if !response.body.is_object() {
+            return Err(GhError::GraphQl {
+                kind: UNKNOWN_ERROR_TYPE.to_string(),
+                message: self.redact(&format!(
+                    "the response body was {} rather than an object, so it said \
+                     neither data nor errors",
+                    shape(&response.body)
+                )),
+            });
+        }
+
         match refusal(&response.body) {
             Some((kind, message)) => Err(GhError::GraphQl {
                 kind,
@@ -902,6 +949,24 @@ fn refusal(body: &serde_json::Value) -> Option<(String, String)> {
             .unwrap_or("no message in the error")
             .to_string(),
     ))
+}
+
+/// What a body was, for a diagnostic that must not quote it.
+///
+/// The shape and never the content: an operator needs to know *how* the answer
+/// was unreadable, and the answer itself is the one thing that has been known to
+/// carry a credential back — see [`GhCli::redact`]. `Null` covers the empty
+/// response as well as a literal `null`, because [`parse_body`] reads a body that
+/// is not there as `Null` and by this point the two are one case.
+fn shape(body: &serde_json::Value) -> &'static str {
+    match body {
+        serde_json::Value::Null => "empty or null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
 }
 
 /// A response body, or `Null` when there was none.

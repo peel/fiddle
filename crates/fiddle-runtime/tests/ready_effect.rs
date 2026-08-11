@@ -1017,6 +1017,19 @@ async fn the_mutation_the_child_received_binds_the_node_id_from_the_read() {
         PR,
         json!({"number": PR, "draft": true, "node_id": NODE_ID, "state": "open"}),
     );
+    // The same answer `an_approved_ready_transition_commits` scripts, because the
+    // paragraph above says this runs against the same world and that has to stay
+    // true. Added by `fiddle-e902`, which withdrew the GraphQL route's unscripted
+    // 200: this case had rested on that courtesy, and it did not *break* when the
+    // courtesy went — the stub records the request and counts the call before it
+    // routes, so every assertion below still held — it simply started making them
+    // against a world whose fixture had panicked, and a walk ending `Unresolved`
+    // would have made the paragraph above wrong.
+    world.script_graphql(
+        0,
+        200,
+        json!({"data": {"markPullRequestReadyForReview": {"pullRequest": {"isDraft": false}}}}),
+    );
 
     let _ = world.execute_decided(op()).await;
 
