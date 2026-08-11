@@ -234,9 +234,24 @@ document that describes it do not agree about what the token holds.
 The disagreement is about **necessity, not about the dispatch**. This table's
 *"worst of both"* line is not the argument against RUNBOOKS and should not be read
 as one: it is conditioned on `Workflows` being granted **in place of** `Actions`,
-and RUNBOOKS grants both, so a token minted from it dispatches perfectly well. What
-survives is narrower and still worth stating — a grant the lane has no use for is
-authority to rewrite the target repository's CI, held for nothing.
+and RUNBOOKS grants both, so a token minted from it dispatches perfectly well.
+
+**And RUNBOOKS gives a reason, three lines below the list this document quotes
+from it.** It is worth quoting rather than answering: *"`Actions` and `Workflows`
+are different grants and both are needed: `Actions` dispatches a workflow,
+`Workflows` writes a workflow *file*. `Contents: write` alone returns 403 for any
+path under `.github/workflows/**`."* That is correct, and this document confirms
+it elsewhere — installing this repository's own `fiddle-check.yml` at `73b480a`
+took exactly that grant.
+
+So the honest statement of the disagreement is narrow: **the lane has no use for
+`Workflows`**, because the only file it pushes is a one-line probe at the
+repository root — while **installing or repairing the dispatch target does**, and
+that is a job an operator does once, not something the lane performs. Whether a
+standing credential should carry a grant needed only for setup is the open
+question, and it is the operator's to answer. Saying the grant is held "for
+nothing" would be wrong, and would be this document answering a question by not
+reading the other file's next paragraph.
 
 That does **not** explain the issue: `Workflows` is not `Issues`, and no reading of
 it permits `createIssue`. It is recorded here because it is the same question —
@@ -629,17 +644,9 @@ live-github: branches at the remote: main
 
 Both lines are checked. The first is the scoped claim; the second asserts this
 repository's standing rule that `main` is its only permanent branch, so a scoped
-cleanup that missed something *outside* its namespace is still caught.
-
-**Three of the definition's five clauses are what the lane asserts; the issue
-clause is not, and cannot be.** `scripts/live-github.sh` contains no occurrence of
-`issue` at all, and by the argument in *An issue is residue* it never should: a
-credential that is refused `closeIssue` and `deleteIssue` cannot check a clause it
-could not act on without either failing every run or being written to tolerate its
-own 403. So the issue clause is **operator-checked, not lane-checked** — its home is
-the `gh issue list` line under *After a run*, run by a person. Saying the lane
-asserts "zero residue" without that split would claim a check nothing performs,
-which is the same defect as a comment whose expected output is false.
+cleanup that missed something *outside* its namespace is still caught. Which of
+the definition's clauses that covers, and which it does not, is stated once under
+*The one thing that cannot be cleaned up*.
 
 ### The one thing that cannot be cleaned up
 
@@ -660,12 +667,16 @@ issue": #25 cannot be deleted either, so a definition demanding its absence woul
 be one more unachievable claim, and the honest form names the one entry that is
 grandfathered rather than pretending the count is zero.
 
-**Who checks which clause is part of the definition, not a footnote to it.** The
-lane checks four — the two counts and the branch listing in the transcript above.
-The issue clause is checked by an operator running the `gh issue list` line under
-*After a run*, because the lane's credential is refused every operation that would
-let it act on a finding. A definition that did not say so would read as though one
-process verified all five.
+**Who checks which clause is part of the definition, not a footnote to it, and the
+answer is read off the script rather than asserted here.** `scripts/live-github.sh`
+guards the three counts at its line 380 and the branch listing at its line 387, so
+**the first, second, third and fifth clauses are lane-asserted**. The fourth — no
+issue beyond #25 — is checked by an operator running the `gh issue list` line under
+*After a run*, because the lane contains no occurrence of `issue` at all and, by
+the argument in *An issue is residue*, never should: a credential refused
+`closeIssue` and `deleteIssue` cannot check a clause it could not act on without
+either failing every run or being written to tolerate its own 403. A definition
+that did not say so would read as though one process verified all five.
 
 ### An issue is residue, and it is worse than a branch
 
