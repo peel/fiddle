@@ -74,10 +74,13 @@ contents.
    (`live-github.sh:85`, `verify-graphql-ready.sh:68`), and those two defaults
    are the only places the name appears **as a target** —
    `grep -rn FIDDLE_EFFECTS_REPO` outside `docs/` returns those two lines and no
-   other assignment. No product code points at it: every other occurrence of the
-   name in the tree is inside a `#[cfg(test)]` module, an acceptance fixture
-   string, a doc comment, or CI prose citing what was measured here, and none of
-   those can write to anything. `.github/workflows/github-effects.yml` is a
+   other assignment. **No product code points at it, and that is checkable rather
+   than asserted:** every occurrence of the name under `crates/` must be in a file
+   under a `tests/` directory, or after its file's `#[cfg(test)]` line, or on a
+   comment line. Any occurrence failing all three is product code holding this
+   repository's name, and is a violation of this rule. See *Rule 4 was false from
+   `253a7de`* for the check run at this commit and what it found.
+   `.github/workflows/github-effects.yml` is a
    *caller* of the first script (line 262) rather than a third writer: it sets no
    target of its own. A third default, or one outside `#[cfg(test)]`, violates
    this rule — see *Rule 4 was false from `253a7de`*.
@@ -115,6 +118,36 @@ default as *"the only place its name appears outside this document"*. Commit
 `253a7de` added `scripts/verify-graphql-ready.sh` with a second default at its
 line 68, identical in shape to the lane's, and the rule was false from that
 commit until it was corrected here.
+
+**Its two clauses were false for different reasons, and by different margins.**
+The writer count was off by one, which `253a7de` explains. The second clause was
+off by far more and no commit explains it: the name appears in **20** places
+outside `docs/`, not one. A reader who fixes only the writer count will believe
+the rest of the rule, which is why this is stated separately — the first clause
+was falsified by a change, the second was **never true** in the form it was
+written.
+
+Those 20 break down as the two `FIDDLE_EFFECTS_REPO` defaults, **11** occurrences
+under `crates/`, and 7 in `.env.example`, `github-effects.yml` and the two
+scripts' own comments. Running the rule's boundary check over the 11 at this
+commit: `orchestration.rs:1228` is inside the `#[cfg(test)]` opening at `:725`;
+`human/mod.rs:580`, `:593` and `:604` are inside the one opening at `:574`, which
+runs to the file's end at 608; `github/checks.rs:41` is a `//!` doc comment; and
+the remaining six are in `crates/fiddle-acceptance/tests/`, where the whole file
+is a test target. **Zero are product code**, so the *"no product code points at
+it"* half survives intact — which is the half worth keeping, and the reason the
+clause was narrowed to "as a target" rather than deleted.
+
+The counts above are a measurement at this commit and are not themselves the
+rule — the boundary check is. A count in a standing rule goes stale the first time
+someone adds a fixture, which is the failure this section exists to record.
+
+Both were found by **grepping the tree**, not by reading the bean that assigned
+this correction: the bean named the second writer and did not state that the
+second clause was false at all, and an earlier draft of this edit undercounted the
+occurrences at nine by missing two acceptance fixtures, the two script comments
+and `.env.example`. That is the same class of error as the rule itself — a set
+asserted from memory rather than enumerated from the tree.
 
 It was found by the confirming **evaluation** of the bean that added the script,
 not by review of this document — which is the part worth keeping. A rule
