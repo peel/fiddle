@@ -304,9 +304,18 @@ pub struct ProposeConfig {
     /// the `collaborators/{user}/permission` endpoint in favour of exactly this
     /// list.
     ///
-    /// An empty list authorizes nobody, and that is a coherent deployment rather
-    /// than a misconfiguration: it is what "fiddle may publish drafts here and
-    /// nobody has been given the authority to promote one" spells.
+    /// An empty list authorizes nobody, and the type admits one because nothing
+    /// at this layer can refuse it — a `Vec` is a `Vec`. **No document can express
+    /// one**, though: `[github.decision] authorized` has no default and is refused
+    /// empty at the parse boundary, because a deployment that can publish a
+    /// question and can never accept an answer suspends every run for ever.
+    ///
+    /// So the empty case is not a deployment a reader will meet in a file, and it
+    /// is still worth pinning: `decision_protocol`'s
+    /// `a_deployment_that_nominated_nobody_authorizes_nobody` drives it, because
+    /// the failure that matters is the opposite one — a check deleted from the walk
+    /// authorizes *everybody*, and the schema refusing an empty list must not be
+    /// the only thing standing between a caller and that.
     pub deciders: Vec<u64>,
 
     /// What the one interpretation call runs inside.

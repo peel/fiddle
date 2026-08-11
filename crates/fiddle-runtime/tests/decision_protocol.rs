@@ -1008,9 +1008,15 @@ async fn neither_a_bot_nor_an_app_can_decide() {
 /// the production code, and the two failure modes are opposite: a check that was
 /// deleted authorizes everybody, while a list that is *empty* must authorize
 /// nobody — including the person every other case in this file nominates, whose
-/// reply is the one being ignored here. Worth its own case because a run
-/// configured with no approvers is a real configuration and not a broken one, and
-/// nothing else here drives it.
+/// reply is the one being ignored here.
+///
+/// **A document can no longer ask for this**, and that is why the case matters
+/// more rather than less: `[github.decision] authorized` is refused empty at the
+/// parse boundary, so the schema is now the first line of defence — and a test
+/// that leaned on the schema would be pinning the wrong layer. What is asserted
+/// here is that the *walk* authorizes nobody under an empty list, so deleting the
+/// allowlist check is a failure here rather than something only a configuration
+/// refusal would have caught.
 #[tokio::test]
 async fn a_deployment_that_nominated_nobody_authorizes_nobody() {
     let world = with_nobody_authorized();

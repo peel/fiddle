@@ -441,6 +441,119 @@ fn config_check_rejects_an_unknown_key_inside_the_policy_table() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// `[github.decision]` — who may decide, and how far a conversation read may go.
+// ---------------------------------------------------------------------------
+
+/// The numeric user id the fixtures below nominate. An id and never a login,
+/// which is the property the schema enforces by type.
+const DECIDER: u64 = 505_401;
+
+/// What the channel's `status` reports today, and it is deliberately not
+/// `"enforced"`: nothing in this build reads either key yet, because the
+/// capability that would — `propose_change` — is not constructible from a
+/// document. See `render.rs`'s `DECISION_STATUS` for the argument, and the bean's
+/// own record for what has to land before the word changes.
+const DECISION_STATUS: &str = "accepted-not-enforced";
+
+/// [`FORGE`] with a `[github.decision]` table carrying `body`.
+fn with_decision(body: &str) -> String {
+    format!("{FORGE}\n[github.decision]\n{body}\n")
+}
+
+/// **The decision channel is disclosed, in both renderings.**
+///
+/// `config check` is the command an operator runs to confirm what a document
+/// means before a run acts on it, and who may promote a change is the most
+/// consequential thing this document now says. Asserted field by field rather
+/// than by searching for substrings, for the reason the agent table's own
+/// scenario gives: a renamed key has to fail here.
+///
+/// `matched_on` is in the payload because the *kind* of identity is the property,
+/// not a detail: a reader who cannot tell whether `505401` is matched as an
+/// immutable id or as something a login could become cannot tell whether the
+/// allowlist means what they think.
+#[test]
+fn config_check_reports_the_decision_channel_and_its_authorized_set() {
+    let document = with_decision(&format!("authorized = [{DECIDER}]"));
+    let github = checked(&document)["github"].clone();
+    let decision = &github["decision"];
+    assert_eq!(
+        decision["authorized"],
+        serde_json::json!([DECIDER]),
+        "{github}"
+    );
+    assert_eq!(decision["matched_on"], "numeric_user_id", "{github}");
+    // The bound the document left to its default, reported as the value that
+    // will actually apply — the rule every other defaulted bound follows.
+    assert_eq!(decision["max_pages"], 10, "{github}");
+    assert_eq!(decision["status"], DECISION_STATUS, "{github}");
+
+    // And the human rendering says the same three things, because an operator at
+    // a terminal is the reader this is for.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fiddle.toml");
+    std::fs::write(&path, &document).unwrap();
+    let out = support::fiddle_command()
+        .args(["config", "check", "--config", path.to_str().unwrap()])
+        .env_remove(FORGE_CREDENTIAL)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(out.status.code(), Some(0), "stdout: {stdout}");
+    assert!(
+        stdout.contains(&DECIDER.to_string())
+            && stdout.contains("numeric_user_id")
+            && stdout.contains("max_pages = 10"),
+        "the plain rendering must disclose the channel too: {stdout}"
+    );
+}
+
+/// **A document naming nobody is refused, and told why.**
+///
+/// The empty list is the one an operator is most likely to write on the way to
+/// filling it in, and reading it as "anybody" is the failure this refusal exists
+/// to prevent. Exit 2, because it is a document that cannot be honoured rather
+/// than a run that went wrong.
+#[test]
+fn config_check_refuses_a_decision_table_that_names_nobody() {
+    let out = check(&with_decision("authorized = []"));
+    assert_eq!(out.status.code(), Some(2), "an empty list must exit 2");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("authorized") && stderr.contains("nobody"),
+        "the diagnostic must name the key and say why, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("fiddle.toml:15"),
+        "the diagnostic must point at the table it is about, got: {stderr}"
+    );
+}
+
+/// A login is not a spelling this schema admits, so the loose match a login
+/// would force on the code is unreachable from any document.
+#[test]
+fn config_check_refuses_an_approver_named_by_login() {
+    let out = check(&with_decision(r#"authorized = ["peel"]"#));
+    assert_eq!(out.status.code(), Some(2), "a login must exit 2");
+}
+
+/// The same strictness one table deeper: `[github.decision]` is its own strict
+/// table, because `deny_unknown_fields` on `[github]` does not reach into a
+/// child — `[github.read_retry]`'s reasoning, applied to the second child table.
+#[test]
+fn config_check_rejects_an_unknown_key_inside_the_decision_table() {
+    let out = check(&with_decision(&format!(
+        "authorized = [{DECIDER}]\nmax_page = 10"
+    )));
+    assert_eq!(out.status.code(), Some(2), "unknown key must exit 2");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("max_page") && stderr.contains("unknown field"),
+        "the diagnostic must name the offending key and why, got: {stderr}"
+    );
+}
+
 /// A rule this build cannot honour is refused at its line rather than defaulted
 /// to something permissive.
 #[test]
@@ -523,10 +636,19 @@ fn config_check_reports_the_github_table_it_accepted() {
     // as `null` so an operator learns which refusal is waiting for them.
     assert_eq!(github["work"], serde_json::Value::Null, "{github}");
     assert_eq!(github["workflow"], serde_json::Value::Null, "{github}");
-    // Absent means allow, and it is reported rather than left to be inferred.
+    // Absent means allow, and it is reported rather than left to be inferred —
+    // for every kind this build can be given a rule for, so that a kind added to
+    // the table without being added to the rendering fails here rather than being
+    // a rule an operator cannot confirm.
     assert_eq!(github["policy"]["ensure_branch_published"], "allow");
     assert_eq!(github["policy"]["ensure_pull_request"], "allow");
     assert_eq!(github["policy"]["ensure_check_requested"], "allow");
+    assert_eq!(github["policy"]["publish_decision_request"], "allow");
+    assert_eq!(github["policy"]["ensure_pull_request_ready"], "allow");
+    // And the channel a deployment has not described is `null` rather than
+    // absent, for the reason `work` and `workflow` are: an operator confirming a
+    // document should learn that nobody is authorized to promote a change here.
+    assert_eq!(github["decision"], serde_json::Value::Null, "{github}");
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("fiddle.toml");

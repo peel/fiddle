@@ -333,6 +333,57 @@ fn a_document_with_no_workspace_table_says_so() {
     );
 }
 
+/// **A capability this build cannot construct blames the build, not the file.**
+///
+/// The document here describes `propose_change`'s deployment completely — a forge,
+/// an approver named by id, a model and a workspace — so there is nothing in it to
+/// add. Until this scenario existed the arm refused with `missing("[github.decision]")`,
+/// which was true only while the schema had no such table: once it had one, a
+/// deployment that wrote it correctly was told to add a table it already had, and
+/// no test noticed because nothing drove this arm at all.
+///
+/// So the assertion is on what the refusal must *not* say as much as on what it
+/// must: exit 2, the capability named, and no instruction to go and edit a
+/// document that is already complete.
+#[test]
+fn a_capability_this_build_cannot_construct_says_so_without_blaming_the_document() {
+    let s = Scenario::new();
+    s.write_work_item(WORK_ID, "open");
+    let tables = agentic_tables(&s, UNREACHABLE_GATEWAY);
+    s.append_config(&tables);
+    s.append_config(
+        "\n[github]\nrepo = \"peel/fiddle\"\nbase = \"main\"\n\
+         token = { env = \"FIDDLE_GITHUB_TOKEN\" }\n\
+         \n[github.decision]\nauthorized = [505401]\n",
+    );
+
+    let out = s
+        .run_command(INVOCATION_REF)
+        .args(["--capability", "propose_change", "--json"])
+        .env(CREDENTIAL, SENTINEL)
+        .env("FIDDLE_GITHUB_TOKEN", SENTINEL)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(2), "stderr = {stderr}");
+    assert!(
+        stderr.contains("propose_change"),
+        "the refusal must name what was asked for: {stderr}"
+    );
+    assert!(
+        !stderr.contains("[github.decision]"),
+        "the document carries that table — a refusal naming it sends the reader \
+         to a line that is already correct: {stderr}"
+    );
+    // And a refusal that never built anything must not have resolved a
+    // credential on the way, either.
+    assert!(
+        !stderr.contains(SENTINEL) && !String::from_utf8_lossy(&out.stdout).contains(SENTINEL),
+        "a capability that was not built must not have read a credential: {stderr}"
+    );
+}
+
 /// **`inspect` and `run` never disagree about what will happen.**
 ///
 /// The defect this closes: `inspect` took no `--capability` and reported the

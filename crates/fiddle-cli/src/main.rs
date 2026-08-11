@@ -86,6 +86,10 @@ enum CliError {
 
     #[error(transparent)]
     #[diagnostic(transparent)]
+    Unbuildable(#[from] Unbuildable),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
     CredentialAbsent(#[from] CredentialAbsent),
 
     #[error(transparent)]
@@ -202,6 +206,39 @@ struct Unconfigured {
     /// The document as the caller named it, already rendered: a diagnostic is
     /// text, and a `PathBuf` in one has to be displayed somewhere anyway.
     path: String,
+}
+
+/// A capability this build advertises and cannot yet construct.
+///
+/// Its own diagnostic rather than [`Unconfigured`]'s, because the two are
+/// different claims and only one of them is the operator's to act on. An
+/// `Unconfigured` says *your document is missing something*, and its help tells a
+/// reader to go and add it; that help would be actively wrong here, since a
+/// document naming every table `propose_change` needs — `[github]`,
+/// `[github.decision]`, `[agent]`, `[workspace]` — is a document with nothing left
+/// to add. What is missing is a construction in this binary.
+///
+/// The refusal has to exist somewhere: `CAPABILITIES` advertises
+/// `propose_change`, `Selection::parse` accepts it, and
+/// `every_registered_capability_can_be_selected` is what holds those two together.
+/// So the honest answer is this one — the invocation named something this build
+/// cannot do yet, said plainly, with nothing for the reader to go and edit.
+///
+/// It exits on the same row as the other rejections for the same reason they do:
+/// the invocation described a deployment this build does not provide, and nothing
+/// was attempted.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("this build cannot execute `{capability}` yet")]
+#[diagnostic(
+    code(fiddle::capability::unbuildable),
+    help(
+        "the capability is implemented and tested in fiddle-runtime; what this \
+         binary does not yet build is the context it runs in. Nothing in the \
+         document needs changing — run a capability this build can execute"
+    )
+)]
+struct Unbuildable {
+    capability: CapabilityId,
 }
 
 /// The environment does not hold the credential the configuration names.
@@ -327,18 +364,22 @@ fn exit_code_for(termination: &Termination) -> u8 {
             CliError::Config(ConfigError::NotFound(_) | ConfigError::Invalid(_))
             | CliError::InvocationRef(_)
             | CliError::UnknownCapability(_)
-            // All three of the new rejections are the same row and the same
+            // Every one of the rejections below is the same row and the same
             // kind of thing: the invocation described a deployment its
-            // configuration and environment do not provide, and nothing was
-            // attempted. A caller scripting fiddle needs one number for "fix
-            // your setup and try again", not three.
+            // configuration, its environment or this build does not provide, and
+            // nothing was attempted. A caller scripting fiddle needs one number
+            // for "fix your setup and try again", not one per way of being unable
+            // to start.
             | CliError::Unconfigured(_)
             | CliError::CredentialAbsent(_)
             | CliError::Gateway(_)
-            // And the fourth, for the same reason: a path the document names
-            // that this machine cannot supply is a setup to fix, not work that
-            // was attempted and failed.
-            | CliError::PathUnusable(_),
+            // A path the document names that this machine cannot supply is a
+            // setup to fix, not work that was attempted and failed.
+            | CliError::PathUnusable(_)
+            // And a capability this build cannot construct is the one member of
+            // the set that is nobody's document to fix — see [`Unbuildable`]. It
+            // is still this row: nothing ran, and a caller has to stop.
+            | CliError::Unbuildable(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -761,24 +802,32 @@ fn build_capability<'a>(
         }
 
         // **A placeholder, and the only arm in this function that builds
-        // nothing.** `propose_change` needs everything the two arms above
-        // resolve *and* two things this binary does not have yet: the
-        // `[github.decision]` table saying who may decide and how far a
-        // conversation read may go, and a forge whose worktree is the one the
-        // attempt will work in — `resolve_forge` reads `HEAD` out of
-        // `github.work` before the capability runs, and the tree
-        // `capability::attempt_worktree` derives does not exist at that moment.
+        // nothing** — but no longer one that blames the document for it.
         //
-        // So the honest answer is the one the diagnostic already exists to give:
-        // the document is valid and does not describe this deployment. It names
-        // the table the configuration task adds, which is the same task that
-        // replaces this arm with a construction.
+        // It used to refuse with `missing("[github.decision]")`, on the argument
+        // that the document did not describe this deployment. That was true only
+        // while the table did not exist. It exists now, strictly, with an approver
+        // list that has no permissive default — so a deployment that wrote it
+        // correctly would have been told to add a table it already had, which is
+        // the one thing a configuration diagnostic must never do.
+        //
+        // What is actually missing is here rather than there, and it is two
+        // things: an `EffectContext` whose worktree is the tree the attempt will
+        // *create* — `resolve_forge` reads `HEAD` out of `github.work` before the
+        // capability runs, and `capability::attempt_worktree`'s path does not exist
+        // at that moment — and a `DecisionTrace` for the walk to announce itself
+        // to, which nothing outside `fiddle-runtime`'s own tests implements. Both
+        // belong to the bean that gates a suspension end to end, because a
+        // construction no test can drive is not a capability an operator can run.
         //
         // The arm is here rather than absent because the match is exhaustive and
         // because `Selection::parse` must accept the id: `CAPABILITIES` now
         // advertises it, and `every_registered_capability_can_be_selected` is
         // what keeps those two in step.
-        Selection::Propose => Err(missing("[github.decision]").into()),
+        Selection::Propose => Err(Unbuildable {
+            capability: selection.id(),
+        }
+        .into()),
     }
 }
 
