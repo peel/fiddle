@@ -1006,3 +1006,23 @@ So the check is: **enumerate worktrees, and check each one's status, not only th
 That is the same failure as (1) with a different cause, and together they are why a live lane read as a dead one. The fix is to stop specifying a file: **ask for the report inline in the final message**, which is what every successful lane has done anyway. Remove the file instruction from the bean template and from every dispatch prompt.
 
 **The compounding cost, stated plainly.** Three lanes were dispatched onto one bean. Two of them collided in `crates/fiddle-runtime/src/human/mod.rs`, and the second one's first edit was rejected as changed-under-it, with a hook naming the other worktree. The protection built up all milestone — `git commit --only <explicit paths>`, checking `git status` before committing — does not help here, and the lane that hit it said why: **the collision is in the file, not the index.** Two agents editing one file defeats every index-level safeguard, so the only real protection is not dispatching two agents into one file, which requires knowing the first one exists.
+
+**Addendum — a fifth defect in the same comment, found after the bean converged.** `fiddle-ayqd` converged at `4111711` with five evaluations behind it. A lane then landed `d6696da`, comment-only, fixing something none of those five caught:
+
+> The enumeration heading `a_mangled_body_is_malformed_and_says_how` listed four kinds of damage — reflowed, respaced, truncated, closing lost — over a table that runs five cases. The kind it omitted, a dropped version token, is one of the three that used to refuse as `MarkerError::Version`, so a reader mapping "the first three" onto the enumeration got the truncation instead, which was always `Malformed`. `c9a5a50` corrected the counts to five and three and left the list beneath them at four, which is where the arithmetic stopped adding up.
+
+So the count fix was **half a fix**: the numbers were corrected and the list they counted was not. The lead verified that repair by grepping for the phrase `All four` and finding it gone — a check that could only ever confirm the numbers, never the enumeration. That is the same shape as everything else in this file: a check that cannot fail on the thing it is supposed to establish.
+
+**The tally for one doc comment: five defects, five evaluations, and the fifth defect found after convergence.**
+
+1. the essay orphaned onto `type Case` by a lint fix
+2. a correction appended rather than folded in — the lead's wording, refuted and then left standing
+3. "the message a reader would see" when the code captures the inner `Malformed` payload
+4. "a run names every case that moved" when plain `assert_eq!` prints two `Vec` dumps
+5. a five-case table under a four-kind enumeration, with "the first three" then pointing at the wrong three
+
+Not one was catchable by `cargo fmt`, `cargo clippy -D warnings`, the test suite, or `cargo doc`. Every one was found by a person reading the artifact, and two evaluators plus a confirming pass read this comment without seeing (5).
+
+**What this says about the loop, stated plainly.** Convergence is two consecutive passing evaluations, and it is a real gate for behaviour — inversions make behavioural claims falsifiable. **It is not a gate for prose.** There is no mechanical check on documentation, so the only thing standing between a comment and a false statement is whether a reader happened to look at that sentence. Five readers looked at this one and the fifth defect still survived them all.
+
+The honest conclusion is not "evaluate documentation harder". It is that **a prose claim about code should be written so that something can fail** — the byte pin, the inversion, the per-case table — and where that is impossible, the claim should be a reference rather than an assertion. That is the same rule already recorded for cross-crate claims, generalised: **the reason to prefer a pointer over a statement is not modesty, it is that a pointer cannot go stale in a way nothing notices.**
