@@ -1255,3 +1255,41 @@ kill matched four other lanes. Same family: **process-level intervention across 
 identification of the owner, and killing another lane's work needs its consent, not the lead's
 inference.** The lane was told the failure was external so it would not debug a phantom, and told to
 keep its 853M target directory rather than start cold.
+
+### A ruling and an evaluation dispatched in the same breath guarantees a stale pack
+
+Third occurrence on this milestone of a pack pinned behind the bean it evaluates — after `fiddle-rvcu` and
+`fiddle-8vpm` — but the first with a mechanism worth naming, because this one the lead **caused** rather
+than merely failed to notice.
+
+The sequence: the lane reported DONE at `41c3c43`. The lead reviewed it, found a load-bearing claim
+refutable, and sent a ruling to fix it. The lead then built the evidence pack and dispatched the
+evaluator at `41c3c43` — **while the lane was still acting on that ruling.** The lane landed the fix as
+`e6667e9`. So the evaluator was pointed at a commit the lead's own ruling had just superseded.
+
+**The general rule: issuing a ruling and dispatching the evaluation in the same breath guarantees the
+pack is stale if the lane obeys.** A ruling that asks for a change is a promise that the tip will move.
+Dispatching against the pre-ruling commit is not a race that was lost, it is a contradiction — the lead
+asked for a new commit and then evaluated the absence of it. **After a ruling that requires a change,
+wait for the lane to name the resulting commit before dispatching evaluation.** The cost of waiting is
+minutes; the cost of not waiting is an evaluator failing a criterion on text that no longer exists.
+
+**And the specific harm was not cosmetic**, which is what distinguishes this from the two earlier
+instances. The dispatch told the evaluator to probe the git-count criterion hardest. At `41c3c43` the doc
+comment on `the_approve_path_invokes_git_not_at_all` still carried the refutable sentence — *"no program
+seam"*, disproved by one `grep -rn 'Command::new'`. That comment ships in the diff and is the first thing
+an evaluator reads on that criterion. So the stale dispatch pointed a primed evaluator directly at the
+one sentence the ruling existed to remove, and a FAIL would have been correct on the text in front of it
+and wrong about the artifact.
+
+**What the lane did right, and it is the generalisable half.** Told the argument was refutable, it fixed
+the claim in **two** places — the bean *and* the shipping doc comment — on the reasoning that correcting
+only the bean would leave the refutable version in front of the evaluator anyway. Then it verified every
+line the lead had cited at it rather than accepting the correction on report, and **found a third reason
+the lead had missed**: there are two git channels in this capability, not one, because `Workspace::create`
+and `changed_files` bypass the seam entirely with a direct `Command::new("git")`. A correction accepted on
+authority would have produced a weaker claim than a correction verified.
+
+Recorded alongside the earlier entry on absence-inference. Same family, inverted: there, a check that
+could not evaluate was read as a negative result; here, a commit that had not happened yet was evaluated
+as though it had. **Both are the lead treating a state it had not observed as the state that holds.**
