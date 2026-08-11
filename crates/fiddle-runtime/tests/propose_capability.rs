@@ -555,33 +555,23 @@ fn identity_at(
 // Registration
 // ---------------------------------------------------------------------------
 
-/// It names itself, it names its own stage, and the stage is not another
+/// It is registered, it names its own stage, and the stage is not another
 /// capability's vocabulary — the defect `Capability::stage` exists because of.
-///
-/// # What this test does *not* say, and why
-///
-/// The bean asks for `["stub_mark", "fixture_repair", "publish_change",
-/// "propose_change"]` out of `CAPABILITIES`, and that list is deliberately still
-/// three long. An id in it is a claim that an operator can pass it to
-/// `--capability`, and `every_registered_capability_can_be_selected` in the
-/// binary enforces exactly that by walking the array and requiring each id to
-/// name a selection the CLI can build. `propose_change` has no selection yet and
-/// cannot have one until `resolve_forge` learns to publish from a worktree that
-/// does not exist when the forge is resolved — it reads that tree's `HEAD` — so
-/// the entry and the selection belong to the CLI task, together. Registering it
-/// here first would advertise a capability nothing can run, which is the defect
-/// the binary's test exists to catch.
-///
-/// So this asserts the id the capability answers to, which is the half that is
-/// this task's, and pins the absence with its reason so the pair is not forgotten.
 #[tokio::test]
-async fn the_fourth_capability_names_itself_and_names_its_own_stage() {
+async fn the_fourth_capability_is_registered_and_names_its_own_stage() {
     let ids: Vec<&str> = fiddle_runtime::CAPABILITIES
         .iter()
         .map(|capability| capability.0)
         .collect();
-    assert_eq!(ids, ["stub_mark", "fixture_repair", "publish_change"]);
-    assert_eq!(PROPOSE_CHANGE.0, "propose_change");
+    assert_eq!(
+        ids,
+        [
+            "stub_mark",
+            "fixture_repair",
+            "publish_change",
+            "propose_change"
+        ]
+    );
 
     let world = World::fresh();
     let ctx = world.ctx();

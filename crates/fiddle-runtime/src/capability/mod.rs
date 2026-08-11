@@ -55,27 +55,11 @@ use std::path::PathBuf;
 /// against it, so a build that gains a capability offers it and names it in a
 /// diagnostic without anyone remembering to update a second list.
 ///
-/// # Why [`fiddle_core::PROPOSE_CHANGE`] is not here yet
-///
-/// Because this list is what the CLI validates `--capability` against, so an id
-/// in it is a claim that this build *offers* that capability — and
-/// `every_registered_capability_can_be_selected` in the binary is what makes the
-/// claim stick: it walks this array and requires each id to name a selection the
-/// binary can build. `propose_change` has no selection yet, and it cannot have
-/// one until `resolve_forge` learns to publish from a worktree that does not
-/// exist when the forge is resolved (its `head_sha` read would fail), which is
-/// the CLI task's work rather than the capability's.
-///
-/// So the id and the entry move together, in the task that adds the selection.
-/// Registering it here first would advertise a capability an operator cannot run
-/// — the exact defect the binary's test exists to catch — and the alternative,
-/// weakening that test, would trade a real property for a tidy list.
-/// [`propose::ProposeChange`] is reachable and exercised meanwhile:
-/// `tests/propose_capability.rs` drives it exactly as the orchestration will.
-pub const CAPABILITIES: [CapabilityId; 3] = [
+pub const CAPABILITIES: [CapabilityId; 4] = [
     fiddle_core::STUB_MARK,
     fiddle_core::FIXTURE_REPAIR,
     fiddle_core::PUBLISH_CHANGE,
+    fiddle_core::PROPOSE_CHANGE,
 ];
 
 /// Proof that a derivation authorised an execution, as part of a named attempt.
@@ -530,25 +514,21 @@ mod tests {
     /// The known-id list is the one source the CLI validates `--capability`
     /// against, so a build that can run a capability has to name it here.
     /// The known-id list is the one source the CLI validates `--capability`
-    /// against, so a build that can *offer* a capability has to name it here —
-    /// and, by `every_registered_capability_can_be_selected` in the binary, a
-    /// build that names one here has to be able to assemble it. `propose_change`
-    /// is the fourth [`Capability`] in this module and is deliberately absent
-    /// from both, together; see [`CAPABILITIES`].
+    /// against, so a build that can run a capability has to name it here — and,
+    /// by `every_registered_capability_can_be_selected` in the binary, a build
+    /// that names one here has to have a selection for it. The two move
+    /// together, which is why the fourth id and that selection arrive in one
+    /// change.
     #[test]
-    fn every_capability_this_build_can_offer_is_registered() {
+    fn every_capability_this_build_has_is_registered() {
         assert_eq!(
             CAPABILITIES,
             [
                 STUB_MARK,
                 fiddle_core::FIXTURE_REPAIR,
-                fiddle_core::PUBLISH_CHANGE
+                fiddle_core::PUBLISH_CHANGE,
+                fiddle_core::PROPOSE_CHANGE
             ]
-        );
-        assert!(
-            !CAPABILITIES.contains(&fiddle_core::PROPOSE_CHANGE),
-            "an id in this list is a capability an operator can select, and \
-             `propose_change` has no selection until the CLI can build one"
         );
     }
 

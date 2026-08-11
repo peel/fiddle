@@ -2369,12 +2369,20 @@ fn the_capability_never_receives_a_raw_token() {
 /// it. `every_registered_capability_can_be_selected` in the binary is the other
 /// half — it fails to build if a registered id has no selection.
 #[test]
-fn the_registry_holds_three_capabilities() {
+fn the_registry_holds_every_capability_this_build_offers() {
     let ids: Vec<&str> = fiddle_runtime::CAPABILITIES
         .iter()
         .map(|capability| capability.0)
         .collect();
-    assert_eq!(ids, ["stub_mark", "fixture_repair", "publish_change"]);
+    assert_eq!(
+        ids,
+        [
+            "stub_mark",
+            "fixture_repair",
+            "publish_change",
+            "propose_change"
+        ]
+    );
 }
 
 /// The two observations Task 8 added are filled by the run that can see them.

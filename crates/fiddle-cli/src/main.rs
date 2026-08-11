@@ -133,6 +133,10 @@ enum Selection {
     /// One change published to a forge: a branch, a pull request and a requested
     /// check, each proposed through the effect executor.
     Publish,
+    /// One change produced by a bounded attempt, published as a draft, and put
+    /// to a person — the hybrid capability, whose run suspends rather than
+    /// completing.
+    Propose,
 }
 
 impl Selection {
@@ -142,6 +146,7 @@ impl Selection {
             Selection::Mark => fiddle_core::STUB_MARK,
             Selection::Repair => fiddle_core::FIXTURE_REPAIR,
             Selection::Publish => fiddle_core::PUBLISH_CHANGE,
+            Selection::Propose => fiddle_core::PROPOSE_CHANGE,
         }
     }
 
@@ -160,6 +165,8 @@ impl Selection {
             Ok(Selection::Repair)
         } else if requested == fiddle_core::PUBLISH_CHANGE.0 {
             Ok(Selection::Publish)
+        } else if requested == fiddle_core::PROPOSE_CHANGE.0 {
+            Ok(Selection::Propose)
         } else {
             Err(UnknownCapability {
                 requested: requested.to_string(),
@@ -752,6 +759,26 @@ fn build_capability<'a>(
                 },
             )))
         }
+
+        // **A placeholder, and the only arm in this function that builds
+        // nothing.** `propose_change` needs everything the two arms above
+        // resolve *and* two things this binary does not have yet: the
+        // `[github.decision]` table saying who may decide and how far a
+        // conversation read may go, and a forge whose worktree is the one the
+        // attempt will work in — `resolve_forge` reads `HEAD` out of
+        // `github.work` before the capability runs, and the tree
+        // `capability::attempt_worktree` derives does not exist at that moment.
+        //
+        // So the honest answer is the one the diagnostic already exists to give:
+        // the document is valid and does not describe this deployment. It names
+        // the table the configuration task adds, which is the same task that
+        // replaces this arm with a construction.
+        //
+        // The arm is here rather than absent because the match is exhaustive and
+        // because `Selection::parse` must accept the id: `CAPABILITIES` now
+        // advertises it, and `every_registered_capability_can_be_selected` is
+        // what keeps those two in step.
+        Selection::Propose => Err(missing("[github.decision]").into()),
     }
 }
 
@@ -859,7 +886,13 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             // `fixture_repair` resolve no GitHub credential.
             let forge = match selection {
                 Selection::Publish => Some(resolve_forge(&config, &cli.config, &cancel).await?),
-                Selection::Mark | Selection::Repair => None,
+                // `Selection::Propose` resolves none, and not because it reaches
+                // no forge — it reaches one — but because `resolve_forge` reads
+                // `HEAD` out of `github.work` before the capability runs, and the
+                // worktree a proposal publishes from is created *by* the attempt.
+                // A forge for it is the configuration task's to build, together
+                // with the arm in `build_capability` that would borrow it.
+                Selection::Mark | Selection::Repair | Selection::Propose => None,
             };
             let selected = build_capability(
                 selection,
