@@ -195,7 +195,7 @@ fn main() {
     print!(
         "HTTP/2.0 {status} \r\n{}\r\n{}",
         response_headers(mode),
-        response_body(status, mode)
+        response_body(&dir, status, mode, &key)
     );
     std::process::exit(exit);
 }
@@ -278,7 +278,14 @@ fn response_headers(mode: &str) -> String {
 /// client that carried a body into a diagnostic would leak it, and the sentinel
 /// test would catch that rather than passing because nothing happened to be
 /// echoed.
-fn response_body(status: u16, mode: &str) -> String {
+///
+/// A comment create answers with the comment it created, because the real endpoint
+/// does and because [`HumanInteractionPort::request`] reads the id out of it. The
+/// id is **the one [`posted_comments`] will list it under** rather than a number of
+/// this function's own: GitHub's create and GitHub's listing agree about a
+/// comment's id, and a fixture whose two halves disagreed would let a client that
+/// invented an id from the response pass a test asserting the id it read back.
+fn response_body(dir: &Path, status: u16, mode: &str, key: &str) -> String {
     if mode == "echo_token" {
         let token = std::env::var("GH_TOKEN").unwrap_or_default();
         return serde_json::json!({ "message": format!("Bad credentials: {token}") }).to_string();
@@ -290,6 +297,18 @@ fn response_body(status: u16, mode: &str) -> String {
     // anything in the world the listing describes.
     if mode == "answers_a_run_id" {
         return serde_json::json!({ "id": 999_999 }).to_string();
+    }
+    // Counted *after* `apply_effect` has appended this write, so the last landed
+    // comment on this path is the one just created.
+    if status < 400 && key.starts_with("POST") && key.ends_with("_comments") {
+        let landed = std::fs::read_to_string(dir.join("world"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|entry| entry["key"].as_str() == Some(key))
+            .count() as u64;
+        return serde_json::json!({ "id": FIRST_POSTED_COMMENT + landed.saturating_sub(1) })
+            .to_string();
     }
     match status >= 400 {
         true => serde_json::json!({ "message": format!("scripted {status}") }).to_string(),
@@ -991,7 +1010,7 @@ const CONVERSATION: &str = "issue-comments";
 /// Well clear of the small ids the suites seed by hand, and not a number that
 /// could be an index, a count or a page — [`pull_requests`]' reason for starting
 /// its numbering at 7 and the runs listing's for starting at 4200.
-const FIRST_POSTED_COMMENT: u64 = 3001;
+const FIRST_POSTED_COMMENT: u64 = 9000;
 
 /// A page of the conversation with the comments this world's own `POST`s created
 /// appended to it.
@@ -1047,10 +1066,12 @@ fn with_posted_comments(
 /// conversation, and a fixture that could not tell them apart would answer a
 /// duplicate-detection test either way.
 ///
-/// The author is a `User` with no app attribution, which is what a comment
-/// written through a personal access token looks like — the credential every
-/// `GhCli` in the deterministic suite carries. The Actions shape is a `Bot` and is
-/// a different world; a test that needs one seeds a page instead.
+/// The author is a `Bot`, because fiddle is one. A request comment is fiddle's
+/// own question and never anybody's answer to it, and a fixture that returned it
+/// as an ordinary user would let a validation walk with that id on its allowlist
+/// count the question as a reply. `is_bot` is the field
+/// `validate::select_candidates` refuses on, so this is the shape that keeps the
+/// fixture from quietly supplying the thing under test.
 fn posted_comments(dir: &Path, bare_path: &str) -> Vec<serde_json::Value> {
     // [`script_key`]'s mangling, for a path that carries no query — which a
     // comment `POST` never does. Derived here rather than matched loosely so the
@@ -1078,7 +1099,7 @@ fn posted_comments(dir: &Path, bare_path: &str) -> Vec<serde_json::Value> {
                 "created_at": "2026-08-11T00:00:00Z",
                 "updated_at": "2026-08-11T00:00:00Z",
                 "author_association": "OWNER",
-                "user": { "login": "fiddle", "id": 1_000_001, "type": "User" },
+                "user": { "login": "fiddle[bot]", "id": 1_000_001, "type": "Bot" },
                 "performed_via_github_app": serde_json::Value::Null,
             })
         })
