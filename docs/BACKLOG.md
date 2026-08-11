@@ -1074,3 +1074,29 @@ Three things worth keeping:
 - **A type that carries one value twice makes agreement a fixture convention.** Every test author naturally constructs a consistent object, so the disagreeing case never appears unless somebody writes it on purpose. The duplication is the defect; the wrong read is only its symptom. Collapsing it is filed as `fiddle-11vj`, and this is the guard until then.
 - **The bug was found by a prose warning, not by a test.** The lead flagged the duplicated field from an implementer's report — the field being read was never checked — and the implementer then found its own landed code reading the wrong one. So the chain was: one lane reads a type and notices a hazard while blocked, the lead writes it down, a second lane checks its own code against the note. No gate participated.
 - **This is what "the fixture cannot distinguish the candidates" looks like at its worst.** The earlier instances were a sorted listing hiding a positional read, and a world list omitting the contested case. Here the *type* invites the indistinguishable fixture, so every honest test built one. The rule stated earlier — for any property about order, selection or identity, at least one fixture must make the correct answer and the lazy answer differ — needs a companion: **when a type can hold two values that must agree, at least one test must set them disagreeing, and the type should be suspected of being wrong.**
+
+### 2026-08-11 — The dispatch log was not drifting, it was not being written, and restart recovery reads it
+Reconciling the epic's dispatch counters at the end of the session, against the beans that converged:
+
+| bean | `total_dispatches` recorded | real dispatches |
+|---|---|---|
+| `fiddle-rvcu` | 0 | 3 |
+| `fiddle-9krm` | 2 | 5 |
+| `fiddle-n8fs` | **field absent** | 5 |
+| `fiddle-dvsl` | 0 | 9 |
+| `fiddle-ayqd` | **field absent** | 11 |
+| `fiddle-8vpm` | **field absent** | 4 |
+| `fiddle-v5bm` | 0 | 4 |
+
+The first reading was that the counter had drifted. It had not. **The mechanism is intact and correctly wired**: `scripts/append-eval-log.sh` initialises and increments `total_dispatches`, `scripts/parse-eval-log.sh` reads it back into `{base_sha, iteration_count, total_dispatches, last_verdict, last_guidance}`, and `skills/develop-loop/restart-recovery.md` consumes that. Nothing is broken.
+
+**The lead stopped running the logging step.** It was run once, early, on one bean — which is why that bean alone reads a non-zero number — and then dropped for every subsequent iteration on every bean. Three beans never had the field initialised at all.
+
+**The consequence is not a wrong number, it is that restart recovery would mis-read the entire epic.** A fresh session recovering this work runs `parse-eval-log.sh` and gets `total_dispatches: 0` for beans that consumed nine and eleven dispatches. It would conclude they had barely been worked, and would re-dispatch against a 16-budget it believed untouched. The guard exists precisely to stop a bean iterating forever, and for this whole epic it was reading zero.
+
+Two things follow, and the second is the general one:
+
+- **The budget guard was never enforcing anything this session.** `check-convergence.sh` takes `--current-dispatches` as an argument, and the lead passed hand-estimated numbers rather than `parse-eval-log.sh`'s output. So the one protection against unbounded iteration was sourced from the lead's memory. `fiddle-ayqd` used **11 of 16** and nothing would have stopped it at 16.
+- **A step that only matters after a crash will be the first step dropped.** Nothing in a healthy session depends on the eval log: the lead knows the counts, the bean bodies carry the narrative, and convergence is computed from scorecards on disk. The log's only consumer is a session that no longer exists. So the incentive to write it is zero right up to the moment it is the only thing that would have helped — and the failure is silent, because a log nobody reads cannot be noticed as missing.
+
+That is a design problem rather than a discipline problem, and the fix is to make the loop's own progress depend on the record: **have the step that logs the dispatch be the step that produces the number convergence is checked against**, so skipping it fails the iteration rather than costing nothing. As it stands, writing the log is pure altruism toward a hypothetical successor, and this session demonstrates exactly how much of that gets done under load.
