@@ -991,3 +991,83 @@ async fn the_port_refuses_an_unreadable_conversation_rather_than_reporting_no_re
 
     assert!(err.to_string().contains("500"), "got {err}");
 }
+
+// ---------------------------------------------------------------------------
+// The request id the type carries twice
+// ---------------------------------------------------------------------------
+
+/// The question is identified by the id its **marker** carries, and by nothing
+/// else it happens to hold.
+///
+/// `HumanDecisionRequest` carries the request id twice — as `request` and as
+/// `binding.request` — and nothing makes the two agree. Only `binding.request`
+/// reaches the marker, because that is what `render_marker` is given. So an
+/// operation matching on the other field publishes a marker naming one id and
+/// then searches for a different one: it finds nothing, concludes it has not asked
+/// yet, and posts again on **every attempt, forever**. That is the unbounded
+/// duplicate supply this operation exists to prevent, arriving through the one
+/// door the executor cannot close — from step 3's view the postcondition really is
+/// absent each time, so no amount of inspect-before-write helps.
+///
+/// This is the only case in the file that can notice. Every other one builds a
+/// request whose two ids agree, so both readings behave identically and the bug is
+/// invisible. Here they are made to disagree on purpose, which is why the request
+/// is assembled by hand rather than through `request_with`.
+#[tokio::test]
+async fn the_question_is_identified_by_the_id_its_marker_carries() {
+    let world = World::new();
+    // The marker on the conversation names the *binding's* id, because that is
+    // what a marker can name.
+    world.page("issue-comments", 1, &[comment_with_marker(11, &binding())]);
+
+    let mut divergent = request();
+    // A well-formed id that is not this question's. If the operation reads this
+    // field, it will not recognise the comment above.
+    divergent.request = DecisionRequestId("dddddddddddddddd".to_string());
+    assert_ne!(
+        divergent.request, divergent.binding.request,
+        "this case is only meaningful while the two disagree"
+    );
+    let op = PublishDecisionRequest::new(REPO.to_string(), PR, divergent);
+
+    let receipt = world.execute(op).await.unwrap();
+
+    assert_eq!(
+        world.posted_comments(),
+        0,
+        "the request was already published; reading the wrong id posts forever"
+    );
+    assert!(
+        matches!(
+            receipt.value,
+            InteractionRef::GitHubPullRequestComment { comment: 11, .. }
+        ),
+        "got {:?}",
+        receipt.value
+    );
+}
+
+/// And the target names that same id, so the effect identity a fresh process
+/// recomputes is the one the marker can be found by.
+///
+/// Separate from the case above because they fail for different reasons: that one
+/// is about the postcondition lookup, and this one is about the identity the
+/// approval is bound to. A target built from the other field would derive an
+/// effect id no continuation could match against the marker it read.
+#[test]
+fn the_target_names_the_id_the_marker_carries() {
+    let mut divergent = request();
+    let binding_id = divergent.binding.request.clone();
+    divergent.request = DecisionRequestId("dddddddddddddddd".to_string());
+    let op = PublishDecisionRequest::new(REPO.to_string(), PR, divergent);
+
+    assert_eq!(
+        op.target(),
+        fiddle_runtime::human::decision_request_target(REPO, PR, &binding_id)
+    );
+    assert!(
+        !op.target().contains("dddddddddddddddd"),
+        "the target must not name the field the marker cannot carry: {}",
+        op.target()
+    );
+}
