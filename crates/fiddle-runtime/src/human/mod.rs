@@ -470,6 +470,14 @@ impl HumanInteractionPort for GitHubConversation {
     /// a `0` standing in for an id nobody sent would name a comment that is not
     /// this question. What makes reading it safe is that no decision rests on it;
     /// see [`PublishDecisionRequest::apply`].
+    ///
+    /// **That refusal is untested, and cannot be tested today.** It is invisible
+    /// through the executor — `apply` discards this value and step 8 reads the
+    /// world back whichever way the mutation reported — and it is unreachable from
+    /// a test directly, because [`AuthorizedEffect`] has no public constructor, so
+    /// nothing outside this crate's own walk can call this method. Recorded here
+    /// rather than left to look covered; `a_create_that_answers_without_a_comment_id_is_settled_by_the_read`
+    /// says the same thing from the other side.
     async fn request(
         &self,
         ctx: &EffectContext,

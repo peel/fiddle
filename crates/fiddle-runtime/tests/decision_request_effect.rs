@@ -881,19 +881,27 @@ async fn the_receipt_names_the_comment_the_world_holds_and_not_the_one_the_respo
     assert_eq!(receipt.external_ref.as_deref(), Some("9000"));
 }
 
-/// A create that answered without a comment id is settled by the read, like any
-/// other lost answer.
+/// A create whose answer carried no comment id still ends committed, exactly once.
 ///
-/// The port refuses to invent an id — a `0` standing in for one nobody sent would
-/// name a comment that is not this question — so the mutation reports a failure
-/// while having really landed. That is the ambiguous write, arriving by a third
-/// route, and it needs no rule of its own: step 8 reads the conversation, finds
-/// the comment, and the effect is committed. Nothing posts twice.
+/// The scripted mode answers 201 with a body that is a message rather than a
+/// comment — and puts the credential in it, which is why the token assertion is
+/// here: nothing built from that body reaches the receipt.
 ///
-/// The scripted mode puts the credential in the response body, which is why the
-/// token assertion is here too: the refusal is built from the path and the status
-/// and never from the body, so a diagnostic that quoted what `gh` said would leak
-/// it and fail here.
+/// **What this case does not prove.** `HumanInteractionPort::request` refuses a
+/// create that named no id rather than defaulting one, and that refusal is
+/// *unobservable from here*: `apply` discards the port's answer, and the executor
+/// reads the world back at step 8 whether the mutation reported success or
+/// failure, so a port that returned comment `0` instead of erroring produces this
+/// same receipt. An inversion replacing the check with `unwrap_or_default()`
+/// breaks no test in this file, and no test can be written that it would break —
+/// the port cannot be called from a test at all, because `AuthorizedEffect` has
+/// no public constructor. The strictness stays because defaulting an id is a lie
+/// about which comment this is; it is documented here as untested rather than
+/// left looking covered.
+///
+/// What *is* pinned below is real and is the reason the case exists: a 201 the
+/// client could not read a comment out of leaves exactly one comment in the
+/// world, and the walk settles it by looking rather than by asking again.
 #[tokio::test]
 async fn a_create_that_answers_without_a_comment_id_is_settled_by_the_read() {
     let world = World::new();
