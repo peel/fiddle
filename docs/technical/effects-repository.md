@@ -72,18 +72,18 @@ contents.
    `scripts/verify-graphql-ready.sh`, ADR 018's probe. Each carries its own
    `FIDDLE_EFFECTS_REPO` default naming this repository
    (`live-github.sh:85`, `verify-graphql-ready.sh:68`), and those two defaults
-   are the only places the name appears **as a target** —
-   `grep -rn FIDDLE_EFFECTS_REPO` outside `docs/` returns those two lines and no
-   other assignment. **No product code points at it, and that is checkable rather
-   than asserted:** every occurrence of the name under `crates/` must be in a file
-   under a `tests/` directory, or after its file's `#[cfg(test)]` line, or on a
-   comment line. Any occurrence failing all three is product code holding this
-   repository's name, and is a violation of this rule. See *Rule 4 was false from
-   `253a7de`* for the check run at this commit and what it found.
-   `.github/workflows/github-effects.yml` is a
-   *caller* of the first script (line 262) rather than a third writer: it sets no
-   target of its own. A third default, or one outside `#[cfg(test)]`, violates
-   this rule — see *Rule 4 was false from `253a7de`*.
+   are the only places the name appears **as a target**.
+   `.github/workflows/github-effects.yml` is a *caller* of the first script
+   (line 262) rather than a third writer: it sets no target of its own.
+
+   **Exactly two things violate this rule, and both are checkable.** One: a third
+   `FIDDLE_EFFECTS_REPO` assignment — `grep -rn FIDDLE_EFFECTS_REPO` outside
+   `docs/` must return those two lines and no other. Two: an occurrence of this
+   repository's name under `crates/` that is *neither* in a file under a `tests/`
+   directory, *nor* after its file's `#[cfg(test)]` line, *nor* on a comment
+   line — that is product code holding the name, which is what *"no product code
+   points at it"* forbids. See *Rule 4 was false from `253a7de`* for that check
+   run at this commit and what it found.
 5. **Nobody works in it.** If that ever stops being true, rule 2's scoping is
    what protects them — see *Cleanup and residue*.
 
@@ -159,6 +159,8 @@ defensible. Weakening it to something unfalsifiable — "it is written to only b
 scripts that mean well" — would be worse than the brief falsehood: the next
 writer would then be compliant by construction.
 
+## The credential
+
 A fine-grained personal access token, held in `FIDDLE_GITHUB_TOKEN` — the same
 environment variable name the `[github]` table names, so the lane and the product
 read the credential from one place. It expires 2026-11-07.
@@ -188,13 +190,43 @@ remediation text name this same list.
 
 On 2026-08-10, during `fiddle-w0xt`, a GraphQL `createIssue` against this
 repository **succeeded** under this credential and opened issue #25. Nothing in
-the list above grants it. `.env.example`, this table,
-`docs/evaluator-calibration-general.md`,
-[ADR 018](decisions/018-a-graphql-200-is-not-a-success.md) and
-`.github/workflows/github-effects.yml`'s remediation text (line 152) all describe
-the same five-permission grant, under which that mutation should have been
-refused. Five sources agreeing is not evidence when the wire disagrees with all
-five — it is a measure of how often one was copied.
+the list above grants it.
+
+Four places enumerate that same grant — Contents read and write, Pull requests
+read and write, Actions read and write, Metadata read, Secrets none — and under
+every one of them the mutation should have been refused:
+
+| Where | |
+| --- | --- |
+| `.env.example` | lines 19-26 |
+| `docs/evaluator-calibration-general.md` | line 809, which adds *"`Issues` is absent"* in as many words |
+| `.github/workflows/github-effects.yml` | its remediation text, lines 153-154 |
+| this table | above |
+
+The calibration is the pointed one: it does not merely omit `Issues`, it names the
+absence and builds a design decision on it — GitHub routes an issue comment
+through **Issues** and a pull request comment through **Pull requests**, so M2's
+conversation was deliberately put on a pull request *"so the credential would not
+have to be widened"*. A grant that permits `createIssue` is the thing that choice
+was made to avoid needing.
+
+Four sources agreeing is not evidence when the wire disagrees with all four; it is
+a measure of how often one was copied.
+
+**And a fifth place enumerates a different grant, which is worse than a fourth
+agreeing one.** `docs/technical/RUNBOOKS.md` § *Minting the GitHub token* — the
+procedure an operator actually follows to create this credential, scoped to this
+repository — prescribes *"these five, and no others"* and lists **`Workflows`
+read and write**, with no `Secrets` row at all. This table argues the opposite
+directly: `Workflows` is *"not something the lane ever does"*, and a credential
+holding it *"can rewrite the target's CI, which is the worst of both"*. So the
+document that mints the token and the document that describes it do not agree
+about what the token holds.
+
+That does **not** explain the issue: `Workflows` is not `Issues`, and no reading of
+it permits `createIssue`. It is recorded here because it is the same question —
+*what is actually granted?* — and because it means the count of documents to
+reconcile is five with two distinct answers, not four with one.
 
 Every issue-*modifying* operation was refused in the same session — 403 on REST
 `PATCH state=closed`, `FORBIDDEN` on both `closeIssue` and `deleteIssue`, as
@@ -596,9 +628,12 @@ residue anyone needs to act on. There were sixteen, all closed, when the target
 guard above was added.
 
 So "zero residue" means precisely: **no `fiddle/` branch, no open pull request,
-no `fiddle-` workflow run, no issue a lane opened, and `main` the only branch.**
+no `fiddle-` workflow run, no issue beyond #25, and `main` the only branch.**
 Not "no pull request has ever existed" — that is unachievable, and a lane that
-claimed it would be lying.
+claimed it would be lying. For the same reason it is "beyond #25" and not "no
+issue": #25 cannot be deleted either, so a definition demanding its absence would
+be one more unachievable claim, and the honest form names the one entry that is
+grandfathered rather than pretending the count is zero.
 
 ### An issue is residue, and it is worse than a branch
 
@@ -623,11 +658,15 @@ and cannot remove one:
 
 Every direction that would clear the object is refused, and only the direction
 that creates one is permitted. That makes an issue **worse than a branch, not
-better**. A `fiddle/` branch is residue the lane made and the lane removes; a
-closed pull request is residue the forge will not let anyone remove; an issue sits
-in the third and worst position — residue a *lane* can create that only an
-*operator* can clear, so it accumulates in a repository whose whole argument is
-that its residue is the lane's own problem rather than a person's.
+better** — and worse than a closed pull request too. A `fiddle/` branch is residue
+the lane made and the lane removes. A closed pull request is residue the forge lets
+nobody remove, but no credential was needed to reach that state. An issue is both
+at once: a *lane* can create one, only an *operator* can even **close** it, and
+**nobody can delete it** — `deleteIssue` is refused to this credential and GitHub
+offers no path that would leave the repository as though the issue had never
+existed. So it accumulates, with a person's attention required for each one, in a
+repository whose whole argument is that its residue is the lane's own problem
+rather than a person's. #25 is now permanent; see *After a run*.
 
 **So the rule is abstention, not cleanup: a lane must not create an issue at
 all.** Not "must clean up any issue it creates" — that is a promise this
@@ -635,8 +674,9 @@ credential provably cannot keep, and a cleanup step written against it would fai
 on every run or, worse, be written to tolerate its own 403 and report clean. The
 honest rule is the one that can actually be held: nothing here opens an issue, and
 `createIssue` is not in any lane's vocabulary. Cleanup therefore has no issue
-sweep, and its absence is deliberate rather than an omission — there is nothing
-for a sweep to do, because there is nothing to sweep.
+sweep, and its absence is deliberate rather than an omission — a sweep could not
+have removed #25 either, so adding one would buy nothing and would imply a
+capability the credential does not have.
 
 ### After a run
 
@@ -645,14 +685,28 @@ gh repo view peel/fiddle-effects-acceptance --json visibility           # PUBLIC
 gh api repos/peel/fiddle-effects-acceptance/branches --jq '.[].name'    # exactly: main
 gh pr list --repo peel/fiddle-effects-acceptance --state open           # empty
 gh api repos/peel/fiddle-effects-acceptance/actions/runs --jq '.total_count'  # 0
-gh issue list --repo peel/fiddle-effects-acceptance --state all         # nothing a lane opened
+gh issue list --repo peel/fiddle-effects-acceptance --state all         # exactly: #25, closed
 gh api repos/peel/fiddle-effects-acceptance/actions/secrets            # 403, as above
 ```
 
 The issue line is `--state all` rather than `--state open` on purpose: the rule
 being checked is that no lane ever opened one, and a closed issue is evidence that
 one did — closing it is what an operator had to do, which is precisely the residue
-the rule exists to prevent.
+the rule exists to prevent. So `--state open` would answer "empty" and prove
+nothing.
+
+**The one entry it lists is expected, and a second one is a violation.** #25 is the
+issue `fiddle-w0xt` opened on 2026-08-10 and an operator closed, described under
+*An issue is residue*. It cannot be removed — `deleteIssue` is refused — so it
+stays in this listing permanently, in the same way the closed pull requests above
+do, and it is this rule's one grandfathered entry rather than a passing state. Any
+issue numbered other than 25 means a lane created one after the rule said it must
+not, which is the thing being checked.
+
+Expecting "nothing" here would be the same mistake as a residue check that reports
+clean because it was told to look at the wrong thing. A check whose stated expected
+output is already false on the day it is written teaches its reader to stop reading
+the comment.
 
 The lane also creates one `mktemp -d` directory holding the whole disposable
 project — the configuration document, the fixture roots, the clone, the reports —
