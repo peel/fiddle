@@ -1,4 +1,4 @@
-//! The first run: produce a change, publish a draft, ask, and stop.
+//! The whole walk: produce a change, publish a draft, ask, stop — and come back.
 //!
 //! Everything here is offline, credential-free and always runs. The forge is the
 //! scripted `gh` in `tests/gh_stub/`, reached through the product's own
@@ -29,33 +29,60 @@
 //! first pass, and a shell that believed the model's `claimed_complete` could not
 //! make the second fail. Both scripts claim completion, which is the point — the
 //! claim is evidence beside the exit code, never instead of it.
+//!
+//! # Every continuation here runs in a process that could not have produced the change
+//!
+//! [`continue_in`] is the second half of this file, and it takes two things away
+//! before running: the `git` becomes one that cannot be executed, and the
+//! workspace root becomes a *file*, so no worktree can be created under it. Both
+//! are removed for **every** continuation case rather than only for the one whose
+//! criterion is about it, because that is the difference between a property and a
+//! sample: a continuation that grew a push or a second attempt fails loudly in all
+//! of them instead of quietly acquiring a second mutation channel. It is
+//! `support::unreachable_git`'s own reasoning, applied to a capability that has a
+//! path which legitimately pushes and a path which must not.
+//!
+//! # Where the two payload comparisons finally meet
+//!
+//! [`the_second_payload_comparison_catches_what_the_first_could_not_see`] is the
+//! only test in the workspace that runs both of them in one walk:
+//! [`resolve`] compares the marker's digest against the operation this run
+//! rebuilds, and [`Executor::execute_decided`] compares the *approval's* digest
+//! against the payload the proposal carries. Until a caller existed that did both,
+//! the bridge between them was asserted at the type level only — that
+//! [`ResolvedDecision::approved`] answers `None` for the three non-approvals — and
+//! the end-to-end claim was unproven. It widens the proposal after `resolve` has
+//! already passed, which is the one disagreement the first comparison structurally
+//! cannot see.
 
 mod fixture;
 mod support;
 
 use fiddle_core::{
-    effect_id, parse_marker, payload_hash, DeploymentRule, EffectKind, EvidenceRef, NextAction,
-    Observation, PROPOSE_CHANGE, PUBLISH_CHANGE,
+    effect_id, parse_marker, payload_hash, DecisionBinding, DeploymentRule, EffectKind,
+    EvidenceRef, NextAction, Observation, ProposedEffect, PROPOSE_CHANGE, PUBLISH_CHANGE,
 };
 use fiddle_runtime::agent::AgentBudget;
 use fiddle_runtime::capability::{
     attempt_worktree, Capability, CapabilityError, ExecutionGrant, ProposeChange, ProposeConfig,
 };
 use fiddle_runtime::effect::{
-    EffectContext, EffectTrace, ExecutionStep, Executor, IntegrationOperation, ReadRetry,
-    Recurrence,
+    EffectContext, EffectError, EffectOutcome, EffectTrace, ExecutionStep, Executor,
+    IntegrationOperation, ReadRetry, Recurrence, ResolvedDecision,
 };
 use fiddle_runtime::git::GitCli;
 use fiddle_runtime::github::{branch_name, pull_request_ready_target, EnsurePullRequestReady};
+use fiddle_runtime::human::interpret::InterpretationBounds;
+use fiddle_runtime::human::validate::{resolve, DecisionStep, DecisionTrace, DecisionWalk};
 use fiddle_runtime::human::InteractionRef;
 use fiddle_runtime::workspace::WorkspaceCommand;
 use fiddle_runtime::GhCli;
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
-use support::{Deployment, INVOCATION_REF, PROJECT};
+use support::{unreachable_git, Deployment, INVOCATION_REF, PROJECT};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
@@ -85,6 +112,54 @@ const PR: u64 = 7;
 /// that compiles a crate with no dependencies.
 const PATIENT: Duration = Duration::from_secs(180);
 
+/// The immutable numeric id this deployment nominated as able to decide.
+///
+/// An id and not a login, which is the allowlist's whole design: a login can be
+/// changed and the vacated name reclaimed, and a numeric id cannot.
+const APPROVER: u64 = 505_401;
+
+/// A numeric id nobody nominated. Whatever this account writes, it is not an
+/// answer this run may act on.
+const STRANGER: u64 = 999_999;
+
+/// fiddle's own question, as [`ProposeChange`] composes it.
+///
+/// Written down so that the interpretation's prompt and the marker's comment can
+/// be asserted against one string — and checked against the question the world
+/// really received in [`suspended`], so it cannot drift from the capability's.
+const QUESTION: &str = "May fiddle mark pull request acme/r#7 ready for review?";
+
+/// The reply of somebody who agrees, and the evidence span every approving
+/// document below quotes out of it.
+const YES: &str = "yes, go ahead";
+
+/// What the interpreting model answers for each of the four verdicts.
+///
+/// Each `evidence` span is a substring of the reply it accompanies, because
+/// `interpret` refuses a document that cannot quote the comment it read — so
+/// these pairs are the fixture's way of saying *the model read this reply*, and a
+/// mismatched pair would land on `Unclear` rather than on the verdict the case is
+/// about.
+const APPROVES: &str = r#"{"decision":"approve","redirect":null,"evidence":"go ahead"}"#;
+const REJECTS: &str = r#"{"decision":"reject","redirect":null,"evidence":"drop it"}"#;
+const REDIRECTS: &str = r#"{"decision":"redirect","redirect":"use a bounded loop instead","evidence":"do it differently"}"#;
+const UNCLEAR: &str = r#"{"decision":"unclear","redirect":null,"evidence":"what does this do"}"#;
+
+/// The bounds one interpretation runs inside. Generous, because no case here is
+/// about a bound; `interpretation.rs` owns those.
+fn patient_interpretation() -> InterpretationBounds {
+    InterpretationBounds {
+        max_reply_bytes: 4_096,
+        max_tokens: 256,
+        deadline: Duration::from_secs(30),
+    }
+}
+
+/// The answer a successful `markPullRequestReadyForReview` comes back with.
+fn readied() -> Value {
+    json!({"data": {"markPullRequestReadyForReview": {"pullRequest": {"isDraft": false}}}})
+}
+
 // ---------------------------------------------------------------------------
 // The world one proposal runs against
 // ---------------------------------------------------------------------------
@@ -99,11 +174,27 @@ struct World {
     remote: PathBuf,
     fixture: PathBuf,
     steps: Mutex<Vec<(EffectKind, &'static str)>>,
+    /// The validation order, as the walk announced it.
+    ///
+    /// A second list rather than a widening of the first, because the two traits
+    /// are separate for a reason `validate::DecisionTrace` states: the
+    /// authorization order repeats once per effect and carries an
+    /// [`EffectKind`], while the decision order runs once for the single effect a
+    /// question gates. Keeping them apart is also what makes
+    /// [`the_capability_delegates_the_whole_validation_order`] an assertion about
+    /// the shared walk rather than about this capability's own control flow.
+    decisions: Mutex<Vec<&'static str>>,
 }
 
 impl EffectTrace for World {
     fn step(&self, kind: EffectKind, step: ExecutionStep) {
         self.steps.lock().unwrap().push((kind, step.as_str()));
+    }
+}
+
+impl DecisionTrace for World {
+    fn step(&self, step: DecisionStep) {
+        self.decisions.lock().unwrap().push(step.as_str());
     }
 }
 
@@ -141,6 +232,7 @@ impl World {
             remote,
             fixture,
             steps: Mutex::new(Vec::new()),
+            decisions: Mutex::new(Vec::new()),
         }
     }
 
@@ -162,6 +254,31 @@ impl World {
     }
 
     fn ctx_publishing_from(&self, work: PathBuf) -> EffectContext {
+        self.ctx_with(
+            work,
+            GitCli::new(
+                PathBuf::from("git"),
+                // Never used: a path remote authenticates nobody, which is what
+                // keeps this lane credential-free while still running the exact
+                // environment the product builds.
+                "ghp_never_used_by_a_path_remote".to_string(),
+                "FIDDLE_GITHUB_TOKEN",
+                PATIENT,
+            ),
+        )
+    }
+
+    /// The context a continuation runs against: the same scripted forge, and a
+    /// `git` that cannot be executed at all.
+    ///
+    /// See this module's documentation. The approve, reject, redirect and unclear
+    /// paths propose no operation that reads [`EffectContext::work`], so a `git`
+    /// nothing can run is not a limitation of these cases — it is the assertion.
+    fn ctx_without_git(&self) -> EffectContext {
+        self.ctx_with(self.work(), unreachable_git())
+    }
+
+    fn ctx_with(&self, work: PathBuf, git: GitCli) -> EffectContext {
         EffectContext::new(
             GhCli::new(
                 PathBuf::from(env!("CARGO_BIN_EXE_gh_stub")),
@@ -176,15 +293,7 @@ impl World {
                 self.dir.path().join("config"),
                 PATIENT,
             ),
-            GitCli::new(
-                PathBuf::from("git"),
-                // Never used: a path remote authenticates nobody, which is what
-                // keeps this lane credential-free while still running the exact
-                // environment the product builds.
-                "ghp_never_used_by_a_path_remote".to_string(),
-                "FIDDLE_GITHUB_TOKEN",
-                PATIENT,
-            ),
+            git,
             work,
             CancellationToken::new(),
         )
@@ -334,6 +443,115 @@ impl World {
         .unwrap();
     }
 
+    /// Put the replies somebody wrote after fiddle's question on the
+    /// conversation, and make every comment on it answerable by its own id.
+    ///
+    /// Two things are being arranged, and both are the fixture's rather than the
+    /// code's:
+    ///
+    /// - **The listing.** The scripted `gh` merges the comments this world's own
+    ///   `POST`s created onto the *last* page, so the replies are written to page
+    ///   one and fiddle's question arrives after them. That order is deliberately
+    ///   the wrong way round: `validate::select_candidates` decides what is a
+    ///   reply by comparing ids, and a fixture that also happened to be sorted
+    ///   would make "after the question" and "later in the vector"
+    ///   indistinguishable.
+    /// - **The re-read.** The by-id route has no merge and panics on a comment
+    ///   nothing scripted, so a continuation has to script one for fiddle's own
+    ///   question too. It is built from the body the world *really received*,
+    ///   read back out of the recorded `POST`, so a re-read cannot agree with a
+    ///   marker the capability never published.
+    ///
+    /// Ids are assigned above `request_comment`'s and derived from it, so this
+    /// cannot drift from whatever numbering the fixture chose.
+    fn answered_by(&self, request_comment: u64, replies: &[(u64, &str)]) -> Vec<u64> {
+        let ids: Vec<u64> = (1..=replies.len() as u64)
+            .map(|offset| request_comment + offset)
+            .collect();
+        let listed: Vec<Value> = ids
+            .iter()
+            .zip(replies)
+            .map(|(id, (author, body))| comment(*id, *author, body))
+            .collect();
+        let page = self.dir.path().join("issue-comments/page-1.json");
+        std::fs::write(&page, Value::Array(listed.clone()).to_string()).unwrap();
+
+        for reply in &listed {
+            self.by_id(reply);
+        }
+        // Timestamps equal, because fiddle has no path that edits its own
+        // question and `validate` refuses one whose two stamps differ. The author
+        // is the bot the stub lists it under, so the walk declines it as a
+        // candidate for its own answer.
+        let question = self
+            .posted_comments()
+            .first()
+            .expect("a suspended world has posted its question")
+            .clone();
+        self.by_id(&json!({
+            "id": request_comment,
+            "body": question,
+            "created_at": POSTED_AT,
+            "updated_at": POSTED_AT,
+            "author_association": "OWNER",
+            "user": {"login": "fiddle[bot]", "id": 1_000_001, "type": "Bot"},
+            "performed_via_github_app": Value::Null,
+        }));
+        ids
+    }
+
+    /// What the by-id route answers for one comment.
+    fn by_id(&self, comment: &Value) {
+        let dir = self.dir.path().join("issue-comments/by-id");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{}.json", comment["id"].as_u64().unwrap())),
+            comment.to_string(),
+        )
+        .unwrap();
+    }
+
+    /// Script the answer to GraphQL call `n`, status and body separately.
+    ///
+    /// Separate arguments because for GraphQL they are separate facts: a refusal
+    /// arrives as **200** carrying an `errors[]`. `ready_effect.rs`'s fixture and
+    /// its reasoning.
+    fn script_graphql(&self, n: usize, status: u16, body: Value) {
+        let dir = self.dir.path().join("graphql");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{n}.json")),
+            json!({"status": status, "body": body}).to_string(),
+        )
+        .unwrap();
+    }
+
+    /// How many GraphQL calls this world was asked to answer.
+    ///
+    /// The mutation has exactly one spelling in this build, so this is the count
+    /// of ready transitions *attempted* — which is what "an approval buys one
+    /// mutation and a repeat buys none" is stated in.
+    fn graphql_calls(&self) -> usize {
+        std::fs::read_to_string(self.dir.path().join("graphql_calls"))
+            .ok()
+            .and_then(|count| count.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// Take the workspace away, so that no attempt could run here even if
+    /// something tried.
+    ///
+    /// A *file* where the root directory was, rather than a missing directory:
+    /// `Workspace::create` would create a missing one. The derived worktree path
+    /// is unchanged, so the capability's own published-from check still agrees —
+    /// which is the point. A continuation is a fresh process that never held a
+    /// checkout, and this is the nearest a test can get to one.
+    fn with_no_workspace_available(&self) {
+        let root = self.workspace_root();
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::write(&root, b"not a directory").unwrap();
+    }
+
     /// Which effects the executor entered `apply` for, in order.
     ///
     /// The mutation, and never the proposal: this is the list "the walk performed
@@ -365,6 +583,45 @@ impl World {
     fn steps(&self) -> Vec<(EffectKind, &'static str)> {
         self.steps.lock().unwrap().clone()
     }
+
+    /// Which steps of the validation order were announced, in order.
+    fn decision_steps(&self) -> Vec<&'static str> {
+        self.decisions.lock().unwrap().clone()
+    }
+
+    /// The comments whose marker names one request.
+    ///
+    /// Counted over the bodies the world was really asked to post, so "the run did
+    /// not ask a second time" is a claim about the conversation rather than about
+    /// an internal flag.
+    fn comments_naming(&self, request: &fiddle_core::DecisionRequestId) -> Vec<String> {
+        self.posted_comments()
+            .into_iter()
+            .filter(|body| parse_marker(body).is_ok_and(|binding| &binding.request == request))
+            .collect()
+    }
+}
+
+/// The timestamp the scripted `gh` lists a comment this run posted under, in both
+/// of its fields — which is what says nobody has edited it.
+///
+/// Duplicated from `gh_stub`'s own constant rather than shared, because the stub
+/// is a binary and its constants are private to it. It is load-bearing in one
+/// direction only: a value that disagreed would make the request comment's
+/// re-read report an edit, which is a loud failure and not a silent pass.
+const POSTED_AT: &str = "2026-08-11T00:00:00Z";
+
+/// One comment somebody wrote, as the listing returns it.
+fn comment(id: u64, author: u64, body: &str) -> Value {
+    json!({
+        "id": id,
+        "body": body,
+        "created_at": POSTED_AT,
+        "updated_at": POSTED_AT,
+        "author_association": "COLLABORATOR",
+        "user": {"login": format!("user-{author}"), "id": author, "type": "User"},
+        "performed_via_github_app": Value::Null,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -391,6 +648,8 @@ fn config(world: &World, check: WorkspaceCommand) -> ProposeConfig {
             max_changed_files: 16,
             tool_timeout: PATIENT,
         },
+        deciders: vec![APPROVER],
+        interpretation: patient_interpretation(),
         cancel: CancellationToken::new(),
     }
 }
@@ -482,14 +741,27 @@ async fn run(
     Vec<EvidenceRef>,
     Option<fiddle_core::Publication>,
 ) {
-    run_with(world, script, check, PROPOSE_CHANGE, None).await
+    run_with(
+        world,
+        MockCompletionModel::new(script),
+        check,
+        PROPOSE_CHANGE,
+        None,
+    )
+    .await
 }
 
 /// The same, with the executor's binding and the published-from tree open to a
 /// test that is about one of them.
+///
+/// The model arrives already built rather than as a script, because a case about
+/// the continuation has to be able to read what was asked of it afterwards —
+/// `MockCompletionModel` is cloned into the walk and the clone shares its record,
+/// which is how "an unauthorized reply reaches no model" is asserted against the
+/// requests that were made rather than against a log.
 async fn run_with(
     world: &World,
-    script: Vec<MockTurn>,
+    model: MockCompletionModel,
     check: WorkspaceCommand,
     bound_to: fiddle_core::CapabilityId,
     publishing_from: Option<PathBuf>,
@@ -502,27 +774,115 @@ async fn run_with(
         Some(work) => world.ctx_publishing_from(work),
         None => world.ctx(),
     };
+    execute_against(world, &ctx, model, check, bound_to).await
+}
+
+/// A continuation: the same capability, over the world a suspended run left, in a
+/// process that holds neither a workspace nor a usable `git`.
+///
+/// See this module's documentation for why both are taken away from every case
+/// here rather than from one.
+async fn continue_in(
+    world: &World,
+    model: MockCompletionModel,
+) -> (
+    Result<EvidenceRef, CapabilityError>,
+    Vec<EvidenceRef>,
+    Option<fiddle_core::Publication>,
+) {
+    world.with_no_workspace_available();
+    let ctx = world.ctx_without_git();
+    execute_against(world, &ctx, model, the_projects_own_check(), PROPOSE_CHANGE).await
+}
+
+async fn execute_against(
+    world: &World,
+    ctx: &EffectContext,
+    model: MockCompletionModel,
+    check: WorkspaceCommand,
+    bound_to: fiddle_core::CapabilityId,
+) -> (
+    Result<EvidenceRef, CapabilityError>,
+    Vec<EvidenceRef>,
+    Option<fiddle_core::Publication>,
+) {
     let deployment = Deployment(DeploymentRule::Allow);
     let executor = Executor::new(
         bound_to,
         PROJECT.to_string(),
         INVOCATION_REF.to_string(),
         &deployment,
-        &ctx,
+        ctx,
         world,
         ReadRetry::none(),
     );
-    let capability = ProposeChange::new(
-        executor,
-        &ctx,
-        MockCompletionModel::new(script),
-        config(world, check),
-    );
+    let capability = ProposeChange::new(executor, ctx, world, model, config(world, check));
 
     let outcome = capability
         .execute(grant_for(PROPOSE_CHANGE), WORK_ID, INVOCATION_REF)
         .await;
     (outcome, capability.receipts(), capability.publication())
+}
+
+/// What a first run left behind, for the continuation that reads it.
+struct Suspension {
+    /// The comment fiddle's question really landed on, taken off the interaction
+    /// the run named rather than assumed from the fixture's numbering.
+    comment: u64,
+    /// The revision the question was asked about.
+    head_sha: String,
+}
+
+/// Run once, so that the world holds a published change and an unanswered
+/// question.
+///
+/// The whole first half of the walk really runs — the attempt, the push, the
+/// draft, the comment — so every continuation below reads a question fiddle
+/// actually asked, at a revision it actually published. A hand-seeded marker
+/// would be a test of the fixture's arithmetic.
+async fn suspended(world: &World) -> Suspension {
+    let (outcome, _, _) = run(world, repairs(), the_projects_own_check()).await;
+    let (request, comment, question) = match outcome {
+        Err(CapabilityError::AwaitingDecision {
+            request,
+            interaction: InteractionRef::GitHubPullRequestComment { comment, .. },
+            question,
+        }) => (request, comment, question),
+        other => panic!("a first run suspends, got {other:?}"),
+    };
+    let head_sha = world.published_sha();
+    assert_eq!(
+        request,
+        identity_at(&head_sha).0,
+        "the question is the one a fresh process derives"
+    );
+    assert_eq!(
+        question, QUESTION,
+        "and it is the text this file asserts on"
+    );
+    // The world the second process reads: the pull request answerable by number,
+    // as a real forge would answer it.
+    world.pull_request_at(PR, &head_sha, true);
+    Suspension { comment, head_sha }
+}
+
+/// The walk a continuation performs, rebuilt here from canonical inputs.
+///
+/// Used by the bridge case, which drives `resolve` and the executor directly
+/// rather than through the capability — so it needs the same inputs the
+/// capability derives, derived the same way.
+fn walk_at<'a>(target: &'a str, payload: &'a str, allowlist: &'a [u64]) -> DecisionWalk<'a> {
+    DecisionWalk {
+        repo: REPO,
+        pr: PR,
+        max_pages: 10,
+        project: PROJECT,
+        invocation_ref: INVOCATION_REF,
+        kind: EffectKind::EnsurePullRequestReady,
+        target,
+        payload,
+        allowlist,
+    }
 }
 
 /// The request id, the gated effect id and the payload digest a *fresh* process
@@ -588,6 +948,7 @@ async fn the_fourth_capability_is_registered_and_names_its_own_stage() {
     let capability = ProposeChange::new(
         executor,
         &ctx,
+        &world,
         MockCompletionModel::new(repairs()),
         config(&world, the_projects_own_check()),
     );
@@ -792,7 +1153,7 @@ async fn the_capability_cannot_propose_under_another_capabilitys_name() {
     let world = World::fresh();
     let (outcome, _, _) = run_with(
         &world,
-        repairs(),
+        MockCompletionModel::new(repairs()),
         the_projects_own_check(),
         PUBLISH_CHANGE,
         None,
@@ -828,7 +1189,7 @@ async fn a_context_publishing_from_another_tree_is_refused_before_anything_runs(
     let elsewhere = world.dir.path().join("somewhere-else");
     let (outcome, _, _) = run_with(
         &world,
-        repairs(),
+        MockCompletionModel::new(repairs()),
         the_projects_own_check(),
         PROPOSE_CHANGE,
         Some(elsewhere.clone()),
@@ -1033,19 +1394,25 @@ async fn the_suspended_run_waits_on_the_question_the_comment_carries() {
 /// recognise its own work from is the world. It is given a model that would write
 /// something *different*, which is what makes "it did not attempt again" an
 /// assertion about the published tree rather than about an internal counter.
+///
+/// The conversation is given **no replies at all**, which is the case that
+/// distinguishes *nobody has answered* from *somebody has*: the walk reads six of
+/// its eight steps, finds no candidate reply, and the run goes on waiting without
+/// a model call. The by-id route has to be scripted for fiddle's own question even
+/// so, because the walk re-reads what it is about to rely on — and that re-read is
+/// the reason this case reaches further than it did before the continuation
+/// existed.
 #[tokio::test]
 async fn a_second_process_finds_its_own_question_and_does_not_ask_twice() {
     let world = World::fresh();
-    let first = run(&world, repairs(), the_projects_own_check()).await;
-    assert!(first.0.is_err());
-    let published = world.published_sha();
-    // The world the second process reads is the world the first one left, and the
-    // by-number read is arranged through the stub's own seed rather than by the
-    // code under test.
-    world.pull_request_at(PR, &published, true);
+    let suspension = suspended(&world).await;
+    let published = suspension.head_sha.clone();
+    world.answered_by(suspension.comment, &[]);
 
     // A second capability value, with empty receipts and no worktree, over the
-    // same forge — which is all a fresh process has.
+    // same forge — which is all a fresh process has. Its `git` and its workspace
+    // are the working ones, deliberately: "the attempt did not run again" is a
+    // claim about a run that *could* have run one.
     let (outcome, receipts, _) = run(&world, repairs_differently(), the_projects_own_check()).await;
 
     let error = outcome.expect_err("the question stands, so the run is still waiting");
@@ -1055,6 +1422,18 @@ async fn a_second_process_finds_its_own_question_and_does_not_ask_twice() {
         }
         other => panic!("a run whose question is unanswered waits, got {other:?}"),
     }
+    assert_eq!(
+        world.decision_steps(),
+        [
+            DecisionStep::RecomputeIdentity.as_str(),
+            DecisionStep::FindRequest.as_str(),
+            DecisionStep::ParseBinding.as_str(),
+            DecisionStep::SelectCandidates.as_str(),
+            DecisionStep::ReReadCandidates.as_str(),
+            DecisionStep::ReObserveState.as_str(),
+        ],
+        "an unanswered question announces six steps and stops"
+    );
     assert_eq!(
         world.posted_comments().len(),
         1,
@@ -1175,4 +1554,562 @@ async fn a_published_change_nobody_has_been_asked_about_is_resumed_by_asking() {
             .head_sha,
         published
     );
+}
+
+// ---------------------------------------------------------------------------
+// The continuation: resolve the answer, and act only on an approval
+// ---------------------------------------------------------------------------
+
+/// One continuation over the world a first run left, answered by one person.
+struct Answered {
+    outcome: Result<EvidenceRef, CapabilityError>,
+    receipts: Vec<EvidenceRef>,
+    /// The model the walk was given, so what was asked of it can be read back.
+    model: MockCompletionModel,
+    /// The question this run is about, as a fresh process derives it.
+    request: fiddle_core::DecisionRequestId,
+    /// The revision it was asked about.
+    head_sha: String,
+    /// How many comments this world had been asked to post *before* the
+    /// continuation ran — the baseline "and it posted nothing further" is stated
+    /// against.
+    posted_before: usize,
+}
+
+/// Suspend a run, have `author` answer it with `reply`, and read that reply as
+/// `document`.
+///
+/// The GraphQL answer is scripted on every path, including the three where no
+/// mutation may happen: a fixture that could only answer a mutation it expected
+/// would make "nothing was dispatched" indistinguishable from "the fixture had no
+/// answer for it".
+async fn answered(world: &World, author: u64, reply: &str, document: &str) -> Answered {
+    let suspension = suspended(world).await;
+    world.answered_by(suspension.comment, &[(author, reply)]);
+    world.script_graphql(0, 200, readied());
+
+    let posted_before = world.posted_comments().len();
+    let model = MockCompletionModel::new([MockTurn::text(document)]);
+    let (outcome, receipts, _) = continue_in(world, model.clone()).await;
+    Answered {
+        outcome,
+        receipts,
+        model,
+        request: identity_at(&suspension.head_sha).0,
+        head_sha: suspension.head_sha,
+        posted_before,
+    }
+}
+
+/// **Approve is the only decision that mutates.**
+///
+/// The four verdicts against one property, over four worlds rather than one,
+/// because a world in which the transition has happened cannot be asked the
+/// question again — which is itself the subject of
+/// [`a_second_invocation_after_an_approval_completes_without_a_second_mutation`].
+///
+/// The mutation has exactly one spelling in this build, so the assertion is made
+/// twice from two doors: the `apply` the executor announced, and the count of
+/// GraphQL calls the forge was asked for. A capability that performed the
+/// transition some other way would still be visible in the second.
+#[tokio::test]
+async fn only_an_approval_marks_the_pull_request_ready() {
+    for (reply, document, should_mutate) in [
+        (YES, APPROVES, true),
+        ("no, drop it", REJECTS, false),
+        ("do it differently", REDIRECTS, false),
+        ("what does this do?", UNCLEAR, false),
+    ] {
+        let world = World::fresh();
+        let answered = answered(&world, APPROVER, reply, document).await;
+
+        assert_eq!(
+            world
+                .effects_performed()
+                .contains(&EffectKind::EnsurePullRequestReady),
+            should_mutate,
+            "{reply:?} performed {:?}",
+            world.effects_performed()
+        );
+        assert_eq!(
+            world.graphql_calls(),
+            usize::from(should_mutate),
+            "{reply:?} asked the forge for {} GraphQL calls",
+            world.graphql_calls()
+        );
+        assert_eq!(
+            answered.outcome.is_ok(),
+            should_mutate,
+            "{reply:?} produced {:?}",
+            answered.outcome
+        );
+        // Every one of them read the reply, which is what makes the differences
+        // above differences of verdict rather than of whether anybody looked.
+        assert_eq!(answered.model.requests().len(), 1, "{reply:?}");
+    }
+}
+
+/// The transition goes through the executor's **decided** entry point, and that is
+/// observable rather than inferred.
+///
+/// `ExecutionStep::ResolveDecision` is announced in exactly one place — inside the
+/// arm of step 4 that has a [`ResolvedDecision`] in hand — so a capability that
+/// had called [`Executor::execute`] instead would have been refused with
+/// `HumanDecisionRequired` and this step would never appear. It is the difference
+/// between *this milestone has a decided path* and *this milestone has a decided
+/// path something walks*, which is the criticism M2's `RequireHumanDecision` drew.
+///
+/// The whole four-effect order is asserted, across the two processes: three
+/// automatic effects from the run that asked, and the one `Human` effect from the
+/// run that read the answer.
+#[tokio::test]
+async fn the_transition_is_performed_through_the_decided_entry_point() {
+    let world = World::fresh();
+    let answered = answered(&world, APPROVER, YES, APPROVES).await;
+
+    let evidence = answered
+        .outcome
+        .expect("an approved transition earns evidence");
+    assert!(
+        evidence.0.starts_with("effect:ensure_pull_request_ready:"),
+        "the run's evidence is the transition it performed: {evidence:?}"
+    );
+    assert!(
+        evidence.0.contains(":committed:"),
+        "and the postcondition was read back: {evidence:?}"
+    );
+
+    assert!(
+        world.steps().contains(&(
+            EffectKind::EnsurePullRequestReady,
+            ExecutionStep::ResolveDecision.as_str()
+        )),
+        "the gated effect was authorized by a decision, which only \
+         `execute_decided` can announce: {:?}",
+        world.steps()
+    );
+    assert_eq!(
+        world.effects_performed(),
+        [
+            EffectKind::EnsureBranchPublished,
+            EffectKind::EnsurePullRequest,
+            EffectKind::PublishDecisionRequest,
+            EffectKind::EnsurePullRequestReady,
+        ],
+        "{:?}",
+        world.steps()
+    );
+    // And the receipt reached the bundle beside the first run's, rather than only
+    // the return value.
+    let kinds: Vec<&str> = answered
+        .receipts
+        .iter()
+        .filter(|entry| entry.0.starts_with("effect:"))
+        .map(|entry| entry.0.split(':').nth(1).unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["ensure_pull_request_ready"],
+        "a continuation's receipts are its own: {:?}",
+        answered.receipts
+    );
+}
+
+/// A rejection is a conclusion, not a wait and not a failure to retry.
+///
+/// Exit 20, which is what `Recurrence::Permanent` means: repeating the invocation
+/// re-derives the same verdict, because the same person's same comment is still
+/// the last authorized reply. Inviting a retry (11) would ask again; suspending
+/// (10) would leave a run waiting for an answer it has already been given.
+#[tokio::test]
+async fn a_rejection_concludes_the_run_rather_than_suspending_it_again() {
+    let world = World::fresh();
+    let answered = answered(&world, APPROVER, "no, drop it", REJECTS).await;
+
+    let error = answered.outcome.expect_err("a refusal earns nothing");
+    match &error {
+        CapabilityError::DecisionRejected { request, reason } => {
+            assert_eq!(*request, answered.request, "the question that was refused");
+            assert!(
+                reason.as_str().contains("drop it"),
+                "the reason is the person's own words: {reason}"
+            );
+        }
+        other => panic!("a refusal is reported as one, got {other:?}"),
+    }
+    assert_eq!(error.recurrence(), Recurrence::Permanent);
+    assert!(
+        !matches!(error, CapabilityError::AwaitingDecision { .. }),
+        "a run that has its answer is not waiting for one"
+    );
+    assert_eq!(
+        world.posted_comments().len(),
+        answered.posted_before,
+        "and nothing further was said out there"
+    );
+    assert_eq!(world.graphql_calls(), 0);
+}
+
+/// An unclear reply waits on the *same* request and posts nothing at all.
+///
+/// Publishing a follow-up comment is deliberately not done, and the reason is a
+/// property rather than a preference: the effect has not moved, so the request
+/// identity has not moved, so `PublishDecisionRequest::inspect` finds the existing
+/// marker and correctly suppresses a second post. Making a follow-up possible
+/// would mean a second identity for the same question — an effect kind M3 does not
+/// have — and inventing one to send a courtesy message is not worth a new external
+/// mutation. Recorded in the design's §8 as a known gap.
+///
+/// Both halves are asserted, because they are different claims: that exactly one
+/// comment names this question, and that **this run posted nothing** — the first
+/// would also hold of a run that posted a second comment naming a *different*
+/// question.
+#[tokio::test]
+async fn an_unclear_reply_waits_on_the_same_request_and_posts_nothing_further() {
+    let world = World::fresh();
+    let answered = answered(&world, APPROVER, "what does this do?", UNCLEAR).await;
+
+    let error = answered
+        .outcome
+        .expect_err("an unread answer is not evidence");
+    match &error {
+        CapabilityError::AwaitingDecision { request, .. } => {
+            assert_eq!(
+                *request, answered.request,
+                "the same question, not a new one"
+            );
+        }
+        other => panic!("an unclear reply leaves the run waiting, got {other:?}"),
+    }
+    assert_eq!(error.recurrence(), Recurrence::Awaiting);
+    assert!(
+        error.to_string().contains("could not be read as"),
+        "the diagnostic says why the run is still waiting: {error}"
+    );
+    assert_eq!(
+        world.comments_naming(&answered.request).len(),
+        1,
+        "no second question"
+    );
+    assert_eq!(
+        world.posted_comments().len(),
+        answered.posted_before,
+        "an unclear reply posts nothing at all"
+    );
+    assert_eq!(world.graphql_calls(), 0);
+}
+
+/// A redirect changes nothing out there, and says what it was told.
+///
+/// Attempting the change again is Task 15's; until then the honest outcome is that
+/// the run is waiting, with the instruction in the diagnostic so an operator can
+/// see what was asked for rather than only that something was.
+#[tokio::test]
+async fn a_redirect_waits_and_names_the_instruction_it_received() {
+    let world = World::fresh();
+    let answered = answered(&world, APPROVER, "do it differently", REDIRECTS).await;
+
+    let error = answered.outcome.expect_err("a redirect earns nothing yet");
+    assert!(
+        matches!(error, CapabilityError::AwaitingDecision { .. }),
+        "got {error:?}"
+    );
+    assert_eq!(error.recurrence(), Recurrence::Awaiting);
+    assert!(
+        error.to_string().contains("use a bounded loop instead"),
+        "the instruction is named: {error}"
+    );
+    assert_eq!(
+        world.posted_comments().len(),
+        answered.posted_before,
+        "a redirect mutates nothing, including the conversation"
+    );
+    assert_eq!(world.graphql_calls(), 0);
+}
+
+/// **A continuation needs no worktree, and this one could not have had one.**
+///
+/// The approve path publishes nothing through git, so a process that cannot create
+/// a workspace at all still completes it — which is the property that makes the
+/// deleted-workspace lane in Task 13 possible.
+///
+/// Three witnesses rather than a count, because `Workspace` reaches the ambient
+/// `git` through `Command::new("git")` and there is no program seam to record on:
+///
+/// - the workspace root is a **file**, so `Workspace::create` could not have
+///   produced a worktree under it, and this run reports success anyway;
+/// - the `git` the adapter would push with is `/nonexistent/git`, so any push
+///   would have failed loudly rather than silently succeeding;
+/// - the remote still holds exactly the branch and the commit the *first* run
+///   published, so nothing was pushed to it a second time.
+#[tokio::test]
+async fn the_approve_path_invokes_git_not_at_all() {
+    let world = World::fresh();
+    let answered = answered(&world, APPROVER, YES, APPROVES).await;
+
+    answered
+        .outcome
+        .expect("a continuation with no workspace still completes");
+    assert!(
+        !world.workspace_root().is_dir(),
+        "no worktree could be created under a file, and none was needed"
+    );
+    assert_eq!(world.branches(), [world.branch()]);
+    assert_eq!(
+        world.published_sha(),
+        answered.head_sha,
+        "the remote is where the first run left it"
+    );
+    assert!(
+        answered
+            .receipts
+            .contains(&EvidenceRef("tools:0".to_string())),
+        "a continuation calls no tool, because it runs no attempt: {:?}",
+        answered.receipts
+    );
+    assert_eq!(world.graphql_calls(), 1, "one approval, one mutation");
+}
+
+/// The validation order is the shell's, and the capability neither re-implements
+/// nor partially bypasses it.
+///
+/// An unauthorized reply reaches no model *here* either — not because this
+/// capability checks an allowlist, but because `validate::resolve` owns that check
+/// and the capability calls it. The evidence is the order the walk announced: six
+/// deterministic steps and no `interpret`, from the trace the shared walk writes
+/// to rather than from anything this capability could have written itself.
+#[tokio::test]
+async fn the_capability_delegates_the_whole_validation_order() {
+    let world = World::fresh();
+    let answered = answered(&world, STRANGER, "approve", APPROVES).await;
+
+    let error = answered
+        .outcome
+        .expect_err("nobody who may decide has decided");
+    match &error {
+        CapabilityError::AwaitingDecision { request, .. } => {
+            assert_eq!(*request, answered.request);
+        }
+        other => panic!("an unauthorized reply leaves the run waiting, got {other:?}"),
+    }
+    assert_eq!(
+        answered.model.requests().len(),
+        0,
+        "a reply nobody authorized must not cost a model call"
+    );
+    assert_eq!(
+        world.decision_steps(),
+        [
+            DecisionStep::RecomputeIdentity.as_str(),
+            DecisionStep::FindRequest.as_str(),
+            DecisionStep::ParseBinding.as_str(),
+            DecisionStep::SelectCandidates.as_str(),
+            DecisionStep::ReReadCandidates.as_str(),
+            DecisionStep::ReObserveState.as_str(),
+        ],
+        "the whole deterministic order ran, and stopped where there was nothing \
+         to interpret"
+    );
+    assert!(
+        !world
+            .effects_performed()
+            .contains(&EffectKind::EnsurePullRequestReady),
+        "{:?}",
+        world.effects_performed()
+    );
+    assert_eq!(world.graphql_calls(), 0);
+}
+
+/// **The two payload comparisons, in one walk, with only the second able to see
+/// the disagreement.**
+///
+/// `resolve` compares the marker's digest against the payload *this run rebuilds*;
+/// `execute_decided` compares the **approval's** digest against the payload the
+/// proposal carries. Between the two there is a gap nothing else covers: a
+/// proposal widened after the walk passed. The identity cannot catch it, because
+/// the identity is derived over the target and deliberately never over the
+/// payload — so the widened request arrives looking like the same work.
+///
+/// The positive control runs second and against the same world, which is what
+/// makes the refusal attributable to the widening rather than to anything else
+/// about this fixture: the same decision, the same operation and the same forge
+/// commit when the payload is the one the person was shown.
+#[tokio::test]
+async fn the_second_payload_comparison_catches_what_the_first_could_not_see() {
+    let world = World::fresh();
+    let suspension = suspended(&world).await;
+    world.answered_by(suspension.comment, &[(APPROVER, YES)]);
+    world.script_graphql(0, 200, readied());
+
+    // Step 8's comparison: the walk rebuilds the operation and agrees with the
+    // marker, so it resolves an approval.
+    let ctx = world.ctx_without_git();
+    let ready = EnsurePullRequestReady::new(REPO.to_string(), PR, suspension.head_sha.clone());
+    let target = ready.target();
+    let payload = ready.payload();
+    let resolution = resolve(
+        &ctx,
+        &walk_at(&target, &payload, &[APPROVER]),
+        QUESTION,
+        MockCompletionModel::new([MockTurn::text(APPROVES)]),
+        &patient_interpretation(),
+        &world,
+    )
+    .await
+    .expect("the walk resolves");
+    let answer = resolution.answer.expect("an authorized approval");
+    let (request, effect, digest) = identity_at(&suspension.head_sha);
+    let decision = ResolvedDecision::approved(
+        DecisionBinding {
+            request,
+            effect,
+            payload: digest,
+            head_sha: suspension.head_sha.clone(),
+        },
+        &answer.interpreted,
+    )
+    .expect("an approval is the one verdict that converts");
+
+    let deployment = Deployment(DeploymentRule::Allow);
+    let executor = Executor::new(
+        PROPOSE_CHANGE,
+        PROJECT.to_string(),
+        INVOCATION_REF.to_string(),
+        &deployment,
+        &ctx,
+        &world,
+        ReadRetry::none(),
+    );
+
+    // Step 4's comparison: the proposal now asks for one thing more than the
+    // question carried, and the approval is not addressed to it.
+    let refused = executor
+        .execute_decided(
+            proposal(&target, &widened(&payload)),
+            EnsurePullRequestReady::new(REPO.to_string(), PR, suspension.head_sha.clone()),
+            &decision,
+        )
+        .await
+        .expect_err("an approval given for another request buys nothing");
+    match &refused {
+        EffectError::PayloadDiverged { approved, .. } => {
+            assert_eq!(
+                approved,
+                &decision.binding().payload,
+                "the digest the person was shown is the one that refused it"
+            );
+        }
+        other => panic!("a widened proposal diverges, got {other:?}"),
+    }
+    assert_eq!(
+        refused.recurrence(),
+        Recurrence::Permanent,
+        "nothing here a repeat gets past"
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        0,
+        "and it was refused before the mutation"
+    );
+    assert!(
+        !world.steps().contains(&(
+            EffectKind::EnsurePullRequestReady,
+            ExecutionStep::Authorize.as_str()
+        )),
+        "refused at step 4 by the decision, not at step 6 by the envelope: {:?}",
+        world.steps()
+    );
+
+    // The control: the same approval, the same operation, the payload the marker
+    // named.
+    let receipt = executor
+        .execute_decided(
+            proposal(&target, &payload),
+            EnsurePullRequestReady::new(REPO.to_string(), PR, suspension.head_sha.clone()),
+            &decision,
+        )
+        .await
+        .expect("the request that was approved commits");
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(world.graphql_calls(), 1, "one approval, one mutation");
+}
+
+/// A repeat of an invocation whose transition already landed completes, and buys
+/// no second mutation.
+///
+/// This capability records no change set on any path, so nothing stops a later
+/// invocation of the same run from walking the whole thing again: it finds its own
+/// pull request, derives the same question, finds the same comment — and the
+/// validation order then refuses, because the pull request it was asked about is
+/// no longer a draft. The honest answer at that point is not a failure. The gated
+/// effect's postcondition holds, and the executor's step 3 is what says so: it
+/// inspects before it combines policy, so an already-ready pull request settles
+/// there and no decision is needed to *observe* a completed effect. `ready.rs`
+/// documents that ordering, and `an_already_ready_pull_request_is_the_postcondition`
+/// pins it.
+///
+/// So the run completes on the transition that really happened, and the assertion
+/// that it performed nothing is the GraphQL count: still one, from the invocation
+/// that had the approval.
+#[tokio::test]
+async fn a_second_invocation_after_an_approval_completes_without_a_second_mutation() {
+    let world = World::fresh();
+    let first = answered(&world, APPROVER, YES, APPROVES).await;
+    first.outcome.expect("the approved transition landed");
+
+    let model = MockCompletionModel::new([MockTurn::text(APPROVES)]);
+    let (outcome, receipts, _) = continue_in(&world, model.clone()).await;
+
+    let evidence = outcome.expect("the transition this run was about has happened");
+    assert!(
+        evidence.0.contains("ensure_pull_request_ready") && evidence.0.contains(":committed:"),
+        "it completes on the effect the world already satisfies: {evidence:?}"
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        1,
+        "the mutation was dispatched once, by the invocation that had the approval"
+    );
+    assert!(
+        !world
+            .effects_performed()
+            .iter()
+            .skip(4)
+            .any(|kind| *kind == EffectKind::EnsurePullRequestReady),
+        "and nothing was applied a second time: {:?}",
+        world.effects_performed()
+    );
+    assert_eq!(
+        model.requests().len(),
+        0,
+        "no reply was interpreted: the walk refused before the model, because the \
+         state it re-observed had moved"
+    );
+    assert!(
+        receipts.contains(&EvidenceRef("tools:0".to_string())),
+        "{receipts:?}"
+    );
+}
+
+/// One proposal of the gated effect, under this capability's own name.
+fn proposal(target: &str, payload: &str) -> ProposedEffect {
+    ProposedEffect {
+        capability: PROPOSE_CHANGE,
+        kind: EffectKind::EnsurePullRequestReady,
+        target: target.to_string(),
+        payload: payload.to_string(),
+    }
+}
+
+/// The gated effect's payload with one more key in it than the question carried.
+///
+/// A *widening* and not a corruption: still well formed, still naming the same
+/// pull request at the same revision, and asking for one thing more than the
+/// person was shown. That is the disagreement the identity cannot see, which is
+/// why it is the one worth testing.
+fn widened(payload: &str) -> String {
+    let mut asked: serde_json::Map<String, Value> =
+        serde_json::from_str(payload).expect("the payload is an object");
+    asked.insert("merge".to_string(), json!(true));
+    Value::Object(asked).to_string()
 }

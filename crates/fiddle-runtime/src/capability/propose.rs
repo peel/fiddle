@@ -1,9 +1,10 @@
-//! Produce a change, publish it as a draft, ask about it, and stop.
+//! Produce a change, publish it as a draft, ask about it, stop — and come back for
+//! the answer.
 //!
 //! The build's first **hybrid** capability: M1's bounded attempt produces the
 //! change, M1's check decides whether it was earned, M2's operations publish it,
 //! and M3's [`PublishDecisionRequest`] asks a person the one question fiddle is
-//! not entitled to answer for itself. The walk is
+//! not entitled to answer for itself. The walk a *first* run takes is
 //!
 //! ```text
 //! 1  a bounded attempt in a detached worktree, judged by this capability's own check
@@ -14,9 +15,38 @@
 //! ```
 //!
 //! and the transition out of draft — [`EnsurePullRequestReady`], the one `Human`
-//! minimum in this build — is **not proposed here at all**. Five things about
-//! that walk are worth stating, because each of them is a decision rather than an
-//! implementation detail.
+//! minimum in this build — is **not proposed there at all**. A later run, with no
+//! memory of that one, finds the question already on the conversation and takes the
+//! other walk:
+//!
+//! ```text
+//! 1  validate::resolve — eight steps, of which six are deterministic and precede
+//!    the one bounded model call
+//! 2  Approve   → EnsurePullRequestReady through Executor::execute_decided, Ok
+//!    Reject    → Err(DecisionRejected)  — Permanent, exit 20, a person said no
+//!    Redirect  → Err(AwaitingDecision)  — Awaiting, exit 10, naming the instruction
+//!    Unclear   → Err(AwaitingDecision)  — Awaiting, exit 10, and nothing is posted
+//!    no answer → Err(AwaitingDecision)  — Awaiting, exit 10, the question stands
+//! ```
+//!
+//! **That approve arm is the only production caller of
+//! [`Executor::execute_decided`] in this build**, and therefore the only path on
+//! which an operation declaring a `Human` minimum ever commits. A decided path
+//! nothing walks is the shape M2's `RequireHumanDecision` was criticised for, and
+//! this is what stops that criticism applying twice.
+//!
+//! # A continuation holds no workspace, and must not need one
+//!
+//! [`EffectContext::work`] is the worktree a push publishes from, and
+//! [`EnsureBranchPublished`] is the only operation that reads it. The approve,
+//! reject, redirect and unclear paths propose no such operation — the branch is
+//! already published, and the two `gh` calls involved touch no checkout — so a
+//! process that cannot create a workspace at all completes them. That is not a
+//! convenience: it is what makes a continuation from a fresh process, after the
+//! first run's worktree was removed, something the suite can prove offline.
+//!
+//! Six things about the two walks are worth stating, because each is a decision
+//! rather than an implementation detail.
 //!
 //! # The gated effect is not proposed, rather than proposed and refused
 //!
@@ -90,17 +120,20 @@ use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::{attempt, AgentBudget, ToolHost, ToolReceipts};
 use crate::effect::{
     EffectContext, EffectOutcome, EffectReceipt, Executor, IntegrationOperation, ObservedState,
+    ResolvedDecision,
 };
 use crate::github::{
     branch_name, EnsureBranchPublished, EnsurePullRequest, EnsurePullRequestReady, GhError,
     PullRequest,
 };
+use crate::human::interpret::InterpretationBounds;
+use crate::human::validate::{resolve, DecisionError, DecisionTrace, DecisionWalk, HumanAnswer};
 use crate::human::{InteractionRef, PublishDecisionRequest};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspacePath};
 use fiddle_core::{
     decision_request_id, effect_id, payload_hash, AttemptId, CapabilityId, DecisionBinding,
-    EffectKind, EvidenceRef, HumanDecisionRequest, Observation, ProposedEffect, Publication,
-    Published, ReviewState, SourceRef, WorkRef,
+    EffectKind, EvidenceRef, HumanDecisionRequest, InterpretedHumanDecision, Observation,
+    ProposedEffect, Publication, Published, ReviewState, SourceRef, WorkRef,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -138,6 +171,24 @@ const REGISTERED_TOOLS: [&str; 4] = ["read_file", "write_file", "list_files", "r
 
 /// What a call to anything outside [`REGISTERED_TOOLS`] is counted as.
 const FOREIGN_TOOL: &str = "unregistered";
+
+/// How many pages of a conversation the continuation may read before the read is a
+/// refusal rather than a truncation.
+///
+/// **The same bound [`PublishDecisionRequest::inspect`] applies**, and it has to
+/// be: this capability asks one conversation two questions — *is my question
+/// already here* through the operation's own `inspect`, and *has anybody answered
+/// it* through [`resolve`] — and a run whose two reads saw different amounts of
+/// the same conversation could find its question and then miss the reply below it.
+///
+/// It is stated twice because `human`'s copy is a private module constant and
+/// `human/mod.rs` is not this task's file. That is a duplication to collapse the
+/// next time either file is touched, by making the constant there `pub`; until
+/// then the drift risk is recorded here rather than left for somebody to find. It
+/// is not a deployment key: nobody has asked to configure how much of a
+/// conversation fiddle reads, and a document value that could disagree with the
+/// operation's own bound would be worse than a constant that cannot.
+const CONVERSATION_PAGES: u32 = 10;
 
 /// Where this run's attempt works, and the worktree whose `HEAD` the branch
 /// effect publishes.
@@ -225,6 +276,32 @@ pub struct ProposeConfig {
     /// What one bounded attempt runs inside. M1's five bounds, unwidened.
     pub budget: AgentBudget,
 
+    /// The immutable numeric ids of the people this deployment nominated to
+    /// decide.
+    ///
+    /// Ids and not logins, and not `author_association` either. A login can be
+    /// changed and the vacated name reclaimed, so an allowlist matching one would
+    /// let a renamed-and-reclaimed account inherit an approver's authority; and an
+    /// association says what somebody's relationship to the repository is rather
+    /// than whether *this deployment* nominated them. The design records declining
+    /// the `collaborators/{user}/permission` endpoint in favour of exactly this
+    /// list.
+    ///
+    /// An empty list authorizes nobody, and that is a coherent deployment rather
+    /// than a misconfiguration: it is what "fiddle may publish drafts here and
+    /// nobody has been given the authority to promote one" spells.
+    pub deciders: Vec<u64>,
+
+    /// What the one interpretation call runs inside.
+    ///
+    /// Beside [`ProposeConfig::budget`] rather than folded into it, because the
+    /// two bound different things: that one bounds a tool-using attempt over a
+    /// checkout, and this one bounds a single completion that is handed one
+    /// comment and answers with one small object. There is no turn count here,
+    /// and its absence is [`InterpretationBounds`]'s own decision — a second turn
+    /// would be a second chance at an approval.
+    pub interpretation: InterpretationBounds,
+
     /// Stops the attempt, the tools, the check and the commit together.
     pub cancel: tokio_util::sync::CancellationToken,
 }
@@ -268,6 +345,16 @@ pub struct ProposeChange<'a, M> {
     /// The same context the executor was built with. See the type's
     /// documentation for what this is for and what it costs.
     ctx: &'a EffectContext,
+    /// Where the validation order writes down which of its eight steps it is on.
+    ///
+    /// A borrow held for the run, exactly as [`Executor`] holds its
+    /// [`EffectTrace`](crate::effect::EffectTrace), and required rather than
+    /// defaulted for that trait's reason: a sink that discarded by omission would
+    /// let a production path go dark without anybody deciding it should. The two
+    /// traits are separate — see [`DecisionTrace`] — so a caller supplies both,
+    /// and in this build one value implements both and the two orders end up in
+    /// one place.
+    decisions: &'a dyn DecisionTrace,
     model: M,
     config: ProposeConfig,
     /// What each completed effect left behind, appended as it happens.
@@ -326,12 +413,14 @@ where
     pub fn new(
         executor: Executor<'a>,
         ctx: &'a EffectContext,
+        decisions: &'a dyn DecisionTrace,
         model: M,
         config: ProposeConfig,
     ) -> Self {
         ProposeChange {
             executor,
             ctx,
+            decisions,
             model,
             config,
             receipts: Mutex::new(Vec::new()),
@@ -433,11 +522,23 @@ where
     /// `{repo}#{pr}:{request_id}` — so two bodies for one question are one effect,
     /// and step 3 recognises the comment that is already there rather than
     /// comparing what it would have written.
+    /// The effect a person is being asked about, rebuilt from canonical inputs.
+    ///
+    /// One function for both of the runs that need it — the one that asks and the
+    /// one that acts — so the identity and the payload a person was shown are the
+    /// identity and the payload that get spent. Two constructions of the same
+    /// operation would agree today and have no reason to keep agreeing, and the
+    /// disagreement would be invisible: the identity is derived over the target
+    /// and never over the payload, so a widened payload arrives looking like the
+    /// same work. The executor's step 4 catches that, and this is what makes it
+    /// something that never has to.
+    fn gated(&self, pr: u64, head_sha: &str) -> EnsurePullRequestReady {
+        EnsurePullRequestReady::new(self.config.repo.clone(), pr, head_sha.to_string())
+    }
+
     fn question_about(&self, work_id: &str, pr: u64, head_sha: &str) -> HumanDecisionRequest {
         let repo = &self.config.repo;
-        // The gated effect, built exactly as the continuation will build it, so
-        // the identity a person is asked about is the identity that will be spent.
-        let ready = EnsurePullRequestReady::new(repo.clone(), pr, head_sha.to_string());
+        let ready = self.gated(pr, head_sha);
         let effect = effect_id(
             self.executor.project(),
             self.executor.invocation_ref(),
@@ -505,6 +606,58 @@ where
     where
         O: IntegrationOperation,
     {
+        self.proposing(kind, target, payload, operation, None).await
+    }
+
+    /// The same, with an approval a person gave available to the executor's step 4.
+    ///
+    /// The only route in this build to
+    /// [`Executor::execute_decided`], and therefore the only
+    /// path on which an operation whose
+    /// [`IntegrationOperation::minimum`] is
+    /// [`Human`](fiddle_core::HumanDecisionRequirement::Human) can commit. What
+    /// makes it safe is that the decision is not believed here: the executor
+    /// re-derives this effect's identity and payload digest for itself and
+    /// compares both against the approval, so a decision given for another
+    /// question or another request refuses inside the executor rather than being
+    /// vouched for by this caller.
+    async fn propose_decided<O>(
+        &self,
+        kind: EffectKind,
+        target: String,
+        payload: String,
+        operation: O,
+        decision: &ResolvedDecision,
+    ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, CapabilityError>
+    where
+        O: IntegrationOperation,
+    {
+        self.proposing(kind, target, payload, operation, Some(decision))
+            .await
+    }
+
+    /// One proposal, whichever of the executor's two entry points it goes
+    /// through.
+    ///
+    /// One private body rather than two public ones, for the reason
+    /// [`Executor::walk`](crate::effect::Executor) gives about itself: the thing
+    /// that must not vary between the decided path and the undecided one is
+    /// everything except step 4's third input. Here that is the proposal's
+    /// construction and the recording of its receipt — and the recording is the
+    /// half worth insisting on, because "the receipt reaches the bundle" has to
+    /// stay one statement rather than two that could disagree on the arm where
+    /// the *next* effect fails.
+    async fn proposing<O>(
+        &self,
+        kind: EffectKind,
+        target: String,
+        payload: String,
+        operation: O,
+        decision: Option<&ResolvedDecision>,
+    ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, CapabilityError>
+    where
+        O: IntegrationOperation,
+    {
         let proposed = ProposedEffect {
             // Its own id, and not a parameter. A capability that could name the
             // proposing capability could propose in another's name; this one
@@ -514,7 +667,14 @@ where
             target,
             payload,
         };
-        let receipt = self.executor.execute(proposed, operation).await?;
+        let receipt = match decision {
+            None => self.executor.execute(proposed, operation).await?,
+            Some(decision) => {
+                self.executor
+                    .execute_decided(proposed, operation, decision)
+                    .await?
+            }
+        };
         self.receipts
             .lock()
             .unwrap()
@@ -746,26 +906,245 @@ where
         })
     }
 
-    /// The branch a run takes when its question is already on the conversation.
+    /// The branch a run takes when its question is already on the conversation:
+    /// read the answer, and act only on an approval.
     ///
-    /// **Task 11b replaces this body**, with the validation order, the bounded
-    /// interpretation, and the transition an approval alone authorises. Until
-    /// then the honest answer is the one the run started with: the question
-    /// stands, nobody's answer has been read, and the run is waiting — so it
-    /// suspends again on the *same* request and posts nothing further, which is
-    /// what [`PublishDecisionRequest`]'s own postcondition would enforce anyway.
-    fn awaiting(
+    /// # Nothing here decides anything the shell has not already decided
+    ///
+    /// [`resolve`] owns the whole eight-step order — which comment is this run's
+    /// question, whether the marker authenticates against a recomputed identity,
+    /// which replies are candidates, whether any of them changed since they were
+    /// listed, whether the pull request is still open at the revision it was asked
+    /// about, and only then the one bounded model call. This function *calls* it
+    /// and branches on what it answered. That is the difference the criterion is
+    /// about: an unauthorized reply reaches no model on this path either, not
+    /// because the capability checks an allowlist but because the walk it delegates
+    /// to does, before the model exists.
+    ///
+    /// # Four verdicts, and exactly one of them mutates
+    ///
+    /// The branch is written as the *conversion* rather than as four arms that
+    /// agree to behave: [`ResolvedDecision::approved`] is the only constructor of
+    /// step 4's third input and it takes the verdict, so
+    /// [`Reject`](InterpretedHumanDecision::Reject),
+    /// [`Redirect`](InterpretedHumanDecision::Redirect) and
+    /// [`Unclear`](InterpretedHumanDecision::Unclear) have no spelling that
+    /// reaches the executor's decided path. The binding it is given is the one
+    /// **this process derived**, in [`ProposeChange::question_about`], and never
+    /// the one parsed off the comment — the marker is what a forger can copy, and
+    /// [`resolve`]'s steps 3 and 8 are what established that the conversation's
+    /// copy agrees with this derivation.
+    ///
+    /// A rejection concludes the run. A redirect and an unclear reply leave it
+    /// waiting on the *same* request and publish nothing: the effect has not
+    /// moved, so the request identity has not moved, so
+    /// [`PublishDecisionRequest`]'s own postcondition would suppress a second post
+    /// anyway. A follow-up comment would need a second identity for the same
+    /// question, which is an effect kind this build does not have.
+    async fn continue_from(
         &self,
         request: HumanDecisionRequest,
         interaction: InteractionRef,
+        pr: u64,
+        head_sha: &str,
+    ) -> Result<EvidenceRef, CapabilityError> {
+        let gated = self.gated(pr, head_sha);
+        let target = gated.target();
+        let payload = gated.payload();
+        let walk = DecisionWalk {
+            repo: &self.config.repo,
+            pr,
+            max_pages: CONVERSATION_PAGES,
+            // From the executor, like every other identity this capability
+            // derives, so a misbound run cannot resolve a decision under a name
+            // its own effects were not derived from.
+            project: self.executor.project(),
+            invocation_ref: self.executor.invocation_ref(),
+            kind: EffectKind::EnsurePullRequestReady,
+            target: &target,
+            // The bytes and not the digest: step 8's arithmetic belongs inside
+            // step 8, and a caller that hashed it here would be doing the
+            // comparison's half outside the walk that reports it.
+            payload: &payload,
+            allowlist: &self.config.deciders,
+        };
+
+        let resolution = match resolve(
+            self.ctx,
+            &walk,
+            // fiddle's own text, and the same string the request comment carries.
+            // `interpret` takes the question as text so that it cannot receive an
+            // identity; see `human::validate`'s documentation before composing
+            // anything into this.
+            &request.question,
+            self.model.clone(),
+            &self.config.interpretation,
+            self.decisions,
+        )
+        .await
+        {
+            Ok(resolution) => resolution,
+            // The one refusal that is not a refusal. See
+            // [`ProposeChange::already_ready`].
+            Err(DecisionError::AlreadyReady) => return self.already_ready(pr, head_sha).await,
+            Err(source) => {
+                return Err(CapabilityError::DecisionUnresolved {
+                    request: request.binding.request,
+                    source,
+                })
+            }
+        };
+
+        let Some(HumanAnswer {
+            interpreted,
+            acted_on,
+        }) = resolution.answer
+        else {
+            // Not a refusal and not a model call: nobody the deployment nominated
+            // has replied, which is the state a suspended run exists in.
+            return Err(self.awaiting(
+                &request,
+                interaction,
+                "nobody who may decide has answered it yet".to_string(),
+            ));
+        };
+
+        match (
+            ResolvedDecision::approved(request.binding.clone(), &interpreted),
+            &interpreted,
+        ) {
+            (Some(decision), _) => self.act_on(pr, head_sha, &decision).await,
+            (None, InterpretedHumanDecision::Reject { reason }) => {
+                Err(CapabilityError::DecisionRejected {
+                    request: request.binding.request.clone(),
+                    reason: reason.clone(),
+                })
+            }
+            (None, InterpretedHumanDecision::Redirect { instruction }) => Err(self.awaiting(
+                &request,
+                interaction,
+                format!(
+                    "comment {} asks for something else instead, and attempting again \
+                     is not implemented: {instruction}",
+                    acted_on.comment
+                ),
+            )),
+            (None, InterpretedHumanDecision::Unclear) => Err(self.awaiting(
+                &request,
+                interaction,
+                format!(
+                    "comment {} could not be read as a decision, so the question stands",
+                    acted_on.comment
+                ),
+            )),
+            // Unreachable by construction: `approved` answers `Some` for exactly
+            // this verdict. It is answered rather than left to `unreachable!()`
+            // because a panic inside a capability takes the whole run's record
+            // with it, and the fail-closed answer — nothing performed, the
+            // question still standing — is available and costs a line.
+            (None, InterpretedHumanDecision::Approve) => Err(self.awaiting(
+                &request,
+                interaction,
+                "an approval was read and could not be bound to the question it \
+                 answered"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// Perform the transition a person authorised.
+    ///
+    /// The **only** production path in this build that reaches
+    /// [`Executor::execute_decided`], and therefore the only one on which an
+    /// operation declaring a `Human` minimum commits. The operation is rebuilt
+    /// here from [`ProposeChange::gated`] rather than carried in from the
+    /// question, so the target and the payload the executor compares the approval
+    /// against come from the same one derivation the question was asked about.
+    async fn act_on(
+        &self,
+        pr: u64,
+        head_sha: &str,
+        decision: &ResolvedDecision,
+    ) -> Result<EvidenceRef, CapabilityError> {
+        let gated = self.gated(pr, head_sha);
+        let receipt = self
+            .propose_decided(
+                EffectKind::EnsurePullRequestReady,
+                gated.target(),
+                gated.payload(),
+                gated,
+                decision,
+            )
+            .await?;
+        Ok(receipt_evidence(
+            EffectKind::EnsurePullRequestReady,
+            &receipt,
+        ))
+    }
+
+    /// The pull request is already out of draft, so the transition this run was
+    /// about has happened.
+    ///
+    /// [`DecisionError::AlreadyReady`] is a refusal of the *validation order* —
+    /// there is no decision left to establish — and it is not a failure of the
+    /// run. This capability records no change set on any path, so a later
+    /// invocation of the same run walks the whole thing again: it finds its own
+    /// pull request, derives the same question, finds the same comment, and the
+    /// walk then refuses because the object is no longer a draft. Reporting that
+    /// as an error would make a completed run fail on its next invocation.
+    ///
+    /// So the effect is proposed through the **undecided** entry point, and the
+    /// executor's own ordering is what makes that correct rather than a way of
+    /// slipping past the gate: step 3 inspects the postcondition *before* step 4
+    /// combines policy, so an already-ready pull request settles at step 3 with
+    /// [`EffectOutcome::Committed`] and no decision is required to *observe* a
+    /// completed effect. [`EnsurePullRequestReady::inspect`] states that ordering
+    /// and `ready_effect.rs`'s
+    /// `an_already_ready_pull_request_is_the_postcondition` pins it.
+    ///
+    /// Nothing can be mutated here. If the pull request were re-drafted between
+    /// the walk's read and this one, step 3 would answer *absent*, step 4 would
+    /// find a `Human` minimum with no decision in hand, and the effect would
+    /// refuse as
+    /// [`HumanDecisionRequired`](crate::effect::EffectError::HumanDecisionRequired)
+    /// — `Awaiting`, exit 10, go and answer the current question.
+    async fn already_ready(&self, pr: u64, head_sha: &str) -> Result<EvidenceRef, CapabilityError> {
+        let gated = self.gated(pr, head_sha);
+        let receipt = self
+            .propose(
+                EffectKind::EnsurePullRequestReady,
+                gated.target(),
+                gated.payload(),
+                gated,
+            )
+            .await?;
+        Ok(receipt_evidence(
+            EffectKind::EnsurePullRequestReady,
+            &receipt,
+        ))
+    }
+
+    /// The run is waiting, and this is what it is waiting for.
+    ///
+    /// `because` says which of the four ways of not having an answer this is, and
+    /// it rides in the `question` field because that is what a run outcome's
+    /// `reason` is built from: a diagnostic naming only the request id would leave
+    /// a reader of the `--json` payload with nothing to act on.
+    ///
+    /// The id carried out is `binding.request` — the one field the marker is
+    /// rendered from. [`HumanDecisionRequest`] carries the request id twice and
+    /// only that one reaches a conversation, so a run reading the other would
+    /// report waiting on a question nobody can find.
+    fn awaiting(
+        &self,
+        request: &HumanDecisionRequest,
+        interaction: InteractionRef,
+        because: String,
     ) -> CapabilityError {
         CapabilityError::AwaitingDecision {
-            request: request.binding.request,
+            request: request.binding.request.clone(),
             interaction,
-            question: format!(
-                "{} (this build publishes the question and does not yet read answers)",
-                request.question
-            ),
+            question: format!("{} — {because}", request.question),
         }
     }
 
@@ -881,7 +1260,17 @@ where
                 .await
                 .map_err(|error| adapter(EffectKind::PublishDecisionRequest, error))?;
             return match published {
-                Some(published) => Err(self.awaiting(request, published.into_value())),
+                // The question is out there. Whether anybody has answered it is
+                // the conversation's to say, and the validation order's to read.
+                Some(published) => {
+                    self.continue_from(
+                        request,
+                        published.into_value(),
+                        pull_request.number,
+                        &head_sha,
+                    )
+                    .await
+                }
                 // A pull request with no question on it: a run that stopped
                 // between the create and the comment. The change is already
                 // published, so this resumes by asking rather than by attempting

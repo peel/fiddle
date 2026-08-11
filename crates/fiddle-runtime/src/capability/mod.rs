@@ -29,9 +29,12 @@
 //! authorization envelope are all on the other side of that seam. [`propose`]
 //! holds [`ProposeChange`], the first **hybrid** one: it puts [`repair`]'s
 //! bounded attempt and its own check in front of [`publish`]'s operations, and
-//! then does the thing none of the other three can — it stops and asks. Its
-//! execution ends in an `Err` on the path where everything worked, which is what
-//! [`Recurrence::Awaiting`](crate::effect::Recurrence::Awaiting) is for.
+//! then does the thing none of the other three can — it stops and asks, and a
+//! later process comes back and reads the answer. The run that asks ends in an
+//! `Err` on the path where everything worked, which is what
+//! [`Recurrence::Awaiting`](crate::effect::Recurrence::Awaiting) is for; the run
+//! that finds an approval is the only one in this build that performs an effect a
+//! person had to authorize.
 
 pub mod propose;
 pub mod publish;
@@ -43,9 +46,10 @@ pub use publish::{PublishChange, PublishConfig};
 pub use repair::{FixtureRepair, RepairConfig};
 pub use stub::StubMark;
 
+use crate::human::validate::DecisionError;
 use crate::human::InteractionRef;
 use fiddle_core::{
-    AttemptId, CapabilityId, DecisionRequestId, EvidenceRef, NextAction, Publication,
+    AttemptId, CapabilityId, DecisionRequestId, EvidenceRef, NextAction, Publication, Published,
 };
 use std::path::PathBuf;
 
@@ -357,6 +361,54 @@ pub enum CapabilityError {
         question: String,
     },
 
+    /// Somebody who may decide read the question and said no.
+    ///
+    /// # Why a refusal is `Permanent` and not `Awaiting`
+    ///
+    /// Because the question has been answered. `Awaiting` says *nothing is wrong
+    /// and nothing will change until something outside this process does*, and
+    /// that is exactly false here: the thing outside this process has already
+    /// happened. Repeating the invocation re-derives the same request id, finds
+    /// the same conversation, selects the same last authorized reply and reads it
+    /// the same way — which is what [`crate::effect::Recurrence::Permanent`]
+    /// means, and is the row
+    /// [`PolicyDenied`](crate::effect::EffectError::PolicyDenied) already uses
+    /// for a decision that a repeat re-derives.
+    ///
+    /// It is not `Correctable` either. There is no obstacle in front of the run
+    /// for an operator to remove; a person considered the change and declined it,
+    /// and inviting a retry would present that as a transient failure.
+    ///
+    /// The reason is [`Published`] rather than `String` because it is a span of
+    /// text somebody outside this process wrote, arriving by way of a model that
+    /// read them. `Published::of` is the only way to put such text where a reader
+    /// will see it, and this reaches a run outcome's `reason`.
+    #[error("a person refused request {}: {reason}", request.0)]
+    DecisionRejected {
+        request: DecisionRequestId,
+        reason: Published,
+    },
+
+    /// The validation order could not establish a decision one way or the other.
+    ///
+    /// Ten distinct refusals travel in here, and they are carried whole rather
+    /// than flattened for [`CapabilityError::Effect`]'s reason: the distinctions
+    /// are the point. "Two comments name this question", "fiddle's own question
+    /// has been edited" and "the conversation could not be read" send an operator
+    /// to three different places, and a capability that rendered them into one
+    /// string would have thrown away the only thing that tells them apart.
+    ///
+    /// [`CapabilityError::recurrence`] is where each of the ten is given an exit
+    /// row, and that match is deliberately exhaustive over
+    /// [`DecisionError`] rather than a catch-all: the next refusal
+    /// the walk grows is a question the compiler asks whoever adds it.
+    #[error("no decision could be established for request {}: {source}", request.0)]
+    DecisionUnresolved {
+        request: DecisionRequestId,
+        #[source]
+        source: DecisionError,
+    },
+
     /// The attempt's check passed over a tree nobody changed, so there is
     /// nothing to propose.
     ///
@@ -456,6 +508,49 @@ impl CapabilityError {
             CapabilityError::NotAuthorised { .. }
             | CapabilityError::Misbound { .. }
             | CapabilityError::PublishesElsewhere { .. } => Recurrence::Permanent,
+
+            // A person said no. See the variant for why this row and not one of
+            // the other two.
+            CapabilityError::DecisionRejected { .. } => Recurrence::Permanent,
+
+            // The ten refusals of the validation order, each given the row its
+            // own evidence earns. Written out rather than defaulted, because the
+            // two families here are genuinely different and a blanket answer
+            // would be wrong about half of them: a read that failed is an
+            // obstacle a repeat gets past, and a marker naming another effect is
+            // a fact about the conversation that a repeat re-derives.
+            CapabilityError::DecisionUnresolved { source, .. } => match source {
+                // Read failures and races. Each of these can be true on one walk
+                // and false on the next without anybody doing anything about it:
+                // a listing that failed, a comment deleted between two reads, a
+                // reply edited between the listing and the re-read, a head that
+                // moved while the walk was running. A repeat re-reads.
+                DecisionError::Unreadable(_)
+                | DecisionError::RequestAbsent(_)
+                | DecisionError::ReplyEdited { .. }
+                | DecisionError::HeadMoved { .. } => Recurrence::Correctable,
+                // And a state somebody has to change out there before any repeat
+                // of this invocation can get further: two comments naming one
+                // question, fiddle's own question rewritten — which fiddle has no
+                // path that does, and whose evidence is a timestamp pair that
+                // never returns to agreeing. `DuplicateRequest` is on this row
+                // for the same test rather than by resemblance: the walk chooses
+                // no candidate replies at all while there are two request
+                // comments, so a repeat re-derives the same refusal until a
+                // person deletes one.
+                DecisionError::DuplicateRequest { .. }
+                | DecisionError::RequestEdited { .. }
+                | DecisionError::ForeignEffect { .. }
+                | DecisionError::ForeignPayload { .. }
+                | DecisionError::NotOpen
+                // `AlreadyReady` is here for completeness and is not reached
+                // through `propose_change`: that capability answers it by
+                // proposing the gated effect and letting the executor's step 3
+                // observe the postcondition it already satisfies. A caller that
+                // did surface it would be reporting a transition that happened,
+                // which no repeat undoes.
+                | DecisionError::AlreadyReady => Recurrence::Permanent,
+            },
 
             // **The variant that is not a failure.** Everything else in this
             // table answers "would repeating get past this"; this one answers
