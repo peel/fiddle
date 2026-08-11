@@ -26,12 +26,19 @@
 //! is therefore the first one that holds no means of doing so. It proposes three
 //! effects to an [`Executor`](crate::effect::Executor) already bound to its own
 //! id and receives three receipts; the credential, the client and the
-//! authorization envelope are all on the other side of that seam.
+//! authorization envelope are all on the other side of that seam. [`propose`]
+//! holds [`ProposeChange`], the first **hybrid** one: it puts [`repair`]'s
+//! bounded attempt and its own check in front of [`publish`]'s operations, and
+//! then does the thing none of the other three can — it stops and asks. Its
+//! execution ends in an `Err` on the path where everything worked, which is what
+//! [`Recurrence::Awaiting`](crate::effect::Recurrence::Awaiting) is for.
 
+pub mod propose;
 pub mod publish;
 pub mod repair;
 pub mod stub;
 
+pub use propose::{attempt_worktree, ProposeChange, ProposeConfig};
 pub use publish::{PublishChange, PublishConfig};
 pub use repair::{FixtureRepair, RepairConfig};
 pub use stub::StubMark;
@@ -47,6 +54,24 @@ use std::path::PathBuf;
 /// The single source of the known-id list: the CLI validates `--capability`
 /// against it, so a build that gains a capability offers it and names it in a
 /// diagnostic without anyone remembering to update a second list.
+///
+/// # Why [`fiddle_core::PROPOSE_CHANGE`] is not here yet
+///
+/// Because this list is what the CLI validates `--capability` against, so an id
+/// in it is a claim that this build *offers* that capability — and
+/// `every_registered_capability_can_be_selected` in the binary is what makes the
+/// claim stick: it walks this array and requires each id to name a selection the
+/// binary can build. `propose_change` has no selection yet, and it cannot have
+/// one until `resolve_forge` learns to publish from a worktree that does not
+/// exist when the forge is resolved (its `head_sha` read would fail), which is
+/// the CLI task's work rather than the capability's.
+///
+/// So the id and the entry move together, in the task that adds the selection.
+/// Registering it here first would advertise a capability an operator cannot run
+/// — the exact defect the binary's test exists to catch — and the alternative,
+/// weakening that test, would trade a real property for a tidy list.
+/// [`propose::ProposeChange`] is reachable and exercised meanwhile:
+/// `tests/propose_capability.rs` drives it exactly as the orchestration will.
 pub const CAPABILITIES: [CapabilityId; 3] = [
     fiddle_core::STUB_MARK,
     fiddle_core::FIXTURE_REPAIR,
@@ -348,6 +373,40 @@ pub enum CapabilityError {
         question: String,
     },
 
+    /// The attempt's check passed over a tree nobody changed, so there is
+    /// nothing to propose.
+    ///
+    /// Neither of the two nearby answers is honest. Publishing an empty commit
+    /// would open a draft and ask a person to approve a change that does not
+    /// exist; reporting success would account for work that was never done, and
+    /// this is the capability whose whole point is that the *change* is the
+    /// deliverable. So it is a failure — and a correctable one, because a later
+    /// attempt over the same fixture may well produce something.
+    ///
+    /// Distinct from [`CapabilityError::CheckFailed`] on purpose: the check
+    /// passed, and a diagnostic saying otherwise would send an operator to look
+    /// at a check that is working.
+    #[error("the attempt changed no file, so there is nothing to propose")]
+    NothingProposed,
+
+    /// The context a capability was given publishes from a tree that is not the
+    /// one its attempt works in.
+    ///
+    /// Only [`ProposeChange`] can reach this, and it is
+    /// the same family of refusal as [`CapabilityError::Misbound`]: two values
+    /// that have to name one thing, checked before anything is read rather than
+    /// reconciled afterwards. What makes it worth a variant of its own is what
+    /// the confusion would produce — [`crate::github::EnsureBranchPublished`]
+    /// pushes `HEAD` out of the context's worktree, so a run whose attempt
+    /// worked somewhere else would publish a commit it never made, with a
+    /// payload hash naming the commit it did make and a postcondition read that
+    /// then disagrees with both.
+    #[error("this run publishes from {publishing} and its attempt works in {working}")]
+    PublishesElsewhere {
+        publishing: PathBuf,
+        working: PathBuf,
+    },
+
     /// The executor a capability was built with names a different run than the
     /// one asking it to execute.
     ///
@@ -386,22 +445,33 @@ impl CapabilityError {
             // obstacle in front of the run: fix the permission, let the model
             // try again, and the same invocation succeeds. `attempt.rs` and
             // `repair_protocol.rs` pin all four, and none of them moves here.
+            //
+            // M3's `NothingProposed` joins them, and for the same test rather
+            // than by resemblance: an attempt that changed nothing is an attempt
+            // that may change something next time, so a repeat is worth
+            // inviting. It is deliberately not `Permanent` — that would tell a
+            // caller to give up on a fixture the next attempt might repair.
             CapabilityError::Write { .. }
             | CapabilityError::CheckFailed { .. }
             | CapabilityError::Workspace(_)
+            | CapabilityError::NothingProposed
             | CapabilityError::Agent(_) => Recurrence::Correctable,
 
-            // The two internal-consistency refusals. Neither is reachable
-            // through [`crate::orchestration::run`] — a grant is only ever
-            // issued for the capability the derivation named, and an executor is
-            // only ever bound to the run that built it — so this arm changes no
-            // observable behaviour. It is written the honest way regardless:
-            // both say, in their own documentation, that there is no run they
-            // are correct for, and a build that produced one would produce it
-            // again on every repeat.
-            CapabilityError::NotAuthorised { .. } | CapabilityError::Misbound { .. } => {
-                Recurrence::Permanent
-            }
+            // The internal-consistency refusals. The first two are unreachable
+            // through [`crate::orchestration::run`] — a grant is only ever issued
+            // for the capability the derivation named, and an executor is only
+            // ever bound to the run that built it — so those two arms change no
+            // observable behaviour and are written the honest way regardless.
+            //
+            // `PublishesElsewhere` is the one of the three a *document* can
+            // produce, and it belongs on this row for the same test: the two
+            // paths are derived from the run's own inputs, so a repeat under the
+            // same configuration derives the same disagreement. It is exit 20
+            // rather than 11 because there is nothing here for a retry to get
+            // past; what has to change is what the caller was built with.
+            CapabilityError::NotAuthorised { .. }
+            | CapabilityError::Misbound { .. }
+            | CapabilityError::PublishesElsewhere { .. } => Recurrence::Permanent,
 
             // **The variant that is not a failure.** Everything else in this
             // table answers "would repeating get past this"; this one answers
@@ -459,8 +529,14 @@ mod tests {
 
     /// The known-id list is the one source the CLI validates `--capability`
     /// against, so a build that can run a capability has to name it here.
+    /// The known-id list is the one source the CLI validates `--capability`
+    /// against, so a build that can *offer* a capability has to name it here —
+    /// and, by `every_registered_capability_can_be_selected` in the binary, a
+    /// build that names one here has to be able to assemble it. `propose_change`
+    /// is the fourth [`Capability`] in this module and is deliberately absent
+    /// from both, together; see [`CAPABILITIES`].
     #[test]
-    fn every_capability_this_build_has_is_registered() {
+    fn every_capability_this_build_can_offer_is_registered() {
         assert_eq!(
             CAPABILITIES,
             [
@@ -468,6 +544,11 @@ mod tests {
                 fiddle_core::FIXTURE_REPAIR,
                 fiddle_core::PUBLISH_CHANGE
             ]
+        );
+        assert!(
+            !CAPABILITIES.contains(&fiddle_core::PROPOSE_CHANGE),
+            "an id in this list is a capability an operator can select, and \
+             `propose_change` has no selection until the CLI can build one"
         );
     }
 

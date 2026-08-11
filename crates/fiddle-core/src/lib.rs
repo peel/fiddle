@@ -28,7 +28,7 @@ pub mod report;
 
 pub use assessment::{
     assess, correlation_key, derive_next, CapabilityAssessment, NextAction, FIXTURE_REPAIR,
-    PUBLISH_CHANGE, STUB_MARK,
+    PROPOSE_CHANGE, PUBLISH_CHANGE, STUB_MARK,
 };
 pub use decision::{
     decision_request_id, parse_marker, render_marker, ActorRef, DecisionBinding, DecisionRequestId,
