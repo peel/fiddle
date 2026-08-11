@@ -1057,3 +1057,18 @@ So the honest statement is narrower and more useful: **the gate set was incomple
 **Owed work**, filed as its own bean: add `cargo doc --workspace --no-deps` to the gate, decide whether to enforce with `-D warnings` immediately or ratchet from the current 53, and clear the backlog of existing warnings. Ratcheting is probably right — 53 is too many to fix inside another bean's scope, and a gate that starts red teaches lanes to ignore it.
 
 One caveat for whoever takes it: `private_intra_doc_links` firing 38 times may be a deliberate style in this codebase — public docs pointing at private implementation detail is often the *useful* link — so that arm should be judged before it is enforced, not silenced by reflex.
+
+### 2026-08-11 — Twenty-four tests passed over a post-forever bug, because every fixture built the two ids agreeing
+The clearest instance yet of the fixture family, and it was in **landed, evaluated-adjacent code** rather than in a sketch.
+
+`HumanDecisionRequest` carries the request id **twice** — as its own `request` field and as `binding.request` — with nothing making them agree. Only `binding.request` is rendered into the marker. `PublishDecisionRequest::target()` and `inspect`'s lookup were reading **`self.request.request`**.
+
+**All 24 tests in the file passed over it**, because every one of them built a request whose two ids were equal. When they disagree, the run publishes a marker naming one id, searches for the other, finds nothing, and **posts forever** — and, as the implementer put it, the executor cannot close that door, because *from step 3's view the postcondition genuinely is absent each time*. A liveness bug with no upper bound, invisible to a full green suite.
+
+Fixed at `0939c39`: both readings go through one private `asking()`, two new tests make the fields disagree deliberately, and **inversion I10 confirms those two are the only cases in the file that can notice**.
+
+Three things worth keeping:
+
+- **A type that carries one value twice makes agreement a fixture convention.** Every test author naturally constructs a consistent object, so the disagreeing case never appears unless somebody writes it on purpose. The duplication is the defect; the wrong read is only its symptom. Collapsing it is filed as `fiddle-11vj`, and this is the guard until then.
+- **The bug was found by a prose warning, not by a test.** The lead flagged the duplicated field from an implementer's report — the field being read was never checked — and the implementer then found its own landed code reading the wrong one. So the chain was: one lane reads a type and notices a hazard while blocked, the lead writes it down, a second lane checks its own code against the note. No gate participated.
+- **This is what "the fixture cannot distinguish the candidates" looks like at its worst.** The earlier instances were a sorted listing hiding a positional read, and a world list omitting the contested case. Here the *type* invites the indistinguishable fixture, so every honest test built one. The rule stated earlier — for any property about order, selection or identity, at least one fixture must make the correct answer and the lazy answer differ — needs a companion: **when a type can hold two values that must agree, at least one test must set them disagreeing, and the type should be suspected of being wrong.**
