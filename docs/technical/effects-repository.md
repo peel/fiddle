@@ -77,13 +77,19 @@ contents.
    (line 262) rather than a third writer: it sets no target of its own.
 
    **Exactly two things violate this rule, and both are checkable.** One: a third
-   `FIDDLE_EFFECTS_REPO` assignment — `grep -rn FIDDLE_EFFECTS_REPO` outside
-   `docs/` must return those two lines and no other. Two: an occurrence of this
+   default — `grep -rn 'FIDDLE_EFFECTS_REPO:-'` outside `docs/` must return those
+   two lines and no other. The `:-` is load-bearing, not decoration: the bare name
+   `FIDDLE_EFFECTS_REPO` also appears at `live-github.sh:183` and `:261`, in a
+   comment and in a `refuse_target` message, so a grep without it answers **four**
+   and this clause would be false as stated. Two: an occurrence of this
    repository's name under `crates/` that is *neither* in a file under a `tests/`
-   directory, *nor* after its file's `#[cfg(test)]` line, *nor* on a comment
-   line — that is product code holding the name, which is what *"no product code
-   points at it"* forbids. See *Rule 4 was false from `253a7de`* for that check
-   run at this commit and what it found.
+   directory, *nor* between the braces of a `#[cfg(test)]` module, *nor* on a
+   comment line — that is product code holding the name, which is what *"no
+   product code points at it"* forbids. "Between the braces" and not "after the
+   `#[cfg(test)]` line", because a file whose test module is *declared* near the
+   top — `#[cfg(test)] mod tests;` — would otherwise exempt everything below it,
+   which is the whole file. See *Rule 4 was false from `253a7de`* for both checks
+   run at this commit and what they found.
 5. **Nobody works in it.** If that ever stops being true, rule 2's scoping is
    what protects them — see *Cleanup and residue*.
 
@@ -130,13 +136,15 @@ written.
 Those 20 break down as the two `FIDDLE_EFFECTS_REPO` defaults, **11** occurrences
 under `crates/`, and 7 in `.env.example`, `github-effects.yml` and the two
 scripts' own comments. Running the rule's boundary check over the 11 at this
-commit: `orchestration.rs:1228` is inside the `#[cfg(test)]` opening at `:725`;
-`human/mod.rs:580`, `:593` and `:604` are inside the one opening at `:574`, which
-runs to the file's end at 608; `github/checks.rs:41` is a `//!` doc comment; and
-the remaining six are in `crates/fiddle-acceptance/tests/`, where the whole file
-is a test target. **Zero are product code**, so the *"no product code points at
-it"* half survives intact — which is the half worth keeping, and the reason the
-clause was narrowed to "as a target" rather than deleted.
+commit: `orchestration.rs:1228` and `human/mod.rs:580`, `:593`, `:604` are inside
+`#[cfg(test)]` modules that open at `:725` and `:574` and, in both files, extend to
+the end of the file — so the occurrences are between the braces and not merely
+below the attribute, which is the form the clause requires;
+`github/checks.rs:41` is a `//!` doc comment; and the remaining six are in
+`crates/fiddle-acceptance/tests/`, where the whole file is a test target.
+**Zero are product code**, so the *"no product code points at it"* half survives
+intact — which is the half worth keeping, and the reason the clause was narrowed to
+"as a target" rather than deleted.
 
 The counts above are a measurement at this commit and are not themselves the
 rule — the boundary check is. A count in a standing rule goes stale the first time
@@ -217,11 +225,18 @@ a measure of how often one was copied.
 agreeing one.** `docs/technical/RUNBOOKS.md` § *Minting the GitHub token* — the
 procedure an operator actually follows to create this credential, scoped to this
 repository — prescribes *"these five, and no others"* and lists **`Workflows`
-read and write**, with no `Secrets` row at all. This table argues the opposite
-directly: `Workflows` is *"not something the lane ever does"*, and a credential
-holding it *"can rewrite the target's CI, which is the worst of both"*. So the
-document that mints the token and the document that describes it do not agree
-about what the token holds.
+read and write**, with no `Secrets` row at all. This table omits `Workflows`
+deliberately, on the ground that writing a file under `.github/workflows/**` is
+*"not something the lane ever does: the only file the lane pushes is a one-line
+probe at the repository root"*. So the document that mints the token and the
+document that describes it do not agree about what the token holds.
+
+The disagreement is about **necessity, not about the dispatch**. This table's
+*"worst of both"* line is not the argument against RUNBOOKS and should not be read
+as one: it is conditioned on `Workflows` being granted **in place of** `Actions`,
+and RUNBOOKS grants both, so a token minted from it dispatches perfectly well. What
+survives is narrower and still worth stating — a grant the lane has no use for is
+authority to rewrite the target repository's CI, held for nothing.
 
 That does **not** explain the issue: `Workflows` is not `Issues`, and no reading of
 it permits `createIssue`. It is recorded here because it is the same question —
@@ -616,6 +631,16 @@ Both lines are checked. The first is the scoped claim; the second asserts this
 repository's standing rule that `main` is its only permanent branch, so a scoped
 cleanup that missed something *outside* its namespace is still caught.
 
+**Three of the definition's five clauses are what the lane asserts; the issue
+clause is not, and cannot be.** `scripts/live-github.sh` contains no occurrence of
+`issue` at all, and by the argument in *An issue is residue* it never should: a
+credential that is refused `closeIssue` and `deleteIssue` cannot check a clause it
+could not act on without either failing every run or being written to tolerate its
+own 403. So the issue clause is **operator-checked, not lane-checked** — its home is
+the `gh issue list` line under *After a run*, run by a person. Saying the lane
+asserts "zero residue" without that split would claim a check nothing performs,
+which is the same defect as a comment whose expected output is false.
+
 ### The one thing that cannot be cleaned up
 
 **A closed pull request is permanent.** GitHub has no API that deletes one, so
@@ -634,6 +659,13 @@ claimed it would be lying. For the same reason it is "beyond #25" and not "no
 issue": #25 cannot be deleted either, so a definition demanding its absence would
 be one more unachievable claim, and the honest form names the one entry that is
 grandfathered rather than pretending the count is zero.
+
+**Who checks which clause is part of the definition, not a footnote to it.** The
+lane checks four — the two counts and the branch listing in the transcript above.
+The issue clause is checked by an operator running the `gh issue list` line under
+*After a run*, because the lane's credential is refused every operation that would
+let it act on a finding. A definition that did not say so would read as though one
+process verified all five.
 
 ### An issue is residue, and it is worse than a branch
 
