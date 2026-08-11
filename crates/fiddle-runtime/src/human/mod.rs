@@ -38,19 +38,37 @@ use fiddle_core::{
     parse_marker, render_marker, HumanDecisionRequest, HumanDecisionRequirement, MarkerError,
 };
 
-/// The two types this module's neighbours reached first, re-exported so a reader
-/// of `human` finds the whole vocabulary of a decision in one place.
+/// A GitHub comment, as the adapter that reads one describes it.
 ///
-/// Neither is defined here and neither should be. [`HumanResponse`] describes a
-/// GitHub comment — `is_bot`, `author_association`, the two timestamps — which is
-/// the adapter's business rather than the domain's, so it lives beside the
-/// listing it is parsed from. [`ActorRef`] and [`InterpretedHumanDecision`] are
-/// domain vocabulary and live in `fiddle-core` with every other identity and
-/// every other verdict. A second definition of either would be two spellings of
-/// one wire type, which is the drift the marker's single `render`/`parse` pair
-/// exists to prevent one level down.
+/// Re-exported and not defined here: it carries `is_bot`, `author_association`
+/// and the two timestamps, which are facts about a GitHub comment and so the
+/// adapter's business rather than the domain's. It is named here because
+/// [`HumanInteractionPort::responses`] answers with them, and a reader of that
+/// signature should not have to go looking.
+///
+/// # `ActorRef` and `InterpretedHumanDecision` are deliberately *not* beside it
+///
+/// Both are `fiddle-core`'s and both were re-exported here for a while, on the
+/// reasoning that a reader of `human` should find the whole vocabulary of a
+/// decision in one place. That was wrong, and `github/mod.rs` had already written
+/// down why:
+///
+/// > a second path to it through the GitHub adapter would invite a consumer to
+/// > reach for the domain's identity type by way of the client that happens to
+/// > read one
+///
+/// `human` is such a client. The rule there is the rule here, and there is now
+/// one rule rather than two comments disagreeing.
+///
+/// What settles it is that nobody walked the second path. Every consumer reaches
+/// these types directly — `github/comments.rs` takes `fiddle_core::ActorRef`, and
+/// [`interpret`], which is this module's *own submodule*, takes
+/// `fiddle_core::decision::InterpretedHumanDecision`. So the re-exports had zero
+/// consumers, which makes them inert surface, which this milestone has refused on
+/// three separate beans. [`HumanResponse`] stays because the port's signature
+/// names it and removing it would send a reader of that signature to another
+/// module for a type this one hands them.
 pub use crate::github::HumanResponse;
-pub use fiddle_core::{ActorRef, InterpretedHumanDecision};
 
 /// How far a postcondition read will follow the conversation before refusing.
 ///
@@ -239,7 +257,7 @@ impl PublishDecisionRequest {
     ///
     /// Read off [`self.request.binding.request`](fiddle_core::DecisionBinding),
     /// and **not** off the [`HumanDecisionRequest::request`] field beside it. See
-    /// [`PublishDecisionRequest::asking`] for why those are two different values
+    /// `asking` below for why those are two different values
     /// and why only one of them is safe to use.
     pub fn target(&self) -> String {
         decision_request_target(&self.repo, self.pr, self.asking())
@@ -301,7 +319,7 @@ impl PublishDecisionRequest {
     /// conversation looks like that — and so is a body whose marker names another
     /// question. Neither is an error here.
     ///
-    /// The id compared against is [`PublishDecisionRequest::asking`]'s, which is
+    /// The id compared against is `asking`'s, which is
     /// the one this operation's own marker carries. Comparing the other one would
     /// post forever; that method's documentation is where the reason lives.
     fn is_this_request(&self, body: &str) -> bool {
@@ -352,7 +370,7 @@ impl IntegrationOperation for PublishDecisionRequest {
     /// the comment and reports the effect committed. Nothing re-posts.
     ///
     /// Every page, or an error. [`read_conversation`] refuses rather than
-    /// truncates at [`CONVERSATION_PAGES`], and an unreadable conversation is
+    /// truncates at `CONVERSATION_PAGES`, and an unreadable conversation is
     /// never an empty one — which matters more here than almost anywhere: reading
     /// a failed listing as "no request yet" would post a duplicate question on
     /// every attempt for as long as the listing stayed broken.
@@ -537,7 +555,7 @@ impl HumanInteractionPort for GitHubConversation {
 
     /// [`read_conversation`], and nothing added.
     ///
-    /// Bounded at [`CONVERSATION_PAGES`], so a conversation longer than that is
+    /// Bounded at `CONVERSATION_PAGES`, so a conversation longer than that is
     /// refused rather than truncated: "nobody has answered" and "I read as much as
     /// I was allowed" are different facts, and only the first is one to act on.
     async fn responses(
