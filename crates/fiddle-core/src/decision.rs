@@ -590,21 +590,17 @@ mod tests {
     /// what it should have been.
     ///
     /// A `for` loop of `assert_eq!` over a table stops at the earliest
-    /// divergence, so it can only ever observe its **first** case: the rest queue
-    /// behind one another, and rows two and three stay unobserved until somebody
-    /// fixes row one. That is not hypothetical here. The claim that three mangled
-    /// bodies each used to refuse as [`MarkerError::Version`] had to be checked by
-    /// hand in a scratch tree, because the loop that was supposed to be its
-    /// evidence could only ever show one of the three.
-    ///
-    /// To be exact about what the loop did and did not do: it *caught* any single
-    /// case that regressed, and either form does. What it could not do is
-    /// **report** a second one, so a claim about three bodies was not something
-    /// any one run could evidence — and the run that mattered was the one where
-    /// all three regressed together, which is the shape of a removed guard.
+    /// divergence. It *catches* any single case that regresses — either form
+    /// does — but it cannot **report** a second one in the same run, so a claim
+    /// quantified over three bodies was never something one run could evidence.
+    /// That is not hypothetical here: the claim that three mangled bodies each
+    /// used to refuse as [`MarkerError::Version`] had to be checked by hand in a
+    /// scratch tree, one body at a time, because the loop could name only one of
+    /// them. And the run that mattered was the one where all three regressed
+    /// together, which is the shape of a removed guard.
     ///
     /// So the whole table is compared in one [`assert_eq!`]: a run names every
-    /// case that moved, and no case can hide behind a case above it. The refusal
+    /// case that moved rather than only the earliest one to move. The refusal
     /// is reduced to the message a reader would see, and anything that is not a
     /// [`MarkerError::Malformed`] is spelled out with `{:?}` instead, so a body
     /// that started being accepted — or refused by a different variant — shows up
