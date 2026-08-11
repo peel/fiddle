@@ -1155,3 +1155,22 @@ Two smaller things from the same lane worth keeping:
 
 - **It pre-empted its own null result.** Its planned inversion was *"restore the silent default and see what notices"*, and it worked out in advance that the answer would be **nothing** — so the criterion "a test that forgets to script a response cannot pass" would have been a property asserted nowhere. It wrote `an_unscripted_graphql_call_cannot_pass_for_an_answer` first, so the inversion had a witness. That is the null-result discipline applied *before* the measurement rather than as a confession after it.
 - **It measured a diagnostic's usefulness rather than assuming it.** The filename is `eprintln!`'d before the panic because the client quotes `stderr` through a 120-character bound and a panic's own `thread … panicked at <file>:<line>` prefix consumes about 78 of them — so the name the diagnostic exists to carry would have been truncated out of the one place a test author reads it. Measured before it was written.
+
+### 2026-08-11 — The tracker CLI stalled on another project's hung processes, and archiving was not the fix
+Worth recording because the first diagnosis was wrong and the second is not something a reader would guess.
+
+Symptom: `beans show` taking 8–31 seconds and `beans update` timing out at 45, having previously been instant. A batch of three writes in one command hung for two minutes.
+
+**First diagnosis, and it was wrong.** The store had grown to 151 top-level files, so bean count looked like the cause. Archiving moved **418** beans — completed and scrapped, preserved and still queryable — leaving 31 files. **Reads stayed at 31 seconds.** Worth doing, and not the fix.
+
+**Actual cause.** `ps` showed **six hung `beans` processes querying `icecube-mps4`** — a different project entirely, invoked without `--beans-path`. They were holding whatever the CLI serialises on, so contention arrived from outside this repository and no amount of tidying inside it would help. They drained on their own: six to three, and reads back to 8 seconds.
+
+**The tell was in the timing all along.** 31 seconds wall against **0.25 seconds** of user+sys. A process burning no CPU is waiting, not working, and a store of 151 markdown files cannot take 31 seconds of anything. Reading the bean files directly took **0.4 seconds** throughout — so the store was always healthy and only the CLI was blocked.
+
+Three things to carry:
+
+- **Check CPU against wall clock before theorising about size.** Almost-zero CPU means blocked, and blocked means look for a lock or a peer, not for volume.
+- **The store is pure markdown** — YAML frontmatter plus body, an activity log, and the archived set; no index or database. Direct file reads are a safe fallback for anything load-bearing. Direct *writes* are technically safe but bypass the CLI's etag check, which is a real risk while lanes are live.
+- **An invocation from another project, missing `--beans-path`, can stall this one.** Worth knowing before someone spends an hour tidying their own tracker, as happened here.
+
+A smaller note, since it cost two commands: `hooks/archive-guard.sh` rejects any command whose *text* matches the archived-directory path, to stop readers pulling stale artifacts back in. It fires on an `ls` of that path — and, as this entry discovered, on a `BACKLOG` entry that merely quotes the path while explaining the guard. Writing about the guard trips the guard.
