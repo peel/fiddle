@@ -2108,6 +2108,55 @@ fn an_edited_request_comment_is_refused_rather_than_recomputed_around() {
         refused.stdout,
         refused.stderr
     );
+
+    // The question edited *before* the walk began, which is the third rule and was
+    // untested until an inversion said so. Deleting the product's `created_at !=
+    // updated_at` check broke nothing, because the case above moves `updated_at` and is
+    // caught by the listing-versus-re-read comparison first — the very rule the edited
+    // *approval* scenario already covers. So this half was proving the reply rule twice.
+    //
+    // Here `updated_at` matches the listing exactly, so that comparison has nothing to
+    // say, and only the stamps disagreeing can refuse.
+    let long_ago = World::with_model_script(a_real_repair());
+    let third = suspend(&long_ago);
+    let question = long_ago.the_only_request_comment();
+    assert_eq!(
+        question.created_at, question.updated_at,
+        "a question fiddle has just written carries two equal stamps, which is the \
+         baseline this case departs from"
+    );
+    long_ago.show_as_edited_before_the_listing(question.id);
+    long_ago.post_comment(AUTHORIZED, APPROVAL);
+    long_ago.accept_the_ready_mutation();
+
+    let refused = long_ago.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        long_ago.pull_request(third.pull_request)["draft"],
+        serde_json::json!(true),
+        "an edit made before this walk started is still an edit fiddle did not make: \
+         stdout={} stderr={}",
+        refused.stdout,
+        refused.stderr
+    );
+    assert_eq!(long_ago.graphql_calls(), 0);
+    assert_eq!(
+        long_ago.model_calls(),
+        2,
+        "step 5 precedes step 7, so no reply was interpreted"
+    );
+    assert_eq!(
+        refused.code,
+        Some(20),
+        "stdout={} stderr={}",
+        refused.stdout,
+        refused.stderr
+    );
 }
 
 /// A second comment naming one request is a state to report, never a set to pick

@@ -1486,6 +1486,19 @@ pub const SEEDED_AT: &str = "2026-08-11T00:00:00Z";
 /// only do so if the fixture can produce one.
 pub const EDITED_AT: &str = "2026-08-11T12:00:00Z";
 
+/// The `created_at` a comment carries when it was written **before** an edit that has
+/// already happened — strictly earlier than [`SEEDED_AT`], which is then its
+/// `updated_at`.
+///
+/// The value that makes `created_at` a discriminating field. `fiddle-pwyi` recorded it
+/// as unclosable by construction, on the ground that `SEEDED_AT` was the only value
+/// anything in this world ever wrote to it, so reading the field and inventing it were
+/// indistinguishable. That was true of the fixture as it stood. With a second value
+/// there is a difference to see: [`World::show_as_edited_before_the_listing`] writes
+/// this one, and the refusal it provokes is the product comparing two stamps rather
+/// than assuming them equal.
+pub const WRITTEN_BEFORE_AN_EDIT: &str = "2026-08-10T00:00:00Z";
+
 /// The id the first inline review comment this world holds is numbered from.
 ///
 /// **Above [`FIRST_POSTED_COMMENT`]'s 9000 on purpose, and the choice is what makes
@@ -2381,8 +2394,58 @@ impl World {
     /// never held — because silently scripting a re-read nobody performs is the
     /// vacuous version of this whole scenario.
     pub fn edit_comment_on_next_read(&self, id: u64, body: &str) {
+        self.script_the_re_read(id, |comment| {
+            comment["body"] = serde_json::Value::String(body.to_string());
+            comment["updated_at"] = serde_json::Value::String(EDITED_AT.to_string());
+        });
+    }
+
+    /// Make the re-read of comment `id` report that it was edited **before** this walk
+    /// began, without the window between the two reads having moved at all.
+    ///
+    /// # Why this is a second capability rather than a variation of the first
+    ///
+    /// The product has two refusals about fiddle's own question and they are different
+    /// claims. `reread` refuses when `updated_at` moved *between the listing and the
+    /// re-read*; a separate check refuses when `created_at != updated_at` on the
+    /// re-read, which is a claim about the comment's **whole history** — the rule's own
+    /// documentation says "an edit made long before this walk started fails it too".
+    ///
+    /// **An inversion proved the second rule was untested.** Deleting the `created_at
+    /// != updated_at` check broke nothing, because [`World::edit_comment_on_next_read`]
+    /// moves `updated_at` and is therefore caught by the *first* rule first — the same
+    /// mechanism the edited-approval scenario already exercises. So the scenario meant
+    /// to cover fiddle's question being rewritten was covering the reply rule twice.
+    ///
+    /// This isolates the second rule by leaving `updated_at` **equal to the listing's**
+    /// and moving `created_at` back instead. The window did not move, so the first rule
+    /// has nothing to say; the stamps disagree, so only the second can refuse.
+    ///
+    /// It also makes `created_at` discriminating for the first time. `fiddle-pwyi`
+    /// recorded that field as unclosable *by construction* because [`SEEDED_AT`] was
+    /// the only value anything in this world ever wrote to it — true of that fixture,
+    /// and no longer true: [`WRITTEN_BEFORE_AN_EDIT`] is a second value, and a
+    /// `created_at` that were hardcoded or ignored fails the scenario below.
+    pub fn show_as_edited_before_the_listing(&self, id: u64) {
+        self.script_the_re_read(id, |comment| {
+            comment["created_at"] = serde_json::Value::String(WRITTEN_BEFORE_AN_EDIT.to_string());
+        });
+    }
+
+    /// Write the by-id file the next re-read of `id` is answered from, starting from
+    /// the entry the listing really holds.
+    ///
+    /// The shared half of the two capabilities above. It starts from the listing so the
+    /// two reads differ in exactly the fields the caller touched and are identical
+    /// everywhere else — a file assembled from scratch would refuse for whichever key
+    /// the product happened to miss, which is a refusal about the fixture.
+    ///
+    /// The listing's `updated_at` is asserted unedited first: both callers are
+    /// expressing a divergence *from* the unedited state, and one built on a comment
+    /// this file had already edited would be measuring against the wrong baseline.
+    fn script_the_re_read(&self, id: u64, edit: impl FnOnce(&mut serde_json::Value)) {
         let listed = self.listed_comments();
-        let mut edited = listed
+        let mut comment = listed
             .iter()
             .find(|comment| comment["id"].as_u64() == Some(id))
             .unwrap_or_else(|| {
@@ -2397,17 +2460,16 @@ impl World {
             })
             .clone();
         assert_eq!(
-            edited["updated_at"].as_str(),
+            comment["updated_at"].as_str(),
             Some(SEEDED_AT),
             "the listing must still carry the unedited stamp, or the divergence this \
-             writes is not a divergence: {edited}"
+             writes is not a divergence: {comment}"
         );
-        edited["body"] = serde_json::Value::String(body.to_string());
-        edited["updated_at"] = serde_json::Value::String(EDITED_AT.to_string());
+        edit(&mut comment);
 
         let dir = self.stub.join(CONVERSATION).join(BY_ID);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(format!("{id}.json")), edited.to_string()).unwrap();
+        std::fs::write(dir.join(format!("{id}.json")), comment.to_string()).unwrap();
     }
 
     /// Tell the forge its pull request is at a different revision, and hand back the
