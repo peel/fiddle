@@ -510,8 +510,7 @@ pub struct GitHub {
     #[serde(default)]
     pub policy: PolicyTable,
 
-    /// Who this deployment nominated to decide, and how far a conversation read
-    /// may go.
+    /// Who this deployment nominated to decide.
     ///
     /// `Option` with no default, following `work` and `workflow` rather than
     /// `policy`, and the difference between the two is the whole reason: an absent

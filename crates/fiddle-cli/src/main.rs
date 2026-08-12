@@ -939,8 +939,15 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 // no forge — it reaches one — but because `resolve_forge` reads
                 // `HEAD` out of `github.work` before the capability runs, and the
                 // worktree a proposal publishes from is created *by* the attempt.
-                // A forge for it is the configuration task's to build, together
-                // with the arm in `build_capability` that would borrow it.
+                //
+                // That forge and the `build_capability` arm that would borrow it
+                // are **owed**, and they are owed to the bean that builds the
+                // scripted world a decision walk needs — not to the configuration
+                // task, which this comment used to name. Configuration added the
+                // `[github.decision]` table and was ruled off the construction, on
+                // the argument that a forge, a production `DecisionTrace` and an
+                // `InterpretationBounds` no test can drive are three inert
+                // surfaces rather than a capability. See the arm itself.
                 Selection::Mark | Selection::Repair | Selection::Propose => None,
             };
             let selected = build_capability(

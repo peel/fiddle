@@ -442,7 +442,10 @@ fn config_check_rejects_an_unknown_key_inside_the_policy_table() {
 }
 
 // ---------------------------------------------------------------------------
-// `[github.decision]` — who may decide, and how far a conversation read may go.
+// `[github.decision]` — who may decide. One key, and the reason it is one is at
+// `config::Decision`: a page bound was specified for this table and removed,
+// because a constant that cannot disagree with itself is what two reads of one
+// conversation need.
 // ---------------------------------------------------------------------------
 
 /// The numeric user id the fixtures below nominate. An id and never a login,
