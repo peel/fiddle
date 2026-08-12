@@ -1387,3 +1387,57 @@ would have been easy to report "installed and working" on the strength of the ve
 running server. **An installed tool is not a working tool, and the test has to exercise the path the tool
 was chosen for** — here, two different target directories, which is precisely the configuration that
 failed.
+
+### The grant discrepancy is resolved: a public repository, not an undocumented permission
+
+`fiddle-gund` recorded that the effects credential's effective grant was **wider than four documents
+describe** — `.env.example`, the permission table in `effects-repository.md`, the calibration, and ADR 018
+all describe a grant under which `createIssue` should not have succeeded, and it did, while every
+issue-*modifying* operation was refused. It was recorded unresolved and belonging to the operator, which
+was the right disposition at the time. **The operator has now answered, and the answer resolves it: the
+token has no Issues access at all.**
+
+The reconciliation, measured rather than argued:
+
+- **`peel/fiddle-effects-acceptance` is a public repository** with issues enabled (`visibility: public`,
+  `has_issues: true`). On a public repo, **any authenticated identity may open an issue** — that is
+  ordinary public bug-reporting behaviour and requires no repository permission whatsoever. So
+  `createIssue` succeeding is not evidence of an Issues grant.
+- **Modifying issue state is permission-gated**, which is why REST `PATCH state=closed` returned 403 and
+  GraphQL `closeIssue` and `deleteIssue` both returned 200 carrying `FORBIDDEN`. Those refusals are the
+  grant showing through.
+- **So the asymmetry that looked like an undocumented permission was two different mechanisms**: public
+  semantics permitting the create, and the absent grant refusing every modify. The four documents were
+  right. Nothing needs widening and nothing was wider than described.
+
+**The table's own standing rule caught this, one level deeper than anyone had applied it.** The rule reads
+*"scope is proven by a 403 and never by a successful read."* The probe treated a successful **write** on a
+public repo as evidence about the grant, which is the same error the rule forbids for reads: a success can
+be explained by something other than the permission you are testing for. **On a public repository, a
+successful write to a public-write-open surface proves nothing either.**
+
+**A second instance of the same error was caught in the course of resolving this, and it was the lead's.**
+The scoped token was used to read `peel/fiddle` and `peel/fiddle-acceptance` — the two repositories this
+milestone's constraints record as **403, verified** — and both reads **succeeded**. That looked briefly
+like the credential had been widened. It had not: **both of those repositories are public too**, so the
+reads were public reads and proved nothing. The sound test is a permission-gated endpoint, and it confirms
+the boundary exactly:
+
+| repository | `GET /repos/{r}/collaborators` (requires push/admin) |
+|---|---|
+| `peel/fiddle` | `Resource not accessible by personal access token` |
+| `peel/fiddle-acceptance` | `Resource not accessible by personal access token` |
+| `peel/fiddle-effects-acceptance` | `1` |
+
+**The token's selection is the disposable repository alone, and this is now proven by denial rather than
+recorded on trust.** Use a permission-gated endpoint for scope proofs; `GET /repos/{owner}/{repo}` cannot
+serve, because every one of these repositories answers it to anybody.
+
+**Residue:** issue #25 ("scope probe") is **closed** as of this check. The rule stands unchanged — a lane
+must not create an issue at all — and it is now better founded, since the reason a lane can create one is
+that the repository is public, which no credential change can prevent.
+
+Owed, and small: the permission table's Issues row, its subsection, and ADR 018 still describe this as
+unexplained. The file's header rule is *append, never rewrite an existing finding*, so the correction is
+an appended resolution rather than an edit, and it wants its own bean rather than a quiet change to a
+converged bean's artifact.
