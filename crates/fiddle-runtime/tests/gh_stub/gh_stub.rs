@@ -1141,24 +1141,144 @@ fn posted_comments(dir: &Path, bare_path: &str) -> Vec<serde_json::Value> {
 /// ever read: the re-read exists to find out whether a comment changed since it
 /// was listed, and nothing lists a review comment.
 ///
-/// Unscripted is a panic here as well, and for a sharper reason than on the
-/// listing. The tempting default is a 404 — a comment deleted between the two
-/// reads, which is a real thing the world does — but that is a *scenario*, and
-/// a fixture that produced it for a file a test forgot to write would answer a
-/// question nobody asked. When a bean needs a deletion it can be scripted; what
-/// it cannot be is the answer to an oversight.
+/// # The scripted file wins, and it has to
+///
+/// A test that writes `by-id/<id>.json` is saying *this is what the re-read
+/// returns, whatever the listing says* — which is the only way to express an
+/// **edit between the two reads**, the one thing step 5 of the validation order
+/// exists to catch. `decision_protocol`'s `with_edited_approval` builds exactly
+/// that: one listing entry and one by-id entry differing only in `updated_at`.
+/// So the file is consulted first and the fallback below never overrides one.
+///
+/// # And when nothing is scripted, the listing answers — which it could not before
+///
+/// This route used to panic for **every** unscripted id, on the argument that a
+/// default 404 would be a *scenario* answering an oversight. That argument still
+/// holds for a 404 and is why there is none. What it did not justify was refusing
+/// to answer about a comment **this world visibly holds**: the route knew nothing
+/// of the two sources the listing draws on, so a comment the world's own `POST`
+/// created could not be re-read at all.
+///
+/// **The consequence was that no continuation walk had ever been driven against a
+/// posted question** — only against comments a test wrote straight into a by-id
+/// file. The step whose whole purpose is comparing a re-read against a listing had
+/// been exercised solely against inputs a test constructed on both sides. That is
+/// the same shape as this fixture's other constructor-mistaken-for-observer traps,
+/// one layer beneath them, and `fiddle-565u` is where it surfaced.
+///
+/// So the fallback is [`listed_conversation_comments`], the *union of both sources
+/// the listing merges*, and it is deliberately not one of them: a fallback over the
+/// world log alone answers fiddle's own `POST` and not a reply a test seeded onto a
+/// page, and a fallback over the page files alone does the reverse. Step 5 re-reads
+/// **the request comment and every candidate**, so answering one kind and not the
+/// other leaves the walk refusing exactly where it did before.
+///
+/// An unmatched id is still a panic, now saying both things it looked at, because
+/// "no file and no such comment" and "no file" are different oversights.
+///
+/// Two comments sharing an id is reported and never chosen from — the rule this
+/// fixture applies to duplicate pull requests and duplicate request comments, for
+/// the same reason: there is no principled way to pick, and a world holding two is
+/// one somebody assembled.
+///
+/// **That arm is unreachable in this build and is kept anyway.** Relaxing it to take
+/// the first of several broke no test, because nothing constructs a duplicate: a
+/// seeded comment is numbered above everything the conversation shows, and a posted
+/// one from [`FIRST_POSTED_COMMENT`]. The one collision `World::post_comment`
+/// documents — a run that wrongly posted a *second* question after a reply was
+/// seeded — needs the very defect a continuation exists not to have.
+///
+/// It is kept because the alternative is not "no branch", it is *taking the first*,
+/// and this match has to be total. A fail-closed arm that no test can reach is not
+/// the same thing as a check that cannot fail: it adds no confidence, and it removes
+/// the option of silently answering about the wrong comment. Said here so a later
+/// reader does not mistake its untestedness for deadness.
 fn comment_by_id(dir: &Path, id: &str) -> (u16, String, String) {
     let file = dir
         .join("issue-comments")
         .join("by-id")
         .join(format!("{id}.json"));
-    let body = std::fs::read_to_string(&file).unwrap_or_else(|_| {
-        panic!(
-            "nothing scripted at {}; a comment is answered from its file or not at all",
+    if let Ok(body) = std::fs::read_to_string(&file) {
+        return (200, String::new(), body);
+    }
+
+    let listed: Vec<serde_json::Value> = listed_conversation_comments(dir)
+        .into_iter()
+        .filter(|comment| {
+            comment["id"]
+                .as_u64()
+                .is_some_and(|held| held.to_string() == id)
+        })
+        .collect();
+    match listed.as_slice() {
+        [only] => (200, String::new(), only.to_string()),
+        [] => panic!(
+            "nothing scripted at {}, and this world's conversation lists no comment \
+             {id}: a comment is answered from its file, or from the listing, or not \
+             at all",
             file.display()
-        )
-    });
-    (200, String::new(), body)
+        ),
+        many => panic!(
+            "{} comments in this world share id {id}, and a re-read is reported \
+             rather than chosen from",
+            many.len()
+        ),
+    }
+}
+
+/// Every comment the conversation collection would list, from **both** of the
+/// sources its listing draws on.
+///
+/// The page files a test wrote, in page order, and then the comments this world's
+/// own `POST`s created — which is the order and the composition
+/// [`with_posted_comments`] produces for a read of the last page, and it is written
+/// as one function rather than two so the by-id route and the listing route cannot
+/// come to disagree about what the conversation holds.
+///
+/// The posted half is gathered per conversation path rather than over every `POST`
+/// at once, because [`posted_comments`] numbers from [`FIRST_POSTED_COMMENT`]
+/// *within* a path: a question published on one pull request must not appear in
+/// another's conversation, and pooling the writes would give two conversations'
+/// first comments the same id. Discovering the paths from the world log rather than
+/// taking one as an argument is what lets a by-id read — whose path names no issue
+/// — be answered at all.
+fn listed_conversation_comments(dir: &Path) -> Vec<serde_json::Value> {
+    let mut found = Vec::new();
+
+    // The seeded half: whole page files, and never `by-id/*.json` beside them,
+    // which is why the pages are walked by number rather than by globbing.
+    let pages = dir.join(CONVERSATION);
+    let mut page = 1;
+    while let Ok(text) = std::fs::read_to_string(pages.join(format!("page-{page}.json"))) {
+        if let Ok(serde_json::Value::Array(listed)) = serde_json::from_str(&text) {
+            found.extend(listed);
+        }
+        page += 1;
+    }
+
+    // The posted half, per conversation. A `POST` to `/repos/o/r/issues/{n}/comments`
+    // is recorded under the mangled key, so the paths are read back out of it.
+    let mut conversations: Vec<String> = std::fs::read_to_string(dir.join("world"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|landed| landed["key"].as_str().map(str::to_string))
+        .filter(|key| key.starts_with("POST_repos_") && key.ends_with("_comments"))
+        .filter(|key| key.contains("_issues_"))
+        .collect();
+    conversations.sort();
+    conversations.dedup();
+    for key in conversations {
+        // Un-mangling a key into a path cannot recover an owner or repository whose
+        // own name held an underscore — `script_key` threw that apart. It does not
+        // have to: [`posted_comments`] re-mangles whatever path it is given by the
+        // same substitution, so key → path → key round-trips **exactly** whether or
+        // not the middle step is a real path. The path is an intermediate, and the
+        // key is what selects the writes.
+        let path = format!("/{}", key.trim_start_matches("POST_").replace('_', "/"));
+        found.extend(posted_comments(dir, &path));
+    }
+    found
 }
 
 /// What a bare repository's `refs/heads/<branch>` points at, or `None` when it

@@ -32,16 +32,28 @@
 //! deleted, by
 //! [`a_suspension_leaks_the_credential_on_no_surface_a_reader_reaches`].
 //!
-//! # Two fixture steps a scenario has to make, and why the stub cannot
+//! # One fixture step a scenario has to make, and why the stub cannot
 //!
-//! Both are recorded in full on the helpers, and neither invents a fact:
 //! [`World::answer_pull_request_by_number`] supplies GitHub's by-number answer for
-//! a pull request a run just created, because a create carries no revision and the
-//! stub therefore cannot derive one; and
-//! [`World::make_the_conversation_re_readable`] answers the by-id route the
-//! validation order's step 5 reads through, which has no merge on purpose. Each
-//! takes its values from the world — the remote's own ref, and the listing's own
-//! bytes — rather than from anything fiddle printed.
+//! a pull request a run just created. The stub cannot derive it: a create body
+//! carries a head *label*, a base and a title and **no revision**, so the one fact
+//! `EnsurePullRequestReady` and the validation order both turn on is not something
+//! the create could have told it. The value comes from the remote's own ref, read
+//! with real git, and is asserted against the marker the run published — never from
+//! anything fiddle printed.
+//!
+//! **There were two.** The second answered the by-id route the validation order's
+//! step 5 reads through, and it is gone because that route now answers for itself,
+//! from the two sources its own listing draws on. That the route could not was the
+//! deepest finding on this milestone: because it panicked for any comment the
+//! world's own `POST` created, **no continuation walk had ever been driven against a
+//! posted question** — only against comments a test wrote into a by-id file on both
+//! sides of a comparison. `gh_stub`'s `comment_by_id` carries the full reasoning and
+//! why the scripted file still wins.
+//!
+//! The generalisation is worth more than either instance: **when a fixture has two
+//! reads of one collection, closing one says nothing about the other, and the one
+//! nobody has closed is the one the product depends on next.**
 
 mod support;
 
@@ -890,16 +902,14 @@ fn a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says() {
 
     // --- a person answers ---
     world.post_comment(AUTHORIZED, APPROVAL);
-    // The re-read the validation order's step 5 makes is answered from what the
-    // listing really returned, and it is made *after* the reply so the reply is in
-    // it. The count is the denominator: a mirror of nothing would leave the walk
-    // failing on a file it wanted rather than passing.
-    let mirrored = world.make_the_conversation_re_readable();
-    assert_eq!(
-        mirrored, 2,
-        "the question and the reply are both re-readable, and {mirrored} were mirrored"
-    );
     world.accept_the_ready_mutation();
+    // **No fixture step between the reply and the continuation, and that absence is
+    // the point.** The validation order's step 5 re-reads the request comment and
+    // every candidate by id, and the scripted `gh` now answers that route from the
+    // two sources its own listing draws on — the page a person's reply was written
+    // to, and the `POST` fiddle's question really made. This scenario used to have
+    // to mirror the conversation into by-id files first, and a step a test has to
+    // remember is a step a test can forget.
 
     // --- process B: a fresh process, given only the same InvocationRef ---
     let b = world.fiddle([
@@ -1045,7 +1055,6 @@ fn each_process_is_its_own_attempt_against_one_work_ref() {
     let a = suspend(&world).run;
 
     world.post_comment(AUTHORIZED, APPROVAL);
-    world.make_the_conversation_re_readable();
     world.accept_the_ready_mutation();
     let b = world.fiddle([
         "run",
@@ -1060,6 +1069,27 @@ fn each_process_is_its_own_attempt_against_one_work_ref() {
     // is unaffected — a run that exits 11 has still minted its own attempt id and
     // still published a bundle naming the work it was about.
     assert_eq!(b.code, Some(11), "stdout={} stderr={}", b.stdout, b.stderr);
+    // **And the exit code alone is not enough to say B continued, which an
+    // inversion is what taught.** Row 11 is `retryable`, and while `usp7` stands it
+    // is what a *successful* continuation earns — so it is also what a continuation
+    // that refused at step 5 earns, because an unreadable comment is an adapter
+    // failure and adapter failures are retryable too. One number, two outcomes.
+    //
+    // Three inversions over the by-id route came back null against this test for
+    // exactly that reason, while the walk above caught all three. These two lines
+    // close it: they are the smallest observation that distinguishes *B did the
+    // transition* from *B could not read the conversation*, and they are read out of
+    // the world rather than out of B's own payload.
+    assert_eq!(
+        world.graphql_calls(),
+        1,
+        "B must have continued rather than merely failed retryably"
+    );
+    assert_eq!(
+        world.pull_request(CONVERSATION_ISSUE)["draft"],
+        serde_json::json!(false),
+        "and the forge is what says the transition happened"
+    );
 
     assert_ne!(
         world.attempt_id(&a),
