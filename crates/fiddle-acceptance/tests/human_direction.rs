@@ -1494,16 +1494,25 @@ struct Row {
 ///
 /// # The mutation is armed on every row, including the seven that must not mutate
 ///
-/// [`World::accept_the_ready_mutation`] is called unconditionally, and that is the
-/// load-bearing choice in this test. The GraphQL route has no unscripted default: a
-/// run that wrongly dispatched the transition against an unarmed world would fail
-/// inside the stub, leave `draft` true, and **pass** every assertion below while
-/// having attempted precisely the act the row forbids.
+/// [`World::accept_the_ready_mutation`] is called unconditionally, so the world is
+/// *willing* to mark the pull request ready on every row. What that buys is
+/// **attribution rather than detection**, and the difference was measured rather than
+/// argued: arming was removed and a row's product check deleted at the same time, and
+/// the row still failed — on `graphql_calls`, because a dispatch is counted whether or
+/// not the world answers it.
 ///
-/// Armed, the world is *willing*. A wrongly dispatched mutation is answered, the stub
-/// rewrites the pull request out of draft, and the row fails on `draft` — which is
-/// the failure the milestone is about, reported as itself. "Still a draft" now means
-/// fiddle refused, rather than meaning the fixture did.
+/// So arming is not what catches a wrongly dispatched transition; `graphql_calls` is.
+/// What arming changes is *which* failure a reader is handed. Armed, the mutation is
+/// answered, the stub rewrites the pull request out of draft, and the row fails on
+/// `draft` — the forge's own word, and the exact failure this milestone exists to
+/// prevent. Unarmed, the same defect is reported as a transition dispatched into a
+/// world that would not answer it, which is a sentence about the fixture.
+///
+/// It also makes "still a draft" mean fiddle refused rather than that the fixture did,
+/// which is what lets `draft` be the criterion's evidence at all.
+///
+/// (This paragraph replaced a claim that an unarmed world would let such a row **pass**.
+/// That was wrong, and the inversion that was meant to confirm it disproved it instead.)
 const MATRIX: &[Row] = &[
     Row {
         name: "plain approval",
