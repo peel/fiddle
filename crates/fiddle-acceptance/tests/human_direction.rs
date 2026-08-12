@@ -1692,6 +1692,31 @@ fn the_decision_matrix_mutates_only_where_it_should() {
             run.stderr
         );
 
+        if name == "no reply at all" {
+            // **The commonest suspension message, asserted — and it is what makes
+            // `and_who_was_not_counted`'s empty branch unreachable.**
+            //
+            // Nobody wrote anything, and the declined list is still not empty: the walk
+            // declines fiddle's own question as `RequestComment`, so every suspension
+            // carries at least one entry. That is the fact the product's empty guard is
+            // documented as unreachable *because of*, and until now it was reasoned
+            // rather than measured — an inversion putting `panic!` in that branch fires
+            // no test, which proves the branch is dead but not why.
+            //
+            // This is also the message a reader meets most often, so it is worth pinning
+            // that reporting fiddle's own comment is what it says rather than a surprise.
+            let published = world.all_published_bytes();
+            assert!(
+                published.contains(&format!(
+                    "comment {question} by {FIDDLE_BOT} (the request comment is not a \
+                     reply to itself)"
+                )),
+                "{name}: a suspension with no replies still records the one comment the \
+                 walk declined: {}",
+                &published[..published.len().min(3000)]
+            );
+        }
+
         if name == "review comment only" {
             // **The reply is where a reply would count, and it still did not.** Without
             // this, [`FIRST_REVIEW_COMMENT`]'s value appears only in a position where
