@@ -1341,3 +1341,49 @@ Recorded with the lane's closing observation, which is the right frame for all t
 bean produced: every one was **a true statement that a neighbour's change made false**, and each was
 caught by a reader who had the means to check and used it. That is a healthy failure mode. The one that
 nearly escaped was the one where the reader had the means, used them, got the right answer, and deferred.
+
+### sccache does not share across lanes, and the three-pass measurement says why
+
+Two infrastructure incidents on this milestone — load average 81, then the disk at 96% — share one root
+cause: **a private `CARGO_TARGET_DIR` per lane means no shared compilation cache**, so every lane
+rebuilds the whole tree and keeps its own 4–8G of artifacts. `sccache` was installed to fix it. **It does
+not fix the stated problem, and the measurement is unambiguous.**
+
+Three passes of `cargo check -p fiddle-core --all-features`, identical code, `CARGO_INCREMENTAL=0`,
+`RUSTC_WRAPPER=sccache`:
+
+| pass | target dir | cache hits | wall |
+|---|---|---|---|
+| 1 — cold cache | `sc-a` | 0, with **19** cacheable compilations stored | 22.46s |
+| 2 — **different** dir, same code | `sc-b` | **1 of 32 requests** | 10.87s |
+| 3 — **same** dir as pass 1, deleted first | `sc-a` | **19** — exactly what pass 1 stored | **4.06s** |
+
+**The target-dir path is part of the cache key.** Pass 3 recovered every one of pass 1's stored
+compilations by rebuilding at the same path; pass 2 recovered one by rebuilding the same code at a
+different path. The cause is not a misconfiguration: the `dev` profile carries debuginfo, which embeds
+absolute paths, so artifacts built into two different directories **are genuinely different artifacts**
+and sccache is right to refuse to share them.
+
+**So what it actually buys is different from what it was chosen for, and is still worth having.**
+It does not deduplicate compilation *across* lanes. It makes **deleting a target directory cheap** — a
+cold rebuild at a path sccache has seen is 4.06s against 22.46s, a 5.5× recovery from a bounded 10 GiB
+shared cache. That converts the disk problem from "reclaim space and pay a full rebuild" into "reclaim
+space freely", which is the pressure that prompted this. Pair it with routine target-dir reclamation
+rather than treating it as a substitute.
+
+**What would fix the stated problem, neither done here:**
+
+- **One shared `CARGO_TARGET_DIR` for all lanes.** Cargo's own file lock serialises builds, so lanes block
+  on each other — tolerable given this epic's dependency graph is nearly linear, and it removes the
+  redundant compilation entirely rather than caching around it.
+- **`--remap-path-prefix`** to normalise absolute paths so artifacts stop being path-dependent, which
+  would let sccache share across directories. It is a workspace-wide `RUSTFLAGS` change that affects
+  backtraces and debugger paths, so it is a real tradeoff and not a free win.
+
+**The method note is the transferable part.** The first check ran `sccache rustc probe.rs -o probe1`
+twice and reported **2 requests, 0 hits, 0 misses, 2 non-cacheable** — which proves the wrapper is
+invoked and nothing about whether real builds cache, a bare link step being non-cacheable by design. It
+would have been easy to report "installed and working" on the strength of the version string and the
+running server. **An installed tool is not a working tool, and the test has to exercise the path the tool
+was chosen for** — here, two different target directories, which is precisely the configuration that
+failed.
