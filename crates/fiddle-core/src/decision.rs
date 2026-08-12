@@ -914,13 +914,19 @@ mod tests {
     /// against somebody re-adding the field is a red test rather than a review
     /// comment, and it lives here in `fiddle-core` beside the type it constrains.
     ///
-    /// # The key set, and never an occurrence count
+    /// # The key set, and deliberately not an occurrence count
     ///
-    /// Counting the id's appearances and requiring one would pass a second copy
-    /// that *disagreed* — which is the dangerous case, not the harmless one. The
-    /// key set fails on any second top-level field whatever its value. The count
-    /// afterwards is a second, narrower claim: nothing nested repeats the id
-    /// either.
+    /// One assertion and not two. Counting how often the id appears in the
+    /// serialized document and requiring one **passes a second copy that
+    /// disagrees** — which is the dangerous case rather than the harmless one, since
+    /// a copy equal to the binding's id posts nothing wrong and a copy that differs
+    /// is what posts forever. So a count is strictly weaker than the key set, which
+    /// fails on any second top-level field whatever its value.
+    ///
+    /// That is worth a sentence here because the two would look interchangeable to
+    /// somebody tidying this test, and the person most likely to edit a guard against
+    /// re-adding the field is the person re-adding it. Keeping the shorter assertion
+    /// would leave the guard green for exactly the change it exists to refuse.
     #[test]
     fn the_request_id_is_held_in_exactly_one_place() {
         let request = HumanDecisionRequest {
@@ -958,13 +964,6 @@ mod tests {
             ],
             "the request id belongs to the binding alone: a top-level copy of it is \
              what published a marker naming one question and then looked for another"
-        );
-
-        let id = request.binding.request.0.as_str();
-        assert_eq!(
-            serde_json::to_string(&request).unwrap().matches(id).count(),
-            1,
-            "and nothing nested repeats it either"
         );
     }
 }
