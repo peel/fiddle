@@ -1607,3 +1607,48 @@ the pristine-copy pattern has three requirements and this milestone has now foun
    version from before the tree moved.
 3. And the guard must compare against something whose currency is established, which (1) and (2) together
    make automatic: a fresh pin of a known file set has no gap between what was copied and what was there.
+
+### Agreement is not verification: a plausible mechanism confirmed by a second reader has been checked zero times
+
+Twice on `fiddle-z9vy`, and the second instance is the clearer one.
+
+**The instance.** The lane's first message reported that an approval for a moved head "refuses at step 2 via
+`RequestAbsent` → `Correctable` → exit 11", correcting the bean's own claim of "refused at step 3 on identity".
+The reasoning was good: the gated target is `{repo}#{pr}@{head}`, the request id derives over that target, so a
+moved head yields an id no comment names. **The lead confirmed it back**, calling the reasoning sound and
+asking only that it be inverted.
+
+Then it was measured. `panic!` on entry to `resolve`: **7 of 22 tests failed and
+`an_approval_for_a_head_that_has_moved_is_unrecognisable_not_merely_rejected` PASSED.** A moved head **never
+enters `resolve` at all** — so neither step 2's `RequestAbsent` nor step 6's `HeadMoved` is the refusal, and
+**it is not a refusal**. Exit 10, having published a fresh question about the head that now exists:
+`PublishDecisionRequest::inspect` finds no comment carrying the new marker, answers `None`, and the capability
+takes the first walk and asks.
+
+**Three claims, two wrong, and the wrong ones were the ones that had been agreed.** The bean's, the lane's, and
+the measurement's. The lane's final report and bean text had it right; the lead's ruling restated the earlier
+version, so the wrong mechanism was in writing twice — by two different readers — before anything ran.
+
+**The general shape.** When a lane proposes a mechanism and the lead confirms it, the claim has been examined by
+two people and **tested by nobody**. Worse, it now *reads* as corroborated: a later reader sees a claim made
+and independently agreed, which is the signature of a verified fact. Agreement between readers who share a
+model of the code is not independence — it is the same reasoning performed twice.
+
+**So a mechanism claim is not corroborated by assent.** The only thing that corroborates it is a run that would
+have failed had it been false. On this milestone the cheap form is available almost always: `panic!` at the
+entry to the function the mechanism names, and see which tests notice. That single mutation refuted a claim two
+readers had agreed on, and it took one line.
+
+**A second instance on the same bean, in the opposite direction.** The lane wrote that
+`Ignored::as_str`'s only caller was a unit test. The lead "corrected" it by pointing at `validate.rs:630` and
+`:636` — which are **`serde_json::Value::as_str()`** on `response.body["state"]` and
+`response.body["head"]["sha"]`, a different method on a different type. The lead's correction was itself the
+token-vs-structure error the lead had documented **in that same dispatch**. The lane refuted it by grepping for
+the *receiver* rather than the method: `reason.as_str` gives one hit in that file, at `:775`, and
+`#[cfg(test)]` begins at `:659`.
+
+**Both instances have the same remedy and it is not "be more careful".** It is that a claim about *mechanism* —
+which code path runs, which guard fires, who calls what — should be stated with the mutation that would refute
+it, and the mutation should be run. The lane's practice of pinning the exit code *and* naming the guard, then
+inverting to confirm which guard fires, is what caught both. **A mechanism nobody tried to break is a
+hypothesis with a citation.**
