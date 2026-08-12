@@ -1503,3 +1503,65 @@ Landed as `fiddle_core::decision::tests::the_request_id_is_held_in_exactly_one_p
 
 Origin: evaluation of `fiddle-11vj` (codex confirming pass pending)
 Tags: #debt #idea
+
+### `mkdir -p` into a shared scratchpad inherits another lane's files, and a restore loop then writes them
+
+`fiddle-565u`'s inversion driver created its pristine-copy directory with `mkdir -p "$SP/pristine"`. That
+directory **already existed** and already held three `.rs` files another lane had pinned there. `mkdir -p`
+succeeds silently on an existing directory, so the driver treated a populated directory as its own. Its
+restore loop then walked *everything in that directory* and copied all of it back — including three files it
+had never pinned — into the **repository root** as untracked `decision_protocol.rs`, `human_mod.rs` and
+`validate.rs`.
+
+**No tracked file was harmed.** The lane verified `crates/fiddle-runtime/src/human/validate.rs` and
+`tests/decision_protocol.rs` were both unmodified, removed the three strays before committing, and reported
+it unprompted. The lead had independently noticed the strays in a status check and flagged them; the lane's
+explanation arrived with the cause already diagnosed.
+
+**Two mechanisms combined, and both are general.**
+
+**`mkdir -p` is not "make me a fresh directory".** It is "ensure a path exists", and it cannot distinguish
+between a directory it created and one it found. Any script that follows `mkdir -p` by treating the directory
+as exclusively its own is wrong on the second run and wrong when a sibling shares the parent. The scratchpad
+on this milestone is shared by every lane, so `$SP/<generic-name>` is a collision waiting for a second
+occupant. Use a name that cannot collide — the bean id — or create with plain `mkdir` and let it fail when the
+path exists, which is the whole point of the failure.
+
+**A restore loop that walks a directory restores whatever is in it.** The pristine-copy pattern is sound —
+copy before mutating, `cmp` after restoring, verify byte-identical — but its safety rests on the copy set
+being *exactly* what was pinned. A loop over `ls` rather than over a recorded manifest silently widens to
+include anything a neighbour left behind. **Record what you pinned and restore from that list, not from the
+directory.** The failure is asymmetric and quiet: extra files are written where they do not belong, and the
+`cmp` on the files that *were* pinned still passes, so every guard reports success.
+
+Nothing about the inversion evidence is affected — the mutations, their restores and the byte comparisons were
+all correct — but the incident is a reminder that a shared scratchpad is shared state, and this milestone has
+several lanes writing into it at once.
+
+### A latent fixture race, found only by adding load, and fixed "reasoned, not measured"
+
+`fiddle-565u`'s three new scenarios landed in the same test binary as `fiddle-pwyi`'s killed-repair scenario.
+One gate run then failed inside `delete_workspaces` with **`Directory not empty`** — the first failure of its
+kind, and the first run in which those scenarios shared a binary.
+
+The diagnosis: `kill -9` reaches one process, and the `git` checking a worktree out is **not in its process
+group**, so it kept writing behind `remove_dir_all`'s walk. That is a plausible and specific account.
+
+**The lane could not reproduce it** — not under CPU load, not with the previous condition restored, eight runs
+each way. So it fixed the race twice and **labelled both fixes "reasoned, not measured" at the sites
+themselves**: `interrupt_a_repair_inside_its_worktree` now waits for the worktree to be *checked out* rather
+than merely to exist, which is what its own doc comment had always claimed it did; and `remove_tree` waits a
+racing writer out for up to a second.
+
+**Neither fix weakens anything**, which is the property that makes an unreproducible fix acceptable: every
+caller still asserts emptiness afterwards, so a tree that never empties still fails the test. The fix removes
+a race without removing the assertion that would catch the race's effect.
+
+**The disposition is the point.** An unreproducible failure invites two bad responses — ignore it as a fluke,
+or claim a fix works because the failure stopped appearing. Neither is available here: the lane stated the
+diagnosis as reasoning, marked it as unmeasured *in the code* rather than only in a report, and left the
+detecting assertion in place. **A fix labelled as reasoned is auditable; a fix presented as verified when the
+failure was never reproduced is a claim nobody can check.**
+
+Worth noting what exposed it: **added load on a shared test binary**, not a new assertion. Two beans' scenarios
+in one binary changed the timing enough to surface a race that eight deliberate attempts could not.
