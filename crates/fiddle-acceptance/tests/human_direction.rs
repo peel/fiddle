@@ -1448,22 +1448,36 @@ fn describe(comment: &Comment) -> String {
 /// are different acts against the fixture rather than different strings.
 struct Row {
     name: &'static str,
-    /// The verdict scripted for step 7, and the span the model claims to have
-    /// copied out of the reply.
+    /// The verdict scripted for step 7, and the span the model claims to have copied
+    /// out of the reply.
     ///
-    /// **`None` is an assertion, not an omission.** The gateway serves one reply per
-    /// connection and then drops its listener, so a row scripting no interpretation
-    /// is a row claiming the walk refuses *before the model exists* — and a walk that
-    /// reached step 7 anyway fails at the socket rather than being answered something
-    /// plausible. Five of the eight rows are that claim, and it is the one an
-    /// authorization matrix most needs: an unauthorized reply must not reach a model
-    /// that could be persuaded by it.
-    interpretation: Option<(&'static str, &'static str)>,
+    /// **Every row scripts one, including the five whose walk must never reach step
+    /// 7.** That is the same principle as arming the GraphQL mutation: the world is
+    /// made *willing*, so a refusal is fiddle's rather than the fixture's. The five
+    /// arm it to **approve** — the most dangerous answer available — so a walk that
+    /// wrongly took a bot's or a stranger's comment as a candidate is answered
+    /// "approve" and mutates, and the row fails on the forge.
+    ///
+    /// This replaced an `Option` that was `None` on those five rows, which was
+    /// **documented as an assertion and was not one**: the gateway drops its listener
+    /// when the script runs out, but `interpret` collapses every transport failure to
+    /// `Unclear` (`human/interpret.rs:266-271`), and `Unclear` is exit 10 with nothing
+    /// mutated — identical to the reply having been refused. Two inversions came back
+    /// null against it. See [`World::model_calls`].
+    interpretation: (&'static str, &'static str),
     /// What the conversation says when the continuation wakes.
     reply: fn(&World),
     exit: i32,
     /// Whether the pull request is out of draft afterwards — read from the forge.
     ready: bool,
+    /// How many completions the whole row spends: **two** for the suspension's
+    /// bounded attempt, plus one if and only if the walk reached step 7.
+    ///
+    /// The field that makes "no model was reached" a claim this table makes rather
+    /// than one its documentation asserts. Three says a reply was interpreted; two says
+    /// the six deterministic steps disposed of the conversation without a model
+    /// existing, which for an authorization matrix is the point.
+    model_calls: usize,
 }
 
 /// Every row asserts against the **remote**, and that is the whole design of this
@@ -1493,16 +1507,17 @@ struct Row {
 const MATRIX: &[Row] = &[
     Row {
         name: "plain approval",
-        interpretation: Some(("approve", APPROVAL)),
+        interpretation: ("approve", APPROVAL),
         reply: |world| {
             world.post_comment(AUTHORIZED, APPROVAL);
         },
         exit: 0,
         ready: true,
+        model_calls: 3,
     },
     Row {
         name: "rejection",
-        interpretation: Some(("reject", "no, drop this")),
+        interpretation: ("reject", "no, drop this"),
         reply: |world| {
             world.post_comment(AUTHORIZED, "no, drop this");
         },
@@ -1511,10 +1526,11 @@ const MATRIX: &[Row] = &[
         // rejection is the one non-approval that *concludes* the run.
         exit: 20,
         ready: false,
+        model_calls: 3,
     },
     Row {
         name: "unclear",
-        interpretation: Some(("unclear", "what does this change?")),
+        interpretation: ("unclear", "what does this change?"),
         reply: |world| {
             world.post_comment(AUTHORIZED, "what does this change?");
         },
@@ -1522,15 +1538,17 @@ const MATRIX: &[Row] = &[
         // non-approval is not automatically a failure.
         exit: 10,
         ready: false,
+        model_calls: 3,
     },
     Row {
         name: "unauthorized actor",
-        interpretation: None,
+        interpretation: ("approve", "approve"),
         reply: |world| {
             world.post_comment(STRANGER, "approve");
         },
         exit: 10,
         ready: false,
+        model_calls: 2,
     },
     // The two spellings of not being a person, and **both written by `AUTHORIZED`**.
     // That is deliberate and it is what makes the two rows mean anything: a bot reply
@@ -1540,37 +1558,41 @@ const MATRIX: &[Row] = &[
     // its authorship.
     Row {
         name: "bot author",
-        interpretation: None,
+        interpretation: ("approve", "approve"),
         reply: |world| {
             world.post_bot_comment(AUTHORIZED, "approve");
         },
         exit: 10,
         ready: false,
+        model_calls: 2,
     },
     Row {
         name: "app author",
-        interpretation: None,
+        interpretation: ("approve", "approve"),
         reply: |world| {
             world.post_app_comment(AUTHORIZED, "approve");
         },
         exit: 10,
         ready: false,
+        model_calls: 2,
     },
     Row {
         name: "review comment only",
-        interpretation: None,
+        interpretation: ("approve", "approve"),
         reply: |world| {
             world.post_review_comment(AUTHORIZED, "approve");
         },
         exit: 10,
         ready: false,
+        model_calls: 2,
     },
     Row {
         name: "no reply at all",
-        interpretation: None,
+        interpretation: ("approve", "approve"),
         reply: |_| {},
         exit: 10,
         ready: false,
+        model_calls: 2,
     },
 ];
 
@@ -1588,10 +1610,9 @@ fn the_decision_matrix_mutates_only_where_it_should() {
 
     for row in MATRIX {
         let name = row.name;
+        let (verdict, evidence) = row.interpretation;
         let mut script = a_real_repair();
-        if let Some((verdict, evidence)) = row.interpretation {
-            script.push(interprets(verdict, evidence));
-        }
+        script.push(interprets(verdict, evidence));
         let world = World::with_model_script(script);
 
         let suspension = suspend(&world);
@@ -1621,6 +1642,18 @@ fn the_decision_matrix_mutates_only_where_it_should() {
             usize::from(row.ready),
             "{name}: the number of ready transitions dispatched, counted by the world \
              that would have answered them"
+        );
+        // **Was a model reached at all.** Two means the six deterministic steps
+        // disposed of this conversation and step 7 never ran; three means a reply was
+        // interpreted. Without this the five refusing rows could not tell a reply that
+        // was declined from one that was accepted and then failed to interpret, and an
+        // inversion over each of `post_bot_comment` and `post_app_comment` came back
+        // null for exactly that reason.
+        assert_eq!(
+            world.model_calls(),
+            row.model_calls,
+            "{name}: completions served by the endpoint; the suspension spends two and \
+             step 7 spends the third"
         );
         assert_eq!(
             run.code,

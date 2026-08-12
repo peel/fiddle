@@ -2629,6 +2629,26 @@ impl World {
         .unwrap();
     }
 
+    /// How many completions the model endpoint answered, across every process this
+    /// world has run.
+    ///
+    /// # The observation that tells a refused reply from an unreadable one
+    ///
+    /// Written because an inversion came back **null** without it, and the null was in
+    /// the matrix's two most important rows. A walk that wrongly accepted a bot's
+    /// reply as a candidate reaches step 7, and if the script has no interpretation
+    /// left the model call *fails* — `interpret` collapses **every** transport failure
+    /// to `Unclear` (`human/interpret.rs:266-271`), and `Unclear` is
+    /// `AwaitingDecision`, exit 10, nothing mutated. Which is bit-for-bit the outcome
+    /// of the reply having been refused for not being a person.
+    ///
+    /// So "the script ran out" is not an assertion that the model was never asked; it
+    /// is an outcome indistinguishable from success. This counter is the assertion, and
+    /// it is read from the endpoint rather than inferred from an exit code.
+    pub fn model_calls(&self) -> usize {
+        self.gateway.served()
+    }
+
     /// How many GraphQL calls this world was asked to answer.
     ///
     /// Counted by the stub in a file rather than derived from the request log,
