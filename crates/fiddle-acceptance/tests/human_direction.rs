@@ -997,6 +997,22 @@ fn a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says() {
         serde_json::json!(false),
         "it was marked ready, and the forge is what says so"
     );
+    // **The denominator for C's empty execution list**, and the reason it is read
+    // here rather than asserted there alone: `capability_executions == []` is only a
+    // claim about C if the same field is *non*-empty for a process that did execute.
+    // B is that process, and this is the one place in the walk where both payloads
+    // are in hand.
+    let executed: serde_json::Value = serde_json::from_str(&b.stdout)
+        .unwrap_or_else(|error| panic!("stdout is not JSON ({error}): {}", b.stdout));
+    assert_eq!(
+        executed["capability_executions"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default(),
+        1,
+        "B executed the capability once, so an empty list below is a difference \
+         rather than the shape this field always has: {executed}"
+    );
 
     // Exactly one of each object, and the same ones: identity, not counts.
     assert_eq!(

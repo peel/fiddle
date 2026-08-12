@@ -118,12 +118,13 @@
 //!
 //! What has moved is the other side of it. This capability once recorded nothing
 //! **on any path**, including the path on which a person's approval had been read
-//! and the transition performed. That was not a design: it was
-//! `the_capability_holds_no_credential_and_accounts_for_no_work` asserting the
-//! file named none of the machinery, held in place because a converged sibling's
-//! evaluation had passed the property. The debt is paid — `fiddle-usp7` — and what
-//! it cost while it stood is worth recording, because the second cost is the one
-//! nobody predicted:
+//! and the transition performed. That was not a design: it was a source-level test
+//! asserting the file named none of the machinery — since reworded to
+//! `the_capability_holds_no_credential_and_accounts_for_work_in_one_place`, which is
+//! where the split between the two halves is argued — held in place because a
+//! converged sibling's evaluation had passed the property as it stood. The debt is
+//! paid — `fiddle-usp7` — and what it cost while it stood is worth recording,
+//! because the second cost is the one nobody predicted:
 //!
 //! - **A caller retrying never terminated.** The capability completed, the
 //!   transition landed exactly once, and the post-execution re-derivation then
