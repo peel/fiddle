@@ -2254,55 +2254,51 @@ fn a_copied_request_comment_stops_the_run_rather_than_being_chosen_between() {
     );
 }
 
-/// An unauthorized reply is read, declined, and **published about by nobody** — which
-/// is a defect, and this test is the tripwire that says so.
+/// An unauthorized reply is **recorded, with its reason**, so a reader learns somebody
+/// tried to answer rather than finding an unexplained suspension.
 ///
-/// # Why this is a tripwire and not the property the criterion asks for
+/// # This replaces a tripwire, which is the shape this milestone uses for a property it
+/// cannot yet assert
 ///
-/// `m3-ignored-replies-are-recorded` asks that an unauthorized reply appear in what the
-/// run published, with a reason, "so a reader learns somebody tried to answer rather
-/// than finding an unexplained suspension". **The product computes exactly that and
-/// then drops it**, so the property cannot be asserted at this sha and this test pins
-/// the gap instead.
+/// `an_unauthorized_reply_is_declined_but_the_run_publishes_no_reason_for_it` pinned the
+/// gap: `select_candidates` built a `Vec<IgnoredReply>` and `resolve` returned it on
+/// `DecisionResolution::ignored`, and **nothing in the workspace read it** —
+/// `continue_from` destructured `resolution.answer` alone and published the fixed
+/// sentence *"nobody who may decide has answered it yet"*, naming no comment and no
+/// reason. So a run announced that nobody had answered against a conversation holding a
+/// reply it had read and declined. `IgnoredReply` was this milestone's fourth inert
+/// surface, after `RequireHumanDecision`, `execute_decided` and `DecisionTrace`, and
+/// this bean is its first caller.
 ///
-/// The chain, each link verified rather than inferred:
+/// # Three people, three reasons, and the reasons must stay apart
 ///
-/// - `select_candidates` (`human/validate.rs:541-569`) builds a `Vec<IgnoredReply>`,
-///   each carrying an `Ignored` reason whose spellings are fixed at `:255-264`.
-/// - `resolve` returns it on `DecisionResolution::ignored` (`:311`, populated at `:498`
-///   and `:522`).
-/// - `ProposeChange::continue_from` destructures **only** `resolution.answer`
-///   (`capability/propose.rs:1043-1055`). `considered` and `ignored` are dropped, and
-///   the no-answer arm publishes the fixed sentence asserted below — which names no
-///   comment and no reason.
-/// - `grep -rn "ignored\|Ignored" crates/*/src/` over **49 source files** finds no
-///   consumer outside the module that builds it.
-/// - `DecisionTrace` (`:148-150`) carries `fn step` and nothing else, so the attempt
-///   journal records which step the walk reached and never who was declined.
-/// - `Ignored::as_str`'s only caller is
-///   `every_reason_a_reply_was_declined_has_exactly_one_spelling` (`:768-784`), a unit
-///   test asserting the three spellings differ.
+/// One reply from each of the ways of not being able to decide, so the assertion is not
+/// merely that *a* reason was published but that the three are **distinct** in what a
+/// reader receives. Two collapsing into one phrase would leave an operator unable to
+/// tell "not on the allowlist" — which they fix by editing the allowlist — from "not a
+/// person", which they cannot; and that would be worse than the silence this replaces,
+/// because silence does not mislead.
 ///
-/// # What this test does assert, and it is not nothing
-///
-/// That the reply really was **read and declined** — the walk reached step 4, refused
-/// the author, and reached no model — and that the sentence a reader is handed is
-/// *"nobody who may decide has answered it yet"*. Which is the misleading part, stated
-/// as an assertion: somebody did answer, and the run says nobody did.
-///
-/// # Replace this, do not delete it
-///
-/// `fiddle-pwyi` left `the_suspended_path_is_not_yet_reachable_through_the_binary` for
-/// the same purpose and `fiddle-565u` replaced it when the wiring landed. This one will
-/// fail the day `resolution.ignored` reaches the published record, which is deliberate:
-/// it is the reminder that the real property has become assertable. Replace it with the
-/// positive assertion — the reason, the comment number and the author, in
-/// `all_published_bytes` — rather than deleting the coverage.
+/// Fiddle's own question is in the list too, declined as `Ignored::RequestComment`. It
+/// is reported rather than filtered, and its distinct reason is what lets a reader tell
+/// it from somebody who tried to answer.
 #[test]
-fn an_unauthorized_reply_is_declined_but_the_run_publishes_no_reason_for_it() {
+fn an_ignored_reply_is_visible_in_what_the_run_published() {
     let world = World::with_model_script(a_real_repair());
     let suspension = suspend(&world);
-    let declined = world.post_comment(STRANGER, "approve");
+    // Read **before** the bot reply is posted, and it has to be:
+    // `World::request_comments` tells a question from a reply by `is_bot` and nothing
+    // else — deliberately, because that is the field `select_candidates` refuses on —
+    // so a bot's *reply* is indistinguishable from a question to that accessor, and
+    // `the_only_request_comment` would refuse a conversation holding both.
+    let question = world.the_only_request_comment().id;
+
+    // One reply per way of being uncountable. The two non-person replies are written by
+    // `AUTHORIZED`, so the allowlist cannot be what declined them — otherwise two of
+    // the three reasons below could never appear.
+    let stranger = world.post_comment(STRANGER, "approve");
+    let bot = world.post_bot_comment(AUTHORIZED, "approve");
+    let app = world.post_app_comment(AUTHORIZED, "approve");
     world.accept_the_ready_mutation();
 
     let run = world.fiddle([
@@ -2313,8 +2309,9 @@ fn an_unauthorized_reply_is_declined_but_the_run_publishes_no_reason_for_it() {
         "--json",
     ]);
 
-    // First: the reply really was read and really was declined. Without this the
-    // absence below would be consistent with a conversation nobody looked at.
+    // The suspension is still a suspension and nothing was spent: three approvals from
+    // three writers, none of whom may decide, against a world armed to accept the
+    // transition and a model armed to approve.
     assert_eq!(
         run.code,
         Some(10),
@@ -2324,61 +2321,90 @@ fn an_unauthorized_reply_is_declined_but_the_run_publishes_no_reason_for_it() {
     );
     assert_eq!(
         world.pull_request(suspension.pull_request)["draft"],
-        serde_json::json!(true),
-        "a stranger's approval mutates nothing, against a world armed to accept it"
+        serde_json::json!(true)
     );
     assert_eq!(world.graphql_calls(), 0);
     assert_eq!(
         world.model_calls(),
         2,
-        "step 4 declined the author, so step 7 never ran and no model was asked to \
-         read a stranger's words"
-    );
-    assert!(
-        world
-            .conversation()
-            .iter()
-            .any(|comment| comment.id == declined && comment.author == STRANGER),
-        "the reply must be on the conversation the run read: {:?}",
-        world.conversation()
+        "no candidate survived step 4, so step 7 never ran"
     );
 
-    // Now the gap, with its denominator. The bundle is real and was searched: it names
-    // this run's own request id, so "found nothing" is not "examined nothing".
     let published = world.all_published_bytes();
+    // The denominator, first: the bytes are this run's own. "Found nothing" and
+    // "examined nothing" must not look alike, and every assertion below is a search.
     assert!(
         published.contains(&suspension.binding.request),
-        "the published bytes must be this run's own, or this negative examined \
-         nothing: {} bytes",
-        published.len()
-    );
-    for reason in [
-        "actor not authorized",
-        "not authorized",
-        "author is not a person",
-    ] {
-        assert!(
-            !published.contains(reason),
-            "TRIPWIRE: {reason:?} now reaches the published record, which is the \
-             property `m3-ignored-replies-are-recorded` asks for. Replace this test \
-             with the positive assertion rather than deleting it — see its \
-             documentation. ({} bytes searched)",
-            published.len()
-        );
-    }
-    assert!(
-        !published.contains(&declined.to_string()),
-        "TRIPWIRE: the declined comment {declined} is now named in the published \
-         record; replace this test with the positive assertion. ({} bytes searched)",
+        "the published bytes must name this run's request, or nothing below examined \
+         anything: {} bytes",
         published.len()
     );
 
-    // And this is the sentence a reader is actually handed, which is why the gap
-    // matters: somebody answered, was declined, and the run reports that nobody did.
+    // **Each declined comment, its author, and its own reason, asserted as one string.**
+    //
+    // The pairing is the assertion and a co-presence check would not be one: four
+    // comment numbers somewhere in the bundle and three reasons somewhere else is
+    // satisfied by a rendering that attached every reason to the wrong comment, or that
+    // put the author id where the reason belongs. Asserting the rendered entry whole is
+    // what says comment, author and reason belong to each other.
+    //
+    // The author is the immutable numeric id, which is the field the allowlist matches
+    // and therefore the one an operator would edit.
+    for (comment, author, reason) in [
+        (stranger, STRANGER, "actor not authorized"),
+        // Two entries sharing one reason, which is right: `Ignored::NotAPerson` covers a
+        // `Bot` account *and* an app-attributed comment, both spellings of the same
+        // fact. So the three reasons are not one per comment.
+        (bot, AUTHORIZED, "author is not a person"),
+        (app, AUTHORIZED, "author is not a person"),
+        (
+            question,
+            FIDDLE_BOT,
+            "the request comment is not a reply to itself",
+        ),
+    ] {
+        let entry = format!("comment {comment} by {author} ({reason})");
+        assert!(
+            published.contains(&entry),
+            "the record must carry {entry:?} as one entry: {}",
+            &published[..published.len().min(4000)]
+        );
+    }
+
+    // **And the three reasons are distinct, not merely present.** Asserted as three
+    // different strings each appearing, and then as three *different* strings: a
+    // rendering that spelled two of them the same way would satisfy "a reason was
+    // published" and destroy the only thing the list is for.
+    let reasons = [
+        "actor not authorized",
+        "author is not a person",
+        "the request comment is not a reply to itself",
+    ];
+    for reason in reasons {
+        assert!(
+            published.contains(reason),
+            "the reason {reason:?} must reach a reader: {}",
+            &published[..published.len().min(4000)]
+        );
+    }
+    for (at, reason) in reasons.iter().enumerate() {
+        assert!(
+            !reasons[at + 1..].contains(reason),
+            "{reason:?} spells two different exclusions, which is worse than silence"
+        );
+    }
+    // No count of occurrences is asserted, and the reason is worth recording: a bundle
+    // carries the suspension's reason in more than one field — `outcome.suspended.reason`
+    // and the progress entry's `summary` both render it — so every string above appears
+    // twice over. A count would be pinning the bundle's shape while claiming to pin the
+    // message's, and it is the pairing loop above that carries the property.
+
+    // The old sentence is still there and still true — nobody who may decide has
+    // answered — but it is no longer the whole of what a reader is told.
     assert!(
         run.stdout
             .contains("nobody who may decide has answered it yet"),
-        "the suspension's stated reason: {}",
+        "{}",
         run.stdout
     );
 }

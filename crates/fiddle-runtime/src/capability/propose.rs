@@ -155,7 +155,10 @@ use crate::github::{
     PullRequest,
 };
 use crate::human::interpret::InterpretationBounds;
-use crate::human::validate::{resolve, DecisionError, DecisionTrace, DecisionWalk, HumanAnswer};
+use crate::human::validate::{
+    resolve, DecisionError, DecisionResolution, DecisionTrace, DecisionWalk, HumanAnswer,
+    IgnoredReply,
+};
 use crate::human::{InteractionRef, PublishDecisionRequest};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspacePath};
 use fiddle_core::{
@@ -1040,16 +1043,31 @@ where
             }
         };
 
+        // Destructured rather than read field by field, because `ignored` has to
+        // outlive the `answer` this moves out: every arm below reports who was
+        // declined, and a partial move would make the one arm that did not the
+        // easiest to write.
+        let DecisionResolution {
+            answer, ignored, ..
+        } = resolution;
+
         let Some(HumanAnswer {
             interpreted,
             acted_on,
-        }) = resolution.answer
+        }) = answer
         else {
             // Not a refusal and not a model call: nobody the deployment nominated
             // has replied, which is the state a suspended run exists in.
+            //
+            // **And "nobody" is exactly what a reader must not be left with when
+            // somebody did answer.** A stranger's approval, a bot's, an app's are all
+            // read, declined, and — until this arm carried them — dropped, so the run
+            // reported an unanswered question against a conversation that had three
+            // replies in it. `ignored` is where the walk wrote down which and why.
             return Err(self.awaiting(
                 &request,
                 interaction,
+                &ignored,
                 "nobody who may decide has answered it yet".to_string(),
             ));
         };
@@ -1068,6 +1086,7 @@ where
             (None, InterpretedHumanDecision::Redirect { instruction }) => Err(self.awaiting(
                 &request,
                 interaction,
+                &ignored,
                 format!(
                     "comment {} asks for something else instead, and attempting again \
                      is not implemented: {instruction}",
@@ -1077,6 +1096,7 @@ where
             (None, InterpretedHumanDecision::Unclear) => Err(self.awaiting(
                 &request,
                 interaction,
+                &ignored,
                 format!(
                     "comment {} could not be read as a decision, so the question stands",
                     acted_on.comment
@@ -1090,6 +1110,7 @@ where
             (None, InterpretedHumanDecision::Approve) => Err(self.awaiting(
                 &request,
                 interaction,
+                &ignored,
                 "an approval was read and could not be bound to the question it \
                  answered"
                     .to_string(),
@@ -1227,17 +1248,86 @@ where
     /// rendered from, and so the only id a person or a later process can find the
     /// question by. A run that reported any other would name a question nobody can
     /// look up.
+    ///
+    /// # `declined` is the half a reader was previously not told
+    ///
+    /// `resolve` records every comment it read and did not count, with the reason, and
+    /// nothing consumed it: `IgnoredReply` was built in `human::validate` and read
+    /// nowhere else in the workspace, so a suspension announced *"nobody who may decide
+    /// has answered it yet"* against a conversation that might hold three replies from
+    /// three people who were each declined for a different reason. "Nobody answered"
+    /// and "somebody answered and may not decide" are different states and only one of
+    /// them is one an operator can fix.
+    ///
+    /// Every entry is reported, **including fiddle's own question**, which
+    /// `select_candidates` declines as `Ignored::RequestComment`. Filtering it would be
+    /// this function deciding which of the walk's observations a reader deserves, and
+    /// the distinct reasons are what let a reader tell fiddle's own question from
+    /// somebody who tried to answer — which is the whole reason
+    /// [`Ignored`](crate::human::validate::Ignored) is a closed enum with one spelling
+    /// each rather than a written-out string.
     fn awaiting(
         &self,
         request: &HumanDecisionRequest,
         interaction: InteractionRef,
+        declined: &[IgnoredReply],
         because: String,
     ) -> CapabilityError {
         CapabilityError::AwaitingDecision {
             request: request.binding.request.clone(),
             interaction,
-            question: format!("{} — {because}", request.question),
+            question: format!(
+                "{} — {because}{}",
+                request.question,
+                Self::and_who_was_not_counted(declined)
+            ),
         }
+    }
+
+    /// The declined replies, as a reader sees them: which comment, who wrote it, and
+    /// why it was not counted.
+    ///
+    /// # Three things this rendering has to get right
+    ///
+    /// **The reason is the reason and never the author.** Each entry carries the
+    /// comment number, then the author's immutable numeric id — which is the field the
+    /// allowlist matches, so it is the one an operator would edit — and then
+    /// `Ignored::as_str`. An id where a reason belongs would be worse than the silence
+    /// this replaces, because silence does not mislead.
+    ///
+    /// **The reasons stay distinct.** They are taken from `Ignored::as_str` rather than
+    /// re-worded here, so the three spellings
+    /// `every_reason_a_reply_was_declined_has_exactly_one_spelling` keeps apart are the
+    /// three a reader sees. Two reasons collapsing into one phrase would leave an
+    /// operator unable to tell "not on the allowlist" — which they can fix by editing
+    /// the allowlist — from "not a person", which they cannot.
+    ///
+    /// **An empty list adds nothing.** The sentence is only extended when there is
+    /// something to say, so a conversation nobody has written on still reads as the
+    /// plain statement that nobody has answered.
+    fn and_who_was_not_counted(declined: &[IgnoredReply]) -> String {
+        if declined.is_empty() {
+            return String::new();
+        }
+        let each: Vec<String> = declined
+            .iter()
+            .map(|reply| {
+                format!(
+                    "comment {} by {} ({})",
+                    reply.comment,
+                    reply.author.id,
+                    reply.reason.as_str()
+                )
+            })
+            .collect();
+        format!(
+            "; {} read and not counted: {}",
+            match each.len() {
+                1 => "1 comment was".to_string(),
+                many => format!("{many} comments were"),
+            },
+            each.join(", ")
+        )
     }
 
     /// Pair what reached the forge with what CI says.
