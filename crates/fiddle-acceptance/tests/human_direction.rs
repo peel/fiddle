@@ -58,9 +58,9 @@ fn inspect_builds_nothing_for_propose_change() {
     assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
     assert_eq!(world.remote_branches().len(), 0);
     assert!(
-        world.posted_comments().is_empty(),
+        world.posted_comment_bodies().is_empty(),
         "posted {:?}",
-        world.posted_comments()
+        world.posted_comment_bodies()
     );
     assert!(
         world.requested_paths().is_empty(),
@@ -444,9 +444,9 @@ fn the_only_request_comment_is_a_cardinality_assertion() {
 /// # Written because two inversions found nothing
 ///
 /// `inspect_builds_nothing_for_propose_change` asserts `remote_branches` is empty
-/// and `posted_comments` is empty, and those were the only assertions on either
+/// and `posted_comment_bodies` is empty, and those were the only assertions on either
 /// accessor in the lane. So a `remote_branches` that answered `[]` unconditionally
-/// and a `posted_comments` that answered `[]` unconditionally each broke **no
+/// and a `posted_comment_bodies` that answered `[]` unconditionally each broke **no
 /// test** — both negatives were passing for free, and a future `inspect` that grew
 /// a branch or a comment could have gone unnoticed.
 ///
@@ -460,7 +460,7 @@ fn the_only_request_comment_is_a_cardinality_assertion() {
 fn the_accessors_the_read_only_scenario_asserts_empty_can_see_something() {
     let world = World::new();
     assert!(world.remote_branches().is_empty());
-    assert!(world.posted_comments().is_empty());
+    assert!(world.posted_comment_bodies().is_empty());
 
     world.push_branch("fiddle/beans-m3-demo");
     assert_eq!(
@@ -476,7 +476,7 @@ fn the_accessors_the_read_only_scenario_asserts_empty_can_see_something() {
          {answer}"
     );
     assert_eq!(
-        world.posted_comments(),
+        world.posted_comment_bodies(),
         ["a body the recorder must see"],
         "the accessor must read the body that was really sent"
     );
@@ -549,7 +549,7 @@ fn the_suspended_path_is_not_yet_reachable_through_the_binary() {
     );
     // And the world is untouched, which is the half of the criterion that does
     // hold today: a refused construction publishes nothing anywhere.
-    assert!(world.posted_comments().is_empty());
+    assert!(world.posted_comment_bodies().is_empty());
     assert_eq!(world.remote_branches().len(), 0);
     assert_eq!(world.all_published_bytes(), "");
 }

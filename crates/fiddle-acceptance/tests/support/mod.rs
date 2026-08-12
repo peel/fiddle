@@ -1680,17 +1680,26 @@ impl World {
 
     /// The bodies of the comments this world was asked to post, oldest first.
     ///
-    /// The same name and the same meaning as `propose_capability`'s accessor of
-    /// this name, deliberately: the bean's Step 1 writes
-    /// `assert_eq!(world.posted_comments(), 0)` as though it were a count, and
-    /// having one name mean "the bodies" in one crate and "how many" in another is
-    /// how a reader ends up asserting the wrong thing. Cardinality is `.len()` at
-    /// the call site.
+    /// # Why the name says `_bodies` instead of matching the runtime crate
     ///
-    /// Counted from the **requests** rather than from the conversation, because
-    /// that is the number a run which asked twice would move: a listing merges
-    /// what landed, and a post whose answer was lost landed all the same.
-    pub fn posted_comments(&self) -> Vec<String> {
+    /// `posted_comments` is already overloaded there, and not by accident of one
+    /// author: `decision_request_effect.rs:285` returns **`usize`**,
+    /// `propose_capability.rs:415` returns **`Vec<String>`**, and `gh_stub.rs:1104`
+    /// returns **`Vec<serde_json::Value>`**. Three meanings, one name. So "match
+    /// the runtime crate" is not a rule that can be followed — the runtime crate
+    /// does not agree with itself — and this bean's Step 1, which writes
+    /// `assert_eq!(world.posted_comments(), 0)` as though it were a count, is what
+    /// that ambiguity costs a reader.
+    ///
+    /// Naming the return value resolves it instead of picking a side, and it means
+    /// a reader of a *later* bean's tests does not have to know which crate they
+    /// are in to know what the call answers. Cardinality is `.len()` at the call
+    /// site, which is one word and cannot be misread.
+    ///
+    /// Read from the **requests** rather than from the conversation, because that
+    /// is the number a run which asked twice would move: a listing merges what
+    /// landed, and a post whose answer was lost landed all the same.
+    pub fn posted_comment_bodies(&self) -> Vec<String> {
         self.requests()
             .iter()
             .filter(|request| {
@@ -1730,7 +1739,7 @@ impl World {
     /// a run that wrongly posted a *second* question after a reply was seeded
     /// could collide with it. The collision is not silent — two entries would
     /// share an id — but a test asserting "no second question" should not rest on
-    /// ids for it. [`World::posted_comments`], counted off the request log, is the
+    /// ids for it. [`World::posted_comment_bodies`], counted off the request log, is the
     /// accessor that cannot be confused this way.
     pub fn post_comment(&self, author: u64, body: &str) -> u64 {
         let id = self.conversation().iter().map(|c| c.id).max().unwrap_or(0) + 1;
@@ -1757,7 +1766,7 @@ impl World {
     /// on this milestone: `propose_capability`'s `readied()` is a constructor of a
     /// GraphQL response and three beans read its name as an observer of what had
     /// been readied. This is a constructor. A question seeded here was asked by
-    /// nobody — [`World::posted_comments`], read off the request log, is the
+    /// nobody — [`World::posted_comment_bodies`], read off the request log, is the
     /// accessor that says what a *run* really asked.
     ///
     /// It exists because [`World::the_only_request_comment`] is a cardinality
@@ -1970,7 +1979,7 @@ impl World {
 
     // -- denominators for the accessors that are only ever asserted empty ----
     //
-    // `remote_branches` and `posted_comments` are read by the read-only scenario,
+    // `remote_branches` and `posted_comment_bodies` are read by the read-only scenario,
     // which asserts both are empty. Two inversions showed that a version of
     // either which answered empty *unconditionally* broke no test in the lane, so
     // both negatives were passing for free. The two helpers below exist so a test
@@ -1996,7 +2005,7 @@ impl World {
     ///
     /// A fixture action for the same reason as [`World::push_branch`], and the
     /// distinction matters more here: this is **not** fiddle asking a question.
-    /// [`World::posted_comments`] counted afterwards says the *recorder* sees a
+    /// [`World::posted_comment_bodies`] counted afterwards says the *recorder* sees a
     /// write, and says nothing about any run having made one.
     pub fn post_comment_through_the_forge(&self, body: &str) -> String {
         self.gh_sending(
