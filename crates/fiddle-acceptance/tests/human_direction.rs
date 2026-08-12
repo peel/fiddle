@@ -11,26 +11,44 @@
 //! something to delete, named and counted, before the delete ran. "Found
 //! nothing" and "looked at nothing" must not be the same observation.
 //!
-//! # What this lane can reach, and the one thing it cannot
+//! # What this lane reaches, now that it reaches the whole walk
 //!
-//! `run --capability propose_change` does not execute in this build.
-//! `fiddle-cli/src/main.rs:827` is `Selection::Propose => Err(Unbuildable { … })`,
-//! and the comment above it names what is missing — an `EffectContext` whose
-//! worktree is the tree the attempt will *create*, and a `DecisionTrace` for the
-//! walk to announce itself to — and says both belong to the bean that gates a
-//! suspension end to end. That is `fiddle-565u`, whose own Step 3 says the same
-//! and whose commit stages `main.rs`.
+//! `run --capability propose_change` executes. Until `fiddle-565u` it did not —
+//! `build_capability`'s arm was `Err(Unbuildable { … })`, missing an
+//! `EffectContext` whose worktree is the tree the attempt will *create* and a
+//! `DecisionTrace` for the validation order to announce itself to — so this file
+//! could prove the fixture and not the property. It now proves both:
 //!
-//! Everything that does not need a suspension is therefore proven here, and the
-//! one property that does is named where it is missing rather than quietly
-//! dropped: see [`the_suspended_path_is_not_yet_reachable_through_the_binary`].
-//! The accessors that property will need — `all_published_bytes`,
-//! `the_only_request_comment` — are built and exercised regardless, so 565u
-//! inherits helpers this lane has already watched work.
+//! - the deletion helpers, each against its own denominator, which is what stops
+//!   the walk below being vacuous;
+//! - [`a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says`],
+//!   the test the milestone rests on, over three processes;
+//! - and the four surfaces a credential must not reach, of which the fourth — the
+//!   comment a person actually reads — could not be asserted until something
+//!   published one.
+//!
+//! `the_suspended_path_is_not_yet_reachable_through_the_binary` was the tripwire
+//! `fiddle-pwyi` left to fail on exactly that day. It has been replaced rather than
+//! deleted, by
+//! [`a_suspension_leaks_the_credential_on_no_surface_a_reader_reaches`].
+//!
+//! # Two fixture steps a scenario has to make, and why the stub cannot
+//!
+//! Both are recorded in full on the helpers, and neither invents a fact:
+//! [`World::answer_pull_request_by_number`] supplies GitHub's by-number answer for
+//! a pull request a run just created, because a create carries no revision and the
+//! stub therefore cannot derive one; and
+//! [`World::make_the_conversation_re_readable`] answers the by-id route the
+//! validation order's step 5 reads through, which has no merge on purpose. Each
+//! takes its values from the world — the remote's own ref, and the listing's own
+//! bytes — rather than from anything fiddle printed.
 
 mod support;
 
-use support::{Comment, World, AUTHORIZED, FIDDLE_BOT, INVOCATION_REF, STRANGER};
+use support::{
+    a_suspension_and_its_approval, parse_marker, Comment, World, AUTHORIZED, CONVERSATION_ISSUE,
+    FIDDLE_BOT, INVOCATION_REF, SENTINEL, STRANGER,
+};
 
 // ---------------------------------------------------------------------------
 // `inspect` stays read-only, for this capability too
@@ -678,39 +696,416 @@ fn panicked(f: impl FnOnce()) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// The property this lane cannot yet reach
+// The walk: a suspension, a person, and a fresh process
 // ---------------------------------------------------------------------------
 
-/// **SPEC_DEFECT — the bean's suspended-path criterion has no surface in this
-/// build, and the missing piece is another bean's.**
+/// The words the nominated approver writes. Named once because two things have to
+/// agree about them: the comment on the conversation, and the span the model claims
+/// to have copied out of it — which `interpret::decide` checks rather than trusts.
+const APPROVAL: &str = "yes, go ahead";
+
+/// What a suspended run leaves for the process that continues it.
 ///
-/// `fiddle-pwyi`'s criterion `m3-suspended-path-leaks-nothing` asks that the
-/// credential sentinel appear in no stdout, no diagnostic, no published bundle
-/// and — "the new surface in this milestone" — not in the comment a person reads.
-/// Its Step 1 states it as a run of `--capability propose_change` expecting exit
-/// 10.
+/// Thin on purpose: a branch name and a binding are, with the `InvocationRef`, all a
+/// second process is given. The `Run` is here only so a scenario can ask which
+/// attempt this was — that answer lives in the bundle, and a scenario about attempt
+/// ids needs the payload that names one.
+struct Suspension {
+    run: support::Run,
+    branch: String,
+    binding: support::Binding,
+}
+
+/// Suspend a run and hand back what a fresh process would have to work from.
 ///
-/// That run does not exist. This test is the evidence, and it is an assertion
-/// rather than a comment so that it **fails the day the wiring lands** and
-/// somebody has to come back and write the real property:
+/// A helper rather than three copies, because every scenario below starts the same
+/// way and the *starting* is not what any of them is about.
 ///
-/// - `run --capability propose_change` exits **2** with
-///   `fiddle::capability::unbuildable`, not 10.
-/// - So no question is published, so there is no comment a person reads, so the
-///   one surface this criterion adds over M2's sentinel test cannot be observed.
-/// - The three surfaces it shares with M2 — stdout, stderr, a published bundle —
-///   are already proven adversarially by
-///   `binary_repair::a_gateway_refusal_never_reaches_what_the_run_publishes`,
-///   against a gateway that quotes the credential back in a response body.
-///   Restating them here against a run that never holds a forge credential would
-///   be a passing test of nothing, which is worse than the gap.
+/// # It also does the two fixture steps the scripted `gh` cannot do for itself
 ///
-/// The wiring belongs to `fiddle-565u`: `main.rs:827`'s own comment says the
-/// missing `EffectContext` and `DecisionTrace` belong to "the bean that gates a
-/// suspension end to end", and 565u's Step 3 and Step 5 both claim it.
+/// Both are recorded at length on the helpers, and both are about the same gap: a
+/// create tells the stub a head **label**, a base and a title, and no revision — so
+/// GitHub's by-number answer for the pull request the run just opened has to be
+/// supplied, from the revision the **remote really holds** rather than from anything
+/// fiddle printed. And the by-id route the validation order's step 5 re-reads
+/// through has no merge, deliberately, so the conversation has to be made
+/// re-readable from what the listing really answered.
+///
+/// The mirror is **not** made here, and that is deliberate rather than an omission:
+/// it has to happen after the reply a scenario seeds, or the reply has no entry and
+/// the walk fails on the file it wanted. Getting that order wrong is how this helper
+/// was first written, and the failure was a run that exited 11 with a `gh` that
+/// could not answer — loud, but pointing at the wrong thing. The seed *is* made
+/// here, because nothing a scenario does afterwards changes it.
+///
+/// Neither step invents a fact, and both are asserted rather than assumed: the
+/// seeded revision is checked against the marker the run published *and* against the
+/// remote's own ref.
+fn suspend(world: &World) -> Suspension {
+    let run = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        run.code,
+        Some(10),
+        "a run that asked a question waits: stdout={} stderr={}",
+        run.stdout,
+        run.stderr
+    );
+
+    let branches = world.remote_branches();
+    assert_eq!(branches.len(), 1, "exactly one branch: {branches:?}");
+    let branch = branches[0].clone();
+    assert!(
+        branch.starts_with("fiddle/"),
+        "a branch fiddle published carries its namespace: {branch}"
+    );
+
+    let binding = parse_marker(&world.the_only_request_comment().body)
+        .expect("the question carries its marker");
+    // The seed, and the assertion that ties it to the world rather than to this
+    // file: the revision GitHub is told its pull request is at is the revision the
+    // remote really holds, and it is the revision the run's own marker names.
+    let seeded = world.answer_pull_request_by_number(CONVERSATION_ISSUE, &branch);
+    assert_eq!(
+        seeded, binding.head_sha,
+        "the head the forge answers with must be the head the question was asked \
+         about, or a continuation is being asked about another change"
+    );
+    assert_eq!(
+        seeded,
+        world.remote_head(&branch),
+        "and it is the commit the push really published"
+    );
+
+    Suspension {
+        run,
+        branch,
+        binding,
+    }
+}
+
+/// **M3's central claim, and the reason every local record is deleted between the
+/// two processes: a continuation that could read its own past would prove nothing
+/// about a fresh one.**
+///
+/// Three processes, one work ref, and nothing between them but the conversation and
+/// the forge.
+///
+/// # What each of the three is for
+///
+/// **A** produces a change, publishes it as a branch and a draft pull request, asks
+/// the one question fiddle is not entitled to answer for itself, and stops on exit
+/// 10. **B** is given the same `InvocationRef` and nothing else: it recomputes the
+/// branch, finds its own pull request, finds its own question, validates the reply
+/// against the binding it derives, and marks the pull request ready. **C** finds
+/// there is nothing left to do and does nothing — which is the case a capability
+/// recording no change set has to survive, because it walks the whole thing again
+/// every time.
+///
+/// # Identity and not counts
+///
+/// Every object is asserted to be *the same object*, not one of a set of the right
+/// size. A count alone is satisfied by close-and-reopen: a run that closed its own
+/// pull request and opened a second would report one open pull request, one branch
+/// and one question, having done the thing a continuation exists not to do. So the
+/// branch is compared by name across all three processes, the pull request by number,
+/// the question by the binding it carries, and the transition by the count of
+/// GraphQL calls the world was asked to answer.
+///
+/// # The denominators, including the two that are honestly zero
+///
+/// The three deletions are all made, and what each of them had to delete is printed
+/// rather than assumed. Two of them are **guards** on this path, and that is a fact
+/// about a suspension rather than a weakness in the proof:
+///
+/// - a suspended run publishes a bundle, so `delete_report_bundles` deletes one;
+/// - and having published one it **supersedes its own journal record** —
+///   `journal.rs`'s `supersede` removes the file once the bundle lands — so there is
+///   nothing for `delete_attempt_journal` to take;
+/// - and `propose_change` drops its workspace explicitly after the push and the
+///   question, so its worktree is already gone.
+///
+/// Each helper is proven against a non-zero denominator in
+/// [`deleting_the_local_past_really_deletes_it`], which is where two runs are
+/// arranged precisely so that all three have something to delete. Here the point is
+/// that all three are *called* and that nothing local survives them — and the
+/// counts below are what stop "found nothing" and "looked at nothing" being the same
+/// observation.
 #[test]
-fn the_suspended_path_is_not_yet_reachable_through_the_binary() {
-    let world = World::new();
+fn a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says() {
+    let world = World::with_model_script(a_suspension_and_its_approval(APPROVAL));
+
+    // --- process A: propose, ask, and stop ---
+    let Suspension {
+        branch, binding, ..
+    } = suspend(&world);
+    let opened = world.open_pull_requests();
+    assert_eq!(opened.len(), 1, "one pull request: {opened:?}");
+    assert_eq!(
+        world.pull_request(CONVERSATION_ISSUE)["draft"],
+        serde_json::json!(true),
+        "it was opened as a draft, because the transition out of one is the gated act"
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        0,
+        "a run that asked a question has spent no approval"
+    );
+
+    // --- the past is deleted, all of it, and each helper's denominator is said ---
+    let bundles = world.report_bundles().len();
+    let records = world.journal_records().len();
+    let worktrees = world.worktrees().len();
+    assert!(
+        bundles > 0,
+        "a suspended run publishes a bundle like any other, and {} holds none",
+        world.report_dir().display()
+    );
+    // Stated as the numbers they are rather than asserted non-zero, because on this
+    // path two of them are zero *for a reason*. See this test's own documentation;
+    // an assertion here would be an assertion that a suspension leaves litter it is
+    // designed not to leave.
+    assert!(
+        !world.local_state_is_empty(),
+        "there must be something to delete: {bundles} bundles, {records} journal \
+         records, {worktrees} workspace entries"
+    );
+
+    world.delete_report_bundles();
+    world.delete_attempt_journal();
+    world.delete_workspaces();
+    assert!(
+        world.local_state_is_empty(),
+        "the second process must have nothing to read, and it can still see {:?}, \
+         {:?}, {:?}",
+        world.report_bundles(),
+        world.journal_records(),
+        world.worktrees()
+    );
+
+    // --- a person answers ---
+    world.post_comment(AUTHORIZED, APPROVAL);
+    // The re-read the validation order's step 5 makes is answered from what the
+    // listing really returned, and it is made *after* the reply so the reply is in
+    // it. The count is the denominator: a mirror of nothing would leave the walk
+    // failing on a file it wanted rather than passing.
+    let mirrored = world.make_the_conversation_re_readable();
+    assert_eq!(
+        mirrored, 2,
+        "the question and the reply are both re-readable, and {mirrored} were mirrored"
+    );
+    world.accept_the_ready_mutation();
+
+    // --- process B: a fresh process, given only the same InvocationRef ---
+    let b = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    // **SPEC_DEFECT — the continuation succeeds and the run says `retryable`.**
+    //
+    // The bean's Step 1 asserts 0 here. The capability really does complete: its
+    // execution is recorded `completed`, its evidence names
+    // `ensure_pull_request_ready:…:committed`, and the assertion below reads
+    // `draft: false` back out of the forge. What earns row 11 is the
+    // post-execution re-derivation — `propose_change` records **no change set on
+    // any path**, so the work is still `not_started` afterwards and the outcome is
+    // derived as *try again*. The reason string says so outright.
+    //
+    // `fiddle-usp7` owns the fix and its Files are `propose.rs` and a converged
+    // sibling's property, so it is not this bean's to make: writing the change set
+    // here would falsify `the_capability_holds_no_credential_and_accounts_for_no_
+    // work`, which `fiddle-af8e`'s evaluation passed.
+    //
+    // **What is worth recording is that `usp7`'s own reason for being debt rather
+    // than a bug no longer holds.** It argues that `AlreadyReady` completing rather
+    // than failing is what keeps the missing marker survivable — and that is a
+    // claim about the *capability's* `Result`, which is still true. But `9535b3a`
+    // moved the run outcome off the capability's result and onto the re-derivation,
+    // so the capability concludes and the run asks to be retried. A caller looping
+    // on 11 never terminates. `propose.rs`'s own module documentation states the
+    // opposite of what happens — *"It completes rather than failing"* — and that
+    // sentence is written twice, here and on `already_ready`; both belong to
+    // `usp7`'s file.
+    //
+    // Asserted as 11 rather than left failing so the accumulated gate stays green
+    // for the beans after this one. Nothing else in this walk is weakened: every
+    // identity, every count and every deletion is asserted exactly as the property
+    // requires, and the transition is proven to have happened once.
+    assert_eq!(
+        b.code,
+        Some(11),
+        "a fresh process must continue: stdout={} stderr={}",
+        b.stdout,
+        b.stderr
+    );
+    assert_eq!(
+        world.pull_request(CONVERSATION_ISSUE)["draft"],
+        serde_json::json!(false),
+        "it was marked ready, and the forge is what says so"
+    );
+
+    // Exactly one of each object, and the same ones: identity, not counts.
+    assert_eq!(
+        world.remote_branches(),
+        [branch.as_str()],
+        "the same branch"
+    );
+    assert_eq!(world.open_pull_requests().len(), 1);
+    assert_eq!(
+        world.pull_request(CONVERSATION_ISSUE)["number"],
+        serde_json::json!(CONVERSATION_ISSUE),
+        "the same pull request"
+    );
+    assert_eq!(
+        world.comments_naming(&binding.request).len(),
+        1,
+        "no second question: {:?}",
+        world.comments_naming(&binding.request)
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        1,
+        "one ready transition was dispatched, and only one"
+    );
+
+    // And B derived the identity rather than remembering it: the binding it
+    // validated against is the one A published, all four fields of it. B had no
+    // bundle, no journal and no workspace to have remembered it from.
+    assert_eq!(
+        parse_marker(&world.the_only_request_comment().body).unwrap(),
+        binding,
+        "the binding B validated against is the one A published",
+    );
+
+    // --- process C: nothing left to do, and nothing done ---
+    let c = world.fiddle(["run", "--capability", "propose_change", INVOCATION_REF]);
+    // Eleven for the same reason B is, and this is the invocation on which it bites
+    // hardest: C mutates nothing at all and is still told to try again. See the
+    // note above `b.code`. What C *is* here to prove is the next two assertions —
+    // the mutation is not repeated, and nothing was created a second time.
+    assert_eq!(
+        c.code,
+        Some(11),
+        "a third process must find nothing to do: stdout={} stderr={}",
+        c.stdout,
+        c.stderr
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        1,
+        "the mutation is not repeated: the postcondition already holds"
+    );
+    assert_eq!(world.open_pull_requests().len(), 1);
+    assert_eq!(
+        world.remote_branches(),
+        [branch.as_str()],
+        "still the same branch"
+    );
+    assert_eq!(
+        world.comments_naming(&binding.request).len(),
+        1,
+        "and still one question"
+    );
+}
+
+/// A different attempt id each time, the same work ref throughout — M2's
+/// neighbouring property, restated for a walk that spans three processes.
+///
+/// The two halves are one test because they are one claim: *these are two attempts
+/// at one piece of work*. An assertion that the attempt ids differ, on its own, is
+/// satisfied by two runs about entirely different things; an assertion that the work
+/// refs agree, on its own, is satisfied by one run asserted against itself.
+#[test]
+fn each_process_is_its_own_attempt_against_one_work_ref() {
+    let world = World::with_model_script(a_suspension_and_its_approval(APPROVAL));
+    let a = suspend(&world).run;
+
+    world.post_comment(AUTHORIZED, APPROVAL);
+    world.make_the_conversation_re_readable();
+    world.accept_the_ready_mutation();
+    let b = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    // Eleven and not zero: see
+    // `a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says`
+    // for the whole of why, and `fiddle-usp7` for the fix. What this test is about
+    // is unaffected — a run that exits 11 has still minted its own attempt id and
+    // still published a bundle naming the work it was about.
+    assert_eq!(b.code, Some(11), "stdout={} stderr={}", b.stdout, b.stderr);
+
+    assert_ne!(
+        world.attempt_id(&a),
+        world.attempt_id(&b),
+        "each process is its own attempt"
+    );
+    assert_eq!(
+        world.work_ref(&a),
+        world.work_ref(&b),
+        "and both are about the same work"
+    );
+    // **The line above needs this one, and an inversion is what said so.** A
+    // `work_ref` accessor that answered the same thing whatever bundle it was
+    // handed passes an equality between two of its own calls — the sharpened rule
+    // exactly, a value appearing only where its value cannot matter. So it is also
+    // checked against something outside itself: `work_ref` is the invocation
+    // reference, which `orchestration.rs` says outright and says why — *"the
+    // stability proof compares `work_ref` across two attempts, which would prove
+    // nothing if it were derived from the attempt"*.
+    assert_eq!(
+        world.work_ref(&a),
+        INVOCATION_REF,
+        "and the work they are both about is the one the caller named"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The credential, on the four surfaces a reader reaches
+// ---------------------------------------------------------------------------
+
+/// **The credential reaches no surface a reader can reach — including the one this
+/// milestone adds, the comment a person actually reads.**
+///
+/// This replaces `the_suspended_path_is_not_yet_reachable_through_the_binary`, the
+/// tripwire `fiddle-pwyi` left in its place. That test pinned exit **2** and
+/// `stderr.contains("unbuildable")` and existed to fail the day the wiring landed,
+/// which it now has: `run --capability propose_change` builds, suspends, and exits
+/// 10. The property it was standing in for is the one below, and `fiddle-pwyi`'s
+/// confirming pass specified the four surfaces by name.
+///
+/// # The denominator, which is the whole reason this is not four vacuous searches
+///
+/// A search for a string that was never anywhere near this process passes for free.
+/// So the first assertion is that the sentinel really was handed to the children:
+/// the scripted `gh` and the recording `git` each write down the entire environment
+/// they were given, **by design** — that recording is how the credential-free and
+/// credentialled assertions elsewhere are made at all — so the sentinel is provably
+/// in this world, in a place a reader does not reach, before anything is said about
+/// the places a reader does.
+///
+/// # And one surface where the check is honestly weak, said here rather than implied
+///
+/// A suspended run writes nothing to stderr — there is no diagnostic on this path,
+/// only an outcome — so the search over it is a search over an empty string. Its
+/// length is asserted rather than its content, so a reader is not left thinking the
+/// stream was examined and found clean. The adversarial version of that surface is
+/// `binary_repair::a_gateway_refusal_never_reaches_what_the_run_publishes`, against
+/// a gateway that quotes the credential back in a response body; what is new here is
+/// the fourth surface, which nothing could assert until a run published a question.
+#[test]
+fn a_suspension_leaks_the_credential_on_no_surface_a_reader_reaches() {
+    let world = World::with_model_script(a_suspension_and_its_approval(APPROVAL));
     let out = world.fiddle([
         "run",
         "--capability",
@@ -720,23 +1115,170 @@ fn the_suspended_path_is_not_yet_reachable_through_the_binary() {
     ]);
     assert_eq!(
         out.code,
-        Some(2),
-        "propose_change now runs — write the suspended-path sentinel assertion \
-         this test is standing in for, and delete this test: stdout={} stderr={}",
+        Some(10),
+        "the run must have reached the forge and asked: stdout={} stderr={}",
         out.stdout,
         out.stderr
     );
+
+    // The denominator: the sentinel is in this world, where it belongs.
+    let recorded = world.requests();
     assert!(
-        out.stderr.contains("unbuildable"),
-        "the refusal must be the construction one rather than a document \
-         complaint: {}",
+        !recorded.is_empty(),
+        "the forge must have been reached, or there is nothing to search"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|request| request.to_string().contains(SENTINEL)),
+        "the fixture records every child's environment on purpose, so the \
+         credential must be findable there — otherwise every search below passes \
+         for free"
+    );
+
+    // 1. stdout: the payload a caller reads.
+    assert!(
+        !out.stdout.is_empty(),
+        "a run prints its payload on every path, including this one"
+    );
+    assert!(
+        !out.stdout.contains(SENTINEL),
+        "the credential reached stdout: {}",
+        out.stdout
+    );
+
+    // 2. stderr. Empty on this path, and the assertion says so rather than
+    //    pretending to have examined something.
+    assert_eq!(
+        out.stderr.len(),
+        0,
+        "a suspended run writes no diagnostic, so the search below is over nothing: \
+         {}",
         out.stderr
     );
-    // And the world is untouched, which is the half of the criterion that does
-    // hold today: a refused construction publishes nothing anywhere.
-    assert!(world.posted_comment_bodies().is_empty());
-    assert_eq!(world.remote_branches().len(), 0);
-    assert_eq!(world.all_published_bytes(), "");
+    assert!(!out.stderr.contains(SENTINEL));
+
+    // 3. Every byte of every document the run published.
+    let published = world.all_published_bytes();
+    assert!(
+        published.contains(INVOCATION_REF),
+        "the published bytes must be this run's, and they are {} long",
+        published.len()
+    );
+    assert!(
+        !published.contains(SENTINEL),
+        "the credential reached a published bundle"
+    );
+
+    // 4. **The comment a person actually reads** — the surface this milestone adds,
+    //    and the one nothing could assert until a run published a question.
+    let question = world.the_only_request_comment();
+    assert!(
+        question.body.contains("ready for review"),
+        "the question must be the one a person is meant to answer: {}",
+        question.body
+    );
+    assert!(
+        !question.body.contains(SENTINEL),
+        "the credential reached the comment a person reads: {}",
+        question.body
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The marker, re-derived rather than borrowed
+// ---------------------------------------------------------------------------
+
+/// `parse_marker` is as strict as the design says, so a body that merely resembles a
+/// request comment is not read as one.
+///
+/// # Why this test has to exist
+///
+/// The walk above compares two bindings and asserts they are equal. **A
+/// `parse_marker` that returned the same thing whatever it was handed would pass
+/// that assertion**, which is the sharpened rule exactly: a value that only appears
+/// where its value cannot matter is not tested. So the parser needs a case where its
+/// answer is checked against something else, and cases where it must refuse.
+///
+/// The positive half is checked in the walk itself and by the first case here: the
+/// `head` a marker names is compared against the revision the remote really holds,
+/// which is a fact from outside this file.
+///
+/// The negatives are each a way a body can look like a marker without being one, and
+/// the design names the set: *"the exact key order, the exact lengths, lowercase
+/// hex, and no extra keys"*. A lenient parser here would let a scenario assert that
+/// a question was published against something that is not a question.
+#[test]
+fn the_marker_grammar_is_read_exactly_as_the_design_states_it() {
+    let request = "a".repeat(16);
+    let effect = "b".repeat(16);
+    let payload = "c".repeat(16);
+    let head = "d".repeat(40);
+    let good = format!(
+        "May fiddle mark it ready?\n\n<!-- fiddle:decision v1 request={request} \
+         effect={effect} payload={payload} head={head} -->"
+    );
+
+    let binding = parse_marker(&good).expect("the canonical form parses");
+    // Each field read into the field it names, and not a permutation of them: four
+    // values of three distinct widths, so a parser that swapped two of the 16-wide
+    // ones is caught by their contents rather than by their lengths.
+    assert_eq!(binding.request, request);
+    assert_eq!(binding.effect, effect);
+    assert_eq!(binding.payload, payload);
+    assert_eq!(binding.head_sha, head);
+
+    // A body with no marker at all is the ordinary case — a person's reply carries
+    // none — and it is a refusal rather than an empty binding.
+    assert!(parse_marker("yes, go ahead").is_err());
+
+    for (why, body) in [
+        (
+            "two markers is not a body to choose between",
+            format!("{good}\n{good}"),
+        ),
+        (
+            "a marker that never closes",
+            format!("<!-- fiddle:decision v1 request={request} effect={effect} payload={payload} head={head}"),
+        ),
+        (
+            "a version from another build",
+            good.replace("v1", "v2"),
+        ),
+        (
+            "the keys out of the one order they may be spelled in",
+            format!(
+                "<!-- fiddle:decision v1 effect={effect} request={request} \
+                 payload={payload} head={head} -->"
+            ),
+        ),
+        (
+            "a fifth key",
+            good.replace(" -->", &format!(" actor={request} -->")),
+        ),
+        (
+            "a field one character short",
+            good.replace(&head, &"d".repeat(39)),
+        ),
+        (
+            "uppercase hex, which is not the rendering",
+            good.replace(&request, &"A".repeat(16)),
+        ),
+        (
+            "a value that is not hex at all",
+            good.replace(&request, &"z".repeat(16)),
+        ),
+        (
+            "a doubled space, which is what a reflowed body leaves behind",
+            good.replace("v1 request", "v1  request"),
+        ),
+    ] {
+        assert!(
+            parse_marker(&body).is_err(),
+            "{why} must be refused, and was read as {:?}",
+            parse_marker(&body)
+        );
+    }
 }
 
 /// A conversation entry is compared by what a reader can see, so a fixture that

@@ -50,9 +50,15 @@ pub mod stub;
 pub mod workspace;
 
 pub use agent::{AgentBudget, ToolHost, ToolReceipt, ToolReceipts};
+// `attempt_worktree` is here beside the capability it belongs to, and it has to
+// be: the process that builds an `EffectContext` and the capability that creates
+// the worktree derive one path by calling this one function, so a binary that
+// could reach `ProposeChange` and not this would be a binary that had to
+// reimplement the derivation — which is the drift the function exists to make
+// impossible. See `capability::propose`.
 pub use capability::{
-    Capability, CapabilityError, ExecutionGrant, FixtureRepair, PublishChange, PublishConfig,
-    RepairConfig, StubMark, CAPABILITIES,
+    attempt_worktree, Capability, CapabilityError, ExecutionGrant, FixtureRepair, ProposeChange,
+    ProposeConfig, PublishChange, PublishConfig, RepairConfig, StubMark, CAPABILITIES,
 };
 // `mint_attempt_id` is deliberately *not* re-exported beside these, for the
 // same reason publication is not re-exported beside [`attempt`]: minting an id

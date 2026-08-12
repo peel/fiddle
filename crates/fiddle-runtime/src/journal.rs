@@ -43,6 +43,7 @@
 
 use crate::effect::{EffectTrace, ExecutionStep};
 use crate::evidence::{EvidenceError, BUNDLE_FILE};
+use crate::human::validate::{DecisionStep, DecisionTrace};
 use fiddle_core::{AttemptId, CapabilityId, EffectKind, EvidenceRef};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -116,6 +117,43 @@ pub trait AttemptJournal: Send + Sync {
     /// walks seven steps three times, so twenty-one lines of about sixty bytes
     /// are appended beside the two records an attempt already writes.
     fn record_step(&self, kind: EffectKind, step: ExecutionStep);
+
+    /// Record that the validation order reached `step`.
+    ///
+    /// The sibling of [`AttemptJournal::record_step`], and separate from it for the
+    /// reason [`DecisionTrace`] is separate from
+    /// [`EffectTrace`](crate::effect::EffectTrace): the authorization order repeats
+    /// once per effect and carries an [`EffectKind`] to say which, while the
+    /// validation order runs once for the single effect a question gates and has no
+    /// second axis to name.
+    ///
+    /// # What a suspension leaves behind without it
+    ///
+    /// A continuation's whole subject is a walk that reads a conversation and may
+    /// refuse at any of eight numbered places. The two records an attempt already
+    /// writes say *which capability was about to run* and, afterwards, how that
+    /// ended — and between them a walk that stopped at step 5 is
+    /// indistinguishable from one that stopped at step 2, which are two entirely
+    /// different things for an operator to go and look at. Design §6.5 asks for the
+    /// order to be "observable rather than merely intended", and this is where that
+    /// is paid for in a process nobody is watching.
+    ///
+    /// Infallible for [`AttemptJournal::record_step`]'s reason, unchanged: the
+    /// fail-closed invariant belongs entirely to
+    /// [`AttemptJournal::record_intent`], so a journal that cannot be written has
+    /// already stopped the attempt before any step could be traced.
+    ///
+    /// # What may be in it
+    ///
+    /// One closed enumeration and nothing else, which is a narrower bound than
+    /// `record_step`'s two rather than a weaker one.
+    /// [`DecisionStep::as_str`](crate::human::validate::DecisionStep::as_str)
+    /// renders eight fixed names, so no comment body, no marker and no credential
+    /// can reach this file through here — the property design §6.7 states, held by
+    /// construction rather than by review. That matters more on this order than on
+    /// the other one: every input the validation order reads is text somebody
+    /// outside this deployment wrote.
+    fn record_decision_step(&self, step: DecisionStep);
 
     /// Record how the execution ended.
     ///
@@ -222,6 +260,24 @@ impl AttemptJournal for FileJournal {
         }));
     }
 
+    /// One line per step, `"decision_step"` rather than `"effect_step"`.
+    ///
+    /// A third record kind and not a widening of the second, because the two orders
+    /// are two orders: a reader asking which effect got how far and a reader asking
+    /// where the validation order stopped are asking different questions, and a
+    /// shared `"step"` key whose meaning depended on whether a `kind` was beside it
+    /// would answer neither cleanly. [`read_records`] matches `"intent"` and
+    /// `"effect"` by exact string, so this is invisible to it and an
+    /// [`InterruptedAttempt`]'s meaning is unchanged by its presence — the same
+    /// constraint `record_step` was added under.
+    fn record_decision_step(&self, step: DecisionStep) {
+        let _ = self.append(&serde_json::json!({
+            "record": "decision_step",
+            "attempt_id": self.attempt,
+            "step": step.as_str(),
+        }));
+    }
+
     fn record_effect(&self, capability: CapabilityId, status: &str, evidence: &[EvidenceRef]) {
         let _ = self.append(&serde_json::json!({
             "record": "effect",
@@ -304,6 +360,29 @@ impl EffectTrace for AttemptTrace {
         let journal = self.journal.lock().unwrap().clone();
         if let Some(journal) = journal {
             journal.record_step(kind, step);
+        }
+    }
+}
+
+/// The validation order's steps, sunk into the same journal by the same value.
+///
+/// **One value implementing both traits is the arrangement
+/// [`ProposeChange`](crate::ProposeChange) already describes as intended**, and
+/// making it true of the production trace rather than only of the runtime's test
+/// doubles is what puts the two orders of one attempt in one file, in the order
+/// they happened. A capability walks the authorization order once per effect and
+/// the validation order once, interleaved, and a reader reconstructing what a
+/// suspended attempt was doing needs them interleaved.
+///
+/// Everything [`EffectTrace`]'s implementation above argues — the late attachment,
+/// the handle cloned out from under the lock so no `fsync` is held across it, the
+/// silent discard while no attempt owns it — applies here unchanged, because it is
+/// the same cell and the same journal behind it.
+impl DecisionTrace for AttemptTrace {
+    fn step(&self, step: DecisionStep) {
+        let journal = self.journal.lock().unwrap().clone();
+        if let Some(journal) = journal {
+            journal.record_decision_step(step);
         }
     }
 }
@@ -562,7 +641,74 @@ mod tests {
         );
     }
 
-    /// The bridge: nothing before an attempt owns it, the journal afterwards.
+    /// The validation order's steps land in the same file as the authorization
+    /// order's, distinguishably, and neither changes what a recovery reads.
+    ///
+    /// Both orders in one assertion because their *coexistence* is the property:
+    /// one attempt writes both, a reader has to be able to tell them apart, and the
+    /// reading [`interrupted`] makes has to be unmoved by either. Three claims that
+    /// only mean something together — a test of the new record alone would pass
+    /// against a spelling that collided with `"effect_step"`.
+    #[test]
+    fn a_decision_step_is_recorded_beside_an_effect_step_and_neither_is_an_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt = AttemptId("01ATTEMPT".to_string());
+        let recording = journal(dir.path(), &attempt);
+
+        recording.record_intent(STUB_MARK).unwrap();
+        recording.record_step(EffectKind::EnsurePullRequestReady, ExecutionStep::Apply);
+        recording.record_decision_step(DecisionStep::ReObserveState);
+
+        let written = std::fs::read_to_string(
+            dir.path()
+                .join(JOURNAL_DIR)
+                .join(SLUG)
+                .join("01ATTEMPT.jsonl"),
+        )
+        .unwrap();
+        assert_eq!(written.lines().count(), 3, "appended, not rewritten");
+        assert!(
+            written.contains(r#""record":"decision_step""#)
+                && written.contains(r#""step":"re_observe_state""#),
+            "the validation step and its record kind must both be there: {written}"
+        );
+        // Told apart from the authorization order's record rather than sharing its
+        // kind: a reader asking which effect got how far and a reader asking where
+        // the walk stopped are asking different questions.
+        assert!(
+            written.contains(r#""record":"effect_step""#),
+            "the two orders are two records: {written}"
+        );
+        // And the walk carries no `kind`, because it has no second axis to name.
+        // Asserted so a later widening that added one has to come back here.
+        let decision: serde_json::Value = written
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .find(|record| record["record"] == "decision_step")
+            .expect("the decision record is there");
+        assert_eq!(decision["kind"], serde_json::Value::Null, "{decision}");
+
+        // Neither record is an outcome. `interrupted` matches `"effect"` by exact
+        // string, so this attempt still has none — which is the constraint adding
+        // any third record kind to this file has to satisfy.
+        assert_eq!(
+            interrupted(dir.path(), SLUG),
+            vec![InterruptedAttempt {
+                attempt_id: attempt,
+                capability: STUB_MARK.0.to_string(),
+                effect: None,
+            }]
+        );
+    }
+
+    /// The bridge: nothing before an attempt owns it, the journal afterwards —
+    /// **for both traits the one trace implements**.
+    ///
+    /// The two halves are one test because they share the cell: a `DecisionTrace`
+    /// that reached for a journal of its own would pass a test of the effect half
+    /// and write to the wrong file, and one that discarded after attachment would
+    /// pass a test of the unattached window. Each half is asserted on both sides of
+    /// the attachment.
     #[test]
     fn a_trace_records_nothing_until_an_attempt_attaches_its_journal() {
         let dir = tempfile::tempdir().unwrap();
@@ -573,21 +719,43 @@ mod tests {
             .join(SLUG)
             .join("01ATTEMPT.jsonl");
 
+        // Both traits are named at the call site rather than left to method
+        // resolution, which cannot choose between them: one type carries two `step`
+        // methods, and spelling the trait is also what says which order a line is
+        // asserting about.
         let trace = AttemptTrace::new();
-        trace.step(EffectKind::EnsureBranchPublished, ExecutionStep::Apply);
+        EffectTrace::step(
+            &trace,
+            EffectKind::EnsureBranchPublished,
+            ExecutionStep::Apply,
+        );
+        DecisionTrace::step(&trace, DecisionStep::RecomputeIdentity);
         assert!(
             !path.exists(),
-            "an unattached trace must not create a journal of its own"
+            "an unattached trace must not create a journal of its own, on either \
+             order"
         );
 
         trace.attach(Arc::new(journal(dir.path(), &attempt)));
-        trace.step(EffectKind::EnsureBranchPublished, ExecutionStep::Apply);
+        EffectTrace::step(
+            &trace,
+            EffectKind::EnsureBranchPublished,
+            ExecutionStep::Apply,
+        );
+        DecisionTrace::step(&trace, DecisionStep::RecomputeIdentity);
 
         let written = std::fs::read_to_string(&path).unwrap();
         assert_eq!(
             written.lines().count(),
-            1,
-            "exactly the step recorded after attaching: {written}"
+            2,
+            "exactly the two steps recorded after attaching, one per order: {written}"
+        );
+        // And they went to the *same* file, which is the half a trace reaching for a
+        // journal of its own would fail while still passing the count above.
+        assert!(
+            written.contains(r#""record":"effect_step""#)
+                && written.contains(r#""record":"decision_step""#),
+            "both orders share this attempt's journal: {written}"
         );
     }
 

@@ -8,10 +8,11 @@ use fiddle_core::{
     CapabilityId, FiddleBuild, InvocationRef, InvocationRefError, RunOutcome, WorkStateView,
 };
 use fiddle_runtime::effect::{EffectContext, Executor};
+use fiddle_runtime::human::interpret::InterpretationBounds;
 use fiddle_runtime::{
     AgentBudget, AttemptContext, AttemptTrace, Capability, FixtureRepair, GatewayError, GhCli,
-    GitCli, PublishChange, PublishConfig, RepairConfig, StubChangePort, StubMark, StubWorkItemPort,
-    WorkspaceCommand, CAPABILITIES,
+    GitCli, ProposeChange, ProposeConfig, PublishChange, PublishConfig, RepairConfig,
+    StubChangePort, StubMark, StubWorkItemPort, WorkspaceCommand, CAPABILITIES,
 };
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -83,10 +84,6 @@ enum CliError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     Unconfigured(#[from] Unconfigured),
-
-    #[error(transparent)]
-    #[diagnostic(transparent)]
-    Unbuildable(#[from] Unbuildable),
 
     #[error(transparent)]
     #[diagnostic(transparent)]
@@ -206,39 +203,6 @@ struct Unconfigured {
     /// The document as the caller named it, already rendered: a diagnostic is
     /// text, and a `PathBuf` in one has to be displayed somewhere anyway.
     path: String,
-}
-
-/// A capability this build advertises and cannot yet construct.
-///
-/// Its own diagnostic rather than [`Unconfigured`]'s, because the two are
-/// different claims and only one of them is the operator's to act on. An
-/// `Unconfigured` says *your document is missing something*, and its help tells a
-/// reader to go and add it; that help would be actively wrong here, since a
-/// document naming every table `propose_change` needs — `[github]`,
-/// `[github.decision]`, `[agent]`, `[workspace]` — is a document with nothing left
-/// to add. What is missing is a construction in this binary.
-///
-/// The refusal has to exist somewhere: `CAPABILITIES` advertises
-/// `propose_change`, `Selection::parse` accepts it, and
-/// `every_registered_capability_can_be_selected` is what holds those two together.
-/// So the honest answer is this one — the invocation named something this build
-/// cannot do yet, said plainly, with nothing for the reader to go and edit.
-///
-/// It exits on the same row as the other rejections for the same reason they do:
-/// the invocation described a deployment this build does not provide, and nothing
-/// was attempted.
-#[derive(Debug, thiserror::Error, miette::Diagnostic)]
-#[error("this build cannot execute `{capability}` yet")]
-#[diagnostic(
-    code(fiddle::capability::unbuildable),
-    help(
-        "the capability is implemented and tested in fiddle-runtime; what this \
-         binary does not yet build is the context it runs in. Nothing in the \
-         document needs changing — run a capability this build can execute"
-    )
-)]
-struct Unbuildable {
-    capability: CapabilityId,
 }
 
 /// The environment does not hold the credential the configuration names.
@@ -375,11 +339,7 @@ fn exit_code_for(termination: &Termination) -> u8 {
             | CliError::Gateway(_)
             // A path the document names that this machine cannot supply is a
             // setup to fix, not work that was attempted and failed.
-            | CliError::PathUnusable(_)
-            // And a capability this build cannot construct is the one member of
-            // the set that is nobody's document to fix — see [`Unbuildable`]. It
-            // is still this row: nothing ran, and a caller has to stop.
-            | CliError::Unbuildable(_),
+            | CliError::PathUnusable(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -508,9 +468,51 @@ fn cancel_on_interrupt(token: &CancellationToken) {
 /// The two scalars beside it are read at the same moment and for the same
 /// reason: both are resolved before the capability exists, so every refusal a
 /// misconfigured document earns happens before anything is built.
+/// The two capabilities that reach a forge are the two callers, and what they
+/// need of it differs in one place: the worktree. See [`resolve_forge`].
 struct Forge {
     /// The clients, the worktree, and the run's cancellation.
     ctx: EffectContext,
+    /// Where the executor's step order goes: the journal of the attempt this run
+    /// turns out to be.
+    ///
+    /// It lives here for exactly the reason the context does — it has to outlive
+    /// the capability that borrows it — and it is *empty* when it is built,
+    /// because the attempt it belongs to has not been minted yet.
+    /// [`fiddle_runtime::attempt`] fills it in with the journal it creates; see
+    /// [`AttemptTrace`] for why the binding cannot go the other way round.
+    ///
+    /// **Two orders, one sink, one value.** `propose_change` also needs a
+    /// [`DecisionTrace`](fiddle_runtime::human::validate::DecisionTrace) for the
+    /// validation order to announce itself to, and this is that too: `AttemptTrace`
+    /// implements both traits, so the authorization order and the validation order
+    /// of one attempt end up in one file in the order they happened. A second value
+    /// would be a second sink that could be attached to a different attempt.
+    trace: AttemptTrace,
+    /// What only a publication resolves. `None` on the proposing arm, and that is
+    /// a statement about the walk rather than about the document — see
+    /// [`Publishing`].
+    publishing: Option<Publishing>,
+}
+
+/// The two values `publish_change` resolves before its capability exists, and
+/// `propose_change` cannot.
+///
+/// Behind an `Option` rather than fabricated for the proposing arm, because both
+/// would have to be invented there and an invented value on this path is not
+/// harmless:
+///
+/// - `head_sha` would be a commit. The whole reason it is read out here is that
+///   [`fiddle_runtime::EnsureBranchPublished`] takes the intended sha rather than
+///   resolving `HEAD` itself, so a capability cannot publish a commit its own
+///   proposal never named. A proposal publishes the commit its *attempt* makes,
+///   which does not exist when this runs — so there is nothing to read, and a
+///   placeholder would be exactly the fabricated identity the field prevents.
+/// - `workflow` would name a CI workflow. `propose_change` requests no check at
+///   all — its `Publication` says so, `NotApplicable` — so a document driving only
+///   a proposal has no reason to carry `github.workflow`, and demanding one would
+///   be a configuration diagnostic telling an operator to add a key nothing reads.
+struct Publishing {
     /// The commit `github.work` was sitting on when the run began, read once.
     ///
     /// Read here rather than by the capability, because
@@ -523,34 +525,55 @@ struct Forge {
     /// The workflow a check is requested from, already refused by name if the
     /// document did not carry one.
     workflow: String,
-    /// Where the executor's step order goes: the journal of the attempt this run
-    /// turns out to be.
-    ///
-    /// It lives here for exactly the reason the context does — it has to outlive
-    /// the capability that borrows it — and it is *empty* when it is built,
-    /// because the attempt it belongs to has not been minted yet.
-    /// [`fiddle_runtime::attempt`] fills it in with the journal it creates; see
-    /// [`AttemptTrace`] for why the binding cannot go the other way round.
-    trace: AttemptTrace,
 }
 
-/// Build the forge this run publishes through, from `config` alone.
+/// Build the forge this run reaches through, from `config` alone.
 ///
 /// The order is the same one the repairing arm uses and it is the same
 /// argument: the tables and keys first, then the credential, then the clients.
 /// A deployment missing `github.work` is told about `github.work` rather than
 /// about a variable it would also have had to export.
 ///
-/// Reached only when `--capability publish_change` was asked for. That is what
-/// keeps `run` over the other two capabilities — and `inspect` over any of the
-/// three — from resolving a forge credential it has no use for.
+/// Reached only when `--capability publish_change` or `--capability
+/// propose_change` was asked for. That is what keeps `run` over the two
+/// capabilities that reach nothing — and `inspect` over any of the four — from
+/// resolving a forge credential it has no use for.
+///
+/// # One function and two callers, differing in one value: the worktree
+///
+/// [`EffectContext::work`] is the tree whose `HEAD`
+/// [`fiddle_runtime::EnsureBranchPublished`] publishes, and the two capabilities
+/// answer *which tree* differently:
+///
+/// - `publish_change` publishes a tree an operator maintains. The document names
+///   it, `github.work`, and its `HEAD` is read here and now — before anything is
+///   proposed, so a directory that is not a repository is refused rather than
+///   discovered after a push.
+/// - `propose_change` publishes the tree its own attempt will *create*. The path
+///   is [`fiddle_runtime::attempt_worktree`]'s to derive from the run's two
+///   canonical inputs, it does not exist at this moment, and `ProposeChange`
+///   refuses outright if the context points anywhere else — so the derivation is
+///   called here rather than reimplemented, and no `HEAD` is read off a path that
+///   is about to be created.
+///
+/// One function rather than two, because everything else is identical and it is
+/// the *credential* half: one resolution site, two clients, `gh` pinned to the
+/// document's own configuration directory. A sibling resolver would be a second
+/// place a credential is read, and [`resolve_credential`] exists to be able to say
+/// there are exactly two in this binary.
+///
+/// The capability the diagnostics are attributed to is `selection`'s own id, so a
+/// deployment driving a proposal that is missing `[workspace]` is told which
+/// capability wanted it.
 async fn resolve_forge(
     config: &config::Config,
     config_path: &Path,
     cancel: &CancellationToken,
+    selection: Selection,
+    reference: &InvocationRef,
 ) -> Result<Forge, CliError> {
     let missing = |missing: &'static str| Unconfigured {
-        capability: fiddle_core::PUBLISH_CHANGE,
+        capability: selection.id(),
         missing,
         path: config_path.display().to_string(),
     };
@@ -561,14 +584,53 @@ async fn resolve_forge(
     };
 
     let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
-    let work = github.work.as_ref().ok_or_else(|| missing("github.work"))?;
-    let workflow = github
-        .workflow
-        .clone()
-        .ok_or_else(|| missing("github.workflow"))?;
+    // The tree, and the workflow only a publication needs. **Both decided before
+    // the credential**, and that order is a property with a test:
+    // `a_forge_names_each_key_it_cannot_invent_before_the_credential`. An operator
+    // whose document is missing a key has a line to write, and telling them about a
+    // variable they would *also* have to export answers the second question first.
+    //
+    // Matched rather than defaulted, so registering a fifth capability that reaches
+    // a forge is a compile error here — at the one place that has to say which tree
+    // it publishes — instead of a run that silently publishes from somebody else's.
+    let (work, workflow): (PathBuf, Option<String>) = match selection {
+        Selection::Publish => (
+            github
+                .work
+                .as_ref()
+                .ok_or_else(|| missing("github.work"))?
+                .clone(),
+            Some(
+                github
+                    .workflow
+                    .clone()
+                    .ok_or_else(|| missing("github.workflow"))?,
+            ),
+        ),
+        Selection::Propose => {
+            let workspace = config
+                .workspace
+                .as_ref()
+                .ok_or_else(|| missing("[workspace]"))?;
+            (
+                fiddle_runtime::attempt_worktree(
+                    &workspace.root,
+                    &config.project.name,
+                    &reference.as_str(),
+                ),
+                // No workflow, because no check is requested — see [`Publishing`].
+                None,
+            )
+        }
+        // Neither reaches a forge, and `dispatch` does not ask for one. Answered
+        // rather than left unreachable, because a total match is cheaper than an
+        // argument about which paths exist — the reasoning `build_capability`'s
+        // `forge.ok_or_else` already uses.
+        Selection::Mark | Selection::Repair => return Err(missing("[github]").into()),
+    };
 
-    // Only now, and only on this arm. Everything above could have failed for a
-    // deployment that never intended to reach a forge at all.
+    // Only now, and only on the arms that reach a forge. Everything above could
+    // have failed for a deployment that never intended to reach one at all.
     //
     // **One resolution, two clients.** `gh` and `git push` are different
     // programs with different environments, and they authenticate to the same
@@ -599,16 +661,33 @@ async fn resolve_forge(
     // Before the context, because the context takes the `git` by value — and
     // before anything is proposed, so a worktree that is not one is refused
     // rather than discovered after a push.
-    let head_sha = git
-        .head_sha(work, cancel)
-        .await
-        .map_err(|e| unusable("github.work", work, e.to_string()))?;
+    //
+    // **Not read on the proposing arm**, and this is the one asymmetry in this
+    // function. `work` there is a path the attempt is about to create, so there is
+    // no `HEAD` to read and nothing to refuse: a `git` pointed at it would fail for
+    // the correct reason and the diagnostic would name `github.work`, a key that
+    // deployment need not even have written. `Publishing` is where both halves of
+    // what only a publication resolves are said, and why an invented one would not
+    // be harmless.
+    // A workflow was resolved above on exactly the selection that publishes, so
+    // matching on it here is matching on that selection — and the `HEAD` read
+    // belongs here rather than up there, because the client that makes it did not
+    // exist yet.
+    let publishing = match workflow {
+        Some(workflow) => Some(Publishing {
+            head_sha: git
+                .head_sha(&work, cancel)
+                .await
+                .map_err(|e| unusable("github.work", &work, e.to_string()))?,
+            workflow,
+        }),
+        None => None,
+    };
 
     Ok(Forge {
-        ctx: EffectContext::new(gh, git, work.clone(), cancel.clone()),
-        head_sha,
-        workflow,
+        ctx: EffectContext::new(gh, git, work, cancel.clone()),
         trace: AttemptTrace::new(),
+        publishing,
     })
 }
 
@@ -655,6 +734,13 @@ fn build_capability<'a>(
             // rather than by a panic, because a total function is cheaper than
             // an argument about which paths exist.
             let forge = forge.ok_or_else(|| missing("[github]"))?;
+            // Resolved by `resolve_forge` on this selection and only this one, and
+            // answered by the same refusal for the same reason as the line above:
+            // no path in this binary produces a publishing run without them.
+            let publishing = forge
+                .publishing
+                .as_ref()
+                .ok_or_else(|| missing("github.work"))?;
 
             // A `^C` reaches `gh` and `git push` only through the token, so the
             // handler goes in beside the capability that will spawn them.
@@ -698,7 +784,7 @@ fn build_capability<'a>(
                     // `repo` is refused at parse time unless it has an owner.
                     head_owner: github.repo.owner.clone(),
                     base: github.base.clone(),
-                    head_sha: forge.head_sha.clone(),
+                    head_sha: publishing.head_sha.clone(),
                     // Payload, not identity: read by people, hashed for
                     // detectability, matched on by nothing. Derived from the
                     // run's own two names and from no clock or counter, because
@@ -714,7 +800,7 @@ fn build_capability<'a>(
                         reference.as_str(),
                         config.project.name,
                     ),
-                    workflow: forge.workflow.clone(),
+                    workflow: publishing.workflow.clone(),
                     required_checks: github.required_checks.clone(),
                     stub_root: config.stub.root.clone(),
                     project: config.project.name.clone(),
@@ -801,33 +887,210 @@ fn build_capability<'a>(
             )))
         }
 
-        // **A placeholder, and the only arm in this function that builds
-        // nothing** — but no longer one that blames the document for it.
+        // **The hybrid one, and the arm that used to build nothing.**
         //
-        // It used to refuse with `missing("[github.decision]")`, on the argument
-        // that the document did not describe this deployment. That was true only
-        // while the table did not exist. It exists now, strictly, with an approver
-        // list that has no permissive default — so a deployment that wrote it
-        // correctly would have been told to add a table it already had, which is
-        // the one thing a configuration diagnostic must never do.
+        // It refused with `Unbuildable` until this task, on an argument that was
+        // true at the time and named its own two missing pieces: an `EffectContext`
+        // whose worktree is the tree the attempt will *create*, and a
+        // `DecisionTrace` for the validation order to announce itself to. Both now
+        // exist — `resolve_forge` derives the first through
+        // `fiddle_runtime::attempt_worktree` rather than reading a `HEAD` off a path
+        // that is about to be created, and `AttemptTrace` implements the second
+        // beside the `EffectTrace` it already implemented, so the two orders of one
+        // attempt land in one journal.
         //
-        // What is actually missing is here rather than there, and it is two
-        // things: an `EffectContext` whose worktree is the tree the attempt will
-        // *create* — `resolve_forge` reads `HEAD` out of `github.work` before the
-        // capability runs, and `capability::attempt_worktree`'s path does not exist
-        // at that moment — and a `DecisionTrace` for the walk to announce itself
-        // to, which nothing outside `fiddle-runtime`'s own tests implements. Both
-        // belong to the bean that gates a suspension end to end, because a
-        // construction no test can drive is not a capability an operator can run.
-        //
-        // The arm is here rather than absent because the match is exhaustive and
-        // because `Selection::parse` must accept the id: `CAPABILITIES` now
-        // advertises it, and `every_registered_capability_can_be_selected` is
-        // what keeps those two in step.
-        Selection::Propose => Err(Unbuildable {
-            capability: selection.id(),
+        // This is the arm that gates a suspension end to end, so the whole document
+        // it needs is demanded here: `[github]` and `[github.decision]` for the
+        // forge and for who may decide, `[agent]` for the one bounded attempt and
+        // the one bounded interpretation, and `[workspace]` for the tree both of
+        // those happen in. Four tables, each refused by its own name.
+        Selection::Propose => {
+            let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
+            // No permissive default and no empty list: `[github.decision]` is
+            // refused empty at the parse boundary, because a deployment that can
+            // publish a question and can never accept an answer suspends every run
+            // for ever. What is checked here is only that the table is there at all.
+            let decision = github
+                .decision
+                .as_ref()
+                .ok_or_else(|| missing("[github.decision]"))?;
+            let agent = config.agent.as_ref().ok_or_else(|| missing("[agent]"))?;
+            let workspace = config
+                .workspace
+                .as_ref()
+                .ok_or_else(|| missing("[workspace]"))?;
+            let fixture = workspace
+                .fixture
+                .as_ref()
+                .ok_or_else(|| missing("workspace.fixture"))?;
+            let check = workspace
+                .check
+                .as_ref()
+                .ok_or_else(|| missing("workspace.check"))?;
+            // Resolved by the caller, on this selection, with the worktree this
+            // capability is about to create as its `work`. `None` is answered by
+            // the same refusal an absent table earns, for the publishing arm's
+            // reason: no path in this binary produces it.
+            let forge = forge.ok_or_else(|| missing("[github]"))?;
+
+            // Only now, and only on this arm — the repairing arm's order, for the
+            // repairing arm's reason.
+            let credential = resolve_credential(&agent.api_key.env)?;
+            let model = fiddle_runtime::completion_model(
+                &agent.base_url,
+                credential,
+                &agent.api_key.env,
+                &agent.model,
+            )
+            .map_err(GatewayUnavailable)?;
+
+            // A `^C` has to reach three children here rather than the repairing
+            // arm's one: the attempt's tools, the check, and the `gh` and `git` an
+            // effect spawns. They all stop through the one token.
+            cancel_on_interrupt(cancel);
+
+            // The repairing arm's two axes, matched for the repairing arm's reason:
+            // adding a variant is a compile error here instead of a document that
+            // loads and quietly means something else.
+            let config::Isolation::GitWorktree = workspace.isolation;
+            let config::Cleanup::Always = workspace.cleanup;
+
+            // Bound to `propose_change`, so the executor's step 1 refuses a
+            // proposal made in any other capability's name. `&forge.trace` is the
+            // authorization order's sink; the same value is the validation order's,
+            // two arguments below.
+            let executor = Executor::new(
+                fiddle_core::PROPOSE_CHANGE,
+                config.project.name.clone(),
+                reference.as_str(),
+                &github.policy,
+                &forge.ctx,
+                &forge.trace,
+                github.read_retry.as_read_retry(),
+            );
+
+            Ok(Box::new(ProposeChange::new(
+                executor,
+                // The same context the executor holds, and the capability checks
+                // that it publishes from the tree it is about to work in — so a
+                // context built for another run is refused before anything happens
+                // rather than after something has.
+                &forge.ctx,
+                &forge.trace,
+                model,
+                ProposeConfig {
+                    repo: github.repo.to_string(),
+                    // The publishing arm's derivation and its reason, unchanged: a
+                    // head from a fork is not something this milestone can produce,
+                    // and `repo` is refused at parse time unless it has an owner.
+                    head_owner: github.repo.owner.clone(),
+                    base: github.base.clone(),
+                    // Payload, not identity — read by people, hashed for
+                    // detectability, matched on by nothing. Derived from the run's
+                    // own two names and from no clock or counter, the publishing
+                    // arm's rule and for the publishing arm's reason: a payload
+                    // that varied between processes would make the payload hash
+                    // vary with it.
+                    //
+                    // **It is not what protects the continuation, and an inversion
+                    // is what said so.** This comment used to claim a timestamped
+                    // title would make every continuation refuse at step 8. It
+                    // would not: putting `SystemTime::now()` in here broke no test
+                    // in the workspace, because the effect a person approves is
+                    // `EnsurePullRequestReady`, whose payload is `{head, pr, repo}`
+                    // and carries no title — and a continuation never proposes the
+                    // pull request again, so this title never enters a comparison
+                    // across processes at all. The payload identity a continuation
+                    // does turn on is that one, and it is protected at the runtime
+                    // tier, in `ready_effect` and `decision_protocol`.
+                    //
+                    // Determinism here is still right, for the reason above and
+                    // because a run interrupted before its create should not open a
+                    // differently-titled pull request on its next attempt. What it
+                    // is not is load-bearing for the decision walk, and the earlier
+                    // wording would have sent a reader looking for a property this
+                    // line does not hold.
+                    title: format!("{}: {}", config.project.name, reference.as_str()),
+                    body: format!(
+                        "Opened by fiddle for {} in project {}, as a draft.\n\n\
+                         The change was produced by one bounded attempt and passed \
+                         the check this deployment configured. Marking it ready for \
+                         review is the step fiddle will not take on its own: it \
+                         asks in a comment below and acts only on a reply from \
+                         somebody this deployment nominated.\n",
+                        reference.as_str(),
+                        config.project.name,
+                    ),
+                    project: config.project.name.clone(),
+                    fixture: fixture.clone(),
+                    // The root only. The path inside it is `attempt_worktree`'s to
+                    // derive, and `resolve_forge` has already derived it once for
+                    // the context — two call sites of one function, which is the
+                    // arrangement that keeps the tree the attempt works in and the
+                    // tree the push publishes from being two paths.
+                    workspace_root: workspace.root.clone(),
+                    check: WorkspaceCommand {
+                        program: check.program.clone(),
+                        args: check.args.clone(),
+                        timeout: workspace.command_timeout.as_duration(),
+                    },
+                    // The repairing arm's budget, handed over as configured rather
+                    // than pre-tightened, for the repairing arm's reason.
+                    budget: AgentBudget {
+                        max_turns: agent.max_turns,
+                        max_tokens: agent.max_tokens,
+                        deadline: agent.deadline.as_duration(),
+                        max_changed_files: agent.max_changed_files,
+                        tool_timeout: agent.tool_timeout.as_duration(),
+                    },
+                    // Ids and not logins, straight from the table that nominates
+                    // them. Cloned rather than borrowed because `ProposeConfig`
+                    // outlives this arm's view of the document.
+                    deciders: decision.authorized.clone(),
+                    interpretation: interpretation_bounds(agent),
+                    cancel: cancel.clone(),
+                },
+            )))
         }
-        .into()),
+    }
+}
+
+/// What the one interpretation call runs inside, built from `[agent]`.
+///
+/// Beside the attempt's budget rather than folded into it, because the two bound
+/// different things and [`ProposeConfig`] keeps them apart for that reason: a
+/// tool-using attempt over a checkout, and a single completion handed one comment
+/// that answers with one small object. There is no turn count here and its absence
+/// is deliberate upstream — a second turn would be a second chance at an approval.
+///
+/// Two of the three come from the document. The third does not, and that is worth
+/// saying plainly rather than leaving a reader to wonder which keys they can turn.
+///
+/// # `max_reply_bytes` is a constant, and no test in this repository can tell
+///
+/// It bounds how much of a person's reply is put in the prompt. There is no
+/// document key for it, nobody has asked for one, and a value that could disagree
+/// with anything would be worse than one that cannot — so it is named here.
+///
+/// **It is also a value whose value cannot matter to any test that exists**, and
+/// the honest thing is to record that at the site instead of adding a check that
+/// cannot fail. Every reply any suite writes is a short sentence, so every bound
+/// above a few dozen bytes behaves identically and an inversion over this number
+/// comes back null. The behaviour it *does* control — that a truncated reply is
+/// refused rather than interpreted from its first half — is discriminating, and it
+/// is asserted where it can be: `interpretation.rs`'s `bounds_with` drives the
+/// truncation directly at the unit tier. What this line decides is only which
+/// deployments meet that bound in production.
+fn interpretation_bounds(agent: &config::Agent) -> InterpretationBounds {
+    InterpretationBounds {
+        // Generous against the replies a person writes on a pull request and far
+        // below anything that would crowd out the question itself.
+        max_reply_bytes: 4_096,
+        // The same ceilings the attempt runs under, because they are the same
+        // deployment's answer to "how much may one completion cost" and a second
+        // pair of keys would be two answers to one question.
+        max_tokens: agent.max_tokens,
+        deadline: agent.deadline.as_duration(),
     }
 }
 
@@ -934,21 +1197,19 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             // selection that has a forge to reach, so `stub_mark` and
             // `fixture_repair` resolve no GitHub credential.
             let forge = match selection {
-                Selection::Publish => Some(resolve_forge(&config, &cli.config, &cancel).await?),
-                // `Selection::Propose` resolves none, and not because it reaches
-                // no forge — it reaches one — but because `resolve_forge` reads
-                // `HEAD` out of `github.work` before the capability runs, and the
-                // worktree a proposal publishes from is created *by* the attempt.
-                //
-                // That forge and the `build_capability` arm that would borrow it
-                // are **owed**, and they are owed to the bean that builds the
-                // scripted world a decision walk needs — not to the configuration
-                // task, which this comment used to name. Configuration added the
-                // `[github.decision]` table and was ruled off the construction, on
-                // the argument that a forge, a production `DecisionTrace` and an
-                // `InterpretationBounds` no test can drive are three inert
-                // surfaces rather than a capability. See the arm itself.
-                Selection::Mark | Selection::Repair | Selection::Propose => None,
+                // Both capabilities that reach a forge resolve one, through the same
+                // function and the same single credential read. They differ in the
+                // worktree the context publishes from, and `resolve_forge` is where
+                // that difference is decided — `propose_change`'s is derived rather
+                // than named by the document, because the tree its attempt publishes
+                // is the tree its attempt creates.
+                Selection::Publish | Selection::Propose => {
+                    Some(resolve_forge(&config, &cli.config, &cancel, selection, &reference).await?)
+                }
+                // Neither of these reaches a forge, so neither resolves a forge
+                // credential. That is what keeps M0's and M1's lanes runnable on a
+                // machine holding no secrets.
+                Selection::Mark | Selection::Repair => None,
             };
             let selected = build_capability(
                 selection,
@@ -1225,22 +1486,40 @@ mod tests {
         }
     }
 
-    /// **Each key a publication cannot invent is refused by its own name,
-    /// before the credential is reached.**
+    /// **Each key a forge cannot invent is refused by its own name, before the
+    /// credential is reached — and the two capabilities that reach a forge cannot
+    /// invent the same keys.**
     ///
     /// The order is the property: an operator whose document has no
     /// `github.work` has a key to write, and telling them about a variable they
     /// would *also* need would be answering the second question first. The
     /// document here names a variable nothing exports, so a resolution that
     /// happened too early would surface as the wrong refusal.
+    ///
+    /// The rows are what say the two selections are answered differently rather
+    /// than by one list of every key either might want. A proposal asked for
+    /// `github.work` or `github.workflow` would be a diagnostic telling an operator
+    /// to add keys nothing on that walk reads — it publishes from a tree it derives,
+    /// and it requests no check — and a publication asked for `[workspace]` would be
+    /// the same mistake pointing the other way. Both directions are here, because a
+    /// resolver that demanded the union would pass a test of either alone.
     #[tokio::test]
-    async fn a_publication_names_each_key_it_cannot_invent_before_the_credential() {
+    async fn a_forge_names_each_key_it_cannot_invent_before_the_credential() {
         let forge = "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
              [github]\nrepo=\"peel/fiddle\"\nbase=\"main\"\n\
              token={env=\"FIDDLE_A_VARIABLE_NOTHING_EXPORTS\"}\n";
-        for (extra, expected) in [
-            ("", "github.work"),
-            ("work=\"/nonexistent\"\n", "github.workflow"),
+        let reference: InvocationRef = "beans:m3-demo".parse().unwrap();
+        for (selection, extra, expected) in [
+            (Selection::Publish, "", "github.work"),
+            (
+                Selection::Publish,
+                "work=\"/nonexistent\"\n",
+                "github.workflow",
+            ),
+            // A proposal over the very same incomplete `[github]` table is refused
+            // for `[workspace]` and not for `github.work`: the two capabilities want
+            // different things of one document.
+            (Selection::Propose, "", "[workspace]"),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("fiddle.toml");
@@ -1251,17 +1530,105 @@ mod tests {
             // `Forge` to be `Debug`, and a `Debug` on a value that transitively
             // holds two credential-carrying clients is exactly the derive M1
             // shipped a leak through.
-            let Err(error) = resolve_forge(&loaded, &path, &CancellationToken::new()).await else {
+            let Err(error) = resolve_forge(
+                &loaded,
+                &path,
+                &CancellationToken::new(),
+                selection,
+                &reference,
+            )
+            .await
+            else {
                 panic!("the document is incomplete and must be refused");
             };
             match error {
                 CliError::Unconfigured(unconfigured) => {
                     assert_eq!(unconfigured.missing, expected);
-                    assert_eq!(unconfigured.capability, fiddle_core::PUBLISH_CHANGE);
+                    // Attributed to the capability that wanted the key, so an
+                    // operator reading it knows which invocation to fix.
+                    assert_eq!(unconfigured.capability, selection.id());
                 }
                 other => panic!("expected {expected} to be named, got {other:?}"),
             }
         }
+    }
+
+    /// A proposal's forge is not refused for the two keys only a publication reads,
+    /// and its `work` is the tree its own attempt will create.
+    ///
+    /// The negative half of the test above, and it needs its own document because
+    /// the assertion is that a *complete enough* proposing document gets past the
+    /// keys rather than that an incomplete one is refused for something else. What
+    /// it reaches instead is the credential, which is the next thing in the order —
+    /// so this also says `resolve_forge` never read a `HEAD` off the derived path:
+    /// that path does not exist, and a `git` pointed at it would have failed first
+    /// with `PathUnusable` naming `github.work`, a key this document does not have.
+    #[tokio::test]
+    async fn a_proposal_reads_no_head_off_the_tree_its_attempt_has_yet_to_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiddle.toml");
+        std::fs::write(
+            &path,
+            "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
+             [github]\nrepo=\"peel/fiddle\"\nbase=\"main\"\n\
+             token={env=\"FIDDLE_A_VARIABLE_NOTHING_EXPORTS\"}\n\
+             [workspace]\nroot=\"/nonexistent/workspaces\"\n",
+        )
+        .unwrap();
+        let loaded = config::load(&path).unwrap();
+        let reference: InvocationRef = "beans:m3-demo".parse().unwrap();
+
+        let Err(error) = resolve_forge(
+            &loaded,
+            &path,
+            &CancellationToken::new(),
+            Selection::Propose,
+            &reference,
+        )
+        .await
+        else {
+            panic!("nothing exports that variable and it must be refused");
+        };
+        match error {
+            CliError::CredentialAbsent(absent) => {
+                assert_eq!(absent.variable, "FIDDLE_A_VARIABLE_NOTHING_EXPORTS");
+            }
+            other => panic!("expected the variable to be named, got {other:?}"),
+        }
+    }
+
+    /// The path a proposal's context publishes from is the path its capability
+    /// creates, because both come from one function.
+    ///
+    /// Asserted against `attempt_worktree` rather than against a spelling written
+    /// out here, and that is the whole point rather than laziness: a second
+    /// derivation is exactly what `ProposeChange::execute`'s `PublishesElsewhere`
+    /// refusal exists to catch, and a test that recomputed the leaf itself would
+    /// agree with a `resolve_forge` that had drifted. What is checked is that the
+    /// two call sites are the same call — the workspace root is honoured, and the
+    /// run's own two names are what the leaf is derived from.
+    #[test]
+    fn a_proposals_worktree_is_derived_from_the_runs_own_two_names() {
+        let root = Path::new("/w");
+        let derived = fiddle_runtime::attempt_worktree(root, "icecube", "beans:m3-demo");
+
+        assert_eq!(derived.parent(), Some(root), "under the configured root");
+        // Two runs that differ in either name get two trees, which is what stops a
+        // second invocation publishing out of the first one's checkout.
+        assert_ne!(
+            derived,
+            fiddle_runtime::attempt_worktree(root, "icecube", "beans:m3-demo-again")
+        );
+        assert_ne!(
+            derived,
+            fiddle_runtime::attempt_worktree(root, "another-project", "beans:m3-demo")
+        );
+        // And the same two names give the same tree in a *different* process, which
+        // is the half a continuation depends on.
+        assert_eq!(
+            derived,
+            fiddle_runtime::attempt_worktree(root, "icecube", "beans:m3-demo")
+        );
     }
 
     /// And once the document is complete, the credential is what is missing —
@@ -1280,8 +1647,17 @@ mod tests {
         )
         .unwrap();
         let loaded = config::load(&path).unwrap();
+        let reference: InvocationRef = "beans:m3-demo".parse().unwrap();
 
-        let Err(error) = resolve_forge(&loaded, &path, &CancellationToken::new()).await else {
+        let Err(error) = resolve_forge(
+            &loaded,
+            &path,
+            &CancellationToken::new(),
+            Selection::Publish,
+            &reference,
+        )
+        .await
+        else {
             panic!("nothing exports that variable and it must be refused");
         };
         match error {

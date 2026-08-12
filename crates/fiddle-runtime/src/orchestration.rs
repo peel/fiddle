@@ -869,6 +869,13 @@ mod tests {
                 .record(format!("step:{}:{}", kind.as_str(), step.as_str()));
         }
 
+        /// Recorded under a prefix of its own, so a scenario reading this log can
+        /// tell the validation order from the authorization order — the same
+        /// distinction `FileJournal` keeps by writing a third record kind.
+        fn record_decision_step(&self, step: crate::human::validate::DecisionStep) {
+            self.log.record(format!("decision:{}", step.as_str()));
+        }
+
         fn record_effect(&self, _capability: CapabilityId, status: &str, _e: &[EvidenceRef]) {
             self.log.record(format!("effect:{status}"));
         }

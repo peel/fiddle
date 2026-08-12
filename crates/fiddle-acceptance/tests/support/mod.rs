@@ -1294,6 +1294,51 @@ pub fn a_real_repair() -> Vec<Reply> {
     ]
 }
 
+/// A turn in which the model answers the one interpretation question: is this
+/// reply an approval of this request?
+///
+/// The shape is the wire format `human::interpret` declares and nothing wider: a
+/// `decision`, an `evidence` span the model claims to have copied out of the reply,
+/// and — absent here — a `redirect`. Written out rather than reached for from
+/// `fiddle-runtime`, because the acceptance crate depends on neither library and a
+/// fixture that imported the reply type would be scripting the product's own idea
+/// of its wire format instead of a provider's.
+///
+/// `evidence` has to be a span that is really in the reply. It is checked rather
+/// than trusted — `interpret::decide` refuses a model that quoted something the
+/// input does not contain — so a scenario passes the same words it wrote on the
+/// conversation and a scenario testing that refusal passes different ones.
+pub fn interprets(verdict: &str, evidence: &str) -> Reply {
+    accepted(reports(serde_json::json!({
+        "decision": verdict,
+        "redirect": serde_json::Value::Null,
+        "evidence": evidence,
+    })))
+}
+
+/// The script a suspension and the process that continues it spend between them:
+/// one repair, then one interpretation.
+///
+/// Three replies, and the count is the assertion this constant makes about the
+/// walks. **Process A spends two** — a `write_file` and a report, which is one
+/// bounded attempt — and then publishes, asks, and stops without another turn.
+/// **Process B spends one**, on step 7 of the validation order, and it is step
+/// *seven*: the six deterministic steps before it happen without a model, which is
+/// why a run whose reply is unauthorized or whose head has moved never reaches this
+/// reply at all. **Process C spends none**, because its walk refuses at step 6 —
+/// the pull request is no longer a draft — and the transition it was about has
+/// already happened.
+///
+/// So a run that took a turn it should not have exhausts this script and fails at
+/// the socket, loudly, rather than being answered something plausible. That is the
+/// script's real work: the gateway drops its listener when the script runs out, so
+/// the count here is a bound on model calls that no test has to remember to assert.
+pub fn a_suspension_and_its_approval(approval: &str) -> Vec<Reply> {
+    let mut script = a_real_repair();
+    script.push(interprets("approve", approval));
+    script
+}
+
 // ===========================================================================
 // The scripted world a decision walk runs against
 // ===========================================================================
@@ -1379,6 +1424,41 @@ pub const FIDDLE_BOT: u64 = 1_000_001;
 /// that must appear on no surface a reader can reach.
 pub const SENTINEL: &str = "ghp_m3_sentinel_must_never_be_printed_7c04";
 
+/// The GraphQL node id the forge gives the pull request a proposal opens.
+///
+/// **The one value in this fixture that says the transition was spent on the object
+/// it was read from.** `markPullRequestReadyForReview` is addressed by node id and
+/// by nothing else, and the product carries this string from
+/// `EnsurePullRequestReady::inspect` — which refuses to fetch one inside `apply`,
+/// because a fetch there is a second chance to decide which object an approval was
+/// for — through to the mutation. The scripted `gh` then takes a pull request out of
+/// draft only when a landed mutation names *its* node id.
+///
+/// So the value is discriminating in a way a bare count is not: a run that invented
+/// a node id, or carried one from another pull request, dispatches a mutation this
+/// world applies to nothing, and the by-number read still answers `draft: true`.
+///
+/// Shaped like GitHub's own — `PR_` and an opaque tail — and not like a number, for
+/// [`CONVERSATION_ISSUE`]'s reason: a value that could be an index or a count is one
+/// a test could match by accident.
+///
+/// # Its *value* is unclosable, and that is worth saying instead of implying otherwise
+///
+/// Replacing this string with any other broke **no test in the acceptance crate**,
+/// and could not: the product reads the node id out of the seed and writes the same
+/// one back into the mutation, so both sides of every comparison move together.
+/// Reading the field and inventing it are indistinguishable by construction, exactly
+/// as [`SEEDED_AT`] is for `created_at`.
+///
+/// **Its presence is not unclosable, and that is where the discrimination lives.**
+/// Removing `node_id` from the seed fails
+/// `a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says`,
+/// because `EnsurePullRequestReady` refuses an answer it cannot read a node id out
+/// of rather than fetching one — a fetch inside `apply` being a second chance to
+/// decide which object an approval was for. So the field is tested and the string is
+/// not, and no check that cannot fail has been added to pretend otherwise.
+pub const PULL_REQUEST_NODE_ID: &str = "PR_kwDOm3demoNode7";
+
 /// The issue number the conversation is read and written under.
 ///
 /// Seven because that is the number the scripted `gh` assigns the first pull
@@ -1405,6 +1485,129 @@ pub const SEEDED_AT: &str = "2026-08-11T00:00:00Z";
 /// consists of: `validate` refuses a comment whose two stamps differ, and it can
 /// only do so if the fixture can produce one.
 pub const EDITED_AT: &str = "2026-08-11T12:00:00Z";
+
+/// The binding a request comment's marker carries: the four identities a person is
+/// being asked about.
+///
+/// `Eq` because the whole use of it is one comparison — the binding a continuing
+/// process validated against is the binding the suspending process published — and
+/// that comparison is over all four fields at once. Field by field would let three
+/// of them be checked and the fourth quietly ignored.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Binding {
+    /// The question's own id, and the only one a later process can find the
+    /// question by.
+    pub request: String,
+    /// The gated effect this question is about.
+    pub effect: String,
+    /// The digest of the payload that effect would carry.
+    pub payload: String,
+    /// The revision the pull request's head was at when the question was asked.
+    pub head_sha: String,
+}
+
+/// Read the marker one request comment carries, **re-derived from the design's own
+/// grammar**.
+///
+/// # This deliberately does not call `fiddle_core::parse_marker`
+///
+/// The acceptance crate depends on neither `fiddle-core` nor `fiddle-runtime`, and
+/// that is not tidiness: every helper in this module drives the compiled binary as a
+/// subprocess, *"so what the tests observe is exactly what a caller at a shell would
+/// observe"*. Reaching into the library for the parser would break that in the one
+/// place it matters most. **A wrong `parse_marker` would pass**, because the test
+/// and the product would share the defect and neither could see it — the lane would
+/// stop being a second opinion and become a mirror.
+///
+/// So the grammar is taken from the design, which states it outright:
+///
+/// ```text
+/// <!-- fiddle:decision v1 request=<16hex> effect=<16hex> payload=<16hex> head=<40hex> -->
+/// ```
+///
+/// This is `Cargo.toml`'s reason for carrying `blake3` as a dev-dependency, applied
+/// to the other half of the same format: [`Scenario::expected_marker`] re-derives a
+/// correlation key from the design's definition rather than from `fiddle-core`'s
+/// implementation of it, and this re-derives a marker's shape the same way.
+///
+/// # As strict as the design says, and no stricter
+///
+/// The design's own words: *"the exact key order, the exact lengths, lowercase hex,
+/// and no extra keys"*. Each of those is checked, because each is a way a body can
+/// resemble a request comment without being one — and a lenient parser here would
+/// let a scenario assert that a question was published against a comment that only
+/// looked like one. What is **not** checked is the version-token diagnosis the
+/// product makes, which distinguishes a marker from a later build from a mangled
+/// body: that is a refusal taxonomy for an operator, and this returns a reason
+/// string because a scenario's next move is to print it.
+pub fn parse_marker(body: &str) -> Result<Binding, String> {
+    const OPENING: &str = "<!-- fiddle:decision ";
+    const CLOSING: &str = " -->";
+    /// Every field, in the one order a marker may spell them, with the width each
+    /// value must have. One statement rather than four, so the order and the widths
+    /// cannot disagree with each other.
+    const FIELDS: [(&str, usize); 4] = [
+        ("request", 16),
+        ("effect", 16),
+        ("payload", 16),
+        ("head", 40),
+    ];
+
+    let mut openings = body.match_indices(OPENING);
+    let (start, _) = openings
+        .next()
+        .ok_or_else(|| format!("no fiddle decision marker in this body: {body:?}"))?;
+    if openings.next().is_some() {
+        return Err("a body carrying two markers is not a body to choose between".to_string());
+    }
+    let rest = &body[start + OPENING.len()..];
+    let end = rest
+        .find(CLOSING)
+        .ok_or_else(|| format!("a marker opens and is never closed by {CLOSING:?}"))?;
+
+    // Split on a single space and never on whitespace, so a doubled space or an
+    // embedded newline is a malformed marker rather than something this parser
+    // silently tidies up.
+    let tokens: Vec<&str> = rest[..end].split(' ').collect();
+    let [version, fields @ ..] = tokens.as_slice() else {
+        return Err(format!("an empty marker: {body:?}"));
+    };
+    if *version != "v1" {
+        return Err(format!("marker version {version:?} is not v1"));
+    }
+    if fields.len() != FIELDS.len() {
+        return Err(format!(
+            "a marker spells {} fields and the format has {}: {tokens:?}",
+            fields.len(),
+            FIELDS.len()
+        ));
+    }
+
+    let mut values = Vec::with_capacity(FIELDS.len());
+    for ((key, width), token) in FIELDS.iter().zip(fields) {
+        let value = token
+            .strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix('='))
+            .ok_or_else(|| format!("expected {key}=… in position, got {token:?}"))?;
+        if value.len() != *width
+            || !value
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        {
+            return Err(format!(
+                "{key} must be {width} lowercase hex characters, and is {value:?}"
+            ));
+        }
+        values.push(value.to_string());
+    }
+    let mut values = values.into_iter();
+    Ok(Binding {
+        request: values.next().unwrap(),
+        effect: values.next().unwrap(),
+        payload: values.next().unwrap(),
+        head_sha: values.next().unwrap(),
+    })
+}
 
 /// One comment on the conversation, as the listing returns it.
 ///
@@ -1474,14 +1677,43 @@ pub struct World {
 
 impl World {
     /// An empty remote, a conversation that really is empty, an unrepaired
-    /// fixture, and a gateway that will drive one repair.
+    /// fixture, and a gateway that will drive **two repairs**.
     ///
     /// The empty conversation is said on purpose rather than defaulted. The
     /// scripted `gh` panics on an unscripted page instead of answering an empty
     /// one, because an absent file is an oversight — and a fixture that defaulted
     /// it would let a test assert "no question has been asked" against a world it
     /// never built.
+    ///
+    /// The script is the deletion scenario's, which is why it is two repairs and
+    /// not one; [`World::with_model_script`] is where that choice is argued, and a
+    /// scenario driving a *decision* walk gives its own script there instead.
     pub fn new() -> Self {
+        World::with_model_script(a_real_repair().into_iter().chain(a_real_repair()).collect())
+    }
+
+    /// The same world, with the model answering from `script` instead.
+    ///
+    /// # Why the script has to be a parameter
+    ///
+    /// The gateway answers one reply per connection **in order**, and the two walks
+    /// this world drives spend their turns on entirely different things: a repair
+    /// spends two — a `write_file` call and a report — while a *continuation* spends
+    /// one, on interpreting a person's reply, and expects an object with a
+    /// `decision` in it. A single script cannot serve both, and the failure is not a
+    /// clean one: a continuation handed a repair's first reply reads a tool call
+    /// where a verdict should be, and the run refuses for a reason that has nothing
+    /// to do with what the test was about.
+    ///
+    /// So the script is named by the scenario that knows which walk it is driving.
+    /// [`World::new`]'s is the deletion scenario's two repairs, and
+    /// [`a_suspension_and_its_approval`] is the decision walk's.
+    ///
+    /// It is the lower half of [`World::new`] rather than a second constructor
+    /// beside it, for [`Scenario::std_command`]'s reason: everything else here is
+    /// the world both walks share, and a sibling that drifted would let a scenario
+    /// assert against a differently-built world than the one it thinks it has.
+    pub fn with_model_script(script: Vec<Reply>) -> Self {
         let scenario = Scenario::new();
         scenario.write_work_item(WORK_ID, "open");
         scenario.write_work_item(SECOND_WORK_ID, "open");
@@ -1511,15 +1743,7 @@ impl World {
             stub,
             remote,
             work,
-            // Two repairs' worth of turns rather than one, because the deletion
-            // scenario drives two runs: one that finishes and publishes a bundle,
-            // and one that is killed inside its worktree. A gateway holding a
-            // single script would refuse the second run's first turn, and it would
-            // then fail and tear its worktree down before there was anything to
-            // leave behind — a hang or a flake in place of an assertion.
-            gateway: StubGateway::serving(
-                a_real_repair().into_iter().chain(a_real_repair()).collect(),
-            ),
+            gateway: StubGateway::serving(script),
             token: SENTINEL.to_string(),
         };
         let tables = world.tables();
@@ -1668,6 +1892,53 @@ impl World {
     /// fixture value to the table that gives it meaning.
     pub fn config_text(&self) -> String {
         self.scenario.config_text()
+    }
+
+    /// The report bundle one run published, parsed.
+    ///
+    /// Reached the way a downstream reader would: the `--json` payload names its
+    /// bundle in `report`, and the path is resolved against `<report.dir>` rather
+    /// than reconstructed here. A run whose payload pointed somewhere unreadable
+    /// fails in [`Scenario::read_bundle`] instead of being papered over.
+    ///
+    /// The **bundle** and not the payload, because the two carry different things:
+    /// `run --json` prints the outcome, the next action, the executions and the
+    /// progress, and it does not print `attempt_id` or `work_ref` — those are the
+    /// bundle's. So a test asking which attempt this was has to open what the run
+    /// published, which is also the honest place to ask it from.
+    pub fn bundle(&self, run: &Run) -> serde_json::Value {
+        let payload: serde_json::Value = serde_json::from_str(&run.stdout).unwrap_or_else(|e| {
+            panic!("stdout is not JSON ({e}): {}", run.stdout);
+        });
+        self.scenario.read_bundle(&payload)
+    }
+
+    /// Which attempt one run turned out to be.
+    ///
+    /// Minted inside `fiddle_runtime::attempt`, once per process, so two runs over
+    /// one piece of work carry two of these — which is the half of M2's neighbouring
+    /// property a three-process walk restates. Read off the bundle, because that is
+    /// the only place it is published.
+    pub fn attempt_id(&self, run: &Run) -> String {
+        self.bundle(run)["attempt_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a bundle names its attempt: {}", self.bundle(run)))
+            .to_string()
+    }
+
+    /// Which piece of work one run was about.
+    ///
+    /// The other half of the same property, and the one that must **not** move: the
+    /// two processes are two attempts against one work ref. `Option` on the bundle
+    /// and a panic here, because every run this accessor is asked about observed its
+    /// work — a `null` would be a run that saw nothing, which is a different
+    /// scenario and should not be silently compared equal to another one.
+    pub fn work_ref(&self, run: &Run) -> String {
+        let bundle = self.bundle(run);
+        bundle["work_ref"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a bundle over observed work names it: {bundle}"))
+            .to_string()
     }
 
     /// `fiddle run … --capability fixture_repair --json`, handed back unjudged.
@@ -1953,6 +2224,70 @@ impl World {
         questions.remove(0)
     }
 
+    /// Every comment on the conversation whose body names `text`.
+    ///
+    /// The accessor a test asks "was the question asked twice" with, and it reads
+    /// the **conversation** rather than the request log on purpose: two posts of one
+    /// question are two entries in the log by definition, while what a person and a
+    /// later process see is the listing. A run that posted twice and a run that
+    /// posted once are told apart here by what is *there*.
+    ///
+    /// A substring and not a parse, because the caller already holds the identity it
+    /// is looking for — a request id out of a marker it parsed — and asking whether
+    /// any comment names it is a different question from asking whether a comment is
+    /// a well-formed request. [`parse_marker`] is the second question.
+    pub fn comments_naming(&self, text: &str) -> Vec<Comment> {
+        self.conversation()
+            .into_iter()
+            .filter(|comment| comment.body.contains(text))
+            .collect()
+    }
+
+    /// Give the by-id route an answer for every comment the conversation currently
+    /// shows, and say how many that was.
+    ///
+    /// # Why a scenario has to do this
+    ///
+    /// The validation order's step 5 re-reads, **by its own id**, everything the
+    /// decision rests on: every candidate reply *and fiddle's own question*. The
+    /// scripted `gh` answers that route from `issue-comments/by-id/<id>.json` and
+    /// panics on a comment nothing scripted — with no merge from the world log, and
+    /// deliberately so. `propose_capability.rs` records the reason at the tier
+    /// above: the by-id entry is built from the body the world **really received**,
+    /// so a re-read cannot agree with a marker the capability never published. A
+    /// stub that merged would make the two reads agree by construction and take that
+    /// away.
+    ///
+    /// So this is the acceptance tier's version of the same fixture step, and it
+    /// keeps the same discipline: the entries are copied from what the **listing
+    /// really answered**, read back through the scripted `gh` with its merge
+    /// applied, and not from the page files this file wrote. A question fiddle
+    /// posted is therefore mirrored exactly as it was posted, marker and all.
+    ///
+    /// **Order matters and it is the caller's to get right.** Call it after the run
+    /// whose comments are to be re-readable and before the run that re-reads them. A
+    /// comment written afterwards has no entry, and the walk that reaches for one
+    /// fails naming the file it wanted — loudly, which is the right failure for a
+    /// fixture step somebody forgot.
+    ///
+    /// The count is returned so a caller can state a denominator: mirroring nothing
+    /// and mirroring everything must not be the same observation.
+    pub fn make_the_conversation_re_readable(&self) -> usize {
+        let dir = self.stub.join(CONVERSATION).join("by-id");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut mirrored = 0;
+        for page in 1..=self.last_page() {
+            for listed in body_of(&self.listing(page)) {
+                let id = listed["id"]
+                    .as_u64()
+                    .unwrap_or_else(|| panic!("a listed comment carries an id: {listed}"));
+                std::fs::write(dir.join(format!("{id}.json")), listed.to_string()).unwrap();
+                mirrored += 1;
+            }
+        }
+        mirrored
+    }
+
     /// Redistribute the conversation into pages of `per_page`, so a read has to
     /// follow `rel="next"` to see all of it.
     ///
@@ -2034,6 +2369,154 @@ impl World {
     /// `GhCli::graphql` uses, and hand back what it printed.
     pub fn graphql(&self, query: &str) -> String {
         self.gh(&["api", "graphql", "-f", &format!("query={query}")])
+    }
+
+    /// Script the answer to the one GraphQL mutation a decision walk dispatches:
+    /// `markPullRequestReadyForReview`, accepted.
+    ///
+    /// It has to be scripted, and that is the fixture working as intended rather
+    /// than a chore. The GraphQL route has **no unscripted default**, deliberately:
+    /// a route whose omission answered a success is a route where forgetting to
+    /// script one looks exactly like meaning it, and a GraphQL 200 is the one answer
+    /// whose verdict lives in its body — so a fabricated one is a fabricated
+    /// verdict, and this is the mutation a person's approval is spent on.
+    ///
+    /// Accepted means `200` and **no `errors[]`**. The stub reads the verdict off
+    /// the body rather than off the status line, so a refusal is scripted by putting
+    /// an `errors[]` in a 200 and not by changing the number.
+    ///
+    /// Call zero, because the numbering is zero-based and this is the only GraphQL
+    /// call a whole suspension-and-continuation makes. A run that dispatched a
+    /// second one would find call one unscripted and fail naming the file, which is
+    /// the loud version of "the mutation was repeated".
+    pub fn accept_the_ready_mutation(&self) {
+        self.script_graphql(
+            0,
+            200,
+            serde_json::json!({
+                "data": { "markPullRequestReadyForReview": { "clientMutationId": null } }
+            }),
+        );
+    }
+
+    // -- the pull requests ---------------------------------------------------
+
+    /// Every open pull request the forge holds, read through the scripted `gh`.
+    ///
+    /// Read through `gh` and not off the stub's files, for [`World::conversation`]'s
+    /// reason: the listing is answered from the world the writes built, so a pull
+    /// request a *run* created appears here and one this file wrote by hand would
+    /// too. A helper that read `pulls_seed` would see only the second kind, which is
+    /// the only kind no scenario in this lane creates.
+    ///
+    /// `state=open` and no other parameter, so this is the collection and not a
+    /// lookup: the product's own read constrains `head` and `base` as well, and a
+    /// test asking "how many pull requests are there" must not ask the narrower
+    /// question — a second pull request for a *different* head is exactly the
+    /// duplicate a continuation must not create, and a filtered read would not see
+    /// it.
+    pub fn open_pull_requests(&self) -> Vec<serde_json::Value> {
+        body_of(&self.gh(&[
+            "api",
+            "--method",
+            "GET",
+            &format!("/repos/{REPO}/pulls?state=open"),
+        ]))
+    }
+
+    /// One pull request by its own number, read through the scripted `gh`.
+    ///
+    /// # The number is never `1`, and that is the fixture's design rather than a
+    /// quirk
+    ///
+    /// The scripted `gh` numbers pull requests from **7**, because "numbers are
+    /// positional and start at 7 rather than 1, so a test asserting on an external
+    /// reference cannot pass by accident against an index or a count". So
+    /// [`CONVERSATION_ISSUE`] is 7 as well — the conversation a question is
+    /// published to is the first pull request's — and a test passing `1` here is
+    /// asking about nothing.
+    ///
+    /// This is the by-number read, which is a **different answer** from the listing:
+    /// it carries `draft` and `node_id`, and those two are the whole reason
+    /// `EnsurePullRequestReady` addresses it. It is also where a landed ready
+    /// transition becomes visible, because the stub applies the mutations that
+    /// really happened over the seeded body — so `["draft"]` read here after a
+    /// continuation is the world's word on whether the transition occurred, not
+    /// fiddle's.
+    pub fn pull_request(&self, number: u64) -> serde_json::Value {
+        let response = self.gh(&[
+            "api",
+            "--method",
+            "GET",
+            &format!("/repos/{REPO}/pulls/{number}"),
+        ]);
+        object_of(&response)
+            .unwrap_or_else(|| panic!("the forge answered no pull request {number}: {response}"))
+    }
+
+    /// Give the forge its own answer for pull request `number`: a draft, at the
+    /// revision the remote really holds for `branch`, with a node id. Hands back
+    /// that revision.
+    ///
+    /// # Why a scenario has to do this, and why it does not weaken anything
+    ///
+    /// The scripted `gh` derives its pull request *listing* from the creates that
+    /// landed, and it cannot derive the by-number answer the same way: a create
+    /// carries a head **label**, a base and a title, and **no revision at all**. So
+    /// the one fact `EnsurePullRequestReady` and the validation order both turn on —
+    /// which commit this pull request's head is at — is not something the create
+    /// could have told it.
+    ///
+    /// What that fact is taken from is therefore the load-bearing part, and it is
+    /// the **remote's own ref**: [`World::remote_head`] reads what the push really
+    /// put there, with git, out of a real bare repository. Not from fiddle's report,
+    /// not from its stdout, and not from a value this file invented. That is what
+    /// keeps this a statement about the world — *GitHub says its pull request is at
+    /// the commit the branch is at* — rather than a fixture agreeing with the thing
+    /// under test.
+    ///
+    /// **It is a discriminating value, and a scenario should prove that.** Every
+    /// identity a continuation recomputes runs through this revision: the gated
+    /// effect's target is `{repo}#{pr}@{head}`, the request id is derived over that
+    /// target, and the marker names the head outright. So a seed carrying the wrong
+    /// commit makes a continuation refuse — it derives a request id no comment on
+    /// the conversation names — and a scenario that inverts this value should see
+    /// exactly that rather than a pass.
+    pub fn answer_pull_request_by_number(&self, number: u64, branch: &str) -> String {
+        let head_sha = self.remote_head(branch);
+        let dir = self.stub.join("pulls_by_number");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{number}.json")),
+            serde_json::json!({
+                "number": number,
+                "state": "open",
+                // A draft, because that is what `propose_change` opens and what the
+                // gated transition is *from*. The stub rewrites this to `false` once
+                // a `markPullRequestReadyForReview` for this node id has landed, so
+                // the value here is the world before the decision and never after.
+                "draft": true,
+                "node_id": PULL_REQUEST_NODE_ID,
+                "head": { "ref": branch, "sha": &head_sha },
+                "base": { "ref": BASE },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        head_sha
+    }
+
+    /// What the remote's `refs/heads/<branch>` really points at.
+    ///
+    /// Asked of git in the bare repository, which is the world's own record of what
+    /// a push put there. Panics when the branch is absent, because every caller is
+    /// asking about a branch a run has just published and an absent one is a failed
+    /// publication rather than a case.
+    pub fn remote_head(&self, branch: &str) -> String {
+        git_says(
+            &self.remote,
+            &["rev-parse", &format!("refs/heads/{branch}")],
+        )
     }
 
     // -- denominators for the accessors that are only ever asserted empty ----
@@ -2280,8 +2763,36 @@ impl World {
     /// out-of-memory run is how an operator really acquires a leftover worktree,
     /// and it is the state 565u's third deletion is protecting against.
     ///
-    /// Synchronised on the worktree appearing rather than on a sleep, so the kill
-    /// cannot arrive before there is anything to leave behind.
+    /// Synchronised on the worktree being **checked out** rather than on a sleep, so
+    /// the kill cannot arrive before there is anything to leave behind.
+    ///
+    /// # Why the condition is a file and not the directory
+    ///
+    /// It was the directory, and that was a race with a name. `git worktree add` is
+    /// a child process, and it *creates* `<root>/<name>` early and populates it
+    /// afterwards — so a poll that waited only for the directory could kill fiddle
+    /// while its `git` was still writing. The `git` is not in fiddle's process group
+    /// and outlives a `kill -9` of its parent, so it carried on creating entries
+    /// under a root the test was already deleting, and `delete_workspaces` failed
+    /// with `Directory not empty`.
+    ///
+    /// It surfaced when this file gained the decision-walk scenarios: three more
+    /// tests in one binary, each driving a real attempt and real `git`, moved the
+    /// timing enough to lose that race. It was never reproducible on its own, which
+    /// is the shape of the bug rather than an excuse — the window is the duration of
+    /// a checkout.
+    ///
+    /// The fixture's own source file is the condition because its presence is what
+    /// says the checkout finished. Everything that writes into the worktree after
+    /// that point is either in fiddle's own process — the model's `write_file`, which
+    /// dies with it — or the check, which is a `sleep` that writes nothing.
+    ///
+    /// **This change is reasoned and not measured, and an inversion says so.**
+    /// Restoring the old condition and running this binary eight times under CPU
+    /// load did not reproduce the failure, so the narrowing is a diagnosis. The
+    /// robustness that holds whatever the writer turns out to be is in
+    /// [`remove_tree`], which waits the writer out rather than failing; this one
+    /// closes the window instead of tolerating it, and neither weakens an assertion.
     ///
     /// Addressed to [`SECOND_INVOCATION_REF`] and not to [`INVOCATION_REF`], for
     /// the reason that constant records: a run that already accounted for the
@@ -2306,12 +2817,13 @@ impl World {
             .unwrap();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        while self.worktrees().is_empty() {
+        while !self.a_worktree_is_checked_out() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the attempt never branched a worktree under {}, so there was \
-                 nothing to leave behind",
-                self.workspace_root().display()
+                "the attempt never checked a worktree out under {}, so there was \
+                 nothing to leave behind; it holds {:?}",
+                self.workspace_root().display(),
+                self.worktrees()
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -2326,6 +2838,21 @@ impl World {
         assert!(status.success(), "could not kill {}", child.id());
         child.wait().unwrap();
         leftover
+    }
+
+    /// Whether some worktree under the workspace root holds the fixture's own source
+    /// file — which is what says `git worktree add` finished rather than started.
+    ///
+    /// Matched on the file name and at any depth, so it is a claim about the checkout
+    /// rather than about a path this file reconstructed: the worktree's directory is
+    /// [`attempt_worktree`]'s to derive, and a fixture that spelled it out would be a
+    /// second derivation of the one thing that must not have two.
+    ///
+    /// [`attempt_worktree`]: https://docs.rs/fiddle-runtime
+    fn a_worktree_is_checked_out(&self) -> bool {
+        walkdir_files(self.workspace_root())
+            .iter()
+            .any(|path| path.file_name().and_then(|name| name.to_str()) == Some("lib.rs"))
     }
 
     /// Rewrite `workspace.check` so it waits instead of deciding.
@@ -2419,16 +2946,60 @@ const CONVERSATION: &str = "issue-comments";
 /// against itself.
 const ATTEMPTS: &str = ".attempts";
 
-/// Remove `path` and everything under it, tolerating its absence.
+/// Remove `path` and everything under it, tolerating its absence and waiting out a
+/// writer that has not finished.
 ///
 /// Absence is tolerated so a helper can be called before the run that would have
 /// created something, which is what lets `local_state_is_empty` be asserted on a
 /// world nothing has happened in yet.
+///
+/// # Why it retries, and why that is not a weakening
+///
+/// One tree this is asked to remove is a workspace root a **killed** run left
+/// behind, and a killed run can leave a child of its own still writing there:
+/// `kill -9` reaches one process, and the `git` that was checking a worktree out is
+/// not in that process's group. `remove_dir_all` walks and unlinks, so an entry
+/// created behind the walk makes the final `rmdir` fail with `ENOTEMPTY` — which is
+/// a race with a writer and not a tree that cannot be removed.
+///
+/// The retry waits for that writer to finish rather than pretending the tree is
+/// gone. **Nothing is softened:** every caller asserts emptiness afterwards, so a
+/// removal that never succeeds still fails the test, and a partial removal still
+/// fails it. What changes is only that a fixture step is allowed to take a second
+/// rather than to fail because a child was mid-write.
+///
+/// # What is measured and what is reasoned, said plainly
+///
+/// **Measured:** one run of the full workspace gate failed here with `Directory not
+/// empty` on the workspace root, and it was the run in which this file's three
+/// decision-walk scenarios first shared a test binary with the killed-repair one.
+/// **Reasoned:** that the writer is the orphaned checkout. It could not be
+/// reproduced — not under CPU load, and not with the earlier synchronisation
+/// restored, over eight runs each — so the mechanism above is a diagnosis and not an
+/// observation, and it is recorded that way rather than as a fact. The neighbouring
+/// change to what the interrupt waits for is the same diagnosis applied at the
+/// source; this one holds whatever the writer turns out to be.
 fn remove_tree(path: &Path) {
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => panic!("could not remove {} ({e})", path.display()),
+    // A second is far longer than a checkout of this fixture takes and far shorter
+    // than any test timeout, so a genuinely unremovable tree still fails promptly.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) if std::time::Instant::now() < deadline => {
+                // Reported only if it never succeeds, so a passing run stays quiet
+                // and a failing one says how long it waited and what for.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let _ = e;
+            }
+            Err(e) => panic!(
+                "could not remove {} after waiting a second for whatever is still \
+                 writing there ({e}); it holds {:?}",
+                path.display(),
+                walkdir_files(path)
+            ),
+        }
     }
 }
 
@@ -2458,6 +3029,22 @@ fn body_of(response: &str) -> Vec<serde_json::Value> {
     match serde_json::from_str(body) {
         Ok(serde_json::Value::Array(listed)) => listed,
         _ => Vec::new(),
+    }
+}
+
+/// The single JSON object a scripted `gh` response carries, from the raw response.
+///
+/// [`body_of`]'s sibling, and separate rather than one function returning a
+/// `Value`: the collections answer with arrays and the by-number reads answer with
+/// objects, and a caller that had to check which it got would be checking something
+/// the endpoint already decided. `None` means the response carried no object — a
+/// refusal, or a `gh` that answered something this fixture cannot read — so a caller
+/// can say which endpoint disappointed it rather than unwrapping a `null`.
+fn object_of(response: &str) -> Option<serde_json::Value> {
+    let (_, body) = response.split_once("\r\n\r\n")?;
+    match serde_json::from_str(body) {
+        Ok(value @ serde_json::Value::Object(_)) => Some(value),
+        _ => None,
     }
 }
 
