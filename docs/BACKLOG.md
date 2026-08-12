@@ -1441,3 +1441,43 @@ Owed, and small: the permission table's Issues row, its subsection, and ADR 018 
 unexplained. The file's header rule is *append, never rewrite an existing finding*, so the correction is
 an appended resolution rather than an edit, and it wants its own bean rather than a quiet change to a
 converged bean's artifact.
+
+### A confirming pass that renames the criteria cannot confirm them
+
+`fiddle-4vsd`'s codex confirming pass returned a scorecard with **five criterion entries, no antipatterns
+detected, and dimension scores identical to the first pass** — correctness 9, domain_spec_fidelity 9,
+code_quality 8. It looked like a clean confirmation. **Three of its five criterion ids were not the bean's.**
+
+| what codex reported | what it actually was |
+|---|---|
+| `m3-decision-table-is-strict-and-names-ids` | **two binding criteria merged into one** — `m3-authorized-set-has-no-permissive-default` and `m3-decision-table-is-strict-on-its-own` |
+| `I6-control` | **an inversion row promoted to criterion status.** It is a measurement in the evidence, not a criterion |
+| `m3-decision-has-one-key-and-no-stale-max-pages` | **invented.** The `max_pages` removal is work this bean did; no criterion asks for it |
+| — | **`m3-silent-document-keeps-the-human-gate` was dropped entirely** |
+
+The dropped one is the safety property: *a document naming neither new policy row still yields
+`RequireHumanDecision` for the ready transition via `combine`'s Human minimum, while leaving
+`PublishDecisionRequest` ungated.* Two effect kinds, opposite outcomes, one silent document — the property
+that a deployment cannot accidentally remove the human gate by saying nothing.
+
+**Had the scorecard been merged on its shape, that property would have gone unconfirmed with no trace.**
+Five entries, all passing, matching dimensions, zero antipatterns — every surface signal a merge step looks
+at was correct. The substitution was only visible by diffing the reported ids against the bean's eval block,
+which nothing in the loop does automatically.
+
+**The rule: a confirming pass must be checked for criterion-set identity before its verdict is read.**
+Not "did it pass" but "did it score the things the bean asks about". Concretely, compare the id set in the
+scorecard against the id set in the binding `eval` block and reject any pass whose sets differ, before
+looking at a single verdict. `merge-scorecards.sh` matching on ids it is handed cannot catch this: a renamed
+criterion is a *missing* criterion wearing a plausible label, and a merge keyed on the scorecard's own ids
+will report full coverage of a set nobody asked for.
+
+**Why paraphrase is the mechanism.** Codex's substitutions were all *reasonable-sounding*. Merging the
+"no permissive default" and "strict on its own" criteria is defensible as a summary — both concern the
+decision table's strictness. `I6-control` genuinely was the bean's strongest finding, so promoting it reads
+as attentive. And the invented `max_pages` criterion described real work. A pass drifting toward *what the
+bean is about* rather than *what the bean asks* produces exactly this: heavy substantive overlap, a plausible
+scorecard, and one silently missing property. The narrower the criterion, the more likely a summary swallows
+it — and the human gate was the narrowest here.
+
+Recorded beside the entry on stale text. Same family: a claim that looks true because most of it is.
