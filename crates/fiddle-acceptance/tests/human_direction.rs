@@ -30,7 +30,7 @@
 
 mod support;
 
-use support::{Comment, World, AUTHORIZED, INVOCATION_REF};
+use support::{Comment, World, AUTHORIZED, FIDDLE_BOT, INVOCATION_REF, STRANGER};
 
 // ---------------------------------------------------------------------------
 // `inspect` stays read-only, for this capability too
@@ -250,11 +250,74 @@ fn the_scripted_conversation_is_mutable_and_ordered_by_id() {
         [first, second]
     );
     assert_eq!(all[0].body, "one, edited");
+    // The stamps by **value** and not only by their relation to each other.
+    //
+    // `updated_at` is discriminating: `EDITED_AT` differs from `SEEDED_AT`, so a
+    // `comment_from` that hardcoded the field fails here.
+    //
+    // `created_at` is **not**, and it is worth saying rather than implying
+    // otherwise. Hardcoding it to `SEEDED_AT` in `comment_from` was inverted and
+    // **no test noticed** — because `SEEDED_AT` is the only value anything in this
+    // world ever writes to it, so reading the field and inventing it are
+    // indistinguishable by construction. Closing that would mean adding a way to
+    // seed a comment with some other creation stamp, which nothing needs: the
+    // property the walk turns on is the *relation* — equal stamps mean nobody has
+    // edited it — and that half is protected, because moving `updated_at` is what
+    // `edit_comment` does and breaking it fails this test.
+    assert_eq!(all[0].created_at, support::SEEDED_AT);
+    assert_eq!(all[0].updated_at, support::EDITED_AT);
     assert_ne!(all[0].updated_at, all[0].created_at);
     // The comment nobody touched keeps its stamps equal, which is what makes the
     // assertion above about the *edit* rather than about how the fixture writes
     // timestamps in general.
+    assert_eq!(all[1].created_at, support::SEEDED_AT);
+    assert_eq!(all[1].updated_at, support::SEEDED_AT);
     assert_eq!(all[1].updated_at, all[1].created_at);
+}
+
+/// A question posted **through the forge** appears on the conversation, beside the
+/// comment that was already there.
+///
+/// # The third instance of the sharpened rule, and the one 565u rests on
+///
+/// The stub merges the comments a run posted onto the listing, **keyed on the exact
+/// path**. Nothing in this lane asserted the merge: `post_comment_through_the_forge`
+/// was only ever followed by `posted_comment_bodies`, which reads the *request log*.
+/// So `CONVERSATION_ISSUE`'s value appeared only in positions where any value would
+/// have done — the sharpened rule exactly, and not an accessor asserted empty.
+///
+/// It is also the mechanism `fiddle-565u` depends on most directly: a suspended run
+/// publishes its question by posting it, and `the_only_request_comment` finds it
+/// only if the merge puts it on the listing. Every previous exercise of that
+/// accessor used [`World::seed_question`], which writes a page file — so the
+/// accessor was proven against a *constructed* question and never against a posted
+/// one. This is the posted one.
+#[test]
+fn a_question_posted_through_the_forge_appears_on_the_conversation() {
+    let world = World::new();
+    let earlier = world.post_comment(AUTHORIZED, "a person got there first");
+
+    let answer = world.post_comment_through_the_forge("May fiddle mark it ready for review?");
+    assert!(
+        answer.contains("HTTP/2.0 201"),
+        "the write must have been accepted, or there is nothing to merge: {answer}"
+    );
+
+    let only = world.the_only_request_comment();
+    assert_eq!(only.body, "May fiddle mark it ready for review?");
+    assert_eq!(only.author, FIDDLE_BOT);
+    assert!(only.is_bot);
+    // Above the comment that preceded it, which is the ordering every candidate
+    // rule in the validation order decides by.
+    assert!(
+        only.id > earlier,
+        "the question must be numbered after the comment it followed: {} then {}",
+        earlier,
+        only.id
+    );
+    // And the person's comment is still there: the merge added to the listing
+    // rather than replacing it.
+    assert_eq!(world.conversation().len(), 2, "{:?}", world.conversation());
 }
 
 /// The listing pages, and says so in the header a client follows.
@@ -480,6 +543,128 @@ fn the_accessors_the_read_only_scenario_asserts_empty_can_see_something() {
         ["a body the recorder must see"],
         "the accessor must read the body that was really sent"
     );
+}
+
+/// A comment's `author` is the id that wrote it, and two different writers stay
+/// two different ids.
+///
+/// # Written because a sixth inversion found nothing, and this was the worst one
+///
+/// `Comment::author` was asserted by **no test in the lane**: hardcoding the id
+/// `post_comment` writes *and* the id `comment_from` reads, both at once, left all
+/// nine tests passing. `grep -cE 'assert.*author'` over this file returned 0.
+///
+/// That is the field `[github.decision] authorized` matches on, so it is the
+/// surface Task 14's whole authorization matrix reaches its verdict through. A
+/// fixture that answered "the authorized user wrote it" whatever was written would
+/// make every authorization test pass — including the ones whose entire point is a
+/// stranger's reply being refused.
+///
+/// **Two authors and not one, because that is what defeats the inversion.** With a
+/// single author, hardcoding either side of the round trip is invisible; with two
+/// that must differ, hardcoding either side collapses them together and fails
+/// here. `assert_ne!` on the constants is the denominator: it says the two ids were
+/// distinguishable before the fixture was asked to distinguish them.
+#[test]
+fn the_author_of_a_comment_is_the_id_that_wrote_it() {
+    assert_ne!(
+        AUTHORIZED, STRANGER,
+        "the two writers must be different people for anything below to be a test"
+    );
+    let world = World::new();
+    world.post_comment(AUTHORIZED, "the nominated approver writes");
+    world.post_comment(STRANGER, "somebody nobody nominated writes");
+    world.seed_question("and fiddle asks");
+
+    let conversation = world.conversation();
+    assert_eq!(
+        conversation
+            .iter()
+            .map(|comment| comment.author)
+            .collect::<Vec<_>>(),
+        [AUTHORIZED, STRANGER, FIDDLE_BOT],
+        "each comment's author is the id that wrote it"
+    );
+    // And the bot flag is not a proxy for the author: the two people differ from
+    // each other while sharing `is_bot == false`, which is what stops a fixture
+    // deciding authorship from the flag.
+    assert_eq!(
+        conversation
+            .iter()
+            .map(|comment| comment.is_bot)
+            .collect::<Vec<_>>(),
+        [false, false, true]
+    );
+
+    // The tie to the document, which is what makes `author` load-bearing rather
+    // than decorative: the id this world nominates is the id its own
+    // `[github.decision]` table names.
+    assert!(
+        world
+            .config_text()
+            .contains(&format!("authorized = [{AUTHORIZED}]")),
+        "the document must nominate the id the fixture writes: {}",
+        world.config_text()
+    );
+}
+
+/// A credential-free run really is credential-free: every variable this world's
+/// own document names is removed from the child.
+///
+/// # Written because the guarantee was a claim about this machine
+///
+/// `CREDENTIAL_VARS` is four names and `FIDDLE_GITHUB_TOKEN` is not among them —
+/// it is the variable this world's `[github]` table names, which is a property of
+/// the fixture rather than a credential-shaped name in the wild. Nothing removed
+/// it. So `fiddle_without_credentials` was passing because the *test runner*
+/// happened not to export it, and `.env` in this worktree declares it. On a
+/// machine where it is exported, `inspect_builds_nothing_for_propose_change` would
+/// have been running a credentialled `inspect` while claiming the opposite.
+///
+/// **What this test can and cannot distinguish.** It asserts on the command this
+/// world *builds*, not on a child's observed environment — no capability this
+/// build can execute reaches the scripted `gh`, and the stub's environment
+/// recorder is the only thing that can see a child's variables from outside. So it
+/// proves the harness removes them, not that a running fiddle found none. That is
+/// the right half to pin here: the defect was in the harness, and the removal is
+/// what the whole read-only claim rests on.
+///
+/// The credentialled half is asserted from the **same list**, which is the point
+/// of `WORLD_CREDENTIAL_VARS` existing: a variable added to the document must be
+/// both set and removed, and one list cannot disagree with itself.
+#[test]
+fn a_credential_free_run_removes_every_variable_this_worlds_document_names() {
+    // A token that is not the default, so this also shows `with_token_sentinel`
+    // changes what is exported rather than being the identity.
+    let token = "ghp_a_deliberately_different_value_e11a";
+    let world = World::new().with_token_sentinel(token);
+
+    let free = world.credential_environment(false);
+    for name in support::WORLD_CREDENTIAL_VARS {
+        assert_eq!(
+            free.get(name),
+            Some(&None),
+            "a credential-free run must remove {name}, and it is the variable this \
+             world's own document names: {free:?}"
+        );
+    }
+    for name in support::CREDENTIAL_VARS {
+        assert_eq!(
+            free.get(name),
+            Some(&None),
+            "a credential-free run must remove {name}: {free:?}"
+        );
+    }
+
+    let held = world.credential_environment(true);
+    for name in support::WORLD_CREDENTIAL_VARS {
+        assert_eq!(
+            held.get(name),
+            Some(&Some(token.to_string())),
+            "a credentialled run must export {name}, from the same list that \
+             removes it: {held:?}"
+        );
+    }
 }
 
 /// Whether `f` panicked, with its own message suppressed so a deliberate panic

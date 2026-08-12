@@ -1336,6 +1336,44 @@ pub const STRANGER: u64 = 999_999;
 pub const FORGE_CREDENTIAL: &str = "FIDDLE_GITHUB_TOKEN";
 pub const MODEL_CREDENTIAL: &str = "LITELLM_API_KEY";
 
+/// Every variable [`World`]'s own document names, as one list.
+///
+/// # Why these are not in [`CREDENTIAL_VARS`], and must not be added to it
+///
+/// The two lists answer different questions, and conflating them would be wrong in
+/// both directions.
+///
+/// [`CREDENTIAL_VARS`] is the four credential-shaped names that exist in real
+/// deployments and that fiddle must never *need*. It is a **cross-repo contract**:
+/// `scenarios/m0_skeleton.sh` in the public `peel/fiddle-acceptance` repository
+/// removes the same four before invoking the binary, and its own document names no
+/// forge credential at all. Adding `FIDDLE_GITHUB_TOKEN` there would export a
+/// detail of *this fixture's* document into a contract the external lane cannot
+/// mirror meaningfully.
+///
+/// These two are the opposite kind of thing: the variables this world's `[github]`
+/// and `[agent]` tables happen to name, which the credentialled path must
+/// **export** and the credential-free path must **remove**. They are a property of
+/// the fixture, so they live with the fixture.
+///
+/// # And why it is a list rather than two `env_remove` calls
+///
+/// The defect this closes was exactly a missing line: `MODEL_CREDENTIAL` was
+/// removed and `FORGE_CREDENTIAL` was not, so a credential-free run inherited the
+/// one variable this world's own document names — and `.env` in this worktree
+/// declares it, which made the read-only guarantee a claim about the machine rather
+/// than about the binary. One list that both halves iterate cannot disagree with
+/// itself; two hand-written call sites already did.
+pub const WORLD_CREDENTIAL_VARS: [&str; 2] = [FORGE_CREDENTIAL, MODEL_CREDENTIAL];
+
+/// The numeric id the scripted `gh` lists fiddle's own comments under.
+///
+/// Spelled here rather than imported because `gh_stub`'s constant is private to a
+/// binary. It is load-bearing in one direction only: a value that disagreed would
+/// make an assertion about who asked a question fail loudly rather than pass
+/// wrongly.
+pub const FIDDLE_BOT: u64 = 1_000_001;
+
 /// What is exported as the forge credential: a string that authenticates nothing
 /// — the `gh` it reaches is a scripted program and the remote is a path — and
 /// that must appear on no surface a reader can reach.
@@ -1397,20 +1435,6 @@ pub struct Run {
     pub code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
-}
-
-impl Run {
-    /// The `--json` payload this run printed, with the whole result in the panic
-    /// message when it is not JSON — which is where a run that died early says
-    /// why.
-    pub fn payload(&self) -> serde_json::Value {
-        serde_json::from_str(&self.stdout).unwrap_or_else(|e| {
-            panic!(
-                "stdout is not JSON ({e}): {}\nstderr = {}",
-                self.stdout, self.stderr
-            )
-        })
-    }
 }
 
 /// One disposable project, one bare "GitHub" reached through the scripted `gh`, a
@@ -1598,17 +1622,52 @@ impl World {
         credentialled: bool,
     ) -> std::process::Command {
         let mut command = std::process::Command::new(fiddle_binary());
-        for name in CREDENTIAL_VARS {
+        // The four credential-shaped names no lane may need, and then the two this
+        // world's own document names. Removed unconditionally and *before* the
+        // conditional export below, so a credentialled run still ends up with
+        // exactly the two values it means to hand over — and a credential-free one
+        // inherits neither from the environment the tests were launched in.
+        for name in CREDENTIAL_VARS.iter().chain(WORLD_CREDENTIAL_VARS.iter()) {
             command.env_remove(name);
         }
-        command.env_remove(MODEL_CREDENTIAL);
         command.args(args);
         command.args(["--config", self.scenario.config_path().to_str().unwrap()]);
         if credentialled {
-            command.env(FORGE_CREDENTIAL, &self.token);
-            command.env(MODEL_CREDENTIAL, &self.token);
+            for name in WORLD_CREDENTIAL_VARS {
+                command.env(name, &self.token);
+            }
         }
         command
+    }
+
+    /// What [`World::command`] does to the child's environment, as a map from name
+    /// to the value it sets — or `None` where it removes one.
+    ///
+    /// Exposed so the removal can be asserted at all. It is the harness's own
+    /// construction rather than a running child's environment, and
+    /// `a_credential_free_run_removes_every_variable_this_worlds_document_names`
+    /// says why that is the right half to pin: the only thing that can observe a
+    /// child's variables from outside is the scripted `gh`'s environment recorder,
+    /// and no capability this build can execute reaches it.
+    pub fn credential_environment(
+        &self,
+        credentialled: bool,
+    ) -> std::collections::BTreeMap<String, Option<String>> {
+        self.command(["--version"], credentialled)
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    /// The text of this world's own configuration document, so a test can tie a
+    /// fixture value to the table that gives it meaning.
+    pub fn config_text(&self) -> String {
+        self.scenario.config_text()
     }
 
     /// `fiddle run … --capability fixture_repair --json`, handed back unjudged.
@@ -1789,7 +1848,7 @@ impl World {
             "created_at": SEEDED_AT,
             "updated_at": SEEDED_AT,
             "author_association": "OWNER",
-            "user": {"login": "fiddle[bot]", "id": 1_000_001, "type": "Bot"},
+            "user": {"login": "fiddle[bot]", "id": FIDDLE_BOT, "type": "Bot"},
             "performed_via_github_app": serde_json::Value::Null,
         }));
         self.write_page(page, &listed);
