@@ -108,13 +108,11 @@ fn request_with(
     alternatives: &[&str],
     evidence: &[&str],
 ) -> HumanDecisionRequest {
-    let binding = binding();
     HumanDecisionRequest {
-        request: binding.request.clone(),
         invocation_ref: INVOCATION_REF.to_string(),
         work_ref: Some(WorkRef("w-1".to_string())),
         capability: PUBLISH_CHANGE,
-        binding,
+        binding: binding(),
         question: question.to_string(),
         rationale: rationale.to_string(),
         risks: risks.iter().map(|r| r.to_string()).collect(),
@@ -993,49 +991,52 @@ async fn the_port_refuses_an_unreadable_conversation_rather_than_reporting_no_re
 }
 
 // ---------------------------------------------------------------------------
-// The request id the type carries twice
+// The one request id, which is the marker's
 // ---------------------------------------------------------------------------
+//
+// Two cases stood here until `fiddle-11vj`, and both worked by making
+// `HumanDecisionRequest`'s outer `request` field disagree with `binding.request` —
+// the divergence that made a run post forever. That field is gone, so the
+// divergence is no longer expressible and neither case can be written. What
+// replaces them is not a guard against the old bug, which needs none: it is the
+// weaker but still real property that the id the operation looks a comment up by,
+// and the identity it proposes under, are both the id its **own rendered bytes**
+// carry. Read `HumanDecisionRequest`'s type docs for why one field is now the whole
+// of it.
 
-/// The question is identified by the id its **marker** carries, and by nothing
-/// else it happens to hold.
+/// The question this operation recognises is the one **its own rendered body**
+/// names, proved against those bytes rather than against a marker a fixture built
+/// beside them.
 ///
-/// `HumanDecisionRequest` carries the request id twice — as `request` and as
-/// `binding.request` — and nothing makes the two agree. Only `binding.request`
-/// reaches the marker, because that is what `render_marker` is given. So an
-/// operation matching on the other field publishes a marker naming one id and
-/// then searches for a different one: it finds nothing, concludes it has not asked
-/// yet, and posts again on **every attempt, forever**. That is the unbounded
-/// duplicate supply this operation exists to prevent, arriving through the one
-/// door the executor cannot close — from step 3's view the postcondition really is
-/// absent each time, so no amount of inspect-before-write helps.
+/// The seeded comment here is `payload()` itself — the exact string this operation
+/// would have posted — so the producer and the consumer are joined through the wire
+/// format and not through a field they happen to share. A build whose lookup id
+/// came from anywhere other than the id it renders would read this comment as
+/// somebody else's question, conclude it had not asked yet, and post again on
+/// **every attempt, forever**: the unbounded duplicate supply this operation goes
+/// through the executor to prevent, arriving through the one door the executor
+/// cannot close, because from step 3's point of view the postcondition genuinely is
+/// absent each time.
 ///
-/// This is the only case in the file that can notice. Every other one builds a
-/// request whose two ids agree, so both readings behave identically and the bug is
-/// invisible. Here they are made to disagree on purpose, which is why the request
-/// is assembled by hand rather than through `request_with`.
+/// Which is why this case seeds a whole body rather than `comment_with_marker`: a
+/// hand-built marker agrees with the rendering only for as long as the fixture
+/// keeps the two in step, and what is under test is precisely that nothing has to.
 #[tokio::test]
-async fn the_question_is_identified_by_the_id_its_marker_carries() {
+async fn the_operation_recognises_the_question_its_own_body_names() {
     let world = World::new();
-    // The marker on the conversation names the *binding's* id, because that is
-    // what a marker can name.
-    world.page("issue-comments", 1, &[comment_with_marker(11, &binding())]);
-
-    let mut divergent = request();
-    // A well-formed id that is not this question's. If the operation reads this
-    // field, it will not recognise the comment above.
-    divergent.request = DecisionRequestId("dddddddddddddddd".to_string());
-    assert_ne!(
-        divergent.request, divergent.binding.request,
-        "this case is only meaningful while the two disagree"
+    let already_asked = operation().payload();
+    world.page(
+        "issue-comments",
+        1,
+        &[comment_with_body(11, &already_asked)],
     );
-    let op = PublishDecisionRequest::new(REPO.to_string(), PR, divergent);
 
-    let receipt = world.execute(op).await.unwrap();
+    let receipt = world.execute(operation()).await.unwrap();
 
     assert_eq!(
         world.posted_comments(),
         0,
-        "the request was already published; reading the wrong id posts forever"
+        "the question is already published; failing to recognise it posts forever"
     );
     assert!(
         matches!(
@@ -1047,27 +1048,25 @@ async fn the_question_is_identified_by_the_id_its_marker_carries() {
     );
 }
 
-/// And the target names that same id, so the effect identity a fresh process
-/// recomputes is the one the marker can be found by.
+/// And the identity the effect is proposed under is derived from that same
+/// rendered id, so a fresh process holding only the comment recomputes the target
+/// an approval was bound to.
 ///
-/// Separate from the case above because they fail for different reasons: that one
-/// is about the postcondition lookup, and this one is about the identity the
-/// approval is bound to. A target built from the other field would derive an
-/// effect id no continuation could match against the marker it read.
+/// Separate from the case above because the two fail for different reasons: that
+/// one is about the postcondition lookup and this one is about the identity an
+/// approval is spent against. A target derived from anything the marker does not
+/// carry would name an effect no continuation could match against the marker it
+/// read.
+///
+/// Distinct from `the_operation_proposes_under_the_canonical_target` in where the
+/// id comes from: that case takes it from the fixture's binding, this one parses it
+/// back out of the bytes the operation would put on the conversation.
 #[test]
-fn the_target_names_the_id_the_marker_carries() {
-    let mut divergent = request();
-    let binding_id = divergent.binding.request.clone();
-    divergent.request = DecisionRequestId("dddddddddddddddd".to_string());
-    let op = PublishDecisionRequest::new(REPO.to_string(), PR, divergent);
-
+fn the_target_names_the_id_the_rendered_marker_carries() {
+    let op = operation();
+    let published = parse_marker(&op.payload()).expect("the rendered body carries a marker");
     assert_eq!(
         op.target(),
-        fiddle_runtime::human::decision_request_target(REPO, PR, &binding_id)
-    );
-    assert!(
-        !op.target().contains("dddddddddddddddd"),
-        "the target must not name the field the marker cannot carry: {}",
-        op.target()
+        fiddle_runtime::human::decision_request_target(REPO, PR, &published.request)
     );
 }

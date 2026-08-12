@@ -255,36 +255,31 @@ impl PublishDecisionRequest {
 
     /// The canonical target identity to propose this effect under.
     ///
-    /// Read off [`self.request.binding.request`](fiddle_core::DecisionBinding),
-    /// and **not** off the [`HumanDecisionRequest::request`] field beside it. See
-    /// `asking` below for why those are two different values
-    /// and why only one of them is safe to use.
+    /// Read off `asking` below, which is the id the marker carries, so the identity
+    /// an approval is bound to is one a fresh process holding only the comment can
+    /// recompute.
     pub fn target(&self) -> String {
         decision_request_target(&self.repo, self.pr, self.asking())
     }
 
-    /// Which question this is, from the one field that reaches the marker.
+    /// Which question this is: the id that reaches the wire.
     ///
-    /// # Why this method exists at all
+    /// # Why one method rather than the field at each site
     ///
-    /// [`HumanDecisionRequest`] carries the request id **twice** — as its own
-    /// `request` field and as `binding.request` — and nothing makes the two agree.
-    /// Only `binding.request` is rendered into the marker, because
-    /// [`render_marker`] takes the binding, so it is the only one a later process
-    /// can ever read back out of the conversation.
-    ///
-    /// An operation that matched on the other field would therefore publish a
-    /// marker naming one id and then look for a different one. It would find
-    /// nothing, conclude it had not asked yet, and **post again on every attempt,
-    /// forever** — the unbounded duplicate supply this whole operation goes
-    /// through the executor to prevent, arriving through the one door the executor
-    /// cannot close, because from step 3's point of view the postcondition
+    /// `binding.request` is what [`render_marker`] renders, so it is the only id a
+    /// later process can read back out of the conversation. An operation that looked
+    /// a comment up by any *other* id — a second copy of it, a second derivation of
+    /// it — would publish a marker naming one question and then search for another.
+    /// It would find nothing, conclude it had not asked yet, and **post again on
+    /// every attempt, forever**: the unbounded duplicate supply this whole operation
+    /// goes through the executor to prevent, arriving through the one door the
+    /// executor cannot close, because from step 3's point of view the postcondition
     /// genuinely is absent every time.
     ///
-    /// So the marker, the target and the postcondition lookup all read this one
-    /// method, which reads the one field that reaches the wire. The duplication in
-    /// the type is filed as `fiddle-11vj`; until it is collapsed, this is where
-    /// the two are prevented from being confused.
+    /// So the target and the postcondition lookup are one expression rather than two
+    /// spellings of one intention. [`HumanDecisionRequest`] used to carry the id a
+    /// second time as its own field, which is what made this a hazard and not merely
+    /// a convention; `fiddle-11vj` deleted that field, and its type docs record why.
     fn asking(&self) -> &fiddle_core::DecisionRequestId {
         &self.request.binding.request
     }
@@ -319,9 +314,9 @@ impl PublishDecisionRequest {
     /// conversation looks like that — and so is a body whose marker names another
     /// question. Neither is an error here.
     ///
-    /// The id compared against is `asking`'s, which is
-    /// the one this operation's own marker carries. Comparing the other one would
-    /// post forever; that method's documentation is where the reason lives.
+    /// The id compared against is `asking`'s, which is the one this operation's own
+    /// marker carries. Comparing against an id the marker cannot carry would post
+    /// forever; that method's documentation is where the reason lives.
     fn is_this_request(&self, body: &str) -> bool {
         match parse_marker(body) {
             Ok(binding) => &binding.request == self.asking(),

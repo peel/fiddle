@@ -237,12 +237,25 @@ pub enum InterpretedHumanDecision {
 /// describes. Carrying it is also what makes the rendered body self-sufficient:
 /// [`render_marker`] over this one field is the whole of what a later process
 /// needs to recognise this question again.
+///
+/// # Which question this is lives in the binding, and nowhere else
+///
+/// [`binding`](HumanDecisionRequest::binding)`.request` is the only place this type
+/// holds the request id, and that is a property rather than an omission. The id is
+/// what a later process recognises the question by, and it can only recognise it
+/// through the marker — which [`render_marker`] renders from the binding. A second
+/// copy of the id beside the binding would therefore be a value nothing on the wire
+/// could ever carry, and a producer that filled the two from two derivations, or a
+/// consumer that matched on the copy, would publish a marker naming one question
+/// and then look for another: it would find nothing, conclude it had not asked yet,
+/// and **post again on every attempt, forever**. That copy existed until
+/// `fiddle-11vj` deleted it. It was read by nothing, so no test could have noticed
+/// the disagreement; the fix is that the disagreement is no longer expressible.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct HumanDecisionRequest {
-    /// Which question this is, as [`decision_request_id`] derived it.
-    pub request: DecisionRequestId,
-    /// The request that reached the asking run. For a reader, and for the
-    /// identity above, which is derived over it.
+    /// The request that reached the asking run. For a reader, and for
+    /// [`binding`](HumanDecisionRequest::binding)'s request id, which is derived
+    /// over it.
     pub invocation_ref: String,
     /// The work the question is about, when the run is addressed to work at all.
     pub work_ref: Option<WorkRef>,

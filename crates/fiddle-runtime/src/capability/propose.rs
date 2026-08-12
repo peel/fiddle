@@ -529,25 +529,6 @@ where
             })
     }
 
-    /// The question this run would ask about `pr` at `head_sha`.
-    ///
-    /// # The request id is derived once and written twice
-    ///
-    /// [`HumanDecisionRequest`] carries it as its own `request` field *and* inside
-    /// `binding`, and only `binding.request` is rendered into the marker — so a
-    /// producer that filled the two from two derivations could publish a marker
-    /// naming one question and then look for another, find nothing, conclude it
-    /// had not asked yet, and post again on every attempt forever. Here the
-    /// binding is built first and the outer field is a clone of its id, so the two
-    /// cannot disagree; everything downstream reads
-    /// [`PublishDecisionRequest`]'s own accessor, which reads the binding.
-    ///
-    /// The evidence is what this run has done so far, which makes the rendered
-    /// body vary between a first run and a resumed one. That is safe and is worth
-    /// saying why: the request's identity is derived from its *target* —
-    /// `{repo}#{pr}:{request_id}` — so two bodies for one question are one effect,
-    /// and step 3 recognises the comment that is already there rather than
-    /// comparing what it would have written.
     /// The effect a person is being asked about, rebuilt from canonical inputs.
     ///
     /// One function for both of the runs that need it — the one that asks and the
@@ -562,6 +543,24 @@ where
         EnsurePullRequestReady::new(self.config.repo.clone(), pr, head_sha.to_string())
     }
 
+    /// The question this run would ask about `pr` at `head_sha`.
+    ///
+    /// # The request id is derived once and written once
+    ///
+    /// [`decision_request_id`] is called once, into `binding.request`, which is the
+    /// only place [`HumanDecisionRequest`] holds it and the only one
+    /// [`fiddle_core::render_marker`] can put on a conversation. A producer that
+    /// derived it twice could publish a marker naming one question and then look for
+    /// another, find nothing, conclude it had not asked yet, and post again on every
+    /// attempt forever — so there is one derivation here, and everything downstream
+    /// reads [`PublishDecisionRequest`]'s own accessor, which reads the binding.
+    ///
+    /// The evidence is what this run has done so far, which makes the rendered
+    /// body vary between a first run and a resumed one. That is safe and is worth
+    /// saying why: the request's identity is derived from its *target* —
+    /// `{repo}#{pr}:{request_id}` — so two bodies for one question are one effect,
+    /// and step 3 recognises the comment that is already there rather than
+    /// comparing what it would have written.
     fn question_about(&self, work_id: &str, pr: u64, head_sha: &str) -> HumanDecisionRequest {
         let repo = &self.config.repo;
         let ready = self.gated(pr, head_sha);
@@ -583,7 +582,6 @@ where
         };
 
         HumanDecisionRequest {
-            request: binding.request.clone(),
             invocation_ref: self.executor.invocation_ref().to_string(),
             work_ref: Some(WorkRef(work_id.to_string())),
             capability: self.id(),
@@ -1158,9 +1156,9 @@ where
     /// a reader of the `--json` payload with nothing to act on.
     ///
     /// The id carried out is `binding.request` — the one field the marker is
-    /// rendered from. [`HumanDecisionRequest`] carries the request id twice and
-    /// only that one reaches a conversation, so a run reading the other would
-    /// report waiting on a question nobody can find.
+    /// rendered from, and so the only id a person or a later process can find the
+    /// question by. A run that reported any other would name a question nobody can
+    /// look up.
     fn awaiting(
         &self,
         request: &HumanDecisionRequest,

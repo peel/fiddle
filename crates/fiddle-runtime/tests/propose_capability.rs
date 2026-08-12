@@ -1318,16 +1318,21 @@ async fn a_suspended_run_still_reports_what_it_did_reach() {
 /// The question a person reads and the question this run says it is waiting on
 /// are the same question.
 ///
-/// **This is the duplicate-id hazard, stated from the outside.**
-/// `HumanDecisionRequest` carries the request id twice — as its own field and
-/// inside `binding` — and only `binding.request` is rendered into the marker. A
-/// producer that filled the two from two derivations, or a consumer that read the
-/// other one, would publish a marker naming one question and then look for
-/// another: it would find nothing, conclude it had not asked yet, and post again
-/// on every attempt forever. So the marker is parsed back out of the comment the
-/// world really received and required to name the id the run is waiting on — and
-/// every field of it is recomputed here from canonical inputs, so this cannot pass
-/// on a build that invented an identity and then wrote it down consistently.
+/// **This is the post-forever hazard, stated from the outside.**
+/// Only `binding.request` is rendered into the marker, so it is the only id a later
+/// process can find the question by. A producer that derived the id twice, or a
+/// consumer that looked the comment up by anything the marker does not carry, would
+/// publish a marker naming one question and then look for another: it would find
+/// nothing, conclude it had not asked yet, and post again on every attempt forever.
+/// So the marker is parsed back out of the comment the world really received and
+/// required to name the id the run is waiting on — and every field of it is
+/// recomputed here from canonical inputs, so this cannot pass on a build that
+/// invented an identity and then wrote it down consistently.
+///
+/// `HumanDecisionRequest` also carried the id a second time, as its own field, which
+/// is what made this a hazard rather than a convention; `fiddle-11vj` deleted that
+/// field. The half of the hazard this case still watches is the one deletion cannot
+/// reach: two *derivations* of the id, here and in the fresh process below.
 ///
 /// **Why agreement is the assertion.** A single derivation has no direct
 /// observable — nothing outside the capability can see how many times an id was
@@ -1335,9 +1340,10 @@ async fn a_suspended_run_still_reports_what_it_did_reach() {
 /// derivation cannot disagree, and two built from two derivations have no reason
 /// to agree. So the only honest way to test "the id came from one place" is to
 /// take the two places it surfaces — the marker on the conversation and the
-/// request the error names — and require them to be the same string. Twenty-four
-/// tests passed over this bug elsewhere because every one of them built the two
-/// ids agreeing; this one takes them from the world instead.
+/// request the error names — and require them to be the same string. When the
+/// duplicated field still existed, twenty-four tests passed over it because every
+/// one of them built its two ids agreeing; this one takes them from the world
+/// instead.
 #[tokio::test]
 async fn the_suspended_run_waits_on_the_question_the_comment_carries() {
     let world = World::fresh();
