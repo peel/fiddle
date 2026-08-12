@@ -1473,20 +1473,24 @@ async fn a_second_process_finds_its_own_question_and_does_not_ask_twice() {
     );
 }
 
-/// A pull request with no question on it is resumed by asking, not by attempting
-/// again.
+/// Arrange the world an interrupted run left: the branch pushed, the pull request
+/// open on it, and nothing on its conversation — and hand back the commit that was
+/// published.
 ///
-/// The state a process interrupted between the create and the comment leaves
-/// behind, which is a third answer to "is this a first run" that neither of the
-/// other two covers. A second attempt would produce a different commit, the push
-/// would then be a refused non-fast-forward, and the run would be stuck for good;
-/// the change is already out there, and what is missing is the question.
-#[tokio::test]
-async fn a_published_change_nobody_has_been_asked_about_is_resumed_by_asking() {
-    let world = World::fresh();
-    // Arrange the world the interrupted run left: the branch pushed and the pull
-    // request open, with nothing on its conversation. Both are put there with the
-    // test's own tools rather than by the code under test.
+/// Every part of it is put there with the test's own tools rather than by the code
+/// under test, which is what makes a run against it a *continuation* rather than a
+/// second first run.
+///
+/// `draft` is the state the pull request out there is in, and it is a parameter
+/// because both values are a scenario. `true` is the interrupted run's own
+/// leftover; `false` is a pull request somebody has since marked ready for review,
+/// which is
+/// [`a_readied_pull_request_is_not_re_drafted`]'s subject. The two routes are
+/// seeded together on purpose: the listing `EnsurePullRequest::inspect` reads
+/// carries no `draft` at all, so a fixture that seeded only the listing could not
+/// express the difference, and the by-number route `EnsurePullRequestReady::inspect`
+/// reads is where it lives.
+fn a_change_already_published(world: &World, draft: bool) -> String {
     let fixed = world.dir.path().join("fixed");
     fixture::git(
         &world.fixture,
@@ -1533,7 +1537,22 @@ async fn a_published_change_nobody_has_been_asked_about_is_resumed_by_asking() {
         .to_string(),
     )
     .unwrap();
-    world.pull_request_at(PR, &published, true);
+    world.pull_request_at(PR, &published, draft);
+    published
+}
+
+/// A pull request with no question on it is resumed by asking, not by attempting
+/// again.
+///
+/// The state a process interrupted between the create and the comment leaves
+/// behind, which is a third answer to "is this a first run" that neither of the
+/// other two covers. A second attempt would produce a different commit, the push
+/// would then be a refused non-fast-forward, and the run would be stuck for good;
+/// the change is already out there, and what is missing is the question.
+#[tokio::test]
+async fn a_published_change_nobody_has_been_asked_about_is_resumed_by_asking() {
+    let world = World::fresh();
+    let published = a_change_already_published(&world, true);
 
     let (outcome, _, _) = run(&world, repairs_differently(), the_projects_own_check()).await;
 
@@ -1560,6 +1579,89 @@ async fn a_published_change_nobody_has_been_asked_about_is_resumed_by_asking() {
             .head_sha,
         published
     );
+}
+
+/// **A pull request somebody has already marked ready for review is not
+/// re-drafted.**
+///
+/// The rule: the effect `EnsurePullRequest` establishes is *a pull request exists
+/// for this head and base*. `draft` is a property of **creation**, not of the
+/// postcondition — which is why
+/// [`EnsurePullRequest::inspect`](fiddle_runtime::github::EnsurePullRequest)
+/// matches on head, base and `state=open` and deliberately not on `draft`. A run
+/// that re-drafted a pull request a person had readied would walk back a human
+/// action because its own record was lost, which is the opposite of what a
+/// decision walk exists to do.
+///
+/// # Why this test had to be written rather than left as a comment
+///
+/// Task 6 could not write it: `gh_stub`'s pull request carried no `draft` field, so
+/// nothing could tell a seeded draft from a seeded ready one and the assertion
+/// would have been non-discriminating. Task 6's evaluator made the sharper point —
+/// the rule held **because nothing could consult `draft`**, not because anything
+/// said it should not. That is an accident, not a decision, and a later bean adding
+/// `draft` to the read could have reversed it with no test objecting.
+///
+/// Both halves exist now. `ready.rs` reads `draft` off
+/// `GET /repos/{repo}/pulls/{pr}`, and the fixture models it, so the rule is
+/// testable and here it is tested.
+///
+/// # The denominator, which is the whole difficulty
+///
+/// "No create happened" holds trivially of a world where the pull request is
+/// simply *there*, draft or not. What makes this a test of **readiness** is the
+/// assertion above the run: `EnsurePullRequestReady::inspect` is put to the same
+/// world first and answers with its postcondition already satisfied. That is the
+/// product's own reader saying the pull request really is out of draft. Without it
+/// this test would pass just as well against a fixture whose `draft: false` nothing
+/// could see, which is precisely the shape Task 6 declined to ship.
+///
+/// So the two operations are shown to agree, from both sides: one decides whether
+/// to create and settles for the object being there; the other decides whether a
+/// transition already happened and settles for it having happened. Neither
+/// undoes the other's work.
+#[tokio::test]
+async fn a_readied_pull_request_is_not_re_drafted() {
+    let world = World::fresh();
+    // `false`: the pull request out there is ready for review, not a draft.
+    let published = a_change_already_published(&world, false);
+
+    // The denominator. Asserted before the run, because every assertion after it
+    // holds of a world whose readiness nothing could observe.
+    let already_ready = EnsurePullRequestReady::new(REPO.to_string(), PR, published.clone())
+        .inspect(&world.ctx())
+        .await
+        .expect("the world answers a by-number read");
+    assert!(
+        already_ready.is_some(),
+        "the fixture must really hold a readied pull request, or nothing below is \
+         about one"
+    );
+
+    let (outcome, _, _) = run(&world, repairs_differently(), the_projects_own_check()).await;
+
+    // The rule: no second pull request, and specifically no create at all.
+    assert!(
+        world.pull_request_creates().is_empty(),
+        "a readied pull request was re-drafted: {:?}",
+        world.pull_request_creates()
+    );
+    // And nothing else was re-done either. A run that had decided the readied pull
+    // request did not count would have re-pushed the branch as well.
+    assert_eq!(
+        world.effects_performed(),
+        [EffectKind::PublishDecisionRequest],
+        "only the question: the change was already published and already ready: {:?}",
+        world.steps()
+    );
+    // The run still asks, because the question is what is missing — being ready is
+    // not being answered, and the two are decided by different things.
+    let error = outcome.expect_err("the question is what was missing, so the run asks it");
+    assert!(
+        matches!(error, CapabilityError::AwaitingDecision { .. }),
+        "got {error:?}"
+    );
+    assert_eq!(world.posted_comments().len(), 1);
 }
 
 // ---------------------------------------------------------------------------

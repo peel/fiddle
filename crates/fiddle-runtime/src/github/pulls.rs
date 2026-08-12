@@ -287,6 +287,32 @@ impl IntegrationOperation for EnsurePullRequest {
     /// second one gets opened. That is the same rule
     /// [`refs`](super::refs) applies to a 404, arriving at the opposite
     /// treatment because the endpoint says absence differently.
+    ///
+    /// # And note what `draft` is not: part of the postcondition
+    ///
+    /// The match is on head, base and `state=open`, and deliberately not on
+    /// `draft`. So a pull request **a person has already marked ready for review**
+    /// satisfies this postcondition, and no re-draft happens. That is the intended
+    /// rule and not a consequence of the list read being thin:
+    ///
+    /// - the effect is *a pull request exists for this head and base*; `draft` is a
+    ///   property of **creation**, not of the postcondition;
+    /// - re-drafting one somebody had readied would walk back a human action
+    ///   because fiddle's own record was lost, which is the opposite of what a
+    ///   decision walk exists to do.
+    ///
+    /// [`EnsurePullRequestReady::inspect`](super::ready::EnsurePullRequestReady)
+    /// states the agreeing half in full, and states it from the other side: an
+    /// already-ready pull request is *its* postcondition too, so the two operations
+    /// never fight over the same object. The cross-reference is here because a
+    /// reader of the drafting side looks here first, and until it existed the rule
+    /// was written down only in the sibling module.
+    ///
+    /// `propose_capability::a_readied_pull_request_is_not_re_drafted` is the test
+    /// that pins it. Before that test the rule held only because
+    /// `fiddle-runtime`'s `PullRequest` carries no `draft` field for this arm to
+    /// consult — which is an accident a later bean could have reversed with nothing
+    /// objecting.
     async fn inspect(&self, ctx: &EffectContext) -> Result<Option<PullRequest>, GhError> {
         let response = ctx
             .gh
