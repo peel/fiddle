@@ -1071,9 +1071,10 @@ Fixed at `0939c39`: both readings go through one private `asking()`, two new tes
 
 Three things worth keeping:
 
-- **A type that carries one value twice makes agreement a fixture convention.** Every test author naturally constructs a consistent object, so the disagreeing case never appears unless somebody writes it on purpose. The duplication is the defect; the wrong read is only its symptom. Collapsing it is filed as `fiddle-11vj`, and this is the guard until then. **Collapsed by `fiddle-11vj`:** the field had **zero readers in the whole build** — `grep -rn 'request\.request' crates/ --include='*.rs'` returned 0, and `render_request` never touched it — so it was deleted rather than guarded. The two tests above went with it: a divergence that is unrepresentable cannot be asserted about, and the honest claim is that this class of bug is now unwritable rather than that a test watches for it. What replaced them are round-trip cases that parse the marker back out of the operation's own rendered bytes, which is the half of the hazard deletion cannot reach — two *derivations* of one id.
+- **A type that carries one value twice makes agreement a fixture convention.** Every test author naturally constructs a consistent object, so the disagreeing case never appears unless somebody writes it on purpose. The duplication is the defect; the wrong read is only its symptom. Collapsing it is filed as `fiddle-11vj`, and this is the guard until then.
 - **The bug was found by a prose warning, not by a test.** The lead flagged the duplicated field from an implementer's report — the field being read was never checked — and the implementer then found its own landed code reading the wrong one. So the chain was: one lane reads a type and notices a hazard while blocked, the lead writes it down, a second lane checks its own code against the note. No gate participated.
 - **This is what "the fixture cannot distinguish the candidates" looks like at its worst.** The earlier instances were a sorted listing hiding a positional read, and a world list omitting the contested case. Here the *type* invites the indistinguishable fixture, so every honest test built one. The rule stated earlier — for any property about order, selection or identity, at least one fixture must make the correct answer and the lazy answer differ — needs a companion: **when a type can hold two values that must agree, at least one test must set them disagreeing, and the type should be suspected of being wrong.**
+Status: Resolved 2026-08-12 by `fiddle-11vj` at `f2f4974` — collapsed by **deleting** `HumanDecisionRequest::request` rather than by guarding reads of it. The field had zero readers in the whole build (`grep -rn 'request\.request' crates/ --include='*.rs'` → 0; no destructuring reader; nothing serialized the type's shape into a contract), so the two disagreement tests this entry credits could not be kept: after the deletion the divergence is unrepresentable. The companion rule this entry proposes therefore needs its own companion, recorded in the entry *A type that carries one value twice cannot be guarded by a behavioural test, but its shape can be* below.
 
 ### 2026-08-11 — The dispatch log was not drifting, it was not being written, and restart recovery reads it
 Reconciling the epic's dispatch counters at the end of the session, against the beans that converged:
@@ -1481,3 +1482,24 @@ scorecard, and one silently missing property. The narrower the criterion, the mo
 it — and the human gate was the narrowest here.
 
 Recorded beside the entry on stale text. Same family: a claim that looks true because most of it is.
+
+### 2026-08-12 — A type that carries one value twice cannot be guarded by a behavioural test, but its shape can be
+Correcting a claim in `fiddle-11vj`'s own report, and closing the entry *Twenty-four tests passed over a post-forever bug* above.
+
+`fiddle-11vj` deleted `HumanDecisionRequest::request`, the duplicated request id, at `f2f4974`. The implementer reported three things about tests, and **the middle one was false**:
+
+1. The original bug is now inexpressible — **true**. The divergence cannot be constructed, so the two tests that constructed it could not be kept.
+2. *"No test can fail without the fix"* — **false**, and the evaluator wrote the counterexample. The type derives `Serialize`, so its **shape** is observable from outside without any behaviour being involved. Asserting the serialized top-level key set fails with the field re-added and passes without it. Five lines, and it closes the re-adding path mechanically.
+3. Refusing to invent a fake behavioural guard was correct — **true**, and independent of 2. The error was inferring from "no behavioural test is possible" to "no test is possible".
+
+**The rule.** When the fix for a hazard is to *remove* surface, the guard is not a behavioural test — there is no behaviour left to observe — it is an assertion on the type's **shape**, taken through whatever derive already exposes it (`Serialize`, `Debug`, a field-count constant). And assert the **key set**, never an occurrence count: a second copy that *disagreed* — the dangerous case — passes a count of one.
+
+Landed as `fiddle_core::decision::tests::the_request_id_is_held_in_exactly_one_place`.
+
+**Two things that were unrecorded and should not have been:**
+
+- **`docs/fiddle-agentic-factory-prd.md`'s `HumanDecisionRequest` sketch still declares a top-level `request_id`.** It is the only *tracked* document that did, the two design listings being gitignored. Read against the code it diverges in six ways, not one — `request_id`, `invocation_ref: InvocationRef`, `capability_id`, `proposed_effect: ProposedEffect` where the type carries `binding: DecisionBinding`, `Vec<Risk>`, `Vec<Alternative>` — and it carries **no binding at all**, so its top-level id is that design's *only* id and not a duplicate of anything. So it does not re-teach this hazard; it describes a pre-binding design that the marker superseded. Left as written, because this file's rule is that a finding's text outlives whether it still matters. Owed: a pass reconciling the PRD's type sketches against the shipped types, which is bigger than one bean.
+- **Deleting a `pub` field from a type re-exported at `crates/fiddle-core/src/lib.rs:35` is a breaking change to `fiddle-core`'s surface.** Workspace-internal only — the crate is unpublished and every consumer is in this repo — so nothing is owed downstream, and the compiler found every reader. Recorded because "no downstream exists" is a fact about today, and the next such deletion should have to say so out loud rather than assume it.
+
+Origin: evaluation of `fiddle-11vj` (codex confirming pass pending)
+Tags: #debt #idea

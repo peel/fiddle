@@ -251,6 +251,14 @@ pub enum InterpretedHumanDecision {
 /// and **post again on every attempt, forever**. That copy existed until
 /// `fiddle-11vj` deleted it. It was read by nothing, so no test could have noticed
 /// the disagreement; the fix is that the disagreement is no longer expressible.
+///
+/// Re-adding it is a failing test and not a review comment:
+/// `the_request_id_is_held_in_exactly_one_place` asserts this type's serialized
+/// top-level key set, which is what makes a *shape* the derive already exposes into
+/// something a gate can refuse. Anything that needs the id at the top level takes a
+/// method over [`binding`](HumanDecisionRequest::binding), never a stored field —
+/// storing a derived value beside what it derives from is what created a hazard no
+/// behavioural test could see.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct HumanDecisionRequest {
     /// The request that reached the asking run. For a reader, and for
@@ -882,6 +890,81 @@ mod tests {
         assert_ne!(
             decision_request_id("a", "bc", &e),
             decision_request_id("ab", "c", &e),
+        );
+    }
+
+    /// The request id is held in **exactly one place**, and that is asserted rather
+    /// than described.
+    ///
+    /// [`HumanDecisionRequest`] carried the id twice until `fiddle-11vj` — once as
+    /// its own field and once in [`DecisionBinding`] — with only the binding
+    /// reaching the marker, because [`render_marker`] takes the binding. A producer
+    /// filling the two from two derivations, or a consumer matching on the copy,
+    /// publishes a marker naming one question and then searches for another: it
+    /// finds nothing, concludes it has not asked yet, and **posts again on every
+    /// attempt, forever**.
+    ///
+    /// # Why this test is about the type's shape and not its behaviour
+    ///
+    /// Deleting the field made that bug unwritable, and no *behavioural* test can
+    /// fail without the deletion — after it, the divergence cannot be constructed,
+    /// so there is no run to observe going wrong. It does not follow that no test
+    /// can fail without it: the type derives [`serde::Serialize`], which makes its
+    /// **shape** observable from outside with no behaviour involved. So the guard
+    /// against somebody re-adding the field is a red test rather than a review
+    /// comment, and it lives here in `fiddle-core` beside the type it constrains.
+    ///
+    /// # The key set, and never an occurrence count
+    ///
+    /// Counting the id's appearances and requiring one would pass a second copy
+    /// that *disagreed* — which is the dangerous case, not the harmless one. The
+    /// key set fails on any second top-level field whatever its value. The count
+    /// afterwards is a second, narrower claim: nothing nested repeats the id
+    /// either.
+    #[test]
+    fn the_request_id_is_held_in_exactly_one_place() {
+        let request = HumanDecisionRequest {
+            invocation_ref: "beans:w-1".to_string(),
+            work_ref: Some(WorkRef("w-1".to_string())),
+            capability: crate::PUBLISH_CHANGE,
+            binding: binding(),
+            question: "May fiddle mark this ready for review?".to_string(),
+            rationale: "The check passed at this revision.".to_string(),
+            risks: vec!["review notifications reach the team".to_string()],
+            alternatives: vec!["leave it a draft and revisit".to_string()],
+            evidence: vec![EvidenceRef("check=pass".to_string())],
+        };
+
+        let document = serde_json::to_value(&request).expect("the type derives Serialize");
+        let mut fields: Vec<&str> = document
+            .as_object()
+            .expect("a struct serializes as an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            [
+                "alternatives",
+                "binding",
+                "capability",
+                "evidence",
+                "invocation_ref",
+                "question",
+                "rationale",
+                "risks",
+                "work_ref",
+            ],
+            "the request id belongs to the binding alone: a top-level copy of it is \
+             what published a marker naming one question and then looked for another"
+        );
+
+        let id = request.binding.request.0.as_str();
+        assert_eq!(
+            serde_json::to_string(&request).unwrap().matches(id).count(),
+            1,
+            "and nothing nested repeats it either"
         );
     }
 }
