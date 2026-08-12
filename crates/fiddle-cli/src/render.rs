@@ -110,22 +110,13 @@ const AUTHORIZED_MATCHED_ON: &str = "numeric_user_id";
 
 /// What the decision channel is reported as, and **it is not `"enforced"`**.
 ///
-/// The keys parse, they are strict, and they are read by nothing. What an
-/// approver list and a page bound could feed are `ProposeConfig::deciders` and
-/// the two private `CONVERSATION_PAGES` constants — one in
-/// `fiddle_runtime::capability::propose`, one in `fiddle_runtime::human` — and
-/// none of the three is reachable from a document, because
-/// `main::build_capability` cannot yet construct `propose_change`; see the arm
-/// there. So this is [`ACCEPTED_NOT_ENFORCED`]'s case exactly, and it is reported
-/// as that word rather than as a promise the build does not keep: a document
-/// naming an approver who cannot be consulted is precisely the state an operator
-/// running `config check` needs to be told about.
-///
-/// The page bound carries one extra caution for whoever threads it through. Those
-/// two constants are deliberately the same number, because this capability reads
-/// one conversation twice — once to find its question, once to find the reply
-/// below it — and two reads that saw different amounts of it could find the first
-/// and miss the second. A document value has to replace **both** or neither.
+/// The key parses, it is strict, and it is read by nothing. What an approver list
+/// could feed is `ProposeConfig::deciders`, and that is not reachable from a
+/// document, because `main::build_capability` cannot yet construct
+/// `propose_change`; see the arm there. So this is [`ACCEPTED_NOT_ENFORCED`]'s case
+/// exactly, and it is reported as that word rather than as a promise the build does
+/// not keep: a document naming an approver who cannot be consulted is precisely the
+/// state an operator running `config check` needs to be told about.
 ///
 /// **This is the one line to change when that arm lands**, together with the
 /// human rendering's clause and the two tests that pin the word.
@@ -273,7 +264,6 @@ pub fn config_check_json(config: &Config) -> String {
             "decision": github.decision.as_ref().map(|decision| serde_json::json!({
                 "authorized": decision.authorized,
                 "matched_on": AUTHORIZED_MATCHED_ON,
-                "max_pages": decision.max_pages,
                 "status": DECISION_STATUS,
             })),
         });
@@ -397,8 +387,7 @@ pub fn config_check_human(config: &Config) -> String {
              \n  github.policy.ensure_check_requested = {}\
              \n  github.policy.publish_decision_request = {}\
              \n  github.policy.ensure_pull_request_ready = {}\
-             \n  github.decision.authorized = {}\
-             \n  github.decision.max_pages = {}",
+             \n  github.decision.authorized = {}",
             github.repo,
             github.base,
             // The name of the variable, never its value — there is none here to
@@ -452,12 +441,6 @@ pub fn config_check_human(config: &Config) -> String {
                     AUTHORIZED_MATCHED_ON,
                 )
             })),
-            optional(
-                github
-                    .decision
-                    .as_ref()
-                    .map(|decision| decision.max_pages.to_string()),
-            ),
         ));
     }
     out

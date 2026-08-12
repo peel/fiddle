@@ -758,15 +758,23 @@ impl DeploymentPolicy for PolicyTable {
     }
 }
 
-/// `[github.decision]` — who may decide, and how far a conversation read goes.
+/// `[github.decision]` — who may decide.
 ///
 /// A strict table of its own, for [`ReadRetryTable`]'s reason: `deny_unknown_fields`
-/// on `[github]` does not reach into a child, so a mistyped `max_page = 40` would
-/// otherwise parse as nothing and leave an operator believing they had set a
-/// bound. The strictness lives on [`DecisionDocument`], which is what serde
-/// actually deserializes; this type is only ever reached through the conversion
-/// below, so a value of it that has not been checked cannot be parsed into
-/// existence.
+/// on `[github]` does not reach into a child, so a misspelled `authorised = […]`
+/// would otherwise parse as nothing and leave an operator believing they had
+/// nominated somebody. The strictness lives on [`DecisionDocument`], which is what
+/// serde actually deserializes; this type is only ever reached through the
+/// conversion below, so a value of it that has not been checked cannot be parsed
+/// into existence.
+///
+/// **One key, and it stays one.** A `max_pages` bound was specified for this table
+/// and then removed, because `capability::propose`'s own `CONVERSATION_PAGES`
+/// already argues the case against it: nobody asked to configure how much of a
+/// conversation fiddle reads, and a document value that could disagree with the
+/// operation's own bound would be worse than a constant that cannot. Two reads of
+/// one conversation — one to find this run's question, one to find the reply below
+/// it — have to agree, and the way to guarantee that is a constant.
 #[derive(Debug, Deserialize)]
 #[serde(try_from = "DecisionDocument")]
 pub struct Decision {
@@ -784,32 +792,13 @@ pub struct Decision {
     ///
     /// No default, and an empty list refused: see the conversion below.
     pub authorized: Vec<u64>,
-
-    /// Pages of a conversation one read may walk before the read is a refusal
-    /// rather than a truncation.
-    ///
-    /// A bound and not a page size, so it is defaulted like `timeout` and
-    /// `read_retry` are. What it bounds is how much of one conversation is read
-    /// looking for a question and its replies; a conversation longer than this is
-    /// an error rather than a silent truncation, because a truncated read could
-    /// find a question and miss the reply below it.
-    pub max_pages: u32,
 }
 
-/// Ten pages.
+/// The same table before its own constraint has been applied.
 ///
-/// The number the two reads in `fiddle-runtime` already use — `capability::propose`'s
-/// `CONVERSATION_PAGES` and `human`'s copy of it — so a document that says nothing
-/// gets the behaviour this build has today rather than a different one. Neither of
-/// those constants reads this key yet, and until one does this default is the only
-/// value that applies whatever a document writes; `config check` says so.
-const DEFAULT_DECISION_PAGES: u32 = 10;
-
-/// The same table before its own constraints have been applied.
-///
-/// The constraints are applied at the parse boundary rather than where the values
-/// are used, for [`ReadRetryDocument`]'s reason: both mistakes below are ones an
-/// operator can only fix in the file, so the file is where they are refused.
+/// The constraint is applied at the parse boundary rather than where the value is
+/// used, for [`ReadRetryDocument`]'s reason: an empty approver list is a mistake an
+/// operator can only fix in the file, so the file is where it is refused.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DecisionDocument {
@@ -818,8 +807,6 @@ struct DecisionDocument {
     /// empty list below, because a forgotten key and an emptied one are different
     /// mistakes.
     authorized: Vec<u64>,
-    #[serde(default = "default_decision_pages")]
-    max_pages: u32,
 }
 
 impl TryFrom<DecisionDocument> for Decision {
@@ -836,17 +823,8 @@ impl TryFrom<DecisionDocument> for Decision {
                     .to_string(),
             );
         }
-        if document.max_pages == 0 {
-            return Err(
-                "a conversation must be read for at least one page; `max_pages = 0` \
-                 would leave every reply unread, and `max_pages = 1` is how a \
-                 document asks for the first page only"
-                    .to_string(),
-            );
-        }
         Ok(Self {
             authorized: document.authorized,
-            max_pages: document.max_pages,
         })
     }
 }
@@ -1039,10 +1017,6 @@ fn default_read_initial() -> HumanDuration {
 
 fn default_read_max() -> HumanDuration {
     HumanDuration::secs(4)
-}
-
-fn default_decision_pages() -> u32 {
-    DEFAULT_DECISION_PAGES
 }
 
 /// A document that failed the strict schema, carrying enough context to point
@@ -2007,12 +1981,15 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
         })
     }
 
-    /// The table loads, and both halves arrive as the values a run would use.
+    /// The table loads, and the ids arrive in the order the document wrote them.
+    ///
+    /// The order is asserted rather than the set, because the walk's rule for which
+    /// reply decides is about ordering too, and a list quietly sorted or reversed on
+    /// the way in is the kind of difference no other test here would see.
     #[test]
-    fn the_decision_table_names_who_may_decide_and_how_far_a_read_goes() {
-        let decision = decision("authorized = [505401, 42]\nmax_pages = 4").unwrap();
+    fn the_decision_table_names_who_may_decide() {
+        let decision = decision("authorized = [505401, 42]").unwrap();
         assert_eq!(decision.authorized, [505401, 42]);
-        assert_eq!(decision.max_pages, 4);
     }
 
     /// **Empty is not permissive.**
@@ -2029,10 +2006,11 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
     /// been read, so the span it can attribute the refusal to is the table's. The
     /// alternative — a newtype on the field, the way [`Repo`] refuses a
     /// repository at `repo`'s own line — would buy one line of precision for a
-    /// second validation site, and this table has two constraints that want one.
+    /// second type and a second place to look, over a table whose every key is on
+    /// the two lines the caret already covers.
     #[test]
     fn an_empty_authorized_list_is_refused_at_the_table_it_was_written_in() {
-        let text = with_decision("authorized = []\nmax_pages = 10");
+        let text = with_decision("authorized = []");
         let error = toml::from_str::<Config>(&text).unwrap_err();
         let message = error.message().to_string();
         assert!(message.contains("authorized"), "got {message}");
@@ -2068,7 +2046,9 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
     /// guessed authorization.
     #[test]
     fn an_absent_authorized_list_is_refused() {
-        let error = toml::from_str::<Config>(&with_decision("max_pages = 10")).unwrap_err();
+        // A table with nothing in it, which is what "forgot the key" looks like now
+        // that the table has exactly one key to forget.
+        let error = toml::from_str::<Config>(&with_decision("")).unwrap_err();
         assert!(
             error.message().contains("authorized"),
             "the refusal must name the missing key, got {}",
@@ -2085,17 +2065,32 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
 
     /// Strictness reaches one table deeper, for [`ReadRetryTable`]'s reason:
     /// `deny_unknown_fields` on `[github]` does not reach into a child, and a
-    /// mistyped `max_page` that parsed as nothing would be a bound an operator
-    /// believes they set.
+    /// misspelled key that parsed as nothing would be an authorization an operator
+    /// believes they wrote.
+    ///
+    /// **The document is otherwise complete, and that is what makes this a test
+    /// about a mistyped key rather than about an unknown one.** The stray key is a
+    /// misspelling of the table's only real key, beside a correct spelling of it —
+    /// so the same document with the stray line removed loads, which is asserted
+    /// here, and the refusal is therefore attributable to strictness and to nothing
+    /// else. Without that half the scenario would keep passing over a table that had
+    /// stopped being strict, on the strength of `authorized` being absent instead.
     #[test]
     fn a_mistyped_key_in_the_decision_table_is_refused() {
         let error =
-            toml::from_str::<Config>(&with_decision("authorized = [505401]\nmax_page = 10"))
+            toml::from_str::<Config>(&with_decision("authorized = [505401]\nauthorised = [42]"))
                 .unwrap_err();
         assert!(
-            error.message().contains("max_page"),
-            "got {}",
+            error.message().contains("authorised"),
+            "the diagnostic must name the key that will do nothing, got {}",
             error.message()
+        );
+        // The half that keeps the scenario honest: strictness is the only reason the
+        // document above was refused.
+        assert_eq!(
+            decision("authorized = [505401]").unwrap().authorized,
+            [505401],
+            "the same document without the misspelling has to load"
         );
     }
 
@@ -2110,40 +2105,6 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
         assert!(
             decision(r#"authorized = [505401, "peel"]"#).is_err(),
             "one login among the ids is still a login"
-        );
-    }
-
-    /// The bound has a defensible default, so it is defaulted and pinned here
-    /// rather than left to whatever a `default_*` function happened to return.
-    #[test]
-    fn the_decision_defaults_are_the_ones_documented() {
-        assert_eq!(
-            decision("authorized = [505401]").unwrap().max_pages,
-            DEFAULT_DECISION_PAGES
-        );
-        assert_eq!(DEFAULT_DECISION_PAGES, 10);
-    }
-
-    /// A conversation that is never read is not a stricter policy — it is a
-    /// question nobody's answer can reach. Refused in the file, which is the only
-    /// place an operator can fix it; the same reasoning `attempts = 0` has.
-    #[test]
-    fn a_read_of_no_pages_at_all_is_refused() {
-        let message =
-            toml::from_str::<Config>(&with_decision("authorized = [505401]\nmax_pages = 0"))
-                .unwrap_err()
-                .message()
-                .to_string();
-        assert!(
-            message.contains("at least one page"),
-            "the refusal must say what is wrong, got {message}"
-        );
-        // One page is how a document asks for the first page only, so it is legal.
-        assert_eq!(
-            decision("authorized = [505401]\nmax_pages = 1")
-                .unwrap()
-                .max_pages,
-            1
         );
     }
 

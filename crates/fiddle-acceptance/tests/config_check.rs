@@ -461,6 +461,11 @@ const DECIDER: u64 = 505_401;
 /// is the one line that changes when a capability starts reading the keys.
 const DECISION_STATUS: &str = "accepted-not-enforced";
 
+/// The same fact in the plain rendering, which says it in prose rather than in a
+/// word a machine keys on — the split `agent.max_capability_attempts` already uses
+/// between its payload object and its terminal line.
+const DECISION_STATUS_PHRASE: &str = "accepted, not enforced";
+
 /// [`FORGE`] with a `[github.decision]` table carrying `body`.
 fn with_decision(body: &str) -> String {
     format!("{FORGE}\n[github.decision]\n{body}\n")
@@ -489,9 +494,6 @@ fn config_check_reports_the_decision_channel_and_its_authorized_set() {
         "{github}"
     );
     assert_eq!(decision["matched_on"], "numeric_user_id", "{github}");
-    // The bound the document left to its default, reported as the value that
-    // will actually apply — the rule every other defaulted bound follows.
-    assert_eq!(decision["max_pages"], 10, "{github}");
     assert_eq!(decision["status"], DECISION_STATUS, "{github}");
 
     // And the human rendering says the same three things, because an operator at
@@ -506,11 +508,18 @@ fn config_check_reports_the_decision_channel_and_its_authorized_set() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     assert_eq!(out.status.code(), Some(0), "stdout: {stdout}");
+    // **The key as well as the value**, spelled the way the document spells it,
+    // because that rendering's whole contract is `<table>.<key> = <value>` for a
+    // reader whose next move is to go and edit the file. Asserted on the pair and
+    // not on the value alone: a rendering that printed the right ids under a key
+    // an operator could not find in their document would satisfy any number of
+    // substring checks while telling them nothing they could act on.
     assert!(
-        stdout.contains(&DECIDER.to_string())
+        stdout.contains(&format!("github.decision.authorized = {DECIDER}"))
             && stdout.contains("numeric_user_id")
-            && stdout.contains("max_pages = 10"),
-        "the plain rendering must disclose the channel too: {stdout}"
+            && stdout.contains(DECISION_STATUS_PHRASE),
+        "the plain rendering must disclose the channel under the key the document \
+         writes it under: {stdout}"
     );
 }
 
@@ -549,13 +558,20 @@ fn config_check_refuses_an_approver_named_by_login() {
 #[test]
 fn config_check_rejects_an_unknown_key_inside_the_decision_table() {
     let out = check(&with_decision(&format!(
-        "authorized = [{DECIDER}]\nmax_page = 10"
+        "authorized = [{DECIDER}]\nauthorised = [42]"
     )));
     assert_eq!(out.status.code(), Some(2), "unknown key must exit 2");
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(
-        stderr.contains("max_page") && stderr.contains("unknown field"),
+        stderr.contains("authorised") && stderr.contains("unknown field"),
         "the diagnostic must name the offending key and why, got: {stderr}"
+    );
+    // And the same document without the misspelling is accepted, so the refusal
+    // above is strictness and not the correct key having gone missing with it.
+    assert_eq!(
+        checked(&with_decision(&format!("authorized = [{DECIDER}]")))["github"]["decision"]
+            ["authorized"],
+        serde_json::json!([DECIDER])
     );
 }
 
