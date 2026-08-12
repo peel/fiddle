@@ -3,7 +3,8 @@
 # A complete body has: a fenced ```eval block containing both `domains:` and
 # `criteria:`; a files section (## Files heading or a Files: line) with at least
 # one `- Create:`/`- Modify:`/`- Test:`/`- Delete:` line; and at least one
-# `- [ ]` checklist step. Container feature beans (--container) are exempt.
+# checklist step, `- [ ]` or `- [x]`, so that a finished bean whose steps are
+# all ticked still passes. Container feature beans (--container) are exempt.
 #
 # Exit codes:
 #   0  Body is complete (or --container was passed)
@@ -78,9 +79,13 @@ else
   FAILURES+=("missing files section (## Files heading or Files: line)")
 fi
 
-# At least one unchecked checklist step.
-if ! grep -qE '^[[:space:]]*-[[:space:]]+\[ \]' "$BODY"; then
-  FAILURES+=("no - [ ] checklist steps")
+# At least one checklist step, ticked or not. The gate exists to catch a thin
+# body dispatched to an implementer, and a thin body has no checklist at all,
+# while a finished bean has one with every box ticked. Requiring an unchecked
+# box instead rejects every completed bean, which breaks develop Step 1 where
+# it re-derives state from beans after a restart.
+if ! grep -qE '^[[:space:]]*-[[:space:]]+\[[ xX]\]' "$BODY"; then
+  FAILURES+=("no checklist steps (- [ ] or - [x])")
 fi
 
 if [[ ${#FAILURES[@]} -gt 0 ]]; then

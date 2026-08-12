@@ -141,6 +141,67 @@ EXIT_CODE=0
 "$SCRIPT_DIR/validate-bean-body.sh" --body "$TMPDIR/does-not-exist.md" 2>/dev/null || EXIT_CODE=$?
 assert_exit "missing body file → exit 2" 2 "$EXIT_CODE"
 
+# A finished bean has every step ticked. The gate checks that a body carries a
+# checklist at all — a thin body has none — so ticked steps satisfy it. See
+# Test 5 for the property this must not weaken.
+echo "Test 8: finished body, every step ticked → exit 0"
+cat > "$TMPDIR/finished.md" << 'EOF'
+---
+# fiddle-0000
+title: a finished task bean
+status: completed
+---
+
+## Context
+Shaped like a real converged bean: frontmatter, ticked steps, eval block.
+
+## Files
+- Modify: `scripts/foo.sh`
+
+## Steps
+- [x] Write failing test
+- [x] Implement
+- [x] Commit
+
+## Evaluation
+```eval
+domains: [infrastructure]
+criteria:
+  infrastructure:
+    - id: finished-body-passes
+      check: "exits 0"
+```
+EOF
+EXIT_CODE=0
+"$SCRIPT_DIR/validate-bean-body.sh" --body "$TMPDIR/finished.md" 2>"$ERRFILE" || EXIT_CODE=$?
+assert_exit "all steps ticked → exit 0" 0 "$EXIT_CODE"
+assert_exit "all steps ticked → no gaps on stderr" "" "$(cat "$ERRFILE")"
+
+echo "Test 9: in-progress body, some ticked and some not → exit 0"
+sed 's/^- \[x\] Commit$/- [ ] Commit/' "$TMPDIR/finished.md" > "$TMPDIR/mixed.md"
+grep -q '^- \[ \] Commit$' "$TMPDIR/mixed.md" || { echo "  FIXTURE BROKEN: mixed.md has no unchecked step"; exit 1; }
+EXIT_CODE=0
+"$SCRIPT_DIR/validate-bean-body.sh" --body "$TMPDIR/mixed.md" 2>/dev/null || EXIT_CODE=$?
+assert_exit "mixed ticked/unchecked → exit 0" 0 "$EXIT_CODE"
+
+echo "Test 10: uppercase - [X] counts as a checklist step → exit 0"
+sed 's/^- \[x\]/- [X]/' "$TMPDIR/finished.md" > "$TMPDIR/upper.md"
+grep -q '^- \[X\] Implement$' "$TMPDIR/upper.md" || { echo "  FIXTURE BROKEN: upper.md has no - [X] step"; exit 1; }
+EXIT_CODE=0
+"$SCRIPT_DIR/validate-bean-body.sh" --body "$TMPDIR/upper.md" 2>/dev/null || EXIT_CODE=$?
+assert_exit "uppercase [X] → exit 0" 0 "$EXIT_CODE"
+
+# The gate's reason for existing: a body with no checklist of any kind is thin
+# and must not reach an implementer. Test 5 covers prose-only; this covers a
+# body that is otherwise complete, so only the missing checklist can fail it.
+echo "Test 11: otherwise-complete body with no checklist of any kind → exit 2"
+grep -v '^- \[' "$TMPDIR/finished.md" > "$TMPDIR/stepless.md"
+grep -qE '^[[:space:]]*-[[:space:]]+\[[ xX]\]' "$TMPDIR/stepless.md" && { echo "  FIXTURE BROKEN: stepless.md still has a checklist"; exit 1; }
+EXIT_CODE=0
+"$SCRIPT_DIR/validate-bean-body.sh" --body "$TMPDIR/stepless.md" 2>"$ERRFILE" || EXIT_CODE=$?
+assert_exit "no checklist at all → exit 2" 2 "$EXIT_CODE"
+assert_json "error array names steps" '[.[] | select(test("steps"))] | length > 0' "true" "$(cat "$ERRFILE")"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
