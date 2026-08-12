@@ -1388,6 +1388,18 @@ where
                     // would leave a run reaching `already_ready` with its work
                     // done and unaccounted for, which is the defect this fixes in
                     // its residual case rather than a different one.
+                    //
+                    // **And the second arm cannot attribute one run's work to
+                    // another, which is what makes covering it safe rather than
+                    // merely useful.** Everything above is reached only through
+                    // `opened(&branch)`, and [`branch_name`] is a function of the
+                    // project and the invocation reference — so a run holding a
+                    // different reference computes a different branch, finds no
+                    // pull request for it, and takes the first-run path instead.
+                    // `already_ready` is therefore reachable only by the run whose
+                    // own marker it writes, and the write is idempotent across
+                    // repeats of that run because `correlation_key` is derived
+                    // from the same two inputs.
                     self.record_change_set(work_id)?;
                     Ok(evidence)
                 }

@@ -1296,14 +1296,36 @@ async fn a_context_publishing_from_another_tree_is_refused_before_anything_runs(
 ///   withholding it made the run report `Retryable` over work that was done: one
 ///   exit code for two outcomes, and a caller retrying on it never terminated.
 ///
-/// So the second half is now asserted as what it always meant: `record_change_set`
-/// has **one call site**. A second one is how the prohibition would actually be
-/// lost — a write added to `ask`, or to an `awaiting` arm, would be a suspended run
-/// accounting for itself — and a count is what notices that, where a search for the
-/// type name can no longer notice anything.
+/// # What the count below does, and — said plainly — what it does not
 ///
-/// The call site is counted through `self.record_change_set(`, which is a form no
-/// doc comment in the file uses, so the number is the code's and not the prose's.
+/// The second half is now a count: `record_change_set` has **one call site**. A
+/// second one is how the prohibition would realistically be lost — a write added to
+/// `ask`, or to an `awaiting` arm, would be a suspended run accounting for itself —
+/// and a count notices that where a search for the type name no longer can.
+///
+/// **It is not a count of everything that writes, and this comment claimed it was.**
+/// An evaluator broke it with the counterexample: an inline `ChangeSetState` +
+/// `write_atomically` in `ask`, spelling neither counted token, passes **both**
+/// source-level assertions. The prohibition survived that mutation — it still fails
+/// `the_approve_path_accounts_for_the_work_it_completed` and
+/// `only_an_approval_marks_the_pull_request_ready` — so the hole was in the prose
+/// and not in the coverage. It is corrected rather than quietly narrowed because a
+/// sentence claiming more than the code beneath it is the single failure this
+/// milestone has repeated most, and a test holding a converged sibling's property is
+/// the worst place to leave one.
+///
+/// **Where the accounting half actually carries its weight** is
+/// [`only_an_approval_marks_the_pull_request_ready`]: four verdicts over four
+/// worlds, asserting that a change set exists after approve and after none of
+/// reject, redirect or unclear. That is behavioural, it is blind to how the write is
+/// spelled, and it is the real guarantee. The count here is a cheap structural
+/// tripwire in front of it — worth having, and not the thing to point a reader at.
+///
+/// Both counts are over the whole source text, prose included: a `self.record_change_set(`
+/// written inside a comment would inflate them and fail this test. That is a
+/// nuisance and it fails closed, which is the direction to be wrong in. The earlier
+/// version of this sentence asserted the opposite — that no doc comment uses that
+/// form — which was a claim about today's prose rather than about the code.
 #[test]
 fn the_capability_holds_no_credential_and_accounts_for_work_in_one_place() {
     let source = include_str!("../src/capability/propose.rs");
@@ -1328,7 +1350,10 @@ fn the_capability_holds_no_credential_and_accounts_for_work_in_one_place() {
     assert_eq!(
         source.matches("fn record_change_set(").count(),
         1,
-        "and one spelling, so the count above is a count of everything that writes"
+        "and the helper the count above is about has one definition; a second would \
+         make that count a count of one of two writers, not of the writes. Neither \
+         line sees a write spelled inline — `only_an_approval_marks_the_pull_request_\
+         ready` is what covers that"
     );
 }
 
@@ -1793,7 +1818,7 @@ async fn answered(world: &World, author: u64, reply: &str, document: &str) -> An
 /// The four verdicts against one property, over four worlds rather than one,
 /// because a world in which the transition has happened cannot be asked the
 /// question again — which is itself the subject of
-/// [`a_second_invocation_after_an_approval_completes_without_a_second_mutation`].
+/// [`a_second_invocation_after_an_approval_accounts_for_the_work_and_does_not_mutate_again`].
 ///
 /// The mutation has exactly one spelling in this build, so the assertion is made
 /// twice from two doors: the `apply` the executor announced, and the count of
@@ -2337,7 +2362,21 @@ async fn the_second_payload_comparison_catches_what_the_first_could_not_see() {
 /// that it performed nothing is the GraphQL count: still one, from the invocation
 /// that had the approval.
 ///
-/// # And it accounts for the work, which is what stops the residual case looping
+/// # And it accounts for the work — **the only test that witnesses that, so do not
+/// # trim this to its first claim**
+///
+/// The write on this arm is the half of `fiddle-usp7`'s fix that exceeds the bean's
+/// own wording ("the change-set write on the approve path"), and the final assertion
+/// below is the **only** thing in the workspace that fails when it is removed —
+/// inversion I5 measured exactly one failure, this test. The title says so for that
+/// reason: a later author narrowing this back to "no second mutation" would take the
+/// witness with it and nothing would go red.
+///
+/// A second assertion elsewhere would add no discriminating power, because this path
+/// is unreachable through `orchestration::run` once the marker exists. What keeps
+/// the assertion honest instead is the removal above: the change set is deleted
+/// before the walk, so `None` is the state the walk starts from and a marker at the
+/// end is this invocation's own.
 ///
 /// Recording the marker only where the transition is *performed* would leave this
 /// invocation completing with the work unaccounted for, the run reporting
@@ -2348,7 +2387,7 @@ async fn the_second_payload_comparison_catches_what_the_first_could_not_see() {
 /// project and the invocation reference, and a second value here would mean the
 /// two invocations were accounting for different work.
 #[tokio::test]
-async fn a_second_invocation_after_an_approval_completes_without_a_second_mutation() {
+async fn a_second_invocation_after_an_approval_accounts_for_the_work_and_does_not_mutate_again() {
     let world = World::fresh();
     let first = answered(&world, APPROVER, YES, APPROVES).await;
     first.outcome.expect("the approved transition landed");
