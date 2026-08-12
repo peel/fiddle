@@ -1486,6 +1486,57 @@ pub const SEEDED_AT: &str = "2026-08-11T00:00:00Z";
 /// only do so if the fixture can produce one.
 pub const EDITED_AT: &str = "2026-08-11T12:00:00Z";
 
+/// The id the first inline review comment this world holds is numbered from.
+///
+/// **Above [`FIRST_POSTED_COMMENT`]'s 9000 on purpose, and the choice is what makes
+/// "the review-comment endpoint is never consulted" a property with a way of
+/// failing.** `validate::select_candidates` silently skips any comment whose id is
+/// *below* the request comment's — it is not a reply to a question that did not
+/// exist yet — so a review comment numbered under 9000 could be merged onto the
+/// conversation by a future defect and still change nothing, and the test asserting
+/// the endpoint was never asked for would keep passing for the wrong reason.
+///
+/// Numbered above it, an approval sitting in that collection is a comment a walk
+/// *would* accept if it ever reached one: authorized author, a person, later than
+/// the question. So the row asserting the pull request stayed a draft is refuted by
+/// the defect it is about, rather than surviving it.
+pub const FIRST_REVIEW_COMMENT: u64 = 9_500;
+
+/// The app a comment can be attributed to, which is the second of the two
+/// spellings of not being a person.
+///
+/// `HumanResponse::is_bot` is `user.type == "Bot" || performed_via_github_app is
+/// not null` — a disjunction, at `github/comments.rs:147`. A fixture that could
+/// only express the first spelling could not tell a walk checking **both** from one
+/// checking **either**, so both are expressible and the matrix uses each once.
+///
+/// Shaped like GitHub's own rather than a bare `true`, because the product's field
+/// is a `Value` whose *nullness* is the fact — declared that way so that a payload
+/// which never mentioned an app could not be read as one denying it — and a fixture
+/// writing a non-object would be agreeing with a narrower rule than the one under
+/// test.
+///
+/// # Its *contents* are unclosable, and saying so beats adding a check that cannot fail
+///
+/// `is_bot` consults `performed_via_github_app.is_null()` and nothing inside it, so
+/// replacing every field here with different values breaks no test and could not:
+/// three keys nobody reads are indistinguishable from three other keys nobody reads.
+/// **Its non-nullness is what discriminates**, and that *is* closed — the app row of
+/// the matrix fails the moment this is `Null`, because the comment becomes an ordinary
+/// authorized person's reply and mutates.
+///
+/// So the object is shaped like a real one for the reader's sake and is not asserted
+/// about, on the same footing as [`SEEDED_AT`] and [`PULL_REQUEST_NODE_ID`]. Recorded
+/// here so a later reader does not mistake the absence of an assertion for an
+/// oversight.
+pub const POSTING_APP: fn() -> serde_json::Value = || {
+    serde_json::json!({
+        "id": 77_001,
+        "slug": "some-automation",
+        "name": "Some Automation",
+    })
+};
+
 /// The binding a request comment's marker carries: the four identities a person is
 /// being asked about.
 ///
@@ -2087,6 +2138,58 @@ impl World {
     /// ids for it. [`World::posted_comment_bodies`], counted off the request log, is the
     /// accessor that cannot be confused this way.
     pub fn post_comment(&self, author: u64, body: &str) -> u64 {
+        self.write_listed_comment(author, body, "User", serde_json::Value::Null)
+    }
+
+    /// Post a comment whose author is an account of type `Bot`, and hand back its
+    /// id.
+    ///
+    /// The first of the two spellings of not being a person, and it takes an
+    /// `author` rather than assuming one **because the id is what must not be the
+    /// reason it is refused.** A bot reply written by [`STRANGER`] would be declined
+    /// by the allowlist, so the row would pass with
+    /// `Ignored::NotAPerson` deleted from the product entirely. Written by
+    /// [`AUTHORIZED`], the only thing standing between it and a mutation is its
+    /// type, which is the claim.
+    ///
+    /// Distinct from [`World::seed_question`], which also writes a `Bot`: that one
+    /// is fiddle's own question and carries a marker, and it is refused as
+    /// `Ignored::RequestComment` before personhood is ever consulted. These two
+    /// must not be collapsed — the request comment's exclusion is a different rule
+    /// from a bot's.
+    pub fn post_bot_comment(&self, author: u64, body: &str) -> u64 {
+        self.write_listed_comment(author, body, "Bot", serde_json::Value::Null)
+    }
+
+    /// Post a comment a `User` wrote but an **app** is recorded as having performed,
+    /// and hand back its id.
+    ///
+    /// The second spelling, and the one a reader is most likely to think is a
+    /// person: `user.type` is `User`, the login is a person's, and the id is on the
+    /// allowlist. Only `performed_via_github_app` says otherwise. That is the case
+    /// [`POSTING_APP`] exists for — an automation writing through somebody's
+    /// credential — and it is why the two spellings are two rows of the matrix
+    /// rather than one.
+    pub fn post_app_comment(&self, author: u64, body: &str) -> u64 {
+        self.write_listed_comment(author, body, "User", POSTING_APP())
+    }
+
+    /// The one writer behind [`World::post_comment`] and its two non-person
+    /// siblings.
+    ///
+    /// One function rather than three near-copies, because the three differ in
+    /// exactly the two fields the product's `is_bot` is computed from and everything
+    /// else about them — the id rule, the page they land on, the equal timestamps —
+    /// is a property the matrix depends on being identical. Three hand-written
+    /// bodies that drifted would let a row be refused for a reason its scenario did
+    /// not choose.
+    fn write_listed_comment(
+        &self,
+        author: u64,
+        body: &str,
+        kind: &str,
+        app: serde_json::Value,
+    ) -> u64 {
         let id = self.conversation().iter().map(|c| c.id).max().unwrap_or(0) + 1;
         let page = self.last_page();
         let mut listed = self.page(page);
@@ -2096,10 +2199,44 @@ impl World {
             "created_at": SEEDED_AT,
             "updated_at": SEEDED_AT,
             "author_association": "COLLABORATOR",
+            "user": {"login": format!("user-{author}"), "id": author, "type": kind},
+            "performed_via_github_app": app,
+        }));
+        self.write_page(page, &listed);
+        id
+    }
+
+    /// Put a comment in the **inline review** collection — `/pulls/{n}/comments` —
+    /// and hand back its id.
+    ///
+    /// A different collection from the conversation, and the whole point is that
+    /// nothing reads it. `github/comments.rs` offers no route that names it, so an
+    /// approval typed there is unreachable rather than filtered, and the assertion a
+    /// scenario makes about it is that the endpoint was **never asked for**.
+    ///
+    /// Numbered from [`FIRST_REVIEW_COMMENT`], above the question, so that a defect
+    /// which did merge this collection onto the conversation would produce a
+    /// *candidate* and mutate. See that constant for why numbering it below would
+    /// make the row unfalsifiable.
+    pub fn post_review_comment(&self, author: u64, body: &str) -> u64 {
+        let dir = self.stub.join(REVIEW_COMMENTS);
+        std::fs::create_dir_all(&dir).unwrap();
+        let page = dir.join("page-1.json");
+        let mut listed: Vec<serde_json::Value> = std::fs::read_to_string(&page)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        let id = FIRST_REVIEW_COMMENT + listed.len() as u64;
+        listed.push(serde_json::json!({
+            "id": id,
+            "body": body,
+            "created_at": SEEDED_AT,
+            "updated_at": SEEDED_AT,
+            "author_association": "COLLABORATOR",
             "user": {"login": format!("user-{author}"), "id": author, "type": "User"},
             "performed_via_github_app": serde_json::Value::Null,
         }));
-        self.write_page(page, &listed);
+        std::fs::write(&page, serde_json::Value::Array(listed).to_string()).unwrap();
         id
     }
 
@@ -2191,18 +2328,187 @@ impl World {
     /// question" and "later in the vector" from being the same observation.
     /// Assertions about order should be made about `id`.
     pub fn conversation(&self) -> Vec<Comment> {
+        self.listed_comments().iter().map(comment_from).collect()
+    }
+
+    /// The whole conversation as the listing really returned it, unparsed.
+    ///
+    /// [`World::conversation`]'s own source, and separate because two callers need
+    /// two different things from one read. A scenario asserting a property wants
+    /// [`Comment`], where a mistyped key is a compile error; a scenario *rewriting* a
+    /// comment needs every field the product deserializes — `author_association`,
+    /// `user`, `performed_via_github_app` — including the ones no assertion here
+    /// mentions. [`World::edit_comment_on_next_read`] builds its file from this, so a
+    /// re-read differs from its listing in the field the scenario chose and in no
+    /// other: a by-id file assembled from a `Comment` would silently drop three keys
+    /// and the product would refuse it as unreadable, which is a refusal about the
+    /// fixture rather than about an edit.
+    fn listed_comments(&self) -> Vec<serde_json::Value> {
         let mut found = Vec::new();
         let mut page = 1;
         loop {
             let response = self.listing(page);
-            for value in body_of(&response) {
-                found.push(comment_from(&value));
-            }
+            found.extend(body_of(&response));
             if !response.contains("rel=\"next\"") {
                 return found;
             }
             page += 1;
         }
+    }
+
+    /// Make the **re-read** of comment `id` answer `body`, edited, while the listing
+    /// goes on saying what it said.
+    ///
+    /// # The one thing step 5 exists to catch, and the only way to express it
+    ///
+    /// `validate`'s `reread` refuses when a comment's `updated_at` differs from the
+    /// one the listing carried, because a reply rewritten after it was selected is
+    /// not the reply that was selected. That is a disagreement *between two reads*,
+    /// so no single-source fixture can produce it: [`World::edit_comment`] rewrites
+    /// the page, which both reads then agree about, and a walk over it sees a comment
+    /// that was simply composed in two passes — which a person is entitled to do.
+    ///
+    /// The scripted `gh` answers a by-id read from `<conversation>/by-id/{id}.json`
+    /// **in preference to** the listing, precisely so a scenario can say *this is
+    /// what the re-read returns, whatever the listing says*. This writes that file.
+    ///
+    /// It is built from the listing's own entry rather than from a fresh object, so
+    /// the two reads differ in `body` and `updated_at` and are identical everywhere
+    /// else. That is what makes the refusal attributable: a file differing in five
+    /// fields would refuse for whichever the product happened to check first.
+    ///
+    /// Panics on an id the conversation does not list — including one this world
+    /// never held — because silently scripting a re-read nobody performs is the
+    /// vacuous version of this whole scenario.
+    pub fn edit_comment_on_next_read(&self, id: u64, body: &str) {
+        let listed = self.listed_comments();
+        let mut edited = listed
+            .iter()
+            .find(|comment| comment["id"].as_u64() == Some(id))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the conversation lists no comment {id}, so nothing would re-read \
+                     one; it lists {:?}",
+                    listed
+                        .iter()
+                        .filter_map(|c| c["id"].as_u64())
+                        .collect::<Vec<_>>()
+                )
+            })
+            .clone();
+        assert_eq!(
+            edited["updated_at"].as_str(),
+            Some(SEEDED_AT),
+            "the listing must still carry the unedited stamp, or the divergence this \
+             writes is not a divergence: {edited}"
+        );
+        edited["body"] = serde_json::Value::String(body.to_string());
+        edited["updated_at"] = serde_json::Value::String(EDITED_AT.to_string());
+
+        let dir = self.stub.join(CONVERSATION).join(BY_ID);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{id}.json")), edited.to_string()).unwrap();
+    }
+
+    /// Tell the forge its pull request is at a different revision, and hand back the
+    /// one it used to answer with.
+    ///
+    /// # Why this refuses at step 2 rather than at step 6
+    ///
+    /// A reader expects a moved head to be caught by `DecisionError::HeadMoved`,
+    /// which step 6 spells. On this path it never gets that far, and the reason is
+    /// the design's: the gated effect's target is `{repo}#{pr}@{head}`, and the
+    /// request id is derived over that target. So a run reading a *different* head
+    /// derives a *different* request id, and step 2 finds no comment on the
+    /// conversation naming it — `RequestAbsent`, before a single sha is compared.
+    ///
+    /// That is a stronger property than a sha check would be, and it is why the
+    /// scenario is worth having: an approval does not merely fail to apply to the new
+    /// head, it is **unrecognisable** as an answer to a question about it. There is no
+    /// arrangement in which the old approval and the new head are in the same
+    /// conversation.
+    ///
+    /// The previous revision is returned, and the two are asserted to differ, because
+    /// a "move" to the same value is the check that cannot fail.
+    pub fn move_pull_request_head(&self, number: u64, sha: &str) -> String {
+        let path = self
+            .stub
+            .join("pulls_by_number")
+            .join(format!("{number}.json"));
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!(
+                "no seeded answer for pull request {number} at {} ({error}); a head \
+                 cannot move away from a revision nothing ever answered",
+                path.display()
+            )
+        });
+        let mut seeded: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let was = seeded["head"]["sha"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert_ne!(
+            was, sha,
+            "a head that moved to where it already was is not a case"
+        );
+        seeded["head"]["sha"] = serde_json::Value::String(sha.to_string());
+        std::fs::write(&path, seeded.to_string()).unwrap();
+        was
+    }
+
+    /// Rewrite the body of the question **this world's own run posted**, as every
+    /// read of it will now see.
+    ///
+    /// # Not [`World::edit_comment`], and not [`World::edit_comment_on_next_read`]
+    ///
+    /// Three different acts, and the matrix needs this one distinctly. `edit_comment`
+    /// rewrites a page file and **panics on a comment a run posted** — fiddle's
+    /// question lives in the stub's world log, not in the pages, so it cannot reach
+    /// it at all. `edit_comment_on_next_read` makes the two reads disagree, which is
+    /// refused on a *timestamp* without the rewritten bytes ever being weighed.
+    ///
+    /// This rewrites the log entry the listing and the by-id fallback are both derived
+    /// from, so both reads agree and the timestamps stay equal. The only thing wrong
+    /// with the comment is **what it says** — which is the case a marker somebody
+    /// rewrote actually is, and the one where the product has to refuse on its own
+    /// recomputation rather than on evidence of an edit.
+    ///
+    /// Panics unless the world holds exactly one posted question, because a rewrite
+    /// that picked between two would be choosing which run's history to falsify.
+    pub fn rewrite_the_published_question(&self, body: &str) {
+        let log = self.stub.join("world");
+        let text = std::fs::read_to_string(&log)
+            .unwrap_or_else(|error| panic!("no world log at {} ({error})", log.display()));
+        let mut rewritten = Vec::new();
+        let mut found = 0;
+        for line in text.lines() {
+            let Ok(mut landed) = serde_json::from_str::<serde_json::Value>(line) else {
+                rewritten.push(line.to_string());
+                continue;
+            };
+            let posted_a_comment = landed["key"]
+                .as_str()
+                .is_some_and(|key| key.starts_with("POST_repos_") && key.ends_with("_comments"));
+            if !posted_a_comment {
+                rewritten.push(line.to_string());
+                continue;
+            }
+            found += 1;
+            // The log stores the request body as the *string* that was sent, and
+            // `posted_comments` re-parses it, so the rewrite has to go back through
+            // the same encoding rather than replacing a substring of the line.
+            let mut sent: serde_json::Value =
+                serde_json::from_str(landed["body"].as_str().unwrap_or("{}")).unwrap();
+            sent["body"] = serde_json::Value::String(body.to_string());
+            landed["body"] = serde_json::Value::String(sent.to_string());
+            rewritten.push(landed.to_string());
+        }
+        assert_eq!(
+            found, 1,
+            "exactly one posted question may be rewritten, and this world holds \
+             {found}"
+        );
+        std::fs::write(&log, format!("{}\n", rewritten.join("\n"))).unwrap();
     }
 
     /// The comments on the conversation that fiddle wrote, which are its
@@ -2907,6 +3213,27 @@ const CHECK: &str = "{ program = \"grep\", args = [\"-q\", \"len - 1\", \"src/li
 /// to a binary. It is load-bearing in one direction only: a value that disagreed
 /// would make every listing panic on an unscripted page, which is loud.
 const CONVERSATION: &str = "issue-comments";
+
+/// The directory the **inline review** comments live in, which is a different
+/// collection from the conversation and the one nothing reads.
+///
+/// `gh_stub`'s `comment_answer` routes `/repos/o/r/pulls/{n}/comments` here and
+/// `/repos/o/r/issues/{n}/comments` to [`CONVERSATION`], on the key's *shape* rather
+/// than on a substring — the two differ by where the number sits. So a page written
+/// here is reachable only through the review route, which is what makes
+/// [`World::post_review_comment`] a decoy a walk has to fail to consult.
+const REVIEW_COMMENTS: &str = "review-comments";
+
+/// The by-id subdirectory of the conversation, where a re-read is answered from
+/// **in preference to the listing**.
+///
+/// That precedence is the fixture's only way to express an edit *between* the two
+/// reads, which is the whole subject of step 5 of the validation order: the listing
+/// says one thing, the comment's own id says another, and the walk is entitled to
+/// refuse rather than pick. `gh_stub`'s `comment_by_id` consults this file first and
+/// falls back to the listing, so a scenario writes here exactly when it means "the
+/// re-read disagrees".
+const BY_ID: &str = "by-id";
 
 /// The attempt journal's directory name under `<report.dir>`.
 ///

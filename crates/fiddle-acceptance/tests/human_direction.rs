@@ -58,8 +58,8 @@
 mod support;
 
 use support::{
-    a_suspension_and_its_approval, parse_marker, Comment, World, AUTHORIZED, CONVERSATION_ISSUE,
-    FIDDLE_BOT, INVOCATION_REF, SENTINEL, STRANGER,
+    a_real_repair, a_suspension_and_its_approval, interprets, parse_marker, Comment, World,
+    AUTHORIZED, CONVERSATION_ISSUE, FIDDLE_BOT, INVOCATION_REF, SENTINEL, STRANGER,
 };
 
 // ---------------------------------------------------------------------------
@@ -1434,4 +1434,731 @@ fn the_marker_grammar_is_read_exactly_as_the_design_states_it() {
 #[allow(dead_code)]
 fn describe(comment: &Comment) -> String {
     format!("{}: {:?}", comment.id, comment.body)
+}
+
+// ---------------------------------------------------------------------------
+// The matrix: every way the answer is not a plain approval
+// ---------------------------------------------------------------------------
+
+/// One row of the matrix.
+///
+/// The reply is a function of the world rather than a value, because the eight rows
+/// differ in *which collection and which authorship* a reply arrives under — a
+/// person's comment, a bot's, an app's, an inline review comment, none — and those
+/// are different acts against the fixture rather than different strings.
+struct Row {
+    name: &'static str,
+    /// The verdict scripted for step 7, and the span the model claims to have
+    /// copied out of the reply.
+    ///
+    /// **`None` is an assertion, not an omission.** The gateway serves one reply per
+    /// connection and then drops its listener, so a row scripting no interpretation
+    /// is a row claiming the walk refuses *before the model exists* — and a walk that
+    /// reached step 7 anyway fails at the socket rather than being answered something
+    /// plausible. Five of the eight rows are that claim, and it is the one an
+    /// authorization matrix most needs: an unauthorized reply must not reach a model
+    /// that could be persuaded by it.
+    interpretation: Option<(&'static str, &'static str)>,
+    /// What the conversation says when the continuation wakes.
+    reply: fn(&World),
+    exit: i32,
+    /// Whether the pull request is out of draft afterwards — read from the forge.
+    ready: bool,
+}
+
+/// Every row asserts against the **remote**, and that is the whole design of this
+/// test.
+///
+/// A report claiming no mutation beside a pull request that is ready is exactly the
+/// failure this milestone exists to prevent, so fiddle's own account of what it did
+/// cannot be the evidence for what it did. Each row therefore reads `draft` back out
+/// of the forge's own by-number answer and counts the GraphQL calls the world was
+/// asked to answer. The exit code is asserted beside those and never instead of them
+/// — `fiddle-usp7` is the reason that distinction is written down rather than
+/// assumed, because while it stood exit 11 meant both *the transition happened* and
+/// *the conversation could not be read*.
+///
+/// # The mutation is armed on every row, including the seven that must not mutate
+///
+/// [`World::accept_the_ready_mutation`] is called unconditionally, and that is the
+/// load-bearing choice in this test. The GraphQL route has no unscripted default: a
+/// run that wrongly dispatched the transition against an unarmed world would fail
+/// inside the stub, leave `draft` true, and **pass** every assertion below while
+/// having attempted precisely the act the row forbids.
+///
+/// Armed, the world is *willing*. A wrongly dispatched mutation is answered, the stub
+/// rewrites the pull request out of draft, and the row fails on `draft` — which is
+/// the failure the milestone is about, reported as itself. "Still a draft" now means
+/// fiddle refused, rather than meaning the fixture did.
+const MATRIX: &[Row] = &[
+    Row {
+        name: "plain approval",
+        interpretation: Some(("approve", APPROVAL)),
+        reply: |world| {
+            world.post_comment(AUTHORIZED, APPROVAL);
+        },
+        exit: 0,
+        ready: true,
+    },
+    Row {
+        name: "rejection",
+        interpretation: Some(("reject", "no, drop this")),
+        reply: |world| {
+            world.post_comment(AUTHORIZED, "no, drop this");
+        },
+        // 20 and not 10: a person said no, and `Recurrence::Permanent` is the row
+        // that tells a caller there is nothing here for a repeat to get past. A
+        // rejection is the one non-approval that *concludes* the run.
+        exit: 20,
+        ready: false,
+    },
+    Row {
+        name: "unclear",
+        interpretation: Some(("unclear", "what does this change?")),
+        reply: |world| {
+            world.post_comment(AUTHORIZED, "what does this change?");
+        },
+        // 10, because the question still stands. This is the row that says a
+        // non-approval is not automatically a failure.
+        exit: 10,
+        ready: false,
+    },
+    Row {
+        name: "unauthorized actor",
+        interpretation: None,
+        reply: |world| {
+            world.post_comment(STRANGER, "approve");
+        },
+        exit: 10,
+        ready: false,
+    },
+    // The two spellings of not being a person, and **both written by `AUTHORIZED`**.
+    // That is deliberate and it is what makes the two rows mean anything: a bot reply
+    // from `STRANGER` would be declined by the allowlist, so the row would keep
+    // passing with the personhood check deleted from the product outright. Written by
+    // the nominated approver, the only thing between each of these and a mutation is
+    // its authorship.
+    Row {
+        name: "bot author",
+        interpretation: None,
+        reply: |world| {
+            world.post_bot_comment(AUTHORIZED, "approve");
+        },
+        exit: 10,
+        ready: false,
+    },
+    Row {
+        name: "app author",
+        interpretation: None,
+        reply: |world| {
+            world.post_app_comment(AUTHORIZED, "approve");
+        },
+        exit: 10,
+        ready: false,
+    },
+    Row {
+        name: "review comment only",
+        interpretation: None,
+        reply: |world| {
+            world.post_review_comment(AUTHORIZED, "approve");
+        },
+        exit: 10,
+        ready: false,
+    },
+    Row {
+        name: "no reply at all",
+        interpretation: None,
+        reply: |_| {},
+        exit: 10,
+        ready: false,
+    },
+];
+
+#[test]
+fn the_decision_matrix_mutates_only_where_it_should() {
+    // The denominator for the whole table: one row mutates and seven do not, so a
+    // product that refused everything — or accepted everything — fails here rather
+    // than satisfying a table that only ever asserted refusals.
+    assert_eq!(
+        MATRIX.iter().filter(|row| row.ready).count(),
+        1,
+        "exactly one row may mutate, or this table is a bias rather than a rule"
+    );
+    assert_eq!(MATRIX.len(), 8);
+
+    for row in MATRIX {
+        let name = row.name;
+        let mut script = a_real_repair();
+        if let Some((verdict, evidence)) = row.interpretation {
+            script.push(interprets(verdict, evidence));
+        }
+        let world = World::with_model_script(script);
+
+        let suspension = suspend(&world);
+        let pr = suspension.pull_request;
+        (row.reply)(&world);
+        world.accept_the_ready_mutation();
+
+        let run = world.fiddle([
+            "run",
+            "--capability",
+            "propose_change",
+            INVOCATION_REF,
+            "--json",
+        ]);
+
+        // The world first, and the exit code second, because the world is the claim.
+        assert_eq!(
+            world.pull_request(pr)["draft"],
+            serde_json::json!(!row.ready),
+            "{name}: the forge's own answer for pull request {pr} disagrees with this \
+             row; stdout={} stderr={}",
+            run.stdout,
+            run.stderr
+        );
+        assert_eq!(
+            world.graphql_calls(),
+            usize::from(row.ready),
+            "{name}: the number of ready transitions dispatched, counted by the world \
+             that would have answered them"
+        );
+        assert_eq!(
+            run.code,
+            Some(row.exit),
+            "{name}: stdout={} stderr={}",
+            run.stdout,
+            run.stderr
+        );
+
+        if name == "review comment only" {
+            // **The reply is where a reply would count, and it still did not.** Without
+            // this, [`FIRST_REVIEW_COMMENT`]'s value appears only in a position where
+            // any value would do — the sharpened rule exactly — because "the endpoint
+            // was not consulted" is true of a comment numbered anywhere.
+            //
+            // `select_candidates` silently skips any comment whose id is *below* the
+            // request comment's, so a review comment numbered under the question could
+            // be merged onto the conversation by a future defect and still change
+            // nothing. These two assertions say it is numbered above the question and
+            // absent from the conversation: a comment that *would* be a candidate, and
+            // is not one, which is what makes the negative above a property rather
+            // than an accident of numbering.
+            let question = world.the_only_request_comment();
+            assert!(
+                support::FIRST_REVIEW_COMMENT > question.id,
+                "the review comment must be numbered above the question ({} vs {}), or \
+                 a defect merging the collection would change nothing and this row \
+                 could not fail",
+                support::FIRST_REVIEW_COMMENT,
+                question.id
+            );
+            assert!(
+                !world
+                    .conversation()
+                    .iter()
+                    .any(|comment| comment.body == "approve"),
+                "{name}: the review comment must not be on the conversation: {:?}",
+                world.conversation()
+            );
+
+            // **Not merely ignored — never consulted.** An approval sitting in the
+            // review-comment collection must be unreachable rather than filtered, so
+            // the assertion is about the request that was not made.
+            //
+            // With its denominator, because "found nothing" and "examined nothing"
+            // must not look alike: the conversation's own endpoint is asserted to be
+            // among the paths in the same breath, so a recorder that recorded nothing
+            // fails here instead of making this negative pass for free.
+            let paths = world.requested_paths();
+            assert!(
+                paths
+                    .iter()
+                    .any(|path| path.contains(&format!("/issues/{pr}/comments"))),
+                "{name}: the conversation must have been read, or this negative \
+                 examined nothing; {} paths recorded: {paths:?}",
+                paths.len()
+            );
+            assert!(
+                !paths
+                    .iter()
+                    .any(|path| path.contains(&format!("/pulls/{pr}/comments"))),
+                "{name}: the review-comment endpoint was consulted; {} paths \
+                 recorded: {paths:?}",
+                paths.len()
+            );
+        }
+    }
+}
+
+/// And the converse of the last-reply rule, so it is demonstrated as a rule rather
+/// than as a bias toward refusing.
+///
+/// The two halves are one test because neither is worth much alone. *Approve then
+/// refuse does not mutate* is satisfied by a product that never mutates; *refuse then
+/// approve does mutate* is satisfied by one that always does. Only the pair says the
+/// **last** authorized reply decides, and the two runs are identical but for the order
+/// of two comments.
+///
+/// Two worlds and not one, because a walk is spent when it concludes: the approving
+/// half marks the pull request ready, and a second walk against the same world would
+/// be a different scenario — the one `already_ready` answers.
+///
+/// # The evidence span is what pins *which* reply was read, and it was worth a defect
+///
+/// `interpret::decide` refuses a model that quoted a span the reply it was handed does
+/// not contain. So scripting the verdict against the **retraction's** words is not
+/// decoration: a walk that had chosen the earlier approval instead would be handed
+/// `"yes, go ahead"`, would not find `"wait, no — hold off"` inside it, and would come
+/// back `Unclear` — a different exit and no mutation for an entirely different reason.
+/// The two comments therefore cannot be silently swapped underneath this test.
+///
+/// This was written the wrong way first, and the wrong way passed nothing:
+/// [`a_suspension_and_its_approval`] always scripts **approve** and takes only the
+/// span, so handing it the retraction's words scripted *"approve, quoting the
+/// retraction"* — and the run duly marked the pull request ready. The failure was the
+/// correct one. It is recorded here because the helper's name reads like it takes a
+/// verdict and does not.
+#[test]
+fn the_last_authorized_reply_decides_in_both_directions() {
+    // Approve, then change your mind. The verdict is scripted explicitly rather than
+    // through `a_suspension_and_its_approval`, which only ever approves.
+    let mut retracting = a_real_repair();
+    retracting.push(interprets("reject", "wait, no — hold off"));
+    let held_off = World::with_model_script(retracting);
+    let first = suspend(&held_off);
+    held_off.post_comment(AUTHORIZED, APPROVAL);
+    held_off.post_comment(AUTHORIZED, "wait, no — hold off");
+    held_off.accept_the_ready_mutation();
+    let stopped = held_off.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        held_off.pull_request(first.pull_request)["draft"],
+        serde_json::json!(true),
+        "the last authorized reply decides, and it said no: stdout={} stderr={}",
+        stopped.stdout,
+        stopped.stderr
+    );
+    assert_eq!(
+        held_off.graphql_calls(),
+        0,
+        "an approval a person withdrew before the run woke is not spent"
+    );
+    // 20, the rejection row: `Recurrence::Permanent`, because a person said no and
+    // there is nothing here for a repeat to get past.
+    assert_eq!(
+        stopped.code,
+        Some(20),
+        "stdout={} stderr={}",
+        stopped.stdout,
+        stopped.stderr
+    );
+
+    // Refuse, then think better of it.
+    let went_ahead =
+        World::with_model_script(a_suspension_and_its_approval("actually yes, go ahead"));
+    let second = suspend(&went_ahead);
+    went_ahead.post_comment(AUTHORIZED, "not like that");
+    went_ahead.post_comment(AUTHORIZED, "actually yes, go ahead");
+    went_ahead.accept_the_ready_mutation();
+    let proceeded = went_ahead.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        proceeded.code,
+        Some(0),
+        "stdout={} stderr={}",
+        proceeded.stdout,
+        proceeded.stderr
+    );
+    assert_eq!(
+        went_ahead.pull_request(second.pull_request)["draft"],
+        serde_json::json!(false),
+        "a refusal a person reversed does not stand in the way"
+    );
+    assert_eq!(went_ahead.graphql_calls(), 1);
+}
+
+/// The head moved, so the effect the approval named no longer exists — and the
+/// approval is not rejected, it is **never seen**.
+///
+/// # What the run really does, measured rather than assumed
+///
+/// The bean's note says "refused at step 3 on identity", and the walk is both more
+/// interesting than that and not a refusal at all. Measured: the run exits **10**
+/// having published a *second question*, about the head that now exists.
+///
+/// The mechanism is the identity derivation. The gated effect's target is
+/// `{repo}#{pr}@{head}` and the request id is derived over it, so a run reading a
+/// different head derives a **different request id**. `PublishDecisionRequest`'s own
+/// `inspect` then finds no comment on the conversation carrying *that* marker,
+/// answers `None`, and the capability takes the first walk rather than the
+/// continuation: it asks. No step of the validation order runs at all, so neither
+/// `RequestAbsent` (step 2) nor `HeadMoved` (step 6) is reached.
+///
+/// **This is what the test's name claims and a stronger version of it.** An approval
+/// for a superseded head is not weighed and declined; it is unrecognisable as an
+/// answer to any question this run knows how to ask, and the run's response is to ask
+/// a fresh one. The two questions sit on the conversation naming two request ids and
+/// two heads, and nothing was spent on either.
+///
+/// The old attempt is not re-run — the branch and the pull request already exist, so
+/// `tools:0` — which is why the model script needs no second repair.
+#[test]
+fn an_approval_for_a_head_that_has_moved_is_unrecognisable_not_merely_rejected() {
+    let world = World::with_model_script(a_suspension_and_its_approval(APPROVAL));
+    let suspension = suspend(&world);
+    world.post_comment(AUTHORIZED, APPROVAL);
+    world.accept_the_ready_mutation();
+
+    let moved_to = "deadbeef".repeat(5);
+    let was = world.move_pull_request_head(suspension.pull_request, &moved_to);
+    assert_eq!(
+        was, suspension.binding.head_sha,
+        "the revision that moved must be the one the question was asked about, or \
+         this scenario moved something else"
+    );
+
+    let run = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+
+    // The world, first and always: the transition did not happen and nothing was
+    // spent trying, against a world that was armed to accept it.
+    assert_eq!(
+        world.pull_request(suspension.pull_request)["draft"],
+        serde_json::json!(true),
+        "stdout={} stderr={}",
+        run.stdout,
+        run.stderr
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        0,
+        "an approval naming a head that has gone is not spent on the head that \
+         replaced it"
+    );
+    // 10: it is waiting again, on a question it has just asked. Not 20, because
+    // nothing failed, and not 0.
+    assert_eq!(
+        run.code,
+        Some(10),
+        "stdout={} stderr={}",
+        run.stdout,
+        run.stderr
+    );
+
+    // **Two questions, naming two requests and two heads.** This is the assertion the
+    // scenario is really about, and a bare "the pull request is still a draft" would
+    // have been satisfied by a run that did nothing at all.
+    let questions: Vec<(String, String)> = world
+        .conversation()
+        .iter()
+        .filter(|comment| comment.is_bot)
+        .map(|comment| {
+            let binding = parse_marker(&comment.body).expect("a question carries its marker");
+            (binding.request, binding.head_sha)
+        })
+        .collect();
+    assert_eq!(
+        questions,
+        [
+            (
+                suspension.binding.request.clone(),
+                suspension.binding.head_sha.clone()
+            ),
+            (questions[1].0.clone(), moved_to.clone()),
+        ],
+        "the first question stands, and a second names the head that now exists"
+    );
+    assert_ne!(
+        questions[0].0, questions[1].0,
+        "the two questions must name different requests: a run that re-asked under \
+         the *same* request id would be the duplicate a continuation exists not to \
+         create"
+    );
+    // And the approval a person already wrote answers neither of them as far as this
+    // run is concerned: it was never interpreted, which the untouched model script
+    // proves — the script holds one interpretation reply and the run consumed none,
+    // so a walk that had reached step 7 would have found the gateway still holding
+    // it and this assertion could not distinguish that. The `draft` and
+    // `graphql_calls` assertions above are what carry the claim; this is the
+    // conversation a person is left looking at.
+    assert_eq!(
+        world.posted_comment_bodies().len(),
+        2,
+        "one question from the suspension and one from this run: {:?}",
+        world.posted_comment_bodies()
+    );
+}
+
+/// The edited approval. A reply that was rewritten after it was listed is not the
+/// reply that was listed, and the run refuses rather than acting on either version.
+///
+/// This is the one scenario in the file that turns on the two reads of the
+/// conversation **disagreeing**, which is what step 5 exists for and what
+/// [`World::edit_comment_on_next_read`] is the only way to say. The model is never
+/// reached: step 5 precedes step 7, so the script carries no interpretation and a walk
+/// that read this approval anyway fails at the socket.
+#[test]
+fn an_approval_edited_between_the_listing_and_the_re_read_is_refused() {
+    let world = World::with_model_script(a_real_repair());
+    let suspension = suspend(&world);
+    let id = world.post_comment(AUTHORIZED, APPROVAL);
+    world.edit_comment_on_next_read(id, "actually, no");
+    world.accept_the_ready_mutation();
+
+    let run = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        world.pull_request(suspension.pull_request)["draft"],
+        serde_json::json!(true),
+        "stdout={} stderr={}",
+        run.stdout,
+        run.stderr
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        0,
+        "neither version of an edited reply is one to act on"
+    );
+    // 11 and not 20: `DecisionError::ReplyEdited` is `Recurrence::Correctable`,
+    // because an edit is a race a later walk re-reads past — the reply is whatever it
+    // settles at, and this walk simply declines to act on a text that moved under it.
+    assert_eq!(
+        run.code,
+        Some(11),
+        "stdout={} stderr={}",
+        run.stdout,
+        run.stderr
+    );
+    // Neither version — said as an assertion rather than as a sentence. The listing
+    // still carries the approval, so a walk that preferred the listing to the re-read
+    // would have found a perfectly good approval to act on, and the count above is
+    // what says it did not.
+    assert_eq!(
+        world
+            .conversation()
+            .iter()
+            .filter(|comment| comment.id == id && comment.body == APPROVAL)
+            .count(),
+        1,
+        "the listing must still offer the approval, or this refusal had nothing to \
+         refuse: {:?}",
+        world.conversation()
+    );
+}
+
+/// An edited *request* is a record that is not the record.
+///
+/// # Two tamperings, because they are refused by two different rules
+///
+/// A reader would call both of these "somebody edited fiddle's question", and the
+/// product tells them apart:
+///
+/// - **the marker rewritten, both reads agreeing.** Timestamps stay equal, so there is
+///   no evidence of an edit at all — only a payload digest that disagrees with what
+///   this run rebuilds. Refused at step 8 as `ForeignPayload`, **after** the model has
+///   read the approval. That is the sharp case: the run held a genuine approval from
+///   the nominated approver and refused anyway, on its own recomputation.
+/// - **the question edited between the two reads.** Refused at step 5 as
+///   `RequestEdited`, on the timestamp, without the rewritten bytes being weighed at
+///   all — fiddle wrote that comment and has no path that edits one.
+///
+/// Neither is worked around. Nothing recomputes the marker from the conversation,
+/// chooses between the two readings, or falls back to the earlier observation.
+#[test]
+fn an_edited_request_comment_is_refused_rather_than_recomputed_around() {
+    // The marker rewritten, where both reads agree and only the arithmetic objects.
+    let rewritten = World::with_model_script(a_suspension_and_its_approval(APPROVAL));
+    let suspension = suspend(&rewritten);
+    let question = rewritten.the_only_request_comment();
+    let tampered = question.body.replace(
+        &format!("payload={}", suspension.binding.payload),
+        &format!("payload={}", "0".repeat(16)),
+    );
+    assert_ne!(
+        tampered, question.body,
+        "the rewrite must have changed the marker, or nothing is being tested"
+    );
+    rewritten.rewrite_the_published_question(&tampered);
+    // Read back through the listing, so the tampering is a fact about the world this
+    // run will read rather than about a string this test built.
+    assert_eq!(
+        parse_marker(&rewritten.the_only_request_comment().body)
+            .expect("the tampered marker still parses; it is the digest that is wrong")
+            .payload,
+        "0".repeat(16),
+        "the conversation must now carry the rewritten payload"
+    );
+    rewritten.post_comment(AUTHORIZED, APPROVAL);
+    rewritten.accept_the_ready_mutation();
+
+    let refused = rewritten.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        rewritten.pull_request(suspension.pull_request)["draft"],
+        serde_json::json!(true),
+        "a marker somebody rewrote is the one thing the design must not trust: \
+         stdout={} stderr={}",
+        refused.stdout,
+        refused.stderr
+    );
+    assert_eq!(rewritten.graphql_calls(), 0);
+    // 20: `ForeignPayload` is `Recurrence::Permanent`. Nothing a repeat does re-derives
+    // a digest that agrees with a marker somebody rewrote, so a caller is told to stop
+    // rather than to try again. **And the model was reached first** — step 8 follows
+    // step 7 — so this run held an interpreted approval from the nominated approver
+    // and refused on its own arithmetic anyway.
+    assert_eq!(
+        refused.code,
+        Some(20),
+        "stdout={} stderr={}",
+        refused.stdout,
+        refused.stderr
+    );
+
+    // The question edited between the two reads, refused on the timestamp instead.
+    let edited = World::with_model_script(a_real_repair());
+    let second = suspend(&edited);
+    let question = edited.the_only_request_comment();
+    edited.edit_comment_on_next_read(question.id, &question.body.replace("May", "Must"));
+    edited.post_comment(AUTHORIZED, APPROVAL);
+    edited.accept_the_ready_mutation();
+
+    let refused = edited.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        edited.pull_request(second.pull_request)["draft"],
+        serde_json::json!(true),
+        "fiddle has no path that edits its own question, so an edited one is \
+         somebody else's: stdout={} stderr={}",
+        refused.stdout,
+        refused.stderr
+    );
+    assert_eq!(edited.graphql_calls(), 0);
+    // 20 as well, by a different route: `RequestEdited` is `Recurrence::Permanent`,
+    // because the timestamps of an edited comment never return to agreeing. The two
+    // tamperings above therefore share an exit code and share no mechanism, which is
+    // exactly why neither would have been proved by the other.
+    assert_eq!(
+        refused.code,
+        Some(20),
+        "stdout={} stderr={}",
+        refused.stdout,
+        refused.stderr
+    );
+}
+
+/// A second comment naming one request is a state to report, never a set to pick
+/// from.
+///
+/// Reached through the binary because the shape a person could actually create —
+/// copying fiddle's own comment out of the conversation and pasting it back — is a
+/// **body**, not a struct. And it is posted as a *person*, which is what makes the
+/// scenario sharp: the duplicate detection cannot be a filter on authorship, because
+/// this copy is not a bot's.
+///
+/// # Which of the two duplicate guards fires, and how the exit code says so
+///
+/// There are two, and they are not redundant: `PublishDecisionRequest::inspect`
+/// counts the comments carrying this run's marker before the continuation begins, and
+/// step 2 of the validation order counts them again while choosing candidate replies.
+/// One guards publishing a second question, the other guards reading a reply relative
+/// to two of them.
+///
+/// **The exit code is what distinguishes them, and it is 11.** Step 2's
+/// `DecisionError::DuplicateRequest` is `Recurrence::Permanent` — exit 20 — so a run
+/// refusing there would say 20. Exit 11 says the refusal came from `inspect`'s
+/// `GhError::Duplicate` instead, as `Correctable`: a person deleting the copy makes
+/// the next attempt succeed. So this scenario pins the first guard a continuation
+/// meets, and the code is the evidence for *which* rather than decoration on it.
+#[test]
+fn a_copied_request_comment_stops_the_run_rather_than_being_chosen_between() {
+    let world = World::with_model_script(a_real_repair());
+    let suspension = suspend(&world);
+    let question = world.the_only_request_comment();
+    let copy = world.post_comment(AUTHORIZED, &question.body);
+    world.post_comment(AUTHORIZED, APPROVAL);
+    world.accept_the_ready_mutation();
+
+    // The denominator: two comments really do name the one request now, and the copy
+    // is not a bot's. A world holding one would make the refusal below about
+    // something else entirely.
+    let naming = world.comments_naming(&suspension.binding.request);
+    assert_eq!(
+        naming.len(),
+        2,
+        "two comments must name the request: {naming:?}"
+    );
+    assert!(
+        naming
+            .iter()
+            .any(|comment| comment.id == copy && !comment.is_bot),
+        "the copy must be a person's, or this tests a bot filter instead: {naming:?}"
+    );
+
+    let run = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        world.pull_request(suspension.pull_request)["draft"],
+        serde_json::json!(true),
+        "stdout={} stderr={}",
+        run.stdout,
+        run.stderr
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        0,
+        "there is no principled way to pick between two questions, so nothing is \
+         spent on either"
+    );
+    // 11, and the number is load-bearing here: see this test's documentation for why
+    // it is what says the operation's own `inspect` refused rather than step 2.
+    assert_eq!(
+        run.code,
+        Some(11),
+        "stdout={} stderr={}",
+        run.stdout,
+        run.stderr
+    );
+    // And no third comment was published to resolve the confusion.
+    assert_eq!(
+        world.comments_naming(&suspension.binding.request).len(),
+        2,
+        "the run must not have added a question of its own: {:?}",
+        world.comments_naming(&suspension.binding.request)
+    );
 }
