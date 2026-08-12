@@ -240,6 +240,49 @@ impl World {
         self.dir.path().join("workspaces")
     }
 
+    /// Where a change set this run records is written.
+    ///
+    /// Not created here, and deliberately: `write_atomically` creates the
+    /// directory it writes into, so a fixture that pre-made `changes/` would make
+    /// "the capability wrote nothing" and "the capability could not write"
+    /// indistinguishable from the outside.
+    fn stub_root(&self) -> PathBuf {
+        self.dir.path().join("stub-state")
+    }
+
+    /// The correlation marker recorded for `work_id`, or `None` when nothing wrote
+    /// one.
+    ///
+    /// Read by re-parsing the file rather than through `StubChangePort`, because
+    /// what is being asserted here is that *this* capability wrote the file the
+    /// next invocation's assessment goes looking for — at that path, under that
+    /// name. A port would answer the same for a file written anywhere it happened
+    /// to look.
+    fn marker(&self, work_id: &str) -> Option<String> {
+        let path = self.stub_root().join(format!("changes/{work_id}.json"));
+        let text = std::fs::read_to_string(path).ok()?;
+        let value: Value = serde_json::from_str(&text).unwrap();
+        value["marker"].as_str().map(str::to_string)
+    }
+
+    /// Every change set file this world holds, by name, sorted.
+    ///
+    /// The denominator for [`World::marker`]: a marker read back at one path says
+    /// nothing about whether a second was written under another work item's name,
+    /// and "one change set, and it is this work item's" is the claim.
+    fn change_sets(&self) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(self.stub_root().join("changes"))
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.file_name().to_string_lossy().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
     /// The tree the push publishes, derived the way the capability derives it —
     /// through the product's own function, so this fixture cannot agree with a
     /// capability that computed a different path.
@@ -640,6 +683,7 @@ fn config(world: &World, check: WorkspaceCommand) -> ProposeConfig {
         project: PROJECT.to_string(),
         fixture: world.fixture.clone(),
         workspace_root: world.workspace_root(),
+        stub_root: world.stub_root(),
         check,
         budget: AgentBudget {
             max_turns: 8,
@@ -1217,21 +1261,51 @@ async fn a_context_publishing_from_another_tree_is_refused_before_anything_runs(
     );
 }
 
-/// The capability names no credential and constructs no client.
+/// The capability names no credential, constructs no client, and has exactly one
+/// place it can account for work from.
 ///
-/// A source-level assertion because that is the level the property is at: the type
+/// A source-level assertion because that is the level both halves are at: the type
 /// system cannot express "names no secret", and the alternative — asserting that
 /// no token *reached* GitHub — would pass on a capability that held one and
 /// happened not to use it this time. `publish_change` is asserted the same way in
-/// `effect_protocol.rs`, and this is the same list.
+/// `effect_protocol.rs`, and the credential list is the same list.
 ///
-/// The last pair is this capability's own: it writes **no change set**, on any
-/// path. A correlation marker says *this invocation accounts for this work*, and
-/// the next invocation completes on it without executing — so a marker written by
-/// a run that is waiting for an answer would stop the very process that was
-/// supposed to read one.
+/// # Which half is which, and why they are no longer the same prohibition
+///
+/// This test used to be `the_capability_holds_no_credential_and_accounts_for_no_
+/// work`, and its third loop asserted that `ChangeSetState`, `write_atomically`
+/// and `correlation_key` appear in `propose.rs` **on no path at all**. `fiddle-usp7`
+/// falsified that deliberately, and the reason the two halves part company is
+/// worth stating rather than leaving to the diff:
+///
+/// - **The credential half is absolute, and stays absolute.** There is no walk,
+///   no verdict and no world in which this capability should name a secret: the
+///   `gh` and the `git` that carry one were resolved before the executor was built
+///   and live behind it, and a capability that could name one has already lost the
+///   property whatever it then does with it. So the assertion is *never*, and the
+///   right shape for "never" is a search for the string.
+///
+/// - **The accounting half was never absolute — it was a claim about *which*
+///   paths**, and asserting it as a string search was what made it look absolute.
+///   A marker says *this invocation accounts for this work*, and the next
+///   invocation's assessment completes on it without executing. A run that is
+///   **waiting for an answer** has not earned that, and a marker written there
+///   would stop the very process that was supposed to read the answer — that is
+///   the real prohibition, and it is unchanged. A continuation that **completed
+///   the gated transition** has earned it exactly as `publish_change` has, and
+///   withholding it made the run report `Retryable` over work that was done: one
+///   exit code for two outcomes, and a caller retrying on it never terminated.
+///
+/// So the second half is now asserted as what it always meant: `record_change_set`
+/// has **one call site**. A second one is how the prohibition would actually be
+/// lost — a write added to `ask`, or to an `awaiting` arm, would be a suspended run
+/// accounting for itself — and a count is what notices that, where a search for the
+/// type name can no longer notice anything.
+///
+/// The call site is counted through `self.record_change_set(`, which is a form no
+/// doc comment in the file uses, so the number is the code's and not the prose's.
 #[test]
-fn the_capability_holds_no_credential_and_accounts_for_no_work() {
+fn the_capability_holds_no_credential_and_accounts_for_work_in_one_place() {
     let source = include_str!("../src/capability/propose.rs");
     for named in ["GH_TOKEN", "FIDDLE_GITHUB_TOKEN", "token"] {
         assert!(
@@ -1245,12 +1319,17 @@ fn the_capability_holds_no_credential_and_accounts_for_no_work() {
             "the capability constructs no client, and it constructs `{constructed}`"
         );
     }
-    for written in ["ChangeSetState", "write_atomically", "correlation_key"] {
-        assert!(
-            !source.contains(written),
-            "a suspended run accounts for no work, and this names `{written}`"
-        );
-    }
+    assert_eq!(
+        source.matches("self.record_change_set(").count(),
+        1,
+        "accounting has one call site, on the arm that concluded the transition; \
+         a second is a path claiming work it has not completed"
+    );
+    assert_eq!(
+        source.matches("fn record_change_set(").count(),
+        1,
+        "and one spelling, so the count above is a count of everything that writes"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1720,6 +1799,17 @@ async fn answered(world: &World, author: u64, reply: &str, document: &str) -> An
 /// twice from two doors: the `apply` the executor announced, and the count of
 /// GraphQL calls the forge was asked for. A capability that performed the
 /// transition some other way would still be visible in the second.
+///
+/// # And the change set tracks the mutation, verdict for verdict
+///
+/// The last assertion is `fiddle-usp7`'s, and it is here rather than in a fifth
+/// test because it is the same claim about the same four worlds: *accounting
+/// follows completing*. Approve completes the transition and records a marker;
+/// reject, redirect and unclear complete nothing and must record none — a marker on
+/// any of those three would make the next invocation's assessment derive
+/// `Complete` over a question still standing, and the process that was supposed to
+/// read the answer would never run. One `should_mutate` drives all four assertions
+/// precisely so the two can never be given different answers by accident.
 #[tokio::test]
 async fn only_an_approval_marks_the_pull_request_ready() {
     for (reply, document, should_mutate) in [
@@ -1754,6 +1844,12 @@ async fn only_an_approval_marks_the_pull_request_ready() {
         // Every one of them read the reply, which is what makes the differences
         // above differences of verdict rather than of whether anybody looked.
         assert_eq!(answered.model.requests().len(), 1, "{reply:?}");
+        assert_eq!(
+            world.marker(WORK_ID).is_some(),
+            should_mutate,
+            "{reply:?} left change sets {:?}",
+            world.change_sets()
+        );
     }
 }
 
@@ -1820,6 +1916,66 @@ async fn the_transition_is_performed_through_the_decided_entry_point() {
         ["ensure_pull_request_ready"],
         "a continuation's receipts are its own: {:?}",
         answered.receipts
+    );
+}
+
+/// **A continuation that completed the work accounts for it.**
+///
+/// The change set is what the *next* invocation's assessment reads, and until this
+/// was written the approve path performed the one gated transition in this build
+/// and recorded nothing — so `derive_next` re-derived `NotStarted` from a world
+/// whose work was done, the run reported `Retryable`, and a process that had
+/// mutated nothing was told to try again. `fiddle-usp7` carries the measurement.
+///
+/// # What each assertion is here to rule out, because a marker is easy to assert
+/// # vacuously
+///
+/// - **The denominator.** The suspending run wrote no change set, and that is
+///   asserted before the continuation runs. Without it "the continuation wrote
+///   one" and "one was there all along" are the same observation, and the first
+///   run is the process most likely to have written one by mistake.
+/// - **The value.** Compared against [`correlation_key`] recomputed here from this
+///   run's two canonical inputs, so a capability that wrote `Some(anything)` fails.
+///   The second comparison is what makes the first non-vacuous: the same function
+///   over a *different* invocation reference answers differently, so the equality
+///   above is a claim about this run's identity rather than about a constant.
+/// - **The name.** Read at `changes/{WORK_ID}.json` and nowhere else, and the
+///   directory listing is asserted whole — a change set filed under some other
+///   work item's name is an invocation accounting for work it was not asked about,
+///   and a marker read at one path cannot see it.
+#[tokio::test]
+async fn the_approve_path_accounts_for_the_work_it_completed() {
+    let world = World::fresh();
+    let suspension = suspended(&world).await;
+    // The denominator. A run that is waiting for an answer must account for
+    // nothing, and this is the world the continuation starts from.
+    assert_eq!(
+        world.marker(WORK_ID),
+        None,
+        "a suspended run has not earned a marker: {:?}",
+        world.change_sets()
+    );
+
+    world.answered_by(suspension.comment, &[(APPROVER, YES)]);
+    world.script_graphql(0, 200, readied());
+    let model = MockCompletionModel::new([MockTurn::text(APPROVES)]);
+    let (outcome, _, _) = continue_in(&world, model).await;
+    outcome.expect("an approved transition completes");
+
+    assert_eq!(
+        world.marker(WORK_ID).as_deref(),
+        Some(fiddle_core::correlation_key(PROJECT, INVOCATION_REF).as_str()),
+        "the marker is this run's own, derived from its two canonical inputs"
+    );
+    assert_ne!(
+        world.marker(WORK_ID).as_deref(),
+        Some(fiddle_core::correlation_key(PROJECT, "beans:some-other-run").as_str()),
+        "and it is a function of them: another run's inputs give another marker"
+    );
+    assert_eq!(
+        world.change_sets(),
+        [format!("{WORK_ID}.json")],
+        "one change set, filed under the work item the run was asked about"
     );
 }
 
@@ -2155,28 +2311,62 @@ async fn the_second_payload_comparison_catches_what_the_first_could_not_see() {
     assert_eq!(world.graphql_calls(), 1, "one approval, one mutation");
 }
 
-/// A repeat of an invocation whose transition already landed completes, and buys
-/// no second mutation.
+/// A repeat of an invocation whose transition already landed completes, accounts
+/// for the same work, and buys no second mutation.
 ///
-/// This capability records no change set on any path, so nothing stops a later
-/// invocation of the same run from walking the whole thing again: it finds its own
-/// pull request, derives the same question, finds the same comment — and the
-/// validation order then refuses, because the pull request it was asked about is
-/// no longer a draft. The honest answer at that point is not a failure. The gated
-/// effect's postcondition holds, and the executor's step 3 is what says so: it
-/// inspects before it combines policy, so an already-ready pull request settles
-/// there and no decision is needed to *observe* a completed effect. `ready.rs`
-/// documents that ordering, and `an_already_ready_pull_request_is_the_postcondition`
-/// pins it.
+/// # Why this walk still exists once the marker is written
+///
+/// The capability is driven directly here, so nothing consults the change set on
+/// the way in — which is what keeps this a test of the *capability's* walk. Through
+/// `orchestration::run` the marker `fiddle-usp7` added normally makes this
+/// unreachable: the pre-execution derivation reads it, answers `Complete`, and the
+/// capability is never granted at all. What reaches this path is the residual case
+/// — a change set lost, a `[stub] root` moved, or a pull request somebody took out
+/// of draft by hand — and the walk has to be right there too.
+///
+/// So the invocation walks the whole thing again: it finds its own pull request,
+/// derives the same question, finds the same comment — and the validation order
+/// then refuses, because the pull request it was asked about is no longer a draft.
+/// The honest answer at that point is not a failure. The gated effect's
+/// postcondition holds, and the executor's step 3 is what says so: it inspects
+/// before it combines policy, so an already-ready pull request settles there and no
+/// decision is needed to *observe* a completed effect. `ready.rs` documents that
+/// ordering, and `an_already_ready_pull_request_is_the_postcondition` pins it.
 ///
 /// So the run completes on the transition that really happened, and the assertion
 /// that it performed nothing is the GraphQL count: still one, from the invocation
 /// that had the approval.
+///
+/// # And it accounts for the work, which is what stops the residual case looping
+///
+/// Recording the marker only where the transition is *performed* would leave this
+/// invocation completing with the work unaccounted for, the run reporting
+/// `Retryable`, and a caller retrying on 11 arriving back here for ever — the same
+/// livelock `fiddle-usp7` fixed, surviving in the one case that can still reach
+/// this code. The marker is asserted to be the same one the approving invocation
+/// wrote, because it is the same run's: `correlation_key` is a function of the
+/// project and the invocation reference, and a second value here would mean the
+/// two invocations were accounting for different work.
 #[tokio::test]
 async fn a_second_invocation_after_an_approval_completes_without_a_second_mutation() {
     let world = World::fresh();
     let first = answered(&world, APPROVER, YES, APPROVES).await;
     first.outcome.expect("the approved transition landed");
+    let accounted = world
+        .marker(WORK_ID)
+        .expect("the approving invocation accounted for its work");
+
+    // The residual case this walk is now about: the change set is gone, so nothing
+    // would stop a repeat even through the orchestration. Removed rather than left
+    // in place, because with it there the walk below would still run here — the
+    // capability is driven directly — and a reader would be left thinking this path
+    // is what an ordinary repeat takes.
+    std::fs::remove_file(world.stub_root().join(format!("changes/{WORK_ID}.json"))).unwrap();
+    assert_eq!(
+        world.marker(WORK_ID),
+        None,
+        "the denominator for the marker below"
+    );
 
     let model = MockCompletionModel::new([MockTurn::text(APPROVES)]);
     let (outcome, receipts, _) = continue_in(&world, model.clone()).await;
@@ -2209,6 +2399,12 @@ async fn a_second_invocation_after_an_approval_completes_without_a_second_mutati
     assert!(
         receipts.contains(&EvidenceRef("tools:0".to_string())),
         "{receipts:?}"
+    );
+    assert_eq!(
+        world.marker(WORK_ID).as_deref(),
+        Some(accounted.as_str()),
+        "it accounts for the work it found already done, under the same marker the \
+         invocation that performed the transition wrote"
     );
 }
 

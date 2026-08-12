@@ -106,33 +106,43 @@
 //! anywhere other than the derived path, so the agreement is checked rather than
 //! assumed.
 //!
-//! # No change set is recorded, on any path this capability has
+//! # A change set is recorded on the one arm that concluded, and on no other
 //!
 //! A correlation marker says *this invocation accounts for this work*, and the
 //! next invocation's assessment completes on it without executing. A suspended
 //! run has not earned that: the work is a question nobody has answered, and a
-//! marker written here would make the very process that was supposed to read the
+//! marker written there would make the very process that was supposed to read the
 //! answer derive [`NextAction::Complete`](fiddle_core::NextAction) and never run.
+//! That is the prohibition, it is about *which* arm rather than about the file,
+//! and it has not moved.
 //!
-//! That was once the whole of it, and the sentence that followed said the marker
-//! belonged after the transition a person approved — *the continuation's business*.
-//! The continuation is now written and **still records nothing**, so the heading
-//! above remains literally true and its reason has changed. Two things are worth
-//! saying rather than leaving the old sentence to imply something false:
+//! What has moved is the other side of it. This capability once recorded nothing
+//! **on any path**, including the path on which a person's approval had been read
+//! and the transition performed. That was not a design: it was
+//! `the_capability_holds_no_credential_and_accounts_for_no_work` asserting the
+//! file named none of the machinery, held in place because a converged sibling's
+//! evaluation had passed the property. The debt is paid — `fiddle-usp7` — and what
+//! it cost while it stood is worth recording, because the second cost is the one
+//! nobody predicted:
 //!
-//! - **What replaces it.** [`super::publish`] writes one when its effects
-//!   complete, in its own `record_change_set`, and the approve path here has the
-//!   same claim to one. It is not written because
-//!   `the_capability_holds_no_credential_and_accounts_for_no_work` asserts this
-//!   file names none of that machinery **on any path**, and that is a property
-//!   another bean's evaluation already passed. Making it false as a side effect of
-//!   this one would leave that bean converged on something no longer true. It is
-//!   debt with a bean, not an oversight.
-//! - **Why the absence is survivable.** Without a marker, a later invocation of a
-//!   run whose transition already landed walks the whole thing again. It completes
-//!   rather than failing; `ProposeChange::already_ready` is where that is arranged
-//!   and argued.
+//! - **A caller retrying never terminated.** The capability completed, the
+//!   transition landed exactly once, and the post-execution re-derivation then
+//!   found the work unaccounted for and concluded
+//!   [`RunOutcome::Retryable`](fiddle_core::RunOutcome) — exit 11, from a
+//!   process that had mutated nothing.
+//! - **Exit 11 meant two things at once, and that silently weakened every test
+//!   written after it.** It was what a *successful* continuation earned, and also
+//!   what a continuation that refused at step 5 earned, since an unreadable
+//!   comment is an adapter failure and adapter failures are retryable. A test
+//!   asserting the code and not the effect could not tell *the transition
+//!   happened* from *the conversation could not be read* — measured, not reasoned:
+//!   three of `fiddle-565u`'s inversions over the by-id read came back green
+//!   against an acceptance test that asserted only the number.
+//!
+//! [`ProposeChange::walk`] is the one place the write happens and states which two
+//! arms reach it; [`ProposeChange::record_change_set`] is what it writes.
 
+use super::stub::write_atomically;
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::{attempt, AgentBudget, ToolHost, ToolReceipts};
 use crate::effect::{
@@ -148,9 +158,10 @@ use crate::human::validate::{resolve, DecisionError, DecisionTrace, DecisionWalk
 use crate::human::{InteractionRef, PublishDecisionRequest};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspacePath};
 use fiddle_core::{
-    decision_request_id, effect_id, payload_hash, AttemptId, CapabilityId, DecisionBinding,
-    EffectKind, EvidenceRef, HumanDecisionRequest, InterpretedHumanDecision, Observation,
-    ProposedEffect, Publication, Published, ReviewState, SourceRef, WorkRef,
+    correlation_key, decision_request_id, effect_id, payload_hash, AttemptId, CapabilityId,
+    ChangeSetState, DecisionBinding, EffectKind, EvidenceRef, HumanDecisionRequest,
+    InterpretedHumanDecision, Observation, ProposedEffect, Publication, Published, ReviewState,
+    SourceRef, WorkRef,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -281,6 +292,15 @@ pub struct ProposeConfig {
     /// Where the per-run worktree is created. The path itself is
     /// [`attempt_worktree`]'s to derive.
     pub workspace_root: PathBuf,
+
+    /// Where the change set a concluded continuation records is written.
+    ///
+    /// The same field [`PublishConfig`](super::PublishConfig) and
+    /// [`RepairConfig`](super::RepairConfig) carry, resolved from the same
+    /// `[stub] root` document key, because the file is read by one reader that
+    /// does not know which capability wrote it — see
+    /// [`ProposeChange::record_change_set`].
+    pub stub_root: PathBuf,
 
     /// The check that decides whether this attempt earned anything.
     ///
@@ -1111,11 +1131,29 @@ where
     ///
     /// [`DecisionError::AlreadyReady`] is a refusal of the *validation order* —
     /// there is no decision left to establish — and it is not a failure of the
-    /// run. This capability records no change set on any path, so a later
-    /// invocation of the same run walks the whole thing again: it finds its own
-    /// pull request, derives the same question, finds the same comment, and the
-    /// walk then refuses because the object is no longer a draft. Reporting that
-    /// as an error would make a completed run fail on its next invocation.
+    /// run. An invocation reaching here has walked the whole thing again: it found
+    /// its own pull request, derived the same question, found the same comment, and
+    /// the walk then refused because the object is no longer a draft. Reporting
+    /// that as an error would make a completed run fail on its next invocation.
+    ///
+    /// # When this is reached, now that a concluded arm records a change set
+    ///
+    /// Not on an ordinary repeat. [`ProposeChange::walk`] records the marker when
+    /// this arm answers `Ok`, so the *next* invocation's pre-execution derivation
+    /// answers [`NextAction::Complete`](fiddle_core::NextAction) and this capability
+    /// is never granted at all. What is left is the residual case — a change set
+    /// lost, a `[stub] root` moved, or a pull request somebody took out of draft by
+    /// hand — and the answer here has to be right for it, which is why this arm
+    /// accounts for the work exactly as the approve path does. Withholding the
+    /// marker on the ground that this invocation performed nothing would leave that
+    /// case reporting `Retryable` for ever over work that is done: the livelock
+    /// `fiddle-usp7` fixed, surviving in the one place still able to reach it.
+    ///
+    /// This is also why the sentence that used to open this comment — *"this
+    /// capability records no change set on any path, so a later invocation walks the
+    /// whole thing again"* — was not merely stale but the wrong argument. It offered
+    /// the absent marker as the *reason* this arm is survivable, when the absent
+    /// marker was the thing making the run report `Retryable`.
     ///
     /// So the effect is proposed through the **undecided** entry point, and the
     /// executor's own ordering is what makes that correct rather than a way of
@@ -1146,6 +1184,35 @@ where
             EffectKind::EnsurePullRequestReady,
             &receipt,
         ))
+    }
+
+    /// Record this invocation's correlation key as the change set for the work
+    /// item.
+    ///
+    /// Deliberately identical to what [`super::publish`], [`StubMark`](super::StubMark)
+    /// and [`FixtureRepair`](super::FixtureRepair) write, through the same atomic
+    /// write and to the same derived path: the assessment that reads it does not
+    /// know or care which capability produced it, and four capabilities writing
+    /// subtly different files for one reader is a defect waiting for a change of
+    /// capability to expose it.
+    ///
+    /// Called from [`ProposeChange::walk`] and from nowhere else. See the call
+    /// site for which arms reach it and why the two that do have equal claim.
+    fn record_change_set(&self, work_id: &str) -> Result<(), CapabilityError> {
+        let state = ChangeSetState {
+            marker: Some(correlation_key(
+                &self.config.project,
+                self.executor.invocation_ref(),
+            )),
+        };
+        let destination = self
+            .config
+            .stub_root
+            .join(format!("changes/{work_id}.json"));
+        write_atomically(&destination, &state).map_err(|source| CapabilityError::Write {
+            path: destination.clone(),
+            source,
+        })
     }
 
     /// The run is waiting, and this is what it is waiting for.
@@ -1293,13 +1360,35 @@ where
                 // The question is out there. Whether anybody has answered it is
                 // the conversation's to say, and the validation order's to read.
                 Some(published) => {
-                    self.continue_from(
-                        request,
-                        published.into_value(),
-                        pull_request.number,
-                        &head_sha,
-                    )
-                    .await
+                    let evidence = self
+                        .continue_from(
+                            request,
+                            published.into_value(),
+                            pull_request.number,
+                            &head_sha,
+                        )
+                        .await?;
+                    // The `?` above is the gate, and it is why this is the one
+                    // place the marker is written. `continue_from` answers `Ok`
+                    // on exactly two arms and both have concluded that the gated
+                    // transition is accounted for: the approve path, which
+                    // performed it under a decision, and
+                    // [`ProposeChange::already_ready`], which put the same
+                    // operation to the executor and had its postcondition read
+                    // back as [`EffectOutcome::Committed`]. A rejection, a
+                    // redirect, an unclear reply and an unanswered question all
+                    // leave through `Err`, and none of them reaches this line —
+                    // which is the property that matters, because a marker
+                    // written by a run that is *waiting* would stop the very
+                    // process that was supposed to read the answer.
+                    //
+                    // Written here rather than inside the two arms so that
+                    // "concluded" has one spelling. Writing it in `act_on` alone
+                    // would leave a run reaching `already_ready` with its work
+                    // done and unaccounted for, which is the defect this fixes in
+                    // its residual case rather than a different one.
+                    self.record_change_set(work_id)?;
+                    Ok(evidence)
                 }
                 // A pull request with no question on it: a run that stopped
                 // between the create and the comment. The change is already

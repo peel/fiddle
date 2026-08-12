@@ -1913,6 +1913,21 @@ impl World {
         self.scenario.read_bundle(&payload)
     }
 
+    /// The correlation key this world's project and `invocation_ref` must produce.
+    ///
+    /// Delegated to [`Scenario::expected_marker`] rather than recomputed, so the
+    /// derivation has one home — and that home computes it from the design's own
+    /// definition instead of calling `fiddle_core::correlation_key`, which is what
+    /// keeps an assertion about a marker a check against the specification rather
+    /// than against the binary's own arithmetic.
+    ///
+    /// The reference is an argument and not the module constant, because a world can
+    /// be handed more than one and a helper that quietly assumed which would be the
+    /// same shape of mistake it exists to catch.
+    pub fn expected_marker(&self, invocation_ref: &str) -> String {
+        self.scenario.expected_marker(invocation_ref)
+    }
+
     /// Which attempt one run turned out to be.
     ///
     /// Minted inside `fiddle_runtime::attempt`, once per process, so two runs over

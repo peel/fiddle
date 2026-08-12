@@ -866,10 +866,17 @@ fn suspend(world: &World) -> Suspension {
 /// the one question fiddle is not entitled to answer for itself, and stops on exit
 /// 10. **B** is given the same `InvocationRef` and nothing else: it recomputes the
 /// branch, finds its own pull request, finds its own question, validates the reply
-/// against the binding it derives, and marks the pull request ready. **C** finds
-/// there is nothing left to do and does nothing — which is the case a capability
-/// recording no change set has to survive, because it walks the whole thing again
-/// every time.
+/// against the binding it derives, marks the pull request ready, and records the
+/// change set that says it accounted for the work. **C** finds there is nothing left
+/// to do and does nothing — and *does nothing* is asserted as an empty execution
+/// list rather than as an exit code, because that is the difference the change set
+/// makes: C's pre-execution derivation reads B's marker, answers `complete`, and the
+/// capability is never granted at all.
+///
+/// C used to walk the whole thing again every time — find the pull request, derive
+/// the question, find the comment, and settle on a postcondition that already held —
+/// because `propose_change` recorded no change set on any path. That is `fiddle-usp7`,
+/// and while it stood C exited 11 having mutated nothing.
 ///
 /// # Identity and not counts
 ///
@@ -972,56 +979,16 @@ fn a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says() {
         INVOCATION_REF,
         "--json",
     ]);
-    // **SPEC_DEFECT — the continuation succeeds and the run says `retryable`.**
-    //
-    // The bean's Step 1 asserts 0 here. The capability really does complete: its
-    // execution is recorded `completed`, its evidence names
-    // `ensure_pull_request_ready:…:committed`, and the assertion below reads
-    // `draft: false` back out of the forge. What earns row 11 is the
-    // post-execution re-derivation — `propose_change` records **no change set on
-    // any path**, so the work is still `not_started` afterwards and the outcome is
-    // derived as *try again*. The reason string says so outright.
-    //
-    // `fiddle-usp7` owns the fix and its Files are `propose.rs` and a converged
-    // sibling's property, so it is not this bean's to make: writing the change set
-    // here would falsify `the_capability_holds_no_credential_and_accounts_for_no_
-    // work`, which `fiddle-af8e`'s evaluation passed.
-    //
-    // **What is worth recording is that `usp7`'s own reason for being debt rather
-    // than a bug was wrong when it was written.** It argues that `AlreadyReady`
-    // completing rather than failing is what keeps the missing marker survivable —
-    // a claim about the *capability's* `Result`, which is still true and is not the
-    // thing that decides the exit code. `9535b3a` moved the run outcome onto the
-    // post-execution re-derivation, so the capability concludes and the run asks to
-    // be retried, and **a caller that retries on 11 never terminates.**
-    //
-    // The dates are the point, and this comment had them backwards before the lead
-    // caught it. `9535b3a` is **2026-08-08** and `usp7` was created **2026-08-11**:
-    // the commit predates the bean by three days, so that paragraph was not
-    // superseded by a later change — it was written three days after the change that
-    // made it false, and then quoted forward. "Invalidated later" is a blameless
-    // timeline; "wrong when written" is a review that did not test its premise, and
-    // it is the same shape as this milestone's tally errors — a claim true of
-    // something adjacent, restated as though true of the thing in hand.
-    //
-    // `propose.rs`'s own documentation states the opposite of what happens, twice:
-    // *"It completes rather than failing"* in the module header (`:131-134`), and
-    // *"it is not a failure of the run … reporting that as an error would make a
-    // completed run fail on its next invocation"* on `already_ready` (`:1113-1118`).
-    // Cited as ranges rather than single lines because the sentences span several
-    // and this milestone has already shipped seven stale citations. Both are false,
-    // both are `usp7`'s file, and neither is corrected here: fixing prose in a file
-    // whose behaviour another bean owns is how a claim gets corrected in one place
-    // and shipped in another.
-    //
-    // Asserted as 11 rather than left failing so the accumulated gate stays green
-    // for the beans after this one. Nothing else in this walk is weakened: every
-    // identity, every count and every deletion is asserted exactly as the property
-    // requires, and the transition is proven to have happened once.
+    // Zero, and it used to be 11. `fiddle-usp7` is why: the capability completed and
+    // recorded no change set, so the post-execution re-derivation found the work
+    // `not_started` and concluded *try again* over a transition that had landed. The
+    // exit code is asserted here alongside the effect, never instead of it — see the
+    // note on `graphql_calls` below for what an exit code on this path could not
+    // distinguish while that defect stood.
     assert_eq!(
         b.code,
-        Some(11),
-        "a fresh process must continue: stdout={} stderr={}",
+        Some(0),
+        "a fresh process must continue and conclude: stdout={} stderr={}",
         b.stdout,
         b.stderr
     );
@@ -1068,6 +1035,13 @@ fn a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says() {
         "no second question: {:?}",
         world.comments_naming(&binding.request)
     );
+    // **The assertion that survives a change of exit code, and is kept for that
+    // reason.** `fiddle-565u` added it while `usp7` stood, because 11 then meant both
+    // *B did the transition* and *B could not read the conversation* — three of its
+    // inversions over the by-id read came back green against a test that asserted
+    // only the number. Zero is unambiguous where 11 was not, and this line stays
+    // anyway: a test that reads the effect out of the world does not have to be
+    // revisited the next time an exit code changes meaning, and the last one did.
     assert_eq!(
         world.graphql_calls(),
         1,
@@ -1084,17 +1058,53 @@ fn a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says() {
     );
 
     // --- process C: nothing left to do, and nothing done ---
-    let c = world.fiddle(["run", "--capability", "propose_change", INVOCATION_REF]);
-    // Eleven for the same reason B is, and this is the invocation on which it bites
-    // hardest: C mutates nothing at all and is still told to try again. See the
-    // note above `b.code`. What C *is* here to prove is the next two assertions —
-    // the mutation is not repeated, and nothing was created a second time.
+    //
+    // **Asked for `--json`, which it was not before, and that is the substance of
+    // this change rather than the exit code beside it.** While `fiddle-usp7` stood C
+    // exited 11 *having executed the capability* — it walked the forge, found the
+    // question, and settled on a postcondition that already held — and 11 was
+    // asserted with nothing else, so "found nothing to do" was a sentence in the
+    // message and not a claim the test made. Flipping 11 to 0 alone would have
+    // reproduced that: an exit code cannot tell *C was never granted* from *C ran
+    // and concluded*.
+    //
+    // What the marker changes is exactly that. C's **pre-execution** derivation
+    // reads the change set B wrote, answers `complete`, and no grant is issued — so
+    // the observation that says so is an empty execution list, and it is read off
+    // the payload rather than inferred.
+    let c = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
     assert_eq!(
         c.code,
-        Some(11),
+        Some(0),
         "a third process must find nothing to do: stdout={} stderr={}",
         c.stdout,
         c.stderr
+    );
+    let payload: serde_json::Value = serde_json::from_str(&c.stdout)
+        .unwrap_or_else(|error| panic!("stdout is not JSON ({error}): {}", c.stdout));
+    assert_eq!(
+        payload["capability_executions"],
+        serde_json::json!([]),
+        "C executed nothing: the derivation it made before executing was already \
+         `complete`, so no grant was issued: {payload}"
+    );
+    assert_eq!(
+        payload["next_action"],
+        serde_json::json!("complete"),
+        "and that is what it derived, off the change set B recorded: {payload}"
+    );
+    assert_eq!(
+        payload["observations"]["changes"]["available"]["value"]["marker"],
+        serde_json::json!(world.expected_marker(INVOCATION_REF)),
+        "the marker it completed on is this run's own, recomputed here from the two \
+         inputs it is derived from rather than read back out of the same payload: \
+         {payload}"
     );
     assert_eq!(
         world.graphql_calls(),
@@ -1136,23 +1146,26 @@ fn each_process_is_its_own_attempt_against_one_work_ref() {
         INVOCATION_REF,
         "--json",
     ]);
-    // Eleven and not zero: see
-    // `a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says`
-    // for the whole of why, and `fiddle-usp7` for the fix. What this test is about
-    // is unaffected — a run that exits 11 has still minted its own attempt id and
-    // still published a bundle naming the work it was about.
-    assert_eq!(b.code, Some(11), "stdout={} stderr={}", b.stdout, b.stderr);
-    // **And the exit code alone is not enough to say B continued, which an
-    // inversion is what taught.** Row 11 is `retryable`, and while `usp7` stands it
-    // is what a *successful* continuation earns — so it is also what a continuation
-    // that refused at step 5 earns, because an unreadable comment is an adapter
-    // failure and adapter failures are retryable too. One number, two outcomes.
+    // Zero, and it was 11 until `fiddle-usp7` landed. Neither number is what this
+    // test is about — a run exits, mints its own attempt id and publishes a bundle
+    // naming the work on either code — but a continuation that did not conclude is
+    // not the run whose attempt id this test then compares, so the code is asserted
+    // as the precondition it is.
+    assert_eq!(b.code, Some(0), "stdout={} stderr={}", b.stdout, b.stderr);
+    // **And the exit code alone was not enough to say B continued, which an
+    // inversion is what taught.** While `usp7` stood, row 11 was what a *successful*
+    // continuation earned — and also what a continuation that refused at step 5
+    // earned, because an unreadable comment is an adapter failure and adapter
+    // failures are retryable too. One number, two outcomes. Three inversions over
+    // the by-id route came back null against this test for exactly that reason,
+    // while the three-process walk caught all three.
     //
-    // Three inversions over the by-id route came back null against this test for
-    // exactly that reason, while the walk above caught all three. These two lines
-    // close it: they are the smallest observation that distinguishes *B did the
-    // transition* from *B could not read the conversation*, and they are read out of
-    // the world rather than out of B's own payload.
+    // Row 0 does not carry that ambiguity: a refusal at step 5 is retryable and
+    // cannot reach it. **These two lines stay regardless**, and the reason is the
+    // finding rather than caution — the ambiguity was invisible from inside the test
+    // that had it, so the defence is to assert the effect and not only the code,
+    // whatever the code currently means. Both are read out of the world rather than
+    // out of B's own payload.
     assert_eq!(
         world.graphql_calls(),
         1,

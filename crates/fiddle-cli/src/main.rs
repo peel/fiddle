@@ -1029,6 +1029,11 @@ fn build_capability<'a>(
                     // arrangement that keeps the tree the attempt works in and the
                     // tree the push publishes from being two paths.
                     workspace_root: workspace.root.clone(),
+                    // The publishing and repairing arms' value, from the same
+                    // document key: a continuation that concluded records its
+                    // change set where the next invocation's assessment reads one,
+                    // and there is exactly one such place per deployment.
+                    stub_root: config.stub.root.clone(),
                     check: WorkspaceCommand {
                         program: check.program.clone(),
                         args: check.args.clone(),
