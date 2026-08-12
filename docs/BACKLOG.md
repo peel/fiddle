@@ -1565,3 +1565,45 @@ failure was never reproduced is a claim nobody can check.**
 
 Worth noting what exposed it: **added load on a shared test binary**, not a new assertion. Two beans' scenarios
 in one binary changed the timing enough to surface a race that eight deliberate attempts could not.
+
+### A restore reverted committed work and the byte-comparison guard reported success
+
+**Amends the entry above on `mkdir -p` and shared scratchpads. "Record what you pinned" is necessary and not
+sufficient.**
+
+`fiddle-565u`'s inversion driver pinned its files once and reused the pin. After committing `4722dcf` the lane
+added documentation to `gh_stub.rs`, then ran an inversion touching that file. The restore wrote back the
+**pre-commit** pin, **deleting fifteen lines of committed comment** — and the `cmp` guard **passed**, because
+it compares the tree against the pin.
+
+**A guard that confirms "the tree matches the pin" says nothing when the pin is stale.** The comparison was
+correct and the conclusion it licensed was false, which is the same shape as every other guard failure on this
+milestone: a check whose subject was not the thing anybody wanted to know about.
+
+The lane caught it with `git diff` before committing and restored from `HEAD`. Nothing was lost. But the guard
+did not catch it, and the guard existed for exactly this.
+
+**It is the previous entry's incident one step along.** That one restored files the driver had **never pinned**,
+picked up from a directory it had `mkdir -p`'d into. This one restored a version of a file it **had** pinned,
+taken before the tree moved underneath it. Both are the same error:
+
+> **A restore trusts a copy whose relationship to the current tree was assumed rather than established — and
+> in both cases the guard passed.**
+
+**The fix removes the class rather than adding a second check against it: pin fresh immediately before each
+mutation, and never reuse a pin.** A pin taken at the moment of mutation cannot be stale. That is strictly
+better than validating a reused pin against `HEAD` first, because a validation step can be forgotten, mis-scoped,
+or itself go stale — whereas a pin with no lifetime has nothing to go stale.
+
+Verified by the lane: re-running the offending inversion now leaves the tree byte-identical with the
+documentation intact. Pinning also now covers `gh_stub.rs`, which the original manifest omitted.
+
+**The general lesson for inversion discipline on this project**, which is worth more than either incident:
+the pristine-copy pattern has three requirements and this milestone has now found two of them the hard way.
+
+1. Restore from a **recorded manifest**, not from a directory listing — or you write back files a neighbour
+   left behind.
+2. Take the pin **immediately before the mutation**, never earlier and never reused — or you write back a
+   version from before the tree moved.
+3. And the guard must compare against something whose currency is established, which (1) and (2) together
+   make automatic: a fresh pin of a known file set has no gap between what was copied and what was there.
