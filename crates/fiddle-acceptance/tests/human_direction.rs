@@ -726,6 +726,10 @@ struct Suspension {
     run: support::Run,
     branch: String,
     binding: support::Binding,
+    /// The number the **world** gave the pull request A opened, read off the
+    /// listing rather than assumed from a constant. Everything a continuation is
+    /// asserted about is addressed by this.
+    pull_request: u64,
 }
 
 /// Suspend a run and hand back what a fresh process would have to work from.
@@ -777,12 +781,59 @@ fn suspend(world: &World) -> Suspension {
         "a branch fiddle published carries its namespace: {branch}"
     );
 
+    // **The number the world gave A's pull request, read out of the world.** Not
+    // taken from [`CONVERSATION_ISSUE`] and then compared against it — that is a
+    // constant compared with itself — but read off the listing and *checked* against
+    // it, which is a real property with a real way of failing.
+    //
+    // The two have to agree, and nothing else in this lane says so. The scripted
+    // `gh` merges a run's posted comments onto the conversation listing **keyed on
+    // the exact path**, so a question published against pull request 7 is only
+    // visible to a read of `/issues/7/comments`. If the stub numbered pull requests
+    // from anything other than 7, every read below would be looking at the wrong
+    // conversation and would find no question at all — and the failure would look
+    // like a run that never asked rather than like a fixture disagreeing with
+    // itself. `CONVERSATION_ISSUE`'s own documentation states the coupling; this is
+    // the assertion that holds it.
+    let opened = world.open_pull_requests();
+    assert_eq!(opened.len(), 1, "exactly one pull request: {opened:?}");
+    let pull_request = opened[0]["number"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("a listed pull request carries a number: {opened:?}"));
+    assert_eq!(
+        pull_request, CONVERSATION_ISSUE,
+        "the conversation is read under {CONVERSATION_ISSUE} and the world numbered \
+         this pull request {pull_request}; the stub merges a run's comments keyed on \
+         the exact path, so these two disagreeing would hide the question rather \
+         than report anything"
+    );
+    // **And it is a pull request for the branch A pushed, which is what says this
+    // accessor reads the world at all.** An inversion is why this line exists: an
+    // `open_pull_requests` that answered a fabricated `[{"number": 7, "state":
+    // "open"}]` satisfied both the count and the number, so neither of those says
+    // the listing was consulted — and the count is what the whole "no second pull
+    // request" claim rests on. A fabrication that cannot also produce the branch A
+    // derived fails here.
+    //
+    // It is a property worth having in its own right, not only a denominator: the
+    // pull request a continuation finds has to be the one opened for *this run's*
+    // branch, and the head is where the listing says so.
+    assert_eq!(
+        opened[0]["head"]["ref"].as_str(),
+        Some(branch.as_str()),
+        "the pull request must be the one opened for the branch this run published: \
+         {opened:?}"
+    );
+
     let binding = parse_marker(&world.the_only_request_comment().body)
         .expect("the question carries its marker");
     // The seed, and the assertion that ties it to the world rather than to this
     // file: the revision GitHub is told its pull request is at is the revision the
     // remote really holds, and it is the revision the run's own marker names.
-    let seeded = world.answer_pull_request_by_number(CONVERSATION_ISSUE, &branch);
+    // Addressed by the number the *world* gave the pull request, so a fixture whose
+    // numbering moved would seed the object the walk is about rather than a
+    // neighbour of it.
+    let seeded = world.answer_pull_request_by_number(pull_request, &branch);
     assert_eq!(
         seeded, binding.head_sha,
         "the head the forge answers with must be the head the question was asked \
@@ -798,6 +849,7 @@ fn suspend(world: &World) -> Suspension {
         run,
         branch,
         binding,
+        pull_request,
     }
 }
 
@@ -854,12 +906,13 @@ fn a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says() {
 
     // --- process A: propose, ask, and stop ---
     let Suspension {
-        branch, binding, ..
+        branch,
+        binding,
+        pull_request,
+        ..
     } = suspend(&world);
-    let opened = world.open_pull_requests();
-    assert_eq!(opened.len(), 1, "one pull request: {opened:?}");
     assert_eq!(
-        world.pull_request(CONVERSATION_ISSUE)["draft"],
+        world.pull_request(pull_request)["draft"],
         serde_json::json!(true),
         "it was opened as a draft, because the transition out of one is the gated act"
     );
@@ -973,7 +1026,7 @@ fn a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says() {
         b.stderr
     );
     assert_eq!(
-        world.pull_request(CONVERSATION_ISSUE)["draft"],
+        world.pull_request(pull_request)["draft"],
         serde_json::json!(false),
         "it was marked ready, and the forge is what says so"
     );
@@ -984,11 +1037,30 @@ fn a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says() {
         [branch.as_str()],
         "the same branch"
     );
-    assert_eq!(world.open_pull_requests().len(), 1);
+    // **This line used to be `pull_request(CONVERSATION_ISSUE)["number"] ==
+    // CONVERSATION_ISSUE`, which cannot fail** — both sides trace to one constant,
+    // because `answer_pull_request_by_number` writes the number it is given and the
+    // stub's landed-transition rewrite touches `draft` and nothing else. An
+    // evaluator measured it rather than arguing it: the assertion passed when made
+    // before B existed at all. It is the same shape as the title-clock comment
+    // caught earlier in this bean — a comment claiming more than its line does.
+    //
+    // It is **removed rather than replaced by a fifth check**, because the pull
+    // request's identity is already carried, and a made-up fifth would be the same
+    // decoration in a new spelling. Where it actually lives:
+    //
+    // - **the cardinality** below — a run that closed its own pull request and
+    //   opened a second is what a bare count would miss, and this is that count;
+    // - **`draft` flipping to `false`** above, read from a stub that takes a pull
+    //   request out of draft only when a landed mutation names *its own node id*, so
+    //   the object B acted on is the object A opened;
+    // - **the number itself**, checked against the conversation constant in
+    //   `suspend` where the coupling matters, off the world's own listing.
     assert_eq!(
-        world.pull_request(CONVERSATION_ISSUE)["number"],
-        serde_json::json!(CONVERSATION_ISSUE),
-        "the same pull request"
+        world.open_pull_requests().len(),
+        1,
+        "one pull request, not a second alongside it: {:?}",
+        world.open_pull_requests()
     );
     assert_eq!(
         world.comments_naming(&binding.request).len(),
@@ -1052,7 +1124,8 @@ fn a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says() {
 #[test]
 fn each_process_is_its_own_attempt_against_one_work_ref() {
     let world = World::with_model_script(a_suspension_and_its_approval(APPROVAL));
-    let a = suspend(&world).run;
+    let suspended = suspend(&world);
+    let (a, pull_request) = (suspended.run, suspended.pull_request);
 
     world.post_comment(AUTHORIZED, APPROVAL);
     world.accept_the_ready_mutation();
@@ -1086,7 +1159,7 @@ fn each_process_is_its_own_attempt_against_one_work_ref() {
         "B must have continued rather than merely failed retryably"
     );
     assert_eq!(
-        world.pull_request(CONVERSATION_ISSUE)["draft"],
+        world.pull_request(pull_request)["draft"],
         serde_json::json!(false),
         "and the forge is what says the transition happened"
     );
