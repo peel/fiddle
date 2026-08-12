@@ -49,7 +49,7 @@ pub(crate) mod process;
 pub mod stub;
 pub mod workspace;
 
-pub use agent::{AgentBudget, ToolHost, ToolReceipt, ToolReceipts};
+pub use agent::{AgentBudget, Direction, ToolHost, ToolReceipt, ToolReceipts};
 // `attempt_worktree` is here beside the capability it belongs to, and it has to
 // be: the process that builds an `EffectContext` and the capability that creates
 // the worktree derive one path by calling this one function, so a binary that

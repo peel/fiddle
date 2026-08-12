@@ -157,6 +157,50 @@ impl Workspace {
         attempt: &AttemptId,
         cancel: CancellationToken,
     ) -> Result<Self, WorkspaceError> {
+        Workspace::create_at(fixture, root, attempt, "HEAD", cancel)
+    }
+
+    /// The same, branched at `revision` instead of at the fixture's `HEAD`.
+    ///
+    /// # Why anything needs this
+    ///
+    /// A **redirected** attempt — `propose_change`'s redirect arm — has to produce
+    /// a commit that the branch it already published can *fast-forward* to, and
+    /// the fixture's `HEAD` is not on that branch: it is the base the first attempt
+    /// itself branched from. A second attempt from there produces a sibling of the
+    /// published commit rather than a descendant, and the push is then a
+    /// non-fast-forward that [`GitCli::publish`](crate::git::GitCli) refuses and
+    /// never forces. So the revision is the caller's to name, and the caller names
+    /// the head its pull request is at.
+    ///
+    /// [`Workspace::create`] is the same call with `HEAD`, rather than this being
+    /// the same call with a default, so that a first attempt keeps saying what it
+    /// means at the one call site that means it.
+    ///
+    /// # What this cannot do, and what happens when it cannot
+    ///
+    /// `revision` has to be an object the **fixture's own store** already holds. It
+    /// does on the path this exists for, and for a reason rather than by luck: the
+    /// commit was made in a worktree *of this fixture*, and a worktree shares the
+    /// object store it was branched from, so removing the worktree leaves the
+    /// object behind. A fresh process on the same machine, against the same
+    /// `[workspace] fixture`, therefore finds it.
+    ///
+    /// **A process on a different machine does not**, and nothing here fetches. The
+    /// failure is `git worktree add` refusing a revision it cannot resolve, which
+    /// arrives as [`WorkspaceError::Git`] carrying git's own message and the
+    /// revision — a correctable failure naming the sha, not a silent branch from
+    /// somewhere else. Fetching instead would mean a second credential-carrying
+    /// `git` child, and `git::publish` keeps that construction to exactly one on
+    /// purpose; widening it for this is a trade nobody has asked for yet. Recorded
+    /// as the known limit rather than left for a reader to discover.
+    pub fn create_at(
+        fixture: &Path,
+        root: &Path,
+        attempt: &AttemptId,
+        revision: &str,
+        cancel: CancellationToken,
+    ) -> Result<Self, WorkspaceError> {
         std::fs::create_dir_all(root).map_err(|source| WorkspaceError::Io {
             path: root.to_path_buf(),
             source,
@@ -175,7 +219,7 @@ impl Workspace {
                 "--detach",
                 "-q",
                 &path.to_string_lossy(),
-                "HEAD",
+                revision,
             ],
         )?;
         let baseline_ignore = root.join(format!("{}.ignore", attempt.0));

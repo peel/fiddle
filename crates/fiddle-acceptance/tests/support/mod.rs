@@ -1294,6 +1294,91 @@ pub fn a_real_repair() -> Vec<Reply> {
     ]
 }
 
+/// What a **second** attempt writes, once somebody has said to do it differently.
+///
+/// It has to satisfy two things at once and they pull in opposite directions. It
+/// must still pass [`CHECK`] — which greps for `len - 1` — because a redirected
+/// attempt whose check failed publishes nothing, and the scenario would then be
+/// about a failed check rather than about a redirect. And it must **differ from
+/// [`REPAIRED_FIXTURE`] in its bytes**, because "a genuinely different change" is
+/// asserted by reading the pushed tree and comparing it with what was there before.
+///
+/// A comment carrying the instruction's own words is what makes the difference
+/// legible in a diff, and it is also the honest shape of what a redirect produces: a
+/// second attempt at the same defect, done the way somebody asked for.
+pub const REDIRECTED_FIXTURE: &str = "pub fn last_index(len: usize) -> usize {\n    \
+     // the other crate's convention, per the instruction\n    len - 1\n}\n";
+
+/// The script a second attempt spends: write the other version, then report it.
+///
+/// [`a_real_repair`]'s sibling, and two turns for the same reason — the write has to
+/// go through the binary's own `write_file` into the binary's own worktree, or the
+/// check that follows has nothing to pass over and the push has nothing to publish.
+pub fn a_second_repair() -> Vec<Reply> {
+    vec![
+        accepted(calls(
+            "write_file",
+            serde_json::json!({
+                "path": "src/lib.rs",
+                "contents": REDIRECTED_FIXTURE,
+            }),
+        )),
+        accepted(reports(serde_json::json!({
+            "changed_files": ["src/lib.rs"],
+            "summary": "did it the other way",
+            "claimed_complete": true,
+        }))),
+    ]
+}
+
+/// A turn in which the interpreting model reads the reply as a **redirect**, and
+/// says what to do instead.
+///
+/// # The instruction is a separate argument from the evidence, and that is the point
+///
+/// `evidence` has to be a span really present in the reply — `interpret::decide`
+/// refuses a model that quoted what it was not shown — and `instruction` has **no
+/// such anchor**. Task 9's substring check constrains `evidence` alone, so a model
+/// may return an `instruction` the person never wrote, and the length cap is the
+/// specified mitigation rather than a provenance check.
+///
+/// Two arguments rather than one is therefore the fixture telling the truth about
+/// the seam: the text that reaches a later attempt's prompt is **model-authored**,
+/// influenced by whoever wrote the comment and not equal to it. A scenario that
+/// wants the realistic attacker — somebody who writes a hostile comment and a model
+/// that faithfully copies it — passes the same string twice, and one that wants the
+/// weaker-provenance case passes two different ones. Both are reachable, and a
+/// single-argument helper could only express one of them.
+pub fn redirects(instruction: &str, evidence: &str) -> Reply {
+    accepted(reports(serde_json::json!({
+        "decision": "redirect",
+        "redirect": instruction,
+        "evidence": evidence,
+    })))
+}
+
+/// The script a suspension, a redirect, and the fresh attempt it causes spend
+/// between them.
+///
+/// **Five replies, and the count is the assertion.** Two for the first attempt, one
+/// for the interpretation that reads the reply as a redirect, and two for the second
+/// attempt. The gateway drops its listener when the script runs out, so a run that
+/// took a sixth turn fails at the socket rather than being answered something
+/// plausible — and, the direction that matters more here, a run that took only three
+/// leaves two unspent, which [`World::model_calls`] is what makes visible.
+///
+/// That last point is why this constant exists rather than the callers concatenating:
+/// **a redirect that never reached its attempt is indistinguishable from a redirect
+/// the model declined** — `interpret` collapses every transport failure to `Unclear`,
+/// which is `AwaitingDecision`, exit 10, nothing mutated. The script's length and the
+/// served count are how a scenario tells the two apart.
+pub fn a_suspension_and_its_redirect(instruction: &str, evidence: &str) -> Vec<Reply> {
+    let mut script = a_real_repair();
+    script.push(redirects(instruction, evidence));
+    script.extend(a_second_repair());
+    script
+}
+
 /// A turn in which the model answers the one interpretation question: is this
 /// reply an approval of this request?
 ///
@@ -2895,6 +2980,113 @@ impl World {
         )
         .unwrap();
         head_sha
+    }
+
+    /// One file of the commit `branch` points at, as the **remote** holds it.
+    ///
+    /// # This is the observation a fixture-published head cannot fake
+    ///
+    /// Read with `git show` out of the bare repository, so it is the tree a
+    /// reviewer opening the pull request would see — not what fiddle reported, not
+    /// what a scenario wrote, and not the worktree the attempt worked in, which is
+    /// gone by the time anything asks.
+    ///
+    /// It is the accessor "a genuinely *different* change was published" has to be
+    /// stated in. Counting attempts, counting model calls, or reading a moved sha
+    /// all leave one gap in common: a second attempt that wrote the same bytes moves
+    /// the sha — a commit's identity includes the moment it was made — and would
+    /// satisfy every one of them. Only the bytes say the change is different.
+    ///
+    /// `None` when the branch or the path is absent, which are two different
+    /// failures and are deliberately not distinguished: every caller is asking about
+    /// a file a run has just published, and either absence is the same defect.
+    ///
+    /// The branch is a parameter and not [`World::remote_branches`]`[0]`, for
+    /// [`World::expected_marker`]'s reason: a world can hold more than one, and a
+    /// helper that quietly picked would be the mistake it exists to catch.
+    pub fn pushed_file(&self, branch: &str, path: &str) -> Option<String> {
+        let output = std::process::Command::new("git")
+            .args(["show", &format!("refs/heads/{branch}:{path}")])
+            .current_dir(&self.remote)
+            .output()
+            .unwrap();
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Whether the remote holds `descendant` with `ancestor` behind it.
+    ///
+    /// # The world's own answer to "was that a fast-forward or a rewrite"
+    ///
+    /// `[github] git` in this world is the **real** `git`, so there is no recorder to
+    /// filter a `--force` out of — and an argv check would be the weaker claim in any
+    /// case. It says what was typed; this says what the remote now holds. A force
+    /// push that rewrote the branch leaves a head the previous one is not an ancestor
+    /// of, whatever the command line said, and a push that fast-forwarded cannot.
+    ///
+    /// `merge-base --is-ancestor` answers by **exit code**, so a `false` here is a
+    /// real negative rather than a parse of empty output — which is what makes it
+    /// safe to assert in the negative direction, and callers should: a version
+    /// answering `true` unconditionally satisfies the direction that matters on its
+    /// own, and the reverse direction is its denominator.
+    pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> bool {
+        std::process::Command::new("git")
+            .args(["merge-base", "--is-ancestor", ancestor, descendant])
+            .current_dir(&self.remote)
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    /// The text of every prompt the model endpoint was shown, in order.
+    ///
+    /// # Why this is decoded rather than handed over as the request body
+    ///
+    /// [`StubGateway::request_bodies`] already records what went on the wire, and a
+    /// caller asserting against it directly would be asserting against **JSON**: a
+    /// person's words carrying a quote, a newline or a backslash appear there
+    /// escaped, so `body.contains(what_they_wrote)` is false for exactly the inputs
+    /// a hostile one is made of. A scenario written that way would report *the
+    /// instruction never arrived* about a prompt that carries it, and — far worse —
+    /// would report *nothing escaped the fence* about a prompt where something had.
+    ///
+    /// So the messages are parsed out and concatenated, which is the text the model
+    /// is shown. Content that is an array of parts is flattened, because that is the
+    /// other shape an OpenAI-compatible message takes and a client that switched
+    /// shapes must not silently start reading nothing.
+    ///
+    /// One entry per completion, including the turns of a tool loop — so a redirected
+    /// attempt contributes several and the instruction is in each, the whole
+    /// conversation being resent every turn. Assertions should therefore be about
+    /// *which* prompts carry a thing and never about a count of occurrences.
+    pub fn model_prompts(&self) -> Vec<String> {
+        self.gateway
+            .request_bodies()
+            .iter()
+            .map(|body| {
+                let sent: serde_json::Value = serde_json::from_str(body).unwrap_or_else(|error| {
+                    panic!("a request to the model endpoint is JSON ({error}): {body}")
+                });
+                let mut shown = String::new();
+                for message in sent["messages"].as_array().into_iter().flatten() {
+                    match &message["content"] {
+                        serde_json::Value::String(text) => shown.push_str(text),
+                        serde_json::Value::Array(parts) => {
+                            for part in parts {
+                                if let Some(text) = part["text"].as_str() {
+                                    shown.push_str(text);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    shown.push('\n');
+                }
+                shown
+            })
+            .collect()
     }
 
     /// What the remote's `refs/heads/<branch>` really points at.

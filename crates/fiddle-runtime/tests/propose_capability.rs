@@ -30,17 +30,32 @@
 //! make the second fail. Both scripts claim completion, which is the point — the
 //! claim is evidence beside the exit code, never instead of it.
 //!
-//! # Every continuation here runs in a process that could not have produced the change
+//! # Every continuation here runs in a process that could not have produced the
+//! change — except the one whose whole content is producing one
 //!
 //! [`continue_in`] is the second half of this file, and it takes two things away
 //! before running: the `git` becomes one that cannot be executed, and the
 //! workspace root becomes a *file*, so no worktree can be created under it. Both
-//! are removed for **every** continuation case rather than only for the one whose
+//! are removed for every continuation case rather than only for the one whose
 //! criterion is about it, because that is the difference between a property and a
 //! sample: a continuation that grew a push or a second attempt fails loudly in all
 //! of them instead of quietly acquiring a second mutation channel. It is
 //! `support::unreachable_git`'s own reasoning, applied to a capability that has a
 //! path which legitimately pushes and a path which must not.
+//!
+//! **A redirect is the one exception, and it is spelled at the call site rather than
+//! defaulted.** That arm exists to produce a different change, so it needs a real
+//! `git` and a real workspace; [`continue_in_a_process_that_can_attempt`] is where it
+//! gets them, and [`ThenWhat`] is what makes a row of the verdict matrix say which of
+//! the two processes it means. The crippled process is still the default, so the next
+//! arm that quietly needed a checkout would fail rather than acquire one.
+//!
+//! It is worth recording what that default cost while the exception was undeclared.
+//! When `redirect` first grew its attempt, the redirect row of
+//! [`only_an_approval_marks_the_pull_request_ready`] stayed green — because the
+//! redirect fell over on `create_dir_all` before reaching a model, and *no
+//! transition, no GraphQL call, no marker* is exactly what a run that did nothing
+//! produces. Measured, not predicted.
 //!
 //! # Where the two payload comparisons finally meet
 //!
@@ -314,9 +329,11 @@ impl World {
     /// The context a continuation runs against: the same scripted forge, and a
     /// `git` that cannot be executed at all.
     ///
-    /// See this module's documentation. The approve, reject, redirect and unclear
-    /// paths propose no operation that reads [`EffectContext::work`], so a `git`
-    /// nothing can run is not a limitation of these cases — it is the assertion.
+    /// See this module's documentation. The approve, reject and unclear paths propose
+    /// no operation that reads [`EffectContext::work`], so a `git` nothing can run is
+    /// not a limitation of these cases — it is the assertion. A **redirect** does
+    /// propose one and runs through
+    /// [`continue_in_a_process_that_can_attempt`] instead.
     fn ctx_without_git(&self) -> EffectContext {
         self.ctx_with(self.work(), unreachable_git())
     }
@@ -381,6 +398,28 @@ impl World {
             .status
             .success()
             .then(|| String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Whether the remote holds `descendant` as a descendant of `ancestor`.
+    ///
+    /// **The world's own answer to "was that a fast-forward or a rewrite", and the
+    /// reason it is asked of git rather than of an argv.** `[github] git` here is the
+    /// real program, so there is no recorder to filter for a `--force`; and an argv
+    /// check would be the weaker claim anyway — it says what was typed, where this
+    /// says what the remote now holds. A force push that rewrote the branch leaves a
+    /// head the old one is not an ancestor of, whatever the command line looked like.
+    ///
+    /// `merge-base --is-ancestor` answers by exit code, so a `false` here is a real
+    /// negative and not a parse of empty output. It is asserted in both directions
+    /// wherever it is used, because a version answering `true` unconditionally would
+    /// satisfy the direction that matters on its own.
+    fn is_ancestor(&self, ancestor: &str, descendant: &str) -> bool {
+        std::process::Command::new("git")
+            .args(["merge-base", "--is-ancestor", ancestor, descendant])
+            .current_dir(&self.remote)
+            .status()
+            .unwrap()
+            .success()
     }
 
     fn git_says(&self, dir: &Path, args: &[&str]) -> String {
@@ -589,6 +628,13 @@ impl World {
     /// is unchanged, so the capability's own published-from check still agrees —
     /// which is the point. A continuation is a fresh process that never held a
     /// checkout, and this is the nearest a test can get to one.
+    ///
+    /// **It is a real tripwire and it has caught something.** When `redirect` grew a
+    /// fresh attempt, every continuation in this file still ran here, and the redirect
+    /// failed on `create_dir_all` with `AlreadyExists` — which is how the exception
+    /// announced itself rather than being reasoned about. The arms that legitimately
+    /// need a checkout say so through
+    /// [`continue_in_a_process_that_can_attempt`]; this stays the default.
     fn with_no_workspace_available(&self) {
         let root = self.workspace_root();
         let _ = std::fs::remove_dir_all(&root);
@@ -836,6 +882,37 @@ async fn continue_in(
 ) {
     world.with_no_workspace_available();
     let ctx = world.ctx_without_git();
+    execute_against(world, &ctx, model, the_projects_own_check(), PROPOSE_CHANGE).await
+}
+
+/// The one continuation that is allowed a checkout: a **redirect**.
+///
+/// Everything [`continue_in`] takes away, this one leaves: the workspace root is a
+/// usable directory and the `git` is the real one, because a redirect's whole
+/// content is a further bounded attempt and a push on top of what is already
+/// published.
+///
+/// It is a second function rather than a flag on the first so that the count of
+/// callers is the count of verdicts that need a checkout. Today that is one, and if
+/// it ever became two, whoever made it two would have had to come here and say so.
+///
+/// The workspace root is not merely left alone but *removed and recreated*, and
+/// deliberately: the first run's own attempt already ran here, and a root still
+/// holding its worktree would be a directory a continuation could have found a
+/// checkout in. What it must not do is remove the **fixture's** worktree
+/// registration, which `Workspace::remove` has already done properly — see
+/// `Workspace::remove`, which runs `git worktree remove` rather than deleting a
+/// directory behind git's back.
+async fn continue_in_a_process_that_can_attempt(
+    world: &World,
+    model: MockCompletionModel,
+) -> (
+    Result<EvidenceRef, CapabilityError>,
+    Vec<EvidenceRef>,
+    Option<fiddle_core::Publication>,
+) {
+    let _ = std::fs::remove_dir_all(world.workspace_root());
+    let ctx = world.ctx();
     execute_against(world, &ctx, model, the_projects_own_check(), PROPOSE_CHANGE).await
 }
 
@@ -1786,6 +1863,34 @@ struct Answered {
     /// continuation ran — the baseline "and it posted nothing further" is stated
     /// against.
     posted_before: usize,
+    /// `src/lib.rs` as the remote held it before the continuation ran.
+    ///
+    /// Captured here for [`Answered::posted_before`]'s reason, and it has to be
+    /// captured *here*: a redirect moves the branch, so the tree the first run
+    /// published is unreadable from the remote by the time a test could ask for it,
+    /// and "the change is different" has nothing to be different from.
+    published_before: Option<String>,
+}
+
+/// What a continuation goes on to do once the walk has read the reply.
+///
+/// A parameter rather than something [`answered`] infers, because it decides which
+/// *kind of process* the continuation runs in and that is the assertion rather than
+/// a setting. Three of the four verdicts run in a process that could not attempt
+/// anything if it tried — see [`World::with_no_workspace_available`] — and the
+/// fourth must not be able to borrow that guarantee by accident.
+enum ThenWhat {
+    /// Nothing further. The verdict is settled by the walk, so the process is the
+    /// crippled one: no usable workspace root and a `git` nothing can execute.
+    Nothing,
+
+    /// One further bounded attempt, scripted by these turns.
+    ///
+    /// **Only a redirect reaches this**, and it needs a real workspace and a real
+    /// `git` — the attempt has to branch a worktree and the push has to happen. So
+    /// this arm deliberately gives up the "a continuation needs no checkout"
+    /// guarantee, which is what makes it visible that exactly one arm gives it up.
+    OneMoreAttempt(Vec<MockTurn>),
 }
 
 /// Suspend a run, have `author` answer it with `reply`, and read that reply as
@@ -1795,14 +1900,38 @@ struct Answered {
 /// mutation may happen: a fixture that could only answer a mutation it expected
 /// would make "nothing was dispatched" indistinguishable from "the fixture had no
 /// answer for it".
-async fn answered(world: &World, author: u64, reply: &str, document: &str) -> Answered {
+///
+/// `then` says what the verdict costs afterwards; see [`ThenWhat`]. The turns it
+/// carries are appended to the one interpretation turn, in that order, because that
+/// is the order the walk spends them: step 7 first, then the attempt. A model
+/// handed the attempt's turns first would answer the interpretation with a tool
+/// call and the run would refuse for a reason no scenario chose.
+async fn answered(
+    world: &World,
+    author: u64,
+    reply: &str,
+    document: &str,
+    then: ThenWhat,
+) -> Answered {
     let suspension = suspended(world).await;
     world.answered_by(suspension.comment, &[(author, reply)]);
     world.script_graphql(0, 200, readied());
 
     let posted_before = world.posted_comments().len();
-    let model = MockCompletionModel::new([MockTurn::text(document)]);
-    let (outcome, receipts, _) = continue_in(world, model.clone()).await;
+    let published_before = world.published_file("src/lib.rs");
+    let mut turns = vec![MockTurn::text(document)];
+    let attempting = match then {
+        ThenWhat::Nothing => false,
+        ThenWhat::OneMoreAttempt(more) => {
+            turns.extend(more);
+            true
+        }
+    };
+    let model = MockCompletionModel::new(turns);
+    let (outcome, receipts, _) = match attempting {
+        false => continue_in(world, model.clone()).await,
+        true => continue_in_a_process_that_can_attempt(world, model.clone()).await,
+    };
     Answered {
         outcome,
         receipts,
@@ -1810,6 +1939,7 @@ async fn answered(world: &World, author: u64, reply: &str, document: &str) -> An
         request: identity_at(&suspension.head_sha).0,
         head_sha: suspension.head_sha,
         posted_before,
+        published_before,
     }
 }
 
@@ -1835,16 +1965,38 @@ async fn answered(world: &World, author: u64, reply: &str, document: &str) -> An
 /// `Complete` over a question still standing, and the process that was supposed to
 /// read the answer would never run. One `should_mutate` drives all four assertions
 /// precisely so the two can never be given different answers by accident.
+///
+/// # The redirect row runs a real redirect, and it has to
+///
+/// **This row passed for the wrong reason for exactly as long as it took to
+/// measure.** When `redirect` grew its attempt, the row went on being green because
+/// `continue_in` puts a *file* where the workspace root should be — so the redirect
+/// failed on `create_dir_all` before it reached a model, and *"no transition, no
+/// GraphQL call, no marker, one model request"* was satisfied by a run that had done
+/// nothing at all. Which is this milestone's own rule: an outcome two different
+/// causes produce identically is not an assertion about either of them.
+///
+/// So the row carries [`ThenWhat::OneMoreAttempt`], which runs it in a process that
+/// really can attempt, and its `turns` is what tells the two apart — a redirect that
+/// never reached its attempt spends one model call and a redirect that ran one
+/// spends three. The count is therefore per-row rather than the single `1` it was.
 #[tokio::test]
 async fn only_an_approval_marks_the_pull_request_ready() {
-    for (reply, document, should_mutate) in [
-        (YES, APPROVES, true),
-        ("no, drop it", REJECTS, false),
-        ("do it differently", REDIRECTS, false),
-        ("what does this do?", UNCLEAR, false),
+    for (reply, document, should_mutate, then, turns) in [
+        (YES, APPROVES, true, ThenWhat::Nothing, 1),
+        ("no, drop it", REJECTS, false, ThenWhat::Nothing, 1),
+        (
+            "do it differently",
+            REDIRECTS,
+            false,
+            // One interpretation, then the two turns `repairs_differently` scripts.
+            ThenWhat::OneMoreAttempt(repairs_differently()),
+            3,
+        ),
+        ("what does this do?", UNCLEAR, false, ThenWhat::Nothing, 1),
     ] {
         let world = World::fresh();
-        let answered = answered(&world, APPROVER, reply, document).await;
+        let answered = answered(&world, APPROVER, reply, document, then).await;
 
         assert_eq!(
             world
@@ -1867,8 +2019,16 @@ async fn only_an_approval_marks_the_pull_request_ready() {
             answered.outcome
         );
         // Every one of them read the reply, which is what makes the differences
-        // above differences of verdict rather than of whether anybody looked.
-        assert_eq!(answered.model.requests().len(), 1, "{reply:?}");
+        // above differences of verdict rather than of whether anybody looked — and
+        // for the redirect it says more: that the fresh attempt really ran, which
+        // is the one thing its three `false`s above cannot distinguish from a
+        // redirect that fell over on the way there.
+        assert_eq!(
+            answered.model.requests().len(),
+            turns,
+            "{reply:?} spent {} model calls",
+            answered.model.requests().len()
+        );
         assert_eq!(
             world.marker(WORK_ID).is_some(),
             should_mutate,
@@ -1894,7 +2054,7 @@ async fn only_an_approval_marks_the_pull_request_ready() {
 #[tokio::test]
 async fn the_transition_is_performed_through_the_decided_entry_point() {
     let world = World::fresh();
-    let answered = answered(&world, APPROVER, YES, APPROVES).await;
+    let answered = answered(&world, APPROVER, YES, APPROVES, ThenWhat::Nothing).await;
 
     let evidence = answered
         .outcome
@@ -2013,7 +2173,7 @@ async fn the_approve_path_accounts_for_the_work_it_completed() {
 #[tokio::test]
 async fn a_rejection_concludes_the_run_rather_than_suspending_it_again() {
     let world = World::fresh();
-    let answered = answered(&world, APPROVER, "no, drop it", REJECTS).await;
+    let answered = answered(&world, APPROVER, "no, drop it", REJECTS, ThenWhat::Nothing).await;
 
     let error = answered.outcome.expect_err("a refusal earns nothing");
     match &error {
@@ -2056,7 +2216,14 @@ async fn a_rejection_concludes_the_run_rather_than_suspending_it_again() {
 #[tokio::test]
 async fn an_unclear_reply_waits_on_the_same_request_and_posts_nothing_further() {
     let world = World::fresh();
-    let answered = answered(&world, APPROVER, "what does this do?", UNCLEAR).await;
+    let answered = answered(
+        &world,
+        APPROVER,
+        "what does this do?",
+        UNCLEAR,
+        ThenWhat::Nothing,
+    )
+    .await;
 
     let error = answered
         .outcome
@@ -2088,39 +2255,148 @@ async fn an_unclear_reply_waits_on_the_same_request_and_posts_nothing_further() 
     assert_eq!(world.graphql_calls(), 0);
 }
 
-/// A redirect changes nothing out there, and says what it was told.
+/// **A redirect produces a *different* change, publishes it on top of the one that
+/// was already there, and asks a new question about it.**
 ///
-/// Attempting the change again is Task 15's; until then the honest outcome is that
-/// the run is waiting, with the instruction in the diagnostic so an operator can
-/// see what was asked for rather than only that something was.
+/// # This test replaces one that asserted the opposite, and the old one was right
+/// at the time
+///
+/// `a_redirect_waits_and_names_the_instruction_it_received` pinned a redirect that
+/// mutated nothing and carried the instruction in its diagnostic, because attempting
+/// again was not implemented. It is superseded rather than deleted: every claim it
+/// made that is still true is made here — `Awaiting`, no ready transition, no
+/// GraphQL call — beside the ones that are new.
+///
+/// # What each assertion is for, and which of them a wrong implementation passes
+///
+/// A redirect's outcome is `AwaitingDecision`, exit 10, nothing readied — which is
+/// **bit-for-bit what a redirect that fell over on its way to the model produces**,
+/// and what a redirect that was never implemented produced. So the exit is asserted
+/// and is not the evidence. The evidence is:
+///
+/// - **the published file changed**, read out of the bare repository — the one
+///   assertion a run that did nothing cannot pass, and the reason it is a tree read
+///   rather than a count of attempts;
+/// - **the published sha moved, and moved *forward*** — the new commit has the old
+///   one as an ancestor, which is what says the push fast-forwarded rather than
+///   rewrote. `is_ancestor` is asserted in both directions, because a predicate that
+///   answered `true` unconditionally would satisfy the first half alone;
+/// - **one branch and one pull request**, so the different change is on the same
+///   objects rather than beside them;
+/// - **a second question, naming the new head**, and the first still on the
+///   conversation;
+/// - **three model calls**, which is what tells a redirect that ran its attempt from
+///   one that did not.
 #[tokio::test]
-async fn a_redirect_waits_and_names_the_instruction_it_received() {
+async fn a_redirect_produces_a_different_change_and_asks_again_about_it() {
     let world = World::fresh();
-    let answered = answered(&world, APPROVER, "do it differently", REDIRECTS).await;
+    let answered = answered(
+        &world,
+        APPROVER,
+        "do it differently",
+        REDIRECTS,
+        ThenWhat::OneMoreAttempt(repairs_differently()),
+    )
+    .await;
+    let first_sha = answered.head_sha.clone();
+    let first_file = answered
+        .published_before
+        .clone()
+        .expect("the first run published a tree");
 
-    let error = answered.outcome.expect_err("a redirect earns nothing yet");
+    // Still waiting, and still nothing readied: a redirect has produced something
+    // new to decide about and has decided nothing.
+    let error = answered
+        .outcome
+        .expect_err("a redirect has earned no transition");
     assert!(
         matches!(error, CapabilityError::AwaitingDecision { .. }),
         "got {error:?}"
     );
     assert_eq!(error.recurrence(), Recurrence::Awaiting);
+    assert_eq!(world.graphql_calls(), 0, "no approval was spent");
     assert!(
-        error.to_string().contains("use a bounded loop instead"),
-        "the instruction is named: {error}"
+        world.marker(WORK_ID).is_none(),
+        "a waiting run accounts for nothing: {:?}",
+        world.change_sets()
     );
+
+    // A genuinely different change, read out of the remote rather than counted.
+    let second_file = world
+        .published_file("src/lib.rs")
+        .expect("the redirected attempt published a tree");
+    assert_ne!(
+        second_file, first_file,
+        "the published tree must differ, and it is the tree that is the deliverable"
+    );
+    let second_sha = world.published_sha();
+    assert_ne!(second_sha, first_sha, "the head moved");
+    // Forward, by fast-forward. Both directions, so `is_ancestor` is shown to be
+    // answering rather than agreeing.
+    assert!(
+        world.is_ancestor(&first_sha, &second_sha),
+        "the new commit must descend from the published one, or the push was a \
+         rewrite: {first_sha} -> {second_sha}"
+    );
+    assert!(
+        !world.is_ancestor(&second_sha, &first_sha),
+        "and strictly forward, which is the denominator for the line above"
+    );
+
+    // One of everything, still.
+    assert_eq!(world.branches(), [world.branch()], "one branch");
     assert_eq!(
-        world.posted_comments().len(),
-        answered.posted_before,
-        "a redirect mutates nothing, including the conversation"
+        world.pull_request_creates().len(),
+        1,
+        "no second pull request was opened: {:?}",
+        world.pull_request_creates()
     );
-    assert_eq!(world.graphql_calls(), 0);
+
+    // A new question for the new head, and the old one is still in the thread.
+    let posted = world.posted_comments();
+    assert_eq!(
+        posted.len(),
+        answered.posted_before + 1,
+        "exactly one further question: {posted:?}"
+    );
+    let second = parse_marker(posted.last().unwrap()).expect("the new question carries a marker");
+    assert_eq!(
+        second.head_sha, second_sha,
+        "and it is about the change that was just published"
+    );
+    assert_ne!(
+        second.request, answered.request,
+        "a new head is a new question"
+    );
+    assert_ne!(second.effect, identity_at(&first_sha).1, "and a new effect");
+    assert_eq!(
+        world.comments_naming(&answered.request).len(),
+        1,
+        "the old question is neither deleted nor edited: {posted:?}"
+    );
+
+    // Three model calls: the interpretation, then the attempt's two turns. This is
+    // the observation that tells this run from one that never reached its attempt.
+    assert_eq!(
+        answered.model.requests().len(),
+        3,
+        "one interpretation and one two-turn attempt"
+    );
 }
 
-/// **A continuation needs no worktree, and this one could not have had one.**
+/// **The continuation that concludes needs no worktree, and this one could not have
+/// had one.**
 ///
 /// The approve path publishes nothing through git, so a process that cannot create
 /// a workspace at all still completes it — which is the property that makes the
 /// deleted-workspace lane in Task 13 possible.
+///
+/// The name says *the continuation that concludes* rather than *a continuation*,
+/// because a redirect is a continuation and does need one — see
+/// [`a_redirect_produces_a_different_change_and_asks_again_about_it`]. That is not a
+/// weakening of what is asserted here: the arm a person's approval is spent on is
+/// still the arm that can run with no checkout, which is the whole of what Task 13
+/// rests on.
 ///
 /// # Three witnesses rather than a count, and why a count is not available here
 ///
@@ -2147,7 +2423,7 @@ async fn a_redirect_waits_and_names_the_instruction_it_received() {
 #[tokio::test]
 async fn the_approve_path_invokes_git_not_at_all() {
     let world = World::fresh();
-    let answered = answered(&world, APPROVER, YES, APPROVES).await;
+    let answered = answered(&world, APPROVER, YES, APPROVES, ThenWhat::Nothing).await;
 
     answered
         .outcome
@@ -2183,7 +2459,7 @@ async fn the_approve_path_invokes_git_not_at_all() {
 #[tokio::test]
 async fn the_capability_delegates_the_whole_validation_order() {
     let world = World::fresh();
-    let answered = answered(&world, STRANGER, "approve", APPROVES).await;
+    let answered = answered(&world, STRANGER, "approve", APPROVES, ThenWhat::Nothing).await;
 
     let error = answered
         .outcome
@@ -2389,7 +2665,7 @@ async fn the_second_payload_comparison_catches_what_the_first_could_not_see() {
 #[tokio::test]
 async fn a_second_invocation_after_an_approval_accounts_for_the_work_and_does_not_mutate_again() {
     let world = World::fresh();
-    let first = answered(&world, APPROVER, YES, APPROVES).await;
+    let first = answered(&world, APPROVER, YES, APPROVES, ThenWhat::Nothing).await;
     first.outcome.expect("the approved transition landed");
     let accounted = world
         .marker(WORK_ID)

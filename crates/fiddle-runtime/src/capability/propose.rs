@@ -24,7 +24,9 @@
 //!    the one bounded model call
 //! 2  Approve   → EnsurePullRequestReady through Executor::execute_decided, Ok
 //!    Reject    → Err(DecisionRejected)  — Permanent, exit 20, a person said no
-//!    Redirect  → Err(AwaitingDecision)  — Awaiting, exit 10, naming the instruction
+//!    Redirect  → a fresh attempt on top of the published head, then the walk a
+//!                first run takes from step 2 on: Err(AwaitingDecision) — Awaiting,
+//!                exit 10, about a *different* change
 //!    Unclear   → Err(AwaitingDecision)  — Awaiting, exit 10, and nothing is posted
 //!    no answer → Err(AwaitingDecision)  — Awaiting, exit 10, the question stands
 //! ```
@@ -35,15 +37,25 @@
 //! nothing walks is the shape M2's `RequireHumanDecision` was criticised for, and
 //! this is what stops that criticism applying twice.
 //!
-//! # A continuation holds no workspace, and must not need one
+//! # Three of the four continuations hold no workspace, and the fourth is a redirect
 //!
 //! [`EffectContext::work`] is the worktree a push publishes from, and
 //! [`EnsureBranchPublished`] is the only operation that reads it. The approve,
-//! reject, redirect and unclear paths propose no such operation — the branch is
-//! already published, and the two `gh` calls involved touch no checkout — so a
-//! process that cannot create a workspace at all completes them. That is not a
-//! convenience: it is what makes a continuation from a fresh process, after the
-//! first run's worktree was removed, something the suite can prove offline.
+//! reject and unclear paths propose no such operation — the branch is already
+//! published, and the two `gh` calls involved touch no checkout — so a process that
+//! cannot create a workspace at all completes them. That is not a convenience: it is
+//! what makes a continuation from a fresh process, after the first run's worktree
+//! was removed, something the suite can prove offline.
+//!
+//! **A redirect is the exception, necessarily.** The only thing that can produce a
+//! different change is a bounded attempt, and an attempt needs a tree, so that arm
+//! creates one exactly as a first run does — see [`ProposeChange::redirect`], which
+//! is also where the difference that matters lives: the worktree is branched at the
+//! *published head* rather than at the fixture's `HEAD`, so the commit is a
+//! descendant and the push fast-forwards. This sentence used to say all four arms
+//! needed nothing, and `propose_capability`'s continuation fixture — which puts a
+//! *file* where the workspace root would be — is what makes the exception visible
+//! rather than assumed.
 //!
 //! Six things about the two walks are worth stating, because each is a decision
 //! rather than an implementation detail.
@@ -78,11 +90,18 @@
 //!
 //! The read has a third answer, and it is the one nobody plans for: **a pull
 //! request exists and no question has been asked about it**, which is where a
-//! process interrupted between the create and the comment left the world. That
-//! run resumes by asking, and deliberately does not attempt again — a second
-//! attempt would produce a *different* commit, the push would then be a refused
-//! non-fast-forward, and the run would be stuck for good. The change is already
-//! out there; what is missing is the question.
+//! process interrupted between the create and the comment left the world. That run
+//! resumes by asking, and deliberately does not attempt again: the change is already
+//! out there and what is missing is the question, so a second attempt would replace
+//! a change nobody has been given the chance to look at.
+//!
+//! **The reason given here used to be a mechanical one** — that a second attempt
+//! would produce a sibling commit, that the push would be a refused
+//! non-fast-forward, and that the run would be stuck for good. That is no longer the
+//! obstacle it was: [`ProposeChange::redirect`] attempts again on this very path's
+//! sibling, by branching at the published head, and its push fast-forwards. So the
+//! argument here has to stand on what it always actually rested on — nobody has been
+//! asked anything yet — rather than on a limitation that has since been lifted.
 //!
 //! # The worktree is per-run, not per-attempt, because the publisher has to name it
 //!
@@ -145,7 +164,7 @@
 
 use super::stub::write_atomically;
 use super::{Capability, CapabilityError, ExecutionGrant};
-use crate::agent::{attempt, AgentBudget, ToolHost, ToolReceipts};
+use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts};
 use crate::effect::{
     EffectContext, EffectOutcome, EffectReceipt, Executor, IntegrationOperation, ObservedState,
     ResolvedDecision,
@@ -172,6 +191,14 @@ use std::sync::{Arc, Mutex};
 
 /// The origin this capability's earned evidence is named under.
 const PROPOSE_ORIGIN: &str = "propose";
+
+/// The origin a redirect's own evidence reference carries.
+///
+/// Its own word rather than [`PROPOSE_ORIGIN`] with a suffix, because the two are
+/// different facts about the run and a reader filtering on one must not get the
+/// other: `propose` says how many files an attempt changed, and this says what
+/// somebody asked for and which comment they asked in.
+const REDIRECT_ORIGIN: &str = "redirect";
 
 /// The state a pull request this run just observed is in.
 ///
@@ -738,6 +765,29 @@ where
     /// [`CapabilityError::CheckFailed`] carrying its claim beside the exit code
     /// that overruled it, and nothing is published.
     async fn produce(&self) -> Result<Produced, CapabilityError> {
+        self.produce_from("HEAD", Direction::Fresh).await
+    }
+
+    /// The same, branched at `revision` and told what a person asked for.
+    ///
+    /// The two parameters travel together because the one caller that supplies
+    /// either supplies both: a redirected attempt has to start from the commit its
+    /// branch is already at — see [`Workspace::create_at`] for why `HEAD` will not
+    /// do — and it has to be told what to do differently, or it is the first
+    /// attempt again.
+    ///
+    /// Everything else is unchanged, and the list is the claim rather than an
+    /// omission: the same four tools, the same five bounds, the same check run by
+    /// this capability over whatever tree the attempt left, the same refusal of an
+    /// empty change set, the same commit of exactly the files git saw change. A
+    /// redirect changes *what* is attempted and nothing about what an attempt may
+    /// do — see [`Direction::Redirected`], whose text is model-authored and
+    /// influenced by anybody who can write a comment.
+    async fn produce_from(
+        &self,
+        revision: &str,
+        direction: Direction<'_>,
+    ) -> Result<Produced, CapabilityError> {
         let worktree = self.worktree();
         // `Workspace::create` puts the worktree at `<root>/<name>`, so the derived
         // path is split into exactly that pair. The name is not an attempt id and
@@ -756,10 +806,11 @@ where
         // Held for the whole of this execution and dropped at the end of it on
         // every path out, because the Drop guard is what removes the worktree —
         // and held *past this function*, because the push happens out of it.
-        let workspace = Arc::new(Workspace::create(
+        let workspace = Arc::new(Workspace::create_at(
             &self.config.fixture,
             root,
             &name,
+            revision,
             self.config.cancel.clone(),
         )?);
 
@@ -772,7 +823,13 @@ where
 
         // One attempt, bounded. An attempt that failed produced no change, so
         // there is nothing below for the check to be a check *of*.
-        let report = attempt(self.model.clone(), host, self.config.budget.clone()).await?;
+        let report = attempt(
+            self.model.clone(),
+            host,
+            self.config.budget.clone(),
+            direction,
+        )
+        .await?;
 
         // Verified by the shell, independently, whatever the report said.
         let check = workspace.run(&self.config.check).await?;
@@ -983,18 +1040,26 @@ where
     /// [`resolve`]'s steps 3 and 8 are what established that the conversation's
     /// copy agrees with this derivation.
     ///
-    /// A rejection concludes the run. A redirect and an unclear reply leave it
-    /// waiting on the *same* request and publish nothing: the effect has not
-    /// moved, so the request identity has not moved, so
-    /// [`PublishDecisionRequest`]'s own postcondition would suppress a second post
-    /// anyway. A follow-up comment would need a second identity for the same
-    /// question, which is an effect kind this build does not have.
+    /// A rejection concludes the run. An unclear reply leaves it waiting on the
+    /// *same* request and publishes nothing: the effect has not moved, so the request
+    /// identity has not moved, so [`PublishDecisionRequest`]'s own postcondition
+    /// would suppress a second post anyway. A follow-up comment would need a second
+    /// identity for the same question, which is an effect kind this build does not
+    /// have.
+    ///
+    /// **A redirect is the one arm that leaves through neither of those doors.** It
+    /// produces a different change, which moves the head, which moves the effect's
+    /// target, which moves the request identity — so it does not need a second
+    /// identity for the same question, it has a *first* identity for a new one. See
+    /// [`ProposeChange::redirect`]. This paragraph used to group it with `Unclear`,
+    /// and the grouping was true only while attempting again was unimplemented.
     async fn continue_from(
         &self,
         request: HumanDecisionRequest,
         interaction: InteractionRef,
         pr: u64,
         head_sha: &str,
+        work_id: &str,
     ) -> Result<EvidenceRef, CapabilityError> {
         let gated = self.gated(pr, head_sha);
         let target = gated.target();
@@ -1083,16 +1148,10 @@ where
                     reason: reason.clone(),
                 })
             }
-            (None, InterpretedHumanDecision::Redirect { instruction }) => Err(self.awaiting(
-                &request,
-                interaction,
-                &ignored,
-                format!(
-                    "comment {} asks for something else instead, and attempting again \
-                     is not implemented: {instruction}",
-                    acted_on.comment
-                ),
-            )),
+            (None, InterpretedHumanDecision::Redirect { instruction }) => {
+                self.redirect(work_id, head_sha, instruction, acted_on.comment, &ignored)
+                    .await
+            }
             (None, InterpretedHumanDecision::Unclear) => Err(self.awaiting(
                 &request,
                 interaction,
@@ -1116,6 +1175,112 @@ where
                     .to_string(),
             )),
         }
+    }
+
+    /// A person asked for something else: attempt it, publish it on top of what is
+    /// already there, and ask about the new change.
+    ///
+    /// # This is the one continuation path that needs a workspace
+    ///
+    /// The approve, reject and unclear arms propose nothing that reads
+    /// [`EffectContext::work`], which is what lets a fresh process complete them
+    /// with no checkout at all — see this module's documentation. A redirect breaks
+    /// that, necessarily: the only thing that can produce a different change is a
+    /// bounded attempt, and an attempt needs a tree. So this arm creates one exactly
+    /// as a first run does, at the path [`attempt_worktree`] derives, which
+    /// [`Capability::execute`] has already checked the context agrees with.
+    ///
+    /// # The commit goes **on top of** the published head, and that is what keeps one
+    /// of everything
+    ///
+    /// The worktree is branched at `head_sha` — the revision this run's pull request
+    /// says it is at, the revision the question a person answered was *about* — and
+    /// not at the fixture's `HEAD`. A second attempt from the fixture's `HEAD`
+    /// produces a sibling of the published commit, and the push is then a
+    /// non-fast-forward that [`crate::git::publish`] refuses and
+    /// never forces; this module's documentation used to give that as the reason a
+    /// redirect could not attempt again at all, and branching at the head is what
+    /// removes the obstacle rather than working around it.
+    ///
+    /// What it buys is the shape a person would recognise, because it is the shape a
+    /// person answering a review comment produces: a further commit on the same
+    /// branch, so one branch, one pull request, and one conversation carrying the
+    /// whole exchange. [`EnsureBranchPublished`]'s postcondition compares the remote
+    /// ref against the *intended* sha, so the push happens rather than being read as
+    /// already done; [`EnsurePullRequest`] finds the one that is already open and
+    /// creates nothing.
+    ///
+    /// # A new head is a new question, and it falls out of the identity rather than
+    /// being arranged
+    ///
+    /// [`ProposeChange::ask`] derives everything from
+    /// [`ProposeChange::question_about`], whose effect identity is taken over
+    /// [`EnsurePullRequestReady`]'s target — `{repo}#{pr}@{head}`. A moved head is
+    /// therefore a different target, a different effect id, a different request id
+    /// and a different marker, so [`PublishDecisionRequest`]'s own `inspect` finds no
+    /// comment carrying it and posts. Nothing edits or deletes the earlier question:
+    /// it names a different request, and this run has no reason to touch it. The
+    /// conversation keeps both, which is what makes the exchange readable.
+    ///
+    /// # Nothing is accounted for here
+    ///
+    /// This returns through [`ProposeChange::ask`], which is `Err(AwaitingDecision)`
+    /// — `Awaiting`, exit 10 — so [`ProposeChange::walk`]'s `?` is what stops the
+    /// change set being recorded. A redirect has produced something new to decide
+    /// about and has decided nothing, and a marker written here would stop the very
+    /// process meant to read the next answer.
+    ///
+    /// The instruction and the declined replies are recorded as evidence *before* the
+    /// attempt runs, so a bundle from a run that then failed still says what it was
+    /// told to do. `declined` is carried for the reason
+    /// [`ProposeChange::and_who_was_not_counted`] exists: the other arms report who
+    /// was read and not counted, and an arm that dropped it would leave the one
+    /// walk that did the most work saying the least about the conversation it read.
+    ///
+    /// # Why the pull request number is not a parameter
+    ///
+    /// [`ProposeChange::continue_from`] holds one, and passing it here would make
+    /// this the only place in the capability that asks a person's question of a
+    /// number it *remembered* rather than one it read. The new question is asked
+    /// about the pull request [`ProposeChange::publish`] just observed the change on,
+    /// through the same [`EnsurePullRequest::inspect`] the number upstream came from
+    /// — so the two cannot disagree without the lookup itself having changed its
+    /// answer mid-run, and in that case the fresher answer is the right one. A
+    /// parameter compared against it would be a branch nothing can reach, which is
+    /// the shape this milestone keeps finding untested.
+    async fn redirect(
+        &self,
+        work_id: &str,
+        head_sha: &str,
+        instruction: &Published,
+        comment: u64,
+        declined: &[IgnoredReply],
+    ) -> Result<EvidenceRef, CapabilityError> {
+        self.receipts.lock().unwrap().push(EvidenceRef(format!(
+            "{REDIRECT_ORIGIN}:{comment}:{}{}",
+            one_line(instruction.as_str()),
+            Self::and_who_was_not_counted(declined)
+        )));
+
+        // The instruction reaches the attempt through `Direction::Redirected`, whose
+        // documentation is where the two facts about this string live: it is
+        // model-authored rather than verbatim human text, and it is quoted as data
+        // inside a fence it cannot contain. Neither is re-argued here, and neither
+        // may be worked around by composing it into anything on the way.
+        let produced = self
+            .produce_from(head_sha, Direction::Redirected(instruction.as_str()))
+            .await?;
+        let published = self.publish(&self.branch(), &produced.sha).await?;
+        self.receipts.lock().unwrap().push(EvidenceRef(format!(
+            "{PROPOSE_ORIGIN}:{}",
+            produced.changed
+        )));
+        let asked = self.ask(work_id, published, &produced.sha).await;
+        // Explicit and after the question, for [`ProposeChange::walk`]'s reason: the
+        // push publishes out of this tree, and a reader should not have to find the
+        // teardown in a `Drop`.
+        drop(produced.workspace);
+        asked
     }
 
     /// Perform the transition a person authorised.
@@ -1475,6 +1640,7 @@ where
                             published.into_value(),
                             pull_request.number,
                             &head_sha,
+                            work_id,
                         )
                         .await?;
                     // The `?` above is the gate, and it is why this is the one
