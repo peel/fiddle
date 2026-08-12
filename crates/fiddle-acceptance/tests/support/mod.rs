@@ -1490,13 +1490,32 @@ pub const EDITED_AT: &str = "2026-08-11T12:00:00Z";
 /// already happened — strictly earlier than [`SEEDED_AT`], which is then its
 /// `updated_at`.
 ///
-/// The value that makes `created_at` a discriminating field. `fiddle-pwyi` recorded it
-/// as unclosable by construction, on the ground that `SEEDED_AT` was the only value
-/// anything in this world ever wrote to it, so reading the field and inventing it were
-/// indistinguishable. That was true of the fixture as it stood. With a second value
-/// there is a difference to see: [`World::show_as_edited_before_the_listing`] writes
-/// this one, and the refusal it provokes is the product comparing two stamps rather
-/// than assuming them equal.
+/// # Which `created_at` this makes discriminating, and which it does not
+///
+/// **Two surfaces share this field's name and only one of them is closed by this
+/// constant.** An earlier version of this doc said "the value that makes `created_at` a
+/// discriminating field", which is too broad and contradicts an accurate note in
+/// `human_direction.rs` — a reader would get opposite answers about one field name
+/// depending on which file they opened first.
+///
+/// **The product's `HumanResponse::created_at` is discriminating, and this value is what
+/// made it so.** [`World::show_as_edited_before_the_listing`] writes this into the by-id
+/// re-read file, and step 5 of the validation order compares the two stamps it finds
+/// there; deleting that comparison now fails
+/// `an_edited_request_comment_is_refused_rather_than_recomputed_around`, which it did not
+/// before.
+///
+/// **The fixture's own `comment_from`-`created_at` is still not.** That accessor reads
+/// the *listing*, which never carries this value — `write_listed_comment` stamps both
+/// fields `SEEDED_AT` — so hardcoding `comment_from`'s `created_at` still breaks nothing.
+/// `fiddle-pwyi`'s finding stands unchanged for that surface, and
+/// `the_scripted_conversation_is_mutable_and_ordered_by_id` records it at the assertion.
+///
+/// The durable form of such a claim names the condition rather than stating the verdict
+/// absolutely: *unclosable while `SEEDED_AT` is the only value written to this field
+/// **through this accessor***. Stated absolutely it reads as settled and outlives its
+/// justification, which is how the over-broad version above got written — a second value
+/// existed, and nobody checked which surface it was observable through.
 pub const WRITTEN_BEFORE_AN_EDIT: &str = "2026-08-10T00:00:00Z";
 
 /// The id the first inline review comment this world holds is numbered from.
@@ -2421,11 +2440,12 @@ impl World {
     /// and moving `created_at` back instead. The window did not move, so the first rule
     /// has nothing to say; the stamps disagree, so only the second can refuse.
     ///
-    /// It also makes `created_at` discriminating for the first time. `fiddle-pwyi`
-    /// recorded that field as unclosable *by construction* because [`SEEDED_AT`] was
-    /// the only value anything in this world ever wrote to it — true of that fixture,
-    /// and no longer true: [`WRITTEN_BEFORE_AN_EDIT`] is a second value, and a
-    /// `created_at` that were hardcoded or ignored fails the scenario below.
+    /// It also makes the **product's** `HumanResponse::created_at` discriminating for the
+    /// first time — and **not** the fixture's own. [`WRITTEN_BEFORE_AN_EDIT`] reaches only
+    /// the by-id re-read file, which is what step 5 compares; `comment_from` reads the
+    /// *listing*, where both stamps are still `SEEDED_AT`, so `fiddle-pwyi`'s null on that
+    /// accessor stands unchanged. See that constant for why the distinction is recorded
+    /// rather than glossed.
     pub fn show_as_edited_before_the_listing(&self, id: u64) {
         self.script_the_re_read(id, |comment| {
             comment["created_at"] = serde_json::Value::String(WRITTEN_BEFORE_AN_EDIT.to_string());
@@ -2475,20 +2495,33 @@ impl World {
     /// Tell the forge its pull request is at a different revision, and hand back the
     /// one it used to answer with.
     ///
-    /// # Why this refuses at step 2 rather than at step 6
+    /// # A moved head is not refused at all, and this comment used to say it was
     ///
-    /// A reader expects a moved head to be caught by `DecisionError::HeadMoved`,
-    /// which step 6 spells. On this path it never gets that far, and the reason is
-    /// the design's: the gated effect's target is `{repo}#{pr}@{head}`, and the
-    /// request id is derived over that target. So a run reading a *different* head
-    /// derives a *different* request id, and step 2 finds no comment on the
-    /// conversation naming it — `RequestAbsent`, before a single sha is compared.
+    /// **Corrected: an earlier version of this doc claimed the walk refuses at step 2
+    /// with `DecisionError::RequestAbsent`, "before a single sha is compared".** That is
+    /// wrong, and it was wrong in the file a reader consults first while the test that
+    /// drives this helper had the right account. Two independent inversions refuted it —
+    /// `panic!` on entry to `human::validate::resolve` fails 7 of 22 tests in
+    /// `human_direction` and leaves the moved-head scenario **passing** — so the
+    /// validation order is never entered and neither step 2's `RequestAbsent` nor step
+    /// 6's `HeadMoved` is reached.
     ///
-    /// That is a stronger property than a sha check would be, and it is why the
-    /// scenario is worth having: an approval does not merely fail to apply to the new
-    /// head, it is **unrecognisable** as an answer to a question about it. There is no
-    /// arrangement in which the old approval and the new head are in the same
-    /// conversation.
+    /// What actually happens is upstream of `resolve`. The gated effect's target is
+    /// `{repo}#{pr}@{head}` and the request id derives over that target, so a run
+    /// reading a different head derives a different request id;
+    /// `PublishDecisionRequest::inspect` finds no comment carrying *that* marker,
+    /// answers `None`, and the capability takes the **first** walk — it publishes a
+    /// second question and suspends at exit 10.
+    ///
+    /// That is a stronger property than a sha check would be, and it is why the scenario
+    /// is worth having: the old approval is not weighed and declined, it is
+    /// **unrecognisable** as an answer to any question this run knows how to ask.
+    ///
+    /// `an_approval_for_a_head_that_has_moved_is_unrecognisable_not_merely_rejected`
+    /// carries the measured account and asserts it. Prefer it to this summary, and note
+    /// that the same claim is *true* of `resolve` called directly — which is what
+    /// `fiddle-runtime`'s `decision_protocol` asserts — and false of this path. That
+    /// difference is what made the wrong version plausible for three rounds.
     ///
     /// The previous revision is returned, and the two are asserted to differ, because
     /// a "move" to the same value is the check that cannot fail.

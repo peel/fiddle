@@ -294,6 +294,12 @@ fn the_scripted_conversation_is_mutable_and_ordered_by_id() {
     // property the walk turns on is the *relation* — equal stamps mean nobody has
     // edited it — and that half is protected, because moving `updated_at` is what
     // `edit_comment` does and breaking it fails this test.
+    //
+    // **Still true, and worth pinning against a later reading.** `WRITTEN_BEFORE_AN_EDIT`
+    // was added by `fiddle-z9vy` and is a second value for this field name, which makes
+    // the *product's* `HumanResponse::created_at` discriminating — but it reaches only the
+    // by-id re-read file, and `comment_from` reads the listing. So this null is not closed
+    // by it. Two surfaces, one field name, and only one of them moved.
     assert_eq!(all[0].created_at, support::SEEDED_AT);
     assert_eq!(all[0].updated_at, support::EDITED_AT);
     assert_ne!(all[0].updated_at, all[0].created_at);
@@ -1465,8 +1471,18 @@ struct Row {
     /// mutated — identical to the reply having been refused. Two inversions came back
     /// null against it. See [`World::model_calls`].
     interpretation: (&'static str, &'static str),
-    /// What the conversation says when the continuation wakes.
-    reply: fn(&World),
+    /// What the conversation says when the continuation wakes, and **the id of the
+    /// comment it wrote**.
+    ///
+    /// The id is returned rather than discarded because it is what makes the row's reply
+    /// a *candidate* at all. `select_candidates` silently skips any comment numbered
+    /// below the request comment — it is not a reply to a question that did not exist
+    /// yet — and unlike every other exclusion that skip is **not** recorded as an
+    /// `IgnoredReply`. So a reply seeded under the question is invisible rather than
+    /// declined, and a row whose reply landed there would pass having proved nothing.
+    ///
+    /// `None` is the row that writes nothing, and it is the only row entitled to it.
+    reply: fn(&World) -> Option<u64>,
     exit: i32,
     /// Whether the pull request is out of draft afterwards — read from the forge.
     ready: bool,
@@ -1517,9 +1533,7 @@ const MATRIX: &[Row] = &[
     Row {
         name: "plain approval",
         interpretation: ("approve", APPROVAL),
-        reply: |world| {
-            world.post_comment(AUTHORIZED, APPROVAL);
-        },
+        reply: |world| Some(world.post_comment(AUTHORIZED, APPROVAL)),
         exit: 0,
         ready: true,
         model_calls: 3,
@@ -1527,9 +1541,7 @@ const MATRIX: &[Row] = &[
     Row {
         name: "rejection",
         interpretation: ("reject", "no, drop this"),
-        reply: |world| {
-            world.post_comment(AUTHORIZED, "no, drop this");
-        },
+        reply: |world| Some(world.post_comment(AUTHORIZED, "no, drop this")),
         // 20 and not 10: a person said no, and `Recurrence::Permanent` is the row
         // that tells a caller there is nothing here for a repeat to get past. A
         // rejection is the one non-approval that *concludes* the run.
@@ -1540,9 +1552,7 @@ const MATRIX: &[Row] = &[
     Row {
         name: "unclear",
         interpretation: ("unclear", "what does this change?"),
-        reply: |world| {
-            world.post_comment(AUTHORIZED, "what does this change?");
-        },
+        reply: |world| Some(world.post_comment(AUTHORIZED, "what does this change?")),
         // 10, because the question still stands. This is the row that says a
         // non-approval is not automatically a failure.
         exit: 10,
@@ -1552,9 +1562,7 @@ const MATRIX: &[Row] = &[
     Row {
         name: "unauthorized actor",
         interpretation: ("approve", "approve"),
-        reply: |world| {
-            world.post_comment(STRANGER, "approve");
-        },
+        reply: |world| Some(world.post_comment(STRANGER, "approve")),
         exit: 10,
         ready: false,
         model_calls: 2,
@@ -1568,9 +1576,7 @@ const MATRIX: &[Row] = &[
     Row {
         name: "bot author",
         interpretation: ("approve", "approve"),
-        reply: |world| {
-            world.post_bot_comment(AUTHORIZED, "approve");
-        },
+        reply: |world| Some(world.post_bot_comment(AUTHORIZED, "approve")),
         exit: 10,
         ready: false,
         model_calls: 2,
@@ -1578,9 +1584,7 @@ const MATRIX: &[Row] = &[
     Row {
         name: "app author",
         interpretation: ("approve", "approve"),
-        reply: |world| {
-            world.post_app_comment(AUTHORIZED, "approve");
-        },
+        reply: |world| Some(world.post_app_comment(AUTHORIZED, "approve")),
         exit: 10,
         ready: false,
         model_calls: 2,
@@ -1588,9 +1592,7 @@ const MATRIX: &[Row] = &[
     Row {
         name: "review comment only",
         interpretation: ("approve", "approve"),
-        reply: |world| {
-            world.post_review_comment(AUTHORIZED, "approve");
-        },
+        reply: |world| Some(world.post_review_comment(AUTHORIZED, "approve")),
         exit: 10,
         ready: false,
         model_calls: 2,
@@ -1598,7 +1600,7 @@ const MATRIX: &[Row] = &[
     Row {
         name: "no reply at all",
         interpretation: ("approve", "approve"),
-        reply: |_| {},
+        reply: |_| None,
         exit: 10,
         ready: false,
         model_calls: 2,
@@ -1626,7 +1628,25 @@ fn the_decision_matrix_mutates_only_where_it_should() {
 
         let suspension = suspend(&world);
         let pr = suspension.pull_request;
-        (row.reply)(&world);
+        // Read before the reply is written: a bot's *reply* is indistinguishable from a
+        // question to `request_comments`, which tells them apart by `is_bot` and nothing
+        // else, so `the_only_request_comment` would refuse a conversation holding both.
+        let question = world.the_only_request_comment().id;
+        let posted = (row.reply)(&world);
+        // **The reply is numbered where a reply counts.** Asserted from the id the
+        // fixture really returned rather than from any constant: `select_candidates`
+        // skips a comment below the request comment *without recording it*, so a row
+        // whose reply landed under the question would be refused for a reason no
+        // assertion here mentions, and would pass. This is the one exclusion that leaves
+        // no trace, which is why it needs an assertion of its own.
+        if let Some(posted) = posted {
+            assert!(
+                posted > question,
+                "{name}: the reply is comment {posted} and the question is {question}; a \
+                 reply numbered below the question is silently skipped rather than \
+                 declined, so this row would prove nothing"
+            );
+        }
         world.accept_the_ready_mutation();
 
         let run = world.fiddle([
@@ -1685,15 +1705,12 @@ fn the_decision_matrix_mutates_only_where_it_should() {
             // absent from the conversation: a comment that *would* be a candidate, and
             // is not one, which is what makes the negative above a property rather
             // than an accident of numbering.
-            let question = world.the_only_request_comment();
-            assert!(
-                support::FIRST_REVIEW_COMMENT > question.id,
-                "the review comment must be numbered above the question ({} vs {}), or \
-                 a defect merging the collection would change nothing and this row \
-                 could not fail",
-                support::FIRST_REVIEW_COMMENT,
-                question.id
-            );
+            // The ordering is asserted from the id the fixture returned, in the shared
+            // check above this block — **not from `FIRST_REVIEW_COMMENT`**, which is what
+            // this used to read. An assertion against the constant is a value appearing
+            // only where its value cannot matter: hardcoding the numbering to `1 + len`
+            // left all 22 tests passing, because the constant and the assertion moved
+            // together while the id the world really held did not.
             assert!(
                 !world
                     .conversation()
@@ -1981,6 +1998,15 @@ fn an_approval_edited_between_the_listing_and_the_re_read_is_refused() {
         0,
         "neither version of an edited reply is one to act on"
     );
+    // **And no model was asked to read either version.** Step 5 precedes step 7, so an
+    // edited reply is refused before anything interprets it — which the documentation
+    // claimed and nothing asserted until now. Two, from the suspension's bounded
+    // attempt.
+    assert_eq!(
+        world.model_calls(),
+        2,
+        "an edited reply is refused before step 7, so nothing interpreted it"
+    );
     // 11 and not 20: `DecisionError::ReplyEdited` is `Recurrence::Correctable`,
     // because an edit is a race a later walk re-reads past — the reply is whatever it
     // settles at, and this walk simply declines to act on a text that moved under it.
@@ -2069,6 +2095,16 @@ fn an_edited_request_comment_is_refused_rather_than_recomputed_around() {
         refused.stderr
     );
     assert_eq!(rewritten.graphql_calls(), 0);
+    // **Three, and this is the sharpest assertion in the tampering evidence.** Step 8
+    // follows step 7, so the run reached the model, was handed a genuine approval from
+    // the nominated approver, read it as an approval — and refused anyway, on its own
+    // recomputation. That sentence was carried by a doc comment while the matrix rows
+    // next door pinned the same kind of fact with `model_calls`; now it is asserted.
+    assert_eq!(
+        rewritten.model_calls(),
+        3,
+        "the walk reached step 7 and interpreted the approval before step 8 refused it"
+    );
     // 20: `ForeignPayload` is `Recurrence::Permanent`. Nothing a repeat does re-derives
     // a digest that agrees with a marker somebody rewrote, so a caller is told to stop
     // rather than to try again. **And the model was reached first** — step 8 follows

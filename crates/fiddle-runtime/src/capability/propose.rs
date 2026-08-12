@@ -1302,9 +1302,27 @@ where
     /// operator unable to tell "not on the allowlist" — which they can fix by editing
     /// the allowlist — from "not a person", which they cannot.
     ///
-    /// **An empty list adds nothing.** The sentence is only extended when there is
-    /// something to say, so a conversation nobody has written on still reads as the
-    /// plain statement that nobody has answered.
+    /// # The empty branch is **unreachable in this build**, and is kept deliberately
+    ///
+    /// Said plainly because an earlier version of this doc described it as a case — *"a
+    /// conversation nobody has written on still reads as the plain statement that nobody
+    /// has answered"* — and that case cannot occur. `select_candidates` declines the
+    /// request comment itself as `Ignored::RequestComment`, and the request comment is by
+    /// construction on the conversation the walk just found it in, so `declined` holds at
+    /// least one entry at every one of [`ProposeChange::awaiting`]'s call sites. Verified
+    /// by inversion: `panic!` in the branch below fails no test.
+    ///
+    /// It is kept for the reason an unreachable fail-closed arm is worth keeping — the
+    /// alternative is not "no branch", it is falling through to the formatting below with
+    /// nothing to format, which renders *"; 0 comments were read and not counted: "*: a
+    /// sentence that states a count nobody asked for and then trails off after a colon.
+    /// A reader would be worse served by that than by the plain statement, and it would
+    /// be a defect introduced by tidiness.
+    ///
+    /// It becomes reachable the moment `select_candidates` stops declining the request
+    /// comment, which is a change somebody could reasonably make — the request comment is
+    /// not a *reply* in any sense a reader cares about — so this is a guard with a
+    /// foreseeable future rather than dead code.
     fn and_who_was_not_counted(declined: &[IgnoredReply]) -> String {
         if declined.is_empty() {
             return String::new();
