@@ -2249,20 +2249,49 @@ impl World {
     /// # Why a scenario has to do this
     ///
     /// The validation order's step 5 re-reads, **by its own id**, everything the
-    /// decision rests on: every candidate reply *and fiddle's own question*. The
-    /// scripted `gh` answers that route from `issue-comments/by-id/<id>.json` and
-    /// panics on a comment nothing scripted — with no merge from the world log, and
-    /// deliberately so. `propose_capability.rs` records the reason at the tier
-    /// above: the by-id entry is built from the body the world **really received**,
-    /// so a re-read cannot agree with a marker the capability never published. A
-    /// stub that merged would make the two reads agree by construction and take that
-    /// away.
+    /// decision rests on: every candidate reply *and fiddle's own question* —
+    /// `validate.rs:446-449` calls `reread` on `asked` before the candidate loop.
+    /// The scripted `gh` answers that route from `issue-comments/by-id/<id>.json`
+    /// and panics on a comment nothing scripted, with no merge from any other source.
     ///
-    /// So this is the acceptance tier's version of the same fixture step, and it
-    /// keeps the same discipline: the entries are copied from what the **listing
-    /// really answered**, read back through the scripted `gh` with its merge
-    /// applied, and not from the page files this file wrote. A question fiddle
-    /// posted is therefore mirrored exactly as it was posted, marker and all.
+    /// **The consequence is the deepest finding on this milestone, and it is worth
+    /// stating rather than working around.** Because that route panics for any
+    /// comment the world's own `POST` created, **the continuation walk had never
+    /// once been driven against a posted question** — only against ones a test wrote
+    /// straight into a by-id file. So the step whose entire purpose is catching a
+    /// question edited between publication and continuation had been exercised only
+    /// against constructed inputs.
+    ///
+    /// It is the same trap `CONVERSATION_ISSUE` carries, **one layer beneath the fix
+    /// for it**: `fiddle-pwyi` closed the *listing* half — nothing had asserted that
+    /// a comment posted through the forge appears on the listing at all — and this
+    /// half was invisible from where that fix stood. A trap that recurs one layer
+    /// under its own remedy is worth more to the next lane than either instance
+    /// alone, which is why it is written here and not only in a bean.
+    ///
+    /// # Why it is mirrored here rather than merged in the stub
+    ///
+    /// Not because the stub must not merge. `propose_capability.rs:459` was read
+    /// that way at first and it does not say so — it *describes* the route having no
+    /// merge and then says how that suite copes, which is a statement of fact and
+    /// not a ruling. Recorded because the misreading nearly became this helper's
+    /// justification.
+    ///
+    /// The reason that survives is that **a world-log merge would not be enough.**
+    /// Two kinds of comment reach this conversation: fiddle's question, through a
+    /// real `POST` the stub logs, and a person's reply, which [`World::post_comment`]
+    /// writes straight onto a page because no capability in this build posts on
+    /// somebody else's behalf. A fallback over the world log answers the first and
+    /// not the second, and step 5 re-reads **both** — so the walk would still fail.
+    /// An inversion says so rather than an argument: mirroring only the comments a
+    /// `POST` created leaves the pull request at `draft: true`, because B refuses
+    /// before it reaches the mutation.
+    ///
+    /// So the entries are copied from what the **listing really answered**, through
+    /// the scripted `gh` with its merge applied — one source that already unifies
+    /// both kinds — and not from the page files this file wrote. A question fiddle
+    /// posted is mirrored exactly as it was posted, marker and all, which is the
+    /// property `propose_capability.rs` describes wanting.
     ///
     /// **Order matters and it is the caller's to get right.** Call it after the run
     /// whose comments are to be re-readable and before the run that re-reads them. A

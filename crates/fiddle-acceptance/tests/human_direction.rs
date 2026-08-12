@@ -925,15 +925,31 @@ fn a_suspension_then_a_fresh_process_acts_only_on_what_the_conversation_says() {
     // work`, which `fiddle-af8e`'s evaluation passed.
     //
     // **What is worth recording is that `usp7`'s own reason for being debt rather
-    // than a bug no longer holds.** It argues that `AlreadyReady` completing rather
-    // than failing is what keeps the missing marker survivable — and that is a
-    // claim about the *capability's* `Result`, which is still true. But `9535b3a`
-    // moved the run outcome off the capability's result and onto the re-derivation,
-    // so the capability concludes and the run asks to be retried. A caller looping
-    // on 11 never terminates. `propose.rs`'s own module documentation states the
-    // opposite of what happens — *"It completes rather than failing"* — and that
-    // sentence is written twice, here and on `already_ready`; both belong to
-    // `usp7`'s file.
+    // than a bug was wrong when it was written.** It argues that `AlreadyReady`
+    // completing rather than failing is what keeps the missing marker survivable —
+    // a claim about the *capability's* `Result`, which is still true and is not the
+    // thing that decides the exit code. `9535b3a` moved the run outcome onto the
+    // post-execution re-derivation, so the capability concludes and the run asks to
+    // be retried, and **a caller that retries on 11 never terminates.**
+    //
+    // The dates are the point, and this comment had them backwards before the lead
+    // caught it. `9535b3a` is **2026-08-08** and `usp7` was created **2026-08-11**:
+    // the commit predates the bean by three days, so that paragraph was not
+    // superseded by a later change — it was written three days after the change that
+    // made it false, and then quoted forward. "Invalidated later" is a blameless
+    // timeline; "wrong when written" is a review that did not test its premise, and
+    // it is the same shape as this milestone's tally errors — a claim true of
+    // something adjacent, restated as though true of the thing in hand.
+    //
+    // `propose.rs`'s own documentation states the opposite of what happens, twice:
+    // *"It completes rather than failing"* in the module header (`:131-134`), and
+    // *"it is not a failure of the run … reporting that as an error would make a
+    // completed run fail on its next invocation"* on `already_ready` (`:1113-1118`).
+    // Cited as ranges rather than single lines because the sentences span several
+    // and this milestone has already shipped seven stale citations. Both are false,
+    // both are `usp7`'s file, and neither is corrected here: fixing prose in a file
+    // whose behaviour another bean owns is how a claim gets corrected in one place
+    // and shipped in another.
     //
     // Asserted as 11 rather than left failing so the accumulated gate stays green
     // for the beans after this one. Nothing else in this walk is weakened: every
