@@ -31,6 +31,20 @@ the exact opposite of what they found. Write the per-lane code under a distinct 
 and say in the report which field is the result, because a reader who greps the obvious one gets the
 inverse of your finding.
 
+**In this repository `git diff`'s body is reformatted and carries no `+`/`-` prefixes.** The `rtk` proxy hook
+renders it as two columns with `..` marking an added line, so **`grep -cE '^\+'` returns 0 over a range with
+245 insertions** — a clean-looking zero that is pure artefact. This is the truncated-log rule with a new cause:
+not a pipe dropping output, but a proxy rewriting it. `git diff --quiet` (exit status), `git diff --stat` and
+`git diff --name-only` are unaffected, so the inversion guards are sound. **Count at each sha instead —
+`git show <sha>:<path> | grep -c` — which is format-independent.**
+
+**`--no-fail-fast` is load-bearing whenever a mutation could fire in more than one binary.** M3: a lane flipped
+a `Recurrence` arm and its first run reported **one result line of twenty**, because cargo stopped at the first
+failing binary — and the lib binary, where the only pin lived, runs first. The tally alone read as an ordinary
+`135/1`. **The denominator is the only thing that caught it**, and a repeat without the flag gets a 1-of-20
+measurement that reads like a 20-of-20 one. That log is kept, marked `== SUPERSEDED ==` in the file with the
+reason.
+
 **Capture exit codes from the command itself, never through a pipe.** `echo $?` after a pipe reports the last
 stage's status.
 
@@ -371,6 +385,12 @@ Recorded because they cost more wall-clock in M3 than any code defect.
 consecutive and all three after this rule was written down — each one a message assuming a lane had not
 finished when it had. Writing the rule did not stop it; the lanes caught it every time. Check the tree and name the
 sha before ruling; a lane's "done" does not cover a request that crossed it.
+
+**Re-measure the baseline at the sha you are dispatching from, not the sha you last measured.** M3's lead put
+`665 / 0 / 1 / 42` in four dispatches after the true figure had become 667 — two tests landed in
+`tests/workspace.rs` in between. Two lanes caught it and traced the delta; a third would have had to. A stale
+baseline in a dispatch invites a lane to reconcile a difference that is the lead's arithmetic rather than its
+own work.
 
 **Do not dispatch evaluation against a moving tip.** Four stale dispatches. Give each evaluator its own
 worktree at a pinned sha so implementation and evaluation overlap without drifting under each other — waiting
