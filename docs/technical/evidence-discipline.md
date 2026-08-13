@@ -15,7 +15,11 @@ pipe. Write an `EXIT=` marker after every run and check for it before reading an
 partial log as final **six times** and was caught by a missing marker each time.
 
 **The marker goes into the log, not into the console.** Of five inversion drivers in M3, two echoed the exit
-code to stdout instead, and **79 of 132 logs carry no `EXIT=` marker** as a result. For a single-lane run the
+code to stdout instead, and **158 of 194 inversion-shaped logs carry no `EXIT=` marker** as a result. That
+figure was first recorded here as "79 of 132" — wrong on both numbers, because the count globbed `inv-*.log`
+while the same directory held 53 `inv_*.log` and 6 `8vpm-inv-*.log`, all equally markerless. **A hyphen
+against an underscore**, which is §2's own rule about patterns and structure, committed into the file that
+states it. For a single-lane run the
 absence is recoverable, since one `test result:` line is the whole run; for a 19- or 42-binary run it is not,
 and one such log measured nothing at all — zero results, ending in `warning: build failed`. A status that
 survives only in a transcript is not in the evidence pack.
@@ -33,6 +37,12 @@ stage's status.
 **A negative check must print its denominator.** "Found nothing" and "examined nothing" must not render
 identically. M3: four checks returned an empty result because they ran from the wrong directory, and only the
 denominator distinguished a clean bill from a broken check.
+
+**"Found nothing" fails hardest when you looked in one place.** M3's audit reported one bean's inversion
+artefacts as "none"; they were on disk under `scratchpad/usp7/` as `inv-I1`…`inv-I8` with a manifest and a
+restore script, while the audit looked for `inv-usp7/`, the naming its own lane used. The absence was
+published inside the section auditing other beans for exactly this, and the artefacts **supported** the
+conclusion it had already reached another way.
 
 **A filtered count reports both numbers.** *"5 hits, of which 4 are `String::as_str` on a different type"* —
 never the filtered count alone. M3: a lane reported "exactly one hit" from a grep returning five, one message
@@ -131,6 +141,11 @@ reality, because the same hand wrote both. Pair it with one assertion over a **r
 re-sorted its live log after dispatching a genuine GraphQL mutation by hand. Correspondingly, one real call
 cannot cover four arms. **Neither surface alone is the property.**
 
+**A null is only as wide as the lanes behind it.** M3: one mutation ran green in four lanes a reader would
+name — the library, the protocol lane, the capability lane, the acceptance lane — and red in a fifth, 2 of 26.
+The record and the bean filed from it both reported the null without naming the lane that refutes it. **Report
+the lanes a null was taken over, not only its count.**
+
 **A null result is a finding to report, not a problem to hide.** M3's beans reported 8, 7, 4 and 0 nulls; every
 one was either closed or recorded with its reason. Two were found by attacking a *proposed fix* rather than the
 code.
@@ -158,6 +173,15 @@ repository. A restore loop pointed at any of them today reverts five files with 
 neighbouring lane had left in a shared scratchpad. Note also that `mkdir -p` cannot distinguish a directory it
 created from one it found.
 
+**A cleanup counts what is left, not what it deleted.** M3's live lane proved this by mutating its own
+sweep to select the author's user id instead of the comment's: the walk still passed, and the sweep printed
+`found 2, deleted 0, left 2` and exited 1. A sweep that reports its deletions cannot distinguish a successful
+delete from a delete of nothing; a sweep that asserts the remaining count can. The same lane also found that
+the mechanism its own bean gave for this defect was wrong — the payload's key order puts `id` *before*
+`user.id`, so scraping the first id-shaped field happens to be right — while the consequence was real and
+re-measured, `DELETE` by the user id answering 404 with the comment still listed. **A claim's consequence can
+be real while its stated mechanism is false, and only the consequence is worth carrying forward.**
+
 **Verify the restore with both `cmp` against the pin and `git diff --quiet`.**
 
 **One worktree, one lane, and a bean is not finished until its lane stops editing.** M3's worse instance: the
@@ -176,10 +200,16 @@ the pin passes and `git diff --quiet` passes. Defending against it means re-read
 every restore and comparing it to the sha you pinned at. The lane that found this records the sha per
 inversion and does not compare it — which is how it knew the gap was there.
 
-**`git commit --only <path>` is the form that cannot capture a neighbour's mutation**, and it is why four
-docs commits landed inside two running inversion exercises in M3 without corrupting either. A bare
-`git commit -a`, or a `git add` of a directory, stages whatever is dirty — including a mutation a neighbour is
-mid-run on, which then becomes `HEAD` with no guard able to see it. Commit the paths you edited, by name.
+**`git commit --only <path>` is necessary and not sufficient.** It prevents *staging* a neighbour's
+mutation, which is why four docs commits landed inside two running inversion exercises in M3 without
+corrupting either. It does **not** stop the pre-commit hook: `prek` stashes every unstaged change, runs the
+hooks, and restores. The lead committed a docs file while a lane had **189 uncommitted lines** in the same
+worktree and watched `Unstaged changes detected, stashing` scroll past — that work spent the interval in
+`.devenv/state/prek/patches/*.patch` and came back only because nothing failed. **The rule with no caveat: do
+not commit in a worktree where another lane has uncommitted work.** A bare `git commit -a` is worse still,
+staging the mutation outright so it becomes `HEAD` where no pin-guard can see it. This rule was stated as
+sufficient twenty minutes before being demonstrated insufficient; it is the third refinement of the same rule
+in one afternoon, and each came from overstating the previous.
 
 **Namespace your scratchpad by bean, and never write a driver to its root.** M3: an evaluator was given its own
 detached worktree but not its own scratchpad, wrote `invert.sh` to the shared root, and replaced the
