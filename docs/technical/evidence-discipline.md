@@ -115,6 +115,15 @@ created from one it found.
 
 **Verify the restore with both `cmp` against the pin and `git diff --quiet`.**
 
+**One worktree, one lane, and a bean is not finished until its lane stops editing.** M3's worse instance: the
+lead dispatched an auditing lane into a worktree, then asked a supposedly-finished lane for four more edits in
+the same tree. The second lane sampled `git status` every three seconds, caught product files cycling
+mutate → test → restore, and **refused to edit until told the tree was its own** — correctly, and its reasoning
+is the general statement: *a scratchpad collision costs a driver, which is replaceable; a working-tree collision
+reverts committed work while both `cmp`-against-pin guards pass*, because each guard compares the tree only to
+its own pin and is silent about another writer. **Reopening a bean means reassigning its worktree, or giving it
+a new one.**
+
 **Namespace your scratchpad by bean, and never write a driver to its root.** M3: an evaluator was given its own
 detached worktree but not its own scratchpad, wrote `invert.sh` to the shared root, and replaced the
 implementation lane's driver — a file that bean's record cites as evidence. Its logs and mutation scripts
