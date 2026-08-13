@@ -280,22 +280,29 @@ fn a_revision_the_fixture_can_only_fetch_is_refused_by_name_and_nothing_fetches(
     let refusal = match Workspace::create_at(&fixture_repo, &root, &attempt(), &published, token())
     {
         Err(error) => error,
-        // TRIPWIRE. `create_at` branched at a revision the fixture's store did
-        // not hold, so something now resolves it — a fetch, an alternate, or a
-        // caller contract that ensures the object first. That is the limitation
-        // this test exists to pin, and it is no longer the limitation.
+        // TRIPWIRE, and it is reached by two different causes, so the message
+        // names both rather than assuming the good one.
         //
-        // What to write in its place: assert *how*. Which credential the
-        // resolution carries and where it comes from, that `git::publish` is
-        // still the only credential-carrying git child or that it deliberately
-        // is not, and that a resolution which fails is still a correctable
-        // `WorkspaceError` naming the revision rather than a silent branch from
-        // somewhere else. Then say so at `ProposeChange::produce_from`, which is
-        // the caller the constraint was documented for.
+        // Either something now *resolves* the revision — a fetch, an alternate,
+        // a caller contract that ensures the object first — in which case the
+        // limitation this test exists to pin has been lifted, and what to write
+        // in its place is an assertion about *how*: which credential the
+        // resolution carries and where it comes from, whether `git::publish` is
+        // still the only credential-carrying git child or deliberately is not,
+        // and that a resolution which fails is still a correctable
+        // `WorkspaceError` naming the revision. Then say the same at
+        // `ProposeChange::produce_from`, which is the caller the constraint was
+        // documented for.
+        //
+        // Or the refusal was *swallowed* and this is a worktree branched from
+        // somewhere else — the failure the documentation calls out as the one
+        // thing that must not happen quietly. That is a defect, not a lifted
+        // limitation, and the test stays as it is.
         Ok(_) => panic!(
-            "create_at resolved {published}, which the fixture's store did not \
-             hold — the documented limitation has been lifted and this test has \
-             to be rewritten, not deleted; see the comment above this panic"
+            "create_at returned a workspace for {published}, which the fixture's \
+             store did not hold: either something resolves it now, or the refusal \
+             was swallowed and this worktree is branched from somewhere else. See \
+             the comment above this panic — the two want opposite responses"
         ),
     };
 
