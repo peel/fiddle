@@ -3410,18 +3410,26 @@ fn a_redirect_whose_attempt_changes_nothing_asks_nothing_and_says_why() {
 /// - **The transition is unspent**, against a world armed to accept it — and then
 ///   spent, by the identical words posted one position later.
 ///
-/// # Why this and not the redirect scenario the criterion describes
+/// # Why this and not only the redirect scenario the criterion describes
 ///
 /// The motivating case is an approval of change one stranded below the question a
-/// redirect asks about change two, and **this fixture cannot express it.** Measured:
-/// the first question is 9000, a reply 9001, a second reply 9002, and the second
-/// question is **9001 again** — `gh_stub`'s posted comments are numbered positionally
-/// within a path while `World::post_comment` numbers from the highest id the
-/// conversation shows, and neither knows about the other. The world that leaves has
-/// two comments sharing an id, `comment_by_id` reports a duplicate rather than
-/// choosing, and no third process can walk it. See
-/// [`an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent`],
-/// which asserts what that world does support and pins the collision.
+/// redirect asks about change two. **Corrected: this used to say "this fixture cannot
+/// express it", and gave the measurement** — the first question 9000, a reply 9001, a
+/// second reply 9002, and the second question **9001 again**, because `gh_stub`'s
+/// posted comments were numbered positionally within a path while
+/// `World::post_comment` numbered from the highest id the conversation showed, and
+/// neither knew about the other. That was true, and the world it left had two comments
+/// sharing an id, so `comment_by_id` reported a duplicate and no third process could
+/// walk it.
+///
+/// Ids are now minted at post time, and
+/// [`an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent`]
+/// drives that third process. **This scenario is still worth having, and its reason
+/// never depended on the collision:** it changes one thing and nothing else — where the
+/// approval sits relative to the question — against the same author, the same bytes,
+/// the same world and the same script. The redirect scenario changes the question as
+/// well, so an identity mechanism and an ordering mechanism are not distinguished there
+/// and are distinguished here.
 #[test]
 fn an_approval_below_the_question_is_no_candidate_and_the_same_words_above_it_are() {
     let world = World::with_model_script(a_suspension_and_its_approval(APPROVAL));
@@ -3553,10 +3561,13 @@ fn an_approval_below_the_question_is_no_candidate_and_the_same_words_above_it_ar
 /// It buys nothing, which is the claim, but it buys nothing *because a later reply
 /// superseded it* and not because it was excluded from the candidate set.
 ///
-/// The ordering rule is the other one, and it is what would strand this approval
-/// below the question a redirect asks about the new change. It is proven in
+/// The ordering rule is the other one, and it is what strands this approval below the
+/// question the redirect asks about the new change. It is proven in isolation by
 /// [`an_approval_below_the_question_is_no_candidate_and_the_same_words_above_it_are`],
-/// isolated, because it cannot be reached from here — see the tripwire below.
+/// and — since ids are minted at post time — **also reached from here**, by a third
+/// process at the end of this test. **Corrected: this used to say it "cannot be reached
+/// from here — see the tripwire below".** It could not, and the tripwire is what said
+/// so; both are now discharged.
 ///
 /// # What is asserted, and what each observation rules out
 ///
@@ -3565,6 +3576,10 @@ fn an_approval_below_the_question_is_no_candidate_and_the_same_words_above_it_ar
 /// names the redirect's comment as the one acted on, so the walk did not merely fail
 /// to read the approval — it read a different comment and said which. And the
 /// transition is unspent against a world armed to accept it.
+///
+/// Then a third process, which is the criterion's own scenario and the thing the
+/// duplicate id was a ceiling on: it finds its question standing, finds no candidate
+/// above it, asks nobody, publishes nothing, and names the approval in no exclusion.
 #[test]
 fn an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent() {
     let world = World::with_model_script(a_suspension_and_its_redirect(INSTEAD, REDIRECTION));
@@ -3640,45 +3655,138 @@ fn an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent() 
          outvoted is not being refused: {evidence}"
     );
 
-    // --- the tripwire, and what it is holding open ---
+    // --- one conversation, one numbering ---
     //
-    // The criterion this scenario belongs to is about the candidate set of the
-    // **new** question: the approval of change one is below it, so it is not a
-    // candidate for change two, and a further process finds no reply and stays
-    // suspended. **That process cannot be driven in this world**, because the
-    // fixture gives the new question an id it has already given the approval.
+    // **This replaces a tripwire, and the tripwire fired as designed.** It read
+    // `assert_eq!(questions[1].id, approved)` and said: *"this pins a fixture defect,
+    // not a property. The new question shares an id with the approval below it, so no
+    // process can continue from this conversation."* Two independent schemes ran over
+    // one conversation — `gh_stub`'s posted comments numbered `9000 + i` within a path,
+    // `World::post_comment` numbering from the highest id the conversation showed — and
+    // neither knew about the other, so the question A asked was 9000, the approval 9001,
+    // the redirect 9002, and the question this run asked was **9001 again**.
     //
-    // `gh_stub`'s `posted_comments` numbers a run's own comments `9000 + i` within a
-    // conversation path and knows nothing of what a test seeded, while
-    // `World::post_comment` numbers from the highest id the conversation shows. So
-    // the question A asked is 9000, the approval 9001, the redirect 9002, and the
-    // question this run just asked is 9001 again. `comment_by_id` reports a
-    // duplicate rather than choosing from it, so step 5's re-read of the request
-    // comment fails, and `gh_stub.rs:1187-1189` is wrong to say the collision needs
-    // "the very defect a continuation exists not to have" — a redirect asking again
-    // after a reply is the ordinary case, and the converged
-    // `a_redirect_produces_a_different_change_and_asks_again_about_it` already
-    // leaves such a world behind.
-    //
-    // Pinned rather than left as a note, so it fails the day the fixture assigns
-    // ids at post time and the property becomes assertable.
+    // `gh_stub::apply_effect` now mints a posted comment's id at post time, above
+    // everything the world holds. So the pinned equality is gone and the property the
+    // ceiling was hiding is asserted below it instead.
     let questions = world.request_comments();
     assert_eq!(
         questions.len(),
         2,
         "the redirect asked again: {questions:?}"
     );
-    assert_eq!(
-        questions[1].id, approved,
-        "TRIPWIRE — this pins a fixture defect, not a property. The new question \
-         ({}) shares an id with the approval below it ({approved}), so no process \
-         can continue from this conversation. When `gh_stub` assigns a posted \
-         comment's id at post time instead of positionally, this assertion fails: \
-         replace it with `questions[1].id > approved`, run a third process, and \
-         assert it finds no reply, publishes nothing, and names no declined entry \
-         for comment {approved} — which is the ordering rule reached through the \
-         scenario the criterion describes rather than through its isolation.",
+    assert!(
+        questions[1].id > approved,
+        "the new question must sit above the approval it does not answer: question \
+         {} against approval {approved}",
         questions[1].id
+    );
+    // **Every comment in the world has a distinct id**, which is the claim the
+    // arithmetic makes and the one a single pair of ids cannot carry. Restoring either
+    // numbering scheme fails here: positional numbering gives the second question the
+    // approval's id, and `max(id) + 1` without the `FIRST_POSTED_COMMENT` floor gives a
+    // first question the id 1 — which is asserted against elsewhere, and would pass
+    // this line, so this is not the only guard.
+    let ids: Vec<u64> = world.conversation().iter().map(|c| c.id).collect();
+    let mut distinct = ids.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        ids.len(),
+        "one conversation has one numbering, and this one holds {ids:?}"
+    );
+
+    // --- process C: the ordering rule, reached through the scenario rather than its
+    // isolation ---
+    //
+    // The criterion this scenario belongs to is about the candidate set of the **new**
+    // question. The approval of change one is below it, so it is no candidate for
+    // change two, and a further process finds no reply and stays suspended. This is the
+    // process the duplicate id made undrivable: step 5 re-reads the request comment
+    // **by id**, and `comment_by_id` reports a duplicate rather than choosing from it.
+    //
+    // GitHub's by-number answer is re-seeded first, from the remote's own ref, because
+    // that is what the world now is: the branch moved when the redirect's attempt
+    // pushed, and a pull request's head follows its branch. `suspend` does the same step
+    // for the same reason, and the returned revision is asserted against the marker the
+    // redirect published rather than assumed — a seed carrying the wrong commit would
+    // make C derive a request id no comment names, which is a *different* scenario that
+    // also ends in a suspension.
+    let moved_to = world.answer_pull_request_by_number(suspended.pull_request, &suspended.branch);
+    let second = parse_marker(&questions[1].body).expect("the new question carries a marker");
+    assert_eq!(
+        moved_to, second.head_sha,
+        "the head the forge now answers with is the head the new question was asked \
+         about"
+    );
+
+    let third = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        third.code,
+        Some(10),
+        "a third process finds its own question standing and no reply to it: \
+         stdout={} stderr={}",
+        third.stdout,
+        third.stderr
+    );
+    // **It published nothing.** Still two questions, and still two `POST`s counted off
+    // the request log — the second of which says C did not re-ask under an id it had
+    // already used, which is what a run whose `inspect` could not find its own comment
+    // would do.
+    assert_eq!(
+        world.request_comments().len(),
+        2,
+        "no third question: {:?}",
+        world.request_comments()
+    );
+    assert_eq!(
+        world.posted_comment_bodies().len(),
+        2,
+        "and no third `POST`: {:?}",
+        world.posted_comment_bodies()
+    );
+    // **The model was never asked again**, which is what says the approval was not a
+    // candidate rather than a candidate that was read and refused. Five is the count
+    // the redirect left: two for A's attempt, one interpretation, two for B's.
+    assert_eq!(
+        world.model_calls(),
+        5,
+        "nothing was read as a decision, so step 7 never ran"
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        0,
+        "and the armed transition is still unspent"
+    );
+    assert_eq!(
+        world.pull_request(suspended.pull_request)["draft"],
+        serde_json::json!(true)
+    );
+    // **And the approval is in no declined entry of C's own record**, which is the
+    // ordering rule: a comment below the request comment was not read and refused, it
+    // is a conversation that was already going on. The question's entry is the
+    // denominator — the list is rendered and the approval is genuinely elsewhere.
+    let payload: serde_json::Value = serde_json::from_str(&third.stdout)
+        .unwrap_or_else(|error| panic!("stdout is not JSON ({error}): {}", third.stdout));
+    let evidence = payload["capability_executions"][0]["evidence"].to_string();
+    assert!(
+        !evidence.contains(&format!("comment {approved} by")),
+        "comment {approved} must appear in no declined entry of the third process: \
+         {evidence}"
+    );
+    assert!(
+        third
+            .stdout
+            .contains("nobody who may decide has answered it yet"),
+        "and that is what a reader is told: {}",
+        third.stdout
     );
 }
 

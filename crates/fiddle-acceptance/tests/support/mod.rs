@@ -2425,7 +2425,7 @@ impl World {
     /// somebody else's behalf and a fixture that faked one through the forge's
     /// write path would be recording a request nobody made.
     ///
-    /// # The id, and the one thing it cannot promise
+    /// # The id
     ///
     /// One above the highest id the conversation currently shows, fiddle's own
     /// posted comments included. That is what makes the collection ordered by id
@@ -2434,14 +2434,23 @@ impl World {
     /// so a reply seeded below the question it answers would be invisible and one
     /// seeded above a comment that predates it would be a false candidate.
     ///
-    /// **What it cannot promise** is that a comment *fiddle* posts afterwards gets
-    /// an id above this one. The stub numbers its own from a fixed base
-    /// (`FIRST_POSTED_COMMENT`, 9000) and knows nothing about what was seeded, so
-    /// a run that wrongly posted a *second* question after a reply was seeded
-    /// could collide with it. The collision is not silent — two entries would
-    /// share an id — but a test asserting "no second question" should not rest on
-    /// ids for it. [`World::posted_comment_bodies`], counted off the request log, is the
-    /// accessor that cannot be confused this way.
+    /// **Corrected: this used to carry a "what it cannot promise" clause** — that the
+    /// stub numbered its own comments from a fixed base and knew nothing about what
+    /// was seeded, *"so a run that wrongly posted a second question after a reply was
+    /// seeded could collide with it"*. Two things about that were wrong. The collision
+    /// needed no misbehaving run: a **legitimate** redirect posts a second question
+    /// after a reply, and the converged
+    /// `human_direction::a_redirect_produces_a_different_change_and_asks_again_about_it`
+    /// was already leaving such a world behind. And it was not harmless: `gh_stub`'s
+    /// `comment_by_id` reports a duplicate rather than choosing from it, and step 5 of
+    /// the decision walk re-reads by id, so a third process could not be driven at all.
+    ///
+    /// `gh_stub::apply_effect` now mints a posted comment's id **at post time**, above
+    /// everything the world holds, so this rule and that one are one rule and there is
+    /// nothing left to promise around. [`World::posted_comment_bodies`], counted off the
+    /// request log, remains the accessor for "did a run ask twice" — not because ids
+    /// are unreliable but because a listing merges what landed and a post whose answer
+    /// was lost landed all the same.
     pub fn post_comment(&self, author: u64, body: &str) -> u64 {
         self.write_listed_comment(author, body, "User", serde_json::Value::Null)
     }
@@ -3076,13 +3085,21 @@ impl World {
     /// stub really takes a pull request out of draft when one lands. Both hold here
     /// or neither does, and the caller reads the draft again afterwards to say so.
     ///
-    /// It is deliberately not a third process. A process that continued would need
-    /// the conversation to hold the question it was answering, and after a redirect
-    /// has asked again this world's comment ids are not distinct — `gh_stub`'s
-    /// posted comments are numbered positionally within a path and know nothing of
-    /// what a test seeded, so the second question can collide with a reply. That is a
-    /// fixture defect and it is not this accessor's to work around; what a scenario
-    /// needs from here is the narrow claim that the arming was live.
+    /// It is deliberately not a third process, and the reason has changed. **It used to
+    /// be that it could not be one:** *"after a redirect has asked again this world's
+    /// comment ids are not distinct — `gh_stub`'s posted comments are numbered
+    /// positionally within a path and know nothing of what a test seeded, so the second
+    /// question can collide with a reply."* That was true and is no longer — ids are
+    /// minted at post time now, and
+    /// [`an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent`](../human_direction.rs)
+    /// drives a third process through exactly that world.
+    ///
+    /// It stays a hand-sent mutation because a third process is a *different and weaker*
+    /// answer to the question this accessor asks. What a scenario needs from here is the
+    /// narrow claim that **the arming was live** — that the answer scripted at call zero
+    /// really accepts and the stub really takes a pull request out of draft. A process
+    /// would have to reach that through a whole walk, so a failure anywhere in the walk
+    /// would look like the arming being dead.
     ///
     /// **This is a fixture write and not an observation.** It moves the world, so a
     /// caller must make every assertion about what the run did *before* calling it —
