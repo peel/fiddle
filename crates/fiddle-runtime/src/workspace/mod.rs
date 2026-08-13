@@ -194,6 +194,36 @@ impl Workspace {
     /// `git` child, and `git::publish` keeps that construction to exactly one on
     /// purpose; widening it for this is a trade nobody has asked for yet. Recorded
     /// as the known limit rather than left for a reader to discover.
+    ///
+    /// So it is the caller's obligation, and the caller is
+    /// [`ProposeChange::produce_from`](crate::capability::ProposeChange) on the
+    /// redirect arm: the revision it names has to be one the fixture it is pointed
+    /// at can already resolve. It can be, because the run that published that head
+    /// worked in a worktree of that fixture — and it stops being so the moment the
+    /// second run is a different machine. Nothing here can check that on the
+    /// caller's behalf without becoming the fetch this refuses to be, so the
+    /// refusal is what the caller gets.
+    ///
+    /// # Pinned rather than described
+    ///
+    /// `tests/workspace.rs` holds both halves.
+    /// `a_worktree_branches_at_the_revision_it_was_given_and_not_at_head` is the
+    /// property this function exists for, asserted against a fixture whose `HEAD`
+    /// has moved so that honouring `revision` and ignoring it cannot look the
+    /// same. `a_revision_the_fixture_can_only_fetch_is_refused_by_name_and_nothing_fetches`
+    /// is the limitation: two repositories stand in for the two machines, a commit
+    /// is made in one and the fixture is a clone taken before it existed, and the
+    /// refusal is asserted to name the sha, to leave no worktree, and to be
+    /// `Correctable` rather than `Permanent`. It fails the day anything here
+    /// resolves a revision the store does not hold, and it asks the store which of
+    /// the two ways that happened — resolved, or swallowed — because those want
+    /// opposite responses.
+    ///
+    /// One half of "nothing fetches" is out of reach there and said so at the test:
+    /// a fetch that *worked* changes the outcome and is caught, and a fetch that
+    /// was added and *failed* leaves this same refusal behind it and is not. The
+    /// boundary is pinned by outcome; counting this function's git children would
+    /// pin it by construction, and nothing in the crate does that yet.
     pub fn create_at(
         fixture: &Path,
         root: &Path,
