@@ -1975,6 +1975,35 @@ fn an_approval_for_a_head_that_has_moved_is_unrecognisable_not_merely_rejected()
          the *same* request id would be the duplicate a continuation exists not to \
          create"
     );
+    // **And each id is a *function of* the head beside it, not merely different from
+    // its neighbour.** The line above is satisfied by a build deriving ids from a
+    // counter or a clock, which is the same shape of gap as asserting an exit code a
+    // transport failure also produces: differing ids are what a derivation over the
+    // head and a derivation over nothing at all both look like from outside.
+    //
+    // This is the assertion the whole mechanism in the doc comment rests on. *"The
+    // gated effect's target is `{repo}#{pr}@{head}` and the request id is derived over
+    // it, so a run reading a different head derives a different request id"* — until
+    // now that account was stated and never checked here, and it is the reason the
+    // approval is unrecognisable rather than declined.
+    //
+    // Re-derived from the design and never by calling `fiddle_core`; see
+    // `support::expected_request_id` for why the import would be worse than the gap.
+    assert_eq!(
+        questions[0].0,
+        world.expected_request_id(
+            INVOCATION_REF,
+            suspension.pull_request,
+            &suspension.binding.head_sha
+        ),
+        "the standing question's id is derived over the head it was asked about"
+    );
+    assert_eq!(
+        questions[1].0,
+        world.expected_request_id(INVOCATION_REF, suspension.pull_request, &moved_to),
+        "and this run's question is derived over the head that now exists, which is \
+         what makes the old approval an answer to no question this run can ask"
+    );
     // And the approval a person already wrote answers neither of them as far as this
     // run is concerned: it was never interpreted, which the untouched model script
     // proves — the script holds one interpretation reply and the run consumed none,
@@ -2635,11 +2664,51 @@ fn a_redirect_produces_a_different_change_and_asks_again_about_it() {
         second.head_sha, second_sha,
         "and it is about the change that was just published"
     );
-    assert_ne!(
-        second.request, first.request,
-        "a new head is a new question"
+    // **A new head is a new question, asserted as a derivation and no longer as a
+    // difference.**
+    //
+    // The previous version of these two lines — kept here, marked, because a reader
+    // needs to know the claim moved — was:
+    //
+    // ```text
+    // assert_ne!(second.request, first.request, "a new head is a new question");
+    // assert_ne!(second.effect, first.effect, "and a new effect");
+    // ```
+    //
+    // Both are true of a build that numbers questions from a counter, or hashes a
+    // clock, and neither of those is a function of the head at all. So the pair was
+    // an outcome two different causes produce identically, which is not an assertion
+    // about either of them. The four below re-derive both identities from the design's
+    // definition over the head each question was really asked about — read from the
+    // remote with `git`, not from anything fiddle printed — so a counter fails here.
+    //
+    // Both questions are checked and not only the new one, because the first
+    // question's id had no test re-deriving it either.
+    assert_eq!(
+        first.effect,
+        world.expected_effect_id(INVOCATION_REF, pull_request, &first_sha),
+        "the first question's effect is derived over the head it was asked about"
     );
-    assert_ne!(second.effect, first.effect, "and a new effect");
+    assert_eq!(
+        first.request,
+        world.expected_request_id(INVOCATION_REF, pull_request, &first_sha),
+        "and so is its request id"
+    );
+    assert_eq!(
+        second.effect,
+        world.expected_effect_id(INVOCATION_REF, pull_request, &second_sha),
+        "the redirect's question names the effect the *new* head derives"
+    );
+    assert_eq!(
+        second.request,
+        world.expected_request_id(INVOCATION_REF, pull_request, &second_sha),
+        "and the request id that effect derives, which is what makes a moved head a \
+         different question with no rule written to say so"
+    );
+    // The two differ, which is now a *consequence* of the four assertions above
+    // taken with `assert_ne!(second_sha, first_sha)` further up rather than a claim
+    // of its own — and it is stated so a reader looking for the old property finds
+    // where it went.
     assert_eq!(
         world.comments_naming(&first.request).len(),
         1,

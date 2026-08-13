@@ -1809,6 +1809,136 @@ pub fn parse_marker(body: &str) -> Result<Binding, String> {
     })
 }
 
+/// The **identity of the gated effect** one question is about, re-derived from the
+/// design's own definition.
+///
+/// # Why this exists at all, and what it replaced
+///
+/// A published marker's `effect` and `request` were asserted only to **differ** from
+/// an earlier question's — `assert_ne!(second.request, first.request)`. The design's
+/// claim is stronger and is a different claim: a moved head **derives** a new
+/// question. An implementation numbering questions from a counter, or hashing a
+/// clock, produces differing ids and satisfies every `assert_ne!` ever written about
+/// them, so the two forms are not the same property. *Any outcome two different
+/// causes produce identically is not an assertion about either of them* — and
+/// "differing ids" is produced identically by a derivation over the head and by a
+/// counter that knows nothing about it.
+///
+/// What is already known, and it is not nothing: deriving the id over a **fixed**
+/// revision fails 21 tests across the workspace, so the id is demonstrably not
+/// constant. What no assertion said before this helper is that it is a *function of
+/// the head*.
+///
+/// # This deliberately does not call `fiddle_core::effect_id`
+///
+/// [`parse_marker`]'s argument, applied to the arithmetic rather than to the grammar,
+/// and it is sharper here. A test computing the expected id with the product's own
+/// function **passes on a wrong `effect_id`**: test and product share the defect and
+/// neither can see it. The acceptance crate depends on neither `fiddle-core` nor
+/// `fiddle-runtime` (`Cargo.toml:7-9`) and carries `blake3` as a dev-dependency
+/// *specifically* so derivations come from the design (`Cargo.toml:15-18`). A
+/// black-box lane that reaches into the library stops being a second opinion and
+/// becomes a mirror.
+///
+/// [`Scenario::expected_marker`] is the same move on the other identity in the same
+/// format. Note that the two are **different objects** and one cannot serve for the
+/// other: that one derives the *correlation key*, `blake3(project + NUL +
+/// invocation_ref)`, which does not name a head at all.
+///
+/// # The definition, as the design states it
+///
+/// ```text
+/// target = {repo}#{pr}@{head_sha}
+/// effect = blake3(lp[project, invocation_ref, "ensure_pull_request_ready", target])[..16]
+/// ```
+///
+/// where `lp` is the length-prefixed framing [`length_prefixed`] spells out. The kind
+/// is written as the literal string the design gives it rather than imported, for the
+/// reason every other constant in this file is spelled out: a value that drifted fails
+/// here, loudly, instead of agreeing with whatever the product now says.
+///
+/// Every input is an argument, which is the design's own property of this derivation —
+/// nothing is read from outside, so the recomputation is checkable rather than merely
+/// plausible. [`World::expected_effect_id`] is the convenience that supplies this
+/// world's project and repository.
+pub fn expected_effect_id(
+    project: &str,
+    invocation_ref: &str,
+    repo: &str,
+    pr: u64,
+    head_sha: &str,
+) -> String {
+    let target = format!("{repo}#{pr}@{head_sha}");
+    truncated_digest(&length_prefixed([
+        project,
+        invocation_ref,
+        "ensure_pull_request_ready",
+        &target,
+    ]))
+}
+
+/// The **identity of the question** that gates the effect at `pr`'s `head_sha`,
+/// re-derived from the design's own definition.
+///
+/// ```text
+/// request = blake3(lp[project, invocation_ref, effect])[..16]
+/// ```
+///
+/// The head reaches this value only through the effect, which is the design's whole
+/// argument for deriving one from the other: *"the gated `EffectId` covers the
+/// effect's target, so a moved branch head derives a different effect, which derives a
+/// different request id, which is a different question"*. Staleness is then free
+/// rather than a rule somebody had to write — and this is the assertion that says the
+/// chain really runs through the head rather than around it.
+///
+/// See [`expected_effect_id`] for why the library is not called, and
+/// [`World::expected_request_id`] for the convenience form.
+pub fn expected_request_id(
+    project: &str,
+    invocation_ref: &str,
+    repo: &str,
+    pr: u64,
+    head_sha: &str,
+) -> String {
+    let effect = expected_effect_id(project, invocation_ref, repo, pr, head_sha);
+    truncated_digest(&length_prefixed([project, invocation_ref, &effect]))
+}
+
+/// The design's framing: each field becomes its **byte** length, a colon, then the
+/// field — `["ab", "c"]` is `2:ab1:c`.
+///
+/// Restated here rather than joined with a separator byte, because the framing is
+/// half of what these two derivations are. The design's reason for it is that a
+/// separator whose exclusion rests on convention can be violated by input: with a NUL
+/// join, `("a\0b", "c")` and `("a", "b\0c")` name one identity for two different
+/// effects. A test that framed its fields the easy way would agree with the product
+/// on every well-behaved input and disagree on exactly the inputs the framing exists
+/// for.
+///
+/// **Byte** length and not character count, because the digest is taken over bytes and
+/// the two differ for any non-ASCII field. Nothing this lane passes is non-ASCII
+/// today, so this line is a value appearing where its value cannot matter — recorded
+/// as such rather than presented as tested.
+fn length_prefixed<const N: usize>(fields: [&str; N]) -> String {
+    let mut material = String::new();
+    for field in fields {
+        material.push_str(&field.len().to_string());
+        material.push(':');
+        material.push_str(field);
+    }
+    material
+}
+
+/// The 16-hex-character rendering both identities are truncated to.
+///
+/// One definition rather than two, so an effect id and a request id derived here
+/// cannot drift into different widths — which is also the reason the product has one.
+/// [`parse_marker`] checks each field against a fixed width, so a width that moved
+/// here would produce an expectation the marker's own grammar rejects.
+fn truncated_digest(material: &str) -> String {
+    blake3::hash(material.as_bytes()).to_hex()[..16].to_string()
+}
+
 /// One comment on the conversation, as the listing returns it.
 ///
 /// A struct rather than a `serde_json::Value` because every field here is one a
@@ -2126,6 +2256,32 @@ impl World {
     /// same shape of mistake it exists to catch.
     pub fn expected_marker(&self, invocation_ref: &str) -> String {
         self.scenario.expected_marker(invocation_ref)
+    }
+
+    /// The gated effect's identity for `pr` at `head_sha`, in this world.
+    ///
+    /// [`expected_effect_id`] with this world's project and repository supplied and
+    /// everything a scenario chooses left as an argument. The free function carries
+    /// the derivation and the argument for not importing it; this exists so a call
+    /// site reads as the three facts the scenario is making a claim about — which
+    /// pull request, at which revision, under which reference — rather than as five
+    /// arguments of which two are always the same.
+    ///
+    /// `pr` and `head_sha` are arguments and never read out of the world here, for
+    /// [`World::expected_marker`]'s reason: the whole point is to compare the
+    /// published marker against a revision the *scenario* names from its own
+    /// observation of the remote, and a helper that fetched the current head would
+    /// be asserting that the world agrees with itself.
+    pub fn expected_effect_id(&self, invocation_ref: &str, pr: u64, head_sha: &str) -> String {
+        expected_effect_id(PROJECT_NAME, invocation_ref, REPO, pr, head_sha)
+    }
+
+    /// The question's identity for `pr` at `head_sha`, in this world.
+    ///
+    /// [`expected_request_id`]'s convenience form; see [`World::expected_effect_id`]
+    /// for why the two constants are supplied and the rest is not.
+    pub fn expected_request_id(&self, invocation_ref: &str, pr: u64, head_sha: &str) -> String {
+        expected_request_id(PROJECT_NAME, invocation_ref, REPO, pr, head_sha)
     }
 
     /// Which attempt one run turned out to be.
