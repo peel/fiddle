@@ -899,12 +899,7 @@ mod tests {
     /// The paths and not the count, so a failure says *where* the duplicate is, and
     /// so that a copy which moves the id somewhere else fails rather than counting
     /// to one from the wrong place.
-    fn paths_holding(
-        value: &serde_json::Value,
-        needle: &str,
-        at: &str,
-        found: &mut Vec<String>,
-    ) {
+    fn paths_holding(value: &serde_json::Value, needle: &str, at: &str, found: &mut Vec<String>) {
         let below = |key: &str| {
             if at.is_empty() {
                 key.to_string()
