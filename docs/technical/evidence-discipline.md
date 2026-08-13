@@ -14,6 +14,12 @@ discarded 34 of 42 result lines and reported `binaries=8 passed=0` — a catastr
 pipe. Write an `EXIT=` marker after every run and check for it before reading any figure. The lead read a
 partial log as final **six times** and was caught by a missing marker each time.
 
+**The marker goes into the log, not into the console.** Of five inversion drivers in M3, two echoed the exit
+code to stdout instead, and **79 of 132 logs carry no `EXIT=` marker** as a result. For a single-lane run the
+absence is recoverable, since one `test result:` line is the whole run; for a 19- or 42-binary run it is not,
+and one such log measured nothing at all — zero results, ending in `warning: build failed`. A status that
+survives only in a transcript is not in the evidence pack.
+
 **Capture exit codes from the command itself, never through a pipe.** `echo $?` after a pipe reports the last
 stage's status.
 
@@ -70,8 +76,21 @@ bit-for-bit indistinguishable and 21 tests passed over it.
 `chars().count() <= 2_048` against a cap documented in bytes; the lead corrected it to `len()`, which is
 strictly better — and the rows it asserts over are pure ASCII, so the byte form and the character form agree on
 every one of them. Two caps of 2048 exist, `REDIRECT_INSTRUCTION_LIMIT` in bytes and `PUBLISHED_TEXT_LIMIT` in
-characters, and **deleting the byte truncation entirely left the suite green.** The lead's own correcting
-comment named the discriminating case — *"3,000 star characters truncate to 2,046 bytes, which is 682
+characters, and deleting the byte truncation entirely left **the acceptance lane** green — it was written up
+here as "left the suite green", and that is this document breaking the filtered-count rule stated one section
+above it. `-p fiddle-runtime --test interpretation` fails **2 of 8** under that same mutation, measured twice
+at two shas by two lanes. **A per-lane null is not a suite null, and the sentence that says otherwise was in
+the file that forbids it.**
+
+**And the runtime-tier half of that cap is held by an accident of spelling.**
+`a_redirect_instruction_is_capped` feeds `"z".repeat(10_000)` — pure ASCII, so both caps agree on it — and
+fails by **2 bytes**, 2050 against 2048, only because the truncation marker `Published::of` appends contains
+one `…` (U+2026, three bytes) inside a bound counted in characters. **Respell that marker `"..."` and the
+assertion goes green under the mutation it exists to catch.** Its sibling `a_cap_never_splits_a_character`
+fails by 6070 against 2048 and is the real guard. An assertion whose margin comes from another crate's
+constant should say so at the assertion.
+
+The lead's own correcting comment named the discriminating case — *"3,000 star characters truncate to 2,046 bytes, which is 682
 characters"* — and the row was never written. **When a fix turns on a distinction, the input has to make the
 distinction visible; otherwise the assertion is a value appearing only where its value cannot matter, and the
 fix's own justification is the test it is missing.**
@@ -109,6 +128,11 @@ elsewhere** — but it must say so, rather than documenting a case that cannot o
 work while the `cmp` guard passed, because the guard compares the tree to the pin and says nothing when the pin
 is stale.
 
+**Delete a pin after a verified restore, or mark it `SPENT`.** A pin that outlives its run is a loaded gun
+with no safety: M3's shared scratchpad still holds `inv-565u/pin/` and `inv-565u/pristine/` where
+`human_direction.rs` is 63,185 bytes against 176,941 in the tree, and `inv-9krm/` is an entire copy of the
+repository. A restore loop pointed at any of them today reverts five files with `cmp` passing.
+
 **Restore from a recorded manifest, not a directory listing.** A listing-based restore wrote back three files a
 neighbouring lane had left in a shared scratchpad. Note also that `mkdir -p` cannot distinguish a directory it
 created from one it found.
@@ -123,6 +147,13 @@ is the general statement: *a scratchpad collision costs a driver, which is repla
 reverts committed work while both `cmp`-against-pin guards pass*, because each guard compares the tree only to
 its own pin and is silent about another writer. **Reopening a bean means reassigning its worktree, or giving it
 a new one.**
+
+**The two directions are asymmetric, and only one of them has a guard.** A neighbour's edit that your restore
+would revert **is** caught — by `git diff --quiet` after the restore. A neighbour's *commit* that captures
+your live mutation is caught by **nothing**: after the commit the mutated file *is* `HEAD`, so `cmp` against
+the pin passes and `git diff --quiet` passes. Defending against it means re-reading `git rev-parse HEAD` after
+every restore and comparing it to the sha you pinned at. The lane that found this records the sha per
+inversion and does not compare it — which is how it knew the gap was there.
 
 **Namespace your scratchpad by bean, and never write a driver to its root.** M3: an evaluator was given its own
 detached worktree but not its own scratchpad, wrote `invert.sh` to the shared root, and replaced the
