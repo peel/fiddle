@@ -89,6 +89,16 @@ assert_empty "empty output" "$OUT"
 echo "Test 5: owner line that is not a session → allow"
 # The guard is a prefix match, so a second line carrying something else is a
 # marker this hook does not understand rather than one it may act on.
+#
+# **Which guard delivers this is not the guard you would name.** Deleting the
+# hook's `[[ "$OWNER" == session=* ]]` line leaves this suite at 16 passed, 0
+# failed — measured, not reasoned: the equality check below it compares against
+# `session=$SESSION_ID`, whose left side always carries the prefix, so an owner
+# line that lacks it cannot match either way. The prefix guard is therefore
+# redundant *today* and worth keeping, because it stops being redundant the moment
+# anyone compares bare ids. This case pins the behaviour the contract promises,
+# which is what should survive that refactor, rather than the line that currently
+# implements it.
 arm_marker "fiddle-sip9" "owner=$OWNER_SESSION"
 OUT=$(hook_out "{\"session_id\":\"$OWNER_SESSION\"}"); EXIT_CODE=$?
 assert_exit "unrecognised owner line exits 0" 0 "$EXIT_CODE"
