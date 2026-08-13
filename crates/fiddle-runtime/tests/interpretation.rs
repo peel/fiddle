@@ -35,6 +35,7 @@
 //! runs before a model call is spent.
 
 use fiddle_core::decision::InterpretedHumanDecision;
+use fiddle_core::published::PUBLISHED_TEXT_LIMIT;
 use fiddle_runtime::human::interpret::{interpret, InterpretationBounds};
 use rig_core::completion::{
     CompletionError, CompletionModel, CompletionRequest, CompletionResponse,
@@ -447,12 +448,66 @@ async fn the_call_is_bounded_and_the_reply_is_capped_before_it_is_sent() {
 
 /// A redirect instruction is capped too, because unlike a reject reason it
 /// reaches a later prompt as well as a published field.
+///
+/// # The input is multi-byte, and that is the whole of what this row asserts
+///
+/// Two bounds of 2,048 sit on this value:
+/// `Published::of(truncate(&instruction, REDIRECT_INSTRUCTION_LIMIT))` is a
+/// **byte** bound inside a **character** bound
+/// ([`PUBLISHED_TEXT_LIMIT`]). On any ASCII input the two agree, so an ASCII row
+/// cannot say which one cut — and worse than that.
+///
+/// **The false version, shown rather than swapped out.** This row fed
+/// `"z".repeat(10_000)`. Deleting the byte truncation left it failing by **2
+/// bytes**, 2,050 against 2,048, and those two bytes were donated by the `…`
+/// (U+2026, three bytes) in the marker [`Published::of`] appends — a *character*
+/// counted inside a character bound, paying for itself twice in bytes. Respelling
+/// that marker `...` in `fiddle-core` turned this assertion **green under the
+/// mutation it exists to catch**, and nothing in the workspace pinned the
+/// marker's spelling. Any ASCII input has that defect intrinsically: with the
+/// byte cap in place the result is at most 2,048 bytes, which is at most 2,048
+/// characters, so the character cap is a no-op and the only way this row can fail
+/// is through the marker's arithmetic.
+///
+/// # What makes this input discriminating, as arithmetic
+///
+/// `★` is three bytes, and 1,000 of them is:
+///
+/// - **1,000 characters, inside [`PUBLISHED_TEXT_LIMIT`]** — so the character cap
+///   cuts nothing, no marker is ever appended, and no constant of `fiddle-core`'s
+///   is in the margin at all. That premise is asserted below against the real
+///   constant rather than a literal, so lowering the character cap under this
+///   row's feet fails here instead of quietly making the row say nothing.
+/// - **3,000 bytes, past `REDIRECT_INSTRUCTION_LIMIT`** — so something must cut,
+///   and only the byte cap can.
+///
+/// The cap assertion itself stays a literal `2_048`: a build whose byte cap was
+/// widened tenfold must fail here, which it cannot do if the assertion moves with
+/// the constant.
+///
+/// The acceptance tier asserts the same disagreement end-to-end, in
+/// `human_direction::a_redirect_instruction_is_capped_in_bytes_and_not_merely_in_characters`,
+/// against the prompt the instruction reaches. This row is the same claim one
+/// tier down and a hundred times cheaper, which is where a cap regression should
+/// be caught first.
 #[tokio::test]
 async fn a_redirect_instruction_is_capped() {
-    let long = "z".repeat(10_000);
+    // Built here because a constant cannot hold a `repeat`.
+    let long = "★".repeat(1_000);
+    assert_eq!(
+        long.chars().count(),
+        1_000,
+        "the arithmetic this row rests on: characters"
+    );
+    assert_eq!(long.len(), 3_000, "and bytes");
+    assert!(
+        long.chars().count() <= PUBLISHED_TEXT_LIMIT,
+        "the character cap must cut nothing here, or a cut proves nothing about the byte cap"
+    );
+
     let scripted =
-        format!(r#"{{"decision":"redirect","redirect":"{long}","evidence":"use zzz instead"}}"#);
-    match interpret(mock(&scripted), QUESTION, "use zzz instead", &bounds()).await {
+        format!(r#"{{"decision":"redirect","redirect":"{long}","evidence":"use stars instead"}}"#);
+    match interpret(mock(&scripted), QUESTION, "use stars instead", &bounds()).await {
         InterpretedHumanDecision::Redirect { instruction } => assert!(
             instruction.as_str().len() <= 2_048,
             "not capped: {} bytes",
