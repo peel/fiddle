@@ -73,6 +73,11 @@ run was filtered for `^scripts`, which is the `-f gcc` format, against the defau
 hits" against a non-zero exit code.** The disagreement between the count and the exit code is what caught it,
 which is the argument for always printing both.
 
+**`beans list -S` is a relevance search, not a substring filter.** Searching M3's tracker for `443 passed`
+returned **97 beans**; exactly **2** contained the string. Reporting the 97 would have invented a
+twelve-places-became-ninety-seven defect out of a ranking function. **Confirm a tracker search by reading the
+bodies it returned**, the same way a grep hit is confirmed by opening the file.
+
 **A filtered count reports both numbers.** *"5 hits, of which 4 are `String::as_str` on a different type"* —
 never the filtered count alone. M3: a lane reported "exactly one hit" from a grep returning five, one message
 after warning the lead about exactly this.
