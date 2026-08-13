@@ -44,6 +44,21 @@ restore script, while the audit looked for `inv-usp7/`, the naming its own lane 
 published inside the section auditing other beans for exactly this, and the artefacts **supported** the
 conclusion it had already reached another way.
 
+**Measure a bean's premise before changing anything: it may be wrong in your favour.** M3's residue bean
+described two counts that read `0` on a failed read. The lane stubbed the readers first and found a third case
+the bean did not contain — **with only two of three reads failing, every assertion passes and the run is
+byte-identical to a clean one.** That turned the fix from a better message into a sentinel. A bean is a
+hypothesis with evidence attached, not a specification of the defect's extent.
+
+**Extract the code under test from the file, rather than retyping it into your harness — and have the
+extraction print its line count and refuse to run on an empty result.** M3 tested 13 arms of a shell cleanup
+this way, so a hand copy could not drift from the thing being claimed about.
+
+**A check whose output format does not match your filter reports zero and means nothing.** M3: a `shellcheck`
+run was filtered for `^scripts`, which is the `-f gcc` format, against the default multi-line output — **"0
+hits" against a non-zero exit code.** The disagreement between the count and the exit code is what caught it,
+which is the argument for always printing both.
+
 **A filtered count reports both numbers.** *"5 hits, of which 4 are `String::as_str` on a different type"* —
 never the filtered count alone. M3: a lane reported "exactly one hit" from a grep returning five, one message
 after warning the lead about exactly this.
