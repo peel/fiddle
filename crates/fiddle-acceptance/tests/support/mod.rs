@@ -1456,6 +1456,46 @@ pub fn a_suspension_and_its_approval(approval: &str) -> Vec<Reply> {
     script
 }
 
+/// An interpretation naming **fields outside the schema** beside a perfectly good
+/// approval.
+///
+/// # What a document like this would be if it were read
+///
+/// `effect` and `payload` are the two identities the marker carries and the two the
+/// walk recomputes for itself. A model that could name either would be naming *which
+/// change gets spent* — it would be choosing the effect a person's approval is applied
+/// to, from a document a provider returned. That is the blast radius
+/// `#[serde(deny_unknown_fields)]` on `interpret::Reply` exists to bound: the reply is
+/// the one document in this walk that comes from outside and is not a person's words,
+/// so a field the schema does not name is refused rather than ignored.
+///
+/// # Why this belongs at the acceptance tier and not only beside `interpret`
+///
+/// An inversion measured it. Removing `deny_unknown_fields` fails **2 of 8** in
+/// `fiddle-runtime --test interpretation` and **nothing at all** in
+/// `--test decision_protocol` (19/19) or in `fiddle-acceptance --test human_direction`
+/// (29/29 at the time), because every scripted reply in those two suites is a document
+/// this build authored. So the property was asserted against `interpret` and not
+/// against the **walk** that calls it, and not against the binary at all.
+///
+/// The verdict is a real `"approve"` with a real quoted span, so nothing but the extra
+/// fields can be the reason it is refused. A scenario built on a *malformed* verdict
+/// would be refused by the schema either way.
+pub fn a_suspension_and_a_hostile_interpretation(approval: &str) -> Vec<Reply> {
+    let mut script = a_real_repair();
+    script.push(accepted(reports(serde_json::json!({
+        "decision": "approve",
+        "redirect": serde_json::Value::Null,
+        "evidence": approval,
+        // Sixteen lowercase hex characters each, which is the shape the marker's own
+        // grammar requires — so a build that read these would have values it could act
+        // on rather than ones it would reject for their form.
+        "effect": "dead0beef0dead00",
+        "payload": "0feed0dad0cafe00",
+    }))));
+    script
+}
+
 // ===========================================================================
 // The scripted world a decision walk runs against
 // ===========================================================================
@@ -1809,6 +1849,161 @@ pub fn parse_marker(body: &str) -> Result<Binding, String> {
     })
 }
 
+/// Write a binding back out as the marker line a request comment carries.
+///
+/// [`parse_marker`]'s inverse, from the same statement of the design's grammar and for
+/// the same reason it is not `fiddle_core::render_marker`: a fixture that rendered with
+/// the product's own function could not express a marker the product would not write,
+/// which is the only kind worth forging.
+///
+/// It exists so a scenario can edit **one field** of a published marker and leave every
+/// other byte of the comment alone. That is the case step 3 of the validation order is
+/// an authentication rather than a formality for: a marker naming the right request id
+/// proves only that its author could read the conversation, and the effect id is
+/// derived from four values the conversation does not carry. A scenario that rewrote
+/// the whole body instead would be refused for whichever difference the product noticed
+/// first.
+///
+/// [`World::rewrite_the_published_marker`] asserts that what this renders is
+/// byte-for-byte what the body already held, which is what keeps this grammar and the
+/// product's from drifting apart unnoticed.
+pub fn render_marker(binding: &Binding) -> String {
+    format!(
+        "<!-- fiddle:decision v1 request={} effect={} payload={} head={} -->",
+        binding.request, binding.effect, binding.payload, binding.head_sha
+    )
+}
+
+/// The **identity of the gated effect** one question is about, re-derived from the
+/// design's own definition.
+///
+/// # Why this exists at all, and what it replaced
+///
+/// A published marker's `effect` and `request` were asserted only to **differ** from
+/// an earlier question's — `assert_ne!(second.request, first.request)`. The design's
+/// claim is stronger and is a different claim: a moved head **derives** a new
+/// question. An implementation numbering questions from a counter, or hashing a
+/// clock, produces differing ids and satisfies every `assert_ne!` ever written about
+/// them, so the two forms are not the same property. *Any outcome two different
+/// causes produce identically is not an assertion about either of them* — and
+/// "differing ids" is produced identically by a derivation over the head and by a
+/// counter that knows nothing about it.
+///
+/// What is already known, and it is not nothing: deriving the id over a **fixed**
+/// revision fails 21 tests across the workspace, so the id is demonstrably not
+/// constant. What no assertion said before this helper is that it is a *function of
+/// the head*.
+///
+/// # This deliberately does not call `fiddle_core::effect_id`
+///
+/// [`parse_marker`]'s argument, applied to the arithmetic rather than to the grammar,
+/// and it is sharper here. A test computing the expected id with the product's own
+/// function **passes on a wrong `effect_id`**: test and product share the defect and
+/// neither can see it. The acceptance crate depends on neither `fiddle-core` nor
+/// `fiddle-runtime` (`Cargo.toml:7-9`) and carries `blake3` as a dev-dependency
+/// *specifically* so derivations come from the design (`Cargo.toml:15-18`). A
+/// black-box lane that reaches into the library stops being a second opinion and
+/// becomes a mirror.
+///
+/// [`Scenario::expected_marker`] is the same move on the other identity in the same
+/// format. Note that the two are **different objects** and one cannot serve for the
+/// other: that one derives the *correlation key*, `blake3(project + NUL +
+/// invocation_ref)`, which does not name a head at all.
+///
+/// # The definition, as the design states it
+///
+/// ```text
+/// target = {repo}#{pr}@{head_sha}
+/// effect = blake3(lp[project, invocation_ref, "ensure_pull_request_ready", target])[..16]
+/// ```
+///
+/// where `lp` is the length-prefixed framing [`length_prefixed`] spells out. The kind
+/// is written as the literal string the design gives it rather than imported, for the
+/// reason every other constant in this file is spelled out: a value that drifted fails
+/// here, loudly, instead of agreeing with whatever the product now says.
+///
+/// Every input is an argument, which is the design's own property of this derivation —
+/// nothing is read from outside, so the recomputation is checkable rather than merely
+/// plausible. [`World::expected_effect_id`] is the convenience that supplies this
+/// world's project and repository.
+pub fn expected_effect_id(
+    project: &str,
+    invocation_ref: &str,
+    repo: &str,
+    pr: u64,
+    head_sha: &str,
+) -> String {
+    let target = format!("{repo}#{pr}@{head_sha}");
+    truncated_digest(&length_prefixed([
+        project,
+        invocation_ref,
+        "ensure_pull_request_ready",
+        &target,
+    ]))
+}
+
+/// The **identity of the question** that gates the effect at `pr`'s `head_sha`,
+/// re-derived from the design's own definition.
+///
+/// ```text
+/// request = blake3(lp[project, invocation_ref, effect])[..16]
+/// ```
+///
+/// The head reaches this value only through the effect, which is the design's whole
+/// argument for deriving one from the other: *"the gated `EffectId` covers the
+/// effect's target, so a moved branch head derives a different effect, which derives a
+/// different request id, which is a different question"*. Staleness is then free
+/// rather than a rule somebody had to write — and this is the assertion that says the
+/// chain really runs through the head rather than around it.
+///
+/// See [`expected_effect_id`] for why the library is not called, and
+/// [`World::expected_request_id`] for the convenience form.
+pub fn expected_request_id(
+    project: &str,
+    invocation_ref: &str,
+    repo: &str,
+    pr: u64,
+    head_sha: &str,
+) -> String {
+    let effect = expected_effect_id(project, invocation_ref, repo, pr, head_sha);
+    truncated_digest(&length_prefixed([project, invocation_ref, &effect]))
+}
+
+/// The design's framing: each field becomes its **byte** length, a colon, then the
+/// field — `["ab", "c"]` is `2:ab1:c`.
+///
+/// Restated here rather than joined with a separator byte, because the framing is
+/// half of what these two derivations are. The design's reason for it is that a
+/// separator whose exclusion rests on convention can be violated by input: with a NUL
+/// join, `("a\0b", "c")` and `("a", "b\0c")` name one identity for two different
+/// effects. A test that framed its fields the easy way would agree with the product
+/// on every well-behaved input and disagree on exactly the inputs the framing exists
+/// for.
+///
+/// **Byte** length and not character count, because the digest is taken over bytes and
+/// the two differ for any non-ASCII field. Nothing this lane passes is non-ASCII
+/// today, so this line is a value appearing where its value cannot matter — recorded
+/// as such rather than presented as tested.
+fn length_prefixed<const N: usize>(fields: [&str; N]) -> String {
+    let mut material = String::new();
+    for field in fields {
+        material.push_str(&field.len().to_string());
+        material.push(':');
+        material.push_str(field);
+    }
+    material
+}
+
+/// The 16-hex-character rendering both identities are truncated to.
+///
+/// One definition rather than two, so an effect id and a request id derived here
+/// cannot drift into different widths — which is also the reason the product has one.
+/// [`parse_marker`] checks each field against a fixed width, so a width that moved
+/// here would produce an expectation the marker's own grammar rejects.
+fn truncated_digest(material: &str) -> String {
+    blake3::hash(material.as_bytes()).to_hex()[..16].to_string()
+}
+
 /// One comment on the conversation, as the listing returns it.
 ///
 /// A struct rather than a `serde_json::Value` because every field here is one a
@@ -2128,6 +2323,32 @@ impl World {
         self.scenario.expected_marker(invocation_ref)
     }
 
+    /// The gated effect's identity for `pr` at `head_sha`, in this world.
+    ///
+    /// [`expected_effect_id`] with this world's project and repository supplied and
+    /// everything a scenario chooses left as an argument. The free function carries
+    /// the derivation and the argument for not importing it; this exists so a call
+    /// site reads as the three facts the scenario is making a claim about — which
+    /// pull request, at which revision, under which reference — rather than as five
+    /// arguments of which two are always the same.
+    ///
+    /// `pr` and `head_sha` are arguments and never read out of the world here, for
+    /// [`World::expected_marker`]'s reason: the whole point is to compare the
+    /// published marker against a revision the *scenario* names from its own
+    /// observation of the remote, and a helper that fetched the current head would
+    /// be asserting that the world agrees with itself.
+    pub fn expected_effect_id(&self, invocation_ref: &str, pr: u64, head_sha: &str) -> String {
+        expected_effect_id(PROJECT_NAME, invocation_ref, REPO, pr, head_sha)
+    }
+
+    /// The question's identity for `pr` at `head_sha`, in this world.
+    ///
+    /// [`expected_request_id`]'s convenience form; see [`World::expected_effect_id`]
+    /// for why the two constants are supplied and the rest is not.
+    pub fn expected_request_id(&self, invocation_ref: &str, pr: u64, head_sha: &str) -> String {
+        expected_request_id(PROJECT_NAME, invocation_ref, REPO, pr, head_sha)
+    }
+
     /// Which attempt one run turned out to be.
     ///
     /// Minted inside `fiddle_runtime::attempt`, once per process, so two runs over
@@ -2269,7 +2490,7 @@ impl World {
     /// somebody else's behalf and a fixture that faked one through the forge's
     /// write path would be recording a request nobody made.
     ///
-    /// # The id, and the one thing it cannot promise
+    /// # The id
     ///
     /// One above the highest id the conversation currently shows, fiddle's own
     /// posted comments included. That is what makes the collection ordered by id
@@ -2278,14 +2499,23 @@ impl World {
     /// so a reply seeded below the question it answers would be invisible and one
     /// seeded above a comment that predates it would be a false candidate.
     ///
-    /// **What it cannot promise** is that a comment *fiddle* posts afterwards gets
-    /// an id above this one. The stub numbers its own from a fixed base
-    /// (`FIRST_POSTED_COMMENT`, 9000) and knows nothing about what was seeded, so
-    /// a run that wrongly posted a *second* question after a reply was seeded
-    /// could collide with it. The collision is not silent — two entries would
-    /// share an id — but a test asserting "no second question" should not rest on
-    /// ids for it. [`World::posted_comment_bodies`], counted off the request log, is the
-    /// accessor that cannot be confused this way.
+    /// **Corrected: this used to carry a "what it cannot promise" clause** — that the
+    /// stub numbered its own comments from a fixed base and knew nothing about what
+    /// was seeded, *"so a run that wrongly posted a second question after a reply was
+    /// seeded could collide with it"*. Two things about that were wrong. The collision
+    /// needed no misbehaving run: a **legitimate** redirect posts a second question
+    /// after a reply, and the converged
+    /// `human_direction::a_redirect_produces_a_different_change_and_asks_again_about_it`
+    /// was already leaving such a world behind. And it was not harmless: `gh_stub`'s
+    /// `comment_by_id` reports a duplicate rather than choosing from it, and step 5 of
+    /// the decision walk re-reads by id, so a third process could not be driven at all.
+    ///
+    /// `gh_stub::apply_effect` now mints a posted comment's id **at post time**, above
+    /// everything the world holds, so this rule and that one are one rule and there is
+    /// nothing left to promise around. [`World::posted_comment_bodies`], counted off the
+    /// request log, remains the accessor for "did a run ask twice" — not because ids
+    /// are unreliable but because a listing merges what landed and a post whose answer
+    /// was lost landed all the same.
     pub fn post_comment(&self, author: u64, body: &str) -> u64 {
         self.write_listed_comment(author, body, "User", serde_json::Value::Null)
     }
@@ -2723,6 +2953,137 @@ impl World {
         std::fs::write(&log, format!("{}\n", rewritten.join("\n"))).unwrap();
     }
 
+    /// Rewrite **one field of the marker** on the question this world's run published,
+    /// and hand back the binding a reader will now find there.
+    ///
+    /// # Why a field and not a body
+    ///
+    /// [`World::rewrite_the_published_question`] can already replace the whole comment,
+    /// and that is the wrong instrument for the case step 3 exists for. A marker whose
+    /// **effect** field was edited while its **request** field was left alone is still
+    /// found: `PublishDecisionRequest::is_this_request` compares only the request id, so
+    /// `inspect` recognises the comment, the walk enters the validation order, and step 3
+    /// — the recomputation of the effect from four values the conversation does not carry
+    /// — is what refuses. A scenario that rewrote more than one field would be refused
+    /// for whichever difference the product happened to check first, and the attribution
+    /// is the whole claim.
+    ///
+    /// So the caller is handed the parsed [`Binding`] and edits exactly what it means to.
+    ///
+    /// # Two assertions, and each closes a way this could quietly do nothing
+    ///
+    /// The edit must **change** the binding, because a marker rewritten to what it
+    /// already said is the check that cannot fail. And the marker this file renders from
+    /// the old binding must be **present in the body byte for byte**, which is what says
+    /// [`render_marker`]'s grammar and the product's rendering still agree: without it, a
+    /// drift in either would make this replace nothing and the scenario would pass
+    /// against an untouched question.
+    pub fn rewrite_the_published_marker(&self, edit: impl FnOnce(&mut Binding)) -> Binding {
+        let comment = self.the_only_request_comment();
+        let was = parse_marker(&comment.body)
+            .unwrap_or_else(|reason| panic!("the published question carries a marker: {reason}"));
+        let mut now = was.clone();
+        edit(&mut now);
+        assert_ne!(
+            now, was,
+            "a marker rewritten to what it already said is not a case"
+        );
+        let rendered = render_marker(&was);
+        assert!(
+            comment.body.contains(&rendered),
+            "the body must carry the marker this file renders, or the grammar here and \
+             the product's have drifted and this would rewrite nothing.\nrendered: \
+             {rendered}\nbody: {}",
+            comment.body
+        );
+        self.rewrite_the_published_question(&comment.body.replace(&rendered, &render_marker(&now)));
+        now
+    }
+
+    /// Make the `POST` that publishes the question **land and then lose its answer**.
+    ///
+    /// # The provenance this world could not produce
+    ///
+    /// The scripted `gh` has carried `commit_then_die` since M2 — the write is applied
+    /// and *then* the process ends without answering, in that order, because a stub that
+    /// exited first would be testing a failed write. Nothing in this world could reach
+    /// it: `commit_then_*` is scripted per REST key, and no accessor here wrote a script
+    /// file at all. So the milestone's central rule — settle a lost answer by reading,
+    /// never by asking again — was asserted for the *question* only in
+    /// `fiddle-runtime`'s `decision_request_effect`, which drives the operation through
+    /// the executor and therefore cannot see a caller that goes around it.
+    ///
+    /// The key is derived from the same repository and conversation the capability
+    /// addresses, mangled the way `gh_stub::script_key` mangles a path, so a script
+    /// cannot come to name a path nothing requests. `201` because that is what the
+    /// endpoint answers; the exit field is unused for a `commit_then_*` mode, which ends
+    /// the process itself.
+    ///
+    /// **It stays armed for every later process**, deliberately. A continuation that
+    /// wrongly posted a second question would die the same way, and the world would then
+    /// hold two comments — which is what [`World::request_comments`] is read for. A knob
+    /// that disarmed itself would make "the second run did not ask again" a claim about
+    /// the fixture's bookkeeping instead of about the conversation.
+    pub fn lose_the_answer_to_the_question(&self) {
+        let key = format!(
+            "POST_{}",
+            format!("repos/{REPO}/issues/{CONVERSATION_ISSUE}/comments").replace('/', "_")
+        );
+        std::fs::write(self.stub.join("script").join(key), "201 0 commit_then_die").unwrap();
+    }
+
+    /// Script the answer to GraphQL call `n` to **land and then lose its answer**.
+    ///
+    /// The same provenance as [`World::lose_the_answer_to_the_question`] on the other
+    /// write route, and it has to be scripted separately for the reason
+    /// [`World::script_graphql`] states: every GraphQL call is one `POST /graphql`, so
+    /// the REST script derives one key for all of them and could not tell a refusal from
+    /// a lost answer. The ending rides in `graphql/{n}.json` beside the status and the
+    /// body.
+    ///
+    /// The body is the accepted one, because that is what "the mutation landed" means
+    /// here — a GraphQL verdict lives in the body, so a mutation that lands and loses its
+    /// answer is an accepted body the client never got to read.
+    pub fn lose_the_answer_to_the_ready_mutation(&self) {
+        let dir = self.stub.join("graphql");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("0.json"),
+            serde_json::json!({
+                "status": 200,
+                "body": {
+                    "data": { "markPullRequestReadyForReview": { "clientMutationId": null } }
+                },
+                "mode": "commit_then_die",
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// The keys of every write that landed **under a `gh` that then failed to answer**,
+    /// in arrival order.
+    ///
+    /// Read out of the stub's world log, where the mode is recorded beside the mutation,
+    /// and it earns its place for `gh_stub::apply_effect`'s stated reason: it is how a
+    /// test asserts, *of the world it is making its claims about*, that a write landed
+    /// ambiguously. Without it a scenario could only script the ambiguity and hope the
+    /// run under test took that route — and a test that would pass on a request which
+    /// simply succeeded is not yet a test of the ambiguous one.
+    pub fn landed_ambiguously(&self) -> Vec<String> {
+        std::fs::read_to_string(self.stub.join("world"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|landed| {
+                landed["mode"]
+                    .as_str()
+                    .is_some_and(|mode| mode.starts_with("commit_then_"))
+            })
+            .filter_map(|landed| landed["key"].as_str().map(str::to_string))
+            .collect()
+    }
+
     /// The comments on the conversation that fiddle wrote, which are its
     /// questions.
     ///
@@ -2920,13 +3281,21 @@ impl World {
     /// stub really takes a pull request out of draft when one lands. Both hold here
     /// or neither does, and the caller reads the draft again afterwards to say so.
     ///
-    /// It is deliberately not a third process. A process that continued would need
-    /// the conversation to hold the question it was answering, and after a redirect
-    /// has asked again this world's comment ids are not distinct — `gh_stub`'s
-    /// posted comments are numbered positionally within a path and know nothing of
-    /// what a test seeded, so the second question can collide with a reply. That is a
-    /// fixture defect and it is not this accessor's to work around; what a scenario
-    /// needs from here is the narrow claim that the arming was live.
+    /// It is deliberately not a third process, and the reason has changed. **It used to
+    /// be that it could not be one:** *"after a redirect has asked again this world's
+    /// comment ids are not distinct — `gh_stub`'s posted comments are numbered
+    /// positionally within a path and know nothing of what a test seeded, so the second
+    /// question can collide with a reply."* That was true and is no longer — ids are
+    /// minted at post time now, and
+    /// [`an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent`](../human_direction.rs)
+    /// drives a third process through exactly that world.
+    ///
+    /// It stays a hand-sent mutation because a third process is a *different and weaker*
+    /// answer to the question this accessor asks. What a scenario needs from here is the
+    /// narrow claim that **the arming was live** — that the answer scripted at call zero
+    /// really accepts and the stub really takes a pull request out of draft. A process
+    /// would have to reach that through a whole walk, so a failure anywhere in the walk
+    /// would look like the arming being dead.
     ///
     /// **This is a fixture write and not an observation.** It moves the world, so a
     /// caller must make every assertion about what the run did *before* calling it —

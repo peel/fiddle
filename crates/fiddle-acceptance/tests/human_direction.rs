@@ -58,7 +58,8 @@
 mod support;
 
 use support::{
-    a_real_repair, a_redirect_whose_attempt_changes_nothing, a_suspension_and_its_approval,
+    a_real_repair, a_redirect_whose_attempt_changes_nothing,
+    a_suspension_and_a_hostile_interpretation, a_suspension_and_its_approval,
     a_suspension_and_its_redirect, interprets, parse_marker, Comment, World, AUTHORIZED,
     CONVERSATION_ISSUE, FIDDLE_BOT, INVOCATION_REF, REDIRECTED_FIXTURE, REPAIRED_FIXTURE, REPO,
     SENTINEL, STRANGER,
@@ -1975,6 +1976,35 @@ fn an_approval_for_a_head_that_has_moved_is_unrecognisable_not_merely_rejected()
          the *same* request id would be the duplicate a continuation exists not to \
          create"
     );
+    // **And each id is a *function of* the head beside it, not merely different from
+    // its neighbour.** The line above is satisfied by a build deriving ids from a
+    // counter or a clock, which is the same shape of gap as asserting an exit code a
+    // transport failure also produces: differing ids are what a derivation over the
+    // head and a derivation over nothing at all both look like from outside.
+    //
+    // This is the assertion the whole mechanism in the doc comment rests on. *"The
+    // gated effect's target is `{repo}#{pr}@{head}` and the request id is derived over
+    // it, so a run reading a different head derives a different request id"* — until
+    // now that account was stated and never checked here, and it is the reason the
+    // approval is unrecognisable rather than declined.
+    //
+    // Re-derived from the design and never by calling `fiddle_core`; see
+    // `support::expected_request_id` for why the import would be worse than the gap.
+    assert_eq!(
+        questions[0].0,
+        world.expected_request_id(
+            INVOCATION_REF,
+            suspension.pull_request,
+            &suspension.binding.head_sha
+        ),
+        "the standing question's id is derived over the head it was asked about"
+    );
+    assert_eq!(
+        questions[1].0,
+        world.expected_request_id(INVOCATION_REF, suspension.pull_request, &moved_to),
+        "and this run's question is derived over the head that now exists, which is \
+         what makes the old approval an answer to no question this run can ask"
+    );
     // And the approval a person already wrote answers neither of them as far as this
     // run is concerned: it was never interpreted, which the untouched model script
     // proves — the script holds one interpretation reply and the run consumed none,
@@ -2635,11 +2665,51 @@ fn a_redirect_produces_a_different_change_and_asks_again_about_it() {
         second.head_sha, second_sha,
         "and it is about the change that was just published"
     );
-    assert_ne!(
-        second.request, first.request,
-        "a new head is a new question"
+    // **A new head is a new question, asserted as a derivation and no longer as a
+    // difference.**
+    //
+    // The previous version of these two lines — kept here, marked, because a reader
+    // needs to know the claim moved — was:
+    //
+    // ```text
+    // assert_ne!(second.request, first.request, "a new head is a new question");
+    // assert_ne!(second.effect, first.effect, "and a new effect");
+    // ```
+    //
+    // Both are true of a build that numbers questions from a counter, or hashes a
+    // clock, and neither of those is a function of the head at all. So the pair was
+    // an outcome two different causes produce identically, which is not an assertion
+    // about either of them. The four below re-derive both identities from the design's
+    // definition over the head each question was really asked about — read from the
+    // remote with `git`, not from anything fiddle printed — so a counter fails here.
+    //
+    // Both questions are checked and not only the new one, because the first
+    // question's id had no test re-deriving it either.
+    assert_eq!(
+        first.effect,
+        world.expected_effect_id(INVOCATION_REF, pull_request, &first_sha),
+        "the first question's effect is derived over the head it was asked about"
     );
-    assert_ne!(second.effect, first.effect, "and a new effect");
+    assert_eq!(
+        first.request,
+        world.expected_request_id(INVOCATION_REF, pull_request, &first_sha),
+        "and so is its request id"
+    );
+    assert_eq!(
+        second.effect,
+        world.expected_effect_id(INVOCATION_REF, pull_request, &second_sha),
+        "the redirect's question names the effect the *new* head derives"
+    );
+    assert_eq!(
+        second.request,
+        world.expected_request_id(INVOCATION_REF, pull_request, &second_sha),
+        "and the request id that effect derives, which is what makes a moved head a \
+         different question with no rule written to say so"
+    );
+    // The two differ, which is now a *consequence* of the four assertions above
+    // taken with `assert_ne!(second_sha, first_sha)` further up rather than a claim
+    // of its own — and it is stated so a reader looking for the old property finds
+    // where it went.
     assert_eq!(
         world.comments_naming(&first.request).len(),
         1,
@@ -3341,18 +3411,26 @@ fn a_redirect_whose_attempt_changes_nothing_asks_nothing_and_says_why() {
 /// - **The transition is unspent**, against a world armed to accept it — and then
 ///   spent, by the identical words posted one position later.
 ///
-/// # Why this and not the redirect scenario the criterion describes
+/// # Why this and not only the redirect scenario the criterion describes
 ///
 /// The motivating case is an approval of change one stranded below the question a
-/// redirect asks about change two, and **this fixture cannot express it.** Measured:
-/// the first question is 9000, a reply 9001, a second reply 9002, and the second
-/// question is **9001 again** — `gh_stub`'s posted comments are numbered positionally
-/// within a path while `World::post_comment` numbers from the highest id the
-/// conversation shows, and neither knows about the other. The world that leaves has
-/// two comments sharing an id, `comment_by_id` reports a duplicate rather than
-/// choosing, and no third process can walk it. See
-/// [`an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent`],
-/// which asserts what that world does support and pins the collision.
+/// redirect asks about change two. **Corrected: this used to say "this fixture cannot
+/// express it", and gave the measurement** — the first question 9000, a reply 9001, a
+/// second reply 9002, and the second question **9001 again**, because `gh_stub`'s
+/// posted comments were numbered positionally within a path while
+/// `World::post_comment` numbered from the highest id the conversation showed, and
+/// neither knew about the other. That was true, and the world it left had two comments
+/// sharing an id, so `comment_by_id` reported a duplicate and no third process could
+/// walk it.
+///
+/// Ids are now minted at post time, and
+/// [`an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent`]
+/// drives that third process. **This scenario is still worth having, and its reason
+/// never depended on the collision:** it changes one thing and nothing else — where the
+/// approval sits relative to the question — against the same author, the same bytes,
+/// the same world and the same script. The redirect scenario changes the question as
+/// well, so an identity mechanism and an ordering mechanism are not distinguished there
+/// and are distinguished here.
 #[test]
 fn an_approval_below_the_question_is_no_candidate_and_the_same_words_above_it_are() {
     let world = World::with_model_script(a_suspension_and_its_approval(APPROVAL));
@@ -3484,10 +3562,13 @@ fn an_approval_below_the_question_is_no_candidate_and_the_same_words_above_it_ar
 /// It buys nothing, which is the claim, but it buys nothing *because a later reply
 /// superseded it* and not because it was excluded from the candidate set.
 ///
-/// The ordering rule is the other one, and it is what would strand this approval
-/// below the question a redirect asks about the new change. It is proven in
+/// The ordering rule is the other one, and it is what strands this approval below the
+/// question the redirect asks about the new change. It is proven in isolation by
 /// [`an_approval_below_the_question_is_no_candidate_and_the_same_words_above_it_are`],
-/// isolated, because it cannot be reached from here — see the tripwire below.
+/// and — since ids are minted at post time — **also reached from here**, by a third
+/// process at the end of this test. **Corrected: this used to say it "cannot be reached
+/// from here — see the tripwire below".** It could not, and the tripwire is what said
+/// so; both are now discharged.
 ///
 /// # What is asserted, and what each observation rules out
 ///
@@ -3496,6 +3577,10 @@ fn an_approval_below_the_question_is_no_candidate_and_the_same_words_above_it_ar
 /// names the redirect's comment as the one acted on, so the walk did not merely fail
 /// to read the approval — it read a different comment and said which. And the
 /// transition is unspent against a world armed to accept it.
+///
+/// Then a third process, which is the criterion's own scenario and the thing the
+/// duplicate id was a ceiling on: it finds its question standing, finds no candidate
+/// above it, asks nobody, publishes nothing, and names the approval in no exclusion.
 #[test]
 fn an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent() {
     let world = World::with_model_script(a_suspension_and_its_redirect(INSTEAD, REDIRECTION));
@@ -3571,45 +3656,138 @@ fn an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent() 
          outvoted is not being refused: {evidence}"
     );
 
-    // --- the tripwire, and what it is holding open ---
+    // --- one conversation, one numbering ---
     //
-    // The criterion this scenario belongs to is about the candidate set of the
-    // **new** question: the approval of change one is below it, so it is not a
-    // candidate for change two, and a further process finds no reply and stays
-    // suspended. **That process cannot be driven in this world**, because the
-    // fixture gives the new question an id it has already given the approval.
+    // **This replaces a tripwire, and the tripwire fired as designed.** It read
+    // `assert_eq!(questions[1].id, approved)` and said: *"this pins a fixture defect,
+    // not a property. The new question shares an id with the approval below it, so no
+    // process can continue from this conversation."* Two independent schemes ran over
+    // one conversation — `gh_stub`'s posted comments numbered `9000 + i` within a path,
+    // `World::post_comment` numbering from the highest id the conversation showed — and
+    // neither knew about the other, so the question A asked was 9000, the approval 9001,
+    // the redirect 9002, and the question this run asked was **9001 again**.
     //
-    // `gh_stub`'s `posted_comments` numbers a run's own comments `9000 + i` within a
-    // conversation path and knows nothing of what a test seeded, while
-    // `World::post_comment` numbers from the highest id the conversation shows. So
-    // the question A asked is 9000, the approval 9001, the redirect 9002, and the
-    // question this run just asked is 9001 again. `comment_by_id` reports a
-    // duplicate rather than choosing from it, so step 5's re-read of the request
-    // comment fails, and `gh_stub.rs:1187-1189` is wrong to say the collision needs
-    // "the very defect a continuation exists not to have" — a redirect asking again
-    // after a reply is the ordinary case, and the converged
-    // `a_redirect_produces_a_different_change_and_asks_again_about_it` already
-    // leaves such a world behind.
-    //
-    // Pinned rather than left as a note, so it fails the day the fixture assigns
-    // ids at post time and the property becomes assertable.
+    // `gh_stub::apply_effect` now mints a posted comment's id at post time, above
+    // everything the world holds. So the pinned equality is gone and the property the
+    // ceiling was hiding is asserted below it instead.
     let questions = world.request_comments();
     assert_eq!(
         questions.len(),
         2,
         "the redirect asked again: {questions:?}"
     );
-    assert_eq!(
-        questions[1].id, approved,
-        "TRIPWIRE — this pins a fixture defect, not a property. The new question \
-         ({}) shares an id with the approval below it ({approved}), so no process \
-         can continue from this conversation. When `gh_stub` assigns a posted \
-         comment's id at post time instead of positionally, this assertion fails: \
-         replace it with `questions[1].id > approved`, run a third process, and \
-         assert it finds no reply, publishes nothing, and names no declined entry \
-         for comment {approved} — which is the ordering rule reached through the \
-         scenario the criterion describes rather than through its isolation.",
+    assert!(
+        questions[1].id > approved,
+        "the new question must sit above the approval it does not answer: question \
+         {} against approval {approved}",
         questions[1].id
+    );
+    // **Every comment in the world has a distinct id**, which is the claim the
+    // arithmetic makes and the one a single pair of ids cannot carry. Restoring either
+    // numbering scheme fails here: positional numbering gives the second question the
+    // approval's id, and `max(id) + 1` without the `FIRST_POSTED_COMMENT` floor gives a
+    // first question the id 1 — which is asserted against elsewhere, and would pass
+    // this line, so this is not the only guard.
+    let ids: Vec<u64> = world.conversation().iter().map(|c| c.id).collect();
+    let mut distinct = ids.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        ids.len(),
+        "one conversation has one numbering, and this one holds {ids:?}"
+    );
+
+    // --- process C: the ordering rule, reached through the scenario rather than its
+    // isolation ---
+    //
+    // The criterion this scenario belongs to is about the candidate set of the **new**
+    // question. The approval of change one is below it, so it is no candidate for
+    // change two, and a further process finds no reply and stays suspended. This is the
+    // process the duplicate id made undrivable: step 5 re-reads the request comment
+    // **by id**, and `comment_by_id` reports a duplicate rather than choosing from it.
+    //
+    // GitHub's by-number answer is re-seeded first, from the remote's own ref, because
+    // that is what the world now is: the branch moved when the redirect's attempt
+    // pushed, and a pull request's head follows its branch. `suspend` does the same step
+    // for the same reason, and the returned revision is asserted against the marker the
+    // redirect published rather than assumed — a seed carrying the wrong commit would
+    // make C derive a request id no comment names, which is a *different* scenario that
+    // also ends in a suspension.
+    let moved_to = world.answer_pull_request_by_number(suspended.pull_request, &suspended.branch);
+    let second = parse_marker(&questions[1].body).expect("the new question carries a marker");
+    assert_eq!(
+        moved_to, second.head_sha,
+        "the head the forge now answers with is the head the new question was asked \
+         about"
+    );
+
+    let third = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        third.code,
+        Some(10),
+        "a third process finds its own question standing and no reply to it: \
+         stdout={} stderr={}",
+        third.stdout,
+        third.stderr
+    );
+    // **It published nothing.** Still two questions, and still two `POST`s counted off
+    // the request log — the second of which says C did not re-ask under an id it had
+    // already used, which is what a run whose `inspect` could not find its own comment
+    // would do.
+    assert_eq!(
+        world.request_comments().len(),
+        2,
+        "no third question: {:?}",
+        world.request_comments()
+    );
+    assert_eq!(
+        world.posted_comment_bodies().len(),
+        2,
+        "and no third `POST`: {:?}",
+        world.posted_comment_bodies()
+    );
+    // **The model was never asked again**, which is what says the approval was not a
+    // candidate rather than a candidate that was read and refused. Five is the count
+    // the redirect left: two for A's attempt, one interpretation, two for B's.
+    assert_eq!(
+        world.model_calls(),
+        5,
+        "nothing was read as a decision, so step 7 never ran"
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        0,
+        "and the armed transition is still unspent"
+    );
+    assert_eq!(
+        world.pull_request(suspended.pull_request)["draft"],
+        serde_json::json!(true)
+    );
+    // **And the approval is in no declined entry of C's own record**, which is the
+    // ordering rule: a comment below the request comment was not read and refused, it
+    // is a conversation that was already going on. The question's entry is the
+    // denominator — the list is rendered and the approval is genuinely elsewhere.
+    let payload: serde_json::Value = serde_json::from_str(&third.stdout)
+        .unwrap_or_else(|error| panic!("stdout is not JSON ({error}): {}", third.stdout));
+    let evidence = payload["capability_executions"][0]["evidence"].to_string();
+    assert!(
+        !evidence.contains(&format!("comment {approved} by")),
+        "comment {approved} must appear in no declined entry of the third process: \
+         {evidence}"
+    );
+    assert!(
+        third
+            .stdout
+            .contains("nobody who may decide has answered it yet"),
+        "and that is what a reader is told: {}",
+        third.stdout
     );
 }
 
@@ -4113,4 +4291,415 @@ fn a_redirect_instruction_is_capped_in_bytes_and_not_merely_in_characters() {
         Some(REDIRECTED_FIXTURE),
         "the redirected attempt's tree is what was published"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Three properties this tier could not observe, each with the inversion that
+// found it
+// ---------------------------------------------------------------------------
+
+/// **A question whose `POST` landed and whose answer was lost is asked once, and the
+/// next process finds one comment rather than posting a second.**
+///
+/// # The inversion that found the gap, and the lane that could not see it
+///
+/// `ProposeChange::ask` was rewritten to `POST` the question through `ctx.gh` and build
+/// the `InteractionRef` from the response's id, bypassing `Executor::execute` — so no
+/// step 3 inspect-before-write and no step 8 read-back. Measured:
+/// `fiddle-runtime --test propose_capability` **24 → 18/6**;
+/// `--test decision_request_effect` **26 → 26/0**; and this lane **29 → 29/0**.
+///
+/// `decision_request_effect` drives the operation *through* the executor, so it cannot
+/// see a caller that goes around it. This lane had no duplicate-question row for the
+/// ask at all, because nothing here could make a write land and lose its answer:
+/// `commit_then_die` is scripted per REST key and no accessor wrote a script file.
+/// [`World::lose_the_answer_to_the_question`] is that accessor.
+///
+/// # Read from the conversation, and never from the run's own report
+///
+/// `POST /repos/{repo}/issues/{pr}/comments` documents no idempotency key of any kind,
+/// so a question re-sent after a lost answer makes a **second** comment — and two
+/// request comments is a question with no answerable thread, because the validation
+/// order chooses candidate replies by their position relative to *the* request comment.
+/// A run that believed it had asked once would report exactly that; only the
+/// conversation says how many are there.
+#[test]
+fn a_question_whose_answer_was_lost_is_asked_once_and_never_twice() {
+    let world = World::with_model_script(a_real_repair());
+    world.lose_the_answer_to_the_question();
+
+    // --- process A: the write lands, and the answer does not come back ---
+    let suspended = suspend(&world);
+    // **Of this world, and not of some other directory:** the mode is recorded beside
+    // the mutation in the stub's own log, so this says the ambiguity really happened on
+    // the run under test. Without it the scenario would be scripting an ambiguity and
+    // hoping the run took that route, and a test that would pass on a request which
+    // simply succeeded is not yet a test of the ambiguous one.
+    assert_eq!(
+        world.landed_ambiguously(),
+        [format!(
+            "POST_repos_{}_issues_{CONVERSATION_ISSUE}_comments",
+            REPO.replace('/', "_")
+        )],
+        "the question's POST must be the write that landed under a `gh` that then \
+         failed to answer, and the only one"
+    );
+    // One POST off the request log, and one comment on the conversation. Two readings
+    // of the same number from two independent recorders: the log counts what was asked
+    // for, the listing counts what a person would see.
+    assert_eq!(
+        world.posted_comment_bodies().len(),
+        1,
+        "the run settled a lost answer by reading, not by asking again: {:?}",
+        world.posted_comment_bodies()
+    );
+    assert_eq!(world.request_comments().len(), 1);
+
+    // --- the next invocation, with nothing local left to read ---
+    world.delete_report_bundles();
+    world.delete_attempt_journal();
+    world.delete_workspaces();
+    assert!(
+        world.local_state_is_empty(),
+        "a continuation that could read its own past would prove nothing about a \
+         fresh one"
+    );
+
+    let next = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        next.code,
+        Some(10),
+        "the question stands and nobody has answered it: stdout={} stderr={}",
+        next.stdout,
+        next.stderr
+    );
+    // **The property, read off the conversation.** The script is still armed, so a run
+    // that posted again would land a second comment and lose that answer too — which is
+    // exactly what this count would then show.
+    assert_eq!(
+        world.request_comments().len(),
+        1,
+        "exactly one question on the conversation after both processes: {:?}",
+        world.request_comments()
+    );
+    assert_eq!(
+        world.posted_comment_bodies().len(),
+        1,
+        "and exactly one POST was ever made: {:?}",
+        world.posted_comment_bodies()
+    );
+    assert_eq!(
+        parse_marker(&world.the_only_request_comment().body)
+            .expect("the one question carries its marker")
+            .request,
+        suspended.binding.request,
+        "and it is the question the first process asked, not a re-ask under a new id"
+    );
+
+    // **The denominator, in this world.** "Exactly one" is worth asserting only if two
+    // would be seen, and `request_comments` filters on the author being a bot — so a
+    // version answering "one" unconditionally, or filtering the wrong field, passes
+    // everything above.
+    world.post_bot_comment(FIDDLE_BOT, "a second question, by hand");
+    assert_eq!(
+        world.request_comments().len(),
+        2,
+        "the accessor can see a second question in this very world: {:?}",
+        world.request_comments()
+    );
+}
+
+/// **A marker whose `effect` field names another effect is refused on the run's own
+/// recomputation, and no model is reached.**
+///
+/// # Why this is reachable here at all, and what refuses
+///
+/// `PublishDecisionRequest::is_this_request` compares only the **request** id. So a
+/// marker whose effect field has been edited still matches: `inspect` finds the comment,
+/// the capability takes the continuation rather than asking again, and **step 3** — the
+/// recomputation of the effect from four values the conversation does not carry — is what
+/// refuses. That is what makes step 3 an authentication rather than a formality, and a
+/// marker naming the right request id proves only that its author could read the thread.
+///
+/// The inversion: shadow the recomputed effect id with the marker's at step 3, so the
+/// comparison cannot disagree. Measured: `fiddle-runtime --test decision_protocol`
+/// **19 → 15/4**, and this lane **29 → 29/0**.
+///
+/// # The discriminator is the model count, not the exit code
+///
+/// `ForeignEffect` is `Recurrence::Permanent`, so this is exit **20** — and so are
+/// `ForeignPayload` and `RequestEdited`, which the tampering scenario next door already
+/// covers. **Corrected: `fiddle-jkbk` predicted exit 10 for this refusal**; 10 is
+/// `Recurrence::Awaiting`, which is what an unanswered question earns, and the mapping in
+/// `capability/mod.rs` puts `ForeignEffect` on the permanent row instead. Either way an
+/// exit code alone cannot say which of the three fired.
+///
+/// What can is **where in the order it fired**. Step 3 precedes step 7, so a refusal here
+/// never reads a reply as a decision and the model count stays at the attempt's two —
+/// against the payload tampering, which refuses at step 8 and therefore *has* interpreted
+/// an approval, at three. The counts are what separate two refusals that share an exit
+/// code and share no mechanism.
+#[test]
+fn a_marker_naming_another_effect_is_refused_before_any_model_is_reached() {
+    let world = World::with_model_script(a_suspension_and_its_approval(APPROVAL));
+    let suspended = suspend(&world);
+    world.post_comment(AUTHORIZED, APPROVAL);
+    world.accept_the_ready_mutation();
+
+    // A genuinely foreign effect id and not sixteen zeroes: derived from the design over
+    // *another pull request*, so it is the identity of a real other effect. A value that
+    // could not be any effect's identity would let a build pass that refused the shape
+    // rather than the mismatch.
+    let elsewhere = world.expected_effect_id(
+        INVOCATION_REF,
+        suspended.pull_request + 1,
+        &suspended.binding.head_sha,
+    );
+    let forged = world.rewrite_the_published_marker(|binding| binding.effect = elsewhere.clone());
+    // **The request id is untouched, which is the whole scenario.** If it moved, the
+    // comment would no longer be found, the capability would ask a fresh question, and
+    // this would be the moved-head scenario under another name.
+    assert_eq!(
+        forged.request, suspended.binding.request,
+        "the question is still findable, or step 3 is never reached"
+    );
+    assert_ne!(forged.effect, suspended.binding.effect);
+    // Read back through the listing, so the forgery is a fact about the world this run
+    // will read rather than about a string this test built.
+    assert_eq!(
+        parse_marker(&world.the_only_request_comment().body)
+            .expect("the forged marker still parses; it is the effect that is wrong")
+            .effect,
+        elsewhere,
+        "the conversation must now carry the foreign effect"
+    );
+
+    let refused = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+
+    // The world first: nothing was spent, against a world armed to accept it.
+    assert_eq!(
+        world.pull_request(suspended.pull_request)["draft"],
+        serde_json::json!(true),
+        "a marker naming another effect must not spend this one: stdout={} stderr={}",
+        refused.stdout,
+        refused.stderr
+    );
+    assert_eq!(world.graphql_calls(), 0);
+    // **The discriminating observation.** Two, which is the attempt's own turns and
+    // nothing since: step 3 refused before step 7 could read the approval standing on
+    // the conversation. The script still holds its interpretation reply.
+    assert_eq!(
+        world.model_calls(),
+        2,
+        "step 3 precedes step 7, so no reply was ever read as a decision"
+    );
+    assert_eq!(
+        refused.code,
+        Some(20),
+        "stdout={} stderr={}",
+        refused.stdout,
+        refused.stderr
+    );
+    // And the refusal a reader is given names the mismatch rather than the symptom, with
+    // both identities in it — which is what tells them the marker was rewritten rather
+    // than that something went wrong.
+    let published = world.all_published_bytes();
+    assert!(
+        published.contains(&format!(
+            "the marker names effect {elsewhere} and this run derives {}",
+            suspended.binding.effect
+        )),
+        "the record must say which effect was found and which was derived: {} bytes",
+        published.len()
+    );
+    // Still one question. A refusal is not a reason to ask again.
+    assert_eq!(world.request_comments().len(), 1);
+}
+
+/// **A model document naming fields outside the schema resolves to nothing *through the
+/// walk*, and the pull request stays a draft.**
+///
+/// # The inversion, and the three lanes it was invisible in
+///
+/// Removing `#[serde(deny_unknown_fields)]` from `interpret::Reply` fails **2 of 8** in
+/// `fiddle-runtime --test interpretation` and is a **null** in
+/// `--test decision_protocol` (19 → 19/0) and in this lane (29 → 29/0). Every scripted
+/// reply in those two suites is a document this build authored, so no row ever handed
+/// `resolve` a document naming fields outside the schema — the blast-radius property was
+/// asserted against `interpret` and not against the walk that calls it, and not against
+/// the binary at all.
+///
+/// [`a_suspension_and_a_hostile_interpretation`] is the document. `effect` and `payload`
+/// are the two identities the marker carries and the walk recomputes, so a model that
+/// could name either would be choosing which change a person's approval is spent on.
+///
+/// # What a broken build passes here, and what it cannot
+///
+/// The outcome is `AwaitingDecision`, exit 10, nothing readied — **bit-for-bit what a
+/// redirect that never reached its model produces**, because `interpret` collapses every
+/// transport failure to `Unclear` and `Unclear` is `AwaitingDecision`. So the exit code is
+/// asserted and is nowhere near the evidence. The evidence is two counts in opposite
+/// directions:
+///
+/// - **three model calls**, which says the gateway really answered the hostile document.
+///   The gateway drops its listener when its script runs out, so a walk that failed at
+///   the socket would leave this at two and look identical from the outside.
+/// - **no GraphQL call and a pull request still in draft, against a world armed to accept
+///   the transition.** This is what fails when the schema stops refusing: the document
+///   carries a real `"approve"` with a real quoted span, so a build that ignored the
+///   extra fields would read it as an approval and spend it.
+#[test]
+fn a_model_document_naming_an_effect_or_a_payload_reaches_no_decision_through_the_walk() {
+    let world = World::with_model_script(a_suspension_and_a_hostile_interpretation(APPROVAL));
+    let suspended = suspend(&world);
+    let reply = world.post_comment(AUTHORIZED, APPROVAL);
+    world.accept_the_ready_mutation();
+
+    let waiting = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+
+    // The world, against a world armed to accept the transition. **These two are what a
+    // build without `deny_unknown_fields` fails.**
+    assert_eq!(
+        world.pull_request(suspended.pull_request)["draft"],
+        serde_json::json!(true),
+        "a reply naming an effect and a payload must buy nothing: stdout={} stderr={}",
+        waiting.stdout,
+        waiting.stderr
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        0,
+        "and the armed transition was never dispatched"
+    );
+    // **The denominator that says the document was really served.** A walk that failed
+    // at the socket produces the same exit code and the same untouched world.
+    assert_eq!(
+        world.model_calls(),
+        3,
+        "the walk reached step 7 and the gateway answered the hostile document"
+    );
+    assert_eq!(
+        waiting.code,
+        Some(10),
+        "an unreadable verdict is not a refusal to act, it is no decision: stdout={} \
+         stderr={}",
+        waiting.stdout,
+        waiting.stderr
+    );
+    // The question stands, so the person can answer again — a document the model
+    // mangled is not a reason to stop asking. And a reader is told **which** comment
+    // could not be read, which is where they would go to look. Note it is *not* the
+    // "nobody who may decide has answered it yet" wording the unanswered-question rows
+    // assert: somebody did answer, and their reply is what could not be read.
+    //
+    // **This message is not offered as a discriminator.** A walk whose model call failed
+    // at the socket says the same words, for `interpret`'s own reason — it collapses
+    // every transport failure to `Unclear` as well. `model_calls` above is what
+    // separates the two; this asserts only that the reader is pointed at the reply.
+    // The id `post_comment` handed back, and **not** the last entry of `conversation()`:
+    // the stub merges a run's own posted comments onto the last page whatever their ids,
+    // so the listing's order and the ids' order are allowed to disagree — and here they
+    // do, with the question fiddle posted sitting after the reply that answers it. That
+    // disagreement is deliberate, and reading the last entry for "the reply" is the
+    // mistake `World::conversation` documents; it was made here first and this is what
+    // it cost.
+    assert_eq!(world.request_comments().len(), 1);
+    assert!(
+        waiting.stdout.contains(&format!(
+            "comment {reply} could not be read as a decision, so the question stands"
+        )),
+        "{}",
+        waiting.stdout
+    );
+}
+
+/// **The ready mutation lands, its answer is lost, and it is settled by reading rather
+/// than dispatched again.**
+///
+/// # The lane this was asserted in, and the one it was not
+///
+/// The milestone's central rule — retry the read, never the mutation — is proven for M2's
+/// effects at this tier in `exactly_once`, and for the ready mutation only in
+/// `fiddle-runtime --test ready_effect`. The inversion that found the gap re-dispatches
+/// `operation.apply` once when the dispatch classifies `EffectOutcome::Unknown`:
+/// `ready_effect` **10 → 9/1**, M2's `exactly_once` **7 → 4/3**, and this lane
+/// **29 → 29/0**.
+///
+/// The reason was a fixture one. `World::dispatch_the_ready_mutation` is a positive
+/// control — it proves the arming is live — and this world had **no way to lose the
+/// answer** to the real one: the landed-then-lost GraphQL mutation was scripted into
+/// `ready_effect`'s own harness, not into the acceptance world's.
+/// [`World::lose_the_answer_to_the_ready_mutation`] is that knob.
+///
+/// # Where the counting happens, and why an unscripted second call is not the assertion
+///
+/// The stub increments its GraphQL counter **before** it looks for a script, so a second
+/// dispatch is counted and then panics naming the file it wanted. That makes a repeat
+/// loud, which is useful, but it is not the property: the property is that the world was
+/// asked **once** and that the transition is visibly there. Both are read off the world —
+/// the counter the stub keeps, and the by-number answer with the landed transition
+/// applied over the seeded draft.
+#[test]
+fn a_ready_mutation_whose_answer_was_lost_is_settled_by_reading_and_not_sent_again() {
+    let world = World::with_model_script(a_suspension_and_its_approval(APPROVAL));
+    let suspended = suspend(&world);
+    world.post_comment(AUTHORIZED, APPROVAL);
+    world.lose_the_answer_to_the_ready_mutation();
+
+    let decided = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+
+    // **Of this world:** the mutation is the write that landed under a `gh` that then
+    // failed to answer, and the only one.
+    assert_eq!(
+        world.landed_ambiguously(),
+        ["POST_graphql"],
+        "the ready mutation must be what landed ambiguously on the run under test"
+    );
+    // **Exactly one dispatch.** A re-dispatch is counted here whether or not it finds an
+    // answer scripted, so this is the number that moves under the inversion.
+    assert_eq!(
+        world.graphql_calls(),
+        1,
+        "the answer was retried by reading and the mutation was not sent again: \
+         stdout={} stderr={}",
+        decided.stdout,
+        decided.stderr
+    );
+    // And the transition really is there, read out of the by-number answer the stub
+    // applies landed mutations over — so this is the world's word and not fiddle's.
+    assert_eq!(
+        world.pull_request(suspended.pull_request)["draft"],
+        serde_json::json!(false),
+        "the mutation landed, so the pull request is ready: stdout={} stderr={}",
+        decided.stdout,
+        decided.stderr
+    );
+    // Still one question, and one POST: a run whose GraphQL answer was lost has no
+    // reason to ask anybody anything.
+    assert_eq!(world.request_comments().len(), 1);
+    assert_eq!(world.posted_comment_bodies().len(), 1);
 }

@@ -298,17 +298,12 @@ fn response_body(dir: &Path, status: u16, mode: &str, key: &str) -> String {
     if mode == "answers_a_run_id" {
         return serde_json::json!({ "id": 999_999 }).to_string();
     }
-    // Counted *after* `apply_effect` has appended this write, so the last landed
-    // comment on this path is the one just created.
-    if status < 400 && key.starts_with("POST") && key.ends_with("_comments") {
-        let landed = std::fs::read_to_string(dir.join("world"))
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter(|entry| entry["key"].as_str() == Some(key))
-            .count() as u64;
-        return serde_json::json!({ "id": FIRST_POSTED_COMMENT + landed.saturating_sub(1) })
-            .to_string();
+    // Read *after* `apply_effect` has appended this write, so the last comment landed
+    // on this path is the one just created — and read out of the log rather than
+    // recounted, which is what makes the create's answer and the listing's entry one
+    // value instead of two derivations that agree until they do not.
+    if status < 400 && is_conversation_comment_post(key) {
+        return serde_json::json!({ "id": last_posted_comment_id(dir, key) }).to_string();
     }
     match status >= 400 {
         true => serde_json::json!({ "message": format!("scripted {status}") }).to_string(),
@@ -623,21 +618,102 @@ fn open_pull_request_for(dir: &Path, body: &str) {
 /// suite could only demonstrate the ambiguity on some other directory and hope
 /// the run under test took the same route — and a test that would pass on a
 /// request that simply succeeded is not yet a test of the ambiguous one.
+/// The comment's own id is minted **here**, at post time, and recorded beside the
+/// write — for a conversation `POST` and for nothing else.
+///
+/// # Why the id is recorded rather than derived later
+///
+/// It used to be derived positionally, `FIRST_POSTED_COMMENT + i` within a path, by
+/// whoever read the log. That put **two independent numbering schemes over one
+/// conversation**: this one, which knew nothing about what a test had seeded, and
+/// `World::post_comment`'s `max(id) + 1`, which knew nothing about this one. Measured:
+/// a run's question was 9000, a person's reply 9001, a second reply 9002 — and a
+/// redirect's second question was **9001 again**.
+///
+/// The consequence is not cosmetic. [`comment_by_id`] reports a duplicate rather than
+/// choosing from it, and step 5 of the decision walk re-reads the request comment by
+/// id, so **no third process could run in a world where a redirect had asked again**.
+/// That is a ceiling on what any scenario can drive, and a redirect asking again after
+/// a reply is the ordinary case rather than a defect.
+///
+/// Minting at post time removes the second scheme instead of reconciling the two:
+/// there is now one moment at which a comment acquires an id, and it is the moment
+/// GitHub would assign one.
+///
+/// # Above everything the world holds, and never below the floor
+///
+/// [`FIRST_POSTED_COMMENT`] stays as a **floor** rather than a base. Its reason is
+/// still good — `decision_request_effect.rs` states it: an id far from zero and far
+/// from one cannot pass by accident against an index, a count or a page number — and a
+/// floor keeps that for the ordinary case of a `POST` onto an empty conversation,
+/// which is what every assertion naming `9000` is about.
+///
+/// Above **every** comment the world holds and not only this conversation's, which is
+/// also what GitHub does: an issue comment id is unique across the repository, not
+/// within a thread. Numbering per path would leave two conversations' first comments
+/// sharing an id, and a fixture cannot both do that and answer a by-id read.
 fn apply_effect(dir: &Path, key: &str, body: &str, mode: &str) {
     if !key.starts_with("POST") && !key.starts_with("DELETE") {
         return; // a read changes nothing
+    }
+    let mut landed = serde_json::json!({ "key": key, "body": body, "mode": mode });
+    if is_conversation_comment_post(key) {
+        landed["comment_id"] = serde_json::json!(next_comment_id(dir));
     }
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(dir.join("world"))
         .unwrap();
-    writeln!(
-        f,
-        "{}",
-        serde_json::json!({ "key": key, "body": body, "mode": mode })
-    )
-    .unwrap();
+    writeln!(f, "{landed}").unwrap();
+}
+
+/// Whether `key` is a `POST` of a comment onto a pull request's **conversation**.
+///
+/// One predicate rather than the same three conditions written at each of the four
+/// places that need them — the mint, the listing, the by-id union and the create's own
+/// answer. They have to agree about which writes carry an id, and three copies of a
+/// condition is how two numbering schemes came to exist in the first place.
+///
+/// `_issues_` and not `_pulls_`: the inline review collection is a different
+/// collection, nothing lists it, and [`with_posted_comments`] merges only the
+/// conversation.
+fn is_conversation_comment_post(key: &str) -> bool {
+    key.starts_with("POST_repos_") && key.contains("_issues_") && key.ends_with("_comments")
+}
+
+/// The id a comment posted **now** gets: one above the highest the world already
+/// holds, and never below [`FIRST_POSTED_COMMENT`].
+///
+/// Read through [`listed_conversation_comments`], which is the union of both sources a
+/// listing draws on — the page files a test wrote and the comments earlier `POST`s
+/// created. Reading one of them would reinstate exactly the blindness this replaces:
+/// over the log alone it cannot see a seeded reply, and over the pages alone it cannot
+/// see its own earlier question.
+fn next_comment_id(dir: &Path) -> u64 {
+    let highest = listed_conversation_comments(dir)
+        .iter()
+        .filter_map(|comment| comment["id"].as_u64())
+        .max();
+    match highest {
+        Some(highest) => (highest + 1).max(FIRST_POSTED_COMMENT),
+        None => FIRST_POSTED_COMMENT,
+    }
+}
+
+/// The id of the last comment posted under `key` — the one a create is answering
+/// about, because [`apply_effect`] has already appended it.
+fn last_posted_comment_id(dir: &Path, key: &str) -> u64 {
+    std::fs::read_to_string(dir.join("world"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|landed| landed["key"].as_str() == Some(key))
+        .filter_map(|landed| landed["comment_id"].as_u64())
+        .next_back()
+        .unwrap_or_else(|| {
+            panic!("no comment has landed under {key}, so no create can be answered about one")
+        })
 }
 
 /// Answer a read from the world the writes built. This is what makes the
@@ -1101,6 +1177,13 @@ fn with_posted_comments(
 /// count the question as a reply. `is_bot` is the field
 /// `validate::select_candidates` refuses on, so this is the shape that keeps the
 /// fixture from quietly supplying the thing under test.
+///
+/// The id is **read** and never derived. [`apply_effect`] minted it at post time,
+/// above everything the world held; a reader that recomputed it positionally is the
+/// second numbering scheme that gave one conversation two comments with one id, and
+/// that function records what it cost. An entry with no id is a panic rather than a
+/// fallback, because the fallback *is* the defect: it would number this comment from a
+/// base again and disagree with whatever the create answered.
 fn posted_comments(dir: &Path, bare_path: &str) -> Vec<serde_json::Value> {
     // [`script_key`]'s mangling, for a path that carries no query — which a
     // comment `POST` never does. Derived here rather than matched loosely so the
@@ -1114,11 +1197,16 @@ fn posted_comments(dir: &Path, bare_path: &str) -> Vec<serde_json::Value> {
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter(|landed| landed["key"].as_str() == Some(key.as_str()))
-        .enumerate()
-        .map(|(i, landed)| {
+        .map(|landed| {
             let request = parse(landed["body"].as_str().unwrap_or_default());
+            let id = landed["comment_id"].as_u64().unwrap_or_else(|| {
+                panic!(
+                    "a comment landed under {key} with no id recorded at post time: \
+                     {landed}"
+                )
+            });
             serde_json::json!({
-                "id": FIRST_POSTED_COMMENT + i as u64,
+                "id": id,
                 // The body as it was *sent*. A fixture that re-rendered it would
                 // make the bytes posted and the bytes read back agree by
                 // construction, and whether they agree is a property under test.
@@ -1181,18 +1269,38 @@ fn posted_comments(dir: &Path, bare_path: &str) -> Vec<serde_json::Value> {
 /// the same reason: there is no principled way to pick, and a world holding two is
 /// one somebody assembled.
 ///
-/// **That arm is unreachable in this build and is kept anyway.** Relaxing it to take
-/// the first of several broke no test, because nothing constructs a duplicate: a
-/// seeded comment is numbered above everything the conversation shows, and a posted
-/// one from [`FIRST_POSTED_COMMENT`]. The one collision `World::post_comment`
-/// documents — a run that wrongly posted a *second* question after a reply was
-/// seeded — needs the very defect a continuation exists not to have.
+/// # That arm was reachable, and the comment that said otherwise is why nobody looked
 ///
-/// It is kept because the alternative is not "no branch", it is *taking the first*,
-/// and this match has to be total. A fail-closed arm that no test can reach is not
+/// **Corrected. This used to say: *"Relaxing it to take the first of several broke no
+/// test, because nothing constructs a duplicate: a seeded comment is numbered above
+/// everything the conversation shows, and a posted one from `FIRST_POSTED_COMMENT`. The
+/// one collision `World::post_comment` documents — a run that wrongly posted a second
+/// question after a reply was seeded — needs the very defect a continuation exists not
+/// to have."*** The last sentence was false, and it was the load-bearing one.
+///
+/// A **legitimate** redirect posts a second question after a reply. No defect is
+/// required: the two numbering schemes were what collided, not a run misbehaving. The
+/// converged
+/// `human_direction::a_redirect_produces_a_different_change_and_asks_again_about_it`
+/// already left a duplicate-id world behind, harmlessly, because nothing read by id
+/// afterwards — and step 5 of the decision walk re-reads by id, so the real cost was
+/// that **no third process could be driven in such a world at all**. That was a
+/// ceiling on what any later scenario could reach, and the comment is why it read as a
+/// cosmetic clash.
+///
+/// The two schemes are now one: [`apply_effect`] mints a comment's id at post time,
+/// above every comment the world holds, so a duplicate is not merely unconstructed but
+/// unconstructible from this fixture's own writers.
+///
+/// The arm is kept, because the alternative is not "no branch", it is *taking the
+/// first*, and this match has to be total. A fail-closed arm nothing can reach is not
 /// the same thing as a check that cannot fail: it adds no confidence, and it removes
-/// the option of silently answering about the wrong comment. Said here so a later
-/// reader does not mistake its untestedness for deadness.
+/// the option of silently answering about the wrong comment — which is a behaviour
+/// forbidden two paragraphs above, for duplicate pull requests and duplicate request
+/// comments, on the argument that there is no principled way to pick. Said here so a
+/// later reader does not mistake its untestedness for deadness, and so that the reason
+/// it is unreachable is a property of the minting rather than an accident somebody can
+/// undo without noticing.
 fn comment_by_id(dir: &Path, id: &str) -> (u16, String, String) {
     let file = dir
         .join("issue-comments")
@@ -1236,12 +1344,19 @@ fn comment_by_id(dir: &Path, id: &str) -> (u16, String, String) {
 /// come to disagree about what the conversation holds.
 ///
 /// The posted half is gathered per conversation path rather than over every `POST`
-/// at once, because [`posted_comments`] numbers from [`FIRST_POSTED_COMMENT`]
-/// *within* a path: a question published on one pull request must not appear in
-/// another's conversation, and pooling the writes would give two conversations'
-/// first comments the same id. Discovering the paths from the world log rather than
-/// taking one as an argument is what lets a by-id read — whose path names no issue
-/// — be answered at all.
+/// at once, because a question published on one pull request must not appear in
+/// another's conversation and [`posted_comments`] is keyed on the exact path.
+/// Discovering the paths from the world log rather than taking one as an argument is
+/// what lets a by-id read — whose path names no issue — be answered at all.
+///
+/// **Corrected: this used to say the grouping was needed because `posted_comments`
+/// numbers from `FIRST_POSTED_COMMENT` *within* a path, "and pooling the writes would
+/// give two conversations' first comments the same id".** That reason is gone —
+/// [`apply_effect`] mints an id above every comment the world holds, in any
+/// conversation, so pooling would no longer collide. The grouping is kept for the
+/// reason that was always the real one and is stated first above: which conversation a
+/// comment belongs to is a property, and a fixture that could not tell two
+/// conversations apart would answer a duplicate-detection test either way.
 fn listed_conversation_comments(dir: &Path) -> Vec<serde_json::Value> {
     let mut found = Vec::new();
 
@@ -1263,8 +1378,7 @@ fn listed_conversation_comments(dir: &Path) -> Vec<serde_json::Value> {
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter_map(|landed| landed["key"].as_str().map(str::to_string))
-        .filter(|key| key.starts_with("POST_repos_") && key.ends_with("_comments"))
-        .filter(|key| key.contains("_issues_"))
+        .filter(|key| is_conversation_comment_post(key))
         .collect();
     conversations.sort();
     conversations.dedup();
