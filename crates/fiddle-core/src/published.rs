@@ -131,6 +131,28 @@ mod tests {
 
     /// The bound is on what is published, marker included — so a reader can
     /// state one number and be right about the whole field.
+    ///
+    /// # `says_so` was the half this test did not check
+    ///
+    /// It asserted the character count, the surviving head, and that the original
+    /// length *appears*. A marker of bare `" {length}"` — no word, no unit —
+    /// satisfies all three, and the count assertion cannot see it at all, because
+    /// `kept` is derived from the marker's own length and so the field is exactly
+    /// `PUBLISHED_TEXT_LIMIT` characters under any marker whatever. The field could
+    /// therefore have been reduced to `xxx…xxx 8192`, handing a reader a number
+    /// with nothing saying what it counted or that anything had been dropped.
+    /// Measured rather than reasoned: under that mutation `-p fiddle-core --lib`
+    /// stayed **64 passed / 0 failed**.
+    ///
+    /// What the two assertions at the end pin is the marker's *meaning* — that it
+    /// says something was truncated, and in what unit the number is. The `…` glyph
+    /// is deliberately **not** pinned. It once mattered by accident: U+2026 is
+    /// three bytes inside a bound counted in characters, so it donated the whole
+    /// 2-byte margin by which `interpretation::a_redirect_instruction_is_capped`
+    /// failed when the redirect byte cap was deleted, and respelling it here turned
+    /// that assertion green under the mutation it existed to catch. That row now
+    /// uses a multi-byte input and draws no margin from here, which is what makes
+    /// the glyph a free cosmetic choice rather than something to pin.
     #[test]
     fn text_past_the_bound_is_cut_to_it_and_says_so() {
         let loud = "x".repeat(PUBLISHED_TEXT_LIMIT * 4);
@@ -151,6 +173,16 @@ mod tests {
                 .as_str()
                 .contains(&(PUBLISHED_TEXT_LIMIT * 4).to_string()),
             "a reader must be told how much there really was: {}",
+            published.as_str()
+        );
+        assert!(
+            published.as_str().contains("truncated"),
+            "a number alone does not say anything was dropped: {}",
+            published.as_str()
+        );
+        assert!(
+            published.as_str().contains("characters in full"),
+            "nor does it say what the number counts: {}",
             published.as_str()
         );
     }

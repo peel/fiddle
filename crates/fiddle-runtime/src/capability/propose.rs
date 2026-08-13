@@ -178,7 +178,7 @@ use crate::human::validate::{
     resolve, DecisionError, DecisionResolution, DecisionTrace, DecisionWalk, HumanAnswer,
     IgnoredReply,
 };
-use crate::human::{InteractionRef, PublishDecisionRequest};
+use crate::human::{InteractionRef, PublishDecisionRequest, CONVERSATION_PAGES};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspacePath};
 use fiddle_core::{
     correlation_key, decision_request_id, effect_id, payload_hash, AttemptId, CapabilityId,
@@ -230,24 +230,6 @@ const REGISTERED_TOOLS: [&str; 4] = ["read_file", "write_file", "list_files", "r
 
 /// What a call to anything outside [`REGISTERED_TOOLS`] is counted as.
 const FOREIGN_TOOL: &str = "unregistered";
-
-/// How many pages of a conversation the continuation may read before the read is a
-/// refusal rather than a truncation.
-///
-/// **The same bound [`PublishDecisionRequest::inspect`] applies**, and it has to
-/// be: this capability asks one conversation two questions — *is my question
-/// already here* through the operation's own `inspect`, and *has anybody answered
-/// it* through [`resolve`] — and a run whose two reads saw different amounts of
-/// the same conversation could find its question and then miss the reply below it.
-///
-/// It is stated twice because `human`'s copy is a private module constant and
-/// `human/mod.rs` is not this task's file. That is a duplication to collapse the
-/// next time either file is touched, by making the constant there `pub`; until
-/// then the drift risk is recorded here rather than left for somebody to find. It
-/// is not a deployment key: nobody has asked to configure how much of a
-/// conversation fiddle reads, and a document value that could disagree with the
-/// operation's own bound would be worse than a constant that cannot.
-const CONVERSATION_PAGES: u32 = 10;
 
 /// Where this run's attempt works, and the worktree whose `HEAD` the branch
 /// effect publishes.
