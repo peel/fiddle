@@ -20,6 +20,13 @@ absence is recoverable, since one `test result:` line is the whole run; for a 19
 and one such log measured nothing at all — zero results, ending in `warning: build failed`. A status that
 survives only in a transcript is not in the evidence pack.
 
+**An inversion's result is the lane's exit code, not the driver's.** A driver that runs several lanes and
+then exits cleanly writes `EXIT=0` for itself while individual lanes exited 101. M3: the lead grepped `^EXIT=`
+across eight inversion logs, got zero from all eight, and would have reported **every one as a null** —
+the exact opposite of what they found. Write the per-lane code under a distinct name (`LANE_EXIT[<lane>]=`),
+and say in the report which field is the result, because a reader who greps the obvious one gets the
+inverse of your finding.
+
 **Capture exit codes from the command itself, never through a pipe.** `echo $?` after a pipe reports the last
 stage's status.
 
