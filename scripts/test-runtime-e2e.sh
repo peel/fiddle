@@ -154,7 +154,12 @@ DEVELOP_HOLISTIC_DIR="$PROJECT_DIR/skills/develop-holistic"
 assert_contains_tree() {
   local desc="$1" dir="$2" pattern="$3"
   local hits
-  hits=$(grep -rl -- "$pattern" "$dir" 2>/dev/null | sed "s|^$dir/||" | sort | tr '\n' ' ')
+  # `|| true` because this suite runs under `set -euo pipefail`, where a grep that
+  # matches nothing makes the whole substitution fail and kills the script before
+  # it can report anything. That is not a hypothetical: it is what this helper did
+  # on its first inversion, and a suite that dies on the failure path prints no
+  # denominator at all — the exact reading this fix exists to prevent.
+  hits=$( { grep -rl -- "$pattern" "$dir" 2>/dev/null || true; } | sed "s|^$dir/||" | sort | tr '\n' ' ')
   if [ -n "$hits" ]; then
     PASS=$((PASS+1)); echo "  PASS: $desc (in ${hits% })"
   else
