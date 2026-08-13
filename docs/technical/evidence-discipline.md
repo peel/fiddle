@@ -251,6 +251,14 @@ milestone.
 
 ## 4. Scope
 
+**On a public repository a successful *write* proves nothing about a grant either.** One verb deeper than
+the read rule, and it is what actually happened: M3 spent a session believing an effects credential held an
+undocumented `Issues` grant because `createIssue` returned 201. It does not — the repository is public with
+issues enabled, where **any authenticated identity may open an issue and no permission is involved**, so that
+surface answers identically to a credential holding the permission and to one that does not. The 403 and the
+two `FORBIDDEN` results were the absent grant showing through. Four documents said the grant was narrow and
+all four were right. **A surface open to everyone cannot discriminate, in either direction.**
+
 **A scope claim needs a control that shows the probe could have come out the other way.** A 403 from a
 permission-gated endpoint is not yet a proof: it is consistent with the endpoint being gated for everyone, or
 with the repository being unusual. M3's live lane showed `GET /repos/{r}/collaborators` returning
