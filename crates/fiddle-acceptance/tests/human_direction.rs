@@ -2709,20 +2709,39 @@ fn a_redirect_produces_a_different_change_and_asks_again_about_it() {
 /// # A partition, because the claim is about a mutation nobody thought of
 ///
 /// *"The run did not close the pull request"* can be written as a search for a
-/// `PATCH`, and a search only finds what it was told to look for: a run that
-/// deleted the branch, or locked the conversation, or did something this milestone
-/// has not invented yet would pass it. So this sorts **every** recorded call into
-/// one of four buckets and the caller asserts the fourth is empty and that the
-/// three add up to the total. A fifth kind of call cannot hide in a partition; it
-/// makes the sum wrong.
+/// `PATCH`, and a search only finds what it was told to look for: a run that locked
+/// the conversation, or re-based it, or did something this milestone has not
+/// invented yet would pass it. So this sorts **every** recorded call into one of
+/// four buckets, and a caller asserts the shape of each.
 ///
 /// `writes` carries the verb beside the path, because the path alone is the same
 /// string for a read of a pull request and a `PATCH` that closes it.
 ///
-/// `unclassified` is not a defensive arm. A REST call the product made without
-/// `--method`, or a `graphql` call with a path, is a shape this partition has not
-/// been told how to read, and answering "a read" for it would be the failure this
-/// helper exists to prevent.
+/// `unclassified` is not a defensive arm. A REST call made without `--method`, a
+/// verb spelled `-X`, a path with no leading slash, or a `graphql` call carrying a
+/// path is a shape this partition has not been told how to read, and answering "a
+/// read" for it would be the failure this helper exists to prevent.
+///
+/// # What is outside it, which a reader must know before trusting it
+///
+/// **The boundary is `gh`, and branch publication does not go through `gh`.** A
+/// branch is pushed with real `git` against a real bare repository, so a branch
+/// **delete** and a **force-push** are not recorded here at all and no assertion
+/// over these four buckets can see one. They are covered separately and better, off
+/// the remote itself: `remote_branches()` equal to the one branch, and `pushed_file`
+/// equal to the tree the attempt left. Said here because the four buckets otherwise
+/// read as though they were total over everything a run can do to the world, and
+/// they are total only over what it asked `gh` for.
+///
+/// # Every arm is asserted, and one of them only became so after an inversion
+///
+/// [`the_forge_call_partition_sorts_each_shape_into_its_own_arm`] drives all four
+/// from a table. Before it existed, `graphql` and `unclassified` were read **only**
+/// by assertions that they were empty, so a classifier that sorted a GraphQL call
+/// into `reads` — or that answered `reads` for every shape it could not read —
+/// passed everything. Both mutations were measured green. That is `fiddle-pwyi`'s
+/// rule about an accessor asserted only empty, and this helper had it in two of its
+/// four arms while asserting the third whole.
 struct ForgeCalls {
     reads: Vec<String>,
     writes: Vec<String>,
@@ -2731,29 +2750,36 @@ struct ForgeCalls {
 }
 
 impl ForgeCalls {
-    /// How many calls were sorted — the denominator every claim below needs.
+    /// Nothing sorted yet.
+    fn empty() -> Self {
+        ForgeCalls {
+            reads: Vec::new(),
+            writes: Vec::new(),
+            graphql: Vec::new(),
+            unclassified: Vec::new(),
+        }
+    }
+
+    /// How many calls were sorted.
+    ///
+    /// Compared by a caller against [`World::requests`]'s own length, which is the
+    /// claim that matters: **every recorded call was sorted and none was dropped.**
+    /// It is deliberately not compared against the sum of the arms — `total` *is*
+    /// that sum, so the comparison would reduce to `unclassified.is_empty()` and
+    /// could not fail once that is asserted a line above. It was written that way
+    /// first and an evaluator was right to suspect it.
     fn total(&self) -> usize {
         self.reads.len() + self.writes.len() + self.graphql.len() + self.unclassified.len()
     }
-}
 
-/// Sort every call this world's forge received.
-///
-/// Read off `argv` rather than off [`World::requested_paths`], which drops the verb
-/// — and the verb is the whole of the distinction between a read of a pull request
-/// and a write that closes one.
-fn forge_calls(world: &World) -> ForgeCalls {
-    let mut sorted = ForgeCalls {
-        reads: Vec::new(),
-        writes: Vec::new(),
-        graphql: Vec::new(),
-        unclassified: Vec::new(),
-    };
-    for request in world.requests() {
-        let argv: Vec<&str> = request["argv"]
-            .as_array()
-            .map(|args| args.iter().filter_map(serde_json::Value::as_str).collect())
-            .unwrap_or_default();
+    /// Sort one call, given the `argv` its child received.
+    ///
+    /// Separate from [`forge_calls`] so the classification can be driven from a
+    /// table of shapes rather than only from whatever a walk happens to produce. A
+    /// real run makes reads, two kinds of write and — on the path this file is about
+    /// — no GraphQL call at all, so three of the four arms are unreachable from any
+    /// scenario here.
+    fn sort(&mut self, argv: &[&str]) {
         let method = argv
             .iter()
             .position(|arg| *arg == "--method")
@@ -2763,15 +2789,150 @@ fn forge_calls(world: &World) -> ForgeCalls {
         // `graphql` first, and matched on the literal subcommand rather than on the
         // absence of a path: `gh` addresses every GraphQL call to one endpoint and
         // carries its question in `-f query=`, so "no path" is a consequence of
-        // being a GraphQL call and not a way of recognising one.
+        // being a GraphQL call and not a way of recognising one. A `graphql` call
+        // that *did* carry a path is a shape nobody has explained, and it goes to
+        // `unclassified` rather than being read as either.
         match (argv.contains(&"graphql"), method, path) {
-            (true, _, None) => sorted.graphql.push(argv.join(" ")),
-            (false, Some("GET"), Some(path)) => sorted.reads.push(path.to_string()),
-            (false, Some(verb), Some(path)) => sorted.writes.push(format!("{verb} {path}")),
-            _ => sorted.unclassified.push(argv.join(" ")),
+            (true, _, None) => self.graphql.push(argv.join(" ")),
+            (false, Some("GET"), Some(path)) => self.reads.push(path.to_string()),
+            (false, Some(verb), Some(path)) => self.writes.push(format!("{verb} {path}")),
+            _ => self.unclassified.push(argv.join(" ")),
         }
     }
+}
+
+/// Sort every call this world's forge received.
+///
+/// Read off `argv` rather than off [`World::requested_paths`], which drops the verb
+/// — and the verb is the whole of the distinction between a read of a pull request
+/// and a write that closes one.
+fn forge_calls(world: &World) -> ForgeCalls {
+    let mut sorted = ForgeCalls::empty();
+    for request in world.requests() {
+        let argv: Vec<&str> = request["argv"]
+            .as_array()
+            .map(|args| args.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+        sorted.sort(&argv);
+    }
     sorted
+}
+
+/// **Each shape lands in its own arm** — the four-way assertion the partition's
+/// three "this bucket is empty" claims were standing on.
+///
+/// # Why a table and not a walk
+///
+/// A scenario produces the calls the product makes, which on this path are reads and
+/// two kinds of write and nothing else. So `graphql` and `unclassified` were only
+/// ever read by assertions that they were **empty**, and two inversions confirmed
+/// what that is worth: sorting GraphQL calls into `reads` left 29 of 29 green, and
+/// making the catch-all answer `reads` did too. An arm asserted only empty is not
+/// tested — a classifier that never uses it satisfies the assertion for ever.
+///
+/// A table is what reaches an arm no walk here can produce. It is **not a substitute**
+/// for the real call: a table can encode a wrong expectation as easily as a right
+/// one, which is why
+/// [`a_redirect_performs_no_external_mutation_of_its_own`] also asserts that the
+/// genuine GraphQL call it dispatches lands in `graphql`. The table says the sorter
+/// does what it claims; the real call says a real `gh` invocation has the shape the
+/// sorter expects. Neither alone is the property.
+///
+/// # The rows
+///
+/// One per arm, plus three ways of being unreadable — because "unclassified" is not
+/// one shape and a single row would leave the other two resting on it. Each row is
+/// one call in and one entry out, and the rendering is asserted beside the arm: an
+/// entry filed correctly and rendered wrongly is the defect that made
+/// `requested_paths` unusable for this claim in the first place.
+#[test]
+fn the_forge_call_partition_sorts_each_shape_into_its_own_arm() {
+    for (name, argv, expected, entry) in [
+        (
+            "a GraphQL mutation, which carries its question in -f and no path",
+            vec![
+                "api",
+                "graphql",
+                "-f",
+                "query=mutation($id: ID!) { markPullRequestReadyForReview }",
+                "-f",
+                "id=PR_kwDOm3demoNode7",
+            ],
+            (0, 0, 1, 0),
+            "api graphql -f query=mutation($id: ID!) { markPullRequestReadyForReview } \
+             -f id=PR_kwDOm3demoNode7",
+        ),
+        (
+            "a read",
+            vec!["api", "-i", "--method", "GET", "/repos/acme/r/pulls/7"],
+            (1, 0, 0, 0),
+            "/repos/acme/r/pulls/7",
+        ),
+        (
+            // The shape the whole partition exists for: same path as the read above,
+            // and only the verb says it is a close.
+            "a write that closes the pull request",
+            vec!["api", "-i", "--method", "PATCH", "/repos/acme/r/pulls/7"],
+            (0, 1, 0, 0),
+            "PATCH /repos/acme/r/pulls/7",
+        ),
+        (
+            "a verb spelled -X, which this partition has not been told to read",
+            vec![
+                "api",
+                "-X",
+                "DELETE",
+                "/repos/acme/r/git/refs/heads/fiddle/x",
+            ],
+            (0, 0, 0, 1),
+            "api -X DELETE /repos/acme/r/git/refs/heads/fiddle/x",
+        ),
+        (
+            "a path with no leading slash, so nothing is recognised as the path",
+            vec!["api", "--method", "POST", "repos/acme/r/pulls"],
+            (0, 0, 0, 1),
+            "api --method POST repos/acme/r/pulls",
+        ),
+        (
+            // Not `graphql`, because a GraphQL call has no path — so this is a shape
+            // nobody has explained, and reading it as either would be a guess.
+            "a graphql call carrying a path",
+            vec!["api", "graphql", "--method", "POST", "/graphql"],
+            (0, 0, 0, 1),
+            "api graphql --method POST /graphql",
+        ),
+    ] {
+        let mut sorted = ForgeCalls::empty();
+        sorted.sort(&argv);
+        assert_eq!(
+            (
+                sorted.reads.len(),
+                sorted.writes.len(),
+                sorted.graphql.len(),
+                sorted.unclassified.len(),
+            ),
+            expected,
+            "{name}: sorted into the wrong arm — reads={:?} writes={:?} graphql={:?} \
+             unclassified={:?}",
+            sorted.reads,
+            sorted.writes,
+            sorted.graphql,
+            sorted.unclassified
+        );
+        // One call in, one entry out. The denominator for the row above: without it,
+        // an arm that pushed twice and an arm that pushed nothing would both be
+        // consistent with some tuple.
+        let filed: Vec<&String> = sorted
+            .reads
+            .iter()
+            .chain(&sorted.writes)
+            .chain(&sorted.graphql)
+            .chain(&sorted.unclassified)
+            .collect();
+        assert_eq!(filed.len(), 1, "{name}: one call in, one entry out");
+        assert_eq!(filed[0], entry, "{name}: and this is how it is rendered");
+        assert_eq!(sorted.total(), 1, "{name}: and it is counted once");
+    }
 }
 
 /// **A redirect mutates nothing of its own, and the mutation it did not spend is
@@ -2861,18 +3022,26 @@ fn a_redirect_performs_no_external_mutation_of_its_own() {
     // **Read before anything else touches the world**, because the fixture write
     // below is recorded in this same log.
     let calls = forge_calls(&world);
+    // **Nothing was dropped on the way into the buckets**, which is the denominator
+    // every claim below rests on and the only form of it that can fail. The sum of
+    // the arms equalling `total()` cannot: `total()` *is* that sum, so it reduces to
+    // the line beneath it. This compares against the log instead — a classifier that
+    // skipped a call it could not read would leave a claim about "every write" true
+    // of a subset.
+    assert_eq!(
+        calls.total(),
+        world.requests().len(),
+        "every recorded call must have been sorted, and {} of {} were",
+        calls.total(),
+        world.requests().len()
+    );
     assert!(
         calls.unclassified.is_empty(),
-        "every call must be one of the three kinds, and {} of {} are a shape this \
-         partition cannot read: {:?}",
+        "every call must be one of the three readable kinds, and {} of {} are a shape \
+         this partition cannot read: {:?}",
         calls.unclassified.len(),
         calls.total(),
         calls.unclassified
-    );
-    assert_eq!(
-        calls.reads.len() + calls.writes.len() + calls.graphql.len(),
-        calls.total(),
-        "the partition must be total"
     );
     // Three writes across two rounds, and the list is the claim rather than a
     // sample: one pull request created — the second round found the open one and
@@ -2943,6 +3112,32 @@ fn a_redirect_performs_no_external_mutation_of_its_own() {
         "and this world *can* show a readied pull request, so `draft == true` above \
          was an observation about a mutation that did not happen rather than about a \
          fixture that could not express one"
+    );
+    // **And the empty `graphql` bucket above was an empty bucket rather than an arm
+    // nothing uses.** A genuine `gh api graphql` invocation has just been made
+    // against this world, so re-sorting the log must now file exactly one call there
+    // — and it must not have landed in `reads`, which is the mutation that left this
+    // helper's own inversion green. The table in
+    // [`the_forge_call_partition_sorts_each_shape_into_its_own_arm`] proves the
+    // classifier; this proves a real call has the shape the classifier expects, which
+    // a table written by the same hand cannot.
+    let after = forge_calls(&world);
+    assert_eq!(
+        after.graphql.len(),
+        1,
+        "one GraphQL call is now on the log and sorted as one, out of {}: reads={:?}",
+        after.total(),
+        after.reads.len()
+    );
+    assert!(
+        after.graphql[0].contains("markPullRequestReadyForReview"),
+        "and it is the ready transition: {:?}",
+        after.graphql[0]
+    );
+    assert_eq!(
+        after.writes, calls.writes,
+        "and a GraphQL call is not a write — the inventory this test asserted is \
+         unchanged by it"
     );
 }
 
@@ -3773,13 +3968,27 @@ fn quoted_instruction(prompt: &str, written: &str) -> String {
 /// ASCII**, so bytes and characters agree and the byte assertion is satisfied by
 /// whichever bound happens to bind.
 ///
-/// Two of them bind, which is the part nobody had named. `interpret.rs:302` reads
+/// Two of them bind. `interpret.rs:302` reads
 /// `Published::of(truncate(&instruction, REDIRECT_INSTRUCTION_LIMIT))` — a **byte**
 /// bound of 2,048 inside a **character** bound of 2,048
 /// (`fiddle_core::published::PUBLISHED_TEXT_LIMIT`). Deleting the inner call
 /// altogether leaves the whole of that test green, measured; so does widening
 /// `REDIRECT_INSTRUCTION_LIMIT` tenfold. The assertion's units were corrected and its
 /// *input's* were not.
+///
+/// **An earlier version of this comment said the second bound was "the part nobody
+/// had named", and that was false** — the product names it, at the constant's own
+/// declaration: *"It coincides with `PUBLISHED_TEXT_LIMIT`, and it is stated here
+/// anyway because the two bound different consumers. An instruction is published,
+/// which `Published` covers, **and** it reaches a later attempt's prompt, which
+/// nothing else covers. If the publication bound were ever loosened, the prompt would
+/// still be bounded by this."* The structure, the coincidence and the loosening case
+/// are all written down. The false version is shown rather than swapped out because a
+/// reader should know the claim moved.
+///
+/// What was missing was never a name. It was an **input on which the two bounds
+/// disagree** — a claim about the tests and not about the codebase. The comment above
+/// even names the case, and this is the row it was asking for.
 ///
 /// # What makes this row discriminating, stated as arithmetic
 ///
