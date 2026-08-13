@@ -768,7 +768,7 @@ impl DeploymentPolicy for PolicyTable {
 /// into existence.
 ///
 /// **One key, and it stays one.** A `max_pages` bound was specified for this table
-/// and then removed, because `capability::propose`'s own `CONVERSATION_PAGES`
+/// and then removed, because `human::CONVERSATION_PAGES`
 /// already argues the case against it: nobody asked to configure how much of a
 /// conversation fiddle reads, and a document value that could disagree with the
 /// operation's own bound would be worse than a constant that cannot. Two reads of
