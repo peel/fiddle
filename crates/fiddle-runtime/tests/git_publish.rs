@@ -678,8 +678,26 @@ async fn a_cancellation_after_the_push_was_spawned_is_an_ambiguous_write() {
 
     let cancel = CancellationToken::new();
     let canceller = cancel.clone();
+    // Wait for the premise rather than sleeping past it. A fixed
+    // `sleep(250ms)` stood here and raced the child it depended on: it failed
+    // once in a full-workspace run under load — never in isolation, where this
+    // test passes 6/6 — and what it reported was the premise assertion below,
+    // so a scheduling delay read as a product defect (`fiddle-vicv`).
+    //
+    // `push.json` is the recording `git`'s own note that the pushing child ran,
+    // which is exactly what the premise asserts, so waiting for it puts the
+    // cancellation after the spawn by construction rather than by arithmetic
+    // about machine speed. The bound is a ceiling, not a timing assumption: on
+    // expiry it cancels anyway and lets the premise assertion report with its
+    // own message, instead of hanging the suite.
+    let evidence = work.join("push.json");
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        for _ in 0..6_000 {
+            if evidence.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         canceller.cancel();
     });
 
