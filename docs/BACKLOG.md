@@ -1652,3 +1652,34 @@ which code path runs, which guard fires, who calls what — should be stated wit
 it, and the mutation should be run. The lane's practice of pinning the exit code *and* naming the guard, then
 inverting to confirm which guard fires, is what caught both. **A mechanism nobody tried to break is a
 hypothesis with a citation.**
+
+### 2026-08-13 — The grant resolution is written into the permission table, and ADR 018 never needed it
+
+Acts on *The grant discrepancy is resolved: a public repository, not an undocumented permission*, above, and
+closes the "**Owed, and small**" paragraph that entry ends with. That paragraph's text stays as written, per
+this file's rule; this entry records what was done and corrects one of its claims.
+
+**Done.** `docs/technical/effects-repository.md` now carries *Resolved 2026-08-13: a public repository, not an
+undocumented grant* — appended after the subsection it supersedes rather than replacing it, with the
+superseded instruction (*"treat the effective grant as wider than this table in an unknown direction"*) marked
+in place so a reader cannot act on it, and the permission table's Issues row showing its old status struck
+rather than swapped. The sharper rule is stated there: **on a public repository a successful write proves
+nothing about a grant either**, because a surface open to any authenticated identity answers identically to a
+credential that holds the permission and to one that does not.
+
+**The claim being corrected.** That paragraph says *"the permission table's Issues row, its subsection, and
+**ADR 018** still describe this as unexplained"*, and the entry's opening names ADR 018 as one of the four
+documents describing the grant. Neither is true of ADR 018, and the entry that lists the four enumerating
+documents inside `effects-repository.md` does not include it — it names `.env.example`,
+`docs/evaluator-calibration-general.md`, `.github/workflows/github-effects.yml` and the table itself.
+Measured over all **180** lines of `docs/technical/decisions/018-a-graphql-200-is-not-a-success.md`, case-
+insensitively: `unexplained|unresolved|wider|createissue|#25|issues` returns **one** hit, and it is the verb
+in *"The probe issues one cause"*; `contents|pull requests|metadata|secrets|actions: |permission|grant|403|
+token` returns **one** hit, and it is `personal access token` inside a quoted response body. What ADR 018
+actually says about the episode is *"a mutation this credential is not permitted to issue"* — which the
+resolution confirms rather than contradicts, since `closeIssue` is exactly the operation the absent grant
+refuses. **So ADR 018 needs no append**, and the document that said it did was wrong about it in both
+directions: it neither enumerates the grant nor calls the success unexplained.
+
+**Nothing here widened or exercised a credential.** The gated-endpoint table this entry's parent records was
+re-verified by the lane that resolved the discrepancy; this entry copies it and measured nothing at GitHub.

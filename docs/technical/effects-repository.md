@@ -198,7 +198,7 @@ Its permissions, and what each one is for:
 | Actions | read and write | `POST .../actions/workflows/<file>/dispatches` — **the dispatch** |
 | Metadata | read | mandatory on every fine-grained token, and what answers the selection probe below |
 | Secrets | none | asserted on every run — see *How rule 1 is established* |
-| Issues | **not in this list, and yet an issue was created** | unexplained and **unresolved** — see *A success this table does not account for* |
+| Issues | **not in this list, and yet an issue was created** | ~~unexplained and **unresolved**~~ — **resolved 2026-08-13**: the repository is public, so opening an issue needed no grant at all, and every *modification* was refused by the absent one. The observation stands; the framing does not. See *A success this table does not account for* and *Resolved 2026-08-13: a public repository, not an undocumented grant* |
 
 `Actions: write` is the permission the dispatch requires, so a 403 on the dispatch
 is that permission missing. It is **not** `Workflows`, which is a different
@@ -300,6 +300,62 @@ this table in an unknown direction**, and note that this is the second time in
 this milestone that a set of agreeing documents was wrong about this credential —
 the first is *The second row read 200 until 2026-08-10* below, where four of them
 said the selection was one repository while it was two.
+
+> **Superseded 2026-08-13.** The operator read the permission set: there is no
+> `Issues` grant, and there never was a discrepancy. Do not act on *"wider than this
+> table in an unknown direction"* — the sentence above is kept because it was the
+> disposition this document held for three days, not because it is still true. The
+> next subsection is the resolution.
+
+### Resolved 2026-08-13: a public repository, not an undocumented grant
+
+The subsection above stands as written, per this document's append rule. It is
+superseded, and the resolution is that **the token has no `Issues` access at all**.
+
+Two mechanisms produced the asymmetry, not one undocumented grant:
+
+| what was observed | what produced it |
+| --- | --- |
+| GraphQL `createIssue` **succeeded**, opening #25 | this repository is **public** with issues enabled (`visibility: public`, `has_issues: true`), and on a public repository any authenticated identity may open an issue. Ordinary bug-reporting behaviour, requiring no repository permission — so the success was never evidence of a grant. |
+| REST `PATCH .../issues/25` `state=closed` **403**; GraphQL `closeIssue` and `deleteIssue` **200 carrying `FORBIDDEN`** | modifying issue state *is* permission-gated. Those three refusals **are** the absent `Issues` grant showing through, and they are what a token holding `Issues: write` would not have produced. |
+
+So the grant was never wider than this table describes, and the four documents
+tabulated above were right about it. **Two claims in that subsection are retired
+rather than reworded:** *"Four sources agreeing is not evidence when the wire
+disagrees with all four"* — the wire never disagreed with them — and the instruction
+to treat the grant as wider in an unknown direction. The **fifth** document's
+disagreement is untouched and stays open: `RUNBOOKS.md` prescribes `Workflows` and
+carries no `Secrets` row, which is a question about what a standing credential needs
+and has nothing to do with the issue.
+
+**The standing rule this earns is the one already here, applied one level deeper.**
+That rule is *scope is proven by a 403 and never by a successful read*, and it was
+applied to reads only; the probe then read a successful **write** as evidence about
+the grant, which is the same mistake in the other verb. The sharper form:
+
+> **On a public repository a successful write proves nothing about a grant either.**
+> A surface open to any authenticated identity answers identically to a credential
+> that holds the permission and to one that does not, so the outcome is not an
+> assertion about either.
+
+That is also why the selection table below probes `/collaborators` rather than
+`GET /repos/{owner}/{repo}`: **all three repositories are public and answer the plain
+repository read to anybody**, so it cannot discriminate and cannot serve as a scope
+proof. Re-verified 2026-08-13 on the gated endpoint, recorded in `docs/BACKLOG.md`
+under *The grant discrepancy is resolved: a public repository, not an undocumented
+permission*:
+
+| repository | `GET /repos/{r}/collaborators` |
+| --- | --- |
+| `peel/fiddle` | `Resource not accessible by personal access token` |
+| `peel/fiddle-acceptance` | `Resource not accessible by personal access token` |
+| `peel/fiddle-effects-acceptance` | one collaborator listed — the read was permitted |
+
+**No lane-facing rule changes, and the one that matters is better founded.** A lane
+must still not create an issue at all — see *An issue is residue, and it is worse
+than a branch*. What the resolution changes is why that rule cannot be delegated to
+the credential: the reason a lane *can* open one is that the repository is public, so
+no narrowing of this token would prevent it. Issue #25 is closed.
 
 ### The selection, verified by probe rather than assumed
 

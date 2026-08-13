@@ -893,6 +893,36 @@ mod tests {
         );
     }
 
+    /// Every path in `value` whose string leaf is `needle`, dotted through objects
+    /// and indexed through arrays.
+    ///
+    /// The paths and not the count, so a failure says *where* the duplicate is, and
+    /// so that a copy which moves the id somewhere else fails rather than counting
+    /// to one from the wrong place.
+    fn paths_holding(value: &serde_json::Value, needle: &str, at: &str, found: &mut Vec<String>) {
+        let below = |key: &str| {
+            if at.is_empty() {
+                key.to_string()
+            } else {
+                format!("{at}.{key}")
+            }
+        };
+        match value {
+            serde_json::Value::String(leaf) if leaf == needle => found.push(at.to_string()),
+            serde_json::Value::Object(fields) => {
+                for (key, nested) in fields {
+                    paths_holding(nested, needle, &below(key), found);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (index, nested) in items.iter().enumerate() {
+                    paths_holding(nested, needle, &below(&index.to_string()), found);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// The request id is held in **exactly one place**, and that is asserted rather
     /// than described.
     ///
@@ -914,19 +944,37 @@ mod tests {
     /// against somebody re-adding the field is a red test rather than a review
     /// comment, and it lives here in `fiddle-core` beside the type it constrains.
     ///
-    /// # The key set, and deliberately not an occurrence count
+    /// # The key set, the nested walk, and deliberately not an occurrence count
     ///
-    /// One assertion and not two. Counting how often the id appears in the
-    /// serialized document and requiring one **passes a second copy that
-    /// disagrees** — which is the dangerous case rather than the harmless one, since
-    /// a copy equal to the binding's id posts nothing wrong and a copy that differs
-    /// is what posts forever. So a count is strictly weaker than the key set, which
-    /// fails on any second top-level field whatever its value.
+    /// Counting how often the id appears in the serialized document and requiring
+    /// one **passes a second copy that disagrees** — which is the dangerous case
+    /// rather than the harmless one, since a copy equal to the binding's id posts
+    /// nothing wrong and a copy that differs is what posts forever. That is what a
+    /// count cannot do, and it is the whole of it: an earlier version of this
+    /// comment drew a wider conclusion — *"a count is strictly weaker than the key
+    /// set"* — and that is false. The key set inspects **top-level fields only**, so
+    /// it is blind to the case the count was written for, a second copy carried by a
+    /// nested value. Two assertions follow, and neither covers the other:
     ///
-    /// That is worth a sentence here because the two would look interchangeable to
-    /// somebody tidying this test, and the person most likely to edit a guard against
-    /// re-adding the field is the person re-adding it. Keeping the shorter assertion
-    /// would leave the guard green for exactly the change it exists to refuse.
+    /// * the key set fails on any second **top-level** field whatever its value,
+    ///   including one that disagrees with the binding, which is what a count would
+    ///   wave through;
+    /// * the walk fails on a copy nested at any depth **whose value agrees** with
+    ///   `binding.request`, and it asserts the path rather than the number, so
+    ///   moving the id out of the binding fails too instead of counting to one from
+    ///   the wrong place.
+    ///
+    /// What neither refuses is a copy that is *both* nested *and* disagreeing: a
+    /// value-equality walk cannot see a value it is not equal to, and nothing here
+    /// gates [`DecisionBinding`]'s own serialized key set. Closing it means a shape
+    /// assertion over the nested types, which belongs beside those types rather than
+    /// in this test — and it is the reason the count was not simply restored, since
+    /// a count sees that case no better and the disagreeing top-level copy worse.
+    ///
+    /// All of this is worth the words because the assertions would look
+    /// interchangeable to somebody tidying this test, and the person most likely to
+    /// edit a guard against re-adding the field is the person re-adding it. Keeping
+    /// either one alone would leave the guard green for a change it exists to refuse.
     #[test]
     fn the_request_id_is_held_in_exactly_one_place() {
         let request = HumanDecisionRequest {
@@ -964,6 +1012,22 @@ mod tests {
             ],
             "the request id belongs to the binding alone: a top-level copy of it is \
              what published a marker naming one question and then looked for another"
+        );
+
+        let mut carriers: Vec<String> = Vec::new();
+        paths_holding(
+            &document,
+            request.binding.request.0.as_str(),
+            "",
+            &mut carriers,
+        );
+        carriers.sort_unstable();
+        assert_eq!(
+            carriers,
+            ["binding.request"],
+            "and nothing nested repeats it either: the key set above sees top-level \
+             fields only, so a copy carried by a nested value is the same \
+             forever-posting hazard one level below where that assertion can look"
         );
     }
 }
