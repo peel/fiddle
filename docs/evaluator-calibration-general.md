@@ -839,3 +839,37 @@ Two, both recorded read-only during planning.
   not, and a cleanup that cannot fail loudly is how residue survives a passing run. Score a shell
   bean that handles comment ids on whether it selects the field by name (`.[].id`) rather than by
   pattern.
+
+## all dimensions — Method, aggregated from M3 (2026-08-13)
+
+**Read `docs/technical/evidence-discipline.md` before scoring.** It carries the rules for making and checking
+claims, each with the defect that earned it, aggregated at the end of M3 so later milestones inherit them rather
+than rediscovering them.
+
+M3 transmitted these by copy-paste into every dispatch — roughly 700 lines of it — and the lead's own
+transcription errors propagated three times. The doc exists so a dispatch can point rather than restate.
+
+**The four that change scoring most directly:**
+
+- **Run the criterion-set identity check before reading any verdict.** Compare the ids in your scorecard against
+  the ids in the bean's `eval` block and reject a pass whose sets differ. A confirming pass in M3 merged two
+  criteria, promoted an inversion row to criterion status, invented a fifth, and **dropped a safety property** —
+  while producing five entries, all passing, matching dimensions, zero antipatterns. Every surface signal a
+  merge step reads was correct. **A renamed criterion is a missing criterion wearing a plausible label.** If you
+  name an id in order to *exclude* it, say so explicitly, so a reader can tell exclusion from omission.
+- **A provider that cannot execute must neither fail a criterion nor discount a dimension for its own
+  inability.** In M3 a pass disclosed an inability and then marked all three dimensions down for that same
+  inability, delivering the penalty twice and manufacturing a false regression. The corrected form held on
+  **nine consecutive beans**. The disclosure is free; name what you would have needed.
+- **A partial discharge with a stated reason does not fail a lane.** Accepted three times in M3. Judge whether
+  the reason is right; if you think the criterion cannot be satisfied as written, say `SPEC_DEFECT` rather than
+  failing the lane, and never rename the criterion.
+- **Prefer attacking a claim to checking it.** M3's strongest evaluations broke things: one refuted an
+  exhaustiveness claim in a shipped test message with a constructed counterexample, one reproduced a
+  `panic!`-at-entry inversion that refuted a mechanism two readers had agreed on, and one demonstrated an
+  identity assertion passing *before the process it described existed*. An evaluation that only confirms has
+  tested nothing.
+
+**On second passes.** Across M3 the confirming pass agreed with the first on every bean and never moved a score.
+Where wall-clock matters, one pass is defensible; the second earns its place on beans touching a converged
+sibling's property, a product change, or a credential.
