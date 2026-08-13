@@ -97,6 +97,31 @@ const OBSERVED_NOT_ENFORCED: &str = "observed-not-enforced";
 /// sent to.
 const REQUIRED_CHECKS_DECISION: &str = "017-required-checks-are-observed-not-enforced";
 
+/// What an entry in `[github.decision] authorized` is matched on.
+///
+/// Reported rather than left to be inferred, because the *kind* of identity is
+/// the property: an immutable numeric user id cannot be changed or reclaimed,
+/// which is exactly what a login can, and a reader who cannot tell which of the
+/// two `505401` is cannot tell whether the allowlist means what they think. A
+/// constant rather than a literal in the payload, so this word and the type in
+/// `config::Decision::authorized` cannot come to disagree without a reader of
+/// either being sent here.
+const AUTHORIZED_MATCHED_ON: &str = "numeric_user_id";
+
+/// What the decision channel is reported as, and **it is not `"enforced"`**.
+///
+/// The key parses, it is strict, and it is read by nothing. What an approver list
+/// could feed is `ProposeConfig::deciders`, and that is not reachable from a
+/// document, because `main::build_capability` cannot yet construct
+/// `propose_change`; see the arm there. So this is [`ACCEPTED_NOT_ENFORCED`]'s case
+/// exactly, and it is reported as that word rather than as a promise the build does
+/// not keep: a document naming an approver who cannot be consulted is precisely the
+/// state an operator running `config check` needs to be told about.
+///
+/// **This is the one line to change when that arm lands**, together with the
+/// human rendering's clause and the two tests that pin the word.
+const DECISION_STATUS: &str = ACCEPTED_NOT_ENFORCED;
+
 /// The machine-readable `config check` payload.
 ///
 /// The shape is part of the CLI contract: `status` is `"valid"` and every
@@ -216,11 +241,31 @@ pub fn config_check_json(config: &Config) -> String {
                 "initial": github.read_retry.initial.to_string(),
                 "max": github.read_retry.max.to_string(),
             },
+            // One row per effect kind this build can be given a rule for, so a
+            // rule an operator wrote is a rule they can confirm. A kind missing
+            // here is a document whose gate cannot be read back — which is what
+            // the two M3 kinds were until this task.
             "policy": {
                 "ensure_branch_published": rule(github.policy.ensure_branch_published),
                 "ensure_pull_request": rule(github.policy.ensure_pull_request),
                 "ensure_check_requested": rule(github.policy.ensure_check_requested),
+                "publish_decision_request": rule(github.policy.publish_decision_request),
+                "ensure_pull_request_ready": rule(github.policy.ensure_pull_request_ready),
             },
+            // **Who may promote a change, and how the deployment is matched to
+            // them.** `matched_on` is a fact about the *kind* of identity rather
+            // than a detail: a reader who cannot tell whether an entry is an
+            // immutable id or something a login could become cannot tell whether
+            // the allowlist means what they think it means.
+            //
+            // `null` when the table is absent, for the reason `work` and
+            // `workflow` are: an operator confirming a document should learn that
+            // nobody is authorized here rather than having to notice a missing key.
+            "decision": github.decision.as_ref().map(|decision| serde_json::json!({
+                "authorized": decision.authorized,
+                "matched_on": AUTHORIZED_MATCHED_ON,
+                "status": DECISION_STATUS,
+            })),
         });
     }
     payload(CONFIG_CHECK_SCHEMA, body)
@@ -339,7 +384,10 @@ pub fn config_check_human(config: &Config) -> String {
              \n  github.timeout = {}\
              \n  github.policy.ensure_branch_published = {}\
              \n  github.policy.ensure_pull_request = {}\
-             \n  github.policy.ensure_check_requested = {}",
+             \n  github.policy.ensure_check_requested = {}\
+             \n  github.policy.publish_decision_request = {}\
+             \n  github.policy.ensure_pull_request_ready = {}\
+             \n  github.decision.authorized = {}",
             github.repo,
             github.base,
             // The name of the variable, never its value — there is none here to
@@ -369,6 +417,30 @@ pub fn config_check_human(config: &Config) -> String {
             rule(github.policy.ensure_branch_published),
             rule(github.policy.ensure_pull_request),
             rule(github.policy.ensure_check_requested),
+            rule(github.policy.publish_decision_request),
+            rule(github.policy.ensure_pull_request_ready),
+            // The ids as the document wrote them, followed by what they are
+            // matched on and by the fact that nothing reads them yet — a person
+            // needs the consequence, which is that naming an approver does not
+            // yet make one consultable. See [`DECISION_STATUS`].
+            //
+            // Through `optional`, so an absent table reads the way an absent
+            // `work` or `fixture` does: this is the third key a capability refuses
+            // by name when it is missing, and "not configured" is the word the
+            // other two already use for it.
+            optional(github.decision.as_ref().map(|decision| {
+                format!(
+                    "{} (matched on {}; accepted, not enforced: no capability in \
+                     this build reads it)",
+                    decision
+                        .authorized
+                        .iter()
+                        .map(|id| id.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    AUTHORIZED_MATCHED_ON,
+                )
+            })),
         ));
     }
     out

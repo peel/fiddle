@@ -76,6 +76,12 @@ pub enum EffectKind {
     EnsureBranchPublished,
     EnsurePullRequest,
     EnsureCheckRequested,
+    /// Publishing a contextual question. `Automatic` wherever it is proposed,
+    /// and it must be: a question that needed a question would not terminate.
+    PublishDecisionRequest,
+    /// Marking a draft pull request ready for review. The first effect in this
+    /// build whose capability minimum is `Human`.
+    EnsurePullRequestReady,
 }
 
 impl EffectKind {
@@ -89,6 +95,8 @@ impl EffectKind {
             EffectKind::EnsureBranchPublished => "ensure_branch_published",
             EffectKind::EnsurePullRequest => "ensure_pull_request",
             EffectKind::EnsureCheckRequested => "ensure_check_requested",
+            EffectKind::PublishDecisionRequest => "publish_decision_request",
+            EffectKind::EnsurePullRequestReady => "ensure_pull_request_ready",
         }
     }
 }
@@ -171,7 +179,14 @@ pub fn payload_hash(payload: &str) -> PayloadHash {
 /// a colon or a digit *inside* a field is ordinary content and cannot be read
 /// as framing. Byte length rather than character count because the digest is
 /// taken over bytes; the two differ for any non-ASCII field.
-fn length_prefixed<const N: usize>(fields: [&str; N]) -> String {
+///
+/// Visible to the crate rather than to this module alone because
+/// [`decision_request_id`](crate::decision_request_id) frames its own three
+/// fields the same way. Sharing the function rather than the argument is what
+/// keeps the two framings from drifting apart: a second copy could acquire a
+/// different separator or a character count under a later edit, and nothing
+/// would fail until an identity stopped matching across builds.
+pub(crate) fn length_prefixed<const N: usize>(fields: [&str; N]) -> String {
     let mut material = String::new();
     for field in fields {
         material.push_str(&field.len().to_string());
@@ -183,9 +198,11 @@ fn length_prefixed<const N: usize>(fields: [&str; N]) -> String {
 
 /// The 16-hex-character rendering both identities use.
 ///
-/// One definition rather than two copies of the truncation, so an identity and
-/// a payload digest cannot drift into different widths.
-fn truncated_digest(material: &str) -> String {
+/// One definition rather than two copies of the truncation, so an identity, a
+/// payload digest and a decision request id cannot drift into different widths.
+/// The marker's parser checks each field against a fixed length, so a width
+/// that moved here would be a marker this build could no longer read.
+pub(crate) fn truncated_digest(material: &str) -> String {
     blake3::hash(material.as_bytes()).to_hex()[..16].to_string()
 }
 
@@ -261,6 +278,8 @@ mod tests {
             EffectKind::EnsureBranchPublished,
             EffectKind::EnsurePullRequest,
             EffectKind::EnsureCheckRequested,
+            EffectKind::PublishDecisionRequest,
+            EffectKind::EnsurePullRequestReady,
         ] {
             assert_eq!(
                 serde_json::to_value(kind).unwrap(),
@@ -268,6 +287,51 @@ mod tests {
                 "serde and as_str must agree for {kind:?}"
             );
         }
+    }
+
+    /// The wire spelling is what a later process matches on, so two kinds
+    /// sharing one spelling would make two different effects indistinguishable
+    /// on the wire and identical in the identity. The set is written out rather
+    /// than derived because there is no iterator over the variants; a kind added
+    /// without a line here is a kind this test does not defend.
+    #[test]
+    fn every_kind_has_a_distinct_wire_spelling() {
+        let all = [
+            EffectKind::EnsureBranchPublished,
+            EffectKind::EnsurePullRequest,
+            EffectKind::EnsureCheckRequested,
+            EffectKind::PublishDecisionRequest,
+            EffectKind::EnsurePullRequestReady,
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for kind in all {
+            assert!(
+                seen.insert(kind.as_str()),
+                "{} is spelled twice",
+                kind.as_str()
+            );
+        }
+        assert_eq!(seen.len(), 5);
+    }
+
+    /// The kind is one of the four framed inputs, so two kinds against the same
+    /// target are different effects. Without this, making a pull request ready
+    /// and asking about it would collide.
+    #[test]
+    fn a_kind_participates_in_the_identity() {
+        let a = effect_id(
+            "p",
+            "beans:x",
+            EffectKind::PublishDecisionRequest,
+            "acme/r#7",
+        );
+        let b = effect_id(
+            "p",
+            "beans:x",
+            EffectKind::EnsurePullRequestReady,
+            "acme/r#7",
+        );
+        assert_ne!(a, b);
     }
 
     /// Each of the four inputs must move the identity, or two different effects

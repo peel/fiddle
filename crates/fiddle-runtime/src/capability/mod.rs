@@ -26,17 +26,31 @@
 //! is therefore the first one that holds no means of doing so. It proposes three
 //! effects to an [`Executor`](crate::effect::Executor) already bound to its own
 //! id and receives three receipts; the credential, the client and the
-//! authorization envelope are all on the other side of that seam.
+//! authorization envelope are all on the other side of that seam. [`propose`]
+//! holds [`ProposeChange`], the first **hybrid** one: it puts [`repair`]'s
+//! bounded attempt and its own check in front of [`publish`]'s operations, and
+//! then does the thing none of the other three can — it stops and asks, and a
+//! later process comes back and reads the answer. The run that asks ends in an
+//! `Err` on the path where everything worked, which is what
+//! [`Recurrence::Awaiting`](crate::effect::Recurrence::Awaiting) is for; the run
+//! that finds an approval is the only one in this build that performs an effect a
+//! person had to authorize.
 
+pub mod propose;
 pub mod publish;
 pub mod repair;
 pub mod stub;
 
+pub use propose::{attempt_worktree, ProposeChange, ProposeConfig};
 pub use publish::{PublishChange, PublishConfig};
 pub use repair::{FixtureRepair, RepairConfig};
 pub use stub::StubMark;
 
-use fiddle_core::{AttemptId, CapabilityId, EvidenceRef, NextAction, Publication};
+use crate::human::validate::DecisionError;
+use crate::human::InteractionRef;
+use fiddle_core::{
+    AttemptId, CapabilityId, DecisionRequestId, EvidenceRef, NextAction, Publication, Published,
+};
 use std::path::PathBuf;
 
 /// Every capability this build can execute.
@@ -44,10 +58,12 @@ use std::path::PathBuf;
 /// The single source of the known-id list: the CLI validates `--capability`
 /// against it, so a build that gains a capability offers it and names it in a
 /// diagnostic without anyone remembering to update a second list.
-pub const CAPABILITIES: [CapabilityId; 3] = [
+///
+pub const CAPABILITIES: [CapabilityId; 4] = [
     fiddle_core::STUB_MARK,
     fiddle_core::FIXTURE_REPAIR,
     fiddle_core::PUBLISH_CHANGE,
+    fiddle_core::PROPOSE_CHANGE,
 ];
 
 /// Proof that a derivation authorised an execution, as part of a named attempt.
@@ -305,6 +321,128 @@ pub enum CapabilityError {
     #[error("{0}")]
     Effect(#[from] crate::effect::EffectError),
 
+    /// The capability published a question and stopped. Not a failure: the run
+    /// is waiting, which is what [`fiddle_core::RunOutcome::Suspended`]
+    /// promises.
+    ///
+    /// # Why a wait is an `Err` at all
+    ///
+    /// Because this type's own sentence is *why an execution did not produce
+    /// evidence*, and "it is waiting for a person" belongs to that set — an
+    /// execution that put a question on a conversation has no
+    /// [`EvidenceRef`] for the thing it was asked to do, because that thing has
+    /// not been done. The cleaner shape is to widen the success arm to
+    /// `Evidence | Suspended`, since waiting is not failing; it was rejected on
+    /// cost, because that signature is the seam all four capabilities and the
+    /// orchestration's success path are built on and M0's and M1's lanes both
+    /// drive it. What makes the chosen shape safe is
+    /// [`crate::effect::Recurrence`]: the wait gets its own value there rather
+    /// than borrowing a failure's, and every match on it is exhaustive.
+    ///
+    /// # Why the whole [`InteractionRef`] and not the request id
+    ///
+    /// Because [`crate::orchestration`] files the progress entry that tells a
+    /// reader *where to look*, and it can only do that from a value it was
+    /// given. A [`DecisionRequestId`] identifies the question to a later
+    /// process re-deriving it; it does not tell a person which pull request to
+    /// open. Both are carried, and the rendering is
+    /// [`InteractionRef`]'s single [`Display`](std::fmt::Display), so the
+    /// bundle, this diagnostic and the human line cannot disagree about how one
+    /// conversation is named.
+    ///
+    /// The message names the conversation for that reason, rather than
+    /// deferring it to whichever caller happens to render one: the outcome's
+    /// `reason` is built from this text, and a reason that named only the
+    /// question would leave a reader of the `--json` payload with nowhere to go.
+    #[error("awaiting a human decision at {interaction} on request {}: {question}", request.0)]
+    AwaitingDecision {
+        request: DecisionRequestId,
+        interaction: InteractionRef,
+        question: String,
+    },
+
+    /// Somebody who may decide read the question and said no.
+    ///
+    /// # Why a refusal is `Permanent` and not `Awaiting`
+    ///
+    /// Because the question has been answered. `Awaiting` says *nothing is wrong
+    /// and nothing will change until something outside this process does*, and
+    /// that is exactly false here: the thing outside this process has already
+    /// happened. Repeating the invocation re-derives the same request id, finds
+    /// the same conversation, selects the same last authorized reply and reads it
+    /// the same way — which is what [`crate::effect::Recurrence::Permanent`]
+    /// means, and is the row
+    /// [`PolicyDenied`](crate::effect::EffectError::PolicyDenied) already uses
+    /// for a decision that a repeat re-derives.
+    ///
+    /// It is not `Correctable` either. There is no obstacle in front of the run
+    /// for an operator to remove; a person considered the change and declined it,
+    /// and inviting a retry would present that as a transient failure.
+    ///
+    /// The reason is [`Published`] rather than `String` because it is a span of
+    /// text somebody outside this process wrote, arriving by way of a model that
+    /// read them. `Published::of` is the only way to put such text where a reader
+    /// will see it, and this reaches a run outcome's `reason`.
+    #[error("a person refused request {}: {reason}", request.0)]
+    DecisionRejected {
+        request: DecisionRequestId,
+        reason: Published,
+    },
+
+    /// The validation order could not establish a decision one way or the other.
+    ///
+    /// Ten distinct refusals travel in here, and they are carried whole rather
+    /// than flattened for [`CapabilityError::Effect`]'s reason: the distinctions
+    /// are the point. "Two comments name this question", "fiddle's own question
+    /// has been edited" and "the conversation could not be read" send an operator
+    /// to three different places, and a capability that rendered them into one
+    /// string would have thrown away the only thing that tells them apart.
+    ///
+    /// [`CapabilityError::recurrence`] is where each of the ten is given an exit
+    /// row, and that match is deliberately exhaustive over
+    /// [`DecisionError`] rather than a catch-all: the next refusal
+    /// the walk grows is a question the compiler asks whoever adds it.
+    #[error("no decision could be established for request {}: {source}", request.0)]
+    DecisionUnresolved {
+        request: DecisionRequestId,
+        #[source]
+        source: DecisionError,
+    },
+
+    /// The attempt's check passed over a tree nobody changed, so there is
+    /// nothing to propose.
+    ///
+    /// Neither of the two nearby answers is honest. Publishing an empty commit
+    /// would open a draft and ask a person to approve a change that does not
+    /// exist; reporting success would account for work that was never done, and
+    /// this is the capability whose whole point is that the *change* is the
+    /// deliverable. So it is a failure — and a correctable one, because a later
+    /// attempt over the same fixture may well produce something.
+    ///
+    /// Distinct from [`CapabilityError::CheckFailed`] on purpose: the check
+    /// passed, and a diagnostic saying otherwise would send an operator to look
+    /// at a check that is working.
+    #[error("the attempt changed no file, so there is nothing to propose")]
+    NothingProposed,
+
+    /// The context a capability was given publishes from a tree that is not the
+    /// one its attempt works in.
+    ///
+    /// Only [`ProposeChange`] can reach this, and it is
+    /// the same family of refusal as [`CapabilityError::Misbound`]: two values
+    /// that have to name one thing, checked before anything is read rather than
+    /// reconciled afterwards. What makes it worth a variant of its own is what
+    /// the confusion would produce — [`crate::github::EnsureBranchPublished`]
+    /// pushes `HEAD` out of the context's worktree, so a run whose attempt
+    /// worked somewhere else would publish a commit it never made, with a
+    /// payload hash naming the commit it did make and a postcondition read that
+    /// then disagrees with both.
+    #[error("this run publishes from {publishing} and its attempt works in {working}")]
+    PublishesElsewhere {
+        publishing: PathBuf,
+        working: PathBuf,
+    },
+
     /// The executor a capability was built with names a different run than the
     /// one asking it to execute.
     ///
@@ -341,26 +479,144 @@ impl CapabilityError {
             // not be written, a check that did not pass, a workspace that could
             // not be prepared and an attempt that produced no report are each an
             // obstacle in front of the run: fix the permission, let the model
-            // try again, and the same invocation succeeds. `attempt.rs` and
-            // `repair_protocol.rs` pin all four, and none of them moves here.
+            // try again, and the same invocation succeeds.
+            //
+            // M3's `NothingProposed` joins them, and for the same test rather
+            // than by resemblance: an attempt that changed nothing is an attempt
+            // that may change something next time, so a repeat is worth
+            // inviting. It is deliberately not `Permanent` — that would tell a
+            // caller to give up on a fixture the next attempt might repair.
+            //
+            // # What pins each of these five, measured arm by arm
+            //
+            // **The false version, shown rather than swapped out.** This said
+            // *"`attempt.rs` and `repair_protocol.rs` pin all four, and none of
+            // them moves here."* Every clause was wrong: `attempt.rs` pins none of
+            // them, `repair_protocol.rs` pins two, and the one pin on `Write` is
+            // *here*, in this crate's own `src/`.
+            //
+            // Each arm was flipped to `Permanent` in turn against
+            // `cargo test -p fiddle-runtime --no-fail-fast` — 20 result lines,
+            // baseline 424 passed / 0 failed. `--no-fail-fast` matters: the `Write`
+            // pin is in the lib binary, which cargo runs first, so a fail-fast run
+            // stops there having measured 1 binary of 20.
+            //
+            // - `Write` — **one** test, 423/1, in neither named file:
+            //   `orchestration::tests::a_capability_failure_is_retryable_and_recorded`.
+            //   It is also **conditional**: it returns early when the outcome is
+            //   `Completed`, which is what an identity able to write a mode-0500
+            //   directory produces. Under such an identity — root in a container —
+            //   this arm is pinned by nothing at all.
+            // - `CheckFailed` — **six**, 418/6:
+            //   `propose_capability::an_attempt_whose_check_failed_publishes_nothing_and_asks_nothing`,
+            //   and in `repair_protocol.rs`
+            //   `a_path_escape_is_refused_and_mutates_nothing`,
+            //   `a_model_claiming_success_over_a_broken_fixture_is_disbelieved`,
+            //   `an_attempt_that_called_no_tools_publishes_tools_zero`,
+            //   `an_absolute_path_is_refused`,
+            //   `a_symlink_out_of_the_workspace_is_refused`.
+            // - `Workspace` — **one**, 423/1:
+            //   `workspace::a_revision_the_fixture_can_only_fetch_is_refused_by_name_and_nothing_fetches`,
+            //   which names `Recurrence` directly and claims in its own comment to
+            //   be this crate's only assertion over the arm. It is — now measured
+            //   rather than asserted.
+            // - `NothingProposed` — **one**, 423/1:
+            //   `propose_capability::an_attempt_that_changed_nothing_publishes_nothing_and_asks_nothing`.
+            // - `Agent` — **five**, 419/5, all in `repair_protocol.rs`:
+            //   `an_unregistered_tool_name_mutates_nothing`,
+            //   `a_cancelled_attempt_leaves_the_fixture_unmutated`,
+            //   `exceeding_the_turn_budget_fails_the_run`,
+            //   `exceeding_the_changed_file_cap_fails_the_run`,
+            //   `malformed_structured_output_fails_the_run`.
+            //
+            // `repair_protocol.rs` pins two of the five and does it **by
+            // behaviour**, never naming the type: its `refusal` helper panics
+            // unless the outcome is `RunOutcome::Retryable`. That is why a grep for
+            // `Recurrence` over its 909 lines returns 0 while it genuinely accounts
+            // for ten of the fourteen tests above — and it is why the claim this
+            // replaces read as plausible.
+            //
+            // `attempt.rs` pins none of the five: all 11 of its tests stay green
+            // under all five flips. It does assert `RunOutcome::Retryable` three
+            // times, but over the attempt journal and the report bundle —
+            // orchestration's own publication failures, upstream of any
+            // `CapabilityError` — so none of them reaches this table.
             CapabilityError::Write { .. }
             | CapabilityError::CheckFailed { .. }
             | CapabilityError::Workspace(_)
+            | CapabilityError::NothingProposed
             | CapabilityError::Agent(_) => Recurrence::Correctable,
 
-            // The two internal-consistency refusals. Neither is reachable
-            // through [`crate::orchestration::run`] — a grant is only ever
-            // issued for the capability the derivation named, and an executor is
-            // only ever bound to the run that built it — so this arm changes no
-            // observable behaviour. It is written the honest way regardless:
-            // both say, in their own documentation, that there is no run they
-            // are correct for, and a build that produced one would produce it
-            // again on every repeat.
-            CapabilityError::NotAuthorised { .. } | CapabilityError::Misbound { .. } => {
-                Recurrence::Permanent
-            }
+            // The internal-consistency refusals. The first two are unreachable
+            // through [`crate::orchestration::run`] — a grant is only ever issued
+            // for the capability the derivation named, and an executor is only
+            // ever bound to the run that built it — so those two arms change no
+            // observable behaviour and are written the honest way regardless.
+            //
+            // `PublishesElsewhere` is the one of the three a *document* can
+            // produce, and it belongs on this row for the same test: the two
+            // paths are derived from the run's own inputs, so a repeat under the
+            // same configuration derives the same disagreement. It is exit 20
+            // rather than 11 because there is nothing here for a retry to get
+            // past; what has to change is what the caller was built with.
+            CapabilityError::NotAuthorised { .. }
+            | CapabilityError::Misbound { .. }
+            | CapabilityError::PublishesElsewhere { .. } => Recurrence::Permanent,
 
-            // The variant M2 added, and the one with two families inside it.
+            // A person said no. See the variant for why this row and not one of
+            // the other two.
+            CapabilityError::DecisionRejected { .. } => Recurrence::Permanent,
+
+            // The ten refusals of the validation order, each given the row its
+            // own evidence earns. Written out rather than defaulted, because the
+            // two families here are genuinely different and a blanket answer
+            // would be wrong about half of them: a read that failed is an
+            // obstacle a repeat gets past, and a marker naming another effect is
+            // a fact about the conversation that a repeat re-derives.
+            CapabilityError::DecisionUnresolved { source, .. } => match source {
+                // Read failures and races. Each of these can be true on one walk
+                // and false on the next without anybody doing anything about it:
+                // a listing that failed, a comment deleted between two reads, a
+                // reply edited between the listing and the re-read, a head that
+                // moved while the walk was running. A repeat re-reads.
+                DecisionError::Unreadable(_)
+                | DecisionError::RequestAbsent(_)
+                | DecisionError::ReplyEdited { .. }
+                | DecisionError::HeadMoved { .. } => Recurrence::Correctable,
+                // And a state somebody has to change out there before any repeat
+                // of this invocation can get further: two comments naming one
+                // question, fiddle's own question rewritten — which fiddle has no
+                // path that does, and whose evidence is a timestamp pair that
+                // never returns to agreeing. `DuplicateRequest` is on this row
+                // for the same test rather than by resemblance: the walk chooses
+                // no candidate replies at all while there are two request
+                // comments, so a repeat re-derives the same refusal until a
+                // person deletes one.
+                DecisionError::DuplicateRequest { .. }
+                | DecisionError::RequestEdited { .. }
+                | DecisionError::ForeignEffect { .. }
+                | DecisionError::ForeignPayload { .. }
+                | DecisionError::NotOpen
+                // `AlreadyReady` is here for completeness and is not reached
+                // through `propose_change`: that capability answers it by
+                // proposing the gated effect and letting the executor's step 3
+                // observe the postcondition it already satisfies. A caller that
+                // did surface it would be reporting a transition that happened,
+                // which no repeat undoes.
+                | DecisionError::AlreadyReady => Recurrence::Permanent,
+            },
+
+            // **The variant that is not a failure.** Everything else in this
+            // table answers "would repeating get past this"; this one answers
+            // that there is nothing to get past. The run asked a person and
+            // stopped, which is what it was built to do, and neither of the
+            // other two rows describes it: 11 invites a repeat that would ask
+            // the same question again, and 20 tells a caller to give up on a
+            // run an answer would finish. See [`Recurrence::Awaiting`].
+            CapabilityError::AwaitingDecision { .. } => Recurrence::Awaiting,
+
+            // The variant M2 added, and the one with three families inside it
+            // since `HumanDecisionRequired` moved to the row above.
             CapabilityError::Effect(error) => error.recurrence(),
         }
     }
@@ -406,6 +662,12 @@ mod tests {
 
     /// The known-id list is the one source the CLI validates `--capability`
     /// against, so a build that can run a capability has to name it here.
+    /// The known-id list is the one source the CLI validates `--capability`
+    /// against, so a build that can run a capability has to name it here — and,
+    /// by `every_registered_capability_can_be_selected` in the binary, a build
+    /// that names one here has to have a selection for it. The two move
+    /// together, which is why the fourth id and that selection arrive in one
+    /// change.
     #[test]
     fn every_capability_this_build_has_is_registered() {
         assert_eq!(
@@ -413,7 +675,8 @@ mod tests {
             [
                 STUB_MARK,
                 fiddle_core::FIXTURE_REPAIR,
-                fiddle_core::PUBLISH_CHANGE
+                fiddle_core::PUBLISH_CHANGE,
+                fiddle_core::PROPOSE_CHANGE
             ]
         );
     }

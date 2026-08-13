@@ -333,6 +333,102 @@ fn a_document_with_no_workspace_table_says_so() {
     );
 }
 
+/// **A proposing capability names the table it is missing, and a complete document
+/// earns no configuration refusal at all.**
+///
+/// # This replaces a test whose subject stopped existing
+///
+/// It was `a_capability_this_build_cannot_construct_says_so_without_blaming_the_
+/// document`, and it pinned exit 2 with `fiddle::capability::unbuildable`: this
+/// build advertised `propose_change`, accepted it, and then refused it because
+/// `build_capability`'s arm constructed nothing. That arm is now wired —
+/// `fiddle-565u` — and with nothing left in this build that can be advertised and
+/// not constructed, the `Unbuildable` diagnostic has been removed rather than left
+/// as an error no path can produce.
+///
+/// **The half of the old test that was worth keeping is kept**, and it is the
+/// discipline rather than the code it happened to be about: *a refusal must not
+/// send a reader to a line that is already correct*. The old arm's first version
+/// refused with `missing("[github.decision]")` over documents that carried the
+/// table, and no test noticed because nothing drove the arm. So both directions are
+/// asserted here — the table is named when it is genuinely absent, and a complete
+/// document is not refused for configuration at all.
+///
+/// The two rows are one test because either alone is satisfiable by a resolver that
+/// is wrong in the other direction: one that refuses everything passes the first,
+/// and one that refuses nothing passes the second.
+#[test]
+fn a_proposal_names_the_table_it_is_missing_and_a_complete_document_is_not_refused() {
+    /// The forge half of a proposing document, without the decision table.
+    const FORGE: &str = "\n[github]\nrepo = \"peel/fiddle\"\nbase = \"main\"\n\
+                         token = { env = \"FIDDLE_GITHUB_TOKEN\" }\n";
+    /// The one table above does not carry, and the one this build has no default
+    /// for: an approver list naming nobody suspends every run for ever.
+    const DECISION: &str = "\n[github.decision]\nauthorized = [505401]\n";
+
+    // The forge is on both rows, so the two documents differ by exactly the table
+    // under test — the discipline `Scenario::append_config` exists for.
+    for (extra, expected) in [("", Some("[github.decision]")), (DECISION, None)] {
+        let s = Scenario::new();
+        s.write_work_item(WORK_ID, "open");
+        let tables = agentic_tables(&s, UNREACHABLE_GATEWAY);
+        s.append_config(&tables);
+        s.append_config(FORGE);
+        s.append_config(extra);
+
+        let out = s
+            .run_command(INVOCATION_REF)
+            .args(["--capability", "propose_change", "--json"])
+            .env(CREDENTIAL, SENTINEL)
+            .env("FIDDLE_GITHUB_TOKEN", SENTINEL)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+        match expected {
+            Some(table) => {
+                assert_eq!(out.status.code(), Some(2), "stderr = {stderr}");
+                assert!(
+                    stderr.contains(table),
+                    "the diagnostic must name the table to add: {stderr}"
+                );
+                assert!(
+                    stderr.contains("propose_change"),
+                    "and the capability that wanted it: {stderr}"
+                );
+            }
+            // A complete document is not a configuration failure. The run still
+            // fails — the gateway is unreachable and the forge is a `gh` that is
+            // not there — and *which* way it fails is other scenarios' business.
+            // What is asserted is only that row 2 is not how a correct document is
+            // answered, and that no diagnostic sends its reader to the file.
+            None => {
+                assert_ne!(
+                    out.status.code(),
+                    Some(2),
+                    "a document naming every table propose_change needs must not be \
+                     refused as a configuration error: stderr = {stderr}"
+                );
+                for table in ["[github.decision]", "[workspace]", "[agent]"] {
+                    assert!(
+                        !stderr.contains(table),
+                        "the document carries {table} — a refusal naming it sends \
+                         the reader to a line that is already correct: {stderr}"
+                    );
+                }
+            }
+        }
+
+        // On both rows: whatever happened, neither credential reached a stream a
+        // caller reads. The proposing arm resolves both of them, so this is the
+        // widest surface in this file on which that can be asked.
+        assert!(
+            !stderr.contains(SENTINEL) && !String::from_utf8_lossy(&out.stdout).contains(SENTINEL),
+            "a credential reached a stream a caller reads: {stderr}"
+        );
+    }
+}
+
 /// **`inspect` and `run` never disagree about what will happen.**
 ///
 /// The defect this closes: `inspect` took no `--capability` and reported the

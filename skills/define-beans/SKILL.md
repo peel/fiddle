@@ -79,7 +79,7 @@ Gate: an agent with zero context can implement this bean by reading only its bod
 
 | # | Check | Fail if |
 |---|---|---|
-| 1 | **Steps exist** | Body has no `## Steps` section or no `- [ ]` checkboxes |
+| 1 | **Steps exist** | Body has no `## Steps` section, or no checkbox steps at all. `- [ ]`, `- [x]` and `- [X]` all count. `scripts/validate-bean-body.sh` is the executable form of this row and is what binds; it accepts any of the three, matching ADR 009's *"at least one checkbox step"*. Requiring an **unchecked** box — which this row used to — rejects every completed bean, and so breaks develop Step 1 where it re-derives state from beans after a restart |
 | 2 | **Steps are actionable** | Any step says "see plan", "as above", "similar to Task N", or lacks concrete instructions |
 | 3 | **Eval block exists** | Body has no fenced ` ```eval ` block with `domains:` and `criteria:` keys (`scripts/validate-bean-body.sh` exits 2 without it) |
 | 4 | **Eval criteria are verifiable** | Any criterion's `check:` is vague ("works correctly") rather than observable ("returns 200 on /health/db") |

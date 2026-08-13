@@ -38,6 +38,16 @@ pub const FIXTURE_REPAIR: CapabilityId = CapabilityId("fixture_repair");
 /// about, so the pure core has to be able to say it.
 pub const PUBLISH_CHANGE: CapabilityId = CapabilityId("publish_change");
 
+/// The capability M3 adds: produce a change, publish it as a draft, and ask a
+/// person before it goes any further.
+///
+/// Here beside the other three for the reason they are here, which is worth
+/// restating for this one because it is the first capability whose work is
+/// *finished* by something outside the process: an id is a name, naming reaches
+/// nothing, and `derive_next` has to be able to say what a run is about whether
+/// that run is going to complete or suspend.
+pub const PROPOSE_CHANGE: CapabilityId = CapabilityId("propose_change");
+
 /// What fiddle concludes about the capability this invocation is about.
 ///
 /// Serialized externally tagged, so the variant name is the observable

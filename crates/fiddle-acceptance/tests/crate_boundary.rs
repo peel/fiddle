@@ -8,6 +8,32 @@ use std::process::Command;
 /// checked against the resolved graph, and the graph speaks package names.
 const FORBIDDEN: &[&str] = &["tokio", "rig-core", "rig-agent", "reqwest", "hyper", "mio"];
 
+/// The two library crates **this** crate must never be able to reach.
+///
+/// A different boundary from [`FORBIDDEN`] and worth keeping apart from it. That one
+/// is about what a *pure domain* may depend on; this one is about what a *black-box
+/// lane* may depend on, and the two lists would never acquire the same entries.
+const THE_LIBRARY_UNDER_TEST: &[&str] = &["fiddle-core", "fiddle-runtime"];
+
+/// The workspace's resolved dependency graph, with every feature on.
+///
+/// One reader rather than one per test, so two tests cannot come to make their claims
+/// about two different graphs — and `--all-features`, because a boundary that held
+/// only under the default feature set is a boundary a `--features` flag walks through.
+fn cargo_metadata() -> serde_json::Value {
+    let out = Command::new(env!("CARGO"))
+        .args(["metadata", "--format-version", "1", "--all-features"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
 /// Every `*.rs` path under `root`, recursively.
 fn walkdir_rs_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -92,22 +118,96 @@ fn the_denylist_names_every_agent_crate() {
 
 #[test]
 fn fiddle_core_has_no_runtime_or_io_dependencies_anywhere_in_its_closure() {
-    let out = Command::new(env!("CARGO"))
-        .args(["metadata", "--format-version", "1", "--all-features"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "cargo metadata failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let meta: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let closure = resolved_closure(&meta, "fiddle-core");
+    let closure = resolved_closure(&cargo_metadata(), "fiddle-core");
     for banned in FORBIDDEN {
         assert!(
             !closure.contains(*banned),
             "fiddle-core's resolved closure must not contain {banned}; closure = {closure:?}"
+        );
+    }
+}
+
+/// **This crate depends on neither library crate, and that is now a test rather than
+/// a comment.**
+///
+/// # Why the rule exists, which is the part a comment could not enforce
+///
+/// The acceptance lane drives the compiled `fiddle` binary as a subprocess, *"so what
+/// the tests observe is exactly what a caller at a shell would observe"*. Its value is
+/// that it is a **second opinion**. The moment a test here calls the library it is
+/// testing, it stops being one and becomes a **mirror**: an acceptance test that checks
+/// the product's output with the product's own parser **passes on a wrong parser**,
+/// because the test and the product then share the defect and neither can see it.
+///
+/// That is not hypothetical. `support::parse_marker` re-derives the marker grammar from
+/// the design rather than calling `fiddle_core::parse_marker`, and
+/// `support::expected_request_id` re-derives two identities from the design rather than
+/// calling `fiddle_core::decision_request_id` — both for exactly this reason, and both
+/// stating it at the function. `Cargo.toml` carries `blake3` as a **dev-dependency**
+/// specifically so those derivations can be written from the specification.
+///
+/// The rule was stated in two places — that manifest and `support/mod.rs`'s header —
+/// and enforced in neither. A rule nothing enforces is a rule the next lane will not
+/// know it is breaking: a bean adding `fiddle-core` to reach one helper would turn every
+/// test in this crate grey-box, and nothing would object.
+///
+/// # The whole resolved closure, and not the `[dev-dependencies]` table
+///
+/// Recorded because it is a real choice. The closure is the right thing on two counts.
+/// [`resolved_closure`] walks a resolve node's `deps`, which carry **every** dependency
+/// kind, so one walk catches a `[dependencies]` entry and a `[dev-dependencies]` entry
+/// alike — and the harm is identical either way, because `#[cfg(test)]` code *is* what
+/// this lane consists of. And an edge three levels down is as harmful as one written
+/// here: if some future test dependency itself depended on `fiddle-core`, these tests
+/// would link the library and could call into it, which reading this crate's own
+/// manifest would never reveal.
+///
+/// # The three assertions, and what each one alone would miss
+///
+/// The denylist's *contents* are checked first, for
+/// [`the_denylist_names_every_agent_crate`]'s reason: the walk below cannot tell
+/// "neither library is reachable" from "no library was named". It is folded in here
+/// rather than given its own test because two entries read by one caller do not earn a
+/// second binary.
+///
+/// Then the **denominator**, and it carries more than "something was examined".
+/// `blake3`, `regex` and `serde_json` are in this closure *only* as dev-dependencies,
+/// so their presence is what proves this walk **sees dev-dependencies at all**. Without
+/// it the guard could be inspecting a graph in which test-only edges never appear — and
+/// it would then pass forever with a `fiddle-core` dev-dependency sitting in the
+/// manifest, which is the precise failure it exists to prevent. They are also the three
+/// that must stay permitted, and asserting them present is the stronger way to say so.
+///
+/// Only then the boundary itself.
+#[test]
+fn fiddle_acceptance_depends_on_neither_library_crate_anywhere_in_its_closure() {
+    for required in ["fiddle-core", "fiddle-runtime"] {
+        assert!(
+            THE_LIBRARY_UNDER_TEST.contains(&required),
+            "the denylist lost {required}, so the walk below would report a boundary it \
+             never checked; THE_LIBRARY_UNDER_TEST = {THE_LIBRARY_UNDER_TEST:?}"
+        );
+    }
+
+    let closure = resolved_closure(&cargo_metadata(), "fiddle-acceptance");
+
+    for permitted in ["blake3", "regex", "serde_json"] {
+        assert!(
+            closure.contains(permitted),
+            "{permitted} must be reachable and is not, so this walk is not seeing \
+             dev-dependencies and the boundary below would pass vacuously; closure = \
+             {closure:?}"
+        );
+    }
+
+    for banned in THE_LIBRARY_UNDER_TEST {
+        assert!(
+            !closure.contains(*banned),
+            "fiddle-acceptance's resolved closure must not contain {banned}: a \
+             black-box lane that can call the library it is testing is a mirror, and a \
+             wrong implementation passes. Re-derive from the design instead — see \
+             `support::parse_marker` and `support::expected_request_id`, and \
+             `Cargo.toml`'s reason for carrying blake3. closure = {closure:?}"
         );
     }
 }

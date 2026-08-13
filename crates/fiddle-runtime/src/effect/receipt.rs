@@ -86,9 +86,19 @@ pub struct EffectReceipt<T> {
 /// The question [`fiddle_core::RunOutcome::Retryable`] documents as its own
 /// test — *would repeating this invocation, once someone has fixed what the
 /// reason names, succeed?* — asked of one failure rather than left for a caller
-/// to guess from a message. It is the discriminator between exit **11** and exit
-/// **20**, and it is a two-valued question because the exit table has exactly
-/// two rows for a run that executed and did not complete.
+/// to guess from a message. It is the discriminator between exits **10**, **11**
+/// and **20**, one value per row the exit table gives a run that executed and
+/// did not complete.
+///
+/// **It was two-valued until M3,** and the third value is not a shade of the
+/// first two. `Correctable` and `Permanent` both answer a question about a
+/// *failure*; [`Recurrence::Awaiting`] answers that nothing failed. A run that
+/// published a question and stopped has done exactly what it was asked to do,
+/// and the only thing wrong with repeating it is that repeating is not what
+/// moves it forward — an answer is. Reading a wait as either of the other two
+/// is the defect the row exists to prevent: automation retrying on 11 would
+/// loop on a question nobody has answered, and automation treating 20 as final
+/// would abandon a run that is merely waiting.
 ///
 /// **"Fixed" is narrower than "somebody could do something about it",** and the
 /// codebase already draws the line where this type draws it. A change set
@@ -113,6 +123,20 @@ pub enum Recurrence {
     /// unchanged. [`fiddle_core::RunOutcome::Failed`], whose promise is exactly
     /// *this will not succeed by being repeated as invoked*.
     Permanent,
+
+    /// Nothing is wrong, and nothing will change until something outside this
+    /// process does: a question has been put to a person and no answer has
+    /// arrived. [`fiddle_core::RunOutcome::Suspended`], whose wording — *the
+    /// run stopped short of a decision it is not entitled to make* — is the
+    /// description, and exit **10**.
+    ///
+    /// The value ADR 016 promised. That decision classified
+    /// [`EffectError::HumanDecisionRequired`] as `Permanent` and said so in as
+    /// many words: `Suspended` promises that something can arrive and resume
+    /// the run, M2 had nothing that could arrive, and exiting 10 would have
+    /// told an operator to wait for something that was never coming. M3 builds
+    /// the channel, so the promise can be kept and the arm moves.
+    Awaiting,
 }
 
 /// Every way an effect can fail to produce a receipt.
@@ -128,15 +152,19 @@ pub enum Recurrence {
 /// write failed when it may well have landed, and the retry would perform it
 /// twice.
 ///
-/// The variants split two ways, and the split is [`EffectError::recurrence`]
-/// rather than an ordering of the enum: four of them are permanent under
-/// repetition and reach exit 20, two are correctable and reach exit 11.
+/// The variants split three ways, and the split is [`EffectError::recurrence`]
+/// rather than an ordering of the enum: three of them are permanent under
+/// repetition and reach exit 20, two are correctable and reach exit 11, and
+/// [`EffectError::HumanDecisionRequired`] is a wait and reaches exit 10. It was
+/// four and two until M3 gave the wait somewhere to go; see ADR 016.
 #[derive(Debug, thiserror::Error)]
 pub enum EffectError {
     #[error("policy denied {kind:?}: {reason}")]
     PolicyDenied { kind: EffectKind, reason: String },
-    /// M2 has no decision channel. Fails closed and names what would satisfy it.
-    #[error("{kind:?} requires a human decision, which M3 introduces: {reason}")]
+    /// The effect's minimum, or the document's rule, says a person decides —
+    /// and no person has. Names what would satisfy it, because the run is
+    /// waiting for exactly that.
+    #[error("{kind:?} is awaiting a human decision on the channel M3 introduced: {reason}")]
     HumanDecisionRequired { kind: EffectKind, reason: String },
     /// The result was unknown and the postcondition read did not settle it.
     #[error("{kind:?} left an unresolved outcome: {reason}")]
@@ -193,21 +221,25 @@ impl EffectError {
             // deployment and running against that.
             EffectError::PolicyDenied { .. } => Recurrence::Permanent,
 
-            // The same, one step weaker in the document and one step stronger in
-            // consequence: `RequireHuman` is a rule that resolves through a
-            // decision channel, and M2 has none. Nothing a repeat can reach will
-            // answer it, so a repeat re-derives the same requirement.
+            // **The arm ADR 016 said would move, moved.** `RequireHuman` is a
+            // rule that resolves through a decision channel. In M2 there was
+            // none, so nothing a repeat could reach would answer it and a
+            // repeat re-derived the same requirement — which is `Permanent`'s
+            // test, and which is why the decision put it there and wrote down
+            // the condition under which it would leave.
             //
-            // **Not `Suspended`,** which is the shape it will take in M3 and is
-            // the wrong word here. `Suspended` says a run is *waiting* — it
-            // promises something can arrive and resume it. In M2 nothing can,
-            // and a run that exited 10 on a decision no channel exists to make
-            // would be telling an operator to wait for something that is never
-            // coming. M2's epic contract reserves that row for M3 for exactly
-            // this reason; when the channel exists, this arm moves there and the
-            // move is a behaviour change with a decision behind it rather than a
-            // code quietly meaning something new.
-            EffectError::HumanDecisionRequired { .. } => Recurrence::Permanent,
+            // That condition is met. M3 publishes the question and reads the
+            // answer back, so something *can* arrive and resume the run, which
+            // is precisely the promise `Suspended` makes and the one M2 could
+            // not keep. Nothing about the failure changed; what changed is that
+            // waiting is now a thing a run can do. The move is a behaviour
+            // change with a decision behind it rather than an exit code quietly
+            // meaning something new, which is the form ADR 016 asked for.
+            //
+            // It moves alone. The other three permanent refusals below are
+            // conclusions rather than questions, and no channel answers a
+            // conclusion.
+            EffectError::HumanDecisionRequired { .. } => Recurrence::Awaiting,
 
             // A defect in the caller, not a condition in the world: the
             // proposal and the operation disagree about what the request *is*,
@@ -281,12 +313,12 @@ mod tests {
                 Recurrence::Permanent,
             ),
             (
-                "a decision channel M2 does not have",
+                "a decision channel that now exists, and has not answered yet",
                 EffectError::HumanDecisionRequired {
                     kind: KIND,
                     reason: reason(),
                 },
-                Recurrence::Permanent,
+                Recurrence::Awaiting,
             ),
             (
                 "the caller's own two halves disagree",
@@ -330,6 +362,51 @@ mod tests {
                 "{what}: {error} was classified {:?}",
                 error.recurrence()
             );
+        }
+    }
+
+    /// ADR 016 said this row moves the moment a decision channel exists. It
+    /// exists, so the move is asserted deliberately rather than being left to
+    /// the table above — where it would read as one more row and not as the
+    /// behaviour change it is.
+    #[test]
+    fn a_required_human_decision_is_now_awaiting_rather_than_permanent() {
+        let error = EffectError::HumanDecisionRequired {
+            kind: EffectKind::EnsurePullRequestReady,
+            reason: "the capability's minimum requires human judgment".into(),
+        };
+        assert_eq!(error.recurrence(), Recurrence::Awaiting);
+        assert_ne!(
+            error.recurrence(),
+            Recurrence::Permanent,
+            "a run that can be resumed by an answer is not a run that has concluded"
+        );
+    }
+
+    /// The other three permanent refusals do not move with it. `PolicyDenied`
+    /// is a settled refusal, `DuplicateState` is a world fiddle is not entitled
+    /// to resolve, and `PayloadDiverged` is a conclusion about the request. A
+    /// build that moved the whole family would satisfy the assertion above by
+    /// accident.
+    #[test]
+    fn no_other_permanent_refusal_became_a_wait() {
+        let refusals = [
+            EffectError::PolicyDenied {
+                kind: KIND,
+                reason: reason(),
+            },
+            EffectError::DuplicateState {
+                kind: KIND,
+                count: 2,
+            },
+            EffectError::PayloadDiverged {
+                kind: KIND,
+                approved: PayloadHash("a".into()),
+                applying: PayloadHash("b".into()),
+            },
+        ];
+        for error in refusals {
+            assert_eq!(error.recurrence(), Recurrence::Permanent, "{error}");
         }
     }
 

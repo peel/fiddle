@@ -24,9 +24,9 @@
 #      print a table it cannot reconcile with the log.
 #
 # Usage:
-#   scripts/gate.sh            # fmt, clippy, test, build --release
+#   scripts/gate.sh            # fmt, clippy, test, shell suites, build --release
 #   scripts/gate.sh --full     # the above plus nix flake check
-#   scripts/gate.sh --quick    # fmt, clippy, test only
+#   scripts/gate.sh --quick    # fmt, clippy, test only (no shell suites)
 set -uo pipefail
 
 MODE="${1:-default}"
@@ -106,6 +106,55 @@ for L in fmt clippy; do
   if [ -s "$LOG_DIR/$L.log" ] && [ "$INNER" -ne 0 ]; then echo "--- $L ---"; tail -20 "$LOG_DIR/$L.log"; fi
 done
 [ "$FAILED" -ne 0 ] && { echo "--- last failing test output ---"; grep -B 2 -A 12 '^failures:' "$TEST_LOG" 2>/dev/null | head -40; }
+
+# The shell suites, which until 2026-08-13 this gate did not run at all. Two of
+# them had been red on `main` for long enough that a person found them by reading
+# a transcript at finish-branch rather than the day the change landed — and the
+# change was a hook gaining an ownership guard, so the suites were stale rather
+# than the behaviour wrong. 49s measured against the Rust step's ~194s.
+#
+# Three things this step deliberately does not do, each of which was measured:
+#
+#   1. IT DOES NOT FOLD INTO `TOTALS`. The awk above attributes `test result:`
+#      lines to Rust binaries. Two suites print no parseable result line at all
+#      — one says "Maki installer tests passed", another prints a bare
+#      " 19 passed, 0 failed" — so a parser keyed on either would read two green
+#      suites as having measured nothing. This gets its own tally line.
+#   2. IT DOES NOT USE THE LOOP'S LAST EXIT CODE. `for t in …; do bash "$t"; done`
+#      exits with the *last* suite's status, which is the same defect as a
+#      driver's exit code standing in for a lane's. Every suite's code is
+#      recorded against its name.
+#   3. IT REFUSES AN EMPTY GLOB. Zero suites run and zero suites failing must not
+#      render identically; a moved directory would otherwise read as a pass.
+#
+# They need nothing the dev shell adds — bash, jq and coreutils — so they run
+# without a second `nix develop` entry. Three of them bind a port or spawn
+# processes; that is the whole flake surface, and it is deliberately gated rather
+# than excluded, because the runtime lifecycle is precisely what went stale here.
+if [ "$MODE" != "--quick" ]; then
+  SHELL_PASS=0; SHELL_FAIL=0; SHELL_TOTAL=0
+  : > "$LOG_DIR/shell.log"
+  for t in scripts/test-*.sh; do
+    [ -f "$t" ] || continue
+    SHELL_TOTAL=$((SHELL_TOTAL + 1))
+    bash "$t" > "$LOG_DIR/shell-$(basename "$t" .sh).log" 2>&1
+    rc=$?
+    printf '%s exit=%d\n' "$t" "$rc" >> "$LOG_DIR/shell.log"
+    if [ "$rc" -eq 0 ]; then
+      SHELL_PASS=$((SHELL_PASS + 1))
+    else
+      SHELL_FAIL=$((SHELL_FAIL + 1))
+      echo "  !! $t exit=$rc"
+      tail -12 "$LOG_DIR/shell-$(basename "$t" .sh).log"
+    fi
+  done
+  if [ "$SHELL_TOTAL" -eq 0 ]; then
+    echo "  REPORT UNRELIABLE: no scripts/test-*.sh matched, so this step measured nothing."
+    FAILED=1
+  fi
+  printf "  SHELL SUITES: %d passed, %d failed of %d\n" "$SHELL_PASS" "$SHELL_FAIL" "$SHELL_TOTAL"
+  [ "$SHELL_FAIL" -ne 0 ] && FAILED=1
+fi
 
 if [ "$MODE" != "--quick" ]; then
   if nix develop -c cargo build --release > "$LOG_DIR/build.log" 2>&1; then echo "build --release  ok"; else echo "build --release  FAILED"; tail -20 "$LOG_DIR/build.log"; FAILED=1; fi

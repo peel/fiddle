@@ -278,6 +278,7 @@ impl<'a> PublishChange<'a> {
             self.config.base.clone(),
             self.config.title.clone(),
             self.config.body.clone(),
+            false,
         );
         let opened = self
             .propose(

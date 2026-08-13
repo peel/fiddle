@@ -8,12 +8,16 @@
 //! what to do about it, `effect` holds the identity by which a later process
 //! recognises an external effect an earlier one performed, `policy` holds
 //! whether such an effect is permitted at all and who has to be asked first,
+//! `decision` holds the identity of the question put to that person, the
+//! marker by which a later process finds it again, the reference by which that
+//! person is recognised, and the four values their answer can amount to,
 //! `outcome` holds how
 //! the run ended, `published` holds the
 //! bound every piece of free text a run publishes is subject to, and `report`
 //! holds the document a run publishes to say all of that to a later reader.
 
 pub mod assessment;
+pub mod decision;
 pub mod effect;
 pub mod identity;
 pub mod observation;
@@ -24,7 +28,11 @@ pub mod report;
 
 pub use assessment::{
     assess, correlation_key, derive_next, CapabilityAssessment, NextAction, FIXTURE_REPAIR,
-    PUBLISH_CHANGE, STUB_MARK,
+    PROPOSE_CHANGE, PUBLISH_CHANGE, STUB_MARK,
+};
+pub use decision::{
+    decision_request_id, parse_marker, render_marker, ActorRef, DecisionBinding, DecisionRequestId,
+    HumanDecisionRequest, InterpretedHumanDecision, MarkerError, MARKER_VERSION,
 };
 pub use effect::{effect_id, payload_hash, EffectId, EffectKind, PayloadHash, ProposedEffect};
 pub use identity::{

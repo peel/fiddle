@@ -30,12 +30,13 @@
 mod support;
 
 use fiddle_core::{
-    effect_id, payload_hash, DeploymentRule, EffectKind, HumanDecisionRequirement, ProposedEffect,
-    FIXTURE_REPAIR, STUB_MARK,
+    decision_request_id, effect_id, payload_hash, DecisionBinding, DeploymentRule, EffectId,
+    EffectKind, HumanDecisionRequirement, InterpretedHumanDecision, PayloadHash, ProposedEffect,
+    Published, FIXTURE_REPAIR, STUB_MARK,
 };
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
-    IntegrationOperation, ObservedState, ReadRetry,
+    IntegrationOperation, ObservedState, ReadRetry, ResolvedDecision,
 };
 use fiddle_runtime::git::{GitCli, GitError};
 use fiddle_runtime::github::{branch_name, EnsureBranchPublished};
@@ -762,6 +763,494 @@ async fn a_denied_deployment_rule_refuses_before_the_mutation() {
         "expected PolicyDenied, got {error:?}"
     );
     assert_eq!(harness.world.mutation_requests(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Step 4's third input: a resolved human decision
+// ---------------------------------------------------------------------------
+//
+// `combine` takes two inputs and the RFC's step 4 names three — "combine the
+// capability's minimum effect rule with deployment policy *and, when needed,
+// resolve a matching contextual human decision*". Until `execute_decided`
+// existed this executor took two of them, so an operation whose `minimum()` is
+// `Human` could not commit at all: step 4 refused, and `AuthorizedEffect` is
+// unforgeable outside `crate::effect`, so `apply` had no other route to reach.
+//
+// Every case below asserts the mutation count as well as the outcome, for the
+// reason the whole file does: what is being gated is a write, and a check that
+// refused while the write happened anyway would satisfy an assertion about the
+// error alone.
+
+/// A revision, in the shape a marker carries one.
+///
+/// Filled in and never asserted on, because the executor does not compare it and
+/// must not: the revision reaches the *identity* through the target —
+/// `EnsurePullRequestReady`'s is `{repo}#{pr}@{head_sha}` — so a moved head is a
+/// different `EffectId` and therefore a different question. Comparing the field
+/// as well would be a second mechanism for one property, and the weaker one,
+/// since an operation whose target omitted the revision would still pass it.
+const DECIDED_HEAD: &str = "1f0e5d4c3b2a19876543210fedcba98765432100";
+
+/// The effect `branch_effect()` proposes, recomputed the way a fresh process
+/// would.
+fn proposed_effect_id() -> EffectId {
+    effect_id(
+        PROJECT,
+        INVOCATION_REF,
+        EffectKind::EnsureBranchPublished,
+        TARGET,
+    )
+}
+
+/// An approval addressed to one effect and one payload.
+///
+/// Built the way a continuation builds one: every value in the binding is
+/// recomputed from canonical inputs rather than read out of a marker and
+/// believed, and `ResolvedDecision::approved` is the only door past the verdict.
+fn approval(effect: EffectId, payload: PayloadHash) -> ResolvedDecision {
+    let request = decision_request_id(PROJECT, INVOCATION_REF, &effect);
+    ResolvedDecision::approved(
+        DecisionBinding {
+            request,
+            effect,
+            payload,
+            head_sha: DECIDED_HEAD.to_string(),
+        },
+        &InterpretedHumanDecision::Approve,
+    )
+    .expect("an approval is what a ResolvedDecision is made of")
+}
+
+/// A harness whose operation demands a person and whose document allows the
+/// kind. `combine(Human, Allow)` is `RequireHumanDecision`, which is the only
+/// cell that reaches step 4's third input at all.
+fn gated_on_a_person() -> Harness {
+    Harness::new(Script::AbsentThenWritten)
+        .with_policy(HumanDecisionRequirement::Human, DeploymentRule::Allow)
+}
+
+/// A verdict that is not an approval never becomes a `ResolvedDecision`.
+///
+/// The gate in the type rather than in the executor, and worth its own case: a
+/// function taking a bare `DecisionBinding` would accept the *question* as though
+/// it were the answer, since a binding is what the marker in a request comment
+/// carries and rendering one requires nobody's agreement.
+#[test]
+fn only_an_approval_becomes_a_resolved_decision() {
+    let binding = || DecisionBinding {
+        request: decision_request_id(PROJECT, INVOCATION_REF, &proposed_effect_id()),
+        effect: proposed_effect_id(),
+        payload: payload_hash(PAYLOAD),
+        head_sha: DECIDED_HEAD.to_string(),
+    };
+
+    assert!(
+        ResolvedDecision::approved(binding(), &InterpretedHumanDecision::Approve).is_some(),
+        "an approval is the one verdict that does"
+    );
+    for refused in [
+        InterpretedHumanDecision::Reject {
+            reason: Published::of("not yet"),
+        },
+        InterpretedHumanDecision::Redirect {
+            instruction: Published::of("do it differently"),
+        },
+        InterpretedHumanDecision::Unclear,
+    ] {
+        assert!(
+            ResolvedDecision::approved(binding(), &refused).is_none(),
+            "{refused:?} must not be convertible into something step 4 would spend"
+        );
+    }
+}
+
+/// The gate, unchanged: with no decision, a `Human` minimum still refuses.
+///
+/// M2's behaviour, and it must survive, because a run with no decision channel
+/// must not silently acquire one. The step assertion is the new half — nothing
+/// was resolved, so no step may announce a resolution.
+#[tokio::test]
+async fn a_human_minimum_with_no_decision_still_refuses() {
+    let harness = gated_on_a_person();
+    let error = harness
+        .executor()
+        .execute(branch_effect(), harness.operation())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, EffectError::HumanDecisionRequired { .. }),
+        "expected HumanDecisionRequired, got {error:?}"
+    );
+    assert_eq!(harness.world.mutations(), 0);
+    assert_eq!(harness.world.mutation_requests(), 0);
+    assert!(
+        !harness.world.steps().contains(&"resolve_decision"),
+        "there was no decision to resolve, so no step may announce one: {:?}",
+        harness.world.steps()
+    );
+}
+
+/// A decision naming this exact effect satisfies step 4, and only then does the
+/// mutation happen.
+///
+/// The decision is an input to the executor rather than a property of the
+/// operation, so the check cannot be bypassed by however the operation was built:
+/// the operation here is the same one the case above was refused with, and its
+/// `minimum()` is still `Human`.
+#[tokio::test]
+async fn a_decision_naming_this_effect_permits_the_mutation() {
+    let harness = gated_on_a_person();
+    let decision = approval(proposed_effect_id(), payload_hash(PAYLOAD));
+
+    let receipt = harness
+        .executor()
+        .execute_decided(branch_effect(), harness.operation(), &decision)
+        .await
+        .expect("a decision naming this exact effect satisfies step 4");
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(harness.world.mutations(), 1);
+    assert_eq!(
+        harness.world.mutation_requests(),
+        1,
+        "and exactly once, as on every other path in this file"
+    );
+    assert_eq!(
+        harness.world.steps(),
+        [
+            "validate_capability",
+            "derive_identity",
+            "inspect_postcondition",
+            "combine_policy",
+            "resolve_decision",
+            "authorize",
+            "apply",
+            "observe_postcondition",
+        ],
+        "the resolution is announced after the combination that asked for it and \
+         before the envelope it unlocks"
+    );
+}
+
+/// A decision for a *different* effect buys nothing.
+///
+/// This is the property the revision-in-the-target design rests on: a moved head
+/// derives a different `EffectId`, so an approval given for the old revision is
+/// not an answer to the new question, and the executor is where that is enforced
+/// rather than trusted.
+///
+/// The refusal is `HumanDecisionRequired` rather than a denial, and the
+/// difference is what an operator does next: the current question genuinely has
+/// not been answered, which is `Awaiting` and exit 10 — "go and answer it" —
+/// rather than exit 20 and "this has concluded".
+#[tokio::test]
+async fn a_decision_naming_another_effect_is_refused() {
+    let harness = gated_on_a_person();
+    let elsewhere = effect_id(
+        PROJECT,
+        INVOCATION_REF,
+        EffectKind::EnsureBranchPublished,
+        "refs/heads/fiddle/somewhere-else",
+    );
+    assert_ne!(
+        elsewhere,
+        proposed_effect_id(),
+        "this proves nothing unless the two identities really differ"
+    );
+    let stale = approval(elsewhere.clone(), payload_hash(PAYLOAD));
+
+    let error = harness
+        .executor()
+        .execute_decided(branch_effect(), harness.operation(), &stale)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, EffectError::HumanDecisionRequired { .. }),
+        "expected HumanDecisionRequired, got {error:?}"
+    );
+    assert_eq!(harness.world.mutations(), 0);
+    assert_eq!(harness.world.mutation_requests(), 0);
+    // Which comparison failed, named: an operator reading this has to be able to
+    // tell a stale approval from an absent one.
+    let rendered = format!("{error}");
+    assert!(
+        rendered.contains(&elsewhere.0) && rendered.contains(&proposed_effect_id().0),
+        "the refusal must name both identities: {rendered}"
+    );
+}
+
+/// `Deny` is absolute and an approval cannot buy it.
+///
+/// `combine` already orders its arms this way — `(_, Deny)` is `Deny` whatever
+/// the minimum — and this asserts the *executor* honours that ordering rather
+/// than checking the decision first. The step assertion is what makes it an
+/// ordering claim instead of an outcome claim: a build that read the decision,
+/// found it good, and only then noticed the denial would reach the same error
+/// while announcing a resolution it had no business performing.
+#[tokio::test]
+async fn an_approval_cannot_buy_a_denied_effect() {
+    let harness = Harness::new(Script::AbsentThenWritten)
+        .with_policy(HumanDecisionRequirement::Human, DeploymentRule::Deny);
+    let decision = approval(proposed_effect_id(), payload_hash(PAYLOAD));
+
+    let error = harness
+        .executor()
+        .execute_decided(branch_effect(), harness.operation(), &decision)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, EffectError::PolicyDenied { .. }),
+        "expected PolicyDenied, got {error:?}"
+    );
+    assert_eq!(harness.world.mutations(), 0);
+    assert_eq!(harness.world.mutation_requests(), 0);
+    assert!(
+        !harness.world.steps().contains(&"resolve_decision"),
+        "a denied effect is refused before the decision is read: {:?}",
+        harness.world.steps()
+    );
+}
+
+/// The payload half: a decision resolved for one request does not license
+/// another.
+///
+/// The cross-process reading of the identity/payload split that step 6 can only
+/// check within one call. The identity is derived from the target and never from
+/// the payload — deliberately, so that rewording a pull request does not open a
+/// second one — so an approval and a request can agree about *which* effect this
+/// is while disagreeing about *what is being done*.
+///
+/// **The proposal and the operation agree here, and that is the point of the
+/// arrangement.** `payload_divergence.rs` is where those two are made to
+/// disagree, and step 6 catches it there. Were this case to move the *request's*
+/// payload instead of the decision's, step 6 would refuse it and the case would
+/// still pass with step 4's comparison deleted — an assertion about a check that
+/// was not running. Only the decision disagrees, so only step 4 can refuse it.
+#[tokio::test]
+async fn a_decision_does_not_license_a_widened_payload() {
+    let harness = gated_on_a_person();
+    let another_request = r#"{"sha":"cafebabe"}"#;
+    assert_ne!(
+        payload_hash(another_request),
+        payload_hash(PAYLOAD),
+        "the two requests must really differ"
+    );
+    let decision = approval(proposed_effect_id(), payload_hash(another_request));
+
+    let error = harness
+        .executor()
+        .execute_decided(branch_effect(), harness.operation(), &decision)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            &error,
+            EffectError::PayloadDiverged { approved, applying, .. }
+                if approved == &payload_hash(another_request)
+                    && applying == &payload_hash(PAYLOAD)
+        ),
+        "expected PayloadDiverged carrying the digest the person was shown and the \
+         one this call would apply, got {error:?}"
+    );
+    assert_eq!(harness.world.mutations(), 0);
+    assert_eq!(harness.world.mutation_requests(), 0);
+}
+
+/// An `Automatic` operation is unaffected by the new path.
+///
+/// Passing a decision to something that needed none changes nothing, so a caller
+/// cannot make an ungated effect *look* approved — and, read the other way, the
+/// decided path did not become a route around step 4. `combine` answered
+/// `Allow`, nothing was gated, and the binding was never inspected, which the
+/// absent step is what shows.
+#[tokio::test]
+async fn a_decision_changes_nothing_for_an_automatic_operation() {
+    // The harness's default policy is `Automatic` against `Allow`.
+    let harness = Harness::new(Script::AbsentThenWritten);
+    let decision = approval(proposed_effect_id(), payload_hash(PAYLOAD));
+
+    let receipt = harness
+        .executor()
+        .execute_decided(branch_effect(), harness.operation(), &decision)
+        .await
+        .expect("an ungated effect is unaffected by an approval it did not need");
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(harness.world.mutations(), 1);
+    assert!(
+        !harness.world.steps().contains(&"resolve_decision"),
+        "nothing was gated, so nothing was resolved: {:?}",
+        harness.world.steps()
+    );
+}
+
+/// **Where this bean's rule and the milestone's central rule meet.** A decision
+/// permits a mutation, the mutation lands, its answer is lost, and the effect is
+/// settled by *reading* rather than by spending the approval a second time.
+///
+/// Worth its own case because it is the one place the two rules could contradict
+/// each other. "An unknown outcome is resolved by reading the world, never by
+/// retrying the mutation" was asserted across this file for `execute` only, and a
+/// decided walk that re-dispatched on an ambiguous answer would spend one
+/// approval on two external effects — which is strictly worse than the duplicate
+/// M2 exists to prevent, because a person authorized one of them and not the
+/// other.
+///
+/// It needs no fault injection beyond what the scripted world already does: the
+/// operation lands the write and then returns `Killed`, so both halves of the
+/// ambiguity are real without a process, a credential or a network.
+#[tokio::test]
+async fn a_decided_mutation_whose_answer_was_lost_is_settled_by_reading() {
+    let harness = Harness::new(Script::WriteLandsAnswerLost)
+        .with_policy(HumanDecisionRequirement::Human, DeploymentRule::Allow);
+    let decision = approval(proposed_effect_id(), payload_hash(PAYLOAD));
+
+    let receipt = harness
+        .executor()
+        .execute_decided(branch_effect(), harness.operation(), &decision)
+        .await
+        .expect("the answer was lost, not the write");
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(
+        harness.world.mutation_requests(),
+        1,
+        "one approval buys one dispatch, and a lost answer does not buy another"
+    );
+    assert_eq!(harness.world.mutations(), 1, "and it landed exactly once");
+    assert!(
+        harness.world.read_after_unknown(),
+        "the executor went and looked rather than writing again"
+    );
+    assert_eq!(
+        harness.world.calls(),
+        ["inspect", "apply", "inspect"],
+        "a read settled it; no second dispatch appears anywhere in the walk"
+    );
+    assert_eq!(
+        harness.world.steps(),
+        [
+            "validate_capability",
+            "derive_identity",
+            "inspect_postcondition",
+            "combine_policy",
+            "resolve_decision",
+            "authorize",
+            "apply",
+            "observe_postcondition",
+        ],
+        "and the decision was resolved exactly once, before the single dispatch"
+    );
+}
+
+/// **The dispatch bound, over every scripted world, on the decided path too.**
+///
+/// `every_path_dispatches_at_most_one_mutation` asserts this of `execute` and
+/// says why: a retry that slipped into an arm nobody wrote a case for is caught
+/// by the sweep rather than by production. That argument applies unchanged to
+/// `execute_decided`, which had no sweep of its own — so the guarantee held for
+/// the paths somebody remembered, which is the shape of gap the original sweep
+/// exists to close.
+///
+/// The expected count is per-world rather than a blanket "at most one", because
+/// two of these worlds settle before the mutation and must dispatch **zero**: a
+/// decided walk that wrote where the undecided one would not have is a decision
+/// path that changed more than step 4.
+#[tokio::test]
+async fn every_decided_path_dispatches_at_most_one_mutation() {
+    let decision = approval(proposed_effect_id(), payload_hash(PAYLOAD));
+    for script in Script::ALL {
+        let harness = Harness::new(script)
+            .with_read_retry(BUDGET.0, BUDGET.1, BUDGET.2)
+            .with_policy(HumanDecisionRequirement::Human, DeploymentRule::Allow);
+        let _ = harness
+            .executor()
+            .execute_decided(branch_effect(), harness.operation(), &decision)
+            .await;
+
+        let expected = match script {
+            // Nothing to do, or nothing that may be written over. Both settle at
+            // step 3, so neither is ever put to policy and neither resolves a
+            // decision — which is the ordering `an_already_satisfied_effect_is\
+            // _never_put_to_policy` pins for the undecided walk.
+            Script::AlreadySatisfied | Script::TwoMatch => 0,
+            _ => 1,
+        };
+        assert_eq!(
+            harness.world.mutation_requests(),
+            expected,
+            "{script:?} dispatched the wrong number of mutations on the decided path"
+        );
+        assert!(
+            harness.world.mutations() <= 1,
+            "{script:?} changed the world {} times",
+            harness.world.mutations()
+        );
+        if expected == 0 {
+            assert!(
+                !harness.world.steps().contains(&"resolve_decision"),
+                "{script:?} settles before policy, so no decision may be resolved: {:?}",
+                harness.world.steps()
+            );
+        }
+    }
+}
+
+/// The two entry points walk one order, and the decision is the only difference.
+///
+/// Asserted as a pair rather than left to the two cases above, because the claim
+/// is about the *walk* and not about either call: the same operation under the
+/// same document reaches `combine_policy` by an identical route, and what happens
+/// after it is the only thing a third input may change. Two copies of the order —
+/// the shape this deliberately did not take — would satisfy every case above
+/// while being free to drift here.
+#[tokio::test]
+async fn the_decided_path_differs_from_the_undecided_one_only_at_step_four() {
+    let undecided = gated_on_a_person();
+    undecided
+        .executor()
+        .execute(branch_effect(), undecided.operation())
+        .await
+        .expect_err("no decision, so the requirement stands unmet");
+
+    let decided = gated_on_a_person();
+    let decision = approval(proposed_effect_id(), payload_hash(PAYLOAD));
+    decided
+        .executor()
+        .execute_decided(branch_effect(), decided.operation(), &decision)
+        .await
+        .expect("the same walk, with the third input supplied");
+
+    let shared = [
+        "validate_capability",
+        "derive_identity",
+        "inspect_postcondition",
+        "combine_policy",
+    ];
+    assert_eq!(
+        undecided.world.steps(),
+        shared,
+        "the undecided walk stops at the combination"
+    );
+    assert_eq!(
+        decided.world.steps()[..shared.len()],
+        shared,
+        "and the decided walk reaches it by exactly the same route"
+    );
+    assert_eq!(
+        decided.world.steps()[shared.len()..],
+        [
+            "resolve_decision",
+            "authorize",
+            "apply",
+            "observe_postcondition"
+        ],
+        "continuing only because a decision answered what the combination asked"
+    );
 }
 
 /// A capability cannot claim another capability's identity when proposing.
@@ -1880,12 +2369,20 @@ fn the_capability_never_receives_a_raw_token() {
 /// it. `every_registered_capability_can_be_selected` in the binary is the other
 /// half — it fails to build if a registered id has no selection.
 #[test]
-fn the_registry_holds_three_capabilities() {
+fn the_registry_holds_every_capability_this_build_offers() {
     let ids: Vec<&str> = fiddle_runtime::CAPABILITIES
         .iter()
         .map(|capability| capability.0)
         .collect();
-    assert_eq!(ids, ["stub_mark", "fixture_repair", "publish_change"]);
+    assert_eq!(
+        ids,
+        [
+            "stub_mark",
+            "fixture_repair",
+            "publish_change",
+            "propose_change"
+        ]
+    );
 }
 
 /// The two observations Task 8 added are filled by the run that can see them.

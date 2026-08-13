@@ -41,6 +41,7 @@ pub mod evidence;
 pub mod gateway;
 pub mod git;
 pub mod github;
+pub mod human;
 pub mod journal;
 pub mod orchestration;
 pub mod ports;
@@ -48,10 +49,16 @@ pub(crate) mod process;
 pub mod stub;
 pub mod workspace;
 
-pub use agent::{AgentBudget, ToolHost, ToolReceipt, ToolReceipts};
+pub use agent::{AgentBudget, Direction, ToolHost, ToolReceipt, ToolReceipts};
+// `attempt_worktree` is here beside the capability it belongs to, and it has to
+// be: the process that builds an `EffectContext` and the capability that creates
+// the worktree derive one path by calling this one function, so a binary that
+// could reach `ProposeChange` and not this would be a binary that had to
+// reimplement the derivation — which is the drift the function exists to make
+// impossible. See `capability::propose`.
 pub use capability::{
-    Capability, CapabilityError, ExecutionGrant, FixtureRepair, PublishChange, PublishConfig,
-    RepairConfig, StubMark, CAPABILITIES,
+    attempt_worktree, Capability, CapabilityError, ExecutionGrant, FixtureRepair, ProposeChange,
+    ProposeConfig, PublishChange, PublishConfig, RepairConfig, StubMark, CAPABILITIES,
 };
 // `mint_attempt_id` is deliberately *not* re-exported beside these, for the
 // same reason publication is not re-exported beside [`attempt`]: minting an id
@@ -59,9 +66,14 @@ pub use capability::{
 // heard of. [`attempt`] mints exactly one and hands it to the capability through
 // its [`ExecutionGrant`]. It stays reachable as `evidence::mint_attempt_id`;
 // what it is no longer is the front door.
+// [`effect::ResolvedDecision`] is here beside [`AuthorizedEffect`] deliberately.
+// The two are the executor's two capability tokens — one the caller cannot forge
+// and one the caller cannot fabricate an approval into — and a type reachable
+// only by its full module path while its sibling is not reads as an oversight
+// somebody would later "fix" without knowing it had been decided.
 pub use effect::{
     AuthorizedEffect, DeploymentPolicy, EffectContext, EffectError, EffectOutcome, EffectReceipt,
-    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ObservedState,
+    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ObservedState, ResolvedDecision,
 };
 pub use evidence::{EvidenceError, BUNDLE_FILE};
 pub use fiddle_core as core;
@@ -77,6 +89,10 @@ pub use github::{
 };
 pub use github::{pull_request_target, EnsurePullRequest, PullRequest};
 pub use github::{GhCli, GhError, GhResponse, RetryAdvice};
+pub use human::{
+    decision_request_target, render_request, GitHubConversation, HumanInteractionPort,
+    InteractionRef, PublishDecisionRequest, PublishedRequest,
+};
 pub use journal::{AttemptJournal, AttemptTrace};
 pub use orchestration::{
     attempt, observe, run, AttemptContext, AttemptRecord, RunContext, RunReport,

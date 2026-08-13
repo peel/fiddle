@@ -138,20 +138,41 @@ echo ""
 echo "=== Test 4: Develop loop and holistic skills have runtime lifecycle ==="
 # ═══════════════════════════════════════════════════════════════════════
 
-DEVELOP_LOOP_SKILL="$PROJECT_DIR/skills/develop-loop/SKILL.md"
-DEVELOP_LOOP_CONTEXT="$PROJECT_DIR/skills/develop-loop/context-loading-order.md"
-DEVELOP_HOLISTIC_SKILL="$PROJECT_DIR/skills/develop-holistic/SKILL.md"
-DEVELOP_LOOP_CONTENT=$(cat "$DEVELOP_LOOP_SKILL" "$DEVELOP_LOOP_CONTEXT")
+DEVELOP_LOOP_DIR="$PROJECT_DIR/skills/develop-loop"
+DEVELOP_HOLISTIC_DIR="$PROJECT_DIR/skills/develop-holistic"
 
-assert_contains "develop-loop references start-runtimes.sh" "$DEVELOP_LOOP_SKILL" "start-runtimes.sh"
-assert_contains "develop-loop references stop-runtimes.sh" "$DEVELOP_LOOP_SKILL" "stop-runtimes.sh"
-if echo "$DEVELOP_LOOP_CONTENT" | grep -q "runtime-evidence"; then
-  PASS=$((PASS+1)); echo "  PASS: develop-loop references runtime-evidence"
-else
-  FAIL=$((FAIL+1)); echo "  FAIL: develop-loop references runtime-evidence"
-fi
-assert_contains "develop-holistic references start-runtimes.sh" "$DEVELOP_HOLISTIC_SKILL" "start-runtimes.sh"
-assert_contains "develop-holistic references stop-runtimes.sh" "$DEVELOP_HOLISTIC_SKILL" "stop-runtimes.sh"
+# The skill is the directory, not the file. These assertions named
+# `develop-loop/SKILL.md` and went red when the runtime lifecycle moved into
+# `dispatch-and-evidence.md` in the SKILL.md → companion-file split, while the
+# skill still said everything it had said before. What has to hold is that the
+# skill *carries* the reference; which of its files carries it is layout, and this
+# project has already reorganised that layout once.
+#
+# A pass prints where it found it, so the next move is visible in the log rather
+# than silent, and a failure prints the whole tree it searched — otherwise "not
+# referenced" and "searched the wrong directory" read identically.
+assert_contains_tree() {
+  local desc="$1" dir="$2" pattern="$3"
+  local hits
+  # `|| true` because this suite runs under `set -euo pipefail`, where a grep that
+  # matches nothing makes the whole substitution fail and kills the script before
+  # it can report anything. That is not a hypothetical: it is what this helper did
+  # on its first inversion, and a suite that dies on the failure path prints no
+  # denominator at all — the exact reading this fix exists to prevent.
+  hits=$( { grep -rl -- "$pattern" "$dir" 2>/dev/null || true; } | sed "s|^$dir/||" | sort | tr '\n' ' ')
+  if [ -n "$hits" ]; then
+    PASS=$((PASS+1)); echo "  PASS: $desc (in ${hits% })"
+  else
+    FAIL=$((FAIL+1))
+    echo "  FAIL: $desc (pattern '$pattern' in none of: $(ls "$dir" 2>/dev/null | tr '\n' ' '))"
+  fi
+}
+
+assert_contains_tree "develop-loop references start-runtimes.sh" "$DEVELOP_LOOP_DIR" "start-runtimes.sh"
+assert_contains_tree "develop-loop references stop-runtimes.sh" "$DEVELOP_LOOP_DIR" "stop-runtimes.sh"
+assert_contains_tree "develop-loop references runtime-evidence" "$DEVELOP_LOOP_DIR" "runtime-evidence"
+assert_contains_tree "develop-holistic references start-runtimes.sh" "$DEVELOP_HOLISTIC_DIR" "start-runtimes.sh"
+assert_contains_tree "develop-holistic references stop-runtimes.sh" "$DEVELOP_HOLISTIC_DIR" "stop-runtimes.sh"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

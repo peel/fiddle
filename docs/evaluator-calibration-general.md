@@ -594,3 +594,316 @@ And the trend numbers now mislead. M2 shows the **lowest dispatches-per-task (2.
 This is not an anchor and corrects no score — there are no scores to correct. It is here because this file is what future evaluators read, and the thing worth carrying forward is: **an evidence-only scorecard buys a fast convergence at the price of contributing nothing to calibration.** A milestone that uses it exclusively should say so at delivery, which M2 is doing here.
 
 Also recorded: the **blind spot-check was deliberately skipped** for M2 at the operator's instruction. Four beans were sampled at the default rate of 5 — `fiddle-amol` (the mandatory proof), `fiddle-swgf`, `fiddle-6o8w` and `fiddle-ufv3` — and none was blind-reviewed, so the divergence between evaluator scoring and unanchored human judgment is unmeasured for this milestone. Combined with the absent dimension data, M2 contributes no calibration signal in either direction.
+
+## M3 — Suspension and human direction
+
+Anchors for the milestone that gives fiddle its first decision it is not entitled to make. Every M3
+bean changes code, so the 2026-07-29 doc-only correction does not apply to any of them.
+
+**M3 scores dimensions, unlike M0 through M2.** Its eval blocks set the general template's defaults
+explicitly — `correctness: 7`, `domain_spec_fidelity: 8`, `code_quality: 6` — rather than the
+`thresholds: {}` every earlier milestone declared. That is a deliberate reversal, taken on 2026-08-10
+at the operator's decision, and the reason is the measurement gap recorded at the foot of this file:
+M2's twenty-one beans all converged evidence-only, so the largest epic in the history contributed
+nothing to the calibration this file exists to hold, while showing the lowest dispatches-per-task and
+iterations of any epic — a number that reads as efficiency and is an artifact of single-pass
+convergence.
+
+The cost is paid per bean and is worth stating so nobody reads M3's dispatch counts as a regression:
+scored convergence needs **two consecutive passes with no regressions**, so every bean carries at
+least one more evaluator dispatch than an M2 bean did. A higher dispatch count in M3's trend row is
+the price of the row having data in it at all.
+
+**The scope rule for this milestone, stated once.** M3 is scored on what the deterministic shell
+*verifies* before it acts, never on whether the model read the person correctly. A comment that was
+ambiguous, an approver who changed their mind, a reply that arrived late — none of these is a defect
+in a bean. What is a defect is a shell that acts on a decision it did not bind to an effect, a
+payload and a revision it re-read. The single question behind every criterion below is: **when the
+approval was spent, had the code proven that the thing being approved is still the thing being
+done?** A bean that would mutate under an approval given for another request has failed this
+milestone's central property however green its tests are.
+
+**A second rule, inherited from M2 and now standing.** An anchor here is scored against external
+state, not against an exit code or a report. And from this milestone onward, a lane is scored on
+whether an **inversion** was run against it: break the property deliberately, run the lane, and
+record which tests noticed. M2's mandatory proof turned out to be carried by one of five tests, and
+an inversion is what established that. A bean claiming a property with no inversion has claimed it,
+not proven it.
+
+**A third rule, because M3's capability is the first hybrid one.** `propose_change` reuses M1's
+bounded attempt to produce the change it proposes. A bean working on that half is scored against
+M1's anchors above — `m1-tool-protocol-correctness`, `m1-bounded-behavior`, `m1-workspace-isolation`
+— and not re-litigated here, and a bean that widens M1's bounds or its four-name workspace allowlist
+to make M3's walk succeed has broken M1 to build M3. What is scored here is only the seam: that the
+attempt's output reaches publication as a commit, and that a redirect instruction reaching the
+attempt's prompt is bounded data rather than instruction and cannot touch the decision, the
+identity, the policy or the payload.
+
+### `m3-decision-binding`
+
+What an approval is bound to, and what takes it away.
+
+- **Poor (1–3).** The approval is a boolean, a comment id, or the presence of the word "approve".
+  The effect is executed because a decision was found, without recomputing the identity it was given
+  for. The payload is not compared, so a request widened after approval is performed. External state
+  is not re-read, so an approval survives the head advancing. "Stale" is one refusal covering
+  several causes, or there is no notion of staleness at all.
+- **Acceptable (4–7).** The approval binds to the decision request id, the `EffectId`, the canonical
+  payload digest and the external revision the question was asked about. All four are recomputed
+  from canonical inputs and required to match before the mutation. A pull request that was closed, a
+  head that advanced, and a payload that changed each refuse. The refusals are distinct enough that
+  a reader knows which one fired.
+  One mechanism is worth naming because the plausible answer is wrong: an approval reply carries no
+  marker and names no effect, so a stale approval cannot be refused by comparing identities. What
+  excludes a reply given to an earlier question is **ordering** — candidates are the comments after
+  the *current* request — while identity is what stops the earlier question being found as the
+  current one. Score a bean's *stated* mechanism, not only its passing test: a bean claiming an
+  identity comparison refuses a stale approval has described something that cannot fire, and its
+  test is passing for a different reason than the one it gives.
+- **Excellent (8–10).** All of the above, plus the binding is **durable in the world rather than in
+  local state** — nothing on disk has to survive for a fresh process to know what was approved, so
+  there is no question about what a missing record means. The payload comparison happens twice
+  independently, once against what the conversation recorded and once inside the executor against
+  what the proposal carried, and the two are recognised as different claims rather than as a
+  duplicated check. An inversion that loosens any single conjunct of the binding predicate makes a
+  named test fail, and the bean says which.
+
+### `m3-authoritative-conversation`
+
+Where the decision is read from, and what is trusted along the way.
+
+- **Poor (1–3).** A wake-up payload, an event body, a CLI argument or a cached value is read as the
+  human's decision. The marker in the request comment is trusted for its contents rather than
+  compared against recomputed values. Inline review comments and conversation comments are conflated.
+  More than one channel could answer the same request. A partial or failed conversation read is
+  reported as "nobody has answered".
+- **Acceptable (4–7).** Exactly one channel is authoritative per request. The full conversation is
+  re-read from the comments endpoint on every continuation, every page of it, without assuming an
+  order. The wake-up input is treated as a hint and never as a decision. Inline review comments are
+  a different endpoint and are not consulted. An unreadable conversation fails closed as an
+  unavailable observation rather than as an empty list.
+- **Excellent (8–10).** All of the above, plus the marker is treated as **a pointer to what to
+  recompute and not as evidence** — every field it carries is derived again from canonical inputs
+  and required to match, so an edited or forged marker fails equality instead of being believed.
+  Parsing is strict about key order, lengths and the version token, and refuses rather than
+  interpreting a body that half-matches, on the reasoning that a half-match is more likely to be a
+  person quoting the marker. That a bean posts to one surface and reads from the same one is pinned
+  by a fixture rather than by prose.
+
+### `m3-suspension-fidelity`
+
+The suspended exit, and continuation with nothing carried across.
+
+- **Poor (1–3).** The process sleeps, polls, or holds the run open waiting for an answer. Suspension
+  is reported as a failure or as retryable, so automation retries it. The continuation depends on a
+  file, a journal entry, a serialized agent run or a session the first process wrote. The exit code
+  is not 10, or 10 is produced by a mapping function nothing drives.
+- **Acceptable (4–7).** The request is durably published *before* the process exits, the run reports
+  `Suspended`, and the process exits 10. A later invocation with the same `InvocationRef` in a fresh
+  process reconstructs the request, the effect and the proposed payload from external sources alone.
+  The bundle a suspended run publishes says where the conversation is, so a reader can find it.
+  `HumanDecisionRequired` no longer lands on the permanent-failure row, per ADR 016's own promise.
+- **Excellent (8–10).** All of the above, proven by a lane that **deletes every local record**
+  between the two processes — bundle, attempt journal, workspace — so the second process provably
+  cannot be reading its own past, and a third invocation observes the postcondition and mutates
+  nothing. The third `Recurrence` value is threaded through matches that are exhaustive with no
+  wildcard, so no existing arm was left to a default. Nothing fake enters the product to make the
+  lane possible.
+
+### `m3-bounded-interpretation`
+
+What the model may decide, and what it may not touch.
+
+- **Poor (1–3).** The model returns free text that is string-matched, or returns a structure whose
+  fields include an effect, a target, an actor, a payload or an identity that the code then uses. An
+  unparseable or timed-out answer defaults to approval, or to a retry that eventually approves. A
+  conditional approval, a quoted approval, or an approval naming a different request is accepted.
+  The interpretation is tested only against a real model.
+- **Acceptable (4–7).** The output is a closed enum plus at most a redirect instruction, validated
+  against a schema that rejects unknown values, missing fields and extra ones. Timeout, refusal,
+  malformed output and every ambiguity resolve to `unclear`, which produces a follow-up rather than
+  an action. The call is bounded in turns, input bytes, output tokens and wall clock. Deterministic
+  tests drive it through a model double over a table of adversarial inputs.
+- **Excellent (8–10).** All of the above, plus the deterministic checks that could refuse the reply
+  run **before** the model call is spent, so the model never has a say in a decision the shell had
+  already made. A property assertion — against the values the executor actually receives, not
+  against the builders that produce them — establishes that no model output can change the effect
+  identity, the payload hash, the actor, the target or the policy. The adversarial table includes
+  text addressed to the model rather than to the human question, and an inversion letting the
+  model's string reach a payload makes a named test fail.
+
+### `m3-actor-and-request-integrity`
+
+Who may decide, and whether the reply read is the reply that was written.
+
+- **Poor (1–3).** Any commenter can decide. Authorization rests on `author_association`, or on a
+  login rather than an immutable id. A bot's or an app's comment counts. An unauthorized reply is
+  silently discarded with no record that it existed. A comment observed once is trusted later
+  without re-reading, so an approval edited after the fact is acted on. Two request comments for one
+  request are resolved by picking one.
+- **Acceptable (4–7).** Authorization is a configured allowlist of immutable numeric user ids, with
+  no permissive default and an empty list refused rather than read as "anybody". Bot and
+  app-attributed comments are excluded from being read as human decisions. Each candidate reply is
+  re-read by its own id and rejected if it changed since it was listed. An unauthorized reply is
+  recorded as observed and ignored, never dropped without trace. More than one request comment is a
+  state to report and never a set to choose from.
+- **Excellent (8–10).** All of the above, plus the request comment is published **through the effect
+  executor** so it gets inspect-before-write — which matters because the comment endpoint documents
+  no idempotency key, so a retried request otherwise makes a second one. Which reply decides when
+  several are authorized is a stated rule with a stated reason, not an accident of iteration order,
+  and the rule fails toward not mutating. Inversions removing the re-read, admitting a bot, or
+  posting the request outside the executor each make a named test fail.
+
+### `m3-graphql-refusal-classification`
+
+The second call shape, and what a 200 is allowed to mean.
+
+- **Poor (1–3).** The GraphQL call reuses the REST classifier unchanged, so a mutation refused with
+  HTTP 200 and an `errors[]` array is read as a success. Or the classification is bolted onto
+  `GhCli::api` as a conditional, leaving one method whose verdict depends on which URL it was handed.
+  Or the errors array is inspected but every error is treated the same way, so a refusal and an
+  ambiguity get one answer. A 200 with `data` is believed on its face and no postcondition is read.
+- **Acceptable (4–7).** A sibling method with its own classification: a non-empty `errors[]` on a 200
+  is a refusal, and `api`'s documented contract is left as written. The error `type` decides the
+  outcome — a refusal is `NotCommitted`, an unprocessable is `Unknown` for REST 422's reason, and an
+  unrecognised type is `Unknown` so the error is toward reading again. The mutation is dispatched
+  exactly once per `execute`. The call shares the existing spawn site, environment and bound rather
+  than introducing a fourth.
+- **Excellent (8–10).** All of the above, plus the shape was **proven against real GitHub before the
+  offline suite was written against it** — both that the mutation lands and that a refusal really
+  arrives as 200 with `errors[]` — rather than pinned from a planner's probe. The reversal is
+  recorded as a decision, because it contradicts the reading a competent person would take from
+  ADR 015, and someone will otherwise correct it back. An inversion restoring `status >= 400` as the
+  only failure test makes a named test fail.
+
+### Known-blocked criteria
+
+Two, both recorded read-only during planning.
+
+- **The comment-event wake-up cannot be exercised from this branch, by construction.**
+  `issue_comment` runs the workflow file as it exists on the **default branch** and offers no ref
+  override — unlike `workflow_dispatch`, where `--ref` at least selects the code. `main` carries no
+  Cargo workspace until the milestone stack merges, so there is no ref at which a comment event both
+  resolves and can build. This is the same family as the invariant `docs/technical/SYSTEM.md`
+  already states for dispatch-only lanes, and it is why M3 deliberately does not build a dispatcher:
+  a lane planned on a feature branch that cannot run there is a lane nobody has tested.
+
+  Score the continuation beans on the property the RFC actually states — *the wake-up payload never
+  counts as approval; a fresh process re-reads the authoritative conversation* — and not on whether
+  a comment started a runner. A bean is scored well for proving continuation from an
+  `InvocationRef` alone and for naming this blockage precisely; it is **not** scored down for the
+  absence of event wiring, and it is scored down for claiming the loop is proven end to end.
+
+  Closing condition, so this does not stay blocked by inertia: the milestone stack merges to `main`,
+  a default-branch `issue_comment` dispatcher lands, and one real comment is observed to start a run.
+  No code in M3 is owed for it.
+
+- **Whether the credential may write a conversation comment is unproven, and the read probes that
+  look like proof are not.** `FIDDLE_GITHUB_TOKEN` answered **200** on
+  `repos/peel/fiddle-effects-acceptance/issues`, `.../issues/comments` and `.../pulls` during
+  planning. Those 200s establish nothing: that repository is **public**, so a fine-grained token
+  reads it whatever its permission set says. This is the same trap the M2 entry above records as
+  *the token's scope is proven by 403, not by 404* — and the same trap that let a two-repository
+  selection survive a whole milestone.
+
+  The documented grant is Contents RW, Pull requests RW, Actions RW, Metadata read, Secrets none —
+  `Issues` is absent. GitHub routes `POST /repos/{o}/{r}/issues/{n}/comments` through **Issues** for
+  an issue and through **Pull requests** for a pull request, which is why the design puts the
+  conversation on a pull request rather than on an issue: the surface was chosen so the credential
+  would not have to be widened days after the operator narrowed it.
+
+  Score the live-lane bean on whether it *proves* the write against real GitHub and cleans up after
+  itself, and treat a 403 there as that bean's finding rather than as an obstacle to work around by
+  widening the token unasked. Do not accept a successful public read as evidence of a grant from any
+  bean.
+
+  **Resolved 2026-08-10, before implementation reached any bean that depends on it.** The write was
+  probed directly: `POST /repos/peel/fiddle-effects-acceptance/issues/19/comments` answered **201
+  Created** with the effects credential, `GET /issues/comments/{id}` read it back, and `DELETE`
+  answered **204**, leaving zero comments, zero open pull requests and `main` alone. So
+  `Pull requests: read and write` does cover a conversation comment on a pull request and no `Issues`
+  grant is needed — which is the measurement the surface choice in the design's §5.1 was betting on.
+  This is no longer a blocked criterion, and a bean must not be scored as though it were. A 403 in the
+  live lane would now be a **regression** to investigate rather than a discovery.
+
+  The read-back carried `id`, `user.login`, `user.id`, `user.type`, `author_association`,
+  `performed_via_github_app`, `created_at` and `updated_at`, with `created_at == updated_at` on a
+  fresh comment — which is what makes "edited since it was listed" detectable at all rather than a
+  property nobody can observe.
+
+  **One hazard found by making the mistake, and it belongs to whoever writes shell against this
+  payload.** `user.id` appears *before* `.id` in a comment object, so scraping the first id-shaped
+  field yields the **author's** user id and not the comment's. The probe's own cleanup did exactly
+  that, deleted nothing, 404'd, and left the comment behind until it was read properly. A typed
+  adapter that names the two fields separately is immune by construction; a lane written in bash is
+  not, and a cleanup that cannot fail loudly is how residue survives a passing run. Score a shell
+  bean that handles comment ids on whether it selects the field by name (`.[].id`) rather than by
+  pattern.
+
+## all dimensions — Method, aggregated from M3 (2026-08-13)
+
+**Read `docs/technical/evidence-discipline.md` before scoring.** It carries the rules for making and checking
+claims, each with the defect that earned it, aggregated at the end of M3 so later milestones inherit them rather
+than rediscovering them.
+
+M3 transmitted these by copy-paste into every dispatch — roughly 700 lines of it — and the lead's own
+transcription errors propagated three times. The doc exists so a dispatch can point rather than restate.
+
+**The four that change scoring most directly:**
+
+- **Run the criterion-set identity check before reading any verdict.** Compare the ids in your scorecard against
+  the ids in the bean's `eval` block and reject a pass whose sets differ. A confirming pass in M3 merged two
+  criteria, promoted an inversion row to criterion status, invented a fifth, and **dropped a safety property** —
+  while producing five entries, all passing, matching dimensions, zero antipatterns. Every surface signal a
+  merge step reads was correct. **A renamed criterion is a missing criterion wearing a plausible label.** If you
+  name an id in order to *exclude* it, say so explicitly, so a reader can tell exclusion from omission.
+- **A provider that cannot execute must neither fail a criterion nor discount a dimension for its own
+  inability.** In M3 a pass disclosed an inability and then marked all three dimensions down for that same
+  inability, delivering the penalty twice and manufacturing a false regression. The corrected form held on
+  **nine consecutive beans**. The disclosure is free; name what you would have needed.
+- **A partial discharge with a stated reason does not fail a lane.** Accepted three times in M3. Judge whether
+  the reason is right; if you think the criterion cannot be satisfied as written, say `SPEC_DEFECT` rather than
+  failing the lane, and never rename the criterion.
+- **Prefer attacking a claim to checking it.** M3's strongest evaluations broke things: one refuted an
+  exhaustiveness claim in a shipped test message with a constructed counterexample, one reproduced a
+  `panic!`-at-entry inversion that refuted a mechanism two readers had agreed on, and one demonstrated an
+  identity assertion passing *before the process it described existed*. An evaluation that only confirms has
+  tested nothing.
+
+**On second passes.** Across M3 the confirming pass agreed with the first on every bean and never moved a score.
+Where wall-clock matters, one pass is defensible; the second earns its place on beans touching a converged
+sibling's property, a product change, or a credential.
+
+### all dimensions — what M3's last three evaluations established (2026-08-13)
+
+The method is in `docs/technical/evidence-discipline.md`; these are the **scoring** consequences.
+
+**Run your own inversions. This is now the standard, not a bonus.** M3's strongest evaluation ran six of its
+own and found **two nulls in the exact helper the bean's first criterion rested on** — arms of a partition
+asserted only *empty*, so a version answering "nothing" unconditionally passed. It still returned PASS, and
+for a *stronger* reason than the lane had written. An evaluation that only re-reads what the lane reported
+cannot find that, and an evaluation that finds it and reports PASS is not contradicting itself.
+
+**Score an audit or infrastructure bean's `code_quality` as the quality of its method and record**, not by
+counting product changes. For such a bean, ask: does every figure name the sha it was measured at, does every
+negative check print its denominator, is each inversion reproducible from the artefacts on disk, and are the
+claims about *other* beans re-measurable? M3's audit bean corrected four of the lead's own claims and one
+sentence in the discipline doc itself; that is what a good record looks like.
+
+**A lane that refuses to work and says why is doing its job.** One M3 lane sampled `git status` every three
+seconds, found another agent cycling mutations through the tree it had been told was its own, and **blocked
+rather than editing**. Do not score that as incomplete work. The correct read is that the lane protected a
+converged sibling's commits and produced the diagnosis the lead had missed.
+
+**A criterion carrying an absolute suite count is a spec defect to name, not a lane failure.** M3 inherited
+`443 passed / 34 binaries` from its design stage into twelve places, including criteria. The true figure ended
+at 665. A lane that measures its own baseline at a named sha and says the criterion's figure is stale has
+satisfied the criterion's *intent*; a lane that "restores" the count has broken the suite.
+
+**Ask of every assertion: what mutation does this fail on that its neighbours do not?** A real tautology
+survived review in M3 — `reads + writes + graphql == total()` where `total()` was defined as those three plus
+a fourth already asserted zero on the line above. It read as a completeness check and could not fail.
+
+**And distrust a null closed only by a table the lane wrote itself.** The same hand wrote the code and the
+expectation, so the table proves the sorter and not the expectation. The closure worth full marks pairs it
+with one assertion over a real invocation.

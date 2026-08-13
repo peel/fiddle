@@ -42,6 +42,20 @@
 //! and [`GhCli::api`] reads the status from there. A branch that decided
 //! anything about the response from exit 1 would have read the wrong surface.
 //!
+//! # Where the status line stops being the verdict
+//!
+//! That rule holds for every REST call and fails for exactly one call shape. A
+//! refused GraphQL mutation answers **200** with a `null` field and an
+//! `errors[]` beside it, so `status >= 400` reads it as a success —
+//! `scripts/verify-graphql-ready.sh` measures the response and
+//! [ADR 018](../../../docs/technical/decisions/018-a-graphql-200-is-not-a-success.md)
+//! is the decision. Rather than make [`GhCli::api`]'s contract conditionally
+//! untrue, GraphQL is a sibling: [`GhCli::graphql`] shares this module's
+//! environment, bound, credential and status-line parse through
+//! [`GhCli::command`] and [`GhCli::dispatch`], and differs in the verdict alone.
+//! Nothing about the five names or the process group is about the URL, so
+//! nothing about them changes.
+//!
 //! `gh` also has no timeout flag, so the runtime owns the deadline — which is
 //! not only a cost. A `gh` killed after it has dispatched a request is a real
 //! ambiguous write rather than a simulated one, and [`GhError::outcome`] is what
@@ -90,6 +104,31 @@ pub struct GhResponse {
     pub retry_after: Option<Duration>,
     /// `X-RateLimit-Remaining`, when the response carried one.
     pub rate_limit_remaining: Option<u64>,
+    /// `Link`, when the response carried one.
+    ///
+    /// The third header this client reads, and the only one that is about the
+    /// *answer* rather than about the credential. A listing says how much of
+    /// itself it returned nowhere else: the page size is GitHub's choice, so a
+    /// short page is not an end, and a client counting what came back cannot
+    /// tell a complete conversation from the first hundredth of one.
+    /// [`comments::read_conversation`](super::comments::read_conversation) is
+    /// what reads it, and what it needs is `rel="next"`.
+    ///
+    /// **A length check is cheaper and is wrong**, which is worth stating here
+    /// because the next reader will otherwise wonder why a header is carried
+    /// for something a comparison against `per_page` appears to answer. The
+    /// two disagree in both directions. A short page is not an end, so a client
+    /// that stopped on one would miss every comment after it; and a page that
+    /// happens to be exactly full is not a continuation, so a client that kept
+    /// going on one would fetch a page nobody has to answer.
+    /// `a_response_carries_actor_identity_and_edit_state_from_the_listing_alone`
+    /// pins the second half of that: one scripted page, and exactly one request
+    /// recorded.
+    ///
+    /// Carried whole and unparsed, because the relations are the reader's
+    /// business and a header this module reduced to a boolean would be one
+    /// every later listing had to widen again.
+    pub link: Option<String>,
 }
 
 /// What a response said about being asked the same question again.
@@ -144,7 +183,9 @@ pub enum GhError {
     #[error("gh could not authenticate (exit 4)")]
     Auth,
     /// A cancellation this runtime raised **before any child existed**, at the
-    /// check in [`GhCli::api`] — the one and only producer.
+    /// check in [`GhCli::dispatch`] — the one and only producer, and shared by
+    /// every call shape because it is the spawn rather than the request that it
+    /// is about.
     ///
     /// This is the only cancellation that is *knowledge*: no process was started,
     /// so no request left this one, so the world is untouched. It is therefore the
@@ -211,6 +252,34 @@ pub enum GhError {
         message: String,
         advice: RetryAdvice,
     },
+    /// **A 200 from GraphQL that was not a success.**
+    ///
+    /// Two producers, and the second is why this is not named for a refusal:
+    ///
+    /// 1. a request GitHub **refused while answering 200**, which is the ordinary
+    ///    case and the one the fields are named for;
+    /// 2. a 200 [`GhCli::graphql`] **could not interpret at all** — a body that is
+    ///    not an object, so it carried neither `data` nor `errors`. `kind` is
+    ///    `"UNKNOWN"` there, which is the same answer this variant already gives a
+    ///    refusal whose type it could not read, and lands in the same `Unknown`
+    ///    arm for the same reason.
+    ///
+    /// The status line says nothing here, and neither does the exit code: a
+    /// refused mutation is `HTTP/2.0 200` with `data.<field>` null and an
+    /// `errors[]` carrying the verdict, and `gh` exits 1 as it does for every
+    /// other failure. `kind` is `errors[0].type` — the machine-readable half,
+    /// which is what makes a classification possible at all — or `"UNKNOWN"`
+    /// when the response carried no type this client could read. `message` is
+    /// its human half, redacted like every other diagnostic.
+    ///
+    /// [`GhError::outcome`] holds the classification and
+    /// [ADR 018](../../../docs/technical/decisions/018-a-graphql-200-is-not-a-success.md)
+    /// its reasons. This variant exists rather than a reused [`GhError::Http`]
+    /// with a fabricated status because there is no status to fabricate that
+    /// would not be a number nobody sent — the same argument [`GhError::Push`]
+    /// makes for git's own verdict.
+    #[error("GraphQL {kind}: {message}")]
+    GraphQl { kind: String, message: String },
     /// **No readable answer came back from a child that may well have run.**
     ///
     /// Four producers, and naming all four is what the classification rests on:
@@ -302,6 +371,27 @@ impl GhError {
             // Every other 4xx is GitHub saying it declined, in terms that leave
             // no room for it having acted anyway.
             GhError::Http { .. } => EffectOutcome::NotCommitted,
+            // The same two questions asked of a refusal that arrived as a 200.
+            // `NOT_FOUND` and `FORBIDDEN` are conclusions *about the request* —
+            // there was no node to reach, or GitHub declined before acting — so
+            // they are the GraphQL spelling of the 4xx arm above.
+            //
+            // Everything else is `Unknown`, and the default is the load-bearing
+            // half rather than a fallthrough. `UNPROCESSABLE` is REST 422's own
+            // reason in another spelling: the probe issued one cause — creating
+            // a ref that already exists — down both surfaces and got a 422 from
+            // one and an `UNPROCESSABLE` from the other, so it inherits 422's
+            // ambiguity along with its number. An unrecognised or absent type is
+            // `Unknown` for a different reason: GitHub's error-type set is
+            // GitHub's to extend, and `NotCommitted` is the claim that permits a
+            // retry, so a name this build has never seen must cost a second read
+            // rather than a second write. The 200 that could not be interpreted at
+            // all arrives as `UNKNOWN` and is carried by that same default, which
+            // is the third thing it is load-bearing for.
+            GhError::GraphQl { kind, .. } => match kind.as_str() {
+                "NOT_FOUND" | "FORBIDDEN" => EffectOutcome::NotCommitted,
+                _ => EffectOutcome::Unknown,
+            },
             // Two objects where one was expected means an earlier write is
             // unaccounted for; that is not a settled world.
             GhError::Duplicate { .. } => EffectOutcome::Unknown,
@@ -371,6 +461,14 @@ impl GhError {
             // 429 is the rate limit saying so without a header; 5xx is GitHub
             // failing at something that is not about this request.
             GhError::Http { status, .. } => *status == 429 || *status >= 500,
+            // Derived from the classification rather than restated beside it, so
+            // the two cannot drift: a `NOT_FOUND` is settled and will still be
+            // not found, while the kinds this build could not settle are exactly
+            // the ones another look might. `Unknown` does not imply this in
+            // general — `Malformed` is the counterexample — but within this
+            // variant every `Unknown` is an unsettled *answer* rather than a
+            // broken runner.
+            GhError::GraphQl { .. } => self.outcome() == EffectOutcome::Unknown,
             // Everything else is settled. A refusal stays refused; a request that
             // was never started has nothing to look for; a program that is not
             // `gh` will not become one however often it is asked, which is why
@@ -488,17 +586,110 @@ impl GhCli {
         body: Option<&serde_json::Value>,
         cancel: &CancellationToken,
     ) -> Result<GhResponse, GhError> {
-        // Checked before spawning, not only raced against: cancellation has to
-        // prevent the effect, and this is the one moment where refusing is free.
-        //
-        // It is also the one moment where a cancellation is *knowledge* — no child
-        // exists, so no request left this process — which is why this returns a
-        // different variant from the `select!` arm below. The two used to share
-        // one, and the sharing is the defect M2's holistic review found.
-        if cancel.is_cancelled() {
-            return Err(GhError::CancelledBeforeSpawn);
+        let mut command = self.command();
+        command.arg("--method").arg(method).arg(path);
+        let stdin = body.map(|body| {
+            command.arg("--input").arg("-");
+            body.to_string().into_bytes()
+        });
+        self.dispatch(&mut command, stdin, cancel).await
+    }
+
+    /// One `gh api graphql` mutation or query, whose verdict is in the body.
+    ///
+    /// A sibling of [`GhCli::api`] rather than a widening of it, for the reason
+    /// [ADR 018](../../../docs/technical/decisions/018-a-graphql-200-is-not-a-success.md)
+    /// gives: a refused mutation answers 200, so the two cannot share a verdict
+    /// rule, and making `api`'s contract depend on which URL it was handed would
+    /// turn each of the five REST operations into a call site to re-read. They
+    /// share everything else — [`GhCli::command`] builds the same environment
+    /// and [`GhCli::dispatch`] runs it under the same bound and reads the same
+    /// status line.
+    ///
+    /// **Variables are variables and never text.** Each pair goes out as its own
+    /// `-f name=value`, which `gh` binds as a GraphQL variable rather than as a
+    /// form field — measured by step 0 of `scripts/verify-graphql-ready.sh`,
+    /// because a mutation whose variables silently did not bind would fail in a
+    /// way that looks like a permissions problem. Interpolating a value into the
+    /// query text instead would let a node id carrying a quote rewrite the query
+    /// it appears in, and a node id is a value this process passes on rather than
+    /// one it chose.
+    ///
+    /// What comes back on success is `data`, and it is a *claim*: nothing here
+    /// makes the mutation's own answer authoritative, and the executor's step 8
+    /// reads the postcondition exactly as it does for every other operation.
+    ///
+    /// **A 200 this method cannot interpret is `Unknown`, not a success.** A body
+    /// that is not an object — `null`, an empty response, an array, a string, a
+    /// number — did not say what happened, and that is the same situation as an
+    /// `errors` field of the wrong shape, which `refusal` already costs a read
+    /// for. It used to be the one place this classification erred toward
+    /// believing an outcome: `response.body["data"]` is `Null` for every one of
+    /// those bodies, so each returned `Ok(Null)` and read as a mutation that
+    /// succeeded and had nothing to report.
+    ///
+    /// ADR 018's direction-of-error argument decides it. An uninterpretable
+    /// answer is not evidence that the mutation did not happen — it is the lost
+    /// answer §6.5 is about — so the caller is sent to *read the world*: being
+    /// wrong this way costs one postcondition read, and being wrong the other way
+    /// costs a duplicate external effect.
+    pub async fn graphql(
+        &self,
+        query: &str,
+        variables: &[(&str, &str)],
+        cancel: &CancellationToken,
+    ) -> Result<serde_json::Value, GhError> {
+        let mut command = self.command();
+        command
+            .arg("graphql")
+            .arg("-f")
+            .arg(format!("query={query}"));
+        for (name, value) in variables {
+            command.arg("-f").arg(format!("{name}={value}"));
         }
 
+        // A status at or above 400 is still a transport failure and still
+        // `GhError::Http`, decided by the shared parse: nothing about GraphQL
+        // changes what a 502 means. Only the 2xx needs a second look.
+        let response = self.dispatch(&mut command, None, cancel).await?;
+
+        // Read before `refusal`, because a body that is not an object has no
+        // `errors` field to be shaped wrongly and would otherwise fall through as
+        // a success. `GraphQl` with an unreadable kind rather than `Malformed`:
+        // both are `Unknown`, and only this one is worth reading again, which is
+        // the half that matters. `Malformed`'s `false` rests on "a program that is
+        // not `gh` will not become one" — and this `gh` answered, with a readable
+        // status line and a body that parsed, so the next answer to the same
+        // question may well be interpretable.
+        if !response.body.is_object() {
+            return Err(GhError::GraphQl {
+                kind: UNKNOWN_ERROR_TYPE.to_string(),
+                message: self.redact(&format!(
+                    "the response body was {} rather than an object, so it said \
+                     neither data nor errors",
+                    shape(&response.body)
+                )),
+            });
+        }
+
+        match refusal(&response.body) {
+            Some((kind, message)) => Err(GhError::GraphQl {
+                kind,
+                message: self.redact(&message),
+            }),
+            None => Ok(response.body["data"].clone()),
+        }
+    }
+
+    /// The one `gh` this module builds: an empty environment, the five names it
+    /// is allowed, the operator's own arguments, and `api -i`.
+    ///
+    /// Written once and called by both call shapes, so "what does the child
+    /// see?" has one answer whatever was asked. `-i` is here rather than at each
+    /// caller because it is what makes the status line readable at all, and a
+    /// call that omitted it would be a call whose failures could only be guessed
+    /// at from an exit code that reports 404, 422 and 500 alike.
+    fn command(&self) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&self.program);
         command.env_clear();
         // A locator may be inherited, an authority may not — M1's rule, applied
@@ -518,20 +709,36 @@ impl GhCli {
         // before it can land.
 
         command.args(&self.args);
+        command.arg("api").arg("-i");
         command
-            .arg("api")
-            .arg("-i")
-            .arg("--method")
-            .arg(method)
-            .arg(path);
-        let stdin = body.map(|body| {
-            command.arg("--input").arg("-");
-            body.to_string().into_bytes()
-        });
+    }
+
+    /// Run a built `gh` under the runtime's bound and read what it answered.
+    ///
+    /// The other half of the single spawn site. Every call shape reaches GitHub
+    /// through this function, so the cancellation check, the deadline, the
+    /// process group and the status-line parse are one implementation rather
+    /// than one per URL.
+    async fn dispatch(
+        &self,
+        command: &mut tokio::process::Command,
+        stdin: Option<Vec<u8>>,
+        cancel: &CancellationToken,
+    ) -> Result<GhResponse, GhError> {
+        // Checked before spawning, not only raced against: cancellation has to
+        // prevent the effect, and this is the one moment where refusing is free.
+        //
+        // It is also the one moment where a cancellation is *knowledge* — no child
+        // exists, so no request left this process — which is why this returns a
+        // different variant from the `select!` arm below. The two used to share
+        // one, and the sharing is the defect M2's holistic review found.
+        if cancel.is_cancelled() {
+            return Err(GhError::CancelledBeforeSpawn);
+        }
 
         // The deadline is the runtime's because `gh` has no flag for one. Own
         // process group and cancellation come with it — see [`crate::process`].
-        let bounded = run_bounded(&mut command, stdin, self.timeout, cancel)
+        let bounded = run_bounded(command, stdin, self.timeout, cancel)
             .await
             .map_err(|source| {
                 GhError::Malformed(self.redact(&format!(
@@ -621,6 +828,7 @@ impl GhCli {
 
         let mut retry_after = None;
         let mut rate_limit_remaining = None;
+        let mut link = None;
         for line in lines {
             let Some((name, value)) = line.split_once(':') else {
                 continue;
@@ -632,6 +840,7 @@ impl GhCli {
             match name.trim().to_ascii_lowercase().as_str() {
                 "retry-after" => retry_after = value.parse().ok().map(Duration::from_secs),
                 "x-ratelimit-remaining" => rate_limit_remaining = value.parse().ok(),
+                "link" => link = Some(value.to_string()),
                 _ => {}
             }
         }
@@ -649,6 +858,7 @@ impl GhCli {
             body,
             retry_after,
             rate_limit_remaining,
+            link,
         };
 
         if response.status >= 400 {
@@ -685,6 +895,77 @@ impl GhCli {
             true => text.to_string(),
             false => text.replace(&self.token, "[redacted]"),
         }
+    }
+}
+
+/// The type this client uses when a GraphQL error carried none it could read.
+///
+/// Not a spelling GitHub sends. It exists so that the classification has
+/// something to match on and lands in the `Unknown` arm, which is where every
+/// unrecognised refusal belongs.
+const UNKNOWN_ERROR_TYPE: &str = "UNKNOWN";
+
+/// Whether a 200 was actually a refusal, and what it said if so.
+///
+/// The whole of the verdict rule that separates [`GhCli::graphql`] from
+/// [`GhCli::api`]. Two shapes are not a refusal, and everything else is:
+///
+/// - no `errors` at all — the ordinary success;
+/// - an `errors` that is an empty array — GitHub does not send one, and a
+///   classifier that read it as a refusal would fail every success from a server
+///   that did.
+///
+/// An `errors` that is present and not an array is therefore a refusal typed
+/// `UNKNOWN`, not a success. It is a body this client cannot read, and reading
+/// it as a success would be believing an outcome on no evidence; typed unknown
+/// it costs a second read instead, which is the direction every mistake in this
+/// classification is meant to fall.
+///
+/// Only `errors[0]` is consulted. GitHub may send several, and taking the first
+/// is what the classification is defined against; carrying all of them would
+/// mean deciding which one the outcome comes from, which is the same choice made
+/// less legibly.
+fn refusal(body: &serde_json::Value) -> Option<(String, String)> {
+    let errors = match &body["errors"] {
+        serde_json::Value::Null => return None,
+        serde_json::Value::Array(errors) if errors.is_empty() => return None,
+        serde_json::Value::Array(errors) => errors,
+        _ => {
+            return Some((
+                UNKNOWN_ERROR_TYPE.to_string(),
+                "the response carried an errors field that is not an array".to_string(),
+            ))
+        }
+    };
+
+    let first = &errors[0];
+    Some((
+        first["type"]
+            .as_str()
+            .unwrap_or(UNKNOWN_ERROR_TYPE)
+            .to_string(),
+        first["message"]
+            .as_str()
+            .unwrap_or("no message in the error")
+            .to_string(),
+    ))
+}
+
+/// What a body was, for a diagnostic that must not quote it.
+///
+/// The shape and never the content: an operator needs to know *how* the answer
+/// was unreadable, and the answer itself is the one thing that has been known to
+/// carry a credential back — see [`GhCli::redact`]. `Null` covers the empty
+/// response as well as a literal `null`, because [`parse_body`] reads a body that
+/// is not there as `Null` and by this point the two are one case.
+fn shape(body: &serde_json::Value) -> &'static str {
+    match body {
+        serde_json::Value::Null => "empty or null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
     }
 }
 

@@ -49,7 +49,7 @@
 //! the verdict, not the delivery.
 
 use super::{Capability, CapabilityError, ExecutionGrant};
-use crate::agent::{attempt, AgentBudget, ToolHost, ToolReceipts};
+use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts};
 use crate::workspace::{Workspace, WorkspaceCommand};
 use fiddle_core::{correlation_key, CapabilityId, ChangeSetState, EvidenceRef};
 use std::path::PathBuf;
@@ -279,7 +279,15 @@ where
 
         // One attempt, bounded. An attempt that failed produced no repair, so
         // there is nothing below for the check to be a check *of*.
-        let report = attempt(self.model.clone(), host, config.budget.clone()).await?;
+        let report = attempt(
+            self.model.clone(),
+            host,
+            config.budget.clone(),
+            // A repair is never redirected: nothing asks anybody anything on this
+            // capability, so there is no instruction there could be one of.
+            Direction::Fresh,
+        )
+        .await?;
 
         // Verified by the shell, independently, whatever the report said. The
         // model may have run the same check itself through `run_check`; that

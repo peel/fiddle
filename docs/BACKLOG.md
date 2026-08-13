@@ -587,3 +587,1099 @@ Worth pricing against the measured cost of an implementer turn: the perf investi
 
 Origin: operator feedback during M2 implementation (epic fiddle-srrw) — "beans are not updated with any progress reports and run for an hour"
 Tags: #debt #orchestrate #ux
+
+### 2026-08-10 — M3's plan assigned its most load-bearing unproven assumption to its last bean
+The M3 design left one thing deliberately unproven: whether the effects credential may **write** a conversation comment. Three read probes had answered 200 and proved nothing, because `peel/fiddle-effects-acceptance` is public — the same trap that let a two-repository token selection survive all of M2. So far so good; the design named it, priced it, and refused to assume it.
+
+What it then did with it is the finding. The proof was assigned to **Task 16b, the last of 24 beans**, while Tasks 5, 11a, 13, 14 and 15 are all built on that surface being writable. Had it 403'd, the answer would have arrived after roughly twenty beans of work resting on it, and the fix is not a code change — it is `Issues: read and write` added to a credential the operator had narrowed that same day, or a different gated effect, which is §5.1 re-opened.
+
+This is precisely the ordering §5.7 of the same document argues *for*, applied to the GraphQL contract (Task 1, first) and not applied to this. The plan's own self-review and a full codex critique pass both missed it; it was caught by the operator asking "should we check the comments part?" while Task 1 was still running.
+
+**Settled the moment it was asked, at a cost that makes the omission worse rather than better.** A closed pull request accepts comments, so no branch and no new pull request were needed: `POST /repos/peel/fiddle-effects-acceptance/issues/19/comments` → **201 Created**, `GET /issues/comments/{id}` → the full payload, `DELETE` → **204**, residue zero. Two calls. That is the entire cost of the thing that was scheduled twenty beans late.
+
+The rule worth carrying, since M4 through M8 all add external surfaces: **order the external-contract proofs by what a refutation would cost, not by where the work naturally falls in the plan.** A proof whose failure re-opens a design decision belongs in the first bean; a proof whose failure is a bug in one adapter can wait for the lane that owns it. Task 1 was correctly first because ADR 018 depended on it. This one was more load-bearing and went last, because it happened to belong to the live lane, and "which bean does this naturally live in" won over "what does being wrong cost".
+
+A second, smaller finding from the same probe, which belongs to whoever writes bash against a comment payload. `user.id` appears **before** `.id` in a comment object, so scraping the first id-shaped field yields the *author's* user id rather than the comment's. The probe's own cleanup did exactly that, issued a DELETE against `505401`, got a 404, and left the comment behind until it was read properly. A typed adapter naming the two fields separately is immune; `scripts/live-github.sh` and Task 16b's phase are bash and are not. The rule: select by name, and make a cleanup that deleted nothing fail loudly, because a cleanup that cannot fail is how residue survives a passing run.
+Origin: planning (epic fiddle-eoqx, seed fiddle-a9y5) — caught by operator question during Task 1's implementation
+Tags: #process #debt
+
+### 2026-08-10 — M3's plan misdescribed the identity framing it told an implementer to copy
+`fiddle-7j2p`'s Step 7 instructed the implementer to frame `decision_request_id`'s inputs "the way `effect_id` frames its four — each field preceded by its byte length as a `u64` in little-endian". That is not what `effect_id` does. Following the plan's letter would have produced a second, incompatible framing inside the one crate whose whole job is that a fresh process recomputes an identity the same way every other process does.
+
+The implementer did not follow the letter. It read `effect_id` first, extracted the real framing into a shared `pub(crate)` helper so the two functions cannot drift, and argued for it: "a second copy could acquire a different separator or a character count under a later edit, and nothing would fail until an identity stopped matching across builds." Evaluation then confirmed the extraction left `effect_id`'s bytes untouched, against the existing `b3sum` pin `39b2e77d1d17cb20`.
+
+So the defect cost nothing, and the reason it cost nothing is worth more than the defect. **A plan that describes existing code is a secondary source, and an implementer that reads the primary one beats it.** This is the fourth plan defect M3's implementers have caught — after the second wildcard-free `EffectKind` match that made Task 2's declared scope non-compiling, the Task 12 criterion contradicting a documented decision in `config.rs`, and the load-bearing credential assumption scheduled twenty beans late. None was caught by the plan's own self-review or by a full codex critique pass; all four were caught by someone reading the code the plan claimed to describe.
+
+The practice that follows, for M4 onward: where a plan step describes existing behaviour, it should **cite the file and let the implementer read it** rather than restating it. A restatement is a copy that can be wrong, and a plan is exactly the kind of document nobody re-checks against the code once it has been reviewed once.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-7j2p, Step 7) — found by the implementer, confirmed by evaluation
+Tags: #process #debt
+
+### 2026-08-10 — A fifth plan defect, and this one was a method that does not exist
+`fiddle-hmho`'s test sketch called `err.worth_another_read()`. The method is `is_worth_reading_again()`, at `crates/fiddle-runtime/src/github/cli.rs:407`. The wrong name was in the bean **and** in the lead's dispatch prompt, so a bean written later against either would have inherited it.
+
+It cost nothing: the implementer read `cli.rs`, used the real name, and reported the discrepancy. Same as the four before it.
+
+The pattern is now firm enough to state as a measurement rather than an impression. Five plan defects on this milestone, none caught by the plan's own self-review, none caught by a full codex critique pass, all five caught by an implementer reading the code the plan claimed to describe:
+
+- the comment-write assumption five beans depend on, scheduled to be proven by the last of twenty-four;
+- a second wildcard-free `EffectKind` match, which made a bean's declared scope non-compiling;
+- a Task 12 criterion requiring policy rows to be mandatory, contradicting a documented decision in the same file;
+- an identity framing described as `u64` little-endian where the code writes `<byte-len>:<field>`, which would have forked the encoding;
+- and now a method name that was never real.
+
+Four of the five are the same species: **the plan restating existing code and getting it wrong.** The fifth (ordering by cost) is different in kind. So the practice recorded against the fourth stands and is worth repeating here because this entry is the evidence for it: where a plan step describes existing behaviour, cite the file and let the implementer read it. A restatement is a copy that can be wrong, in a document nobody re-checks against the source after its single review.
+
+Worth noting what did *not* catch these, since both were paid for: a self-review pass by the plan's own author, and an external critique that returned ten findings and produced eight real fixes. The critique was worth its cost — it caught two leaking cleanups, an impossible follow-up comment, a missing exit row and a contradicting pagination test. It simply does not catch this species, because it reads the plan against the design rather than against the code.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-hmho) — found by the implementer
+Tags: #process #debt
+
+### 2026-08-10 — The epic's Contracts block named a type no bean was told to build
+`ActorRef` appears in `fiddle-eoqx`'s `## Contracts` section, placed in `crates/fiddle-core/src/decision.rs`. Task 2 created that file and did not create the type, because Task 2's steps never mentioned it — they covered the two `EffectKind` variants, the marker's render and parse, and `decision_request_id`. So the contract described a type with no owner, and the first bean that needed it (Task 4, the conversation adapter) found it missing and asked where it should go.
+
+Sixth plan defect on this milestone, and the first of a new species: not a restatement that got the code wrong, but a **contract entry with no corresponding step**. The Contracts block is copied into every bean body so parallel implementers cannot make incompatible choices — which works only for types some bean is actually instructed to define. Nothing checked that every entry in it had a home.
+
+Cost: one question, answered in one message, because the implementer asked instead of guessing. Had it guessed, `ActorRef` would have landed in `github/comments.rs`, and then both `human/` and the pure decision logic would depend on the GitHub adapter for a domain identity — inverting the crate boundary `crate_boundary.rs` exists to hold, and not failing any test, because nothing forbids a runtime module owning a domain type.
+
+The check worth adding for M4 onward, and it is mechanical: **every type named in a Contracts block must be greppable to a step that creates it.** A contract entry no step owns is either a type that will be defined twice by whoever needs it first, or defined in the wrong crate by whoever needs it soonest. Both are silent.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-127g) — found by the implementer asking rather than guessing
+Tags: #process #debt
+
+### 2026-08-10 — A drafting run accepts an already-readied pull request, and that is a decision rather than an accident
+`EnsurePullRequest::inspect` matches on head, base and `state=open`. With M3's `draft: bool` added, a drafting run that finds an existing pull request therefore treats its postcondition as satisfied **even when that pull request has already been marked ready for review** — and it performs no mutation.
+
+Task 6's implementer noticed this while writing the tests and flagged that it is currently "an accident of the type rather than a decision", because `gh_stub` models a pull request as `{head, base, title}` with no `draft` field at all, so the case cannot even be expressed in the fixture.
+
+The behaviour is right, and the reasons are worth having on record before somebody "fixes" it:
+
+- The effect is *a pull request exists for this head and base*. `draft` is a property of **creation**, not of the postcondition — the same reasoning that makes `inspect` match on head and base and deliberately not on title or body, since matching on those is what opens a second pull request.
+- Re-drafting a pull request a person had readied would **undo human progress**. A run whose local record was lost must never walk back a human's action; that is the failure mode this whole milestone is built against.
+- It composes: if the pull request is already ready, `EnsurePullRequestReady::inspect` returns the postcondition and nothing mutates. The two operations agree rather than fighting.
+
+Assigned to `fiddle-pwyi` (Task 13a), which builds the scripted world the acceptance walk needs and must model `draft` for the walk to be expressible at all. It should assert the case directly: a readied pull request is not re-drafted.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-yg9c) — found while writing a test the fixture could not support
+Tags: #debt #decision
+
+### 2026-08-10 — The lead ruled three times on one type, and the churn was the lead's alone
+`ActorRef` was placed by three successive rulings in one hour: into `fiddle-core` (asked for by Task 4's implementer, answered by the lead), then into `fiddle-runtime` (the lead retracting after seeing the implementer had already put it there), then back into `fiddle-core` (an agent acting on the first ruling before the retraction reached it, which the lead then accepted as final). It compiles and its tests pass in the final position, and no work was lost — but two agents were told opposite things about one type inside the same round.
+
+The failure is not the placement, it is the lead answering an architectural question at message speed. Each ruling was reasoned; none was reasoned *enough*, and the second was the worst because it retracted a correct answer using the wrong test: "nothing in `fiddle-core` names it" is true and irrelevant. The right test is whether the type is domain vocabulary, and it plainly is — `EffectId`, `CapabilityId`, `WorkRef` and `InvocationRef` all live there, and M6's attended mode will have actors who are not GitHub comment authors.
+
+What this costs and what to do about it. Two agents received contradictory instructions, a type moved crates twice, and the bean that consumes it (`fiddle-v5bm`) accumulated three notes of which two are wrong — which is worse than no note, because a reader cannot tell which is current without the git history of a bean body. The rule worth adopting: **a question about where a type lives is answered once, in writing, against the vocabulary already in the tree — and if the answer changes, the superseded note is marked superseded rather than followed by a contradicting one.** The final note on `fiddle-v5bm` does that; the two above it should have been amended rather than left standing.
+
+Recorded here rather than only on the bean because the pattern is about lead behaviour under concurrency, and it will recur every round that has four agents asking questions at once.
+Origin: lead (epic fiddle-eoqx) — three rulings on one type during the parallel round
+Tags: #process #orchestrate
+
+### 2026-08-10 — Three lead errors in one round, each corrected by the agent it was about
+Recorded together because they share a cause: the lead answering fast, from a stale read of a tree four agents were changing.
+
+**1. `ActorRef`'s placement, and who moved it.** The lead ruled it into `fiddle-core`, retracted on seeing it in `github/comments.rs`, then accepted `fiddle-core` again — and told Task 4's implementer, in its shutdown note, that it had *left* the type in the adapter and had been right to. It had not: it followed the first ruling and moved the type in `d11a47e`, also removing the `github/mod.rs` re-export with a comment on why a second path to it would invite a dependency on the wrong crate. The implementer corrected the record before shutting down, specifically so the consuming bean would not be pointed at a type that is not there. Ground truth: one definition, `crates/fiddle-core/src/decision.rs:78`, not re-exported through the adapter.
+
+**2. "The build break was unfounded" was itself unfounded.** Task 8 reported that `HEAD` did not build because its commit declared `pub mod interpret;` while `human/interpret.rs` was untracked. By the time the lead checked, Task 9's `f02cffa` had healed it, and the lead called the alarm unfounded. It was accurate when raised. The implementer's own point is the one worth keeping: an implementer who finds a half-landed cross-lane dependency should report it and leave the other agent's file alone, and that will sometimes mean the branch tip is briefly broken through nobody's fault — **treating that report as a false alarm afterwards discourages the next one.**
+
+**3. `crate_boundary` passing was cited as evidence about placement, and is not.** Its two `fiddle-core` tests are a resolved-closure denylist and a source grep for impure names. A pure struct of a `u64` and a `String` trips neither, wherever it lives. So the gate was green before and after the move and says nothing about which crate should own the type. Noticed by the implementer, which had checked the grep's banned list before writing its doc comment for exactly that reason.
+
+**And one structural observation about the round rather than about the lead.** Three agents wrote to `crates/fiddle-core/src/decision.rs` in one round — `f02cffa` (`InterpretedHumanDecision`), `d11a47e` (`ActorRef`), and the lead's rulings that sent them there — none of it in any bean's declared `## Files`. The parallel round was planned by checking that the four beans' declared files were disjoint, and they were. What made a pure-core file a shared surface was the lead's own mid-round rulings, issued per-agent, each locally reasonable. **A concurrency plan that only checks declared scope does not survive a lead that widens scope by message.**
+Origin: lead (epic fiddle-eoqx), corrected by fiddle-127g's and fiddle-kgr7's implementers
+Tags: #process #orchestrate
+
+### 2026-08-10 — An implementer marked its own bean completed, and the loop would have accepted it
+`fiddle-dvsl` was found at status `completed` with an evaluation log reading `iterations=0, dispatches=0, verdict=UNKNOWN`. Its implementer had transitioned it, in good faith, having finished the work and written its summary. Nothing objected: no script checks that a completed bean carries a terminal verdict, and the lead only noticed while reconciling a separate message.
+
+`docs/technical/SYSTEM.md` already carries the invariant — *"Only the lead manages bean status transitions"* — and `skills/develop/implementer-prompt.md` does not state it. Nor did the lead's dispatch prompts, which told implementers to tick their `## Steps` and append a `## Summary of Changes` using `beans update`, i.e. handed them the exact tool and said nothing about the one transition they must not make. Five implementers were dispatched with that prompt this milestone; one of them drew the obvious conclusion.
+
+**What it would have cost if unnoticed.** The bean reads as converged with no scorecard, no dimension data, and no second pass. Its two genuinely unassertable criteria were correctly named as owed rather than approximated — the honest outcome — but nothing would have recorded that a human had ever agreed, and `trend-eval-history.sh` would show a completed bean contributing nothing, indistinguishable from an evidence-only convergence. The milestone's own calibration was changed this round specifically to stop that happening.
+
+Two fixes, and the second is the one that survives a forgetful lead:
+
+- **State it in `skills/develop/implementer-prompt.md`**: tick your steps, append your summary, never change `status`. The prompt already hands over `beans update`; it should fence the one use that is not the implementer's.
+- **Make it mechanical.** `scripts/check-convergence.sh` and the eval-log scripts already exist; a bean at `completed` whose parsed log has no terminal verdict is a detectable state, and the natural home is the same Stop-hook family as `develop-verdict-gate.sh`. A prose rule in SYSTEM.md that neither the prompt nor any script enforces is a rule that holds until an agent is helpful.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-dvsl) — found by the lead while reconciling a shutdown message
+Tags: #process #orchestrate #debt
+
+### 2026-08-10 — Concurrent lanes sharing one `target/` produce false test failures, which is an evidence-integrity problem
+`fiddle-9krm`'s implementer reported four `config_check` failures during a workspace run, caused by `target/debug/fiddle` being **relinked by a concurrent lane mid-run**. Re-run in isolation, that binary passed 20/0. Confirmed: all agents in this round share `/Users/peel/wrk/fiddle/.worktrees/agentic-factory-m3/target`, and the acceptance lanes resolve the binary under test through that path.
+
+The obvious cost of a shared `target/` is slowness — cargo's build lock serialises compilation, which is why the parallel round's speedup was smaller than projected. **The cost that matters more is that a suite can report failures that are not real.**
+
+Acceptance lanes here launch the compiled binary as a subprocess. If another agent relinks it between the launch and the assertion, the lane fails for a reason that has nothing to do with the code under review. And the evidence pack an evaluator scores is a *captured* suite run: a false failure inside it is indistinguishable, to the evaluator, from a real one. So the failure mode is not "a lane flakes and somebody re-runs it" — it is **a bean scored down for another bean's link step**, with the evaluator reasoning carefully about evidence that was never true.
+
+Nothing was mis-scored this round: the implementer noticed the pattern, re-ran the affected binary in isolation, and reported both results. That depended on an implementer being careful enough to distrust its own red suite.
+
+Two mitigations, and the second is the one worth adopting:
+
+- **Re-run a failing binary in isolation before believing it**, and say so in the report. Cheap, and it is what happened here — but it relies on judgment every time.
+- **Give each concurrent agent its own `CARGO_TARGET_DIR`.** Costs a cold build per agent, genuinely parallel rather than serialised on the build lock, and removes the interference entirely. It also recovers the parallel speedup the shared lock was eating. The lead should set it in the dispatch prompt for any round with more than one implementer.
+
+Worth stating the general shape, because it will recur wherever this project parallelises: **a shared mutable artifact between concurrent lanes turns a verification result into a race.** The evidence pack is only as trustworthy as the isolation of the run that produced it.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-9krm) — observed by an implementer that distrusted its own failing suite
+Tags: #process #infrastructure #debt
+
+### 2026-08-10 — A plan's test snippet would have compiled, passed, and proven nothing
+The ninth plan defect of this milestone and the subtlest. The others were wrong names, absent types, or harnesses that never existed — all of which fail loudly the moment an implementer tries them. This one would have shipped green.
+
+`fiddle-rvcu`'s bean asked for a test proving that a resolved decision does not license a widened payload. Its snippet built the case by widening the **operation's** payload:
+
+```rust
+let widened = op.with_payload("something else");
+let err = world.execute_decided(widened, &decision).await.unwrap_err();
+assert!(matches!(err, EffectError::PayloadDiverged { .. }));
+```
+
+`Executor::execute`'s **step 6** already refuses exactly that — it compares the envelope's digest against `IntegrationOperation::payload()` and has done since M2. So the assertion would have passed with step 4's new decision-payload comparison **deleted**: a test about a check that was not running, guarding a property nobody was checking.
+
+The implementer caught it while running the bean's own required inversion and rewrote the case to move the **decision's** payload, leaving proposal and operation agreeing so that only step 4 can refuse. Same property, correct isolation, and the doc comment now records why so nobody simplifies it back. It is also the realistic case: the person approved request A, the continuation built request B, and the identity is unchanged because identity derives from the target rather than the payload.
+
+**What made this one detectable was the inversion, not review.** The bean required three inversions and named what each must break; running them is what exposed that one broke nothing. A reviewer reading the snippet against the design would have seen a correct-looking assertion of a real property — which is precisely what a full external critique pass did see, having read this plan without noticing it.
+
+The rule this sharpens, beyond the standing inversion requirement: **a test written against a property that a neighbouring check already enforces cannot distinguish the two.** When a plan asserts a new guard, the snippet has to arrange a state that *only* the new guard can refuse — and the way to find out whether it does is to delete the new guard and watch. That is cheap, mechanical, and it caught something six other kinds of review did not.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-rvcu) — found by running the bean's own required inversion
+Tags: #process #debt
+
+### 2026-08-10 — The lead's verification shell has no toolchain, and the nearest one compiles a different language
+A sibling of the shared-`target/` finding above, and it bit the lead rather than an implementer. Building `fiddle-rvcu`'s evidence pack, `cargo` was **not on the verification shell's `PATH` at all** — the toolchain arrives through the worktree's devenv/direnv environment, which implementer agents load per-cwd and the lead's shell does not.
+
+Two things then went wrong in sequence, and the second is the dangerous one.
+
+**The captured exit code was the wrong process's.** The verification script read `cargo fmt --all --check 2>&1 | tail -5; echo "exit: $?"` — so `$?` was `tail`'s status. `cargo` was missing, every command printed `command not found`, and the log recorded `fmt exit: 0`. A clean bill of health for three checks that never ran. This is the same defect an evaluator had just found in the previous pack, where a `&&` chain silently swallowed the clippy line; a pipeline swallows it just as quietly, so fixing the `&&` did not fix the class.
+
+**The obvious repair would have measured the wrong compiler.** A `cargo` *does* exist in the sibling `m0` worktree's devenv profile, and reaching for it looks harmless. But `flake.nix` differs between the two worktrees at exactly one line — the Fenix hash of `rust-toolchain.toml` — because **m3 pins 1.97.1 where m0 pins 1.85.0**. Verifying m3's tree with m0's `cargo` would have run `clippy -D warnings` under a compiler twelve minor versions old, on a lane whose entire evidentiary value is that clippy is clean. A pass would have meant nothing and nothing in the log would have said so.
+
+Both mitigations are mechanical:
+
+- **Never infer an exit code through a pipe.** Redirect to a file, capture `$?` from the command itself, then summarise the file. Applies to `&&`, `|`, and `tee` equally.
+- **Resolve the toolchain from the worktree under test**, via `rust-toolchain.toml` rather than from whatever `cargo` is reachable. A stacked-branch project will have worktrees on different pins, and the neighbouring one is always the closest wrong answer.
+
+The general shape, stated to sit beside the `target/` finding: **an evidence pack is only as trustworthy as the provenance of the tools that produced it.** Isolation covers *where* the build wrote; provenance covers *what* did the building. A verification run has to pin both, and the lead's own pack is not exempt from the standard the lead asks evaluators to enforce.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-rvcu) — found by the lead while building an evidence pack, after an evaluator had flagged the same exit-code class in the previous one
+Tags: #process #infrastructure #debt
+
+**Addendum, same day — there is a third axis, and it invalidated the corrected run too.** With the toolchain pinned and `CARGO_TARGET_DIR` isolated, the verification still came back **525 passed / 2 failed**, and both failures were in `github::comments` and `human_comments` — a *different* bean's files, being edited by a live agent at that moment. `effect_protocol` read 50 where the bean under evaluation had measured 48.
+
+**Correction, entered after that bean's evaluator refuted the attribution.** The two extra tests were *not* a third agent's contamination. `git log 4622f05..400e4d0 -- crates/fiddle-runtime/tests/effect_protocol.rs` returns exactly one commit, `400e4d0`, which is **the evaluated bean's own work** — two tests and a fourth inversion its implementer landed 33 seconds before this entry was written. They were uncommitted at the moment of measurement, so the isolation lesson stands unchanged; what was wrong was the story told about them. The count 50 was not noise, it was the bean's own next state — and treating it as contamination is precisely how the evidence pack came to be pinned a commit behind the bean it was evaluating, which the same evaluator also caught. The two *failures* in that run were genuinely another lane's inversion, and that half of the entry holds.
+
+The lesson underneath the lesson: **an unexpected number is a question, not a defect.** Attributing it to a known failure mode without running `git log` on the file is the same move as accepting a claim without evidence — and here it went into a permanent record 33 seconds after the commit that would have explained it.
+
+So the isolation has three axes, not two:
+
+| axis | what it pins | how it fails silently |
+|---|---|---|
+| `CARGO_TARGET_DIR` | where the build wrote | a concurrent lane relinks the binary under test mid-run |
+| `rust-toolchain.toml` | what did the building | a sibling worktree's cargo is a different compiler |
+| **a detached worktree at the commit under evaluation** | **what was built** | **uncommitted work from other agents is measured as the bean's** |
+
+Only the third one produces numbers that are *attributable*. `git worktree add --detach <scratch> <sha>` gives a checkout with zero dirty files, and every count taken there belongs to the commits under evaluation and nothing else. Re-run that way, the same tree verified clean.
+
+This is the method `fiddle-rvcu`'s implementer used unprompted — it measured its delta in a scratch worktree at BASE_SHA with only its two files applied, *because* two other implementers were editing the shared tree — and the lead praised it without adopting it. Adopting it: **an evidence pack for a bean is built from a detached worktree pinned at that bean's last commit**, never from the shared branch checkout, whenever any other agent is live. The shared checkout is only safe when nothing else is running, which in this milestone has been almost never.
+
+**Second addendum — an inversion run is a uniquely bad neighbour, and the three axes are not interchangeable.** The lane that caused the phantom red made the distinction precisely, and it is worth keeping: a private `CARGO_TARGET_DIR` isolated its *artifacts* from concurrent relinks, but did nothing to isolate the *source tree it was mutating* — which is the failure two other agents and the lead then hit. Only the third axis prevents that.
+
+What makes inversions special is that **they deliberately break the tree, and unlike an ordinary edit there is no window in which the intermediate state is meant to be green.** A normal in-progress edit is transiently red by accident and its author is trying to get back to green; an inversion is red *on purpose*, for as long as the measurement takes, and its author will revert rather than repair. Any other agent reading the workspace during that window gets a true-but-expired failure with no signal that it is expired — and, worse, one that looks exactly like a real regression in a file they do not own.
+
+So the rule is not "isolate your build directory", it is: **run inversions in a detached worktree pinned at the commit under evaluation, never in the shared checkout.** The lead's implementer dispatch prompt currently mandates the private target directory and should mandate this too. Cost is a cold build per inversion round; the alternative is that every concurrent lane's test run becomes unreliable for the duration, which has now happened three times in one afternoon and consumed more time than the builds would have.
+
+### 2026-08-10 — `comments.rs:262` claims more relation recognition than one character buys
+Recorded here because it is owed by a bean that is about to converge, and an owed item on a closed bean is a lost item.
+
+`read_a_link_value`'s notion of "readable" is the **presence of a `>`**. That is enough to keep an unparseable header from being read as an end of pages, which is the property `fiddle-9krm` exists to establish, but the doc comment at `crates/fiddle-runtime/src/github/comments.rs:262` describes a stronger recognition than one character delivers. Two residuals follow from it: `<url>; rel="ne` still reads as an end, and a single valid link-value marks a mixed header readable.
+
+Neither is fixable by widening the doubt direction — doing so sends every legitimate last page to its bound, which is a worse failure than the one being prevented. So the code is right and the comment overclaims. **Soften the comment whenever that file is next touched**; do not change the behaviour to match the comment.
+
+The bean's implementer flagged this against its own work, unprompted, having been scoped to correct a record rather than to touch the file — and declined to touch it. That is the correct boundary and the reason this note exists rather than an unrequested edit.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-9krm) — volunteered by the implementer against its own lane
+Tags: #debt #docs
+
+### 2026-08-10 — A bean marked in-progress with zero dispatches is indistinguishable from work in flight
+`fiddle-v5bm` (Task 5) sat in the lead's status table as a live lane for most of a milestone session. It was not. Its `## Evaluation Log` read **`total_dispatches: 0`**, zero of five steps were ticked, none of its three declared files had a commit, and no implementer report was ever received.
+
+The mechanism is a gap in the loop, not merely an oversight. **The lead sets a bean to `in-progress` when it intends to dispatch**, and the status field is the same afterwards whether the dispatch happened, died at birth, or was never sent. So `in-progress` means "the lead once intended this" rather than "an implementer is working on this", and nothing in the loop notices the difference. The lead then reports the bean as in flight, sequences other work behind it, and — in this case — routes two handoffs from another bean to an implementer that does not exist.
+
+The tell was present the entire time and free to read: `total_dispatches: 0` on a bean claimed to be in progress is a contradiction. So is zero ticked steps on a bean that has been live for hours, which is why the earlier finding about implementers never updating their bean while working matters more than it looked — **it removed the only other signal that would have caught this.**
+
+Two mitigations, and the second is the real one:
+
+- **Cross-check `in-progress` against `total_dispatches` and against `git log` on the bean's declared files** before reporting a lane as live. Cheap, and it is what finally found this.
+- **Derive lane liveness from artifacts rather than from status.** A bean is being worked on if and only if there are commits on its declared files, or dirty state in them, or a dispatch recorded in its log. The status field is the lead's intent and should never be read as evidence of an agent. This is the same rule the milestone already applies to implementer claims — a claim is not evidence — applied to the lead's own bookkeeping, which had been exempt.
+
+Worth stating the shape, because it is the third time this milestone: **the lead's own records were held to a weaker standard than the agents' were.** An implementer that reported "in progress" with no commits would have been challenged immediately.
+Origin: process (epic fiddle-eoqx, bean fiddle-v5bm) — found by checking a bean's eval log after noticing it had no commits
+Tags: #process #debt
+
+### 2026-08-10 — The isolation policy that fixed evidence integrity filled the disk to 100%
+The three-axis isolation rule recorded above — a private `CARGO_TARGET_DIR` per agent, plus a detached worktree per inversion — works, and it has a cost nobody priced. Each cold build directory is **1.5–3.6 GB**. With four implementer lanes, two evaluators taking independent measurements, and the lead building evidence packs, the root filesystem reached **100% (3.6 GB free of 461 GB)**. Reclaiming four directories belonging to converged beans freed **9.2 GB** immediately.
+
+Why this is an evidence-integrity problem rather than mere housekeeping: **a build that fails for want of disk does not announce itself as a disk problem.** It surfaces as a link error, a truncated artifact, or a test binary that will not run — indistinguishable at a glance from the failures the isolation was introduced to eliminate, and arriving in exactly the same reports. The fix for false failures is capable of manufacturing false failures.
+
+An evaluator flagged it unprompted while shutting down, having noticed `/private/tmp` at 99% and correctly identified the sibling target directories as the bulk.
+
+The missing half of the policy is a disposal rule, so state it with the policy:
+
+- **A per-inversion worktree is removed as soon as its measurement is recorded** — `git worktree remove --force` in the same step that writes the counts, not at the end of the lane.
+- **A lane's `CARGO_TARGET_DIR` is deleted when its bean converges**, by the lead, in the same action that sets the bean `completed`.
+- **Check free space before dispatching a parallel round.** Six concurrent lanes need roughly 20 GB of build directories, and the round should be sized against what is actually available rather than against the pane ceiling.
+
+Worth pairing with the earlier finding about `git worktree list` accumulating detached checkouts: the same discipline covers both, since a stray worktree and a stray target directory are the same species of leak and only the target directory is large enough to stop the machine.
+Origin: process (epic fiddle-eoqx) — surfaced by an evaluator during shutdown, after the lead mandated the isolation without a disposal rule
+Tags: #process #infrastructure #debt
+
+### 2026-08-10 — A claim about N cases needs N observations, and a fail-fast test can only make one
+A sharpening of the `effect/mod.rs:806-810` finding, generalised to a different shape by the implementer of `fiddle-ayqd` — who applied it to its own already-committed work, unprompted, on the strength of another bean's evaluation.
+
+It had committed a sentence asserting that **three** mangled marker bodies previously refused as `Version`. Its inversion run directly observed **one** of them, because the test fails fast on the first case. The other two follow deterministically from reading a two-line function — which is inference, not observation, and therefore the same species as a doc comment naming a mechanism nobody measured.
+
+The structural point is the part worth keeping. Re-observing the other two by hand corrects the *claim* and leaves the *hole*: a fail-fast test can only ever observe its first case, so the next reflow is free to break cases two and three silently, and the sentence keeps standing on one observation. The durable fix is to make the test unable to pass while any case is unobserved — **collect the outcome for each case and assert on the collection**, so a run reports which case diverged instead of stopping at the earliest one.
+
+Stated as a rule, because it generalises past this file: **a claim quantified over N inputs is evidenced only by N observations.** A test that stops at the first failure evidences exactly one, however many cases its body enumerates. When a comment or a bean says "all three", "every kind", or "each variant", the test behind it must be able to fail on any one of them individually and say which.
+
+This is the third distinct dressing of one underlying error this milestone: a stated mechanism standing in for a measured one. The first was a test whose property a neighbouring check already enforced; the second a comment crediting match-arm order over disjoint variants; this one a quantified claim behind a fail-fast assertion. All three read as correct, and none of the three could notice being wrong.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-ayqd) — self-audit of committed work, prompted by fiddle-rvcu's evaluation
+Tags: #process #testing
+
+**Addendum — the fourth dressing, and it is the one with no local test at all.** Applying the rule above to its own work, `fiddle-ayqd`'s implementer first confirmed the disputed sentence *was* exact: probing each case separately gave `Version("")`, `Version("v1\nrequest=…")` and `Version("request=…")` for the three it claims, with the two that were already `Malformed` being precisely the two the comment does not claim. Five cases, five observations, claim held.
+
+Then it went further unprompted and found a different claim of the same species: a module doc in **`fiddle-core`** asserting that the continuation "recomputes all four fields from canonical inputs and compares them", plus an author check against an allowlist of `ActorRef::id`. That is a claim about **`fiddle-runtime`'s `validate.rs`** — another crate, rewritten by a sibling lane *after* the sentence was written. It verified against the committed tree: `:385` request, `:407` effect, `:472` payload, `:603` head_sha, `:525` the allowlist check. All four plus the actor, so the sentence names work that is actually done.
+
+Its own summary of the near-miss is the finding: *"Had `effect` not been compared there I would have had exactly your `effect/mod.rs:806-810` defect — a true property credited to the wrong mechanism."*
+
+What makes this the worst of the four dressings is that **nothing local can fail.** The other three were at least in reach of a test in the same file: a neighbouring check could be deleted, an arm order swapped, a case enumerated. A comment in crate A describing a mechanism in crate B has no test that binds them — crate B can be rewritten, as it just was, and crate A's sentence goes on asserting the old shape with every suite green.
+
+So: **a cross-crate explanatory claim is unevidenced by construction.** Either put the assertion where the mechanism is, or write it as a reference ("see `validate.rs`, which compares …") rather than as a statement of what happens, so a reader knows to go and check rather than trusting a sentence nothing guards. The four dressings together say the same thing — a stated mechanism standing in for a measured one — and this is the variant where the gap cannot be closed by testing harder in the same file.
+
+**Addendum — the cross-crate hypothesis was confirmed the hard way: the sentence was already false.** The entry above argued that a comment in crate A describing a mechanism in crate B is unevidenced by construction. Within the hour the owning lane (`fiddle-n8fs`, which holds `validate.rs`) read the sentence and found **two of its three claims wrong**, one materially:
+
+- **"recomputes all four fields from canonical inputs" is false for `head_sha`.** Three values are recomputed from canonical inputs — effect id, payload hash, request id. `:603` compares the marker's `head_sha` against the head **observed from the world**, so *neither side of that comparison is a recomputation*. The sentence misdescribes what would fail if GitHub were lying.
+- **`:385` is a sieve, not an authentication.** It compares the request id inside a `filter_map` answering *which comment is our question*, and authenticates nothing, because a request id is copyable off the visible conversation. The authentication is `:407` alone. Listing the two as peer comparisons invites a reader to think step 2 establishes provenance — which is the exact confusion `a_parse_is_not_an_authentication` exists to refute.
+- `:525` confirmed, with a nuance the doc omits: it sits after the `is_bot` arm, so a bot carrying an allowlisted id is refused *before* the allowlist is consulted.
+
+So the prediction did not merely describe a risk; the risk had already materialised, silently, with every suite green. `fiddle-core` cannot depend on `fiddle-runtime`, and the allowlist parameter is a bare `&[u64]` rather than an `ActorRef`-typed value, so a refactor to login comparison would leave the doc false and nothing would fail. **The correction is owed as its own work** — the doc's author has shut down, and the accurate phrasing is recorded on the follow-up bean.
+
+### 2026-08-11 — A test can be insensitive because of its fixture, not its assertion
+The fifth dressing of this milestone's recurring error, and the first where the assertion is correct, the property is real, and the test still cannot fail.
+
+`fiddle-n8fs` set out to invert "the last authorized reply decides" and got a **null result**: `select_candidates` sorted by id, which made `last()` and `max_by_key(id)` agree under *every arrangement a fixture can build*, so the line expressing the property proved nothing. It restructured `resolve` to choose before it orders, and the inversion then landed.
+
+The part worth keeping is what it noticed next. That inversion is **invisible to `the_last_authorized_reply_decides_and_the_earlier_ones_are_evidence`** — the test named for the property — because that test's fixture is *sorted*. The assertion is right, the property is real, and a position-based reading of "last" would pass it forever. What catches the inversion is a different test, `a_scrambled_listing_reaches_the_same_decision_as_a_sorted_one`, whose fixture is deliberately out of order.
+
+The four earlier dressings were all failures of the *assertion* or the *explanation*: a property a neighbouring check already enforced, a comment crediting match-arm order over disjoint variants, a quantified claim behind a fail-fast test, a mechanism described across a crate boundary. This one is a failure of the **input**. Every previous mitigation — assert the message, pin the bytes, observe each case, put the claim where the mechanism is — leaves it untouched, because the test is already asserting the right thing about the wrong world.
+
+The rule: **for any property about order, selection, or identity, at least one test must supply an input where the correct answer and the lazy answer differ.** If every fixture is sorted, "last", "greatest", "first match" and "the one with the largest id" are the same value, and a test cannot distinguish which one the code computed. A passing test whose fixture cannot separate the candidate implementations is a test of nothing, and it will read as the property's guard to everyone who comes after.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-n8fs) — a null inversion result that changed the production code
+Tags: #process #testing
+
+**Amendment — the cheap inversion driver, stated so the wrong half is not what propagates.** A lane that ran 21 inversions found the per-inversion worktree prescribed above is more granularity than the problem needs, and the lead initially wrote that up in a way that invited exactly the wrong reading. Precisely:
+
+- **The saving is one worktree for N inversions. It is not permission to skip isolation.** The run must still happen in a **detached worktree pinned at the commit under inversion**. What is unnecessary is a *fresh* worktree per inversion — a single pinned worktree can host all N rounds, mutating and restoring in place, for one cold build instead of N. Someone who reads "single build, mutate in place" and runs it in the shared checkout has made the original mistake, which is the one this whole entry exists to prevent.
+- **In-place mutate-and-restore is only safe with two guards, and both are required.** Copy the file to a pristine path *before* the first mutation, and *after* the run diff the working file against that copy and assert byte-identity. Run the restore in a `finally`. Without both, an interrupted or crashed round leaves the tree mutated and red — reintroducing the phantom-failure problem *inside* the isolation meant to prevent it, and somewhere far less visible than the shared checkout, where at least other lanes notice.
+
+The lane that supplied this used both guards and verified the restored file byte-identical to the commit before removing the worktree. That is the standard, not the optional extra.
+
+**Amendment to the fixture rule above — the mitigation fails when applied in the obvious place.** The rule as recorded ("at least one fixture must make the correct answer and the lazy answer differ") is right and incomplete. The lane that found it added the part that makes it usable:
+
+> **That discriminating fixture usually has to live in a *different test* from the one named for the property.**
+
+In this case the sorted fixture sat in `the_last_authorized_reply_decides_and_the_earlier_ones_are_evidence` — the test named for the rule — and could never fail under a position-based reading. The discriminating fixture lives in `a_scrambled_listing_reaches_the_same_decision_as_a_sorted_one`. So **someone applying the rule by strengthening the property's own test would not reach it**, because the fixture that test needs is the one it already has for every other assertion it makes. The fifth dressing survives a mitigation applied in the obvious place, which is what makes it the worst of the five.
+
+The corollary, also from that lane, is to resist collapsing the two tests: `considered` order and which reply decides are separate claims, and keeping them as separate assertions is what made two of the inversions individually visible rather than one indistinguishable failure.
+
+**The empirical case, from a lane that both caused and suffered it.** The lane holding Task 7 re-ran its three inversions pinned and corrected two of its own reported figures, having discovered it had run all three in the shared checkout:
+
+- Its baseline was **529 / 0 / 1 / 38** pinned at its own commit, not the **556** it first reported — that figure was the shared tree carrying three other lanes' commits. Both numbers are correct for what they measure; only the pinned one is attributable to the bean.
+- It had reported `a_scrambled_listing_reaches_the_same_decision_as_a_sorted_one` as a third casualty of its `FORBIDDEN` inversion. Pinned, that inversion fails exactly two tests. **The third was another lane's noise, read out of the shared tree — while its own first cut at that same inversion had nine tests red in that tree for three other lanes to trip over.**
+
+That is the whole finding in one lane: **a lane running an inversion in a shared checkout simultaneously generates and consumes unattributable failures, and from inside the two are indistinguishable.** It cannot tell its own noise from anyone else's, and neither can anyone reading its report. Two of the three phantom-failure reports chased earlier in the day are accounted for here.
+
+One correction went the other way and is worth noting for calibration: its `minimum()` → `Automatic` inversion was **526 / 3**, not the 523 / 2 first reported, the extra failure being a test that did not exist at the time of the first run. So the claim that a relaxed minimum "would fail here" is carried by three tests rather than two. **A recorded count that moves upward for a nameable reason is stronger evidence than the original**, and re-measurement is what surfaced it — the same discipline that corrected the two errors also strengthened the third row.
+
+**Correction to the rule above, proved rather than asserted.** The entry says a fail-fast test "can only ever evidence its first case". The lane that supplied the finding then corrected the lead's wording, which had overstated it:
+
+> The fail-fast loop *did* catch any single case that regressed — either form does. What it could not do is **report** a second one.
+
+So the defect is not insensitivity, it is **unreportability**, and it bites exactly when several cases regress together — which is the run that matters for a quantified claim. It demonstrated the distinction instead of arguing it, weakening the guard four ways against the restructured table:
+
+| guard weakened for | passed | failed | cases the one failing run reported |
+|---|---|---|---|
+| the empty token | 555 | 1 | 1 |
+| a token containing a newline | 555 | 1 | 1 |
+| a token starting `request=` | 555 | 1 | 1 |
+| **whole guard removed (all three regress at once)** | 555 | 1 | **3, all named** |
+
+The same production defect reported **one** case under the fail-fast loop and **three** under the collected table. It explicitly declined to claim the first three rows as evidence for the restructure, since they pass under either form. So the corrected rule is: **a claim quantified over N inputs needs a test that can report N failures, not merely detect one.** A loop that stops at the first is sufficient to *notice* a regression and insufficient to *evidence a count*.
+
+### 2026-08-11 — `cargo test` green and `cargo clippy` red on a test-only change
+Small, mechanical, and it would have handed up a red gate. A lane restructuring an assertion table — **tests only, no production code** — had the workspace suite pass at 556 while `cargo clippy --workspace --all-targets --all-features -- -D warnings` exited **101** on `clippy::type_complexity` in the new helper's return type. Fixed with two type aliases, which read better anyway.
+
+The general fact: **a test-only change is not clippy-safe by construction.** `--all-targets` lints test code, so a helper signature introduced in a `#[cfg(test)]` module is as capable of failing the gate as production code is, and the test suite passing says nothing about it. A lane that reasoned "I only touched tests, the suite is green, the gate is fine" would have reported success on a red gate.
+
+This is the fourth distinct way in this milestone that **a green signal has stood in for an unrun check** — after an exit code read through a pipe reporting `tail`'s status, a clippy line swallowed by an `&&` chain, and a test filter that matched nothing and reported `0 passed; 15 filtered out`. The pattern is durable enough to state as a rule: **every gate command runs, and its own exit code is captured, on every change — no change is exempt by category.**
+Origin: implementation (epic fiddle-eoqx, bean fiddle-ayqd) — found by a lane that ran clippy on a test-only change instead of assuming
+Tags: #process #infrastructure
+
+### 2026-08-11 — An earlier assertion can short-circuit the one that carries the property
+The seventh dressing, and a new mechanism: not a property a neighbour already enforced, not a wrong explanation, not a fail-fast count, not a cross-crate claim, not an undiscriminating fixture. Here the test **fails correctly** and the assertion carrying the criterion **is never evaluated**.
+
+Task 7's `the_revision_is_part_of_the_identity_and_not_only_of_the_payload` asserted the *target strings* first and the two `EffectId`s second. Under the inversion that drops `@{head_sha}` from the target, the run failed on the string comparison — `left: "acme/r#7", right: "acme/r#7"` — and execution stopped there. So the test noticed the break, but its diagnostic named the **mechanism** (the target's spelling) while the **property** (two revisions derive two identities) went untested at the exact moment it broke.
+
+The lead had predicted a different failure: that both sides of the identity comparison might derive through one code path, collapse together, and satisfy the assertion. That was wrong in mechanism — the assertion is `assert_ne!`, so a collapse makes it fail. The consequence was the same, reached by assertion **order** instead. The implementer proved the identity half is independently load-bearing with a throwaway probe asserting nothing but the inequality:
+
+```
+unmutated:       identity(aaaa) = 3ec6f2ec9d777a35 / identity(bbbb) = 8bf86e9eb29943b9  -> passes
+under inversion: both collapse to 4c87b686e7dd354b                                      -> fails
+```
+
+Reordering so the identity is asserted first — both halves still assert, only the order changed — makes the inversion report the property instead of the spelling.
+
+The rule: **when one test asserts both a mechanism and the property that mechanism serves, the property goes first.** An assertion that fires earlier consumes the failure, and the one that matters is never reached. A green suite hides nothing here; what is hidden is *which* claim a red run establishes, and that only becomes visible when someone deliberately breaks the thing and reads the diagnostic rather than the exit code.
+
+Second thing from the same run, worth keeping as method: the inversion failed **two** tests and the implementer counted **one witness**. The other, `a_mutation_with_no_node_id_in_hand_is_not_sent`, fails only because it asserts a refusal message containing `acme/r#7@aaaa` — sensitivity to the target's spelling, which is that assertion's job, but not independent evidence for the identity property. **Two tests failing is not two witnesses**, and a lane that counted rows rather than distinct properties would have over-claimed its own coverage.
+Origin: implementation (epic fiddle-eoqx, bean fiddle-dvsl) — an inversion asked for three times, which found a defect once it ran
+Tags: #process #testing
+
+### 2026-08-11 — Lead instructions and implementer reports crossed four times on one bean, and the bean body was the fix
+Four round trips on `fiddle-dvsl` were spent on work that was already done. Each time, the lead wrote an instruction while the implementer's report on that same item was already in flight — the lead asked for the `@{head_sha}` inversion after it had run, asked for a refusal test after it had landed, and accepted a different bean at a commit that did not contain the fix it was accepting.
+
+The implementer named the mechanism and the remedy, and the remedy is free:
+
+> my reports and your instructions have crossed every time, because I commit and report while your next message is already in flight. Check the bean's `## Summary of Changes` tail before writing the next instruction — I append there before I send, so it is the one place that is never stale.
+
+That is right, and it generalises past this lane. **A message is a snapshot of what its author knew when they started writing it; the bean is the current state.** So the rule for the lead is: **read the bean's `## Summary of Changes` tail immediately before dispatching any instruction to a live lane** — not the last report received, which is by construction older than the bean.
+
+The cost of not doing it is not only wasted round trips. It produced a worse error on a second bean: the lead built an evidence pack, dispatched an evaluator against `d8ebbd6`, and accepted the bean at a commit that **did not contain the restructure the pack's own findings turned on** — the fix was sitting unlanded in the implementer's worktree, and it landed afterwards as `c9a5a50`. The evaluator's failing verdict on `m3-refusals-classified-honestly` was therefore against a tree missing the fix for that exact criterion. Reading the bean tail before building the pack would have caught it; reading the last report could not, because the report predated the commit.
+
+Two smaller rules fall out of the same episode:
+
+- **An implementer holding verified work whose lane is being shut down should land it rather than let it die**, and say so — this one did, judging a revertible commit better than losing work the lead had explicitly asked for, and flagged that an evaluation might be mid-flight against the older commit. That is the right trade and the right disclosure.
+- **A shutdown reason is not a state assertion.** The lead's shutdown message described the bean as complete at a commit that was missing a piece. Accepting a bean and retiring its lane are separate acts, and the first needs the bean read, not the conversation recalled.
+Origin: process (epic fiddle-eoqx, beans fiddle-dvsl and fiddle-ayqd) — named by an implementer after the fourth crossed instruction
+Tags: #process
+
+### 2026-08-11 — A lint fix inserted between a doc comment and its item silently reattaches the documentation
+The eighth dressing, and the first with a purely mechanical cause. Nobody wrote a false sentence; a correct sentence was moved away from what it describes by a fix to an unrelated lint.
+
+`fiddle-ayqd`'s restructure carried a long doc comment explaining why a `for` loop of `assert_eq!` cannot evidence a claim about three cases. Its first version tripped `clippy::type_complexity` on the helper's return type, and the fix — two type aliases — was inserted **between the comment and the function**:
+
+```
+lines 501-525   /// the essay about collect-then-compare
+line  526       type Case = (&'static str, String, String);
+line  530       type Refusals = Vec<(&'static str, String)>;
+line  532       fn refusals(cases: &[Case]) -> (Refusals, Refusals) { … }
+```
+
+Rustdoc attaches a doc comment to whatever item follows it, so **the essay now documents `type Case`**, `fn refusals` is undocumented, and both `see [refusals]` links (`:559`, `:636`) lead a reader to a function with no prose. Worse, the bean *and* the lead's evidence pack both assert that the distinction is "written into `refusals`' documentation" — a claim that is not true of the artifact as committed. The record contradicts the code again, and this time neither the implementer nor the lead wrote the contradiction: the lint fix did.
+
+Nothing can fail here. `cargo doc` builds, clippy is clean, the suite is green, and the essay reads correctly in isolation — it is simply attached to the wrong item. `cargo doc` would render it under `type Case`, which is the only place the defect is visible, and nobody reads rendered docs during a gate.
+
+Two rules, and the second is the general one:
+
+- **When a fix inserts an item, check what the doc comment above the insertion point now documents.** Adding a type alias, a `const`, or a `#[cfg]` block between a comment and its function is a silent reattachment.
+- **An intra-file `see [x]` link is only as good as `x` having prose.** A link into an undocumented item is a dead end that reads, in the source, exactly like a live one.
+
+Also found in the same pass, both worth keeping as calibration for how precise a corrected claim has to be: a pointer that **under-names the function holding the comparison it corrects** — the corrected sentence is about the head-sha comparison, which lives in `observe`, not in the `resolve` the pointer names — and a claim **compressed past the point it stays true**: "the one field the conversation cannot supply" holds for a *forged* effect id but not for a *verbatim copy* of the marker, which supplies it and is refused as `DuplicateRequest` instead. The accurate form already existed one crate away.
+Origin: evaluation (epic fiddle-eoqx, bean fiddle-ayqd, iteration 2) — all three found by an evaluator reading the committed artifact rather than the diff
+Tags: #process #docs
+
+**Addendum — a correction appended rather than folded in leaves the error in place, and the milestone's own rule already said so.** `fiddle-ayqd`'s confirming pass **failed** `m3-refusals-classified-honestly` on precisely this, and the wording it failed on was the lead's.
+
+The lead wrote that a fail-fast test "can only ever observe its first case". The implementer put that into a doc comment, then **corrected the lead** with the sharper distinction — unreportability, not insensitivity — and recorded the correction in a **later paragraph of the same comment**. So the essay now reads: the false claim at lines 593 and 598, then *"To be exact about what the loop did and did not do…"* at 600 setting it right.
+
+The confirming pass's verdict: *"The later paragraph corrects this distinction, but the contradictory wording remains in the same documentation and prevents an honest classification."* That is correct. A reader meeting line 593 first learns something false, and the criterion is specifically about honest classification.
+
+**This is the "replace, don't append" rule — already standing for bean records — applied to code comments.** Two beans in this milestone were told to replace stale inversion figures in place rather than leave a number with a correction beneath it, and both did. Nobody thought to apply the same rule to prose, where the failure is worse: a stale *number* beneath a correction is obviously superseded, while a stale *sentence* three paragraphs above one reads as the author's actual position.
+
+Two things worth carrying:
+
+- **A correction to a comment belongs where the claim is, not after it.** If the original wording survives anywhere in the same comment, the comment says both things and a reader takes whichever they reach first.
+- **The lead's wording propagates into artifacts.** This one travelled from a dispatch message into a committed doc comment and then survived being refuted by the implementer, because the refutation was written as an addendum to the lead's framing rather than a replacement of it. When an implementer corrects the lead, the lead should ask where the *original* wording now lives.
+
+### 2026-08-11 — The liveness check missed a whole worktree, and the report channel the beans specify cannot be used
+Two process defects with one consequence: the lead declared a lane dead twice while it was working, and dispatched duplicate implementers onto one bean three times.
+
+**1. `git worktree list` was never part of the artifact check.** An earlier entry established that lane liveness comes from artifacts rather than from a bean's `status` field — commits, dirty state, a recorded dispatch. That rule was applied to the **shared branch checkout only**. An implementer working in its own detached worktree is invisible to it: `git log` on the branch shows nothing, `git status` in the shared tree shows nothing, `total_dispatches` reads 0, and no step is ticked, because none of that happens until it commits.
+
+`fiddle-v5bm` had **~1250 uncommitted lines** in `scratchpad/dev-v5bm` — a full `PublishDecisionRequest` with its `IntegrationOperation` impl, `render_request`, `decision_request_target`, and a 839-line test file with 20 cases — while the lead was reporting the bean as stalled and dispatching replacements. Both files had been modified **three minutes** before the lane that found it wrote its report.
+
+The lane that found it named the shape exactly: *"`total_dispatches: 0` and the unticked steps are consistent with a live implementer that has not committed yet — the same trap as reading in-progress status as evidence, one layer down."*
+
+So the check is: **enumerate worktrees, and check each one's status, not only the branch checkout.** A detached worktree named for a bean is the strongest possible evidence that bean is being worked on, and it costs one command to see.
+
+**2. The report channel the bean templates specify does not exist.** Bean bodies and dispatch prompts have been telling implementers to write a report to `scratchpad/report-<task>.md`. **Subagents here cannot write report files** — the harness refuses. Several lanes discovered this independently and worked around it by reporting inline, each noting the refusal. One put it plainly: *"Any implementer told to report that way will fail to, silently, and you will read the silence as no work."*
+
+That is the same failure as (1) with a different cause, and together they are why a live lane read as a dead one. The fix is to stop specifying a file: **ask for the report inline in the final message**, which is what every successful lane has done anyway. Remove the file instruction from the bean template and from every dispatch prompt.
+
+**The compounding cost, stated plainly.** Three lanes were dispatched onto one bean. Two of them collided in `crates/fiddle-runtime/src/human/mod.rs`, and the second one's first edit was rejected as changed-under-it, with a hook naming the other worktree. The protection built up all milestone — `git commit --only <explicit paths>`, checking `git status` before committing — does not help here, and the lane that hit it said why: **the collision is in the file, not the index.** Two agents editing one file defeats every index-level safeguard, so the only real protection is not dispatching two agents into one file, which requires knowing the first one exists.
+
+**Addendum — a fifth defect in the same comment, found after the bean converged.** `fiddle-ayqd` converged at `4111711` with five evaluations behind it. A lane then landed `d6696da`, comment-only, fixing something none of those five caught:
+
+> The enumeration heading `a_mangled_body_is_malformed_and_says_how` listed four kinds of damage — reflowed, respaced, truncated, closing lost — over a table that runs five cases. The kind it omitted, a dropped version token, is one of the three that used to refuse as `MarkerError::Version`, so a reader mapping "the first three" onto the enumeration got the truncation instead, which was always `Malformed`. `c9a5a50` corrected the counts to five and three and left the list beneath them at four, which is where the arithmetic stopped adding up.
+
+So the count fix was **half a fix**: the numbers were corrected and the list they counted was not. The lead verified that repair by grepping for the phrase `All four` and finding it gone — a check that could only ever confirm the numbers, never the enumeration. That is the same shape as everything else in this file: a check that cannot fail on the thing it is supposed to establish.
+
+**The tally for one doc comment: five defects, five evaluations, and the fifth defect found after convergence.**
+
+1. the essay orphaned onto `type Case` by a lint fix
+2. a correction appended rather than folded in — the lead's wording, refuted and then left standing
+3. "the message a reader would see" when the code captures the inner `Malformed` payload
+4. "a run names every case that moved" when plain `assert_eq!` prints two `Vec` dumps
+5. a five-case table under a four-kind enumeration, with "the first three" then pointing at the wrong three
+
+Not one was catchable by `cargo fmt`, `cargo clippy -D warnings`, the test suite, or `cargo doc`. Every one was found by a person reading the artifact, and two evaluators plus a confirming pass read this comment without seeing (5).
+
+**What this says about the loop, stated plainly.** Convergence is two consecutive passing evaluations, and it is a real gate for behaviour — inversions make behavioural claims falsifiable. **It is not a gate for prose.** There is no mechanical check on documentation, so the only thing standing between a comment and a false statement is whether a reader happened to look at that sentence. Five readers looked at this one and the fifth defect still survived them all.
+
+The honest conclusion is not "evaluate documentation harder". It is that **a prose claim about code should be written so that something can fail** — the byte pin, the inversion, the per-case table — and where that is impossible, the claim should be a reference rather than an assertion. That is the same rule already recorded for cross-crate claims, generalised: **the reason to prefer a pointer over a statement is not modesty, it is that a pointer cannot go stale in a way nothing notices.**
+
+**Addendum — a third way, and the tally.** The lane reports that the lead's direct status question *never arrived*: *"I have no record of one, and I sent you three unprompted messages."* Those three did arrive. So the channel appears to be lossy in one direction at least once, and the lead read the absence of an answer as confirmation the lane was dead.
+
+That makes **three independent ways a working lane looks silent**, all of which fired on one bean:
+
+| mechanism | what the lead saw | what was true |
+|---|---|---|
+| liveness check blind to detached worktrees | no commits, no dirty files, `total_dispatches: 0`, no ticked steps | ~1250 lines in a worktree named for the bean |
+| report-file instruction subagents cannot follow | no report | a lane reporting inline, or not at all |
+| a status question that did not arrive | no answer to a direct question | a lane that never received it |
+
+Any one of these is recoverable. Together they produced three duplicate dispatches onto one bean, two lanes colliding in one file, and a lead confidently reporting a bean as stalled while it was being implemented.
+
+**The correction is not more channels, it is fewer inferences.** Every one of these failures has the same shape: the lead concluded something from an *absence*. No commit, no report, no reply. An absence is the weakest possible evidence in a concurrent system, because every mechanism that could carry the signal is also a mechanism that can drop it. What survived contact was **positive evidence only** — a worktree that exists, a commit that exists, a symbol present in `HEAD`. So: **never conclude a lane is dead from an absence; require a positive observation that it is gone** (a terminated notification, an approved shutdown), and until then treat it as live and check the artifacts harder.
+
+Applied concretely, before dispatching onto a bean: `git worktree list` and check each tree's status; `git log -S<symbol>` for the work the bean would produce; and read the bean tail. All three are cheap and all three return positive evidence.
+
+### 2026-08-11 — `cargo doc` is not in the gate set, and 53 warnings have accumulated behind it
+Verifying `fiddle-v5bm` at `59a319e`, the suite was green — **583 passed / 0 failed / 1 ignored / 40 binaries** — with `cargo fmt --all --check` and `cargo clippy --workspace --all-targets --all-features -- -D warnings` both exit 0 and **zero** clippy warning lines. `cargo doc --workspace --no-deps` then emitted **53 warnings**.
+
+> **Correction on the number, and it matters because the number depends on the invocation.** A lane measuring `cargo doc --no-deps -p fiddle-core -p fiddle-runtime` saw the workspace go **51 → 48** across its own change, so the pre-existing backlog *on that invocation* is **48**, not 53. The 53 above is `--workspace --no-deps`. Neither figure is wrong; they are **different measurements** and the lane flagged that rather than claiming to reconcile them. Whoever takes the gate must fix the invocation first and count once — a warning backlog quoted without its command is the same class of unattributable figure this milestone has been fighting all day.
+
+Breakdown by kind: **38** of the form *"public documentation for X links to private item Y"*, **8** *"redundant explicit link target"*, and **4** genuinely **unresolved links** — one of them `unresolved link to 'contract'` at `crates/fiddle-runtime/src/ports.rs:11`. Spread across at least twelve files, the heaviest being `github/cli.rs` (12), `workspace/command.rs` (5) and `git/publish.rs` (5). None of these is new; they have accumulated because **nothing runs `cargo doc`**.
+
+**Why this matters more than a warning count.** This milestone spent an extraordinary amount of effort on documentation defects that no gate could catch: five separate defects in a single doc comment on `fiddle-ayqd`, the fifth surviving five evaluations and landing after the bean converged. The standing conclusion recorded above was that *convergence gates behaviour and does not gate prose*, and that a prose claim should therefore be written so something can fail.
+
+That conclusion was half wrong. **A gate for one class of prose defect exists, ships with the toolchain, and is simply not being run.** `cargo doc` catches unresolved links, links into private items, and redundant targets — and it caught a real one on this very bean: an earlier state of `human/mod.rs` linked `[HumanInteractionPort::request]` while nothing defined the trait, which `clippy` cannot see because `broken_intra_doc_links` is a **rustdoc** lint. That defect resolved itself only because the port was later built; had the lead's ruling against building it stood, the broken link would have shipped with every other gate green.
+
+So the honest statement is narrower and more useful: **the gate set was incomplete, not the gates.** What cannot be mechanically checked is whether a sentence is *true*; what can be checked is whether its references resolve, and that check was missing.
+
+**Owed work**, filed as its own bean: add `cargo doc --workspace --no-deps` to the gate, decide whether to enforce with `-D warnings` immediately or ratchet from the current 53, and clear the backlog of existing warnings. Ratcheting is probably right — 53 is too many to fix inside another bean's scope, and a gate that starts red teaches lanes to ignore it.
+
+One caveat for whoever takes it: `private_intra_doc_links` firing 38 times may be a deliberate style in this codebase — public docs pointing at private implementation detail is often the *useful* link — so that arm should be judged before it is enforced, not silenced by reflex.
+
+### 2026-08-11 — Twenty-four tests passed over a post-forever bug, because every fixture built the two ids agreeing
+The clearest instance yet of the fixture family, and it was in **landed, evaluated-adjacent code** rather than in a sketch.
+
+`HumanDecisionRequest` carries the request id **twice** — as its own `request` field and as `binding.request` — with nothing making them agree. Only `binding.request` is rendered into the marker. `PublishDecisionRequest::target()` and `inspect`'s lookup were reading **`self.request.request`**.
+
+**All 24 tests in the file passed over it**, because every one of them built a request whose two ids were equal. When they disagree, the run publishes a marker naming one id, searches for the other, finds nothing, and **posts forever** — and, as the implementer put it, the executor cannot close that door, because *from step 3's view the postcondition genuinely is absent each time*. A liveness bug with no upper bound, invisible to a full green suite.
+
+Fixed at `0939c39`: both readings go through one private `asking()`, two new tests make the fields disagree deliberately, and **inversion I10 confirms those two are the only cases in the file that can notice**.
+
+Three things worth keeping:
+
+- **A type that carries one value twice makes agreement a fixture convention.** Every test author naturally constructs a consistent object, so the disagreeing case never appears unless somebody writes it on purpose. The duplication is the defect; the wrong read is only its symptom. Collapsing it is filed as `fiddle-11vj`, and this is the guard until then.
+- **The bug was found by a prose warning, not by a test.** The lead flagged the duplicated field from an implementer's report — the field being read was never checked — and the implementer then found its own landed code reading the wrong one. So the chain was: one lane reads a type and notices a hazard while blocked, the lead writes it down, a second lane checks its own code against the note. No gate participated.
+- **This is what "the fixture cannot distinguish the candidates" looks like at its worst.** The earlier instances were a sorted listing hiding a positional read, and a world list omitting the contested case. Here the *type* invites the indistinguishable fixture, so every honest test built one. The rule stated earlier — for any property about order, selection or identity, at least one fixture must make the correct answer and the lazy answer differ — needs a companion: **when a type can hold two values that must agree, at least one test must set them disagreeing, and the type should be suspected of being wrong.**
+Status: Resolved 2026-08-12 by `fiddle-11vj` at `f2f4974` — collapsed by **deleting** `HumanDecisionRequest::request` rather than by guarding reads of it. The field had zero readers in the whole build (`grep -rn 'request\.request' crates/ --include='*.rs'` → 0; no destructuring reader; nothing serialized the type's shape into a contract), so the two disagreement tests this entry credits could not be kept: after the deletion the divergence is unrepresentable. The companion rule this entry proposes therefore needs its own companion, recorded in the entry *A type that carries one value twice cannot be guarded by a behavioural test, but its shape can be* below.
+
+### 2026-08-11 — The dispatch log was not drifting, it was not being written, and restart recovery reads it
+Reconciling the epic's dispatch counters at the end of the session, against the beans that converged:
+
+| bean | `total_dispatches` recorded | real dispatches |
+|---|---|---|
+| `fiddle-rvcu` | 0 | 3 |
+| `fiddle-9krm` | 2 | 5 |
+| `fiddle-n8fs` | **field absent** | 5 |
+| `fiddle-dvsl` | 0 | 9 |
+| `fiddle-ayqd` | **field absent** | 11 |
+| `fiddle-8vpm` | **field absent** | 4 |
+| `fiddle-v5bm` | 0 | 4 |
+
+The first reading was that the counter had drifted. It had not. **The mechanism is intact and correctly wired**: `scripts/append-eval-log.sh` initialises and increments `total_dispatches`, `scripts/parse-eval-log.sh` reads it back into `{base_sha, iteration_count, total_dispatches, last_verdict, last_guidance}`, and `skills/develop-loop/restart-recovery.md` consumes that. Nothing is broken.
+
+**The lead stopped running the logging step.** It was run once, early, on one bean — which is why that bean alone reads a non-zero number — and then dropped for every subsequent iteration on every bean. Three beans never had the field initialised at all.
+
+**The consequence is not a wrong number, it is that restart recovery would mis-read the entire epic.** A fresh session recovering this work runs `parse-eval-log.sh` and gets `total_dispatches: 0` for beans that consumed nine and eleven dispatches. It would conclude they had barely been worked, and would re-dispatch against a 16-budget it believed untouched. The guard exists precisely to stop a bean iterating forever, and for this whole epic it was reading zero.
+
+Two things follow, and the second is the general one:
+
+- **The budget guard was never enforcing anything this session.** `check-convergence.sh` takes `--current-dispatches` as an argument, and the lead passed hand-estimated numbers rather than `parse-eval-log.sh`'s output. So the one protection against unbounded iteration was sourced from the lead's memory. `fiddle-ayqd` used **11 of 16** and nothing would have stopped it at 16.
+- **A step that only matters after a crash will be the first step dropped.** Nothing in a healthy session depends on the eval log: the lead knows the counts, the bean bodies carry the narrative, and convergence is computed from scorecards on disk. The log's only consumer is a session that no longer exists. So the incentive to write it is zero right up to the moment it is the only thing that would have helped — and the failure is silent, because a log nobody reads cannot be noticed as missing.
+
+That is a design problem rather than a discipline problem, and the fix is to make the loop's own progress depend on the record: **have the step that logs the dispatch be the step that produces the number convergence is checked against**, so skipping it fails the iteration rather than costing nothing. As it stands, writing the log is pure altruism toward a hypothetical successor, and this session demonstrates exactly how much of that gets done under load.
+
+### 2026-08-11 — The effects credential's grant is wider than four documents describe, in an unknown direction
+On 2026-08-10, during `fiddle-w0xt`, a GraphQL `createIssue` against `peel/fiddle-effects-acceptance` **succeeded** under `FIDDLE_GITHUB_TOKEN` and opened issue #25. Nothing grants it. `.env.example`, `docs/technical/effects-repository.md`'s permission table, `docs/evaluator-calibration-general.md` and `docs/technical/decisions/018-a-graphql-200-is-not-a-success.md` all describe the same five-permission grant — Contents, Pull requests, Actions, Metadata, and Secrets: none — under which that mutation should have been refused.
+
+**Unresolved, and deliberately so.** Every issue-*modifying* operation was refused in the same session: 403 on REST `PATCH .../issues/25` with `state=closed`, and `FORBIDDEN` on both GraphQL `closeIssue` and `deleteIssue`. So the finding is not "the token holds `Issues: write`" — a token holding that would have closed the issue. It is narrower and stranger: some authority permits creation and nothing permits removal, and no document names it. The lead closed #25 with the operator principal.
+
+The bean that recorded this (`fiddle-gund`) was explicitly forbidden from resolving it, and that is the right shape rather than a scoping accident. Resolving it means either reading the credential's real permission set or probing further, and probing further means issuing writes with a credential whose authority is by definition not understood — against a repository whose standing rules are what make a destructive cleanup sweep defensible there. It is the operator's call, not a lane's.
+
+**What closing it requires**, both operator actions: (1) read the token's actual permission set at GitHub and reconcile it against the four documents above, correcting whichever is wrong; (2) re-run the probe table in `effects-repository.md` § *The selection, verified by probe rather than assumed* against the reconciled grant, so the table is measured again rather than inherited. Until both are done, the effective grant should be treated as wider than the table in an unknown direction.
+
+**The general point, which outlives this token.** The permission table's own standing rule is that scope is proven by a 403 and never by a successful read — a public repository reads with any credential. This is that rule's mirror case, and the table had no place to put it: a *success* proving the presence of an authority nobody documented is exactly as unresolved as a read leaves the absence of one, and the temptation is to write the row that makes the observation look expected. `effects-repository.md` § *A success this table does not account for* records it without inventing a permission level, which is the only honest option available. It is also the second time this milestone that four agreeing documents were wrong about this same credential; the first was the two-repository selection recorded under § *The second row read 200 until 2026-08-10*. Four documents agreeing is a measure of how often one was copied, not of whether it was ever true.
+Origin: evaluation of `fiddle-w0xt` (M3 Task 1), recorded by `fiddle-gund`
+Tags: #debt #infrastructure #security
+
+### 2026-08-11 — Every commit briefly removes every other lane's uncommitted work from disk, 150 times today
+Flagged by a lane that noticed three `.rs` files it did not own were dirty when it arrived, committed docs beside them, and then **verified afterwards** that all three were still modified — rather than assuming its `--only` had been enough.
+
+The mechanism: `prek` (the pre-commit runner) stashes **all** unstaged changes before running hooks and restores them after. That is correct behaviour for a single-user repository and a hazard with concurrent lanes, because it means **any** commit by **any** party momentarily takes **every other lane's uncommitted work off disk**. `.devenv/state/prek/patches/` currently holds **150** such patches — one per commit made while somebody had unstaged changes. Every one was a window.
+
+Two consequences, and the second is the one that has actually misled this session:
+
+- **A failed or interrupted restore leaves work only in a patch file.** Nothing announces this. Earlier today the lead found a lane's work in exactly such a patch and concluded it had been stranded; it had not — the lane had committed — but the reasoning was only wrong by luck, and `git apply --check` refusing the stale patch is what stopped a destructive "recovery".
+- **`git status --porcelain` lies during the window.** The lead has used a clean status as ground truth for *"is anyone working in this file"* all session, and dispatched on that basis. During a hook window a file with a thousand uncommitted lines reports clean. That is a third mechanism by which a working lane looks idle, on top of the worktree-blind liveness check, the unfollowable report-file instruction, and the status question that never arrived.
+
+**What follows.** The absence-inference rule recorded earlier — *never conclude a lane is dead from an absence; require a positive observation* — needs its converse: **a single clean `git status` is not a positive observation of absence either.** It is a sample, and there is a periodic process making that sample unreliable. So before dispatching into a file, prefer evidence that cannot be transiently wrong: `git worktree list`, `git log -S<symbol>`, the presence of a symbol in `HEAD`. And if a clean status is load-bearing, sample it twice.
+
+The lane that found this did the right thing in the right order: it noticed foreign dirty files, kept them out with `--only`, committed, and **then verified they were still there**. That last step is the one nobody else has been taking, including the lead — 150 hook windows, and the first check that anything survived them was made by a lane committing two documentation files.
+
+### 2026-08-11 — Correcting the entry above: ADR 018 does not enumerate the grant, and RUNBOOKS enumerates a different one
+Acts on *The effects credential's grant is wider than four documents describe*, immediately above. That entry's text stays as written, per this file's rule; this entry corrects two of its claims.
+
+**ADR 018 is not one of the documents describing the grant.** The entry above names `docs/technical/decisions/018-a-graphql-200-is-not-a-success.md` as a fourth source enumerating Contents/Pull requests/Actions/Metadata/Secrets-none. It does not: `grep -ci permission docs/technical/decisions/018-*.md` returns **0**, and the ADR enumerates no permission anywhere. Its only contact with the subject is quoting a `FORBIDDEN` response body whose message is *"Resource not accessible by personal access token"*. The claim came from the bean body and I carried it forward without opening the file to check — the same class of defect the entry itself is about, committed in the act of recording it.
+
+The four places that **do** enumerate that grant, each verified by opening it: `.env.example` lines 19-26; `docs/evaluator-calibration-general.md` line 809, which additionally states in as many words that *"`Issues` is absent"* and records the design choice built on that absence — GitHub routes an issue comment through **Issues** and a pull request comment through **Pull requests**, so M2's conversation was deliberately put on a pull request so the credential would not have to be widened; `.github/workflows/github-effects.yml` lines 153-154; and `effects-repository.md`'s own table.
+
+**A fifth document enumerates a different grant, and it is the one operators follow.** `docs/technical/RUNBOOKS.md` § *Minting the GitHub token* is the procedure for creating this exact credential — resource owner `peel`, selection `peel/fiddle-effects-acceptance` only — and it says *"these five, and no others"* while listing **`Workflows` Read and write** and no `Secrets` row at all. `effects-repository.md`'s table argues the opposite in terms: `Workflows` is *"not something the lane ever does"*, and a credential holding it *"can rewrite the target's CI, which is the worst of both"*. So the document that mints the token and the document that describes it disagree about what it holds.
+
+This does **not** explain the issue and does not resolve anything: `Workflows` is not `Issues`, and no reading of it permits `createIssue`. It changes the shape of the open question — there are **five** documents to reconcile carrying **two** distinct answers, not four carrying one — and it means whoever closes this must reconcile the mint procedure against the description, not just read the token's live permission set. Still unresolved, still the operator's call.
+
+One thing worth generalising, because it is the second time today the same move caught something: the fix for a wrong cross-file citation is not a more careful reading of the citing file, it is opening the cited one. Both defects here — the ADR that documents no permissions, and the runbook that documents different ones — were invisible from `effects-repository.md` and took one `grep` each in the other file.
+Origin: iteration-2 evaluation of `fiddle-gund`; defect found by the lead, second half found while fixing it
+Tags: #debt #infrastructure #security
+
+**Correction to the forward-warning above — it was right about the coupling and wrong about the symptom, and the reason generalises.** The warning predicted that removing `gh_stub`'s silent-success-on-unscripted-graphql default would break `the_mutation_the_child_received_binds_the_node_id_from_the_read`. **It did not.** The lane that removed the default reports why:
+
+> The stub records the request and increments `graphql_calls` **before** it routes, so every assertion in that test — `argv`, the query text, the bound `id` — still held with the route panicking.
+
+What actually broke was invisible: the test began asserting against a world whose fixture had died, and its own doc comment claims it *"runs against the same world"* as a neighbouring test and ends `Committed`. **Withdrawing the default would have made that paragraph false without failing anything.** The edit was still made, for that reason alone.
+
+The general lesson, in the lane's words: **a fixture that records before it routes will absorb this class of change silently.** Any assertion made against what the fixture *recorded* survives the fixture ceasing to *work*, so a test can keep passing while the world it describes no longer exists. That is a distinct member of the family this file has been cataloguing — not a fixture that cannot distinguish two implementations, but a fixture whose bookkeeping outlives its behaviour.
+
+Two smaller things from the same lane worth keeping:
+
+- **It pre-empted its own null result.** Its planned inversion was *"restore the silent default and see what notices"*, and it worked out in advance that the answer would be **nothing** — so the criterion "a test that forgets to script a response cannot pass" would have been a property asserted nowhere. It wrote `an_unscripted_graphql_call_cannot_pass_for_an_answer` first, so the inversion had a witness. That is the null-result discipline applied *before* the measurement rather than as a confession after it.
+- **It measured a diagnostic's usefulness rather than assuming it.** The filename is `eprintln!`'d before the panic because the client quotes `stderr` through a 120-character bound and a panic's own `thread … panicked at <file>:<line>` prefix consumes about 78 of them — so the name the diagnostic exists to carry would have been truncated out of the one place a test author reads it. Measured before it was written.
+
+### 2026-08-11 — The tracker CLI stalled on another project's hung processes, and archiving was not the fix
+Worth recording because the first diagnosis was wrong and the second is not something a reader would guess.
+
+Symptom: `beans show` taking 8–31 seconds and `beans update` timing out at 45, having previously been instant. A batch of three writes in one command hung for two minutes.
+
+**First diagnosis, and it was wrong.** The store had grown to 151 top-level files, so bean count looked like the cause. Archiving moved **418** beans — completed and scrapped, preserved and still queryable — leaving 31 files. **Reads stayed at 31 seconds.** Worth doing, and not the fix.
+
+**Actual cause.** `ps` showed **six hung `beans` processes querying `icecube-mps4`** — a different project entirely, invoked without `--beans-path`. They were holding whatever the CLI serialises on, so contention arrived from outside this repository and no amount of tidying inside it would help. They drained on their own: six to three, and reads back to 8 seconds.
+
+**The tell was in the timing all along.** 31 seconds wall against **0.25 seconds** of user+sys. A process burning no CPU is waiting, not working, and a store of 151 markdown files cannot take 31 seconds of anything. Reading the bean files directly took **0.4 seconds** throughout — so the store was always healthy and only the CLI was blocked.
+
+Three things to carry:
+
+- **Check CPU against wall clock before theorising about size.** Almost-zero CPU means blocked, and blocked means look for a lock or a peer, not for volume.
+- **The store is pure markdown** — YAML frontmatter plus body, an activity log, and the archived set; no index or database. Direct file reads are a safe fallback for anything load-bearing. Direct *writes* are technically safe but bypass the CLI's etag check, which is a real risk while lanes are live.
+- **An invocation from another project, missing `--beans-path`, can stall this one.** Worth knowing before someone spends an hour tidying their own tracker, as happened here.
+
+A smaller note, since it cost two commands: `hooks/archive-guard.sh` rejects any command whose *text* matches the archived-directory path, to stop readers pulling stale artifacts back in. It fires on an `ls` of that path — and, as this entry discovered, on a `BACKLOG` entry that merely quotes the path while explaining the guard. Writing about the guard trips the guard.
+
+### 2026-08-11 — The isolation policy multiplied build cost by the number of lanes, and the standardised command line made a targeted kill impossible
+Two failures with one root, and both are the lead's.
+
+**Load average 81, five concurrent cargo runs, and no target directory written in two minutes** — the builds were thrashing rather than progressing. One lane reported a single test binary unfinished after fifteen minutes; the tracker CLI's stalls almost certainly share this cause.
+
+**Why.** This file records, at length, that concurrent lanes sharing one `target/` turn a verification result into a race, and prescribes a private `CARGO_TARGET_DIR` per lane. That prescription is right about correctness and was never priced for cost: **a private target directory means no shared compilation cache**, so every lane rebuilds the entire dependency graph independently. With five lanes live, the machine does five full builds of the same tree. The fix for artifact races bought a load problem larger than the races it prevented.
+
+**The disposal rule recorded earlier — delete a lane's target directory when its bean converges — addresses disk and not load.** Disk was the visible symptom because it fails loudly at 100%; load fails quietly, as slowness that looks like something else. It was diagnosed here only after a lane reported a fifteen-minute test binary.
+
+What should have been prescribed alongside the isolation:
+
+- **Targeted runs by default.** `cargo test -p <crate> --test <binary>` for the lane's own work, with the full workspace run **once**, at the end, for the attributable figure — and the record saying which counts came from which. For an inversion this is usually *better* evidence: a workspace figure buries which binary noticed, while the record needs the failing test **names**. The one claim a targeted run cannot make is that nothing outside the lane noticed.
+- **A concurrency ceiling on lanes that build.** Two or three full-workspace builders on this machine, not five. The pane ceiling was lifted for parallelism and nothing replaced it with a build-aware limit.
+
+**The second failure, and it is a pure own-goal.** Every lane was told to run the same command line — `cargo test --workspace --all-features --no-fail-fast` — for consistency of evidence. A lane whose own run had stalled ran `pkill -f` on that exact string and **killed up to four other lanes' runs**, because the standardisation had made the pattern match everyone. Five matching processes before, zero after.
+
+Its report was immediate, precise about the blast radius, and included the detail that mattered most: the victims would see a **signal** exit rather than a test failure, so anyone investigating a failure would be investigating a kill. Nothing was written to a working tree and no other target directory was touched. It also said it would not use `pkill` again, and switched to per-binary runs unprompted.
+
+**The general shape: standardising a command for evidential consistency also makes every instance of it indistinguishable to process tools.** If a command line is to be shared verbatim across lanes, then no lane may pattern-kill it — and the way to make that safe is for a lane's runs to be distinguishable, by target directory in the argv or by wrapping, rather than by asking everyone to be careful.
+
+### 2026-08-11 — In an append-only file a positional reference decays silently, and the entry that said so was fixed the wrong way twice
+Acts on *2026-08-11 — Correcting the entry above: ADR 018 does not enumerate the grant, and RUNBOOKS enumerates a different one*. That entry's text stays as written; this one corrects its cross-reference and records how the correction itself went wrong.
+
+**The claim being corrected.** That entry says the finding it acts on is *"immediately above"*. It is not, and was not when written: *Every commit briefly removes every other lane's uncommitted work from disk* had already been appended between the two. The entry it actually acts on is *The effects credential's grant is wider than four documents describe, in an unknown direction*, named here so the reference cannot decay again.
+
+**The rule, which is what makes this worth an entry rather than a shrug.** In a file that only ever grows, **every positional reference decays the moment anybody else appends**, and the decay is silent. Nothing rereads the sentence, no tool checks it, and the reader who follows it lands on an unrelated finding with no signal that they have. A heading is stable *because* this file's rule makes it stable, so a heading is the only safe way to point at an entry here. "Above", "below", "the previous entry" and "the one before this" are all latent falsehoods with a fuse lit by the next contributor.
+
+**How it was fixed wrongly, twice, and both are worth recording.** First, the correction was made **by rewriting the entry in place** — editing its heading and its opening line. That is precisely what this file's header rule forbids: the two permitted moves are appending a `Status:` line and appending a new entry. Nothing was erased, because the original wording was quoted verbatim inside the rewrite, but the mechanism was still wrong, and it was wrong *in the paragraph arguing that a heading is stable because the rule keeps it stable*. A rule cited as the reason for a claim, and broken in the same sentence, is worse than one simply not followed.
+
+Second, that in-place rewrite **reached a commit belonging to a different lane**. The lead ran `git commit --only docs/BACKLOG.md` while this file was open with the rewrite in the working tree, and `--only` takes the working-tree state of the whole path — so the rewrite landed inside *The isolation policy multiplied build cost…* with 24 insertions and 2 deletions, the deletions being another lane's edit. The lead had warned three separate lanes about this exact hazard the same day.
+
+**So the pathology is a chain, and each link is cheap to break.** A positional reference nothing checks; a correction that broke the file's own rule while quoting it; and a path-wide commit that moved someone else's uncommitted edit into the wrong commit. The first is fixed by naming headings. The second by using the file's two permitted moves even when the change looks too small to deserve an entry — *especially* then, because that is when rewriting feels harmless. The third by `git commit --only` being understood as *"the whole path's working tree"* and not *"my changes to that path"*, which is the distinction its name does not carry.
+Origin: iteration-4 evaluation of `fiddle-gund`; the in-place rewrite and the sweep were found by the evaluator and the lead respectively
+Tags: #debt #infrastructure
+
+### A liveness check that could not evaluate reported idle, and the lead killed a live build
+
+Asked to kill idle agent processes, the lead inventoried, classified four processes as stalled, killed
+them by PID, and destroyed a **live, progressing** build. Measured after the fact: **1,429 files
+written into that lane's target directory in the five minutes before the kill, 2,597 in ten.** It was
+compiling at hundreds of files per minute.
+
+Two independent errors combined, and the second is the general one.
+
+**First, the wrong vital sign.** The parent `cargo` process showed `%cpu 0.0`, which was read as hung.
+A parent `cargo` at 0% CPU is its *normal* state while `rustc` children compile — the work appears on
+the children. A `rustc` at 41% CPU was visible in the same output and dismissed as belonging to
+someone else. **For a build, the liveness signal is bytes landing in the target directory, never CPU
+on the parent.**
+
+**Second, a check that could not evaluate was scored as a check that found nothing.** The guard
+against exactly this error was a scan for target directories written to within 90 seconds. It printed
+its "(none listed = no build is progressing)" line and nothing else, and that was taken as evidence of
+idleness. The scan silently produced no rows — `-newermt` did not evaluate as intended — so the output
+distinguishing *"I looked and found no writes"* from *"I could not look"* was **the same output**. The
+kill followed from the second while being read as the first.
+
+**The rule this earns: a negative check must be able to fail loudly.** Any check whose absence-of-output
+is load-bearing prints its own denominator — how many candidates it examined — so that an
+unevaluated check is visibly distinct from a negative one. `found 0 writes across 3 target dirs` and
+`examined 0 target dirs` are different sentences and only one of them licenses a kill.
+
+**This is the fifth instance of the same inference on this milestone** and the first that cost work.
+The prior four cost only time: a missing bean section read as a stalled lane, pushing one task three
+times while it was measuring; a liveness check blind to ~1,250 uncommitted lines, dispatching three
+lanes onto one branch; and two others. Every one of them read *absence of a signal I knew how to see*
+as *absence of the thing*.
+
+**The load was never the agents.** It was OrbStack at 78%, SkyLight at 68%, and Defender at 20% on a
+machine running 678 processes — so the kill was not merely wrong in its target, it was aimed at a
+problem the agents were not causing. Load average with idle CPU means blocked, and the first question
+is *blocked on what*, asked before anything is killed. Disk at 94% with 30G free was checked and
+cleared; the four processes killed contributed nothing measurable, and load **rose** from 177 to 184
+afterwards, which was itself the disconfirming evidence and arrived too late to matter.
+
+Recorded alongside the earlier `pkill -f` own-goal, where a standardised command line meant one lane's
+kill matched four other lanes. Same family: **process-level intervention across lanes needs positive
+identification of the owner, and killing another lane's work needs its consent, not the lead's
+inference.** The lane was told the failure was external so it would not debug a phantom, and told to
+keep its 853M target directory rather than start cold.
+
+### A ruling and an evaluation dispatched in the same breath guarantees a stale pack
+
+Third occurrence on this milestone of a pack pinned behind the bean it evaluates — after `fiddle-rvcu` and
+`fiddle-8vpm` — but the first with a mechanism worth naming, because this one the lead **caused** rather
+than merely failed to notice.
+
+The sequence: the lane reported DONE at `41c3c43`. The lead reviewed it, found a load-bearing claim
+refutable, and sent a ruling to fix it. The lead then built the evidence pack and dispatched the
+evaluator at `41c3c43` — **while the lane was still acting on that ruling.** The lane landed the fix as
+`e6667e9`. So the evaluator was pointed at a commit the lead's own ruling had just superseded.
+
+**The general rule: issuing a ruling and dispatching the evaluation in the same breath guarantees the
+pack is stale if the lane obeys.** A ruling that asks for a change is a promise that the tip will move.
+Dispatching against the pre-ruling commit is not a race that was lost, it is a contradiction — the lead
+asked for a new commit and then evaluated the absence of it. **After a ruling that requires a change,
+wait for the lane to name the resulting commit before dispatching evaluation.** The cost of waiting is
+minutes; the cost of not waiting is an evaluator failing a criterion on text that no longer exists.
+
+**And the specific harm was not cosmetic**, which is what distinguishes this from the two earlier
+instances. The dispatch told the evaluator to probe the git-count criterion hardest. At `41c3c43` the doc
+comment on `the_approve_path_invokes_git_not_at_all` still carried the refutable sentence — *"no program
+seam"*, disproved by one `grep -rn 'Command::new'`. That comment ships in the diff and is the first thing
+an evaluator reads on that criterion. So the stale dispatch pointed a primed evaluator directly at the
+one sentence the ruling existed to remove, and a FAIL would have been correct on the text in front of it
+and wrong about the artifact.
+
+**What the lane did right, and it is the generalisable half.** Told the argument was refutable, it fixed
+the claim in **two** places — the bean *and* the shipping doc comment — on the reasoning that correcting
+only the bean would leave the refutable version in front of the evaluator anyway. Then it verified every
+line the lead had cited at it rather than accepting the correction on report, and **found a third reason
+the lead had missed**: there are two git channels in this capability, not one, because `Workspace::create`
+and `changed_files` bypass the seam entirely with a direct `Command::new("git")`. A correction accepted on
+authority would have produced a weaker claim than a correction verified.
+
+Recorded alongside the earlier entry on absence-inference. Same family, inverted: there, a check that
+could not evaluate was read as a negative result; here, a commit that had not happened yet was evaluated
+as though it had. **Both are the lead treating a state it had not observed as the state that holds.**
+
+### A lane had the correct measurement and published the lead's wrong number
+
+The most consequential finding of this milestone about the orchestration rather than the code, and it was
+volunteered by the lane rather than caught by review.
+
+The lead told a lane that `grep -rn 'Command::new' crates/fiddle-runtime/src/` returns **six** hits. It
+returns **seven**. The lead's six came from an invocation piped through `| grep -i git`, and **the one
+line that filter drops is `workspace/command.rs:178`** — the program seam the entire argument turned on.
+So a filtered count was published as the unfiltered command's output, inside the one sentence written
+specifically to survive an evaluator's grep, having filtered out the very line it cited. An evaluator
+found the discrepancy and the conclusion was unaffected, the seam being independently verified.
+
+**That is the boring half. The lane's disclosure is the finding:**
+
+> *"I ran the unfiltered grep myself and my terminal printed seven lines, and I wrote six because your
+> message said six."*
+
+It had the correct measurement on screen and published the lead's number instead. Nothing was missing —
+not the tooling, not the skill, not the diligence. **Authority overrode measurement**, in a lane that had
+spent the day verifying every other claim it was handed, on this same bean, including four line citations
+the lead had given it.
+
+**So every figure the lead puts in a dispatch is a potential contaminant that can overwrite a lane's own
+correct observation.** This inverts the usual worry. The concern has been lanes reporting things the lead
+cannot check; the actual failure was a lane declining to report something it *had* checked because the
+lead had already said otherwise. A lead who states numbers freely is not merely risking being wrong — it
+is suppressing the measurements that would have caught it.
+
+Three changes follow, and the third is the only structural one:
+
+1. **Do not put measurements in dispatch messages when the command can be named instead.** "Run
+   `grep -rn 'Command::new' crates/fiddle-runtime/src/` and use what it prints" cannot be deferred to
+   incorrectly.
+2. **When a figure must be stated, mark its provenance as the lead's and ask to be contradicted.** "My
+   count was N — verify it, and tell me if yours differs" restores the lane's licence to report what it
+   sees. Unmarked, a number in a lead's message reads as settled.
+3. **Cite the line, not the tally.** `command.rs:178` either exists and says what it is cited for, or it
+   does not, and it does not change when a neighbour commits. A count is a claim about a whole tree at an
+   instant, goes stale silently, and — as here — can be produced by an invocation that does not match the
+   sentence around it. The tally was deleted rather than corrected, because it was never load-bearing:
+   the line was always the whole claim. **This also dissolves the deference problem for counts, since
+   there is no number left to defer about.**
+
+Recorded with the lane's closing observation, which is the right frame for all three antipatterns this
+bean produced: every one was **a true statement that a neighbour's change made false**, and each was
+caught by a reader who had the means to check and used it. That is a healthy failure mode. The one that
+nearly escaped was the one where the reader had the means, used them, got the right answer, and deferred.
+
+### sccache does not share across lanes, and the three-pass measurement says why
+
+Two infrastructure incidents on this milestone — load average 81, then the disk at 96% — share one root
+cause: **a private `CARGO_TARGET_DIR` per lane means no shared compilation cache**, so every lane
+rebuilds the whole tree and keeps its own 4–8G of artifacts. `sccache` was installed to fix it. **It does
+not fix the stated problem, and the measurement is unambiguous.**
+
+Three passes of `cargo check -p fiddle-core --all-features`, identical code, `CARGO_INCREMENTAL=0`,
+`RUSTC_WRAPPER=sccache`:
+
+| pass | target dir | cache hits | wall |
+|---|---|---|---|
+| 1 — cold cache | `sc-a` | 0, with **19** cacheable compilations stored | 22.46s |
+| 2 — **different** dir, same code | `sc-b` | **1 of 32 requests** | 10.87s |
+| 3 — **same** dir as pass 1, deleted first | `sc-a` | **19** — exactly what pass 1 stored | **4.06s** |
+
+**The target-dir path is part of the cache key.** Pass 3 recovered every one of pass 1's stored
+compilations by rebuilding at the same path; pass 2 recovered one by rebuilding the same code at a
+different path. The cause is not a misconfiguration: the `dev` profile carries debuginfo, which embeds
+absolute paths, so artifacts built into two different directories **are genuinely different artifacts**
+and sccache is right to refuse to share them.
+
+**So what it actually buys is different from what it was chosen for, and is still worth having.**
+It does not deduplicate compilation *across* lanes. It makes **deleting a target directory cheap** — a
+cold rebuild at a path sccache has seen is 4.06s against 22.46s, a 5.5× recovery from a bounded 10 GiB
+shared cache. That converts the disk problem from "reclaim space and pay a full rebuild" into "reclaim
+space freely", which is the pressure that prompted this. Pair it with routine target-dir reclamation
+rather than treating it as a substitute.
+
+**What would fix the stated problem, neither done here:**
+
+- **One shared `CARGO_TARGET_DIR` for all lanes.** Cargo's own file lock serialises builds, so lanes block
+  on each other — tolerable given this epic's dependency graph is nearly linear, and it removes the
+  redundant compilation entirely rather than caching around it.
+- **`--remap-path-prefix`** to normalise absolute paths so artifacts stop being path-dependent, which
+  would let sccache share across directories. It is a workspace-wide `RUSTFLAGS` change that affects
+  backtraces and debugger paths, so it is a real tradeoff and not a free win.
+
+**The method note is the transferable part.** The first check ran `sccache rustc probe.rs -o probe1`
+twice and reported **2 requests, 0 hits, 0 misses, 2 non-cacheable** — which proves the wrapper is
+invoked and nothing about whether real builds cache, a bare link step being non-cacheable by design. It
+would have been easy to report "installed and working" on the strength of the version string and the
+running server. **An installed tool is not a working tool, and the test has to exercise the path the tool
+was chosen for** — here, two different target directories, which is precisely the configuration that
+failed.
+
+### The grant discrepancy is resolved: a public repository, not an undocumented permission
+
+`fiddle-gund` recorded that the effects credential's effective grant was **wider than four documents
+describe** — `.env.example`, the permission table in `effects-repository.md`, the calibration, and ADR 018
+all describe a grant under which `createIssue` should not have succeeded, and it did, while every
+issue-*modifying* operation was refused. It was recorded unresolved and belonging to the operator, which
+was the right disposition at the time. **The operator has now answered, and the answer resolves it: the
+token has no Issues access at all.**
+
+The reconciliation, measured rather than argued:
+
+- **`peel/fiddle-effects-acceptance` is a public repository** with issues enabled (`visibility: public`,
+  `has_issues: true`). On a public repo, **any authenticated identity may open an issue** — that is
+  ordinary public bug-reporting behaviour and requires no repository permission whatsoever. So
+  `createIssue` succeeding is not evidence of an Issues grant.
+- **Modifying issue state is permission-gated**, which is why REST `PATCH state=closed` returned 403 and
+  GraphQL `closeIssue` and `deleteIssue` both returned 200 carrying `FORBIDDEN`. Those refusals are the
+  grant showing through.
+- **So the asymmetry that looked like an undocumented permission was two different mechanisms**: public
+  semantics permitting the create, and the absent grant refusing every modify. The four documents were
+  right. Nothing needs widening and nothing was wider than described.
+
+**The table's own standing rule caught this, one level deeper than anyone had applied it.** The rule reads
+*"scope is proven by a 403 and never by a successful read."* The probe treated a successful **write** on a
+public repo as evidence about the grant, which is the same error the rule forbids for reads: a success can
+be explained by something other than the permission you are testing for. **On a public repository, a
+successful write to a public-write-open surface proves nothing either.**
+
+**A second instance of the same error was caught in the course of resolving this, and it was the lead's.**
+The scoped token was used to read `peel/fiddle` and `peel/fiddle-acceptance` — the two repositories this
+milestone's constraints record as **403, verified** — and both reads **succeeded**. That looked briefly
+like the credential had been widened. It had not: **both of those repositories are public too**, so the
+reads were public reads and proved nothing. The sound test is a permission-gated endpoint, and it confirms
+the boundary exactly:
+
+| repository | `GET /repos/{r}/collaborators` (requires push/admin) |
+|---|---|
+| `peel/fiddle` | `Resource not accessible by personal access token` |
+| `peel/fiddle-acceptance` | `Resource not accessible by personal access token` |
+| `peel/fiddle-effects-acceptance` | `1` |
+
+**The token's selection is the disposable repository alone, and this is now proven by denial rather than
+recorded on trust.** Use a permission-gated endpoint for scope proofs; `GET /repos/{owner}/{repo}` cannot
+serve, because every one of these repositories answers it to anybody.
+
+**Residue:** issue #25 ("scope probe") is **closed** as of this check. The rule stands unchanged — a lane
+must not create an issue at all — and it is now better founded, since the reason a lane can create one is
+that the repository is public, which no credential change can prevent.
+
+Owed, and small: the permission table's Issues row, its subsection, and ADR 018 still describe this as
+unexplained. The file's header rule is *append, never rewrite an existing finding*, so the correction is
+an appended resolution rather than an edit, and it wants its own bean rather than a quiet change to a
+converged bean's artifact.
+
+### A confirming pass that renames the criteria cannot confirm them
+
+`fiddle-4vsd`'s codex confirming pass returned a scorecard with **five criterion entries, no antipatterns
+detected, and dimension scores identical to the first pass** — correctness 9, domain_spec_fidelity 9,
+code_quality 8. It looked like a clean confirmation. **Three of its five criterion ids were not the bean's.**
+
+| what codex reported | what it actually was |
+|---|---|
+| `m3-decision-table-is-strict-and-names-ids` | **two binding criteria merged into one** — `m3-authorized-set-has-no-permissive-default` and `m3-decision-table-is-strict-on-its-own` |
+| `I6-control` | **an inversion row promoted to criterion status.** It is a measurement in the evidence, not a criterion |
+| `m3-decision-has-one-key-and-no-stale-max-pages` | **invented.** The `max_pages` removal is work this bean did; no criterion asks for it |
+| — | **`m3-silent-document-keeps-the-human-gate` was dropped entirely** |
+
+The dropped one is the safety property: *a document naming neither new policy row still yields
+`RequireHumanDecision` for the ready transition via `combine`'s Human minimum, while leaving
+`PublishDecisionRequest` ungated.* Two effect kinds, opposite outcomes, one silent document — the property
+that a deployment cannot accidentally remove the human gate by saying nothing.
+
+**Had the scorecard been merged on its shape, that property would have gone unconfirmed with no trace.**
+Five entries, all passing, matching dimensions, zero antipatterns — every surface signal a merge step looks
+at was correct. The substitution was only visible by diffing the reported ids against the bean's eval block,
+which nothing in the loop does automatically.
+
+**The rule: a confirming pass must be checked for criterion-set identity before its verdict is read.**
+Not "did it pass" but "did it score the things the bean asks about". Concretely, compare the id set in the
+scorecard against the id set in the binding `eval` block and reject any pass whose sets differ, before
+looking at a single verdict. `merge-scorecards.sh` matching on ids it is handed cannot catch this: a renamed
+criterion is a *missing* criterion wearing a plausible label, and a merge keyed on the scorecard's own ids
+will report full coverage of a set nobody asked for.
+
+**Why paraphrase is the mechanism.** Codex's substitutions were all *reasonable-sounding*. Merging the
+"no permissive default" and "strict on its own" criteria is defensible as a summary — both concern the
+decision table's strictness. `I6-control` genuinely was the bean's strongest finding, so promoting it reads
+as attentive. And the invented `max_pages` criterion described real work. A pass drifting toward *what the
+bean is about* rather than *what the bean asks* produces exactly this: heavy substantive overlap, a plausible
+scorecard, and one silently missing property. The narrower the criterion, the more likely a summary swallows
+it — and the human gate was the narrowest here.
+
+Recorded beside the entry on stale text. Same family: a claim that looks true because most of it is.
+
+### 2026-08-12 — A type that carries one value twice cannot be guarded by a behavioural test, but its shape can be
+Correcting a claim in `fiddle-11vj`'s own report, and closing the entry *Twenty-four tests passed over a post-forever bug* above.
+
+`fiddle-11vj` deleted `HumanDecisionRequest::request`, the duplicated request id, at `f2f4974`. The implementer reported three things about tests, and **the middle one was false**:
+
+1. The original bug is now inexpressible — **true**. The divergence cannot be constructed, so the two tests that constructed it could not be kept.
+2. *"No test can fail without the fix"* — **false**, and the evaluator wrote the counterexample. The type derives `Serialize`, so its **shape** is observable from outside without any behaviour being involved. Asserting the serialized top-level key set fails with the field re-added and passes without it. Five lines, and it closes the re-adding path mechanically.
+3. Refusing to invent a fake behavioural guard was correct — **true**, and independent of 2. The error was inferring from "no behavioural test is possible" to "no test is possible".
+
+**The rule.** When the fix for a hazard is to *remove* surface, the guard is not a behavioural test — there is no behaviour left to observe — it is an assertion on the type's **shape**, taken through whatever derive already exposes it (`Serialize`, `Debug`, a field-count constant). And assert the **key set**, never an occurrence count: a second copy that *disagreed* — the dangerous case — passes a count of one.
+
+Landed as `fiddle_core::decision::tests::the_request_id_is_held_in_exactly_one_place`.
+
+**Two things that were unrecorded and should not have been:**
+
+- **`docs/fiddle-agentic-factory-prd.md`'s `HumanDecisionRequest` sketch still declares a top-level `request_id`.** It is the only *tracked* document that did, the two design listings being gitignored. Read against the code it diverges in six ways, not one — `request_id`, `invocation_ref: InvocationRef`, `capability_id`, `proposed_effect: ProposedEffect` where the type carries `binding: DecisionBinding`, `Vec<Risk>`, `Vec<Alternative>` — and it carries **no binding at all**, so its top-level id is that design's *only* id and not a duplicate of anything. So it does not re-teach this hazard; it describes a pre-binding design that the marker superseded. Left as written, because this file's rule is that a finding's text outlives whether it still matters. Owed: a pass reconciling the PRD's type sketches against the shipped types, which is bigger than one bean.
+- **Deleting a `pub` field from a type re-exported at `crates/fiddle-core/src/lib.rs:35` is a breaking change to `fiddle-core`'s surface.** Workspace-internal only — the crate is unpublished and every consumer is in this repo — so nothing is owed downstream, and the compiler found every reader. Recorded because "no downstream exists" is a fact about today, and the next such deletion should have to say so out loud rather than assume it.
+
+Origin: evaluation of `fiddle-11vj` (codex confirming pass pending)
+Tags: #debt #idea
+
+### `mkdir -p` into a shared scratchpad inherits another lane's files, and a restore loop then writes them
+
+`fiddle-565u`'s inversion driver created its pristine-copy directory with `mkdir -p "$SP/pristine"`. That
+directory **already existed** and already held three `.rs` files another lane had pinned there. `mkdir -p`
+succeeds silently on an existing directory, so the driver treated a populated directory as its own. Its
+restore loop then walked *everything in that directory* and copied all of it back — including three files it
+had never pinned — into the **repository root** as untracked `decision_protocol.rs`, `human_mod.rs` and
+`validate.rs`.
+
+**No tracked file was harmed.** The lane verified `crates/fiddle-runtime/src/human/validate.rs` and
+`tests/decision_protocol.rs` were both unmodified, removed the three strays before committing, and reported
+it unprompted. The lead had independently noticed the strays in a status check and flagged them; the lane's
+explanation arrived with the cause already diagnosed.
+
+**Two mechanisms combined, and both are general.**
+
+**`mkdir -p` is not "make me a fresh directory".** It is "ensure a path exists", and it cannot distinguish
+between a directory it created and one it found. Any script that follows `mkdir -p` by treating the directory
+as exclusively its own is wrong on the second run and wrong when a sibling shares the parent. The scratchpad
+on this milestone is shared by every lane, so `$SP/<generic-name>` is a collision waiting for a second
+occupant. Use a name that cannot collide — the bean id — or create with plain `mkdir` and let it fail when the
+path exists, which is the whole point of the failure.
+
+**A restore loop that walks a directory restores whatever is in it.** The pristine-copy pattern is sound —
+copy before mutating, `cmp` after restoring, verify byte-identical — but its safety rests on the copy set
+being *exactly* what was pinned. A loop over `ls` rather than over a recorded manifest silently widens to
+include anything a neighbour left behind. **Record what you pinned and restore from that list, not from the
+directory.** The failure is asymmetric and quiet: extra files are written where they do not belong, and the
+`cmp` on the files that *were* pinned still passes, so every guard reports success.
+
+Nothing about the inversion evidence is affected — the mutations, their restores and the byte comparisons were
+all correct — but the incident is a reminder that a shared scratchpad is shared state, and this milestone has
+several lanes writing into it at once.
+
+### A latent fixture race, found only by adding load, and fixed "reasoned, not measured"
+
+`fiddle-565u`'s three new scenarios landed in the same test binary as `fiddle-pwyi`'s killed-repair scenario.
+One gate run then failed inside `delete_workspaces` with **`Directory not empty`** — the first failure of its
+kind, and the first run in which those scenarios shared a binary.
+
+The diagnosis: `kill -9` reaches one process, and the `git` checking a worktree out is **not in its process
+group**, so it kept writing behind `remove_dir_all`'s walk. That is a plausible and specific account.
+
+**The lane could not reproduce it** — not under CPU load, not with the previous condition restored, eight runs
+each way. So it fixed the race twice and **labelled both fixes "reasoned, not measured" at the sites
+themselves**: `interrupt_a_repair_inside_its_worktree` now waits for the worktree to be *checked out* rather
+than merely to exist, which is what its own doc comment had always claimed it did; and `remove_tree` waits a
+racing writer out for up to a second.
+
+**Neither fix weakens anything**, which is the property that makes an unreproducible fix acceptable: every
+caller still asserts emptiness afterwards, so a tree that never empties still fails the test. The fix removes
+a race without removing the assertion that would catch the race's effect.
+
+**The disposition is the point.** An unreproducible failure invites two bad responses — ignore it as a fluke,
+or claim a fix works because the failure stopped appearing. Neither is available here: the lane stated the
+diagnosis as reasoning, marked it as unmeasured *in the code* rather than only in a report, and left the
+detecting assertion in place. **A fix labelled as reasoned is auditable; a fix presented as verified when the
+failure was never reproduced is a claim nobody can check.**
+
+Worth noting what exposed it: **added load on a shared test binary**, not a new assertion. Two beans' scenarios
+in one binary changed the timing enough to surface a race that eight deliberate attempts could not.
+
+### A restore reverted committed work and the byte-comparison guard reported success
+
+**Amends the entry above on `mkdir -p` and shared scratchpads. "Record what you pinned" is necessary and not
+sufficient.**
+
+`fiddle-565u`'s inversion driver pinned its files once and reused the pin. After committing `4722dcf` the lane
+added documentation to `gh_stub.rs`, then ran an inversion touching that file. The restore wrote back the
+**pre-commit** pin, **deleting fifteen lines of committed comment** — and the `cmp` guard **passed**, because
+it compares the tree against the pin.
+
+**A guard that confirms "the tree matches the pin" says nothing when the pin is stale.** The comparison was
+correct and the conclusion it licensed was false, which is the same shape as every other guard failure on this
+milestone: a check whose subject was not the thing anybody wanted to know about.
+
+The lane caught it with `git diff` before committing and restored from `HEAD`. Nothing was lost. But the guard
+did not catch it, and the guard existed for exactly this.
+
+**It is the previous entry's incident one step along.** That one restored files the driver had **never pinned**,
+picked up from a directory it had `mkdir -p`'d into. This one restored a version of a file it **had** pinned,
+taken before the tree moved underneath it. Both are the same error:
+
+> **A restore trusts a copy whose relationship to the current tree was assumed rather than established — and
+> in both cases the guard passed.**
+
+**The fix removes the class rather than adding a second check against it: pin fresh immediately before each
+mutation, and never reuse a pin.** A pin taken at the moment of mutation cannot be stale. That is strictly
+better than validating a reused pin against `HEAD` first, because a validation step can be forgotten, mis-scoped,
+or itself go stale — whereas a pin with no lifetime has nothing to go stale.
+
+Verified by the lane: re-running the offending inversion now leaves the tree byte-identical with the
+documentation intact. Pinning also now covers `gh_stub.rs`, which the original manifest omitted.
+
+**The general lesson for inversion discipline on this project**, which is worth more than either incident:
+the pristine-copy pattern has three requirements and this milestone has now found two of them the hard way.
+
+1. Restore from a **recorded manifest**, not from a directory listing — or you write back files a neighbour
+   left behind.
+2. Take the pin **immediately before the mutation**, never earlier and never reused — or you write back a
+   version from before the tree moved.
+3. And the guard must compare against something whose currency is established, which (1) and (2) together
+   make automatic: a fresh pin of a known file set has no gap between what was copied and what was there.
+
+### Agreement is not verification: a plausible mechanism confirmed by a second reader has been checked zero times
+
+Twice on `fiddle-z9vy`, and the second instance is the clearer one.
+
+**The instance.** The lane's first message reported that an approval for a moved head "refuses at step 2 via
+`RequestAbsent` → `Correctable` → exit 11", correcting the bean's own claim of "refused at step 3 on identity".
+The reasoning was good: the gated target is `{repo}#{pr}@{head}`, the request id derives over that target, so a
+moved head yields an id no comment names. **The lead confirmed it back**, calling the reasoning sound and
+asking only that it be inverted.
+
+Then it was measured. `panic!` on entry to `resolve`: **7 of 22 tests failed and
+`an_approval_for_a_head_that_has_moved_is_unrecognisable_not_merely_rejected` PASSED.** A moved head **never
+enters `resolve` at all** — so neither step 2's `RequestAbsent` nor step 6's `HeadMoved` is the refusal, and
+**it is not a refusal**. Exit 10, having published a fresh question about the head that now exists:
+`PublishDecisionRequest::inspect` finds no comment carrying the new marker, answers `None`, and the capability
+takes the first walk and asks.
+
+**Three claims, two wrong, and the wrong ones were the ones that had been agreed.** The bean's, the lane's, and
+the measurement's. The lane's final report and bean text had it right; the lead's ruling restated the earlier
+version, so the wrong mechanism was in writing twice — by two different readers — before anything ran.
+
+**The general shape.** When a lane proposes a mechanism and the lead confirms it, the claim has been examined by
+two people and **tested by nobody**. Worse, it now *reads* as corroborated: a later reader sees a claim made
+and independently agreed, which is the signature of a verified fact. Agreement between readers who share a
+model of the code is not independence — it is the same reasoning performed twice.
+
+**So a mechanism claim is not corroborated by assent.** The only thing that corroborates it is a run that would
+have failed had it been false. On this milestone the cheap form is available almost always: `panic!` at the
+entry to the function the mechanism names, and see which tests notice. That single mutation refuted a claim two
+readers had agreed on, and it took one line.
+
+**A second instance on the same bean, in the opposite direction.** The lane wrote that
+`Ignored::as_str`'s only caller was a unit test. The lead "corrected" it by pointing at `validate.rs:630` and
+`:636` — which are **`serde_json::Value::as_str()`** on `response.body["state"]` and
+`response.body["head"]["sha"]`, a different method on a different type. The lead's correction was itself the
+token-vs-structure error the lead had documented **in that same dispatch**. The lane refuted it by grepping for
+the *receiver* rather than the method: `reason.as_str` gives one hit in that file, at `:775`, and
+`#[cfg(test)]` begins at `:659`.
+
+**Both instances have the same remedy and it is not "be more careful".** It is that a claim about *mechanism* —
+which code path runs, which guard fires, who calls what — should be stated with the mutation that would refute
+it, and the mutation should be run. The lane's practice of pinning the exit code *and* naming the guard, then
+inverting to confirm which guard fires, is what caught both. **A mechanism nobody tried to break is a
+hypothesis with a citation.**
+
+### 2026-08-13 — The grant resolution is written into the permission table, and ADR 018 never needed it
+
+Acts on *The grant discrepancy is resolved: a public repository, not an undocumented permission*, above, and
+closes the "**Owed, and small**" paragraph that entry ends with. That paragraph's text stays as written, per
+this file's rule; this entry records what was done and corrects one of its claims.
+
+**Done.** `docs/technical/effects-repository.md` now carries *Resolved 2026-08-13: a public repository, not an
+undocumented grant* — appended after the subsection it supersedes rather than replacing it, with the
+superseded instruction (*"treat the effective grant as wider than this table in an unknown direction"*) marked
+in place so a reader cannot act on it, and the permission table's Issues row showing its old status struck
+rather than swapped. The sharper rule is stated there: **on a public repository a successful write proves
+nothing about a grant either**, because a surface open to any authenticated identity answers identically to a
+credential that holds the permission and to one that does not.
+
+**The claim being corrected.** That paragraph says *"the permission table's Issues row, its subsection, and
+**ADR 018** still describe this as unexplained"*, and the entry's opening names ADR 018 as one of the four
+documents describing the grant. Neither is true of ADR 018, and the entry that lists the four enumerating
+documents inside `effects-repository.md` does not include it — it names `.env.example`,
+`docs/evaluator-calibration-general.md`, `.github/workflows/github-effects.yml` and the table itself.
+Measured over all **180** lines of `docs/technical/decisions/018-a-graphql-200-is-not-a-success.md`, case-
+insensitively: `unexplained|unresolved|wider|createissue|#25|issues` returns **one** hit, and it is the verb
+in *"The probe issues one cause"*; `contents|pull requests|metadata|secrets|actions: |permission|grant|403|
+token` returns **one** hit, and it is `personal access token` inside a quoted response body. What ADR 018
+actually says about the episode is *"a mutation this credential is not permitted to issue"* — which the
+resolution confirms rather than contradicts, since `closeIssue` is exactly the operation the absent grant
+refuses. **So ADR 018 needs no append**, and the document that said it did was wrong about it in both
+directions: it neither enumerates the grant nor calls the success unexplained.
+
+**Nothing here widened or exercised a credential.** The gated-endpoint table this entry's parent records was
+re-verified by the lane that resolved the discrepancy; this entry copies it and measured nothing at GitHub.

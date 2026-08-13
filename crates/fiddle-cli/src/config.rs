@@ -416,11 +416,30 @@ pub struct GitHub {
     #[serde(default = "default_git")]
     pub git: PathBuf,
 
-    /// The worktree whose `HEAD` is published.
+    /// The worktree whose `HEAD` is published, **for a publication only**.
     ///
     /// No default, for [`Workspace::fixture`]'s reason: the commit being
-    /// published is the thing this capability is *about*, and a guessed value
+    /// published is the thing `publish_change` is *about*, and a guessed value
     /// would publish whichever repository the process was standing in.
+    ///
+    /// # A proposal does not read this key, and must not
+    ///
+    /// `propose_change` publishes the tree its own attempt worked in, and that
+    /// path is *derived* rather than configured:
+    /// `fiddle_runtime::capability::attempt_worktree` builds it from
+    /// `[workspace] root`, the project name and the invocation reference — the
+    /// canonical inputs the branch name itself is derived from — so the tree the
+    /// attempt writes and the tree the push publishes are one value that cannot
+    /// come to disagree. A proposal that took the worktree from this key instead
+    /// would publish a commit from whichever tree an operator happened to name,
+    /// with the payload hash still matching because no payload mentions a path;
+    /// `ProposeChange::execute` refuses exactly that mismatch rather than trusting
+    /// its caller, which is why the derivation is the one input and this key is
+    /// not a second one.
+    ///
+    /// So a document describing a proposing deployment leaves `work` out, and
+    /// `config check` reports it as absent rather than as something a proposal is
+    /// waiting for.
     #[serde(default)]
     pub work: Option<PathBuf>,
 
@@ -490,6 +509,19 @@ pub struct GitHub {
     /// [`fiddle_core::combine`]'s job rather than this table's.
     #[serde(default)]
     pub policy: PolicyTable,
+
+    /// Who this deployment nominated to decide.
+    ///
+    /// `Option` with no default, following `work` and `workflow` rather than
+    /// `policy`, and the difference between the two is the whole reason: an absent
+    /// `policy` is a document adding no *gate*, which is a coherent thing to say
+    /// nothing about, whereas an absent `decision` would be a document adding no
+    /// *approver* — and a default there is either nobody, which can never continue
+    /// a run, or somebody nobody nominated. So a deployment that never puts a
+    /// change to a person leaves the table out, and one that names it names an
+    /// approver or is refused. See [`Decision`].
+    #[serde(default)]
+    pub decision: Option<Decision>,
 }
 
 /// `[github] read_retry = { attempts, initial, max }`.
@@ -666,8 +698,9 @@ impl<'de> Deserialize<'de> for Repo {
 /// Exhaustive rather than a map, and that is the point of the type: a map would
 /// admit a key for an effect kind this build has never heard of and accept it
 /// silently, which is precisely how a rule an operator believed they had written
-/// comes to apply to nothing. Three fields, three kinds, and adding a fourth
-/// kind is a compile error in [`PolicyTable::rule_for`].
+/// comes to apply to nothing. One field per kind, and adding a kind without a
+/// field is a compile error in [`PolicyTable::rule_for`] — which is how the two
+/// kinds M3 introduced arrived here rather than being forgotten.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyTable {
@@ -677,6 +710,10 @@ pub struct PolicyTable {
     pub ensure_pull_request: DeploymentRule,
     #[serde(default = "allow")]
     pub ensure_check_requested: DeploymentRule,
+    #[serde(default = "allow")]
+    pub publish_decision_request: DeploymentRule,
+    #[serde(default = "allow")]
+    pub ensure_pull_request_ready: DeploymentRule,
 }
 
 /// What an absent rule means.
@@ -696,6 +733,8 @@ impl Default for PolicyTable {
             ensure_branch_published: allow(),
             ensure_pull_request: allow(),
             ensure_check_requested: allow(),
+            publish_decision_request: allow(),
+            ensure_pull_request_ready: allow(),
         }
     }
 }
@@ -703,15 +742,89 @@ impl Default for PolicyTable {
 /// **The key is consumed here, and this is the only place it is read.**
 ///
 /// The executor asks this question once per effect, at its step 4, and acts on
-/// the answer `combine` gives. A `match` rather than a lookup so that the three
-/// keys cannot be cross-wired without the mapping being visible in five lines.
+/// the answer `combine` gives. A `match` rather than a lookup so that the keys
+/// cannot be cross-wired without the mapping being visible in as many lines as
+/// there are kinds.
 impl DeploymentPolicy for PolicyTable {
     fn rule_for(&self, kind: EffectKind) -> DeploymentRule {
         match kind {
             EffectKind::EnsureBranchPublished => self.ensure_branch_published,
             EffectKind::EnsurePullRequest => self.ensure_pull_request,
             EffectKind::EnsureCheckRequested => self.ensure_check_requested,
+            EffectKind::PublishDecisionRequest => self.publish_decision_request,
+            EffectKind::EnsurePullRequestReady => self.ensure_pull_request_ready,
         }
+    }
+}
+
+/// `[github.decision]` — who may decide.
+///
+/// A strict table of its own, for [`ReadRetryTable`]'s reason: `deny_unknown_fields`
+/// on `[github]` does not reach into a child, so a misspelled `authorised = […]`
+/// would otherwise parse as nothing and leave an operator believing they had
+/// nominated somebody. The strictness lives on [`DecisionDocument`], which is what
+/// serde actually deserializes; this type is only ever reached through the
+/// conversion below, so a value of it that has not been checked cannot be parsed
+/// into existence.
+///
+/// **One key, and it stays one.** A `max_pages` bound was specified for this table
+/// and then removed, because `human::CONVERSATION_PAGES`
+/// already argues the case against it: nobody asked to configure how much of a
+/// conversation fiddle reads, and a document value that could disagree with the
+/// operation's own bound would be worse than a constant that cannot. Two reads of
+/// one conversation — one to find this run's question, one to find the reply below
+/// it — have to agree, and the way to guarantee that is a constant.
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "DecisionDocument")]
+pub struct Decision {
+    /// The immutable numeric user ids of the people this deployment nominated to
+    /// decide.
+    ///
+    /// **Ids, and the type is what refuses a login.** A login can be changed and
+    /// the vacated name reclaimed, so an allowlist matching one would let a
+    /// renamed-and-reclaimed account inherit an approver's authority; and not
+    /// `author_association` either, which says what somebody's relationship to the
+    /// repository is rather than whether *this deployment* nominated them. A
+    /// `Vec<u64>` means a document cannot express either, so there is no path on
+    /// which the code has to match an authorization loosely — the refusal belongs
+    /// to the schema rather than to a check somebody could forget to write.
+    ///
+    /// No default, and an empty list refused: see the conversion below.
+    pub authorized: Vec<u64>,
+}
+
+/// The same table before its own constraint has been applied.
+///
+/// The constraint is applied at the parse boundary rather than where the value is
+/// used, for [`ReadRetryDocument`]'s reason: an empty approver list is a mistake an
+/// operator can only fix in the file, so the file is where it is refused.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionDocument {
+    /// No `default`, so a document naming the table and forgetting the key is
+    /// refused by serde naming the key — which is a different refusal from the
+    /// empty list below, because a forgotten key and an emptied one are different
+    /// mistakes.
+    authorized: Vec<u64>,
+}
+
+impl TryFrom<DecisionDocument> for Decision {
+    type Error = String;
+
+    fn try_from(document: DecisionDocument) -> Result<Self, String> {
+        if document.authorized.is_empty() {
+            return Err(
+                "`authorized = []` names nobody, and nobody is not the permissive \
+                 reading: a deployment that can publish a question and can never \
+                 accept an answer suspends every run for ever. Name the numeric \
+                 user ids that may decide, or leave `[github.decision]` out of the \
+                 document altogether"
+                    .to_string(),
+            );
+        }
+        Ok(Self {
+            authorized: document.authorized,
+        })
     }
 }
 
@@ -1672,6 +1785,29 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
         );
     }
 
+    /// Every kind a document may write a rule for, with the key it is written as.
+    ///
+    /// One list rather than two, because the two scenarios below assert the same
+    /// mapping from opposite sides and a list that was extended in one of them
+    /// would leave the other silently sampling. Adding a kind to
+    /// [`PolicyTable::rule_for`] without adding it here leaves an arm no test
+    /// reaches — which is the state `publish_decision_request` and
+    /// `ensure_pull_request_ready` were in between the task that added them and
+    /// this one.
+    const RULE_KEYS: [(&str, EffectKind); 5] = [
+        ("ensure_branch_published", EffectKind::EnsureBranchPublished),
+        ("ensure_pull_request", EffectKind::EnsurePullRequest),
+        ("ensure_check_requested", EffectKind::EnsureCheckRequested),
+        (
+            "publish_decision_request",
+            EffectKind::PublishDecisionRequest,
+        ),
+        (
+            "ensure_pull_request_ready",
+            EffectKind::EnsurePullRequestReady,
+        ),
+    ];
+
     /// **Each key answers for its own effect kind, and for no other.**
     ///
     /// Written out over the whole product rather than sampled: the failure this
@@ -1680,11 +1816,7 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
     /// `rule_for` that returned one field for everything.
     #[test]
     fn every_rule_key_governs_the_effect_kind_it_is_named_after() {
-        let kinds = [
-            ("ensure_branch_published", EffectKind::EnsureBranchPublished),
-            ("ensure_pull_request", EffectKind::EnsurePullRequest),
-            ("ensure_check_requested", EffectKind::EnsureCheckRequested),
-        ];
+        let kinds = RULE_KEYS;
         for (key, _) in kinds {
             let table = github(&format!("{FORGE}\n[github.policy]\n{key} = \"deny\"\n")).policy;
             for (other_key, other_kind) in kinds {
@@ -1730,22 +1862,257 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
     /// An absent `[github.policy]` is the same table as one written with every
     /// key set to `allow` — a document that says nothing must not be stricter
     /// than one that says so out loud.
+    ///
+    /// The `allow` document is built from [`RULE_KEYS`] rather than written out,
+    /// so a kind added to the enumeration is compared here too instead of being
+    /// asserted about a table that never mentioned it.
     #[test]
     fn an_absent_policy_table_adds_no_gate() {
         let absent = github(FORGE).policy;
         let spelled = github(&format!(
-            "{FORGE}\n[github.policy]\nensure_branch_published = \"allow\"\n\
-             ensure_pull_request = \"allow\"\nensure_check_requested = \"allow\"\n"
+            "{FORGE}\n[github.policy]\n{}",
+            RULE_KEYS
+                .iter()
+                .map(|(key, _)| format!("{key} = \"allow\"\n"))
+                .collect::<String>()
         ))
         .policy;
-        for kind in [
-            EffectKind::EnsureBranchPublished,
-            EffectKind::EnsurePullRequest,
-            EffectKind::EnsureCheckRequested,
-        ] {
-            assert_eq!(absent.rule_for(kind), DeploymentRule::Allow);
-            assert_eq!(absent.rule_for(kind), spelled.rule_for(kind));
+        for (key, kind) in RULE_KEYS {
+            assert_eq!(absent.rule_for(kind), DeploymentRule::Allow, "{key}");
+            assert_eq!(absent.rule_for(kind), spelled.rule_for(kind), "{key}");
         }
+    }
+
+    /// **A silent document does not disarm the human gate.**
+    ///
+    /// This is the cell [`fiddle_core::combine`] exists for, reached through the
+    /// deployment table rather than through a unit test of the policy module, and
+    /// it is what makes defaulting the two new rows safe rather than lax: `Allow`
+    /// is *this document adds no gate*, and the capability's own minimum survives
+    /// it.
+    ///
+    /// The second half is the one a reader would not think to check. The question
+    /// itself must never be gated — an effect that published a question and then
+    /// needed a decision to publish it could not terminate — so
+    /// `publish_decision_request` defaulting to `allow` is load-bearing in the
+    /// opposite direction from its sibling.
+    #[test]
+    fn a_silent_policy_table_still_requires_a_human_for_the_ready_transition() {
+        let table = github(FORGE).policy;
+        assert_eq!(
+            table.rule_for(EffectKind::EnsurePullRequestReady),
+            DeploymentRule::Allow,
+            "a document that says nothing must not be stricter than one saying so"
+        );
+        assert!(
+            matches!(
+                fiddle_core::combine(
+                    fiddle_core::HumanDecisionRequirement::Human,
+                    table.rule_for(EffectKind::EnsurePullRequestReady)
+                ),
+                fiddle_core::PolicyDecision::RequireHumanDecision { .. }
+            ),
+            "the human gate must survive a document that names neither new kind"
+        );
+        assert_eq!(
+            fiddle_core::combine(
+                fiddle_core::HumanDecisionRequirement::Automatic,
+                table.rule_for(EffectKind::PublishDecisionRequest)
+            ),
+            fiddle_core::PolicyDecision::Allow,
+            "publishing a question cannot itself require a question"
+        );
+    }
+
+    /// **A document may still deny the gated transition outright**, and then
+    /// there is nothing left to ask about.
+    ///
+    /// [`fiddle_core::combine`]'s first arm, reached from a document rather than
+    /// from a literal: the deny is written in `[github.policy]`, read back through
+    /// `rule_for`, and handed to `combine` beside the capability's own `Human`
+    /// minimum — the pair that would be a question if the document had said
+    /// nothing. What the process does with that decision is
+    /// `EffectError::PolicyDenied`'s `Recurrence::Permanent`, which is exit 20;
+    /// this asserts the half that starts in the file.
+    #[test]
+    fn a_denied_ready_transition_is_a_denial_and_not_a_question() {
+        let table = github(&format!(
+            "{FORGE}\n[github.policy]\nensure_pull_request_ready = \"deny\"\n"
+        ))
+        .policy;
+        assert_eq!(
+            table.rule_for(EffectKind::EnsurePullRequestReady),
+            DeploymentRule::Deny
+        );
+        assert!(
+            matches!(
+                fiddle_core::combine(
+                    fiddle_core::HumanDecisionRequirement::Human,
+                    table.rule_for(EffectKind::EnsurePullRequestReady)
+                ),
+                fiddle_core::PolicyDecision::Deny { .. }
+            ),
+            "a settled refusal is not a wait, even against a Human minimum"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // `[github.decision]`
+    // -----------------------------------------------------------------------
+
+    /// [`FORGE`] with a `[github.decision]` table carrying `body`.
+    ///
+    /// A mutation of a document already known to load, for the reason every other
+    /// scenario in this file uses one: a refusal is then attributable to the lines
+    /// under test and to nothing else in the file.
+    fn with_decision(body: &str) -> String {
+        format!("{FORGE}\n[github.decision]\n{body}\n")
+    }
+
+    /// The table [`with_decision`] builds, or the refusal it earned.
+    fn decision(body: &str) -> Result<Decision, toml::de::Error> {
+        toml::from_str::<Config>(&with_decision(body)).map(|config| {
+            config
+                .github
+                .expect("the forge table is there")
+                .decision
+                .expect("the decision table is there")
+        })
+    }
+
+    /// The table loads, and the ids arrive in the order the document wrote them.
+    ///
+    /// The order is asserted rather than the set, because the walk's rule for which
+    /// reply decides is about ordering too, and a list quietly sorted or reversed on
+    /// the way in is the kind of difference no other test here would see.
+    #[test]
+    fn the_decision_table_names_who_may_decide() {
+        let decision = decision("authorized = [505401, 42]").unwrap();
+        assert_eq!(decision.authorized, [505401, 42]);
+    }
+
+    /// **Empty is not permissive.**
+    ///
+    /// A deployment naming nobody can publish a question and can never accept an
+    /// answer, so every run under it would suspend for ever — a document to refuse
+    /// rather than a run that accepts anybody. The message has to say *why*,
+    /// because "authorized is empty" is a restatement of the line the operator is
+    /// already looking at.
+    ///
+    /// **The caret lands on the table, not on the key**, and the name says so
+    /// rather than claiming the key's own line: the constraint is applied by
+    /// [`Decision`]'s conversion, which serde reaches once the whole table has
+    /// been read, so the span it can attribute the refusal to is the table's. The
+    /// alternative — a newtype on the field, the way [`Repo`] refuses a
+    /// repository at `repo`'s own line — would buy one line of precision for a
+    /// second type and a second place to look, over a table whose every key is on
+    /// the two lines the caret already covers.
+    #[test]
+    fn an_empty_authorized_list_is_refused_at_the_table_it_was_written_in() {
+        let text = with_decision("authorized = []");
+        let error = toml::from_str::<Config>(&text).unwrap_err();
+        let message = error.message().to_string();
+        assert!(message.contains("authorized"), "got {message}");
+        assert!(
+            message.contains("nobody"),
+            "the reason must be stated: {message}"
+        );
+
+        // And it is refused *somewhere* an operator can go and edit, which is the
+        // whole value of a line-aware diagnostic.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiddle.toml");
+        std::fs::write(&path, &text).unwrap();
+        let ConfigError::Invalid(invalid) = load(&path).unwrap_err() else {
+            panic!("a document naming nobody must be an invalid document");
+        };
+        let offset = invalid
+            .span
+            .expect("miette needs somewhere to point")
+            .offset();
+        assert_eq!(
+            line_of(&text, offset),
+            text.lines()
+                .position(|line| line.starts_with("[github.decision]"))
+                .unwrap()
+                + 1,
+            "the span must land on the table that named nobody"
+        );
+    }
+
+    /// Absent is refused too, and differently: one document forgot the key and
+    /// one emptied it. There is no default, because a guessed approver is a
+    /// guessed authorization.
+    #[test]
+    fn an_absent_authorized_list_is_refused() {
+        // A table with nothing in it, which is what "forgot the key" looks like now
+        // that the table has exactly one key to forget.
+        let error = toml::from_str::<Config>(&with_decision("")).unwrap_err();
+        assert!(
+            error.message().contains("authorized"),
+            "the refusal must name the missing key, got {}",
+            error.message()
+        );
+        // Distinct from the empty case: that one explains itself, and this one is
+        // serde saying a required field is not there.
+        assert!(
+            !error.message().contains("nobody"),
+            "a forgotten key and an emptied one must not read alike: {}",
+            error.message()
+        );
+    }
+
+    /// Strictness reaches one table deeper, for [`ReadRetryTable`]'s reason:
+    /// `deny_unknown_fields` on `[github]` does not reach into a child, and a
+    /// misspelled key that parsed as nothing would be an authorization an operator
+    /// believes they wrote.
+    ///
+    /// **The document is otherwise complete, and that is what makes this a test
+    /// about a mistyped key rather than about an unknown one.** The stray key is a
+    /// misspelling of the table's only real key, beside a correct spelling of it —
+    /// so the same document with the stray line removed loads, which is asserted
+    /// here, and the refusal is therefore attributable to strictness and to nothing
+    /// else. Without that half the scenario would keep passing over a table that had
+    /// stopped being strict, on the strength of `authorized` being absent instead.
+    #[test]
+    fn a_mistyped_key_in_the_decision_table_is_refused() {
+        let error =
+            toml::from_str::<Config>(&with_decision("authorized = [505401]\nauthorised = [42]"))
+                .unwrap_err();
+        assert!(
+            error.message().contains("authorised"),
+            "the diagnostic must name the key that will do nothing, got {}",
+            error.message()
+        );
+        // The half that keeps the scenario honest: strictness is the only reason the
+        // document above was refused.
+        assert_eq!(
+            decision("authorized = [505401]").unwrap().authorized,
+            [505401],
+            "the same document without the misspelling has to load"
+        );
+    }
+
+    /// **The type refuses a login, so no document can express one.**
+    ///
+    /// Not a check somebody could forget: `Vec<u64>` means a deployment cannot
+    /// write an authorization that the code would then have to match loosely
+    /// against a name that can be changed and reclaimed.
+    #[test]
+    fn the_authorized_list_takes_ids_and_refuses_logins() {
+        assert!(decision(r#"authorized = ["peel"]"#).is_err());
+        assert!(
+            decision(r#"authorized = [505401, "peel"]"#).is_err(),
+            "one login among the ids is still a login"
+        );
+    }
+
+    /// A deployment that never puts a change to a person names no approvers, and
+    /// the table is absent rather than invented — `work` and `workflow`'s rule,
+    /// not `policy`'s.
+    #[test]
+    fn a_document_naming_no_decision_channel_still_loads() {
+        assert!(github(FORGE).decision.is_none());
     }
 
     /// An M0-shaped document still loads, with the third table absent rather

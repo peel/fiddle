@@ -395,13 +395,35 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             // type; the *consequence* of it is here, because this is where a run
             // concludes. Neither adds a row to the exit-code table — the CLI's
             // single `exit_code_for` maps these to 11 and 20 unchanged.
-            let outcome = match error.recurrence() {
-                Recurrence::Correctable => RunOutcome::Retryable {
-                    reason: reason.clone(),
-                },
-                Recurrence::Permanent => RunOutcome::Failed {
-                    error: reason.clone(),
-                },
+            //
+            // **Three rows since M3, and the third is not a failure.** A
+            // capability that published a question and stopped did what it was
+            // built to do; what it did not do is produce evidence, which is why
+            // it arrives on this arm at all. The status word travels with the
+            // outcome rather than being fixed at `"failed"`, because a bundle
+            // that said `Suspended` on one line and `failed` on the next would
+            // be two renderings of one run that disagree — and an operator
+            // reading the progress entry would conclude the opposite of what
+            // the exit code told them.
+            let (outcome, status) = match error.recurrence() {
+                Recurrence::Correctable => (
+                    RunOutcome::Retryable {
+                        reason: reason.clone(),
+                    },
+                    "failed",
+                ),
+                Recurrence::Permanent => (
+                    RunOutcome::Failed {
+                        error: reason.clone(),
+                    },
+                    "failed",
+                ),
+                Recurrence::Awaiting => (
+                    RunOutcome::Suspended {
+                        reason: reason.clone(),
+                    },
+                    "awaiting",
+                ),
             };
             // Recorded too: "the capability tried and failed" and "the
             // capability's fate is unknown" are different things to recover
@@ -412,7 +434,7 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             // whether the world may have moved, and a refusal and a lost
             // connection are the same answer to that question. Which row the
             // *run* ended on is the bundle's business, not the journal's.
-            ctx.journal.record_effect(capability_id, "failed", &[]);
+            ctx.journal.record_effect(capability_id, status, &[]);
             // **The arm this exists for.** An execution that failed is when an
             // operator most needs to know what it did before it failed, and
             // until this line the answer published here was `[]`.
@@ -420,11 +442,18 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             RunReport {
                 outcome,
                 next_action: derived,
-                executions: vec![execution(capability_id, "failed", observed.clone())],
+                executions: vec![execution(capability_id, status, observed.clone())],
+                // Filed under the capability's own stage, and carrying the same
+                // text the outcome does. For a suspended run that is what makes
+                // the bundle self-sufficient: the reason names the conversation
+                // through [`InteractionRef`](crate::human::InteractionRef)'s one
+                // `Display`, so a reader who opens the published bundle and
+                // never saw the terminal can still find the pull request the
+                // question is waiting on.
                 progress: vec![progress(
                     capability_id,
                     ctx.capability.stage(),
-                    "failed",
+                    status,
                     reason,
                     observed,
                 )],
@@ -840,6 +869,13 @@ mod tests {
                 .record(format!("step:{}:{}", kind.as_str(), step.as_str()));
         }
 
+        /// Recorded under a prefix of its own, so a scenario reading this log can
+        /// tell the validation order from the authorization order — the same
+        /// distinction `FileJournal` keeps by writing a third record kind.
+        fn record_decision_step(&self, step: crate::human::validate::DecisionStep) {
+            self.log.record(format!("decision:{}", step.as_str()));
+        }
+
         fn record_effect(&self, _capability: CapabilityId, status: &str, _e: &[EvidenceRef]) {
             self.log.record(format!("effect:{status}"));
         }
@@ -1118,14 +1154,33 @@ mod tests {
     /// never ran.
     ///
     /// The world has to stay *observable* for the derivation to reach `Execute`
-    /// at all, so the failure is injected as a readable but unwritable change
-    /// directory rather than a missing one. That is a Unix permission, hence
-    /// the gate; and `root` ignores the permission, hence the early return.
-    #[cfg(unix)]
+    /// at all, so the failure is injected into the write alone rather than into
+    /// the directory the observation reads.
+    ///
+    /// # The mechanism is a file type, not a permission bit, and that is the point
+    ///
+    /// This used to seal `changes/` to mode `0500` and then **return early** if the
+    /// run completed anyway, with the comment *"an identity that ignores the
+    /// permission bits"*. `fiddle-c8cx` measured this test to be the **only** pin
+    /// in the workspace on `CapabilityError::Write`'s `Correctable` arm — flipping
+    /// that arm gives 423 passed / 1 failed over 20 binaries, and this is the sole
+    /// noticer. So under `root` the early return fired, this test asserted nothing,
+    /// and that arm was pinned by nothing at all with the suite still green.
+    ///
+    /// A directory standing where [`write_atomically`] must create its temporary
+    /// file takes the identity out of the question: writing a file to a path that
+    /// is already a directory fails with `EISDIR` for **every** identity, because
+    /// it is a property of the path rather than a permission the caller might be
+    /// exempt from. Hence no early return, no `#[cfg(unix)]`, and nothing left for
+    /// an identity to change.
+    ///
+    /// It costs a coupling to the `.{name}.tmp` spelling inside
+    /// `write_atomically`, and that coupling **fails loudly** rather than silently:
+    /// if the temporary's name changes, the write succeeds, the run completes, and
+    /// the `match` below panics on `Completed`. That is the opposite of the early
+    /// return it replaces, and it is the property being bought.
     #[tokio::test]
     async fn a_capability_failure_is_retryable_and_recorded() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = fixture_root();
         let log = std::sync::Arc::<Log>::default();
         let changes_dir = dir.path().join("changes");
@@ -1134,8 +1189,9 @@ mod tests {
         let changes = StubChangePort::new(dir.path());
         let journal = SpyJournal::watching(&log);
 
-        // Readable and listable, but not writable: observation still succeeds.
-        std::fs::set_permissions(&changes_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        // The change set itself stays absent, so the observation still succeeds and
+        // the derivation still reaches `Execute`; only the write is obstructed.
+        std::fs::create_dir_all(changes_dir.join(format!(".{WORK_ID}.json.tmp"))).unwrap();
         let report = run(&context(
             &capability,
             &work_items,
@@ -1144,12 +1200,6 @@ mod tests {
             &attempt_id(),
         ))
         .await;
-        std::fs::set_permissions(&changes_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        if report.outcome == RunOutcome::Completed {
-            // Running with an identity that ignores the permission bits.
-            return;
-        }
 
         match &report.outcome {
             RunOutcome::Retryable { reason } => {
@@ -1184,6 +1234,22 @@ mod tests {
         /// The write's answer was lost and the settling read did not settle it.
         /// Correctable.
         Unresolved,
+        /// The capability published a question on a conversation and stopped.
+        /// Awaiting — and the one refusal that is not a failure.
+        AwaitingDecision,
+    }
+
+    /// The conversation the awaiting scenarios wait on.
+    ///
+    /// A value rather than a literal in each assertion, so a test that asserted
+    /// the rendering asserts the *same* conversation the run was given rather
+    /// than a string that happens to look like one.
+    fn conversation() -> crate::human::InteractionRef {
+        crate::human::InteractionRef::GitHubPullRequestComment {
+            repo: "peel/fiddle-effects-acceptance".to_string(),
+            pr: 4,
+            comment: 991,
+        }
     }
 
     #[async_trait::async_trait]
@@ -1204,6 +1270,13 @@ mod tests {
         ) -> Result<EvidenceRef, CapabilityError> {
             self.log.record("execute");
             let kind = fiddle_core::EffectKind::EnsurePullRequest;
+            if let Refusal::AwaitingDecision = self.how {
+                return Err(CapabilityError::AwaitingDecision {
+                    request: fiddle_core::DecisionRequestId("0123456789abcdef".to_string()),
+                    interaction: conversation(),
+                    question: "may this change be marked ready for review?".to_string(),
+                });
+            }
             Err(CapabilityError::Effect(match self.how {
                 Refusal::PolicyDenied => crate::effect::EffectError::PolicyDenied {
                     kind,
@@ -1213,6 +1286,8 @@ mod tests {
                     kind,
                     reason: "gh was killed before it answered".to_string(),
                 },
+                // Handled above: it is not an `EffectError` at all.
+                Refusal::AwaitingDecision => unreachable!(),
             }))
         }
     }
@@ -1273,5 +1348,77 @@ mod tests {
             assert_eq!(report.progress[0].status, "failed");
             assert_eq!(log.events(), ["intent", "execute", "effect:failed"]);
         }
+    }
+
+    /// One run, and it may only be read one way.
+    ///
+    /// A capability that published a question and stopped produces
+    /// [`RunOutcome::Suspended`](fiddle_core::RunOutcome::Suspended) — exit 10 —
+    /// and neither of the rows the arm used to be able to produce. Both
+    /// exclusions are asserted, because both are wrong in ways an operator's
+    /// automation acts on: a `Retryable` invites a repeat that asks the same
+    /// question again, and a `Failed` tells a caller to abandon a run an answer
+    /// would finish.
+    #[tokio::test]
+    async fn a_capability_awaiting_a_decision_suspends_rather_than_failing_or_retrying() {
+        let dir = fixture_root();
+        let log = std::sync::Arc::<Log>::default();
+        let capability = Refusing {
+            how: Refusal::AwaitingDecision,
+            log: std::sync::Arc::clone(&log),
+        };
+        let work_items = StubWorkItemPort::new(dir.path());
+        let changes = StubChangePort::new(dir.path());
+        let journal = SpyJournal::watching(&log);
+
+        let report = run(&context(
+            &capability,
+            &work_items,
+            &changes,
+            &journal,
+            &attempt_id(),
+        ))
+        .await;
+
+        let reason = match &report.outcome {
+            RunOutcome::Suspended { reason } => reason.clone(),
+            other => panic!("a published question is a wait, not a {other:?}"),
+        };
+        assert!(
+            !matches!(report.outcome, RunOutcome::Retryable { .. }),
+            "repeating asks the same question again"
+        );
+        assert!(
+            !matches!(report.outcome, RunOutcome::Failed { .. }),
+            "an answer would finish this run"
+        );
+
+        // **§6.7, asserted rather than intended.** The reason and the progress
+        // entry both name the conversation, through the one `Display` that
+        // renders it — so a reader holding only the published bundle can open
+        // the pull request. Compared against the value the run was given, not
+        // against a hand-written string, so a rendering that drifted fails here.
+        let named = conversation().to_string();
+        assert!(
+            reason.as_str().contains(&named),
+            "the outcome must say where to look: {reason}"
+        );
+        assert_eq!(report.progress.len(), 1);
+        assert_eq!(
+            report.progress[0].stage, "refused",
+            "the entry is filed under the capability's own stage"
+        );
+        assert!(
+            report.progress[0].summary.as_str().contains(&named),
+            "the bundle must say where to look: {}",
+            report.progress[0].summary
+        );
+
+        // The word a bundle consumer reads must not contradict the outcome. It
+        // was `"failed"` on every row until this one existed, which would have
+        // had the progress entry deny what the exit code said.
+        assert_eq!(report.executions[0].status, "awaiting");
+        assert_eq!(report.progress[0].status, "awaiting");
+        assert_eq!(log.events(), ["intent", "execute", "effect:awaiting"]);
     }
 }

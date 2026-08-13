@@ -21,7 +21,7 @@ in order to be dirtied.
 | Visibility | **public** |
 | Default branch | `main` — its only permanent branch |
 | Contents | `README.md` and `.github/workflows/fiddle-check.yml`, and nothing else |
-| Dispatch target | `.github/workflows/fiddle-check.yml`, installed by commit `73b480a` |
+| Dispatch target | `.github/workflows/fiddle-check.yml`, installed by commit `73b480a` — **a commit in that repository, not in `peel/fiddle`**, so `git rev-parse` fails on it here by construction |
 | Lane | `scripts/live-github.sh`, opt-in, never part of the gate |
 | Contract | `FIDDLE_BIN` names the compiled `fiddle`; `FIDDLE_GITHUB_TOKEN` holds the credential; `gh`, `git` and `jq` must be on `PATH` |
 | Secrets | none — and the lane's credential could not read one if there were |
@@ -67,9 +67,40 @@ contents.
    fiddle's, is disposable, and is removed by the lane that made it.
 3. **Everything titled `fiddle-…` in the Actions history is disposable** and is
    removed by the lane that dispatched it.
-4. **It is written to by the M2 live lane and by nothing else.** No product code
-   points at it; the lane's `FIDDLE_EFFECTS_REPO` default is the only place its
-   name appears outside this document.
+4. **It is written to by exactly two scripts, enumerated here, and by nothing
+   else.** They are `scripts/live-github.sh` — the M2 live lane — and
+   `scripts/verify-graphql-ready.sh`, ADR 018's probe. Each carries its own
+   `FIDDLE_EFFECTS_REPO` default naming this repository
+   (`live-github.sh:85`, `verify-graphql-ready.sh:68`), and those two defaults
+   are the only places the name appears **as a target**.
+   `.github/workflows/github-effects.yml` is a *caller* of the first script
+   (line 262) rather than a third writer: it sets no target of its own.
+
+   **A writer reaches this repository either through a `FIDDLE_EFFECTS_REPO`
+   default or by naming it outright, so the name itself is what gets policed** —
+   `grep -rn peel/fiddle-effects-acceptance` over the two trees a writer can live
+   in, with every line it returns having to fall into an allowed class:
+
+   - **In `scripts/`**, each occurrence must be one of the two
+     `FIDDLE_EFFECTS_REPO:-` defaults or a comment. A script naming this
+     repository anywhere else is a third writer **whether or not it carries a
+     default** — a hardcoded target is the likelier mistake, and it is the case a
+     grep for `FIDDLE_EFFECTS_REPO` alone cannot see.
+   - **Under `crates/`**, each occurrence must be in a file under a `tests/`
+     directory, between the braces of a `#[cfg(test)]` module, or on a comment
+     line. Anything else is product code holding the name, which is what *"no
+     product code points at it"* forbids. "Between the braces" and not "after the
+     `#[cfg(test)]` line", because a file whose test module is *declared* near the
+     top — `#[cfg(test)] mod tests;` — would otherwise exempt everything below it,
+     which is the whole file.
+
+   **Those two greps are this rule's coverage and not a proof of its
+   exhaustiveness.** They police the two trees a writer lives in today; a writer
+   introduced elsewhere — a workflow step that pushes, a new top-level
+   directory — would pass both and still break the rule. The rule is the sentence;
+   the greps are how it is currently enforced, and extending them is part of
+   admitting a new writer. See *Rule 4 was false from `253a7de`* for what they
+   found when the rule was corrected.
 5. **Nobody works in it.** If that ever stops being true, rule 2's scoping is
    what protects them — see *Cleanup and residue*.
 
@@ -95,6 +126,63 @@ reason.
 matters: if the credential ever *could* enumerate secrets, the lane fails and
 says the token is scoped too broadly.
 
+### Rule 4 was false from `253a7de`
+
+Recorded rather than smoothed over, for the same reason as *The second row read
+200 until 2026-08-10* below. Until this edit rule 4 read *"it is written to by the
+M2 live lane and by nothing else"*, and named that lane's `FIDDLE_EFFECTS_REPO`
+default as *"the only place its name appears outside this document"*. Commit
+`253a7de` added `scripts/verify-graphql-ready.sh` with a second default at its
+line 68, identical in shape to the lane's, and the rule was false from that
+commit until it was corrected here.
+
+**Its two clauses were false for different reasons, and by different margins.**
+The writer count was off by one, which `253a7de` explains. The second clause was
+off by far more and no commit explains it: the name appears in **20** places
+outside `docs/`, not one. A reader who fixes only the writer count will believe
+the rest of the rule, which is why this is stated separately — the first clause
+was falsified by a change, the second was **never true** in the form it was
+written.
+
+Those 20, **counted when the rule was corrected and stated as history rather than
+as a description of the current tree**, broke down as the two
+`FIDDLE_EFFECTS_REPO` defaults, 11 occurrences under `crates/`, and 7 in
+`.env.example`, `github-effects.yml` and the two scripts' own comments. The
+boundary check over the `crates/` occurrences found `orchestration.rs` and
+`human/mod.rs` holding theirs inside `#[cfg(test)]` modules that open at `:725` and
+`:574` and, in both files, run to the end of the file — so between the braces and
+not merely below the attribute, which is the form the clause requires;
+`github/checks.rs` holding one in a `//!` doc comment; and the rest in
+`crates/fiddle-acceptance/tests/`, where the whole file is a test target.
+**Zero were product code**, so the *"no product code points at it"* half survived
+intact — which is the half worth keeping, and the reason the clause was narrowed to
+"as a target" rather than deleted.
+
+The figures above are deliberately past-tense and tied to that correction. Run the
+two greps for the current answer; a count written into a standing rule is a stale
+figure waiting to happen, and this document has produced several.
+
+The counts above are a measurement at this commit and are not themselves the
+rule — the boundary check is. A count in a standing rule goes stale the first time
+someone adds a fixture, which is the failure this section exists to record.
+
+Both were found by **grepping the tree**, not by reading the bean that assigned
+this correction: the bean named the second writer and did not state that the
+second clause was false at all, and an earlier draft of this edit undercounted the
+occurrences at nine by missing two acceptance fixtures, the two script comments
+and `.env.example`. That is the same class of error as the rule itself — a set
+asserted from memory rather than enumerated from the tree.
+
+It was found by the confirming **evaluation** of the bean that added the script,
+not by review of this document — which is the part worth keeping. A rule
+asserting an exhaustive set does not fail when the set grows; it just quietly
+stops being true, and nothing mechanical notices. The rule is left as an
+exhaustive enumeration anyway, because a set of writers that can be counted is
+the whole reason a destructive sweep against a standing repository is
+defensible. Weakening it to something unfalsifiable — "it is written to only by
+scripts that mean well" — would be worse than the brief falsehood: the next
+writer would then be compliant by construction.
+
 ## The credential
 
 A fine-grained personal access token, held in `FIDDLE_GITHUB_TOKEN` — the same
@@ -110,16 +198,164 @@ Its permissions, and what each one is for:
 | Actions | read and write | `POST .../actions/workflows/<file>/dispatches` — **the dispatch** |
 | Metadata | read | mandatory on every fine-grained token, and what answers the selection probe below |
 | Secrets | none | asserted on every run — see *How rule 1 is established* |
+| Issues | **not in this list, and yet an issue was created** | ~~unexplained and **unresolved**~~ — **resolved 2026-08-13**: the repository is public, so opening an issue needed no grant at all, and every *modification* was refused by the absent one. The observation stands; the framing does not. See *A success this table does not account for* and *Resolved 2026-08-13: a public repository, not an undocumented grant* |
 
 `Actions: write` is the permission the dispatch requires, so a 403 on the dispatch
 is that permission missing. It is **not** `Workflows`, which is a different
 permission governing pushes that touch `.github/workflows/**` — that is how this
-repository's own `fiddle-check.yml` was installed (commit `73b480a`), and it is
-not something the lane ever does: the only file the lane pushes is a one-line
+repository's own `fiddle-check.yml` was installed (commit `73b480a`, in
+`peel/fiddle-effects-acceptance` and so not resolvable from this checkout), and it
+is not something the lane ever does: the only file the lane pushes is a one-line
 probe at the repository root. A credential granted `Workflows` in place of
 `Actions` still 403s on the dispatch *and* can rewrite the target's CI, which is
 the worst of both. `.env.example` and `.github/workflows/github-effects.yml`'s
 remediation text name this same list.
+
+### A success this table does not account for
+
+On 2026-08-10, during `fiddle-w0xt`, a GraphQL `createIssue` against this
+repository **succeeded** under this credential and opened issue #25. Nothing in
+the list above grants it.
+
+Four places enumerate that same grant — Contents read and write, Pull requests
+read and write, Actions read and write, Metadata read, Secrets none — and under
+every one of them the mutation should have been refused:
+
+| Where | |
+| --- | --- |
+| `.env.example` | lines 19-26 |
+| `docs/evaluator-calibration-general.md` | line 809, which adds *"`Issues` is absent"* in as many words |
+| `.github/workflows/github-effects.yml` | its remediation text, lines 153-154 |
+| this table | above |
+
+The calibration is the pointed one: it does not merely omit `Issues`, it names the
+absence and builds a design decision on it — GitHub routes an issue comment
+through **Issues** and a pull request comment through **Pull requests**, so M2's
+conversation was deliberately put on a pull request *"so the credential would not
+have to be widened"*. A grant that permits `createIssue` is the thing that choice
+was made to avoid needing.
+
+Four sources agreeing is not evidence when the wire disagrees with all four; it is
+a measure of how often one was copied.
+
+**And a fifth place enumerates a different grant, which is worse than a fourth
+agreeing one.** `docs/technical/RUNBOOKS.md` § *Minting the GitHub token* — the
+procedure an operator actually follows to create this credential, scoped to this
+repository — prescribes *"these five, and no others"* and lists **`Workflows`
+read and write**, with no `Secrets` row at all. This table omits `Workflows`
+deliberately, on the ground that writing a file under `.github/workflows/**` is
+*"not something the lane ever does: the only file the lane pushes is a one-line
+probe at the repository root"*. So the document that mints the token and the
+document that describes it do not agree about what the token holds.
+
+The disagreement is about **necessity, not about the dispatch**. This table's
+*"worst of both"* line is not the argument against RUNBOOKS and should not be read
+as one: it is conditioned on `Workflows` being granted **in place of** `Actions`,
+and RUNBOOKS grants both, so a token minted from it dispatches perfectly well.
+
+**And RUNBOOKS gives a reason, three lines below the list this document quotes
+from it.** It is worth quoting rather than answering: *"`Actions` and `Workflows`
+are different grants and both are needed: `Actions` dispatches a workflow,
+`Workflows` writes a workflow *file*. `Contents: write` alone returns 403 for any
+path under `.github/workflows/**`."* That is correct, and this document confirms
+it elsewhere — installing this repository's own `fiddle-check.yml` took exactly
+that grant, in the commit the table above cites and marks as unresolvable from
+this checkout.
+
+So the honest statement of the disagreement is narrow: **the lane has no use for
+`Workflows`**, because the only file it pushes is a one-line probe at the
+repository root — while **installing or repairing the dispatch target does**, and
+that is a job an operator does once, not something the lane performs. Whether a
+standing credential should carry a grant needed only for setup is the open
+question, and it is the operator's to answer. Saying the grant is held "for
+nothing" would be wrong, and would be this document answering a question by not
+reading the other file's next paragraph.
+
+That does **not** explain the issue: `Workflows` is not `Issues`, and no reading of
+it permits `createIssue`. It is recorded here because it is the same question —
+*what is actually granted?* — and because it means the count of documents to
+reconcile is five with two distinct answers, not four with one.
+
+Every issue-*modifying* operation was refused in the same session — 403 on REST
+`PATCH state=closed`, `FORBIDDEN` on both `closeIssue` and `deleteIssue`, as
+tabulated under *An issue is residue, and it is worse than a branch*. So the
+observation is not "this credential
+holds `Issues: write`"; a token with `Issues: write` would have closed the issue.
+It is narrower and stranger than that, and it is **not** resolved here.
+
+**This edit records the discrepancy and does not restate the grant.** The rule
+this table is built on is that scope is proven by a 403 and never by a successful
+read — a public repository reads with any credential, so a success proves nothing
+about authority. This is that rule's mirror case: a success proving the *presence*
+of some authority nobody documented, which is exactly as unresolved as a read
+would leave the absence of one. Writing an `Issues` row with a permission level in
+it would be inventing the grant to match the observation, in a table whose value
+is that every row was measured.
+
+Closing it means reading the token's actual permission set at GitHub and
+re-running the probe table against it — both operator actions, on a credential
+this document does not widen and no lane should. `docs/BACKLOG.md`'s
+2026-08-11 entry carries it. Until then, treat the effective grant as **wider than
+this table in an unknown direction**, and note that this is the second time in
+this milestone that a set of agreeing documents was wrong about this credential —
+the first is *The second row read 200 until 2026-08-10* below, where four of them
+said the selection was one repository while it was two.
+
+> **Superseded 2026-08-13.** The operator read the permission set: there is no
+> `Issues` grant, and there never was a discrepancy. Do not act on *"wider than this
+> table in an unknown direction"* — the sentence above is kept because it was the
+> disposition this document held for three days, not because it is still true. The
+> next subsection is the resolution.
+
+### Resolved 2026-08-13: a public repository, not an undocumented grant
+
+The subsection above stands as written, per this document's append rule. It is
+superseded, and the resolution is that **the token has no `Issues` access at all**.
+
+Two mechanisms produced the asymmetry, not one undocumented grant:
+
+| what was observed | what produced it |
+| --- | --- |
+| GraphQL `createIssue` **succeeded**, opening #25 | this repository is **public** with issues enabled (`visibility: public`, `has_issues: true`), and on a public repository any authenticated identity may open an issue. Ordinary bug-reporting behaviour, requiring no repository permission — so the success was never evidence of a grant. |
+| REST `PATCH .../issues/25` `state=closed` **403**; GraphQL `closeIssue` and `deleteIssue` **200 carrying `FORBIDDEN`** | modifying issue state *is* permission-gated. Those three refusals **are** the absent `Issues` grant showing through, and they are what a token holding `Issues: write` would not have produced. |
+
+So the grant was never wider than this table describes, and the four documents
+tabulated above were right about it. **Two claims in that subsection are retired
+rather than reworded:** *"Four sources agreeing is not evidence when the wire
+disagrees with all four"* — the wire never disagreed with them — and the instruction
+to treat the grant as wider in an unknown direction. The **fifth** document's
+disagreement is untouched and stays open: `RUNBOOKS.md` prescribes `Workflows` and
+carries no `Secrets` row, which is a question about what a standing credential needs
+and has nothing to do with the issue.
+
+**The standing rule this earns is the one already here, applied one level deeper.**
+That rule is *scope is proven by a 403 and never by a successful read*, and it was
+applied to reads only; the probe then read a successful **write** as evidence about
+the grant, which is the same mistake in the other verb. The sharper form:
+
+> **On a public repository a successful write proves nothing about a grant either.**
+> A surface open to any authenticated identity answers identically to a credential
+> that holds the permission and to one that does not, so the outcome is not an
+> assertion about either.
+
+That is also why the selection table below probes `/collaborators` rather than
+`GET /repos/{owner}/{repo}`: **all three repositories are public and answer the plain
+repository read to anybody**, so it cannot discriminate and cannot serve as a scope
+proof. Re-verified 2026-08-13 on the gated endpoint, recorded in `docs/BACKLOG.md`
+under *The grant discrepancy is resolved: a public repository, not an undocumented
+permission*:
+
+| repository | `GET /repos/{r}/collaborators` |
+| --- | --- |
+| `peel/fiddle` | `Resource not accessible by personal access token` |
+| `peel/fiddle-acceptance` | `Resource not accessible by personal access token` |
+| `peel/fiddle-effects-acceptance` | one collaborator listed — the read was permitted |
+
+**No lane-facing rule changes, and the one that matters is better founded.** A lane
+must still not create an issue at all — see *An issue is residue, and it is worse
+than a branch*. What the resolution changes is why that rule cannot be delegated to
+the credential: the reason a lane *can* open one is that the repository is public, so
+no narrowing of this token would prevent it. Issue #25 is closed.
 
 ### The selection, verified by probe rather than assumed
 
@@ -482,7 +718,9 @@ live-github: branches at the remote: main
 
 Both lines are checked. The first is the scoped claim; the second asserts this
 repository's standing rule that `main` is its only permanent branch, so a scoped
-cleanup that missed something *outside* its namespace is still caught.
+cleanup that missed something *outside* its namespace is still caught. Which of
+the definition's clauses that covers, and which it does not, is stated once under
+*The one thing that cannot be cleaned up*.
 
 ### The one thing that cannot be cleaned up
 
@@ -496,8 +734,66 @@ residue anyone needs to act on. There were sixteen, all closed, when the target
 guard above was added.
 
 So "zero residue" means precisely: **no `fiddle/` branch, no open pull request,
-no `fiddle-` workflow run, and `main` the only branch.** Not "no pull request has
-ever existed" — that is unachievable, and a lane that claimed it would be lying.
+no `fiddle-` workflow run, no issue beyond #25, and `main` the only branch.**
+Not "no pull request has ever existed" — that is unachievable, and a lane that
+claimed it would be lying. For the same reason it is "beyond #25" and not "no
+issue": #25 cannot be deleted either, so a definition demanding its absence would
+be one more unachievable claim, and the honest form names the one entry that is
+grandfathered rather than pretending the count is zero.
+
+**Who checks which clause is part of the definition, not a footnote to it, and the
+answer is read off the script rather than asserted here.** `scripts/live-github.sh`
+guards the three counts at its line 380 and the branch listing at its line 387, so
+**the first, second, third and fifth clauses are lane-asserted**. The fourth — no
+issue beyond #25 — is checked by an operator running the `gh issue list` line under
+*After a run*, because the lane contains no occurrence of `issue` at all and, by
+the argument in *An issue is residue*, never should: a credential refused
+`closeIssue` and `deleteIssue` cannot check a clause it could not act on without
+either failing every run or being written to tolerate its own 403. A definition
+that did not say so would read as though one process verified all five.
+
+### An issue is residue, and it is worse than a branch
+
+This class was missing from the list above until 2026-08-11, and its absence had
+a consequence: during `fiddle-w0xt` an exploratory GraphQL `createIssue` against
+this repository succeeded and left issue **#25** open, and that bean's residue
+check reported **clean** — correctly, against the definition as it then stood,
+because no rule told it to look at issues. The lead closed #25 with the operator
+principal. A residue definition that enumerates classes is only as good as its
+enumeration, and this is what a gap in it looks like from the inside: a green
+check over an object nobody had thought to count.
+
+**The asymmetry, measured 2026-08-10.** The lane credential can create an issue
+and cannot remove one:
+
+| Operation | Result |
+| --- | --- |
+| GraphQL `createIssue` | **succeeded** — issue #25 opened |
+| REST `PATCH .../issues/25` with `state=closed` | **403** |
+| GraphQL `closeIssue` | **200 with `FORBIDDEN`** — the shape [ADR 018](decisions/018-a-graphql-200-is-not-a-success.md) quotes |
+| GraphQL `deleteIssue` | **200 with `FORBIDDEN`** |
+
+Every direction that would clear the object is refused, and only the direction
+that creates one is permitted. That makes an issue **worse than a branch, not
+better** — and worse than a closed pull request too. A `fiddle/` branch is residue
+the lane made and the lane removes. A closed pull request is residue the forge lets
+nobody remove, but no credential was needed to reach that state. An issue is both
+at once: a *lane* can create one, only an *operator* can even **close** it, and
+**nobody can delete it** — `deleteIssue` is refused to this credential and GitHub
+offers no path that would leave the repository as though the issue had never
+existed. So it accumulates, with a person's attention required for each one, in a
+repository whose whole argument is that its residue is the lane's own problem
+rather than a person's. #25 is now permanent; see *After a run*.
+
+**So the rule is abstention, not cleanup: a lane must not create an issue at
+all.** Not "must clean up any issue it creates" — that is a promise this
+credential provably cannot keep, and a cleanup step written against it would fail
+on every run or, worse, be written to tolerate its own 403 and report clean. The
+honest rule is the one that can actually be held: nothing here opens an issue, and
+`createIssue` is not in any lane's vocabulary. Cleanup therefore has no issue
+sweep, and its absence is deliberate rather than an omission — a sweep could not
+have removed #25 either, so adding one would buy nothing and would imply a
+capability the credential does not have.
 
 ### After a run
 
@@ -506,8 +802,28 @@ gh repo view peel/fiddle-effects-acceptance --json visibility           # PUBLIC
 gh api repos/peel/fiddle-effects-acceptance/branches --jq '.[].name'    # exactly: main
 gh pr list --repo peel/fiddle-effects-acceptance --state open           # empty
 gh api repos/peel/fiddle-effects-acceptance/actions/runs --jq '.total_count'  # 0
+gh issue list --repo peel/fiddle-effects-acceptance --state all         # exactly: #25, closed
 gh api repos/peel/fiddle-effects-acceptance/actions/secrets            # 403, as above
 ```
+
+The issue line is `--state all` rather than `--state open` on purpose: the rule
+being checked is that no lane ever opened one, and a closed issue is evidence that
+one did — closing it is what an operator had to do, which is precisely the residue
+the rule exists to prevent. So `--state open` would answer "empty" and prove
+nothing.
+
+**The one entry it lists is expected, and a second one is a violation.** #25 is the
+issue `fiddle-w0xt` opened on 2026-08-10 and an operator closed, described under
+*An issue is residue*. It cannot be removed — `deleteIssue` is refused — so it
+stays in this listing permanently, in the same way the closed pull requests above
+do, and it is this rule's one grandfathered entry rather than a passing state. Any
+issue numbered other than 25 means a lane created one after the rule said it must
+not, which is the thing being checked.
+
+Expecting "nothing" here would be the same mistake as a residue check that reports
+clean because it was told to look at the wrong thing. A check whose stated expected
+output is already false on the day it is written teaches its reader to stop reading
+the comment.
 
 The lane also creates one `mktemp -d` directory holding the whole disposable
 project — the configuration document, the fixture roots, the clone, the reports —
