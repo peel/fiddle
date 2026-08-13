@@ -18,7 +18,9 @@
 //!
 //! # Why the ids in here are what they are
 //!
-//! The stub assigns a posted comment `9000 + n`, and seeded comments are numbered
+//! The stub assigns a posted comment an id above every comment the world holds,
+//! floored at `9000`, so a `POST` onto an empty conversation is `9000`. Seeded
+//! comments are numbered
 //! by the test. Both are far from zero and far from one on purpose: an assertion
 //! that a receipt names comment `9000` cannot pass by accident against an index,
 //! a count or a page number, which an assertion about comment `1` could.

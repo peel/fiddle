@@ -150,7 +150,11 @@ cannot cover four arms. **Neither surface alone is the property.**
 **A null is only as wide as the lanes behind it.** M3: one mutation ran green in four lanes a reader would
 name — the library, the protocol lane, the capability lane, the acceptance lane — and red in a fifth, 2 of 26.
 The record and the bean filed from it both reported the null without naming the lane that refutes it. **Report
-the lanes a null was taken over, not only its count.**
+the lanes a null was taken over, not only its count.** And the converse trap: M3 found **two independent
+properties with two different witness lanes** in one helper — dropping a comment-id *floor* left the
+acceptance lane 30/0 green while the runtime lane went 22/4, and breaking the *relation* did the reverse. Run
+either lane alone and the other property reads as a null. **When one change has two effects, look for two
+witnesses.**
 
 **A null result is a finding to report, not a problem to hide.** M3's beans reported 8, 7, 4 and 0 nulls; every
 one was either closed or recorded with its reason. Two were found by attacking a *proposed fix* rather than the
@@ -194,6 +198,12 @@ the mechanism its own bean gave for this defect was wrong — the payload's key 
 `user.id`, so scraping the first id-shaped field happens to be right — while the consequence was real and
 re-measured, `DELETE` by the user id answering 404 with the comment still listed. **A claim's consequence can
 be real while its stated mechanism is false, and only the consequence is worth carrying forward.**
+
+**`git checkout <sha> -- <path>` writes the index as well as the working tree, and `cmp` cannot see it.**
+M3: a mutation script restored that way; the pin's `cmp` passed on all three paths and **`git diff --quiet`
+was what reported it.** Use `git show <sha>:<path> > <path>` instead, and add `git diff --cached --quiet` to
+the driver — a staged mutation survives a clean-looking working tree and lands in the next commit that stages
+by directory.
 
 **Verify the restore with both `cmp` against the pin and `git diff --quiet`.**
 
