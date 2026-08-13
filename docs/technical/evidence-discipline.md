@@ -254,6 +254,14 @@ inversion and does not compare it — which is how it knew the gap was there. **
 its `restore.sh` restores from the manifest, verifies with `cmp` **and** `git diff --quiet`, **and re-reads
 `git rev-parse HEAD` to compare against the pinned sha.** That is the form to copy.
 
+**A fourth member, opposite in direction: the worktree read while `git worktree add` is still writing it.**
+M3: a lane's first look at a fresh worktree showed **every tracked file staged-deleted and every path
+untracked**; thirty seconds later the tree was clean and files were byte-identical to `HEAD`. So *a check that
+runs during worktree setup reports a broken repository, and a check that runs during teardown reports a broken
+build.* **The tell is the same in both: the shape is wrong for the claim** — a real mass deletion does not also
+list every file as untracked, and a real test failure is not a missing binary. When a measurement implies a
+catastrophe, check the shape before believing the magnitude.
+
 **A third member of the same family, and no guard sees it either: the worktree removed under a running lane.**
 M3's lead merged a lane's branch and tore down its worktree while that lane was rebasing and re-running its
 tests. `cmp` and `git diff --quiet` then have nothing to compare, and a torn-down build **surfaces as a red
