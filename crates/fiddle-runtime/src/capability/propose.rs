@@ -758,6 +758,15 @@ where
     /// do — and it has to be told what to do differently, or it is the first
     /// attempt again.
     ///
+    /// **The consequence that pointer does not state.** A redirect's `revision` must
+    /// be an object the fixture's own store already holds. It is, when the run that
+    /// published that head worked in a worktree of this fixture; it is not, when the
+    /// second run is a different machine — `create_at` then refuses with a correctable
+    /// [`WorkspaceError::Git`] naming the sha and **does not fetch**, because this
+    /// capability constructs no credential. Pinned by
+    /// `workspace::a_revision_the_fixture_can_only_fetch_is_refused_by_name_and_nothing_fetches`,
+    /// which is the only assertion on that arm in the workspace.
+    ///
     /// Everything else is unchanged, and the list is the claim rather than an
     /// omission: the same four tools, the same five bounds, the same check run by
     /// this capability over whatever tree the attempt left, the same refusal of an
