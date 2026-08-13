@@ -137,6 +137,14 @@ const APPROVER: u64 = 505_401;
 /// answer this run may act on.
 const STRANGER: u64 = 999_999;
 
+/// The account the scripted `gh` lists fiddle's own comments under.
+///
+/// Named once because two things have to agree about it: the author the fixture writes
+/// onto the question's by-id entry, and the author a receipt's declined list reports for
+/// it. Two literals that drifted would let the declined-list assertion pass against a
+/// walk that had declined some other comment.
+const FIDDLE_BOT: u64 = 1_000_001;
+
 /// fiddle's own question, as [`ProposeChange`] composes it.
 ///
 /// Written down so that the interpretation's prompt and the marker's comment can
@@ -576,7 +584,7 @@ impl World {
             "created_at": POSTED_AT,
             "updated_at": POSTED_AT,
             "author_association": "OWNER",
-            "user": {"login": "fiddle[bot]", "id": 1_000_001, "type": "Bot"},
+            "user": {"login": "fiddle[bot]", "id": FIDDLE_BOT, "type": "Bot"},
             "performed_via_github_app": Value::Null,
         }));
         ids
@@ -1850,15 +1858,76 @@ async fn a_readied_pull_request_is_not_re_drafted() {
 // ---------------------------------------------------------------------------
 
 /// One continuation over the world a first run left, answered by one person.
+///
+/// # Which invocation each field describes
+///
+/// **Two invocations run into one world**, so every field here belongs to one of them
+/// and a reader must not have to guess which. Stated as a list because the guessing is
+/// the defect:
+///
+/// - the **continuation's own**: [`Answered::outcome`],
+///   [`Answered::continuation_receipts`], [`Answered::model`];
+/// - the **first run's**: [`Answered::head_sha`] — the revision it published and asked
+///   about — together with the three `_before` baselines, which exist so that a claim
+///   about what the continuation did is stated against what was already there;
+/// - **both, by construction**: [`Answered::request`]. The identity is derived over the
+///   head, so the two processes derive the same one from inputs neither carried to the
+///   other. That is the design, and it is why this field has no owner;
+/// - the **conversation's**, and so neither run's alone:
+///   [`Answered::question_comment`] and [`Answered::reply_comment`].
+///
+/// **Corrected, and the correction matters because a fix was specified from it.**
+/// `fiddle-d6y1` records that this struct "mixes tiers: its outcome is the
+/// continuation's Result, its receipts are the first run's", and prescribes a second
+/// field for the continuation's receipts. Measured: `receipts` is and always was the
+/// **continuation's own**. [`execute_against`] constructs a fresh `ProposeChange` for
+/// the continuation and returns *that* value's `receipts()`, so the collection starts
+/// empty and holds only what this invocation pushed. Two assertions already in this
+/// file depend on it and pass — one requires exactly one `redirect:` entry, which the
+/// first run never writes, and one requires the `effect:` entries to be exactly
+/// `["ensure_pull_request_ready"]`, which is the continuation's single gated effect and
+/// none of the first run's three.
+///
+/// So the ambiguity the bean found was real and the ownership was the other way round.
+/// The field is renamed rather than joined by a sibling, and the partition above is
+/// what the bean was actually asking for.
 struct Answered {
     outcome: Result<EvidenceRef, CapabilityError>,
-    receipts: Vec<EvidenceRef>,
+    /// What the **continuation** recorded, and nothing the first run recorded.
+    ///
+    /// Named for its invocation because the plain `receipts` was read as the first
+    /// run's by a bean, which then specified a fix around the misreading. One word at
+    /// the field is cheaper than that.
+    continuation_receipts: Vec<EvidenceRef>,
     /// The model the walk was given, so what was asked of it can be read back.
     model: MockCompletionModel,
-    /// The question this run is about, as a fresh process derives it.
+    /// The question both invocations are about, as a fresh process derives it.
     request: fiddle_core::DecisionRequestId,
-    /// The revision it was asked about.
+    /// The revision the **first run** published and asked its question about.
+    ///
+    /// The continuation is about the same revision — that is the property, since a moved
+    /// head derives a different question — so this is the first run's value and both
+    /// runs' subject. `the_approve_path_invokes_git_not_at_all` reads it as *"the remote
+    /// is where the first run left it"*, which is the first reading.
     head_sha: String,
+    /// The comment the **first run's** question landed on, taken off the interaction it
+    /// named rather than assumed from the fixture's numbering.
+    ///
+    /// It is the comment the walk declines as a candidate for its own answer — a
+    /// question is not a reply to itself — so it is the id a receipt's declined list
+    /// must name. On the redirect path the continuation posts a *second* question; that
+    /// one is not this, and is read as `world.posted_comments().last()`.
+    question_comment: u64,
+    /// The comment the **person's reply** landed on: the one a redirect's receipt has to
+    /// name as where its instruction came from.
+    ///
+    /// Handed back by [`World::answered_by`], which mints it, rather than named by a
+    /// constant. `fiddle-d6y1` proposed asserting only that the receipt's origin field
+    /// "parses as an id", on the ground that this fixture has no constant to name — but
+    /// it does not need one, because the writer of the id already returns it. Asserting
+    /// the *value* is what separates a receipt that names its own comment from one that
+    /// names any comment.
+    reply_comment: u64,
     /// How many comments this world had been asked to post *before* the
     /// continuation ran — the baseline "and it posted nothing further" is stated
     /// against.
@@ -1924,7 +1993,13 @@ async fn answered(
     then: ThenWhat,
 ) -> Answered {
     let suspension = suspended(world).await;
-    world.answered_by(suspension.comment, &[(author, reply)]);
+    // The ids are captured rather than discarded: a receipt that says which comment it
+    // read an instruction from can only be checked against the id the fixture really
+    // minted, and this is where that value exists.
+    let seeded = world.answered_by(suspension.comment, &[(author, reply)]);
+    let [reply_comment] = seeded.as_slice() else {
+        panic!("one reply was seeded, and the ids are {seeded:?}");
+    };
     world.script_graphql(0, 200, readied());
 
     let posted_before = world.posted_comments().len();
@@ -1945,10 +2020,12 @@ async fn answered(
     };
     Answered {
         outcome,
-        receipts,
+        continuation_receipts: receipts,
         model,
         request: identity_at(&suspension.head_sha).0,
         head_sha: suspension.head_sha,
+        question_comment: suspension.comment,
+        reply_comment: *reply_comment,
         posted_before,
         published_before,
         requests_before,
@@ -2350,7 +2427,7 @@ async fn a_redirect_names_the_instruction_it_received_where_an_operator_reads_it
         .await;
 
         let named: Vec<&str> = answered
-            .receipts
+            .continuation_receipts
             .iter()
             .map(|receipt| receipt.0.as_str())
             .filter(|receipt| receipt.starts_with("redirect:"))
@@ -2359,11 +2436,60 @@ async fn a_redirect_names_the_instruction_it_received_where_an_operator_reads_it
             named.len(),
             1,
             "one redirect receipt, whatever else the run recorded: {:?}",
-            answered.receipts
+            answered.continuation_receipts
         );
         assert!(
             named[0].contains(instruction),
             "the receipt names the instruction the run was given: {}",
+            named[0]
+        );
+        // **Which comment the instruction was read from**, asserted as a value and not
+        // as a shape. The receipt is `redirect:{comment}:{instruction}{declined}`, and
+        // until now only the instruction half was checked — so a build naming a
+        // *constant* comment id passed, measured at 27 passed / 0 failed. An operator
+        // holding this receipt goes to that comment; one naming any other comment sends
+        // them to somebody else's words.
+        //
+        // The expected id comes from `World::answered_by`, which minted it. Not from a
+        // constant: this fixture has none, and inventing one — `APPROVER_COMMENT` was
+        // the first attempt — would be asserting the fixture's arithmetic against
+        // itself. And not merely "it parses as an id", which `redirect:0:` satisfies.
+        let origin = named[0]
+            .strip_prefix("redirect:")
+            .and_then(|rest| rest.split_once(':'))
+            .map(|(origin, _)| origin)
+            .unwrap_or_else(|| panic!("a redirect receipt names its origin: {}", named[0]));
+        assert_eq!(
+            origin.parse::<u64>().ok(),
+            Some(answered.reply_comment),
+            "the receipt must name the comment the instruction was read from, and the \
+             person replied on comment {}: {}",
+            answered.reply_comment,
+            named[0]
+        );
+        assert_ne!(
+            answered.reply_comment, answered.question_comment,
+            "the reply and the question must be different comments, or naming either \
+             one would satisfy the assertion above"
+        );
+        // **And who was read and not counted**, which is the redirect arm's own
+        // contribution and was asserted nowhere: dropping
+        // `ProposeChange::and_who_was_not_counted` from this receipt left 27 passed / 0
+        // failed. The other three verdicts report the declined list through `awaiting`;
+        // this one returns through `ask`, so an implementation that stopped passing the
+        // list would leave the walk that read the most of the conversation saying the
+        // least about it.
+        //
+        // On this walk the one declined comment is fiddle's **own question** — a
+        // question is not a reply to itself — so the denominator is one rather than
+        // nought, and the id is the first run's question comment rather than a constant.
+        assert!(
+            named[0].contains(&format!(
+                "; 1 comment was read and not counted: comment {} by {} (the request \
+                 comment is not a reply to itself)",
+                answered.question_comment, FIDDLE_BOT
+            )),
+            "the receipt must say who else the walk read, and name them: {}",
             named[0]
         );
 
@@ -2435,7 +2561,7 @@ async fn the_transition_is_performed_through_the_decided_entry_point() {
     // And the receipt reached the bundle beside the first run's, rather than only
     // the return value.
     let kinds: Vec<&str> = answered
-        .receipts
+        .continuation_receipts
         .iter()
         .filter(|entry| entry.0.starts_with("effect:"))
         .map(|entry| entry.0.split(':').nth(1).unwrap())
@@ -2444,7 +2570,7 @@ async fn the_transition_is_performed_through_the_decided_entry_point() {
         kinds,
         ["ensure_pull_request_ready"],
         "a continuation's receipts are its own: {:?}",
-        answered.receipts
+        answered.continuation_receipts
     );
 }
 
@@ -2784,10 +2910,10 @@ async fn the_approve_path_invokes_git_not_at_all() {
     );
     assert!(
         answered
-            .receipts
+            .continuation_receipts
             .contains(&EvidenceRef("tools:0".to_string())),
         "a continuation calls no tool, because it runs no attempt: {:?}",
-        answered.receipts
+        answered.continuation_receipts
     );
     assert_eq!(world.graphql_calls(), 1, "one approval, one mutation");
 }
