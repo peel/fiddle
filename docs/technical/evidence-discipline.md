@@ -170,6 +170,21 @@ section already names: a check that could not evaluate, reported as a negative r
 
 ### Granularity
 
+**A cold `target/` and a cold `sccache` are different costs, and conflating them made isolation look
+unaffordable.** M3's dispatches all carried "a fresh worktree costs a ten-minute cold build", which was the
+standing objection to giving every lane its own. Measured in a worktree with no `target/` at all:
+`gate.sh --full` ran **fmt 1s, clippy 5s, test 116s**, plus release build and `nix flake check`, and the
+sccache counters read **697 hits in 1,959 requests — 50.4% overall, 66.5% on C/C++** with zero errors. So a
+fresh worktree costs about **two minutes**, and the ten-minute figure was a cold *sccache*.
+
+This also resolves an earlier measurement that looked like its opposite: sccache served **1 hit in 32** across
+two target dirs, and 19 hits with a 5.5× speedup at the same path. Both are right and they compose — dev-profile
+debuginfo embeds absolute paths, so **Rust** crates miss across paths while the **native C/C++**
+dependencies hit, and those are the expensive half of a cold build. The useful form: *sccache does not help a
+Rust rebuild at a new path, and does help the half of a cold build that dominates its wall clock.*
+**A private worktree per lane is affordable, which makes it the cheap fix for the collision hazard above
+rather than an expensive one.**
+
 **Run each inversion against the binaries that can observe the mutation, and the full gate once at the end.**
 M3 ran 47, 27, 22 and 17 inversions per bean, each as `cargo test --workspace`. A mutation to
 `capability/propose.rs` cannot affect the other 40 binaries; `human_direction` takes 35s and
@@ -218,7 +233,9 @@ and lost work are different things, and the bean is the difference.**
 
 Recorded because they cost more wall-clock in M3 than any code defect.
 
-**Do not rule on a report while its author may have moved past it.** Six crossings. Check the tree and name the
+**Do not rule on a report while its author may have moved past it.** **Eight** crossings, three of them
+consecutive and all three after this rule was written down — each one a message assuming a lane had not
+finished when it had. Writing the rule did not stop it; the lanes caught it every time. Check the tree and name the
 sha before ruling; a lane's "done" does not cover a request that crossed it.
 
 **Do not dispatch evaluation against a moving tip.** Four stale dispatches. Give each evaluator its own
