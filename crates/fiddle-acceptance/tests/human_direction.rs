@@ -2967,9 +2967,13 @@ fn a_redirect_performs_no_external_mutation_of_its_own() {
 /// worked.
 ///
 /// **Not ask a second question**: a question about no change asks a person to
-/// approve nothing. And it would be worse than useless, because the new question
-/// would carry the *same* head as the old one, so it would name the same request
-/// identity — one question, asked twice, with nothing distinguishing the two.
+/// approve nothing. **Asserted over the run's receipt list and not over a count of
+/// comments**, and the difference was measured rather than reasoned — see the note at
+/// those assertions. A question here would name the *same* request identity as the
+/// first, because the identity is taken over the head and the head has not moved, so
+/// `PublishDecisionRequest`'s own postcondition suppresses the second post and the
+/// conversation looks identical either way. What differs is whether the effect was
+/// proposed at all.
 ///
 /// **Not report success**: exit 11 and not 0. `NothingProposed` is `Correctable`
 /// rather than `Permanent` because a later attempt over the same fixture may well
@@ -3037,22 +3041,58 @@ fn a_redirect_whose_attempt_changes_nothing_asks_nothing_and_says_why() {
         "and the published tree is still the first attempt's"
     );
 
-    // Nothing was asked. **Counted off the request log rather than off the
-    // conversation**, because that is the number a run which asked twice would move:
-    // the listing merges what landed, and the second question would carry the same
-    // head as the first and so the same marker.
+    // --- nothing was asked, and the assertion that says so is not a comment count ---
+    //
+    // **The effect was never proposed.** This is where "posts no question" lives, and
+    // it is stated over the run's own receipt list because that is the only surface on
+    // which asking and not asking differ here. A failed execution's evidence carries
+    // what it reached and nothing more: the redirect it read, and — on a walk that
+    // went on to publish — one `effect:` entry per proposal. There is no
+    // `publish_decision_request` entry because `produce_from` refused before `publish`
+    // and `ask` were called at all.
+    let payload: serde_json::Value = serde_json::from_str(&run.stdout)
+        .unwrap_or_else(|error| panic!("stdout is not JSON ({error}): {}", run.stdout));
+    let evidence = payload["capability_executions"][0]["evidence"].to_string();
+    // The denominator first: this really is this run's evidence, and it got as far as
+    // reading the redirect. Without it every claim below is true of an empty list.
+    assert!(
+        evidence.contains("redirect:"),
+        "the run read the redirect, or nothing below examined anything: {evidence}"
+    );
+    assert!(
+        !evidence.contains("publish_decision_request"),
+        "no decision request was proposed — an attempt that changed nothing has \
+         nothing to ask about: {evidence}"
+    );
+    assert!(
+        !evidence.contains("ensure_branch_published"),
+        "and nothing was published for it to be about: {evidence}"
+    );
+
+    // **The two comment counts below cannot fail while the head is unmoved, and that
+    // is a fact about `PublishDecisionRequest` rather than a weakness here.** It was
+    // measured, not assumed: an inversion that carried an empty change through to
+    // `ask` derived the *same* request identity — the identity is taken over the head,
+    // and the head had not moved — so `PublishDecisionRequest::inspect` found the first
+    // run's comment already there and settled on its own postcondition, publishing
+    // nothing. That inversion was caught by the exit code and by the receipt list
+    // above, and by neither of these lines.
+    //
+    // They are kept because they are the honest statement of what a reader cares about
+    // and because they *would* fire on a path that moved the head before asking, which
+    // is exactly what a redirect that published an empty commit would be. They are not
+    // the evidence that this path asks nothing. Unclosable while the head is unmoved
+    // **through these two accessors**; the receipt list above is the surface on which
+    // it is closed.
     assert_eq!(
         world.posted_comment_bodies().len(),
         1,
         "one question was ever posted, and it is the first run's: {:?}",
         world.posted_comment_bodies()
     );
-    // The denominator for the line above: the one body really is the question, so
-    // this is a count of questions and not a count of something else that happens to
-    // be one.
     assert!(
         parse_marker(&world.posted_comment_bodies()[0]).is_ok(),
-        "the one posted comment carries a request marker: {:?}",
+        "and the one posted comment really is a question: {:?}",
         world.posted_comment_bodies()
     );
     assert_eq!(
@@ -3718,4 +3758,150 @@ fn quoted_instruction(prompt: &str, written: &str) -> String {
         "no prefix of what was written appears in the prompt at all: {prompt}"
     );
     characters[..kept].iter().collect()
+}
+
+/// **The instruction is capped in bytes before it reaches a prompt, and this is the
+/// row that says so — every existing one is satisfied by a character cap.**
+///
+/// # The null this closes, and how it was found
+///
+/// [`a_redirect_instruction_reaches_the_next_prompt_as_data_it_cannot_escape`] asserts
+/// `quoted.len() <= 2_048` **in bytes**, and its comment argues the point exactly
+/// right: *"a character count cannot discriminate a byte cap from a character cap:
+/// 3,000 `★` truncates to 2,046 bytes, which is 682 characters — a factor of three of
+/// slack"*. What it does not do is feed it such a string. **Every row there is pure
+/// ASCII**, so bytes and characters agree and the byte assertion is satisfied by
+/// whichever bound happens to bind.
+///
+/// Two of them bind, which is the part nobody had named. `interpret.rs:302` reads
+/// `Published::of(truncate(&instruction, REDIRECT_INSTRUCTION_LIMIT))` — a **byte**
+/// bound of 2,048 inside a **character** bound of 2,048
+/// (`fiddle_core::published::PUBLISHED_TEXT_LIMIT`). Deleting the inner call
+/// altogether leaves the whole of that test green, measured; so does widening
+/// `REDIRECT_INSTRUCTION_LIMIT` tenfold. The assertion's units were corrected and its
+/// *input's* were not.
+///
+/// # What makes this row discriminating, stated as arithmetic
+///
+/// `★` is three bytes. The instruction is 1,500 of them, so:
+///
+/// - **1,500 characters, which is inside `PUBLISHED_TEXT_LIMIT`.** The character cap
+///   therefore cuts nothing at all, and this is asserted rather than asserted about —
+///   without it, a cut could have come from either bound and the row would say nothing.
+/// - **4,500 bytes, which is past `REDIRECT_INSTRUCTION_LIMIT`.** So a cut can only
+///   have come from the byte bound.
+///
+/// The discriminating observation is therefore that **something was cut**, and the
+/// bound it was cut to. A build with no byte cap publishes all 1,500 characters and
+/// fails here; a build whose byte cap is ten times wider does too.
+///
+/// The instruction reaches the prompt through the same seam every hostile row uses, so
+/// the arrival of a prefix is the denominator: without it, "it was capped" is true of a
+/// prompt that never carried it.
+#[test]
+fn a_redirect_instruction_is_capped_in_bytes_and_not_merely_in_characters() {
+    // Three bytes each, and a count chosen so the two bounds disagree about this
+    // string. Built here because a constant cannot hold a `repeat`.
+    let written = "★".repeat(1_500);
+    assert_eq!(
+        written.chars().count(),
+        1_500,
+        "the arithmetic this row rests on: characters"
+    );
+    assert_eq!(written.len(), 4_500, "and bytes");
+    // Stated as the two comparisons rather than left to a reader: the character bound
+    // cannot be what cuts this, and the byte bound must be.
+    assert!(
+        written.chars().count() <= 2_048,
+        "a character cap of 2,048 cuts nothing here, so a cut is the byte cap's"
+    );
+    assert!(
+        written.len() > 2_048,
+        "and the byte cap has something to cut"
+    );
+
+    // The evidence span is the head of what was written, inside the reply even after
+    // `interpret` cuts the reply to its own bound.
+    let span: String = written.chars().take(8).collect();
+    let world = World::with_model_script(a_suspension_and_its_redirect(&written, &span));
+
+    let suspended = suspend(&world);
+    world.post_comment(AUTHORIZED, &written);
+    let redirected = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        redirected.code,
+        Some(10),
+        "the redirect walk must complete and ask again: stdout={} stderr={}",
+        redirected.stdout,
+        redirected.stderr
+    );
+    // The attempt really ran, so there is a prompt to be right about. Every assertion
+    // below is about one, and a run that composed none has none to be wrong.
+    assert_eq!(
+        world.model_calls(),
+        5,
+        "two turns, an interpretation, and the redirected attempt's two"
+    );
+
+    let prompts = world.model_prompts();
+    let quoting: Vec<&String> = prompts
+        .iter()
+        .filter(|prompt| prompt.starts_with(ATTEMPT_PREAMBLE))
+        .filter(|prompt| prompt.contains(INSTRUCTION_LABEL))
+        .collect();
+    assert!(
+        !quoting.is_empty(),
+        "no attempt was told what was asked for, out of {} prompts: {prompts:?}",
+        prompts.len()
+    );
+
+    for prompt in &quoting {
+        // Taken off the prompt rather than recomputed, so this is not a second
+        // implementation of the cap.
+        let quoted = quoted_instruction(prompt, &written);
+        // The denominator: what arrived is a prefix of what was written, so the
+        // instruction reached the prompt rather than being dropped or rewritten.
+        assert!(
+            written.starts_with(&quoted),
+            "what was quoted is not a prefix of what was written: {} bytes quoted",
+            quoted.len()
+        );
+        // **The property.** Bounded in bytes, and *cut*, which the character bound
+        // cannot account for.
+        assert!(
+            quoted.len() <= 2_048,
+            "the quotation is bounded in bytes and is {} bytes ({} characters)",
+            quoted.len(),
+            quoted.chars().count()
+        );
+        assert!(
+            quoted.chars().count() < written.chars().count(),
+            "and something really was cut — {} characters of {}, which a cap of 2,048 \
+             characters would not have touched",
+            quoted.chars().count(),
+            written.chars().count()
+        );
+        // No partial code point reached the prompt. The cut lands on a boundary or
+        // this string would not be valid UTF-8 to begin with; what is asserted is
+        // that the head is whole, which is what a boundary walk buys.
+        assert!(
+            quoted.chars().all(|character| character == '★'),
+            "and the cut landed on a character boundary: {quoted:?}"
+        );
+    }
+
+    // The walk it happened inside is the redirect walk, not some other road to 10.
+    assert_eq!(
+        world
+            .pushed_file(&suspended.branch, "src/lib.rs")
+            .as_deref(),
+        Some(REDIRECTED_FIXTURE),
+        "the redirected attempt's tree is what was published"
+    );
 }
