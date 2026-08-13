@@ -2018,6 +2018,43 @@ fn an_approval_for_a_head_that_has_moved_is_unrecognisable_not_merely_rejected()
         "one question from the suspension and one from this run: {:?}",
         world.posted_comment_bodies()
     );
+
+    // **And a person reading those two can tell which one is live.** Two questions
+    // that a machine keeps apart by request id are two questions a *reader* cannot
+    // keep apart at all unless the text says so — which was `fiddle-zoec`, filed
+    // against this scenario because the scenario already produced the state and
+    // asserted nothing about its legibility.
+    //
+    // The denominator matters more than the presence: asserting only that the
+    // sentence appears would pass against a build that pasted one constant commit
+    // into both bodies, and "two questions each naming a commit" and "two questions
+    // each naming *its own* commit" would then be the same observation. So each body
+    // is required to name the head its own marker carries, and the two are required
+    // to differ — which is what makes the sentence able to tell a reader anything.
+    //
+    // Nothing here asserts an edit or a deletion, and that is deliberate: fiddle has
+    // no path that edits a comment, and `DecisionError::RequestEdited` refuses a
+    // request comment whose timestamps disagree *because* it has none. This is the
+    // one option that cannot fail closed on a narrower credential.
+    let bodies = world.posted_comment_bodies();
+    for (body, (_, head)) in bodies.iter().zip(questions.iter()) {
+        assert!(
+            body.contains(&format!("This question is about commit {head}")),
+            "each question must name the commit it is about, so a reader can match it \
+             against the pull request's head: expected commit {head} in {body:?}"
+        );
+        assert!(
+            body.contains("this question supersedes it"),
+            "each question must say what an earlier question naming a different \
+             commit means, or a reader is left with two live-looking questions: \
+             {body:?}"
+        );
+    }
+    assert_ne!(
+        questions[0].1, questions[1].1,
+        "the two questions must name different commits, or the sentence above \
+         distinguishes nothing and this assertion passes vacuously"
+    );
 }
 
 /// The edited approval. A reply that was rewritten after it was listed is not the

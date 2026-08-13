@@ -624,7 +624,14 @@ where
                 "The change was produced by one bounded attempt and passed the check \
                  fiddle ran itself over the tree that attempt left. It is published as \
                  a draft at {head_sha}; marking it ready is the step fiddle will not \
-                 take on its own."
+                 take on its own.\n\nThis question is about commit {head_sha} and \
+                 nothing else. If an earlier question from fiddle stands above it \
+                 naming a different commit, that commit is no longer this pull \
+                 request's head: the earlier question was about a revision that no \
+                 longer exists, answering it now does nothing, and this question \
+                 supersedes it. Fiddle leaves it standing rather than editing or \
+                 deleting it, because a comment fiddle wrote and never touches is what \
+                 lets it refuse a request comment somebody else has edited."
             ),
             risks: vec![
                 "Marking it ready puts the change in front of reviewers and starts \
