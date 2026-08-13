@@ -44,6 +44,14 @@ one line, failing 7 of 22 tests while the test in question passed.
 **A mechanism claim ships with the mutation that would refute it.** `panic!` at a function's entry, then see
 which tests notice. It is the cheapest check available and it settled two agreed-but-false claims.
 
+**An assertion that reduces to one already made above it cannot fail.** M3: a helper asserted
+`reads + writes + graphql == total()` where `total()` is defined as those three plus `unclassified` — so it
+reduced to `unclassified == 0`, which the line immediately above already asserted. It read as a completeness
+check and was decoration. The replacement that *can* fail is the one comparing the partition to its source:
+`total() == world.requests().len()`, which catches a dropped entry — and nothing else in that test could,
+because dropping one bucket's entries leaves every other bucket correct. **Ask what mutation this assertion
+fails on that its neighbours do not.** If there is none, it is a restatement.
+
 **Cite ranges, not lines, and open what you cite.** A single-line citation of a multi-line sentence points at
 something true while the claim around it is false. Seven stale or misaimed citations occurred in M3, four of
 them the lead's.
@@ -110,6 +118,12 @@ something about the others.
 **An accessor asserted only *empty* needs a positive case beside the negative.** Three in M3 were read solely
 by a negative assertion, so a version answering "nothing" unconditionally passed everything.
 
+**Closing a null with a table you wrote yourself closes half of it.** A table driving every arm of a
+partition proves the sorter behaves as the table says; it cannot prove the table's expectation matches
+reality, because the same hand wrote both. Pair it with one assertion over a **real** invocation — M3's lane
+re-sorted its live log after dispatching a genuine GraphQL mutation by hand. Correspondingly, one real call
+cannot cover four arms. **Neither surface alone is the property.**
+
 **A null result is a finding to report, not a problem to hide.** M3's beans reported 8, 7, 4 and 0 nulls; every
 one was either closed or recorded with its reason. Two were found by attacking a *proposed fix* rather than the
 code.
@@ -154,6 +168,11 @@ your live mutation is caught by **nothing**: after the commit the mutated file *
 the pin passes and `git diff --quiet` passes. Defending against it means re-reading `git rev-parse HEAD` after
 every restore and comparing it to the sha you pinned at. The lane that found this records the sha per
 inversion and does not compare it — which is how it knew the gap was there.
+
+**`git commit --only <path>` is the form that cannot capture a neighbour's mutation**, and it is why four
+docs commits landed inside two running inversion exercises in M3 without corrupting either. A bare
+`git commit -a`, or a `git add` of a directory, stages whatever is dirty — including a mutation a neighbour is
+mid-run on, which then becomes `HEAD` with no guard able to see it. Commit the paths you edited, by name.
 
 **Namespace your scratchpad by bean, and never write a driver to its root.** M3: an evaluator was given its own
 detached worktree but not its own scratchpad, wrote `invert.sh` to the shared root, and replaced the
