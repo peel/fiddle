@@ -873,3 +873,37 @@ transcription errors propagated three times. The doc exists so a dispatch can po
 **On second passes.** Across M3 the confirming pass agreed with the first on every bean and never moved a score.
 Where wall-clock matters, one pass is defensible; the second earns its place on beans touching a converged
 sibling's property, a product change, or a credential.
+
+### all dimensions — what M3's last three evaluations established (2026-08-13)
+
+The method is in `docs/technical/evidence-discipline.md`; these are the **scoring** consequences.
+
+**Run your own inversions. This is now the standard, not a bonus.** M3's strongest evaluation ran six of its
+own and found **two nulls in the exact helper the bean's first criterion rested on** — arms of a partition
+asserted only *empty*, so a version answering "nothing" unconditionally passed. It still returned PASS, and
+for a *stronger* reason than the lane had written. An evaluation that only re-reads what the lane reported
+cannot find that, and an evaluation that finds it and reports PASS is not contradicting itself.
+
+**Score an audit or infrastructure bean's `code_quality` as the quality of its method and record**, not by
+counting product changes. For such a bean, ask: does every figure name the sha it was measured at, does every
+negative check print its denominator, is each inversion reproducible from the artefacts on disk, and are the
+claims about *other* beans re-measurable? M3's audit bean corrected four of the lead's own claims and one
+sentence in the discipline doc itself; that is what a good record looks like.
+
+**A lane that refuses to work and says why is doing its job.** One M3 lane sampled `git status` every three
+seconds, found another agent cycling mutations through the tree it had been told was its own, and **blocked
+rather than editing**. Do not score that as incomplete work. The correct read is that the lane protected a
+converged sibling's commits and produced the diagnosis the lead had missed.
+
+**A criterion carrying an absolute suite count is a spec defect to name, not a lane failure.** M3 inherited
+`443 passed / 34 binaries` from its design stage into twelve places, including criteria. The true figure ended
+at 665. A lane that measures its own baseline at a named sha and says the criterion's figure is stale has
+satisfied the criterion's *intent*; a lane that "restores" the count has broken the suite.
+
+**Ask of every assertion: what mutation does this fail on that its neighbours do not?** A real tautology
+survived review in M3 — `reads + writes + graphql == total()` where `total()` was defined as those three plus
+a fourth already asserted zero on the line above. It read as a completeness check and could not fail.
+
+**And distrust a null closed only by a table the lane wrote itself.** The same hand wrote the code and the
+expectation, so the table proves the sorter and not the expectation. The closure worth full marks pairs it
+with one assertion over a real invocation.
