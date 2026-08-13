@@ -1154,14 +1154,33 @@ mod tests {
     /// never ran.
     ///
     /// The world has to stay *observable* for the derivation to reach `Execute`
-    /// at all, so the failure is injected as a readable but unwritable change
-    /// directory rather than a missing one. That is a Unix permission, hence
-    /// the gate; and `root` ignores the permission, hence the early return.
-    #[cfg(unix)]
+    /// at all, so the failure is injected into the write alone rather than into
+    /// the directory the observation reads.
+    ///
+    /// # The mechanism is a file type, not a permission bit, and that is the point
+    ///
+    /// This used to seal `changes/` to mode `0500` and then **return early** if the
+    /// run completed anyway, with the comment *"an identity that ignores the
+    /// permission bits"*. `fiddle-c8cx` measured this test to be the **only** pin
+    /// in the workspace on `CapabilityError::Write`'s `Correctable` arm — flipping
+    /// that arm gives 423 passed / 1 failed over 20 binaries, and this is the sole
+    /// noticer. So under `root` the early return fired, this test asserted nothing,
+    /// and that arm was pinned by nothing at all with the suite still green.
+    ///
+    /// A directory standing where [`write_atomically`] must create its temporary
+    /// file takes the identity out of the question: writing a file to a path that
+    /// is already a directory fails with `EISDIR` for **every** identity, because
+    /// it is a property of the path rather than a permission the caller might be
+    /// exempt from. Hence no early return, no `#[cfg(unix)]`, and nothing left for
+    /// an identity to change.
+    ///
+    /// It costs a coupling to the `.{name}.tmp` spelling inside
+    /// `write_atomically`, and that coupling **fails loudly** rather than silently:
+    /// if the temporary's name changes, the write succeeds, the run completes, and
+    /// the `match` below panics on `Completed`. That is the opposite of the early
+    /// return it replaces, and it is the property being bought.
     #[tokio::test]
     async fn a_capability_failure_is_retryable_and_recorded() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = fixture_root();
         let log = std::sync::Arc::<Log>::default();
         let changes_dir = dir.path().join("changes");
@@ -1170,8 +1189,9 @@ mod tests {
         let changes = StubChangePort::new(dir.path());
         let journal = SpyJournal::watching(&log);
 
-        // Readable and listable, but not writable: observation still succeeds.
-        std::fs::set_permissions(&changes_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        // The change set itself stays absent, so the observation still succeeds and
+        // the derivation still reaches `Execute`; only the write is obstructed.
+        std::fs::create_dir_all(changes_dir.join(format!(".{WORK_ID}.json.tmp"))).unwrap();
         let report = run(&context(
             &capability,
             &work_items,
@@ -1180,12 +1200,6 @@ mod tests {
             &attempt_id(),
         ))
         .await;
-        std::fs::set_permissions(&changes_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        if report.outcome == RunOutcome::Completed {
-            // Running with an identity that ignores the permission bits.
-            return;
-        }
 
         match &report.outcome {
             RunOutcome::Retryable { reason } => {

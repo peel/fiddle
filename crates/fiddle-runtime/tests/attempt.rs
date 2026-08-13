@@ -347,9 +347,17 @@ async fn an_executed_capability_is_recorded_even_when_publication_fails() {
     .await;
 
     unseal(&project.report_dir());
-    if record.published.is_some() {
-        return; // an identity that ignores the permission bits
-    }
+    assert!(
+        record.published.is_none(),
+        "the sealed directory did not stop the publication, so this test asserted \
+         nothing. Measured 2026-08-13: uid 501 in the dev shell and GitHub's \
+         ubuntu-latest runner in CI, neither of them root — so if this fires, the \
+         identity changed. The durable fix is an obstacle that is a property of the \
+         path rather than a permission the caller can be exempt from: see \
+         `orchestration::tests::a_capability_failure_is_retryable_and_recorded`, which \
+         puts a directory where the temporary file must go and fails `EISDIR` for every \
+         identity."
+    );
 
     assert!(
         project.bundles().is_empty(),
@@ -468,9 +476,17 @@ async fn an_unrecordable_intent_stops_the_attempt_before_the_capability_runs() {
     let record = run_attempt(&project, &spy, &project.report_dir()).await;
 
     unseal(&project.report_dir());
-    if record.published.is_some() {
-        return; // an identity that ignores the permission bits
-    }
+    assert!(
+        record.published.is_none(),
+        "the sealed directory did not stop the publication, so this test asserted \
+         nothing. Measured 2026-08-13: uid 501 in the dev shell and GitHub's \
+         ubuntu-latest runner in CI, neither of them root — so if this fires, the \
+         identity changed. The durable fix is an obstacle that is a property of the \
+         path rather than a permission the caller can be exempt from: see \
+         `orchestration::tests::a_capability_failure_is_retryable_and_recorded`, which \
+         puts a directory where the temporary file must go and fails `EISDIR` for every \
+         identity."
+    );
 
     assert_eq!(
         spy.calls.load(Ordering::Relaxed),
@@ -517,9 +533,17 @@ async fn a_publication_failure_is_retryable_and_repeating_it_afterwards_succeeds
     .await;
 
     unseal(&project.report_dir());
-    if failed.published.is_some() {
-        return; // an identity that ignores the permission bits
-    }
+    assert!(
+        failed.published.is_none(),
+        "the sealed directory did not stop the publication, so this test asserted \
+         nothing. Measured 2026-08-13: uid 501 in the dev shell and GitHub's \
+         ubuntu-latest runner in CI, neither of them root — so if this fires, the \
+         identity changed. The durable fix is an obstacle that is a property of the \
+         path rather than a permission the caller can be exempt from: see \
+         `orchestration::tests::a_capability_failure_is_retryable_and_recorded`, which \
+         puts a directory where the temporary file must go and fails `EISDIR` for every \
+         identity."
+    );
     match &failed.bundle.outcome {
         RunOutcome::Retryable { reason } => assert!(
             reason.as_str().contains("report bundle"),
