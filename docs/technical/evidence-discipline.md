@@ -103,6 +103,14 @@ check and was decoration. The replacement that *can* fail is the one comparing t
 because dropping one bucket's entries leaves every other bucket correct. **Ask what mutation this assertion
 fails on that its neighbours do not.** If there is none, it is a restatement.
 
+**Read a claim's neighbours before calling it false.** M3's holistic review reported that two committed
+documents contradicted each other: an invariant said *"bean bodies carry the durable executable contract"*
+while the tracker directory is gitignored. **The word "durable" contrasted with the plan being superseded, not
+with version control** — provable from the invariant immediately above it, *"implementer agents work from the
+bean body alone without reading plan files"*, which makes the pair one statement about where an implementer's
+authority comes from. The bean was filed at `high` and scrapped the same day. **A single line is not a claim;
+the passage is.** This is the cite-ranges rule applied to reading rather than to writing.
+
 **Cite ranges, not lines, and open what you cite.** A single-line citation of a multi-line sentence points at
 something true while the claim around it is false. Seven stale or misaimed citations occurred in M3, four of
 them the lead's.
