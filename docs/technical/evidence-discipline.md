@@ -66,6 +66,21 @@ constant, and a whole matrix: five rows asserted a shape (`Unclear` → `Awaitin
 mutated) that **every transport failure also produces**, so a correct refusal and a broken adapter were
 bit-for-bit indistinguishable and 21 tests passed over it.
 
+**Fixing an assertion's units does not fix an input that cannot exercise the difference.** M3: a test asserted
+`chars().count() <= 2_048` against a cap documented in bytes; the lead corrected it to `len()`, which is
+strictly better — and the rows it asserts over are pure ASCII, so the byte form and the character form agree on
+every one of them. Two caps of 2048 exist, `REDIRECT_INSTRUCTION_LIMIT` in bytes and `PUBLISHED_TEXT_LIMIT` in
+characters, and **deleting the byte truncation entirely left the suite green.** The lead's own correcting
+comment named the discriminating case — *"3,000 star characters truncate to 2,046 bytes, which is 682
+characters"* — and the row was never written. **When a fix turns on a distinction, the input has to make the
+distinction visible; otherwise the assertion is a value appearing only where its value cannot matter, and the
+fix's own justification is the test it is missing.**
+
+**A mutation that moves a constant without moving the relation proves nothing.** M3: to demonstrate a tripwire
+over two colliding comment ids, the lead suggested shifting the base constant from 9000 to 9500. The collision
+is relative arithmetic, so every id shifted together and the collision survived — the lane nearly recorded that
+as a pass. Mutate the relation the claim depends on, not a number the claim is expressed in.
+
 **An accessor asserted only *empty* needs a positive case beside the negative.** Three in M3 were read solely
 by a negative assertion, so a version answering "nothing" unconditionally passed everything.
 
