@@ -215,6 +215,16 @@ inversion and does not compare it — which is how it knew the gap was there. **
 its `restore.sh` restores from the manifest, verifies with `cmp` **and** `git diff --quiet`, **and re-reads
 `git rev-parse HEAD` to compare against the pinned sha.** That is the form to copy.
 
+**A third member of the same family, and no guard sees it either: the worktree removed under a running lane.**
+M3's lead merged a lane's branch and tore down its worktree while that lane was rebasing and re-running its
+tests. `cmp` and `git diff --quiet` then have nothing to compare, and a torn-down build **surfaces as a red
+test result that reads like a defect** — here, `target/debug/gh_stub could not be run: No such file or
+directory`, in a test the change did not touch. What distinguished it was the **shape** of the failure: a
+missing binary rather than a failed assertion, in an untouched test. Two cheap detectors: `test -d` the
+worktree **and** re-read `git rev-parse HEAD` after every run; and **treat a chained `cd` that fails as
+fatal**, because the rest of the line then runs somewhere else. In this instance it ran in the merge target
+and accidentally produced the verification that was wanted — *which is luck, not method.*
+
 **`git commit --only <path>` is necessary and not sufficient.** It prevents *staging* a neighbour's
 mutation, which is why four docs commits landed inside two running inversion exercises in M3 without
 corrupting either. It does **not** stop the pre-commit hook: `prek` stashes every unstaged change, runs the
@@ -346,6 +356,13 @@ buys the cost of isolation without the benefit.
 on shell entry. Use `nix develop -c git commit`, which fixes it *and* runs the hooks. `PREK_ALLOW_NO_CONFIG=1`
 silences the same error by skipping the hooks, so it is the wrong fix. Say this in the dispatch when handing
 out a new worktree; three M3 lanes hit it and each spent turns on it.
+
+**Do not tear down a lane's worktree because its work is merged.** Merging is not the same event as the lane
+finishing: it may be rebasing to check its commit against the tip you just moved, or re-running its own
+suite. Confirm the lane is done — ask, or observe an idle notification *after* its report — before removing a
+worktree or deleting a branch. And when `git branch -d` refuses, that check is about **commits, not content**:
+a lane that rebased after you merged leaves a content-identical replay, so prove the tree diff is empty before
+reaching for `-D`.
 
 **Verify before correcting a lane.** Six lanes corrected the lead's reasoning in M3 and all six were right: a
 stale baseline, a table audited against the wrong crate, an accessor claimed absent that existed, a
