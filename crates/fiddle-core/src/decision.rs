@@ -98,6 +98,18 @@ pub struct DecisionRequestId(pub String);
 
 /// What the marker in a request comment says, and the only thing a continuation
 /// trusts it for: knowing what to recompute and compare against.
+///
+/// # Its serialized field set is pinned, and by a different test than you expect
+///
+/// A fifth field here is the same hazard
+/// [`HumanDecisionRequest`]'s own documentation describes — a second copy of the
+/// request id, a marker naming one question while the consumer looks for another,
+/// and a run that posts forever — one level below where that type's key-set
+/// assertion can look. `the_request_id_is_held_in_exactly_one_place` walks the
+/// document for the id's *value*, so it catches a nested copy that **agrees** with
+/// `request` and cannot see one that disagrees, which is the more dangerous of the
+/// two. `every_object_in_a_serialized_request_holds_exactly_the_fields_it_declares`
+/// is what refuses the field whatever value it carries.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct DecisionBinding {
     pub request: DecisionRequestId,
@@ -535,6 +547,27 @@ mod tests {
         }
     }
 
+    /// One whole request, for the two tests that assert over its serialized form.
+    ///
+    /// Every container is deliberately **non-empty** — `work_ref` is `Some`, and
+    /// the three vectors each hold one element. Both tests walk the document, and
+    /// a walk can only look inside a container that has something in it, so a
+    /// fixture emptied here would silently stop covering those arms. The shape test
+    /// asserts that it is populated rather than trusting this comment.
+    fn request() -> HumanDecisionRequest {
+        HumanDecisionRequest {
+            invocation_ref: "beans:w-1".to_string(),
+            work_ref: Some(WorkRef("w-1".to_string())),
+            capability: crate::PUBLISH_CHANGE,
+            binding: binding(),
+            question: "May fiddle mark this ready for review?".to_string(),
+            rationale: "The check passed at this revision.".to_string(),
+            risks: vec!["review notifications reach the team".to_string()],
+            alternatives: vec!["leave it a draft and revisit".to_string()],
+            evidence: vec![EvidenceRef("check=pass".to_string())],
+        }
+    }
+
     /// The round trip is half the contract: what this build writes, this build
     /// reads. Only half, because both halves move together — see
     /// [`the_rendered_marker_is_pinned_byte_for_byte`].
@@ -966,10 +999,21 @@ mod tests {
     ///
     /// What neither refuses is a copy that is *both* nested *and* disagreeing: a
     /// value-equality walk cannot see a value it is not equal to, and nothing here
-    /// gates [`DecisionBinding`]'s own serialized key set. Closing it means a shape
-    /// assertion over the nested types, which belongs beside those types rather than
-    /// in this test — and it is the reason the count was not simply restored, since
-    /// a count sees that case no better and the disagreeing top-level copy worse.
+    /// gates [`DecisionBinding`]'s own serialized key set. That was recorded as this
+    /// test's residual rather than its gap, measured — the mutation passes here,
+    /// 64/0 — and it is the reason the count was not simply restored, since a count
+    /// sees that case no better and the disagreeing top-level copy worse.
+    ///
+    /// **It is now closed, and not here.**
+    /// `every_object_in_a_serialized_request_holds_exactly_the_fields_it_declares`
+    /// pins every object in the document to its declared field set, which refuses
+    /// the fifth field whatever value it carries. That test overlaps this one's key
+    /// set deliberately and is kept separate for a reason worth stating: folded in
+    /// above these two assertions it would fail first on both of their cases and
+    /// take the credit, and a later reader deleting one of them would see nothing go
+    /// red. Two tests, three cases, and each assertion still fails on its own —
+    /// which is measured rather than asserted here, by re-running the nested-equal
+    /// and top-level-disagreeing mutations after the shape guard was added.
     ///
     /// All of this is worth the words because the assertions would look
     /// interchangeable to somebody tidying this test, and the person most likely to
@@ -977,17 +1021,7 @@ mod tests {
     /// either one alone would leave the guard green for a change it exists to refuse.
     #[test]
     fn the_request_id_is_held_in_exactly_one_place() {
-        let request = HumanDecisionRequest {
-            invocation_ref: "beans:w-1".to_string(),
-            work_ref: Some(WorkRef("w-1".to_string())),
-            capability: crate::PUBLISH_CHANGE,
-            binding: binding(),
-            question: "May fiddle mark this ready for review?".to_string(),
-            rationale: "The check passed at this revision.".to_string(),
-            risks: vec!["review notifications reach the team".to_string()],
-            alternatives: vec!["leave it a draft and revisit".to_string()],
-            evidence: vec![EvidenceRef("check=pass".to_string())],
-        };
+        let request = request();
 
         let document = serde_json::to_value(&request).expect("the type derives Serialize");
         let mut fields: Vec<&str> = document
@@ -1028,6 +1062,131 @@ mod tests {
             "and nothing nested repeats it either: the key set above sees top-level \
              fields only, so a copy carried by a nested value is the same \
              forever-posting hazard one level below where that assertion can look"
+        );
+    }
+
+    /// Every object in `value`, as its dotted path and its own sorted key set.
+    ///
+    /// Objects rather than leaves, because the question is what a document may
+    /// *contain* and not what it happens to hold — which is the difference between
+    /// this and [`paths_holding`], and the reason a value that disagrees is visible
+    /// here and invisible there.
+    ///
+    /// Arrays are indexed and descended into, so a struct that appeared inside
+    /// `risks` or `evidence` would be named rather than skipped. The root's path is
+    /// the empty string; `root` would be indistinguishable from a field called
+    /// `root`. Keys are sorted explicitly even though `serde_json`'s map is ordered
+    /// today, because that ordering is a crate feature away from being insertion
+    /// order and this assertion should not depend on which.
+    fn object_shapes(value: &serde_json::Value, at: &str, found: &mut Vec<(String, Vec<String>)>) {
+        let below = |key: &str| {
+            if at.is_empty() {
+                key.to_string()
+            } else {
+                format!("{at}.{key}")
+            }
+        };
+        match value {
+            serde_json::Value::Object(fields) => {
+                let mut keys: Vec<String> = fields.keys().cloned().collect();
+                keys.sort_unstable();
+                found.push((at.to_string(), keys));
+                for (key, nested) in fields {
+                    object_shapes(nested, &below(key), found);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (index, nested) in items.iter().enumerate() {
+                    object_shapes(nested, &below(&index.to_string()), found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A field nobody declared has nowhere to appear, at any depth and whatever it
+    /// carries.
+    ///
+    /// # The case this exists for
+    ///
+    /// `the_request_id_is_held_in_exactly_one_place` holds two assertions and they
+    /// leave one gap between them, which that test records as its residual: a second
+    /// copy of the request id that is **both nested and disagreeing**. The key set
+    /// there reads top-level fields only, so it cannot see inside
+    /// [`DecisionBinding`]; the value walk there compares against
+    /// `binding.request`'s value, so it cannot see a copy that differs from it. A
+    /// disagreeing copy is the dangerous one — an equal copy publishes nothing wrong,
+    /// and a copy that differs is what makes a producer publish a marker naming one
+    /// question while a consumer searches for another, find nothing, conclude it has
+    /// not asked, and post again on every attempt forever.
+    ///
+    /// So the guard here is not about the id at all: it is about **shape**, which is
+    /// what makes it blind to the value and therefore able to refuse every value.
+    /// Both types' field sets are pinned, `HumanDecisionRequest`'s nine and
+    /// `DecisionBinding`'s four, and the walk that produces them is total — a struct
+    /// appearing anywhere in the document, including inside one of the vectors, is a
+    /// new object with a new path and fails this.
+    ///
+    /// # Why it is its own test
+    ///
+    /// It overlaps the key-set assertion in the other test on purpose and must not
+    /// be folded into it. An inversion is caught by whichever assertion fires first,
+    /// so a total shape guard placed above those two would fail on their cases as
+    /// well as on this one, and somebody deleting either of them afterwards would see
+    /// nothing turn red. Separate tests mean all three cases are attributed, and that
+    /// was measured after this was written rather than argued: the nested-equal and
+    /// top-level-disagreeing mutations still fail their own assertions over there.
+    #[test]
+    fn every_object_in_a_serialized_request_holds_exactly_the_fields_it_declares() {
+        let request = request();
+        let document = serde_json::to_value(&request).expect("the type derives Serialize");
+
+        // The walk's denominator. It descends into containers, so a container with
+        // nothing in it is a place it cannot look — and a fixture emptied here would
+        // narrow this assertion without failing it, which is the shape of null this
+        // test exists to close in the first place.
+        assert!(
+            request.work_ref.is_some()
+                && !request.risks.is_empty()
+                && !request.alternatives.is_empty()
+                && !request.evidence.is_empty(),
+            "the fixture must populate every container, or the walk below stops \
+             covering the paths that run through them and says nothing about it"
+        );
+
+        let mut shapes: Vec<(String, Vec<String>)> = Vec::new();
+        object_shapes(&document, "", &mut shapes);
+        shapes.sort();
+        let observed: Vec<(&str, Vec<&str>)> = shapes
+            .iter()
+            .map(|(at, keys)| (at.as_str(), keys.iter().map(String::as_str).collect()))
+            .collect();
+
+        assert_eq!(
+            observed,
+            vec![
+                (
+                    "",
+                    vec![
+                        "alternatives",
+                        "binding",
+                        "capability",
+                        "evidence",
+                        "invocation_ref",
+                        "question",
+                        "rationale",
+                        "risks",
+                        "work_ref",
+                    ]
+                ),
+                ("binding", vec!["effect", "head_sha", "payload", "request"]),
+            ],
+            "these two objects are the whole of a serialized request, and their field \
+             sets are the whole of what it may carry. A path that is not here is a \
+             type that grew a field or a newtype that stopped being transparent; a \
+             key that is not here is somewhere to put a second copy of the request \
+             id, which is the hazard `the_request_id_is_held_in_exactly_one_place` \
+             describes and the one value it cannot see"
         );
     }
 }
