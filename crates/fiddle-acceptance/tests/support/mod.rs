@@ -1456,6 +1456,46 @@ pub fn a_suspension_and_its_approval(approval: &str) -> Vec<Reply> {
     script
 }
 
+/// An interpretation naming **fields outside the schema** beside a perfectly good
+/// approval.
+///
+/// # What a document like this would be if it were read
+///
+/// `effect` and `payload` are the two identities the marker carries and the two the
+/// walk recomputes for itself. A model that could name either would be naming *which
+/// change gets spent* — it would be choosing the effect a person's approval is applied
+/// to, from a document a provider returned. That is the blast radius
+/// `#[serde(deny_unknown_fields)]` on `interpret::Reply` exists to bound: the reply is
+/// the one document in this walk that comes from outside and is not a person's words,
+/// so a field the schema does not name is refused rather than ignored.
+///
+/// # Why this belongs at the acceptance tier and not only beside `interpret`
+///
+/// An inversion measured it. Removing `deny_unknown_fields` fails **2 of 8** in
+/// `fiddle-runtime --test interpretation` and **nothing at all** in
+/// `--test decision_protocol` (19/19) or in `fiddle-acceptance --test human_direction`
+/// (29/29 at the time), because every scripted reply in those two suites is a document
+/// this build authored. So the property was asserted against `interpret` and not
+/// against the **walk** that calls it, and not against the binary at all.
+///
+/// The verdict is a real `"approve"` with a real quoted span, so nothing but the extra
+/// fields can be the reason it is refused. A scenario built on a *malformed* verdict
+/// would be refused by the schema either way.
+pub fn a_suspension_and_a_hostile_interpretation(approval: &str) -> Vec<Reply> {
+    let mut script = a_real_repair();
+    script.push(accepted(reports(serde_json::json!({
+        "decision": "approve",
+        "redirect": serde_json::Value::Null,
+        "evidence": approval,
+        // Sixteen lowercase hex characters each, which is the shape the marker's own
+        // grammar requires — so a build that read these would have values it could act
+        // on rather than ones it would reject for their form.
+        "effect": "dead0beef0dead00",
+        "payload": "0feed0dad0cafe00",
+    }))));
+    script
+}
+
 // ===========================================================================
 // The scripted world a decision walk runs against
 // ===========================================================================
@@ -1807,6 +1847,31 @@ pub fn parse_marker(body: &str) -> Result<Binding, String> {
         payload: values.next().unwrap(),
         head_sha: values.next().unwrap(),
     })
+}
+
+/// Write a binding back out as the marker line a request comment carries.
+///
+/// [`parse_marker`]'s inverse, from the same statement of the design's grammar and for
+/// the same reason it is not `fiddle_core::render_marker`: a fixture that rendered with
+/// the product's own function could not express a marker the product would not write,
+/// which is the only kind worth forging.
+///
+/// It exists so a scenario can edit **one field** of a published marker and leave every
+/// other byte of the comment alone. That is the case step 3 of the validation order is
+/// an authentication rather than a formality for: a marker naming the right request id
+/// proves only that its author could read the conversation, and the effect id is
+/// derived from four values the conversation does not carry. A scenario that rewrote
+/// the whole body instead would be refused for whichever difference the product noticed
+/// first.
+///
+/// [`World::rewrite_the_published_marker`] asserts that what this renders is
+/// byte-for-byte what the body already held, which is what keeps this grammar and the
+/// product's from drifting apart unnoticed.
+pub fn render_marker(binding: &Binding) -> String {
+    format!(
+        "<!-- fiddle:decision v1 request={} effect={} payload={} head={} -->",
+        binding.request, binding.effect, binding.payload, binding.head_sha
+    )
 }
 
 /// The **identity of the gated effect** one question is about, re-derived from the
@@ -2886,6 +2951,137 @@ impl World {
              {found}"
         );
         std::fs::write(&log, format!("{}\n", rewritten.join("\n"))).unwrap();
+    }
+
+    /// Rewrite **one field of the marker** on the question this world's run published,
+    /// and hand back the binding a reader will now find there.
+    ///
+    /// # Why a field and not a body
+    ///
+    /// [`World::rewrite_the_published_question`] can already replace the whole comment,
+    /// and that is the wrong instrument for the case step 3 exists for. A marker whose
+    /// **effect** field was edited while its **request** field was left alone is still
+    /// found: `PublishDecisionRequest::is_this_request` compares only the request id, so
+    /// `inspect` recognises the comment, the walk enters the validation order, and step 3
+    /// — the recomputation of the effect from four values the conversation does not carry
+    /// — is what refuses. A scenario that rewrote more than one field would be refused
+    /// for whichever difference the product happened to check first, and the attribution
+    /// is the whole claim.
+    ///
+    /// So the caller is handed the parsed [`Binding`] and edits exactly what it means to.
+    ///
+    /// # Two assertions, and each closes a way this could quietly do nothing
+    ///
+    /// The edit must **change** the binding, because a marker rewritten to what it
+    /// already said is the check that cannot fail. And the marker this file renders from
+    /// the old binding must be **present in the body byte for byte**, which is what says
+    /// [`render_marker`]'s grammar and the product's rendering still agree: without it, a
+    /// drift in either would make this replace nothing and the scenario would pass
+    /// against an untouched question.
+    pub fn rewrite_the_published_marker(&self, edit: impl FnOnce(&mut Binding)) -> Binding {
+        let comment = self.the_only_request_comment();
+        let was = parse_marker(&comment.body)
+            .unwrap_or_else(|reason| panic!("the published question carries a marker: {reason}"));
+        let mut now = was.clone();
+        edit(&mut now);
+        assert_ne!(
+            now, was,
+            "a marker rewritten to what it already said is not a case"
+        );
+        let rendered = render_marker(&was);
+        assert!(
+            comment.body.contains(&rendered),
+            "the body must carry the marker this file renders, or the grammar here and \
+             the product's have drifted and this would rewrite nothing.\nrendered: \
+             {rendered}\nbody: {}",
+            comment.body
+        );
+        self.rewrite_the_published_question(&comment.body.replace(&rendered, &render_marker(&now)));
+        now
+    }
+
+    /// Make the `POST` that publishes the question **land and then lose its answer**.
+    ///
+    /// # The provenance this world could not produce
+    ///
+    /// The scripted `gh` has carried `commit_then_die` since M2 — the write is applied
+    /// and *then* the process ends without answering, in that order, because a stub that
+    /// exited first would be testing a failed write. Nothing in this world could reach
+    /// it: `commit_then_*` is scripted per REST key, and no accessor here wrote a script
+    /// file at all. So the milestone's central rule — settle a lost answer by reading,
+    /// never by asking again — was asserted for the *question* only in
+    /// `fiddle-runtime`'s `decision_request_effect`, which drives the operation through
+    /// the executor and therefore cannot see a caller that goes around it.
+    ///
+    /// The key is derived from the same repository and conversation the capability
+    /// addresses, mangled the way `gh_stub::script_key` mangles a path, so a script
+    /// cannot come to name a path nothing requests. `201` because that is what the
+    /// endpoint answers; the exit field is unused for a `commit_then_*` mode, which ends
+    /// the process itself.
+    ///
+    /// **It stays armed for every later process**, deliberately. A continuation that
+    /// wrongly posted a second question would die the same way, and the world would then
+    /// hold two comments — which is what [`World::request_comments`] is read for. A knob
+    /// that disarmed itself would make "the second run did not ask again" a claim about
+    /// the fixture's bookkeeping instead of about the conversation.
+    pub fn lose_the_answer_to_the_question(&self) {
+        let key = format!(
+            "POST_{}",
+            format!("repos/{REPO}/issues/{CONVERSATION_ISSUE}/comments").replace('/', "_")
+        );
+        std::fs::write(self.stub.join("script").join(key), "201 0 commit_then_die").unwrap();
+    }
+
+    /// Script the answer to GraphQL call `n` to **land and then lose its answer**.
+    ///
+    /// The same provenance as [`World::lose_the_answer_to_the_question`] on the other
+    /// write route, and it has to be scripted separately for the reason
+    /// [`World::script_graphql`] states: every GraphQL call is one `POST /graphql`, so
+    /// the REST script derives one key for all of them and could not tell a refusal from
+    /// a lost answer. The ending rides in `graphql/{n}.json` beside the status and the
+    /// body.
+    ///
+    /// The body is the accepted one, because that is what "the mutation landed" means
+    /// here — a GraphQL verdict lives in the body, so a mutation that lands and loses its
+    /// answer is an accepted body the client never got to read.
+    pub fn lose_the_answer_to_the_ready_mutation(&self) {
+        let dir = self.stub.join("graphql");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("0.json"),
+            serde_json::json!({
+                "status": 200,
+                "body": {
+                    "data": { "markPullRequestReadyForReview": { "clientMutationId": null } }
+                },
+                "mode": "commit_then_die",
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// The keys of every write that landed **under a `gh` that then failed to answer**,
+    /// in arrival order.
+    ///
+    /// Read out of the stub's world log, where the mode is recorded beside the mutation,
+    /// and it earns its place for `gh_stub::apply_effect`'s stated reason: it is how a
+    /// test asserts, *of the world it is making its claims about*, that a write landed
+    /// ambiguously. Without it a scenario could only script the ambiguity and hope the
+    /// run under test took that route — and a test that would pass on a request which
+    /// simply succeeded is not yet a test of the ambiguous one.
+    pub fn landed_ambiguously(&self) -> Vec<String> {
+        std::fs::read_to_string(self.stub.join("world"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|landed| {
+                landed["mode"]
+                    .as_str()
+                    .is_some_and(|mode| mode.starts_with("commit_then_"))
+            })
+            .filter_map(|landed| landed["key"].as_str().map(str::to_string))
+            .collect()
     }
 
     /// The comments on the conversation that fiddle wrote, which are its

@@ -58,7 +58,8 @@
 mod support;
 
 use support::{
-    a_real_repair, a_redirect_whose_attempt_changes_nothing, a_suspension_and_its_approval,
+    a_real_repair, a_redirect_whose_attempt_changes_nothing,
+    a_suspension_and_a_hostile_interpretation, a_suspension_and_its_approval,
     a_suspension_and_its_redirect, interprets, parse_marker, Comment, World, AUTHORIZED,
     CONVERSATION_ISSUE, FIDDLE_BOT, INVOCATION_REF, REDIRECTED_FIXTURE, REPAIRED_FIXTURE, REPO,
     SENTINEL, STRANGER,
@@ -4290,4 +4291,415 @@ fn a_redirect_instruction_is_capped_in_bytes_and_not_merely_in_characters() {
         Some(REDIRECTED_FIXTURE),
         "the redirected attempt's tree is what was published"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Three properties this tier could not observe, each with the inversion that
+// found it
+// ---------------------------------------------------------------------------
+
+/// **A question whose `POST` landed and whose answer was lost is asked once, and the
+/// next process finds one comment rather than posting a second.**
+///
+/// # The inversion that found the gap, and the lane that could not see it
+///
+/// `ProposeChange::ask` was rewritten to `POST` the question through `ctx.gh` and build
+/// the `InteractionRef` from the response's id, bypassing `Executor::execute` — so no
+/// step 3 inspect-before-write and no step 8 read-back. Measured:
+/// `fiddle-runtime --test propose_capability` **24 → 18/6**;
+/// `--test decision_request_effect` **26 → 26/0**; and this lane **29 → 29/0**.
+///
+/// `decision_request_effect` drives the operation *through* the executor, so it cannot
+/// see a caller that goes around it. This lane had no duplicate-question row for the
+/// ask at all, because nothing here could make a write land and lose its answer:
+/// `commit_then_die` is scripted per REST key and no accessor wrote a script file.
+/// [`World::lose_the_answer_to_the_question`] is that accessor.
+///
+/// # Read from the conversation, and never from the run's own report
+///
+/// `POST /repos/{repo}/issues/{pr}/comments` documents no idempotency key of any kind,
+/// so a question re-sent after a lost answer makes a **second** comment — and two
+/// request comments is a question with no answerable thread, because the validation
+/// order chooses candidate replies by their position relative to *the* request comment.
+/// A run that believed it had asked once would report exactly that; only the
+/// conversation says how many are there.
+#[test]
+fn a_question_whose_answer_was_lost_is_asked_once_and_never_twice() {
+    let world = World::with_model_script(a_real_repair());
+    world.lose_the_answer_to_the_question();
+
+    // --- process A: the write lands, and the answer does not come back ---
+    let suspended = suspend(&world);
+    // **Of this world, and not of some other directory:** the mode is recorded beside
+    // the mutation in the stub's own log, so this says the ambiguity really happened on
+    // the run under test. Without it the scenario would be scripting an ambiguity and
+    // hoping the run took that route, and a test that would pass on a request which
+    // simply succeeded is not yet a test of the ambiguous one.
+    assert_eq!(
+        world.landed_ambiguously(),
+        [format!(
+            "POST_repos_{}_issues_{CONVERSATION_ISSUE}_comments",
+            REPO.replace('/', "_")
+        )],
+        "the question's POST must be the write that landed under a `gh` that then \
+         failed to answer, and the only one"
+    );
+    // One POST off the request log, and one comment on the conversation. Two readings
+    // of the same number from two independent recorders: the log counts what was asked
+    // for, the listing counts what a person would see.
+    assert_eq!(
+        world.posted_comment_bodies().len(),
+        1,
+        "the run settled a lost answer by reading, not by asking again: {:?}",
+        world.posted_comment_bodies()
+    );
+    assert_eq!(world.request_comments().len(), 1);
+
+    // --- the next invocation, with nothing local left to read ---
+    world.delete_report_bundles();
+    world.delete_attempt_journal();
+    world.delete_workspaces();
+    assert!(
+        world.local_state_is_empty(),
+        "a continuation that could read its own past would prove nothing about a \
+         fresh one"
+    );
+
+    let next = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        next.code,
+        Some(10),
+        "the question stands and nobody has answered it: stdout={} stderr={}",
+        next.stdout,
+        next.stderr
+    );
+    // **The property, read off the conversation.** The script is still armed, so a run
+    // that posted again would land a second comment and lose that answer too — which is
+    // exactly what this count would then show.
+    assert_eq!(
+        world.request_comments().len(),
+        1,
+        "exactly one question on the conversation after both processes: {:?}",
+        world.request_comments()
+    );
+    assert_eq!(
+        world.posted_comment_bodies().len(),
+        1,
+        "and exactly one POST was ever made: {:?}",
+        world.posted_comment_bodies()
+    );
+    assert_eq!(
+        parse_marker(&world.the_only_request_comment().body)
+            .expect("the one question carries its marker")
+            .request,
+        suspended.binding.request,
+        "and it is the question the first process asked, not a re-ask under a new id"
+    );
+
+    // **The denominator, in this world.** "Exactly one" is worth asserting only if two
+    // would be seen, and `request_comments` filters on the author being a bot — so a
+    // version answering "one" unconditionally, or filtering the wrong field, passes
+    // everything above.
+    world.post_bot_comment(FIDDLE_BOT, "a second question, by hand");
+    assert_eq!(
+        world.request_comments().len(),
+        2,
+        "the accessor can see a second question in this very world: {:?}",
+        world.request_comments()
+    );
+}
+
+/// **A marker whose `effect` field names another effect is refused on the run's own
+/// recomputation, and no model is reached.**
+///
+/// # Why this is reachable here at all, and what refuses
+///
+/// `PublishDecisionRequest::is_this_request` compares only the **request** id. So a
+/// marker whose effect field has been edited still matches: `inspect` finds the comment,
+/// the capability takes the continuation rather than asking again, and **step 3** — the
+/// recomputation of the effect from four values the conversation does not carry — is what
+/// refuses. That is what makes step 3 an authentication rather than a formality, and a
+/// marker naming the right request id proves only that its author could read the thread.
+///
+/// The inversion: shadow the recomputed effect id with the marker's at step 3, so the
+/// comparison cannot disagree. Measured: `fiddle-runtime --test decision_protocol`
+/// **19 → 15/4**, and this lane **29 → 29/0**.
+///
+/// # The discriminator is the model count, not the exit code
+///
+/// `ForeignEffect` is `Recurrence::Permanent`, so this is exit **20** — and so are
+/// `ForeignPayload` and `RequestEdited`, which the tampering scenario next door already
+/// covers. **Corrected: `fiddle-jkbk` predicted exit 10 for this refusal**; 10 is
+/// `Recurrence::Awaiting`, which is what an unanswered question earns, and the mapping in
+/// `capability/mod.rs` puts `ForeignEffect` on the permanent row instead. Either way an
+/// exit code alone cannot say which of the three fired.
+///
+/// What can is **where in the order it fired**. Step 3 precedes step 7, so a refusal here
+/// never reads a reply as a decision and the model count stays at the attempt's two —
+/// against the payload tampering, which refuses at step 8 and therefore *has* interpreted
+/// an approval, at three. The counts are what separate two refusals that share an exit
+/// code and share no mechanism.
+#[test]
+fn a_marker_naming_another_effect_is_refused_before_any_model_is_reached() {
+    let world = World::with_model_script(a_suspension_and_its_approval(APPROVAL));
+    let suspended = suspend(&world);
+    world.post_comment(AUTHORIZED, APPROVAL);
+    world.accept_the_ready_mutation();
+
+    // A genuinely foreign effect id and not sixteen zeroes: derived from the design over
+    // *another pull request*, so it is the identity of a real other effect. A value that
+    // could not be any effect's identity would let a build pass that refused the shape
+    // rather than the mismatch.
+    let elsewhere = world.expected_effect_id(
+        INVOCATION_REF,
+        suspended.pull_request + 1,
+        &suspended.binding.head_sha,
+    );
+    let forged = world.rewrite_the_published_marker(|binding| binding.effect = elsewhere.clone());
+    // **The request id is untouched, which is the whole scenario.** If it moved, the
+    // comment would no longer be found, the capability would ask a fresh question, and
+    // this would be the moved-head scenario under another name.
+    assert_eq!(
+        forged.request, suspended.binding.request,
+        "the question is still findable, or step 3 is never reached"
+    );
+    assert_ne!(forged.effect, suspended.binding.effect);
+    // Read back through the listing, so the forgery is a fact about the world this run
+    // will read rather than about a string this test built.
+    assert_eq!(
+        parse_marker(&world.the_only_request_comment().body)
+            .expect("the forged marker still parses; it is the effect that is wrong")
+            .effect,
+        elsewhere,
+        "the conversation must now carry the foreign effect"
+    );
+
+    let refused = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+
+    // The world first: nothing was spent, against a world armed to accept it.
+    assert_eq!(
+        world.pull_request(suspended.pull_request)["draft"],
+        serde_json::json!(true),
+        "a marker naming another effect must not spend this one: stdout={} stderr={}",
+        refused.stdout,
+        refused.stderr
+    );
+    assert_eq!(world.graphql_calls(), 0);
+    // **The discriminating observation.** Two, which is the attempt's own turns and
+    // nothing since: step 3 refused before step 7 could read the approval standing on
+    // the conversation. The script still holds its interpretation reply.
+    assert_eq!(
+        world.model_calls(),
+        2,
+        "step 3 precedes step 7, so no reply was ever read as a decision"
+    );
+    assert_eq!(
+        refused.code,
+        Some(20),
+        "stdout={} stderr={}",
+        refused.stdout,
+        refused.stderr
+    );
+    // And the refusal a reader is given names the mismatch rather than the symptom, with
+    // both identities in it — which is what tells them the marker was rewritten rather
+    // than that something went wrong.
+    let published = world.all_published_bytes();
+    assert!(
+        published.contains(&format!(
+            "the marker names effect {elsewhere} and this run derives {}",
+            suspended.binding.effect
+        )),
+        "the record must say which effect was found and which was derived: {} bytes",
+        published.len()
+    );
+    // Still one question. A refusal is not a reason to ask again.
+    assert_eq!(world.request_comments().len(), 1);
+}
+
+/// **A model document naming fields outside the schema resolves to nothing *through the
+/// walk*, and the pull request stays a draft.**
+///
+/// # The inversion, and the three lanes it was invisible in
+///
+/// Removing `#[serde(deny_unknown_fields)]` from `interpret::Reply` fails **2 of 8** in
+/// `fiddle-runtime --test interpretation` and is a **null** in
+/// `--test decision_protocol` (19 → 19/0) and in this lane (29 → 29/0). Every scripted
+/// reply in those two suites is a document this build authored, so no row ever handed
+/// `resolve` a document naming fields outside the schema — the blast-radius property was
+/// asserted against `interpret` and not against the walk that calls it, and not against
+/// the binary at all.
+///
+/// [`a_suspension_and_a_hostile_interpretation`] is the document. `effect` and `payload`
+/// are the two identities the marker carries and the walk recomputes, so a model that
+/// could name either would be choosing which change a person's approval is spent on.
+///
+/// # What a broken build passes here, and what it cannot
+///
+/// The outcome is `AwaitingDecision`, exit 10, nothing readied — **bit-for-bit what a
+/// redirect that never reached its model produces**, because `interpret` collapses every
+/// transport failure to `Unclear` and `Unclear` is `AwaitingDecision`. So the exit code is
+/// asserted and is nowhere near the evidence. The evidence is two counts in opposite
+/// directions:
+///
+/// - **three model calls**, which says the gateway really answered the hostile document.
+///   The gateway drops its listener when its script runs out, so a walk that failed at
+///   the socket would leave this at two and look identical from the outside.
+/// - **no GraphQL call and a pull request still in draft, against a world armed to accept
+///   the transition.** This is what fails when the schema stops refusing: the document
+///   carries a real `"approve"` with a real quoted span, so a build that ignored the
+///   extra fields would read it as an approval and spend it.
+#[test]
+fn a_model_document_naming_an_effect_or_a_payload_reaches_no_decision_through_the_walk() {
+    let world = World::with_model_script(a_suspension_and_a_hostile_interpretation(APPROVAL));
+    let suspended = suspend(&world);
+    let reply = world.post_comment(AUTHORIZED, APPROVAL);
+    world.accept_the_ready_mutation();
+
+    let waiting = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+
+    // The world, against a world armed to accept the transition. **These two are what a
+    // build without `deny_unknown_fields` fails.**
+    assert_eq!(
+        world.pull_request(suspended.pull_request)["draft"],
+        serde_json::json!(true),
+        "a reply naming an effect and a payload must buy nothing: stdout={} stderr={}",
+        waiting.stdout,
+        waiting.stderr
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        0,
+        "and the armed transition was never dispatched"
+    );
+    // **The denominator that says the document was really served.** A walk that failed
+    // at the socket produces the same exit code and the same untouched world.
+    assert_eq!(
+        world.model_calls(),
+        3,
+        "the walk reached step 7 and the gateway answered the hostile document"
+    );
+    assert_eq!(
+        waiting.code,
+        Some(10),
+        "an unreadable verdict is not a refusal to act, it is no decision: stdout={} \
+         stderr={}",
+        waiting.stdout,
+        waiting.stderr
+    );
+    // The question stands, so the person can answer again — a document the model
+    // mangled is not a reason to stop asking. And a reader is told **which** comment
+    // could not be read, which is where they would go to look. Note it is *not* the
+    // "nobody who may decide has answered it yet" wording the unanswered-question rows
+    // assert: somebody did answer, and their reply is what could not be read.
+    //
+    // **This message is not offered as a discriminator.** A walk whose model call failed
+    // at the socket says the same words, for `interpret`'s own reason — it collapses
+    // every transport failure to `Unclear` as well. `model_calls` above is what
+    // separates the two; this asserts only that the reader is pointed at the reply.
+    // The id `post_comment` handed back, and **not** the last entry of `conversation()`:
+    // the stub merges a run's own posted comments onto the last page whatever their ids,
+    // so the listing's order and the ids' order are allowed to disagree — and here they
+    // do, with the question fiddle posted sitting after the reply that answers it. That
+    // disagreement is deliberate, and reading the last entry for "the reply" is the
+    // mistake `World::conversation` documents; it was made here first and this is what
+    // it cost.
+    assert_eq!(world.request_comments().len(), 1);
+    assert!(
+        waiting.stdout.contains(&format!(
+            "comment {reply} could not be read as a decision, so the question stands"
+        )),
+        "{}",
+        waiting.stdout
+    );
+}
+
+/// **The ready mutation lands, its answer is lost, and it is settled by reading rather
+/// than dispatched again.**
+///
+/// # The lane this was asserted in, and the one it was not
+///
+/// The milestone's central rule — retry the read, never the mutation — is proven for M2's
+/// effects at this tier in `exactly_once`, and for the ready mutation only in
+/// `fiddle-runtime --test ready_effect`. The inversion that found the gap re-dispatches
+/// `operation.apply` once when the dispatch classifies `EffectOutcome::Unknown`:
+/// `ready_effect` **10 → 9/1**, M2's `exactly_once` **7 → 4/3**, and this lane
+/// **29 → 29/0**.
+///
+/// The reason was a fixture one. `World::dispatch_the_ready_mutation` is a positive
+/// control — it proves the arming is live — and this world had **no way to lose the
+/// answer** to the real one: the landed-then-lost GraphQL mutation was scripted into
+/// `ready_effect`'s own harness, not into the acceptance world's.
+/// [`World::lose_the_answer_to_the_ready_mutation`] is that knob.
+///
+/// # Where the counting happens, and why an unscripted second call is not the assertion
+///
+/// The stub increments its GraphQL counter **before** it looks for a script, so a second
+/// dispatch is counted and then panics naming the file it wanted. That makes a repeat
+/// loud, which is useful, but it is not the property: the property is that the world was
+/// asked **once** and that the transition is visibly there. Both are read off the world —
+/// the counter the stub keeps, and the by-number answer with the landed transition
+/// applied over the seeded draft.
+#[test]
+fn a_ready_mutation_whose_answer_was_lost_is_settled_by_reading_and_not_sent_again() {
+    let world = World::with_model_script(a_suspension_and_its_approval(APPROVAL));
+    let suspended = suspend(&world);
+    world.post_comment(AUTHORIZED, APPROVAL);
+    world.lose_the_answer_to_the_ready_mutation();
+
+    let decided = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+
+    // **Of this world:** the mutation is the write that landed under a `gh` that then
+    // failed to answer, and the only one.
+    assert_eq!(
+        world.landed_ambiguously(),
+        ["POST_graphql"],
+        "the ready mutation must be what landed ambiguously on the run under test"
+    );
+    // **Exactly one dispatch.** A re-dispatch is counted here whether or not it finds an
+    // answer scripted, so this is the number that moves under the inversion.
+    assert_eq!(
+        world.graphql_calls(),
+        1,
+        "the answer was retried by reading and the mutation was not sent again: \
+         stdout={} stderr={}",
+        decided.stdout,
+        decided.stderr
+    );
+    // And the transition really is there, read out of the by-number answer the stub
+    // applies landed mutations over — so this is the world's word and not fiddle's.
+    assert_eq!(
+        world.pull_request(suspended.pull_request)["draft"],
+        serde_json::json!(false),
+        "the mutation landed, so the pull request is ready: stdout={} stderr={}",
+        decided.stdout,
+        decided.stderr
+    );
+    // Still one question, and one POST: a run whose GraphQL answer was lost has no
+    // reason to ask anybody anything.
+    assert_eq!(world.request_comments().len(), 1);
+    assert_eq!(world.posted_comment_bodies().len(), 1);
 }
