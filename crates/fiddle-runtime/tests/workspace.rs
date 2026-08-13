@@ -9,7 +9,10 @@
 mod fixture;
 
 use fiddle_core::AttemptId;
+use fiddle_runtime::capability::CapabilityError;
+use fiddle_runtime::effect::Recurrence;
 use fiddle_runtime::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
+use std::path::Path;
 use std::time::Duration;
 use tokio::sync::{RwLock, RwLockReadGuard};
 use tokio_util::sync::CancellationToken;
@@ -68,6 +71,58 @@ fn workspace_with(cancel: CancellationToken) -> (Workspace, tempfile::TempDir) {
     (ws, dir)
 }
 
+/// Run git in `dir` and hand back its stdout, or its stderr if it refused.
+///
+/// [`fixture::git`] panics on a non-zero exit, which is right for a fixture step
+/// that must have worked and wrong for the questions asked below. "Does this
+/// store hold that object" is *asked* by a git command that is expected to fail
+/// on the interesting answer, and a helper that panicked on it could not report
+/// it.
+fn git_out(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|source| panic!("could not run git {args:?}: {source}"));
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_string();
+    if output.status.success() {
+        Ok(text(&output.stdout))
+    } else {
+        Err(text(&output.stderr))
+    }
+}
+
+/// Whether `repo`'s own object store holds `object`, asked of git.
+///
+/// The question the whole of
+/// [`a_revision_the_fixture_can_only_fetch_is_refused_by_name_and_nothing_fetches`]
+/// turns on, so it is asked rather than inferred from how the fixture was built.
+fn store_holds(repo: &Path, object: &str) -> bool {
+    git_out(repo, &["cat-file", "-e", object]).is_ok()
+}
+
+/// Commit everything in `repo` and hand back the sha it produced.
+///
+/// The identity is passed per invocation for the reason
+/// [`fixture::trivial_repo`] gives: a CI runner has no `user.email` and `git
+/// commit` refuses outright without one.
+fn commit_all(repo: &Path, message: &str) -> String {
+    fixture::git(repo, &["add", "-A"]);
+    fixture::git(
+        repo,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            message,
+        ],
+    );
+    git_out(repo, &["rev-parse", "HEAD"]).expect("a fresh commit has a sha")
+}
+
 /// A command with a timeout generous enough that only a hang could reach it.
 fn cmd(program: &str, args: &[&str]) -> WorkspaceCommand {
     WorkspaceCommand {
@@ -123,6 +178,172 @@ fn removing_twice_is_not_an_error() {
     ws.remove().unwrap();
     ws.remove()
         .expect("a second removal must be a no-op, not a git failure");
+}
+
+#[test]
+fn a_worktree_branches_at_the_revision_it_was_given_and_not_at_head() {
+    // The redirect path's premise, and the only test that has ever asked for it:
+    // `create_at`'s `revision` reached git through no assertion at this tier, so
+    // a version that dropped it and branched from `HEAD` like
+    // `Workspace::create` would have produced a working worktree, a readable
+    // file and a resolvable sha — everything except the *right* commit.
+    //
+    // Both branch points are taken in one test because only the contrast is the
+    // property. The two commits differ in the one file that is read, so "the
+    // revision was honoured" and "the fixture happened to be there already" do
+    // not render identically.
+    let _env = env_reader();
+    let dir = tempfile::tempdir().unwrap();
+    let repo = fixture::trivial_repo(dir.path());
+    let base = git_out(&repo, &["rev-parse", "HEAD"]).expect("the fixture has one commit");
+    std::fs::write(repo.join("src/lib.rs"), "pub fn moved_on() {}\n").unwrap();
+    let head = commit_all(&repo, "a commit a redirect must not branch from");
+    assert_ne!(
+        base, head,
+        "the fixture's HEAD has to have moved, or this test cannot tell the two \
+         branch points apart"
+    );
+
+    let at_base = Workspace::create_at(
+        &repo,
+        &dir.path().join("at-base"),
+        &attempt(),
+        &base,
+        token(),
+    )
+    .expect("a revision the fixture's store holds is branchable");
+    assert_eq!(
+        git_out(at_base.root(), &["rev-parse", "HEAD"]).unwrap(),
+        base,
+        "the worktree's HEAD is the revision the caller named"
+    );
+    assert_eq!(
+        at_base.read(&p("src/lib.rs")).unwrap(),
+        "pub fn f() {}\n",
+        "and the tree under it is that commit's, not the fixture's current one"
+    );
+
+    let at_head = Workspace::create(&repo, &dir.path().join("at-head"), &attempt(), token())
+        .expect("the fixture's own HEAD is branchable");
+    assert_eq!(
+        at_head.read(&p("src/lib.rs")).unwrap(),
+        "pub fn moved_on() {}\n",
+        "`create` is the same call at HEAD, and HEAD is the other commit — \
+         which is what makes the assertion above about the revision"
+    );
+}
+
+#[test]
+fn a_revision_the_fixture_can_only_fetch_is_refused_by_name_and_nothing_fetches() {
+    // **The limitation `Workspace::create_at` documents, reproduced rather than
+    // described.** A redirect's second attempt names the commit its published
+    // branch is at, and that commit is in the fixture's store only because the
+    // first attempt was made in a worktree *of this fixture*. A process that did
+    // not make it — the next machine, a rebuilt runner, a fresh clone — has the
+    // sha and not the object, and nothing here fetches.
+    //
+    // Two repositories stand in for the two machines: `origin` makes the commit,
+    // and the fixture is a clone taken *before* it existed. That is the honest
+    // shape of the failure. A syntactically invalid revision would fail here too,
+    // and it would prove something else — that git rejects nonsense — because the
+    // refusal and the store would both be out of the picture.
+    let _env = env_reader();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let origin = fixture::trivial_repo(elsewhere.path());
+    fixture::git(
+        dir.path(),
+        &["clone", "-q", &origin.to_string_lossy(), "fixture"],
+    );
+    let fixture_repo = dir.path().join("fixture");
+    std::fs::write(origin.join("src/lib.rs"), "pub fn redirected() {}\n").unwrap();
+    let published = commit_all(&origin, "the commit the other machine published");
+
+    // The denominators. Without the first, "nothing fetched" cannot be told from
+    // "there was nothing to fetch"; without the second, the refusal below could
+    // be about anything.
+    let advertised = git_out(&fixture_repo, &["ls-remote", "origin"])
+        .expect("the clone has its origin and can reach it");
+    assert!(
+        advertised.contains(&published),
+        "the fixture's own remote must advertise the sha, so that the object is \
+         one fetch away and the refusal is a choice rather than an impossibility: \
+         ls-remote said {advertised:?}"
+    );
+    assert!(
+        !store_holds(&fixture_repo, &published),
+        "and the fixture's store must not hold it, or there is no limitation here \
+         to pin"
+    );
+
+    let root = dir.path().join("ws");
+    let refusal = match Workspace::create_at(&fixture_repo, &root, &attempt(), &published, token())
+    {
+        Err(error) => error,
+        // TRIPWIRE. `create_at` branched at a revision the fixture's store did
+        // not hold, so something now resolves it — a fetch, an alternate, or a
+        // caller contract that ensures the object first. That is the limitation
+        // this test exists to pin, and it is no longer the limitation.
+        //
+        // What to write in its place: assert *how*. Which credential the
+        // resolution carries and where it comes from, that `git::publish` is
+        // still the only credential-carrying git child or that it deliberately
+        // is not, and that a resolution which fails is still a correctable
+        // `WorkspaceError` naming the revision rather than a silent branch from
+        // somewhere else. Then say so at `ProposeChange::produce_from`, which is
+        // the caller the constraint was documented for.
+        Ok(_) => panic!(
+            "create_at resolved {published}, which the fixture's store did not \
+             hold — the documented limitation has been lifted and this test has \
+             to be rewritten, not deleted; see the comment above this panic"
+        ),
+    };
+
+    match &refusal {
+        WorkspaceError::Git { command, stderr } => {
+            assert!(
+                command.contains("worktree add"),
+                "the refusal names the git invocation that refused, not this layer's \
+                 guess at it: {command}"
+            );
+            assert!(
+                stderr.contains(&published),
+                "and carries the revision, because a caller that cannot see which \
+                 sha was unresolvable cannot correct it: {stderr}"
+            );
+        }
+        other => panic!(
+            "an unresolvable revision is a git failure carrying git's own \
+             diagnostic, not {other}"
+        ),
+    }
+
+    // Not swallowed: nothing was branched from somewhere else and reported as a
+    // success.
+    assert!(
+        !root.join(attempt().0.as_str()).exists(),
+        "a refused create_at leaves no worktree behind"
+    );
+    // Not fetched. This is the assertion its neighbours cannot make: a refusal
+    // *after* a failed fetch and a refusal that never reached for the network are
+    // the same `Err` from out here, and only the store can tell them apart.
+    assert!(
+        !store_holds(&fixture_repo, &published),
+        "create_at is credential-free, so the object must still be absent \
+         afterwards"
+    );
+
+    // Not permanent. `CapabilityError::Workspace` is `Correctable`, and this is
+    // the reason that arm has to stay that way: the operator fetches, or points
+    // the run at the fixture the branch was made in, and the same invocation
+    // succeeds. Asserted through the real error rather than a hand-built one, and
+    // it is this crate's only assertion over that arm.
+    assert_eq!(
+        CapabilityError::from(refusal).recurrence(),
+        Recurrence::Correctable,
+        "a fixture that could be given the object is an obstacle in front of the \
+         run, not a verdict about it"
+    );
 }
 
 #[test]
