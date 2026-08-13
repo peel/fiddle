@@ -268,6 +268,37 @@ our_runs() {
 # would take for a failure, so the count is printed and the status discarded.
 lines() { grep -c . || true; }
 
+# How many of ours the reader found, or `unreadable` when it could not answer.
+#
+# **`$(reader | lines)` cannot express the difference, and that is the defect this
+# exists for.** A `gh` that failed writes its diagnostic to stderr and nothing to
+# stdout; `grep -c .` counts the nothing and prints `0`; and `0` is what a clean
+# repository prints. `decision_cleanup` learned this at the comment count and says
+# so where it sets `unreadable` — the other counts on the same output line were
+# never held to it.
+#
+# Measured before this was written, with these readers stubbed: with all three
+# reads failing the three counts print `0 0 0` and the residue assertion passes,
+# and the run is saved only incidentally by the branch-list assertion further down,
+# which fails on an empty list for an unrelated reason. **With only the pull-request
+# and run reads failing — one rate limit part-way through a sweep that makes dozens
+# of calls — every assertion passes and the run is indistinguishable from a clean
+# one.** That arm is why this is a sentinel rather than a better message.
+#
+# The status is taken from the reader itself rather than through the pipe, because
+# a pipe reports its last stage. `our_branches` is a pipeline ending in
+# `grep || true`, so its own failure would be invisible without `pipefail` — which
+# is set at the top of this file and which `cleanup`'s `set +e` does not clear.
+# Verified: the broken arm above returns 1 from `our_branches`, not 0.
+counted() {
+  local out
+  if ! out=$("$@"); then
+    printf 'unreadable\n'
+    return 0
+  fi
+  printf '%s\n' "$out" | lines
+}
+
 # ---------------------------------------------------------------------------
 # The target this lane was built for — refused before anything is armed
 # ---------------------------------------------------------------------------
@@ -440,6 +471,26 @@ note "target accepted; arming cleanup"
 COMMENT_RESIDUE=n/a
 SWEPT_CONVERSATIONS=n/a
 
+# How many **pull-request review comments** survived, which is a different class
+# from the one above and was previously not looked at at all.
+#
+# `issues/{n}/comments` and `pulls/{n}/comments` are two endpoints over two
+# collections. The sweep queries the first, because that is where the question and
+# the answer this lane writes land; a review comment — one attached to a line of a
+# diff — is never posted by anything in the walk, and the target repository was
+# measured to hold **0 of them, repo-wide**, before this was added.
+#
+# So this counts and asserts; it does not delete. That is the whole of the
+# decision, and both halves have a reason. Counting closes the gap the measurement
+# leaves open, which is that *the sweep would not have noticed* if the class ever
+# became dirty — a clean repository today is not a property of the code. Not
+# deleting is because a DELETE loop over a collection nothing produces could not be
+# exercised without a live run against a real repository, and an untested
+# destructive path is worse than a detected one: a review comment surviving here
+# fails the run with a diagnostic naming the endpoint, which is an operator's
+# problem to act on rather than a silence.
+REVIEW_COMMENT_RESIDUE=n/a
+
 # Clear the conversations of every open pull request in our namespace.
 #
 # Scoped to the namespace, and to *every* member of it rather than to the one
@@ -449,7 +500,7 @@ SWEPT_CONVERSATIONS=n/a
 # it, so the delete loop runs zero times and the count says so.
 decision_cleanup() {
   set +e
-  local number ids deleted left
+  local number ids deleted left review
   local prs status=0
   prs=$(our_open_prs) || status=$?
   if [ "$status" != 0 ]; then
@@ -459,11 +510,13 @@ decision_cleanup() {
     # otherwise, and this is the one place a residue claim is made.
     COMMENT_RESIDUE=unreadable
     SWEPT_CONVERSATIONS=unreadable
+    REVIEW_COMMENT_RESIDUE=unreadable
     echo "live-github: could not list open pull requests to clear conversations from" >&2
     return 0
   fi
   SWEPT_CONVERSATIONS=$(printf '%s\n' "$prs" | lines)
   COMMENT_RESIDUE=0
+  REVIEW_COMMENT_RESIDUE=0
   while read -r number; do
     [ -n "$number" ] || continue
     # **Selected by name**, `--jq '.[].id'`, and never by a pattern over the
@@ -488,8 +541,13 @@ decision_cleanup() {
     # outlives its explanation: a value that is correct by an accident of key
     # ordering is one an API version is free to reorder, and naming the field costs
     # nothing.
-    ids=$(gh api "repos/$REPO/issues/$number/comments?per_page=100" --jq '.[].id')
-    if [ "$?" != 0 ]; then
+    #
+    # `if ! ids=$(…)` rather than `$?` on the line after: the two behave the same
+    # here, and the second is one edit away from not doing — anything inserted
+    # between the assignment and the test, including an `echo` added while
+    # debugging, replaces the status being read. `shellcheck` says the same as
+    # SC2181.
+    if ! ids=$(gh api "repos/$REPO/issues/$number/comments?per_page=100" --jq '.[].id'); then
       COMMENT_RESIDUE=unreadable
       continue
     fi
@@ -502,10 +560,18 @@ decision_cleanup() {
     # was deleted: a delete loop that ran and achieved nothing prints
     # `deleted=2 left=2` here and fails the assertion in `cleanup`, which is the
     # whole point of counting both.
-    left=$(gh api "repos/$REPO/issues/$number/comments?per_page=100" --jq 'length')
-    if [ "$?" != 0 ]; then
+    if ! left=$(gh api "repos/$REPO/issues/$number/comments?per_page=100" --jq 'length'); then
       COMMENT_RESIDUE=unreadable
       continue
+    fi
+    # The other collection, read and not swept — see `REVIEW_COMMENT_RESIDUE`. It
+    # is read here rather than in `cleanup` because this is where the pull request
+    # numbers are: `cleanup` closes them before its own residue block runs, and a
+    # closed pull request is off `our_open_prs`.
+    if ! review=$(gh api "repos/$REPO/pulls/$number/comments?per_page=100" --jq 'length'); then
+      REVIEW_COMMENT_RESIDUE=unreadable
+    elif [ "$REVIEW_COMMENT_RESIDUE" != unreadable ]; then
+      REVIEW_COMMENT_RESIDUE=$((REVIEW_COMMENT_RESIDUE + review))
     fi
     echo "live-github: cleared #$number's conversation: found $(printf '%s\n' "$ids" | lines), deleted $deleted, left $left"
     [ "$COMMENT_RESIDUE" = unreadable ] || COMMENT_RESIDUE=$((COMMENT_RESIDUE + left))
@@ -551,16 +617,35 @@ cleanup() {
   # it: a residue read made against a `gh` whose configuration directory had just
   # been deleted would be answering under conditions this lane never arranged.
   local left_branches left_prs left_runs every
-  left_branches=$(our_branches | lines)
-  left_prs=$(our_open_prs | lines)
-  left_runs=$(our_runs | lines)
-  every=$(all_branches | paste -sd, -)
+  left_branches=$(counted our_branches)
+  left_prs=$(counted our_open_prs)
+  left_runs=$(counted our_runs)
+  # `unreadable` here too, and deliberately rather than incidentally. An
+  # unreadable branch list used to arrive as the empty string and was refused by
+  # the `!= $BASE` assertion below, which is a true refusal for the wrong reason —
+  # it reports the branch *rule* as broken when what happened is that nobody could
+  # look. The sentinel makes the two different failures print differently, and it
+  # is the value the assertion above this one now checks.
+  if ! every=$(all_branches | paste -sd, -); then
+    every=unreadable
+  fi
 
   rm -rf "$TMP"
 
-  echo "live-github: residue after cleanup: ${REF_NAMESPACE}branches=$left_branches open-prs=$left_prs ${RUN_NAMESPACE}runs=$left_runs comments=$COMMENT_RESIDUE over $SWEPT_CONVERSATIONS conversation(s)"
+  echo "live-github: residue after cleanup: ${REF_NAMESPACE}branches=$left_branches open-prs=$left_prs ${RUN_NAMESPACE}runs=$left_runs comments=$COMMENT_RESIDUE review-comments=$REVIEW_COMMENT_RESIDUE over $SWEPT_CONVERSATIONS conversation(s)"
   echo "live-github: branches at the remote: $every"
 
+  # **A residue claim nobody could read is not a clean bill, and it is asserted
+  # before the counts are compared so that it says which of the two happened.**
+  # Every count above is a negative check, and the rule this lane keeps for those
+  # is that "found nothing" and "could not look" must not render identically. They
+  # did, for three of them, and the assertion below would have called an unreadable
+  # count residue-free or — for the branch list — reported the wrong rule broken.
+  if [ "$left_branches" = unreadable ] || [ "$left_prs" = unreadable ] \
+    || [ "$left_runs" = unreadable ] || [ "$every" = unreadable ]; then
+    echo "live-github: FAIL: could not read the remote to check for residue (branches=$left_branches open-prs=$left_prs runs=$left_runs every=$every); nothing was established about what this lane left behind" >&2
+    exit 1
+  fi
   if [ "$left_branches" != 0 ] || [ "$left_prs" != 0 ] || [ "$left_runs" != 0 ]; then
     echo "live-github: FAIL: cleanup left residue behind" >&2
     exit 1
@@ -576,6 +661,15 @@ cleanup() {
   # number by `decision_cleanup`, which exists only when that phase armed it.
   if [ "$COMMENT_RESIDUE" != 0 ] && [ "$COMMENT_RESIDUE" != n/a ]; then
     echo "live-github: FAIL: $COMMENT_RESIDUE comment(s) survived the conversation sweep over $SWEPT_CONVERSATIONS conversation(s); a closed pull request keeps them for ever" >&2
+    exit 1
+  fi
+  # The class the sweep detects and does not delete, on the same terms: `n/a` when
+  # the decision phase never armed, a number otherwise, `unreadable` when the read
+  # failed. A non-zero here is not this lane's residue to remove — see
+  # `REVIEW_COMMENT_RESIDUE` — so the diagnostic names the endpoint and says what to
+  # do, rather than implying the sweep tried and lost.
+  if [ "$REVIEW_COMMENT_RESIDUE" != 0 ] && [ "$REVIEW_COMMENT_RESIDUE" != n/a ]; then
+    echo "live-github: FAIL: $REVIEW_COMMENT_RESIDUE review comment(s) on pulls/*/comments, a collection this sweep reads and does not delete; nothing in the walk posts one, so either something changed or somebody reviewed by hand — remove them and say which" >&2
     exit 1
   fi
   # This repository's standing rule is that `main` is its only permanent branch —
