@@ -247,6 +247,15 @@ fn a_revision_the_fixture_can_only_fetch_is_refused_by_name_and_nothing_fetches(
     // shape of the failure. A syntactically invalid revision would fail here too,
     // and it would prove something else — that git rejects nonsense — because the
     // refusal and the store would both be out of the picture.
+    //
+    // **The direction this pins, and the direction it cannot.** A fetch that
+    // *worked* would change the outcome, and the tripwire below is what notices;
+    // measured, by adding `git fetch -q origin` ahead of the `worktree add`. A
+    // fetch that was added and *failed* would leave the store exactly as it is and
+    // this same refusal behind it, so it is invisible from out here — the
+    // credential boundary is pinned by outcome, not by counting git children, and
+    // nothing at this tier can count them. Closing that half means asserting on
+    // the processes the workspace spawns, which nothing in this crate does yet.
     let _env = env_reader();
     let elsewhere = tempfile::tempdir().unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -280,30 +289,41 @@ fn a_revision_the_fixture_can_only_fetch_is_refused_by_name_and_nothing_fetches(
     let refusal = match Workspace::create_at(&fixture_repo, &root, &attempt(), &published, token())
     {
         Err(error) => error,
-        // TRIPWIRE, and it is reached by two different causes, so the message
-        // names both rather than assuming the good one.
-        //
-        // Either something now *resolves* the revision — a fetch, an alternate,
-        // a caller contract that ensures the object first — in which case the
-        // limitation this test exists to pin has been lifted, and what to write
-        // in its place is an assertion about *how*: which credential the
-        // resolution carries and where it comes from, whether `git::publish` is
-        // still the only credential-carrying git child or deliberately is not,
-        // and that a resolution which fails is still a correctable
-        // `WorkspaceError` naming the revision. Then say the same at
-        // `ProposeChange::produce_from`, which is the caller the constraint was
-        // documented for.
-        //
-        // Or the refusal was *swallowed* and this is a worktree branched from
-        // somewhere else — the failure the documentation calls out as the one
-        // thing that must not happen quietly. That is a defect, not a lifted
-        // limitation, and the test stays as it is.
-        Ok(_) => panic!(
-            "create_at returned a workspace for {published}, which the fixture's \
-             store did not hold: either something resolves it now, or the refusal \
-             was swallowed and this worktree is branched from somewhere else. See \
-             the comment above this panic — the two want opposite responses"
-        ),
+        // TRIPWIRE. Two causes reach this arm and they want opposite responses,
+        // so the store is *asked* which one it was rather than the next reader
+        // being left to work it out. Both were measured: a `git fetch -q origin`
+        // added ahead of the `worktree add` takes the first branch, and a failed
+        // `worktree add` that silently retries at `HEAD` takes the second.
+        Ok(_) => {
+            let diagnosis = if store_holds(&fixture_repo, &published) {
+                // The object arrived, so something resolves the revision now — a
+                // fetch, an alternate, a caller contract that ensures it first.
+                // The limitation this test exists to pin has been lifted, and the
+                // test has to be rewritten rather than deleted: assert *how*.
+                // Which credential the resolution carries and where it comes
+                // from, whether `git::publish` is still the only
+                // credential-carrying git child or deliberately is not, and that
+                // a resolution which fails is still a correctable
+                // `WorkspaceError` naming the revision. Then say the same at
+                // `ProposeChange::produce_from`, the caller the constraint was
+                // documented for.
+                "and the object is in the store now, so something resolves the \
+                 revision — the documented limitation has been lifted and this \
+                 test has to be rewritten, not deleted"
+            } else {
+                // Nothing arrived, so the refusal was swallowed and this is a
+                // worktree branched from somewhere else — the one thing the
+                // documentation says must not happen quietly. A defect, not a
+                // lifted limitation, and the test stays exactly as it is.
+                "and the object is still absent, so the refusal was swallowed and \
+                 this workspace is branched from somewhere else"
+            };
+            panic!(
+                "create_at returned a workspace for {published}, which the \
+                 fixture's store did not hold, {diagnosis} — see the comment on \
+                 this arm"
+            );
+        }
     };
 
     match &refusal {
@@ -331,14 +351,11 @@ fn a_revision_the_fixture_can_only_fetch_is_refused_by_name_and_nothing_fetches(
         !root.join(attempt().0.as_str()).exists(),
         "a refused create_at leaves no worktree behind"
     );
-    // Not fetched. This is the assertion its neighbours cannot make: a refusal
-    // *after* a failed fetch and a refusal that never reached for the network are
-    // the same `Err` from out here, and only the store can tell them apart.
-    assert!(
-        !store_holds(&fixture_repo, &published),
-        "create_at is credential-free, so the object must still be absent \
-         afterwards"
-    );
+    // There is deliberately no `!store_holds` assertion here. It would fail on no
+    // mutation the arm above does not already fail on first — a fetch that worked
+    // never reaches this line, and a fetch that failed leaves the store exactly as
+    // this refusal found it. The store question belongs where it discriminates,
+    // which is the tripwire.
 
     // Not permanent. `CapabilityError::Workspace` is `Correctable`, and this is
     // the reason that arm has to stay that way: the operator fetches, or points

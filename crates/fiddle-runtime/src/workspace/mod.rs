@@ -213,11 +213,17 @@ impl Workspace {
     /// same. `a_revision_the_fixture_can_only_fetch_is_refused_by_name_and_nothing_fetches`
     /// is the limitation: two repositories stand in for the two machines, a commit
     /// is made in one and the fixture is a clone taken before it existed, and the
-    /// refusal is asserted to name the sha, to leave no worktree, and to leave the
-    /// object **still absent** — which is the only thing that distinguishes a
-    /// refusal that never reached for the network from one that reached it and
-    /// failed. That test fails the day anything here resolves a revision the store
-    /// does not hold, and its own panic message says what to write in its place.
+    /// refusal is asserted to name the sha, to leave no worktree, and to be
+    /// `Correctable` rather than `Permanent`. It fails the day anything here
+    /// resolves a revision the store does not hold, and it asks the store which of
+    /// the two ways that happened — resolved, or swallowed — because those want
+    /// opposite responses.
+    ///
+    /// One half of "nothing fetches" is out of reach there and said so at the test:
+    /// a fetch that *worked* changes the outcome and is caught, and a fetch that
+    /// was added and *failed* leaves this same refusal behind it and is not. The
+    /// boundary is pinned by outcome; counting this function's git children would
+    /// pin it by construction, and nothing in the crate does that yet.
     pub fn create_at(
         fixture: &Path,
         root: &Path,
