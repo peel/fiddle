@@ -9,7 +9,33 @@
 # `workflow_dispatch` that answers 204 with no run id, and the `run-name` echo
 # that is the only channel the effect identity comes back through.
 #
-# It costs nothing and leaves nothing.
+# It leaves nothing, and its first two phases cost nothing.
+#
+# **That sentence used to read "It costs nothing and leaves nothing", and the
+# decision phase below is what made it false.** That phase walks
+# `propose_change`, which begins with a bounded attempt, and an attempt needs a
+# model — so the phase spends tokens against a real gateway. It is therefore
+# opt-in behind `FIDDLE_LIVE_DECISION=1` on top of this whole file already being
+# opt-in, and the false half of the claim is shown here rather than quietly
+# swapped, because a reader who remembers the old sentence is entitled to know
+# which half moved.
+#
+# # What the decision phase asserts that the publish phase cannot
+#
+# `EnsurePullRequestReady` is the one operation in this build whose capability
+# minimum is `Human`, so it is the only one that commits through
+# `Executor::execute_decided`. Reaching it needs a question on a conversation and
+# an answer under it, which is four objects and two processes rather than three
+# objects and two processes. The phase publishes a draft, reads the question back
+# out of GitHub, answers it **as the script**, runs a second fresh process, and
+# reads the draft flag back again — so the transition is observed at the forge
+# rather than believed from a report.
+#
+# It is also the one phase here that can fail for a reason that is not about
+# GitHub: the attempt has to earn the check, and the reply has to be read as an
+# approval, and a model does both. Those two failures are named where they are
+# detected rather than reported as forge failures, because a lane that blamed
+# GitHub for a model's answer would be worse than no lane.
 #
 # # Why this is a script and not a test
 #
@@ -68,6 +94,18 @@
 #   set -a; . ./.env; set +a          # or export FIDDLE_GITHUB_TOKEN yourself
 #   FIDDLE_BIN="$PWD/target/release/fiddle" scripts/live-github.sh
 #
+# and with the decision phase, which additionally needs the model credential
+# `[agent] api_key` names:
+#
+#   FIDDLE_LIVE_DECISION=1 FIDDLE_BIN=… scripts/live-github.sh
+#
+# `FIDDLE_LIVE_DECISION_REPLY` overrides the body the script answers with. That
+# knob is how the cleanup was proven on a failing run rather than only on a
+# passing one: with a body no interpretation can read as a decision, the
+# continuation suspends again and exits 10 where the phase is waiting for 0, the
+# lane fails loudly with a draft pull request and two comments standing, and the
+# residue assertions run on **that** exit path.
+#
 # See `docs/technical/effects-repository.md` for what the target repository is,
 # why it is public, and the standing rules it holds.
 set -euo pipefail
@@ -93,6 +131,44 @@ BASE="main"
 PROJECT="icecube"
 WORK_ID="fiddle-live-publish"
 INVOCATION_REF="beans:$WORK_ID"
+
+# The decision phase's own work item, and therefore its own branch, pull request
+# and question: `refs::branch_name` derives the branch from `(project,
+# invocation_ref)`, so a second work id is what keeps the two phases' objects
+# apart while they are both standing. They *are* both standing — the publish
+# phase's objects are swept by the trap on the way out, not between phases — and
+# that is why every count below is a delta with its denominator rather than a
+# claim that the remote holds exactly one of anything.
+DECISION_WORK_ID="fiddle-live-decide"
+DECISION_REF="beans:$DECISION_WORK_ID"
+
+# Whether the decision phase was asked for, and nothing else counts as asking.
+# An unrecognised value is refused rather than read as a request or as a decline,
+# because both readings of a typo are silent and this lane's first rule is that it
+# does not skip quietly.
+DECISION="${FIDDLE_LIVE_DECISION:-}"
+
+# The model the attempt and the interpretation run against, and the variable its
+# credential is read from. Defaulted to Tier 1 and Tier 2's measured default —
+# `crates/fiddle-cli/tests/smoke.rs` records the profile each candidate produced
+# against a fixture of this shape — so this lane does not introduce a third
+# opinion about which model drives the loop.
+DECISION_MODEL="${FIDDLE_LIVE_MODEL:-bedrock/moonshotai.kimi-k2.5}"
+DECISION_BASE_URL="${FIDDLE_LIVE_BASE_URL:-https://litellm.firn.snplow.net/v1}"
+DECISION_CREDENTIAL="${FIDDLE_LIVE_MODEL_CREDENTIAL:-LITELLM_API_KEY}"
+
+# What the script answers with. Measured against this gateway rather than assumed:
+# the default is read as `approve` with the whole sentence quoted back as the
+# evidence span `interpret::decide` requires, and the body Task 16b's failing run
+# used — a sentence about the weather in Reykjavik — is read as `unclear`.
+DECISION_REPLY="${FIDDLE_LIVE_DECISION_REPLY:-Approved. Please mark it ready for review.}"
+
+# The opening of the marker `fiddle_core::render_marker` puts on a request
+# comment, and the string a question is recognised by. `fiddle_core::decision`'s
+# own `OPENING`, spelled here because this script cannot link against it — if the
+# two ever disagree, the count below drops to zero and says so loudly rather than
+# selecting the wrong comment.
+DECISION_MARKER="<!-- fiddle:decision "
 
 # The namespaces cleanup is allowed to touch. `fiddle/` for refs and pull request
 # heads (`fiddle-runtime::github::refs::NAMESPACE`), `fiddle-` for workflow run
@@ -125,6 +201,22 @@ note() { echo "live-github: $*"; }
 : "${FIDDLE_BIN:?live-github.sh needs FIDDLE_BIN — the path to the compiled fiddle, as in FIDDLE_BIN=\"\$PWD/target/release/fiddle\"}"
 
 [ -x "$FIDDLE_BIN" ] || fail "FIDDLE_BIN is not an executable file: $FIDDLE_BIN"
+
+# The decision phase's own two loud checks, made here rather than three hundred
+# lines below, so a run that cannot complete the phase it was asked for fails
+# before it publishes anything at all.
+#
+# `1` and nothing else. `FIDDLE_LIVE_DECISION=0`, `=no` and `=ture` are all
+# somebody expressing an intention this script would otherwise silently pick a
+# side on, and the side it would pick — skip — is the one indistinguishable from
+# a pass.
+case "$DECISION" in
+  "" | 1) ;;
+  *) fail "FIDDLE_LIVE_DECISION is \"$DECISION\"; the decision phase is requested with exactly 1, and any other value is refused rather than read as a decline" ;;
+esac
+if [ "$DECISION" = 1 ] && [ -z "${!DECISION_CREDENTIAL:-}" ]; then
+  fail "the decision phase needs $DECISION_CREDENTIAL — the credential for the model gateway at $DECISION_BASE_URL, which the attempt and the interpretation both call. It is requested, not optional: a phase that no-opped for want of a key would look exactly like one that passed"
+fi
 command -v gh >/dev/null 2>&1 || fail "gh must be on PATH"
 command -v jq >/dev/null 2>&1 || fail "jq must be on PATH"
 command -v git >/dev/null 2>&1 || fail "git must be on PATH"
@@ -328,6 +420,98 @@ note "target accepted; arming cleanup"
 # That is a property of the forge rather than of this lane, and it is a large part
 # of why the target repository is disposable — see
 # docs/technical/effects-repository.md.
+#
+# **Comments are the residue the close cannot reach**, and they are the decision
+# phase's. A closed pull request keeps its conversation for ever, so the question
+# fiddle posted and the answer this script wrote have to be *deleted* rather than
+# closed over. [`decision_cleanup`] does that, and it runs before this sweep,
+# because `our_open_prs` is how the conversations are found and closing a pull
+# request takes it off that list.
+
+# How many comments survived the conversation sweep, and over how many pull
+# requests. Read by `cleanup`'s residue block rather than asserted where it is
+# measured, and that split is the whole reason it is a variable: `decision_cleanup`
+# runs *first* in the trap chain, so an `exit 1` there would skip the pull-request
+# close and the ref DELETE that follow it, and a comment residue would then buy a
+# branch residue. One assertion, at the end, after every sweep has run.
+#
+# `n/a` and not `0`, because a phase that never ran and a phase that left nothing
+# are different facts and a reader is owed the difference.
+COMMENT_RESIDUE=n/a
+SWEPT_CONVERSATIONS=n/a
+
+# Clear the conversations of every open pull request in our namespace.
+#
+# Scoped to the namespace, and to *every* member of it rather than to the one
+# number the phase managed to record: a process killed between the create and the
+# discovery has a pull request whose conversation nothing else here can reach. The
+# publish phase's pull request is swept too, harmlessly — fiddle never comments on
+# it, so the delete loop runs zero times and the count says so.
+decision_cleanup() {
+  set +e
+  local number ids deleted left
+  local prs status=0
+  prs=$(our_open_prs) || status=$?
+  if [ "$status" != 0 ]; then
+    # A sweep that could not read what to sweep has not established anything. The
+    # count says `unreadable` rather than `0`, because those two must not render
+    # identically — a broken read and a clean repository are the same output
+    # otherwise, and this is the one place a residue claim is made.
+    COMMENT_RESIDUE=unreadable
+    SWEPT_CONVERSATIONS=unreadable
+    echo "live-github: could not list open pull requests to clear conversations from" >&2
+    return 0
+  fi
+  SWEPT_CONVERSATIONS=$(printf '%s\n' "$prs" | lines)
+  COMMENT_RESIDUE=0
+  while read -r number; do
+    [ -n "$number" ] || continue
+    # **Selected by name**, `--jq '.[].id'`, and never by a pattern over the
+    # payload text.
+    #
+    # The hazard is recorded rather than imagined: this bean's planning probe
+    # deleted by the wrong id, was answered `404 Not Found`, and left its comment
+    # behind — a delete that removes nothing and says nothing about it. Measured
+    # again here against the real API, on a closed pull request:
+    # `DELETE .../issues/comments/505401`, the author's user id, answered **404**
+    # with the comment still listed, and the same DELETE with the id read from
+    # `.id` answered **204** and emptied the conversation.
+    #
+    # **The mechanism written down for it is not the one the API has.** This bean's
+    # planning update states that `user.id` appears *before* `.id` in a comment
+    # object, so that scraping the first id-shaped field yields the author's. It
+    # does not. In the POST's answer, in the listing, and in the by-id read alike,
+    # the key order is `url, html_url, issue_url, id, node_id, user, created_at,
+    # updated_at, …`, and the id-shaped paths in payload order are `id` and then
+    # `user.id` — so a scrape of the first one happens to be *right*, and whatever
+    # produced 505401 was a different confusion of the two fields. The rule
+    # outlives its explanation: a value that is correct by an accident of key
+    # ordering is one an API version is free to reorder, and naming the field costs
+    # nothing.
+    ids=$(gh api "repos/$REPO/issues/$number/comments?per_page=100" --jq '.[].id')
+    if [ "$?" != 0 ]; then
+      COMMENT_RESIDUE=unreadable
+      continue
+    fi
+    deleted=0
+    for id in $ids; do
+      gh api "repos/$REPO/issues/comments/$id" --method DELETE >/dev/null 2>&1 \
+        && deleted=$((deleted + 1))
+    done
+    # Read back, and the number that matters is what is *left* rather than what
+    # was deleted: a delete loop that ran and achieved nothing prints
+    # `deleted=2 left=2` here and fails the assertion in `cleanup`, which is the
+    # whole point of counting both.
+    left=$(gh api "repos/$REPO/issues/$number/comments?per_page=100" --jq 'length')
+    if [ "$?" != 0 ]; then
+      COMMENT_RESIDUE=unreadable
+      continue
+    fi
+    echo "live-github: cleared #$number's conversation: found $(printf '%s\n' "$ids" | lines), deleted $deleted, left $left"
+    [ "$COMMENT_RESIDUE" = unreadable ] || COMMENT_RESIDUE=$((COMMENT_RESIDUE + left))
+  done <<<"$prs"
+}
+
 cleanup() {
   local status=$?
   set +e
@@ -374,11 +558,24 @@ cleanup() {
 
   rm -rf "$TMP"
 
-  echo "live-github: residue after cleanup: ${REF_NAMESPACE}branches=$left_branches open-prs=$left_prs ${RUN_NAMESPACE}runs=$left_runs"
+  echo "live-github: residue after cleanup: ${REF_NAMESPACE}branches=$left_branches open-prs=$left_prs ${RUN_NAMESPACE}runs=$left_runs comments=$COMMENT_RESIDUE over $SWEPT_CONVERSATIONS conversation(s)"
   echo "live-github: branches at the remote: $every"
 
   if [ "$left_branches" != 0 ] || [ "$left_prs" != 0 ] || [ "$left_runs" != 0 ]; then
     echo "live-github: FAIL: cleanup left residue behind" >&2
+    exit 1
+  fi
+  # The comment assertion, and it is the one that has to be able to fail. A
+  # conversation sweep that deleted nothing looks exactly like one that had nothing
+  # to delete — which is how the planning probe's 404 went unnoticed until somebody
+  # read the payload — so the count is asserted rather than printed, and `unreadable`
+  # fails here as loudly as a surviving comment does.
+  #
+  # `n/a` passes, and only because it means the decision phase was never asked for:
+  # nothing posted a comment, so there is no claim to make. The value is set to a
+  # number by `decision_cleanup`, which exists only when that phase armed it.
+  if [ "$COMMENT_RESIDUE" != 0 ] && [ "$COMMENT_RESIDUE" != n/a ]; then
+    echo "live-github: FAIL: $COMMENT_RESIDUE comment(s) survived the conversation sweep over $SWEPT_CONVERSATIONS conversation(s); a closed pull request keeps them for ever" >&2
     exit 1
   fi
   # This repository's standing rule is that `main` is its only permanent branch —
@@ -497,18 +694,17 @@ forget_everything_local() {
   [ ! -e "$TMP/reports" ] || fail "no local record of an earlier attempt may survive"
 }
 
-# One fresh process. Prints what it reported and hands back its exit code.
-publish_once() {
-  local label="$1" code=0
-  "$FIDDLE_BIN" run "$INVOCATION_REF" \
-    --capability publish_change --json \
-    --config "$TMP/fiddle.toml" \
-    > "$TMP/$label.json" 2> "$TMP/$label.err" || code=$?
-
-  # Redaction by construction: nothing fiddle wrote is echoed until it has been
-  # checked for the credential, and a hit is a failure rather than a redaction.
+# What one finished process reported, once it is known safe to print.
+#
+# One function and two callers, because the *order* here is the property: no byte
+# fiddle wrote is echoed until it has been checked for every credential this lane
+# holds, and a hit is a failure rather than a redaction. Two copies of that order
+# would be two chances for one of them to lose it — and the decision phase gave
+# this lane a second credential to lose it with.
+summarize_run() {
+  local label="$1" code="$2"
   if grep -F -q -f "$TMP/needle" "$TMP/$label.json" "$TMP/$label.err"; then
-    fail "$label: the credential reached fiddle's own output; not printing it"
+    fail "$label: a credential reached fiddle's own output; not printing it"
   fi
 
   jq -c '{outcome, capability: .capability_executions[0].status,
@@ -517,6 +713,17 @@ publish_once() {
     || fail "$label: stdout is not the JSON payload:
 $(cat "$TMP/$label.json")"
   PAYLOAD="$TMP/$label.json"
+}
+
+# One fresh process. Prints what it reported and hands back its exit code.
+publish_once() {
+  local label="$1" code=0
+  "$FIDDLE_BIN" run "$INVOCATION_REF" \
+    --capability publish_change --json \
+    --config "$TMP/fiddle.toml" \
+    > "$TMP/$label.json" 2> "$TMP/$label.err" || code=$?
+
+  summarize_run "$label" "$code"
   return "$code"
 }
 
@@ -682,4 +889,373 @@ note "after republishing: branches=[$(paste -sd, - <<<"$final_branches")] open-p
 [ "$ATTEMPTS" -ge 2 ] || fail "at least two fresh processes must have run, got $ATTEMPTS"
 note "$ATTEMPTS fresh fiddle processes ran over the same work; the remote holds exactly \
 one branch, one pull request and one requested check, and the same three throughout"
-note "PASS"
+
+# ---------------------------------------------------------------------------
+# Phase three: one question, one answer, one ready transition
+# ---------------------------------------------------------------------------
+#
+# `propose_change`, twice, against real GitHub. The first process attempts,
+# publishes a branch, opens a **draft** pull request, puts one question on its
+# conversation and exits **10** — `RunOutcome::Suspended`, the code whose meaning
+# is "somebody has to answer this". The second process is given the same
+# `InvocationRef` and nothing else, finds the question on the conversation,
+# validates it, reads the answer, and marks the pull request ready for review.
+#
+# # What this phase is not evidence for
+#
+# **The second process is started by this script.** Nothing here shows an
+# `issue_comment` event waking a runner, and §5.3 of the milestone design records
+# that wiring as blocked — `issue_comment` runs the workflow file as it exists on
+# the default branch, and the default branch of this repository carries no
+# workspace. A reader who took this phase for evidence of the trigger would be
+# reading a `bash` line as a webhook. The script says so in its own output, at the
+# point where it does it.
+#
+# **The conversation-comment grant is re-verified here, not established here.** It
+# was probed directly during Task 1, on a closed pull request: `POST
+# .../issues/19/comments` → 201, `GET /issues/comments/{id}` → the payload, `DELETE`
+# → 204, residue zero. So a 403 on the comment below is a **regression** — a
+# credential narrowed, rotated or re-scoped since — and not a discovery, and the
+# response body is the finding either way. The reason to re-verify it inside the
+# lane is that the lane is the thing that runs unattended later.
+#
+# # Why the counts here are deltas
+#
+# The publish phase's branch, pull request and workflow run are still standing:
+# they are swept by the trap on the way out, not between phases. So this phase
+# cannot assert "the remote holds exactly one open pull request" — it asserts that
+# the namespace holds exactly one *more* than it did, that the new one is the one
+# this phase's own process reported, and it prints both numbers.
+
+if [ "$DECISION" != 1 ]; then
+  note "decision phase: NOT REQUESTED (FIDDLE_LIVE_DECISION is unset), so nothing \
+below the publish walk was exercised and this transcript says nothing about the \
+decision channel"
+  note "PASS (publish, republish)"
+  exit 0
+fi
+
+# Armed before the phase creates anything, which is the same ordering the target
+# guard above is built on.
+#
+# `$?` at the top of `cleanup` is the script's own status, and a handler that ran
+# anything before it would overwrite that with its own — reporting a pass for a
+# lane that failed, which is the defect the INT/TERM note above records in its
+# other form. So the status is captured first and put back with a subshell `exit`,
+# which sets `$?` for the command that follows without running anything itself.
+#
+# `decision_cleanup` first, and `cleanup` second, because the conversations are
+# found through `our_open_prs` and closing a pull request takes it off that list.
+# It deletes and counts; the assertion over the count is `cleanup`'s, so that a
+# comment residue cannot skip the branch sweep and buy a branch residue too.
+trap 'status=$?; decision_cleanup; (exit $status); cleanup' EXIT
+note "--- the decision channel: one question, one answer, one ready transition ---"
+note "model $DECISION_MODEL at $DECISION_BASE_URL, credential from \$$DECISION_CREDENTIAL"
+
+# The second credential this lane now holds, added to the needle so that
+# `summarize_run` checks fiddle's output for both. Appended rather than written,
+# and only ever a non-empty value: an empty line in a `grep -F -f` pattern file
+# matches every line, which would turn the leak check into an unconditional
+# failure and get it deleted.
+printf '%s\n' "${!DECISION_CREDENTIAL}" >> "$TMP/needle"
+
+# ---------------------------------------------------------------------------
+# The fixture the attempt repairs, and why it is a clone of the target
+# ---------------------------------------------------------------------------
+#
+# `[workspace] fixture` is the repository an attempt branches its worktree from,
+# and `EnsureBranchPublished` pushes that worktree's `HEAD` to `origin` — so the
+# fixture has to be a clone of the target, or the push would have nowhere to go and
+# the pull request would share no history with `$BASE`. Cloned without a credential
+# helper, like the publish phase's worktree and for the same reason: reading this
+# repository is meant to need no credential.
+#
+# The defect is committed locally rather than pushed, so `main` never carries it:
+# the branch this phase publishes is `main` plus the broken commit plus the repair,
+# which is a fast-forward on a ref that does not yet exist.
+DECISION_FIXTURE="$TMP/decision-fixture"
+git -c credential.helper= clone --quiet "https://github.com/$REPO.git" "$DECISION_FIXTURE" \
+  || fail "could not clone $REPO without a credential; it is meant to be public"
+mkdir -p "$DECISION_FIXTURE/src"
+printf 'pub fn last_index(len: usize) -> usize { len }\n' > "$DECISION_FIXTURE/src/lib.rs"
+git -C "$DECISION_FIXTURE" add -A
+git -C "$DECISION_FIXTURE" \
+  -c user.email=live-github@fiddle.invalid -c user.name="fiddle live lane" \
+  commit -qm "a fixture that fails its own check"
+DECISION_FIXTURE_SHA=$(git -C "$DECISION_FIXTURE" rev-parse HEAD)
+note "fixture at $DECISION_FIXTURE_SHA, one broken commit on top of $BASE"
+
+DECISION_STATE="$TMP/decision-state"
+DECISION_REPORTS="$TMP/decision-reports"
+DECISION_WORKSPACES="$TMP/decision-workspaces"
+mkdir -p "$DECISION_STATE/work" "$DECISION_STATE/changes" "$TMP/decision-gh-config"
+printf '{"id":"%s","status":"open"}\n' "$DECISION_WORK_ID" \
+  > "$DECISION_STATE/work/$DECISION_WORK_ID.json"
+
+# Who may decide, read from the forge rather than written down here. The same
+# credential posts the reply, so the id the document nominates and the id the reply
+# carries are the same person by construction — and the reply's own `user.id` is
+# checked against this value below, which is a second read of one fact through a
+# different route.
+ACTOR_ID=$(gh api user --jq '.id') \
+  || fail "could not read the credential's own user id from GET /user; the document below has to nominate somebody, and inventing an id would nominate nobody"
+ACTOR_LOGIN=$(gh api user --jq '.login')
+note "nominated approver: user id $ACTOR_ID ($ACTOR_LOGIN), read from GET /user"
+
+# `[github]` carries no `work` and no `workflow`: a proposal derives its worktree
+# from `[workspace] root` and its own two canonical inputs, and requests no check
+# at all. The check is `bash` rather than `cargo` because it has to *say* what it
+# wants — a `grep -q` that fails silently teaches a model nothing, and a real
+# `cargo test` would spend a minute per attempt teaching it the same sentence this
+# one prints. The lane's subject is the forge, not the model's ingenuity.
+cat > "$TMP/decision.toml" <<TOML
+[project]
+name = "$PROJECT"
+
+[stub]
+root = "$DECISION_STATE"
+
+[report]
+dir = "$DECISION_REPORTS"
+
+[github]
+repo = "$REPO"
+base = "$BASE"
+token = { env = "FIDDLE_GITHUB_TOKEN" }
+config_dir = "$TMP/decision-gh-config"
+timeout = "300s"
+
+[github.decision]
+authorized = [$ACTOR_ID]
+
+[agent]
+model = "$DECISION_MODEL"
+base_url = "$DECISION_BASE_URL"
+api_key = { env = "$DECISION_CREDENTIAL" }
+max_turns = 16
+max_tokens = 4096
+deadline = "5m"
+tool_timeout = "4m"
+
+[workspace]
+root = "$DECISION_WORKSPACES"
+fixture = "$DECISION_FIXTURE"
+check = { program = "bash", args = ["-c", "grep -q 'len - 1' src/lib.rs || { echo 'src/lib.rs: last_index must return len - 1, not len'; exit 1; }"] }
+command_timeout = "4m"
+TOML
+
+# One fresh process of the proposing capability.
+propose_once() {
+  local label="$1" code=0
+  "$FIDDLE_BIN" run "$DECISION_REF" \
+    --capability propose_change --json \
+    --config "$TMP/decision.toml" \
+    > "$TMP/$label.json" 2> "$TMP/$label.err" || code=$?
+
+  summarize_run "$label" "$code"
+  return "$code"
+}
+
+# Nothing local left for the next process to read.
+#
+# The change-set marker is **asserted absent rather than deleted**, which is the
+# one difference from `forget_everything_local`: a suspended run that had recorded
+# the work as accounted for would be a defect this phase should show, and a `rm`
+# there would erase the evidence of it instead. The denominator is printed, because
+# "no marker" and "no directory to look in" are different facts.
+no_local_record() {
+  local where="$1" markers
+  rm -rf "$DECISION_REPORTS" "$DECISION_WORKSPACES"
+  [ ! -e "$DECISION_REPORTS" ] || fail "$where: no local record of an earlier attempt may survive"
+  [ ! -e "$DECISION_WORKSPACES" ] || fail "$where: no worktree of an earlier attempt may survive"
+  [ -d "$DECISION_STATE/changes" ] \
+    || fail "$where: $DECISION_STATE/changes is not a directory, so the count below would be a check that could not run"
+  markers=$(find "$DECISION_STATE/changes" -type f | lines)
+  [ "$markers" = 0 ] \
+    || fail "$where: $markers change-set marker(s) under $DECISION_STATE/changes; a run that suspended must not have recorded the work as accounted for"
+  note "$where: no bundle, no journal, no worktree, and 0 change-set markers in $DECISION_STATE/changes"
+}
+
+# Fresh processes until one ends on the code this step is waiting for.
+#
+# `converge` above stops at 0; this stops at whichever settled code the step
+# expects, because the first step's success *is* exit 10. Exit 11 is retried for
+# `converge`'s reason — GitHub does not always answer its own writes immediately,
+# and a proposal reads a ref back straight after pushing it. Every other code is
+# settled and is a loud failure.
+#
+# The third argument is what an unexpected *settled* code most likely means for
+# this step, and it exists so that the two ways this phase can fail on a model
+# rather than on the forge are named where they are detected. A lane that reported
+# "fiddle exited 20" would have sent a reader to look at GitHub.
+decide_until() {
+  local step="$1" want="$2" otherwise="$3" attempt=0 code
+  while :; do
+    attempt=$((attempt + 1))
+    ATTEMPTS=$((ATTEMPTS + 1))
+    no_local_record "$step-$attempt"
+    code=0
+    # Recorded so a later assertion can quote the diagnostic of the run that
+    # reached it, rather than guessing the file name back out of the directory.
+    LAST_RUN="$step-$attempt"
+    propose_once "$step-$attempt" || code=$?
+    if [ "$code" = "$want" ]; then
+      note "$step: exit $want after $attempt fresh process(es)"
+      return 0
+    fi
+    [ "$code" = "$RETRYABLE" ] || fail "$step-$attempt: fiddle exited $code, and this step is waiting for $want. $otherwise
+$(cat "$TMP/$step-$attempt.err")"
+    [ "$attempt" -lt "$MAX_ATTEMPTS" ] \
+      || fail "$step: $MAX_ATTEMPTS fresh processes all ended retryable; the world never settled"
+    note "$step-$attempt: retryable, and that is what exit $RETRYABLE means — running again in ${BACKOFF}s"
+    sleep "$BACKOFF"
+  done
+}
+
+# --- the first process: propose, ask, and stop ------------------------------
+
+decide_until propose 10 "Exit 20 here is most often CheckFailed: the attempt did \
+not earn the check, which is a finding about $DECISION_MODEL and not about GitHub. \
+Nothing is published on that path, so there is no forge residue to look for."
+
+# Which pull request this phase opened, read out of the remote. The publish
+# phase's is still open, so the namespace listing is filtered by its number and
+# both figures are printed — a filtered count that reported only the remainder
+# would be hiding the thing that makes it a delta.
+open_now=$(our_open_prs)
+decision_candidates=$(grep -v "^$pr\$" <<<"$open_now" || true)
+note "open ${REF_NAMESPACE} pull requests now: [$(paste -sd, - <<<"$open_now")] \
+($(lines <<<"$open_now") of them), of which the publish phase's is #$pr"
+[ "$(lines <<<"$decision_candidates")" = 1 ] \
+  || fail "exactly one open ${REF_NAMESPACE} pull request other than the publish phase's #$pr expected, got [$(paste -sd, - <<<"$decision_candidates")]"
+PRN=$(tr -d ' ' <<<"$decision_candidates")
+
+# And it is the one this run reported, which is the round trip: the number GitHub
+# gave the object against the number the run recorded for it.
+[ "$(receipt ensure_pull_request external_ref)" = "$PRN" ] \
+  || fail "the proposal's pull request receipt names #$(receipt ensure_pull_request external_ref), the remote holds #$PRN"
+
+DECISION_BRANCH=$(gh api "repos/$REPO/pulls/$PRN" --jq '.head.ref')
+DECISION_HEAD=$(gh api "repos/$REPO/pulls/$PRN" --jq '.head.sha')
+draft_before=$(gh api "repos/$REPO/pulls/$PRN" --jq '.draft')
+note "pull request #$PRN from $DECISION_BRANCH at $DECISION_HEAD, draft=$draft_before"
+[ "$draft_before" = true ] \
+  || fail "#$PRN must have been opened as a draft, because the transition out of one is the gated act; draft=$draft_before"
+[ "$DECISION_BRANCH" != "$branch" ] \
+  || fail "the decision phase must have published its own branch, not the publish phase's $branch"
+
+# The question. Counted over the whole conversation and reported as a fraction,
+# because "one comment carries the marker" and "there is one comment" are
+# different claims and only the first is the one being made.
+conversation=$(gh api "repos/$REPO/issues/$PRN/comments?per_page=100") \
+  || fail "the conversation of #$PRN cannot be read; a count taken from a failed read would be indistinguishable from an empty conversation"
+comments_total=$(jq 'length' <<<"$conversation")
+asked=$(jq --arg marker "$DECISION_MARKER" '[.[] | select(.body | contains($marker))] | length' <<<"$conversation")
+note "conversation of #$PRN: $asked of $comments_total comment(s) carry $DECISION_MARKER"
+[ "$asked" = 1 ] \
+  || fail "exactly one request comment expected on #$PRN, found $asked of $comments_total"
+
+# **Selected by name**, and by the *comment's* name: `.id` for the comment and
+# `.user.id` for its author, two fields the walk means two different things by. The
+# body is filtered on the marker and the id is never read out of text — see the
+# note in `decision_cleanup`, which is where the delete that this confusion sends
+# to a 404 lives, and where what was measured about it is written down.
+REQUEST_COMMENT=$(jq -r --arg marker "$DECISION_MARKER" \
+  'first(.[] | select(.body | contains($marker))) | .id' <<<"$conversation")
+REQUEST_AUTHOR=$(jq -r --arg marker "$DECISION_MARKER" \
+  'first(.[] | select(.body | contains($marker))) | .user.id' <<<"$conversation")
+note "request comment id $REQUEST_COMMENT, written by user id $REQUEST_AUTHOR"
+
+# The denominator for the selection: the two ids have to be different numbers for
+# selecting the right one to be a test at all. It catches one mutation the receipt
+# check below does not — a tidy-up that read the id through the same expression on
+# both sides, which would make that comparison `x == x` and unable to fail.
+[ "$REQUEST_COMMENT" != "$REQUEST_AUTHOR" ] \
+  || fail "the request comment's id and its author's user id are both $REQUEST_COMMENT, which is the field confusion this selection exists to avoid"
+[ "$REQUEST_AUTHOR" = "$ACTOR_ID" ] \
+  || fail "fiddle posted the question as user $REQUEST_AUTHOR, but this lane's credential is user $ACTOR_ID"
+
+# The identity round trip on the question: the comment id GitHub minted against
+# the id the run recorded as the published request's external reference.
+[ "$(receipt publish_decision_request external_ref)" = "$REQUEST_COMMENT" ] \
+  || fail "the request receipt names comment $(receipt publish_decision_request external_ref), the remote holds $REQUEST_COMMENT"
+
+# --- the answer, posted by this script -------------------------------------
+
+# `-f body=` and not a path parameter, so the body is a form field rather than
+# part of the URL. The id of what was written is read back **by name**, as above.
+REPLY_COMMENT=$(gh api "repos/$REPO/issues/$PRN/comments" -f body="$DECISION_REPLY" --jq '.id') \
+  || fail "POST repos/$REPO/issues/$PRN/comments was refused. If this is a 403, the conversation-comment grant proven during Task 1 has been narrowed, rotated or re-scoped since — that is a regression to investigate and the exact response above is the finding. Do not widen the credential to make this pass"
+reply_author=$(gh api "repos/$REPO/issues/comments/$REPLY_COMMENT" --jq '.user.id')
+note "reply comment $REPLY_COMMENT by user $reply_author: \"$DECISION_REPLY\""
+[ "$reply_author" = "$ACTOR_ID" ] \
+  || fail "the reply must come from the user this document nominated ($ACTOR_ID), and it came from $reply_author"
+[ "$REPLY_COMMENT" -gt "$REQUEST_COMMENT" ] \
+  || fail "the reply's id ($REPLY_COMMENT) must be above the question's ($REQUEST_COMMENT), because a candidate reply is chosen by id and not by position"
+
+# --- the second process: it is started HERE, by this script -----------------
+
+note "the continuation below is invoked BY THIS SCRIPT, not by a comment event \
+waking a runner: no issue_comment trigger is installed, and §5.3 records that \
+wiring as blocked. This phase is not evidence for it."
+
+decide_until continue 0 "Exit 10 here means the continuation suspended again \
+rather than acting: either the interpretation did not read \"$DECISION_REPLY\" as \
+an approval — which is what a deliberately-broken FIDDLE_LIVE_DECISION_REPLY \
+produces, and is otherwise a finding about $DECISION_MODEL — or nobody the \
+document nominated had answered. #$PRN is still a draft either way, and the \
+residue counts below are asserted on this exit path."
+
+draft_after=$(gh api "repos/$REPO/pulls/$PRN" --jq '.draft')
+state_after=$(gh api "repos/$REPO/pulls/$PRN" --jq '.state')
+note "#$PRN read back from the remote: draft $draft_before -> $draft_after, state=$state_after"
+# The continuation exited 0, so it acted. This is the transition, read back from
+# the forge rather than taken from the run's own report of itself.
+if [ "$draft_after" != false ]; then
+  fail "#$PRN is still a draft after a continuation that exited 0, which means the run reported completing something the forge does not show. The run's diagnostic:
+$(cat "$TMP/$LAST_RUN.err")"
+fi
+[ "$state_after" = open ] \
+  || fail "#$PRN must still be open after being marked ready, and it is $state_after"
+[ "$(receipt ensure_pull_request_ready external_ref)" = "$PRN" ] \
+  || fail "the ready receipt names #$(receipt ensure_pull_request_ready external_ref), the remote holds #$PRN"
+
+# The head did not move under the approval: what a person approved is what was
+# marked ready.
+[ "$(gh api "repos/$REPO/pulls/$PRN" --jq '.head.sha')" = "$DECISION_HEAD" ] \
+  || fail "#$PRN's head moved from $DECISION_HEAD under the approval"
+
+# One of each, as a delta against what was standing before this phase ran.
+final_open=$(our_open_prs)
+final_ours=$(our_branches)
+note "after the decision phase: open ${REF_NAMESPACE} pull requests \
+[$(paste -sd, - <<<"$final_open")] ($(lines <<<"$final_open")), ${REF_NAMESPACE} branches \
+[$(paste -sd, - <<<"$final_ours")] ($(lines <<<"$final_ours"))"
+[ "$(lines <<<"$final_open")" = 2 ] \
+  || fail "two open ${REF_NAMESPACE} pull requests expected — the publish phase's #$pr and this phase's #$PRN — got [$(paste -sd, - <<<"$final_open")]"
+[ "$(lines <<<"$final_ours")" = 2 ] \
+  || fail "two ${REF_NAMESPACE} branches expected — $branch and $DECISION_BRANCH — got [$(paste -sd, - <<<"$final_ours")]"
+grep -q "^$PRN\$" <<<"$final_open" \
+  || fail "#$PRN must still be the open pull request this phase opened, and the namespace holds [$(paste -sd, - <<<"$final_open")]"
+
+# And the conversation gained nothing but the two comments this walk accounts for:
+# the question and the answer. An unclear reply publishes no follow-up — the
+# request identity has not moved, so `PublishDecisionRequest`'s postcondition is
+# already satisfied — and an approval publishes none either.
+final_conversation=$(gh api "repos/$REPO/issues/$PRN/comments?per_page=100") \
+  || fail "the conversation of #$PRN cannot be read; a count taken from a failed read would be indistinguishable from an empty conversation"
+final_total=$(jq 'length' <<<"$final_conversation")
+final_marked=$(jq --arg marker "$DECISION_MARKER" '[.[] | select(.body | contains($marker))] | length' <<<"$final_conversation")
+note "conversation of #$PRN at the end: $final_marked of $final_total comment(s) carry the request marker"
+[ "$final_total" = 2 ] \
+  || fail "#$PRN's conversation must hold exactly the question and the answer, and it holds $final_total comment(s)"
+# The filter, measured over a conversation that has both kinds in it. Earlier it
+# saw one comment and answered one, which a filter matching everything would also
+# have done; here the two numbers differ, so `1 of 2` says the marker selects the
+# question and not the conversation.
+[ "$final_marked" = 1 ] \
+  || fail "exactly one of #$PRN's $final_total comments must carry the request marker, and $final_marked do"
+
+note "OK: draft -> question -> answer -> ready, one of each, every assertion read \
+back from the remote"
+note "PASS (publish, republish, decision)"
