@@ -479,14 +479,68 @@ impl CapabilityError {
             // not be written, a check that did not pass, a workspace that could
             // not be prepared and an attempt that produced no report are each an
             // obstacle in front of the run: fix the permission, let the model
-            // try again, and the same invocation succeeds. `attempt.rs` and
-            // `repair_protocol.rs` pin all four, and none of them moves here.
+            // try again, and the same invocation succeeds.
             //
             // M3's `NothingProposed` joins them, and for the same test rather
             // than by resemblance: an attempt that changed nothing is an attempt
             // that may change something next time, so a repeat is worth
             // inviting. It is deliberately not `Permanent` — that would tell a
             // caller to give up on a fixture the next attempt might repair.
+            //
+            // # What pins each of these five, measured arm by arm
+            //
+            // **The false version, shown rather than swapped out.** This said
+            // *"`attempt.rs` and `repair_protocol.rs` pin all four, and none of
+            // them moves here."* Every clause was wrong: `attempt.rs` pins none of
+            // them, `repair_protocol.rs` pins two, and the one pin on `Write` is
+            // *here*, in this crate's own `src/`.
+            //
+            // Each arm was flipped to `Permanent` in turn against
+            // `cargo test -p fiddle-runtime --no-fail-fast` — 20 result lines,
+            // baseline 424 passed / 0 failed. `--no-fail-fast` matters: the `Write`
+            // pin is in the lib binary, which cargo runs first, so a fail-fast run
+            // stops there having measured 1 binary of 20.
+            //
+            // - `Write` — **one** test, 423/1, in neither named file:
+            //   `orchestration::tests::a_capability_failure_is_retryable_and_recorded`.
+            //   It is also **conditional**: it returns early when the outcome is
+            //   `Completed`, which is what an identity able to write a mode-0500
+            //   directory produces. Under such an identity — root in a container —
+            //   this arm is pinned by nothing at all.
+            // - `CheckFailed` — **six**, 418/6:
+            //   `propose_capability::an_attempt_whose_check_failed_publishes_nothing_and_asks_nothing`,
+            //   and in `repair_protocol.rs`
+            //   `a_path_escape_is_refused_and_mutates_nothing`,
+            //   `a_model_claiming_success_over_a_broken_fixture_is_disbelieved`,
+            //   `an_attempt_that_called_no_tools_publishes_tools_zero`,
+            //   `an_absolute_path_is_refused`,
+            //   `a_symlink_out_of_the_workspace_is_refused`.
+            // - `Workspace` — **one**, 423/1:
+            //   `workspace::a_revision_the_fixture_can_only_fetch_is_refused_by_name_and_nothing_fetches`,
+            //   which names `Recurrence` directly and claims in its own comment to
+            //   be this crate's only assertion over the arm. It is — now measured
+            //   rather than asserted.
+            // - `NothingProposed` — **one**, 423/1:
+            //   `propose_capability::an_attempt_that_changed_nothing_publishes_nothing_and_asks_nothing`.
+            // - `Agent` — **five**, 419/5, all in `repair_protocol.rs`:
+            //   `an_unregistered_tool_name_mutates_nothing`,
+            //   `a_cancelled_attempt_leaves_the_fixture_unmutated`,
+            //   `exceeding_the_turn_budget_fails_the_run`,
+            //   `exceeding_the_changed_file_cap_fails_the_run`,
+            //   `malformed_structured_output_fails_the_run`.
+            //
+            // `repair_protocol.rs` pins two of the five and does it **by
+            // behaviour**, never naming the type: its `refusal` helper panics
+            // unless the outcome is `RunOutcome::Retryable`. That is why a grep for
+            // `Recurrence` over its 909 lines returns 0 while it genuinely accounts
+            // for ten of the fourteen tests above — and it is why the claim this
+            // replaces read as plausible.
+            //
+            // `attempt.rs` pins none of the five: all 11 of its tests stay green
+            // under all five flips. It does assert `RunOutcome::Retryable` three
+            // times, but over the attempt journal and the report bundle —
+            // orchestration's own publication failures, upstream of any
+            // `CapabilityError` — so none of them reaches this table.
             CapabilityError::Write { .. }
             | CapabilityError::CheckFailed { .. }
             | CapabilityError::Workspace(_)
