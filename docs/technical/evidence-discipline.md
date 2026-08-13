@@ -115,6 +115,19 @@ created from one it found.
 
 **Verify the restore with both `cmp` against the pin and `git diff --quiet`.**
 
+**Namespace your scratchpad by bean, and never write a driver to its root.** M3: an evaluator was given its own
+detached worktree but not its own scratchpad, wrote `invert.sh` to the shared root, and replaced the
+implementation lane's driver — a file that bean's record cites as evidence. Its logs and mutation scripts
+survived because their names differed; the driver did not. **A worktree is not isolation on its own.** The lane
+that got this right namespaced everything under `inv-<bean>/` and collided with nobody.
+
+**The scratchpad path is keyed by worktree, so one session has different scratchpads in different worktrees.**
+M3: the lead assessed this very collision in the wrong directory — same session id, different worktree key —
+found an untouched file belonging to a third lane, and concluded no collision had occurred. Then a
+time-filtered `find` returned nothing and was read as absence. **Both are the same error the measurement
+section already names: a check that could not evaluate, reported as a negative result.**
+
+
 ### Granularity
 
 **Run each inversion against the binaries that can observe the mutation, and the full gate once at the end.**
