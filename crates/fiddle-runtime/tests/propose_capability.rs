@@ -1870,6 +1870,16 @@ struct Answered {
     /// published is unreadable from the remote by the time a test could ask for it,
     /// and "the change is different" has nothing to be different from.
     published_before: Option<String>,
+    /// How many calls the scripted `gh` had recorded *before* the continuation ran.
+    ///
+    /// The denominator every claim about what a continuation asked the forge to do
+    /// is stated against, and it has to be one: one world holds both processes'
+    /// traffic, and the suspending run's is the larger share — it opens the pull
+    /// request and posts the question. An inventory taken over the whole world
+    /// would read the first run's `POST /pulls` as the continuation's, and would
+    /// read exactly the same for a continuation that asked the forge for nothing at
+    /// all.
+    requests_before: usize,
 }
 
 /// What a continuation goes on to do once the walk has read the reply.
@@ -1919,6 +1929,7 @@ async fn answered(
 
     let posted_before = world.posted_comments().len();
     let published_before = world.published_file("src/lib.rs");
+    let requests_before = world.requests().len();
     let mut turns = vec![MockTurn::text(document)];
     let attempting = match then {
         ThenWhat::Nothing => false,
@@ -1940,6 +1951,7 @@ async fn answered(
         head_sha: suspension.head_sha,
         posted_before,
         published_before,
+        requests_before,
     }
 }
 
@@ -2034,6 +2046,338 @@ async fn only_an_approval_marks_the_pull_request_ready() {
             should_mutate,
             "{reply:?} left change sets {:?}",
             world.change_sets()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// What a redirect asks the forge for, and what it tells the operator
+// ---------------------------------------------------------------------------
+
+/// What one recorded `gh` call did to the forge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Traffic {
+    /// `GET`, or no `--method` at all, which is what `gh api` defaults to.
+    Read,
+    /// Any other REST method: the classes that change something out there.
+    Write,
+    /// A GraphQL call, **whatever method it carries**, because a GraphQL mutation
+    /// is in the query and not on the status line — which is ADR 018's subject.
+    GraphQl,
+}
+
+/// One recorded call, read back out of its `argv`.
+struct Call<'a> {
+    method: &'a str,
+    endpoint: &'a str,
+}
+
+/// Read a recorded `argv` back into the two fields that say what it did.
+///
+/// A scan rather than an index, for the scripted `gh`'s own reason: a GraphQL call
+/// carries `-f query=…`, and to anything reading positionally that value is the
+/// first argument that looks like an endpoint. Value-taking flags are consumed
+/// with their values, so the endpoint is the first bare word after `api`.
+fn call_of(argv: &[String]) -> Call<'_> {
+    let mut method = "GET";
+    let mut endpoint = "";
+    let mut rest = argv.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--method" | "-X" => method = rest.next().map(String::as_str).unwrap_or_default(),
+            "-f" | "-F" | "--input" => {
+                rest.next();
+            }
+            "api" => {}
+            flag if flag.starts_with('-') => {}
+            bare if endpoint.is_empty() => endpoint = bare,
+            _ => {}
+        }
+    }
+    Call { method, endpoint }
+}
+
+impl Call<'_> {
+    /// Which class this call falls in.
+    ///
+    /// Total by construction, so a call cannot be lost by falling through: an
+    /// inventory that silently dropped one would read exactly like a run that never
+    /// made it.
+    fn traffic(&self) -> Traffic {
+        match (self.endpoint, self.method) {
+            ("graphql", _) => Traffic::GraphQl,
+            (_, "GET" | "HEAD") => Traffic::Read,
+            _ => Traffic::Write,
+        }
+    }
+
+    /// The verb and the path, which is what an inventory of writes reads as.
+    fn line(&self) -> String {
+        format!("{} {}", self.method, self.endpoint)
+    }
+}
+
+/// Forge traffic is sorted by **what it did**, not by what it is called.
+///
+/// **A table drives every arm, and that is only half of the property.** The same
+/// hand writes the rows and the expectations, so this cannot show that the rows are
+/// the shapes a real run produces. The other half is
+/// [`a_redirect_writes_one_comment_and_asks_for_nothing_else`], which sorts the
+/// `argv` of every call a real redirect made. Neither surface alone is the claim:
+/// this one covers arms no scenario in this file takes, and that one covers the
+/// shapes this table could have invented.
+///
+/// The two GraphQL rows carry the most weight. A GraphQL call arrives with **no
+/// `--method` at all** — the scripted `gh` says so where it names its own world
+/// key — so a sorter that reached for the method first would file this build's one
+/// mutation as a read, which is ADR 018's defect committed inside a test's reading
+/// of the wire. The second row spells `POST`, so the endpoint has to *win* rather
+/// than merely be consulted.
+#[test]
+fn a_recorded_call_is_sorted_by_what_it_did() {
+    for (argv, expected) in [
+        (
+            vec!["api", "-i", "--method", "GET", "/repos/o/r/pulls/7"],
+            Traffic::Read,
+        ),
+        // `gh api`'s default. This client always spells the method, and the sorter
+        // must not depend on it continuing to.
+        (vec!["api", "-i", "/repos/o/r/pulls/7"], Traffic::Read),
+        (
+            vec![
+                "api",
+                "-i",
+                "--method",
+                "POST",
+                "/repos/o/r/issues/7/comments",
+                "--input",
+                "-",
+            ],
+            Traffic::Write,
+        ),
+        // `fiddle-pv2c`'s `i05`: the write this binary could not see for a whole
+        // milestone.
+        (
+            vec![
+                "api",
+                "-i",
+                "--method",
+                "PATCH",
+                "/repos/o/r/pulls/7",
+                "--input",
+                "-",
+            ],
+            Traffic::Write,
+        ),
+        // The same call in `gh`'s short spelling, which a sorter matching only the
+        // long one would file as a read.
+        (
+            vec![
+                "api",
+                "-i",
+                "-X",
+                "PATCH",
+                "/repos/o/r/pulls/7",
+                "--input",
+                "-",
+            ],
+            Traffic::Write,
+        ),
+        (
+            vec!["api", "-i", "--method", "PUT", "/repos/o/r/pulls/7/merge"],
+            Traffic::Write,
+        ),
+        (
+            vec![
+                "api",
+                "-i",
+                "--method",
+                "DELETE",
+                "/repos/o/r/git/refs/heads/fiddle/1234",
+            ],
+            Traffic::Write,
+        ),
+        (
+            vec![
+                "api",
+                "-i",
+                "graphql",
+                "-f",
+                "query=mutation { closeIssue { clientMutationId } }",
+            ],
+            Traffic::GraphQl,
+        ),
+        (
+            vec![
+                "api",
+                "-i",
+                "--method",
+                "POST",
+                "graphql",
+                "-f",
+                "query=mutation { markPullRequestReadyForReview { clientMutationId } }",
+            ],
+            Traffic::GraphQl,
+        ),
+    ] {
+        let argv: Vec<String> = argv.into_iter().map(str::to_string).collect();
+        assert_eq!(call_of(&argv).traffic(), expected, "{argv:?}");
+    }
+}
+
+/// **A redirect asks the forge to write one thing: the question about the new
+/// change.**
+///
+/// The four-row matrix above asserts what a redirect *completed* — no ready
+/// transition, no GraphQL call, no marker — from the executor's `apply` list and the
+/// stub's GraphQL counter. What no assertion in this file made until now is what a
+/// redirect **asked the forge to do at all**. `fiddle-pv2c`'s `i05` is the
+/// denominator: it injected a `PATCH …/pulls/{n}` carrying `{"state":"closed"}`
+/// into this very arm and this binary stayed **24 of 24 green**, while
+/// `human_direction` failed 1 of 28. A `PATCH` performs no [`EffectKind`],
+/// increments no GraphQL counter, and — the scripted `gh` treating anything that is
+/// neither `POST` nor `DELETE` as changing nothing — leaves no trace a later read
+/// could find. The recorded `argv` is the one surface it cannot hide from, because
+/// the stub records a call before it decides what to answer.
+///
+/// # Why the reads are counted and not listed
+///
+/// A redirect reads a great deal: the pull request, the ref, the conversation, each
+/// candidate comment, then all of it again after the attempt. Pinning that list
+/// would fail on any refactor that reordered a lookup while proving nothing about
+/// what changed out there. The count is here for one reason — *"it wrote nothing"*
+/// must not be satisfiable by a continuation that asked the forge for nothing, and
+/// a bare write list cannot tell those apart.
+#[tokio::test]
+async fn a_redirect_writes_one_comment_and_asks_for_nothing_else() {
+    let world = World::fresh();
+    let answered = answered(
+        &world,
+        APPROVER,
+        "do it differently",
+        REDIRECTS,
+        ThenWhat::OneMoreAttempt(repairs_differently()),
+    )
+    .await;
+
+    let calls = world.argvs();
+    let continuation = &calls[answered.requests_before..];
+    let mut reads = 0;
+    let mut graphql = 0;
+    let mut writes: Vec<String> = Vec::new();
+    for argv in continuation {
+        let call = call_of(argv);
+        match call.traffic() {
+            Traffic::Read => reads += 1,
+            Traffic::GraphQl => graphql += 1,
+            Traffic::Write => writes.push(call.line()),
+        }
+    }
+
+    assert!(
+        reads > 0,
+        "the denominator: the continuation made {} calls of which {reads} were \
+         reads, and an empty write inventory over a continuation that asked the \
+         forge nothing would be empty for the wrong reason",
+        continuation.len()
+    );
+    assert_eq!(
+        writes,
+        [format!("POST /repos/{REPO}/issues/{PR}/comments")],
+        "a redirect's only write is the question it asks about the new change, and \
+         the whole continuation asked for {continuation:#?}"
+    );
+    // The matrix above already reads the stub's GraphQL counter for this row; this
+    // is the other door, and it fails where that one cannot — on a mutation
+    // dispatched by a call the counter never got to count.
+    assert_eq!(
+        graphql, 0,
+        "a redirect dispatches no GraphQL: {continuation:#?}"
+    );
+}
+
+/// **A redirect names the instruction it was given, where an operator reads it.**
+///
+/// `16c0738` deleted `a_redirect_waits_and_names_the_instruction_it_received`, and
+/// two of that test's four claims had genuinely become false — a redirect is no
+/// longer a wait with nothing posted, and it does post. Of the two that survived,
+/// `graphql_calls() == 0` was re-homed into the matrix above and **this one was
+/// not**: `"use a bounded loop instead"` went on appearing in this file only as the
+/// reply the fixture scripts, which is a fixture value living where its value
+/// cannot matter.
+///
+/// # The surface moved, and the deleted spelling would now be false
+///
+/// That test read the instruction out of `error.to_string()`. A redirect no longer
+/// ends in that diagnostic: it returns through `ProposeChange::ask`, whose
+/// `AwaitingDecision` carries the **new question** — *"May fiddle mark pull request
+/// acme/r#7 ready for review?"* — and not the instruction. Restoring the old
+/// assertion verbatim would fail against correct code, which is worth writing down,
+/// because a claim usually goes unre-homed for exactly this reason.
+///
+/// The two surfaces it does reach are both asserted, and they fail on different
+/// mutations:
+///
+/// - the **receipt**, `redirect:{comment}:{instruction}`, which is what the bundle
+///   carries and what a `--json` reader is shown;
+/// - the **question the redirect posts**, whose evidence list carries that receipt
+///   onto the conversation. Dropping the evidence from the rendered body leaves the
+///   receipt intact and only the second half red, which is why one assertion is not
+///   both.
+///
+/// # Two instructions, because one row proves less than it looks
+///
+/// A single row passes against a receipt carrying any fixed string. These rows
+/// differ in nothing but the instruction, so what is asserted is that the receipt
+/// names *the instruction this run received* rather than an instruction.
+#[tokio::test]
+async fn a_redirect_names_the_instruction_it_received_where_an_operator_reads_it() {
+    for instruction in ["use a bounded loop instead", "add a regression test first"] {
+        let world = World::fresh();
+        let document = json!({
+            "decision": "redirect",
+            "redirect": instruction,
+            "evidence": "do it differently",
+        })
+        .to_string();
+        let answered = answered(
+            &world,
+            APPROVER,
+            "do it differently",
+            &document,
+            ThenWhat::OneMoreAttempt(repairs_differently()),
+        )
+        .await;
+
+        let named: Vec<&str> = answered
+            .receipts
+            .iter()
+            .map(|receipt| receipt.0.as_str())
+            .filter(|receipt| receipt.starts_with("redirect:"))
+            .collect();
+        assert_eq!(
+            named.len(),
+            1,
+            "one redirect receipt, whatever else the run recorded: {:?}",
+            answered.receipts
+        );
+        assert!(
+            named[0].contains(instruction),
+            "the receipt names the instruction the run was given: {}",
+            named[0]
+        );
+
+        let posted = world.posted_comments();
+        assert_eq!(
+            posted.len(),
+            answered.posted_before + 1,
+            "the redirect asked about the new change exactly once, so the comment \
+             read below is its own and not the first run's: {posted:#?}"
+        );
+        let asked = posted.last().expect("a redirect asks a fresh question");
+        assert!(
+            asked.contains(instruction),
+            "and the question an operator reads carries it too: {asked}"
         );
     }
 }
