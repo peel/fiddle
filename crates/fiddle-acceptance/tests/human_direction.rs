@@ -58,9 +58,10 @@
 mod support;
 
 use support::{
-    a_real_repair, a_suspension_and_its_approval, a_suspension_and_its_redirect, interprets,
-    parse_marker, Comment, World, AUTHORIZED, CONVERSATION_ISSUE, FIDDLE_BOT, INVOCATION_REF,
-    REDIRECTED_FIXTURE, REPAIRED_FIXTURE, SENTINEL, STRANGER,
+    a_real_repair, a_redirect_whose_attempt_changes_nothing, a_suspension_and_its_approval,
+    a_suspension_and_its_redirect, interprets, parse_marker, Comment, World, AUTHORIZED,
+    CONVERSATION_ISSUE, FIDDLE_BOT, INVOCATION_REF, REDIRECTED_FIXTURE, REPAIRED_FIXTURE, REPO,
+    SENTINEL, STRANGER,
 };
 
 // ---------------------------------------------------------------------------
@@ -2696,6 +2697,684 @@ fn a_redirect_produces_a_different_change_and_asks_again_about_it() {
     assert!(
         evidence.contains(&format!("comment {}", questions[0].id)),
         "and names them, which is where an operator would go to look: {evidence}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What a redirect does not do
+// ---------------------------------------------------------------------------
+
+/// Every request the scripted `gh` received, sorted into what kind of call it was.
+///
+/// # A partition, because the claim is about a mutation nobody thought of
+///
+/// *"The run did not close the pull request"* can be written as a search for a
+/// `PATCH`, and a search only finds what it was told to look for: a run that
+/// deleted the branch, or locked the conversation, or did something this milestone
+/// has not invented yet would pass it. So this sorts **every** recorded call into
+/// one of four buckets and the caller asserts the fourth is empty and that the
+/// three add up to the total. A fifth kind of call cannot hide in a partition; it
+/// makes the sum wrong.
+///
+/// `writes` carries the verb beside the path, because the path alone is the same
+/// string for a read of a pull request and a `PATCH` that closes it.
+///
+/// `unclassified` is not a defensive arm. A REST call the product made without
+/// `--method`, or a `graphql` call with a path, is a shape this partition has not
+/// been told how to read, and answering "a read" for it would be the failure this
+/// helper exists to prevent.
+struct ForgeCalls {
+    reads: Vec<String>,
+    writes: Vec<String>,
+    graphql: Vec<String>,
+    unclassified: Vec<String>,
+}
+
+impl ForgeCalls {
+    /// How many calls were sorted — the denominator every claim below needs.
+    fn total(&self) -> usize {
+        self.reads.len() + self.writes.len() + self.graphql.len() + self.unclassified.len()
+    }
+}
+
+/// Sort every call this world's forge received.
+///
+/// Read off `argv` rather than off [`World::requested_paths`], which drops the verb
+/// — and the verb is the whole of the distinction between a read of a pull request
+/// and a write that closes one.
+fn forge_calls(world: &World) -> ForgeCalls {
+    let mut sorted = ForgeCalls {
+        reads: Vec::new(),
+        writes: Vec::new(),
+        graphql: Vec::new(),
+        unclassified: Vec::new(),
+    };
+    for request in world.requests() {
+        let argv: Vec<&str> = request["argv"]
+            .as_array()
+            .map(|args| args.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+        let method = argv
+            .iter()
+            .position(|arg| *arg == "--method")
+            .and_then(|at| argv.get(at + 1))
+            .copied();
+        let path = argv.iter().find(|arg| arg.starts_with('/')).copied();
+        // `graphql` first, and matched on the literal subcommand rather than on the
+        // absence of a path: `gh` addresses every GraphQL call to one endpoint and
+        // carries its question in `-f query=`, so "no path" is a consequence of
+        // being a GraphQL call and not a way of recognising one.
+        match (argv.contains(&"graphql"), method, path) {
+            (true, _, None) => sorted.graphql.push(argv.join(" ")),
+            (false, Some("GET"), Some(path)) => sorted.reads.push(path.to_string()),
+            (false, Some(verb), Some(path)) => sorted.writes.push(format!("{verb} {path}")),
+            _ => sorted.unclassified.push(argv.join(" ")),
+        }
+    }
+    sorted
+}
+
+/// **A redirect mutates nothing of its own, and the mutation it did not spend is
+/// still there afterwards to be spent.**
+///
+/// # The claim, and why it is not the same as the converged redirect walk's
+///
+/// [`a_redirect_produces_a_different_change_and_asks_again_about_it`] asserts that
+/// the pull request is still a draft and that no ready transition was dispatched.
+/// This one asserts the whole of what the redirect did to the world: **cancelling
+/// an effect that never happened needs no external call**, and closing the draft
+/// would be an effect invented to express a cancellation that not acting has
+/// already expressed. So the assertion is an inventory rather than two absences.
+///
+/// # The two vacuous readings of "still a draft", both closed here
+///
+/// `draft == true` is satisfied by a run that did not mutate **and** by a world
+/// that could not have shown the mutation if it had. The second reading is not
+/// hypothetical: this fixture's `state` field is hardcoded `"open"` in both places
+/// that answer it — `gh_stub.rs:565` for the listing and
+/// [`World::answer_pull_request_by_number`] for the by-number read — and the stub's
+/// landed-transition rewrite touches `draft` and nothing else. **A closed pull
+/// request is not expressible in this world**, so `state == "open"` is a check that
+/// cannot fail and is deliberately not asserted; where a close *is* observable is
+/// the write inventory, because the run would have had to ask.
+///
+/// For `draft` the reading is closed rather than avoided. The transition is armed
+/// before the walk, and after every assertion is made the scenario **spends the
+/// arming by hand** and reads the draft again. It flips. So the arming was live,
+/// the stub can show a readied pull request, and the earlier `true` was an
+/// observation about a mutation that did not happen.
+///
+/// # The denominator that says the redirect happened at all
+///
+/// Five model calls. A redirect that died at the gateway and a redirect the model
+/// declined both produce `Unclear` — `AwaitingDecision`, exit 10, nothing mutated —
+/// which is bit-for-bit the shape asserted below. The script holds five replies and
+/// the gateway drops its listener when it runs out, so the served count is what
+/// tells the walk under test from the two that look identical from outside. The
+/// pushed tree is the second such observation and is read out of the remote.
+#[test]
+fn a_redirect_performs_no_external_mutation_of_its_own() {
+    let world = World::with_model_script(a_suspension_and_its_redirect(INSTEAD, REDIRECTION));
+    let suspended = suspend(&world);
+    let pull_request = suspended.pull_request;
+
+    // Armed *before* the walk: the answer a spent approval would be given is in
+    // place, so a run that wrongly readied this pull request would find its
+    // mutation accepted and the draft would flip. Nothing below is an assertion
+    // about a world that could not have moved.
+    world.accept_the_ready_mutation();
+    world.post_comment(AUTHORIZED, REDIRECTION);
+
+    let redirected = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        redirected.code,
+        Some(10),
+        "a redirect asks again: stdout={} stderr={}",
+        redirected.stdout,
+        redirected.stderr
+    );
+    // The two observations a run that concluded some other way cannot produce.
+    assert_eq!(
+        world.model_calls(),
+        5,
+        "two turns, the interpretation, and the redirected attempt's two — a walk \
+         that stopped at the interpretation spends 3 and everything below is still \
+         true of it"
+    );
+    assert_eq!(
+        world
+            .pushed_file(&suspended.branch, "src/lib.rs")
+            .as_deref(),
+        Some(REDIRECTED_FIXTURE),
+        "and the redirected attempt's tree is what was published, so this is the \
+         walk this test is named after"
+    );
+
+    // --- the inventory: everything the redirect asked the forge to change ---
+    //
+    // **Read before anything else touches the world**, because the fixture write
+    // below is recorded in this same log.
+    let calls = forge_calls(&world);
+    assert!(
+        calls.unclassified.is_empty(),
+        "every call must be one of the three kinds, and {} of {} are a shape this \
+         partition cannot read: {:?}",
+        calls.unclassified.len(),
+        calls.total(),
+        calls.unclassified
+    );
+    assert_eq!(
+        calls.reads.len() + calls.writes.len() + calls.graphql.len(),
+        calls.total(),
+        "the partition must be total"
+    );
+    // Three writes across two rounds, and the list is the claim rather than a
+    // sample: one pull request created — the second round found the open one and
+    // created nothing — and two questions posted, one per change. **Nothing that
+    // closes, deletes, re-titles or re-bases anything**, which is what "no effect
+    // was invented to express the cancellation" means when it is stated over the
+    // calls that were made instead of over the ones somebody thought to look for.
+    assert_eq!(
+        calls.writes,
+        [
+            format!("POST /repos/{REPO}/pulls"),
+            format!("POST /repos/{REPO}/issues/{CONVERSATION_ISSUE}/comments"),
+            format!("POST /repos/{REPO}/issues/{CONVERSATION_ISSUE}/comments"),
+        ],
+        "the redirect walk's writes, out of {} calls in total, of which {} were \
+         reads",
+        calls.total(),
+        calls.reads.len()
+    );
+    assert!(
+        calls.graphql.is_empty(),
+        "and no GraphQL call at all, out of {} calls: {:?}",
+        calls.total(),
+        calls.graphql
+    );
+    // The same claim from the counter the stub keeps for itself, which is the
+    // position the *next* answer would be chosen by — so it and the choice cannot
+    // disagree.
+    assert_eq!(
+        world.graphql_calls(),
+        0,
+        "the armed transition was not dispatched"
+    );
+
+    // --- and the objects a cancellation would have moved ---
+    assert_eq!(
+        world.remote_branches(),
+        [suspended.branch.as_str()],
+        "the branch is neither deleted nor joined by another"
+    );
+    assert_eq!(
+        world.open_pull_requests().len(),
+        1,
+        "one pull request, which is also what a close-and-reopen would report — the \
+         write inventory above is what rules that out: {:?}",
+        world.open_pull_requests()
+    );
+    assert_eq!(
+        world.pull_request(pull_request)["draft"],
+        serde_json::json!(true),
+        "and it is still a draft"
+    );
+
+    // --- the positive half of every absence above ---
+    //
+    // Nothing after this line may assert what the *run* did: this is a fixture
+    // write, and it moves the world.
+    world.dispatch_the_ready_mutation();
+    assert_eq!(
+        world.graphql_calls(),
+        1,
+        "the arming was live and the counter moves, so `0` above was a count and \
+         not a constant"
+    );
+    assert_eq!(
+        world.pull_request(pull_request)["draft"],
+        serde_json::json!(false),
+        "and this world *can* show a readied pull request, so `draft == true` above \
+         was an observation about a mutation that did not happen rather than about a \
+         fixture that could not express one"
+    );
+}
+
+/// **An attempt that changed nothing publishes nothing, asks nothing, and reports a
+/// correctable failure saying so.**
+///
+/// # Why the check passes and git still sees nothing
+///
+/// A redirected attempt is branched at the **published head**, not at the fixture's
+/// `HEAD` — see [`a_redirect_produces_a_different_change_and_asks_again_about_it`]
+/// for why it has to be — and that commit already carries [`REPAIRED_FIXTURE`],
+/// which holds the `len - 1` the check greps for. So a second attempt that writes
+/// nothing leaves a tree the check is happy with and a changed-file set that is
+/// empty, which is the one pair `NothingProposed` exists for. The model still claims
+/// it finished; the refusal comes from git.
+///
+/// # The three things it must not do, and why each is a real alternative
+///
+/// **Not push an empty commit**: the head must not move, read out of the bare
+/// repository. That is the tempting implementation — the branch effect would
+/// succeed, the pull request would still be there, and the run would look like it
+/// worked.
+///
+/// **Not ask a second question**: a question about no change asks a person to
+/// approve nothing. And it would be worse than useless, because the new question
+/// would carry the *same* head as the old one, so it would name the same request
+/// identity — one question, asked twice, with nothing distinguishing the two.
+///
+/// **Not report success**: exit 11 and not 0. `NothingProposed` is `Correctable`
+/// rather than `Permanent` because a later attempt over the same fixture may well
+/// produce something.
+///
+/// # The exit code is the weakest assertion here and it is not left alone
+///
+/// Eleven is shared with every other correctable failure, so a redirect that died
+/// in its workspace exits 11 too. Four model calls is what says the redirected
+/// attempt really ran: two for the first attempt, one for the interpretation, one
+/// for an attempt that called no tool. Three would be a walk that stopped at the
+/// interpretation, and the script holds exactly four.
+#[test]
+fn a_redirect_whose_attempt_changes_nothing_asks_nothing_and_says_why() {
+    let world = World::with_model_script(a_redirect_whose_attempt_changes_nothing(
+        INSTEAD,
+        REDIRECTION,
+    ));
+    let suspended = suspend(&world);
+    let published = world.remote_head(&suspended.branch);
+
+    world.accept_the_ready_mutation();
+    world.post_comment(AUTHORIZED, REDIRECTION);
+
+    let run = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        run.code,
+        Some(11),
+        "an attempt that changed nothing is a correctable failure, not a success and \
+         not a suspension: stdout={} stderr={}",
+        run.stdout,
+        run.stderr
+    );
+    assert_eq!(
+        world.model_calls(),
+        4,
+        "the redirected attempt ran and wrote nothing — a walk that stopped at the \
+         interpretation spends 3 and reaches exit 11 by another road"
+    );
+    assert!(
+        run.stderr.contains("changed no file") || run.stdout.contains("changed no file"),
+        "and it says which failure this was, rather than leaving an operator to look \
+         at a check that is working: stdout={} stderr={}",
+        run.stdout,
+        run.stderr
+    );
+
+    // Nothing was published: the head is the commit the first attempt made.
+    assert_eq!(
+        world.remote_head(&suspended.branch),
+        published,
+        "no empty commit was pushed, so the head is where the first attempt left it"
+    );
+    assert_eq!(
+        world
+            .pushed_file(&suspended.branch, "src/lib.rs")
+            .as_deref(),
+        Some(REPAIRED_FIXTURE),
+        "and the published tree is still the first attempt's"
+    );
+
+    // Nothing was asked. **Counted off the request log rather than off the
+    // conversation**, because that is the number a run which asked twice would move:
+    // the listing merges what landed, and the second question would carry the same
+    // head as the first and so the same marker.
+    assert_eq!(
+        world.posted_comment_bodies().len(),
+        1,
+        "one question was ever posted, and it is the first run's: {:?}",
+        world.posted_comment_bodies()
+    );
+    // The denominator for the line above: the one body really is the question, so
+    // this is a count of questions and not a count of something else that happens to
+    // be one.
+    assert!(
+        parse_marker(&world.posted_comment_bodies()[0]).is_ok(),
+        "the one posted comment carries a request marker: {:?}",
+        world.posted_comment_bodies()
+    );
+    assert_eq!(
+        world.request_comments().len(),
+        1,
+        "and the conversation shows one question, not two naming one request: {:?}",
+        world.request_comments()
+    );
+
+    // And nothing was decided, against a world armed to accept the transition.
+    assert_eq!(world.graphql_calls(), 0);
+    assert_eq!(
+        world.pull_request(suspended.pull_request)["draft"],
+        serde_json::json!(true)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What an old approval cannot buy
+// ---------------------------------------------------------------------------
+
+/// **The same approval, by the same person, in the same words: refused below the
+/// question and acted on above it.**
+///
+/// # This is the mechanism, isolated
+///
+/// A reply carries no marker and names no effect, so nothing about an approval says
+/// which change it was for and no identity comparison can refuse one for naming the
+/// wrong thing. What makes an old approval unspendable is **ordering**:
+/// `validate::select_candidates` walks the conversation comparing ids against the
+/// request comment's, and a comment below it "predates the question and is not
+/// recorded as an exclusion — it is not a reply that was declined, it is a
+/// conversation that was already going on".
+///
+/// So this scenario changes **one thing and nothing else**: where the approval sits
+/// relative to the question. Same constant, same author, same body, same world, the
+/// same armed transition and the same model script. An identity mechanism would
+/// refuse both or neither, because the two comments are the same bytes.
+///
+/// # The three signatures of ordering, as against being refused
+///
+/// - **The model is never called.** Interpretation is step 7 and a candidate is
+///   chosen at step 4, so a comment that is not a candidate is never read as a
+///   decision. `model_calls` stays at the first attempt's two.
+/// - **The declined list does not name it.** Every comment the walk read and did not
+///   count is published with its own reason — a stranger's, a bot's, an app's,
+///   fiddle's own question. A comment below the request comment appears in none of
+///   them, because it was not declined. **The list naming the question and not the
+///   approval is the discriminating observation**, and the question's entry is its
+///   denominator: the rendering is working, and the approval is still absent from it.
+/// - **The transition is unspent**, against a world armed to accept it — and then
+///   spent, by the identical words posted one position later.
+///
+/// # Why this and not the redirect scenario the criterion describes
+///
+/// The motivating case is an approval of change one stranded below the question a
+/// redirect asks about change two, and **this fixture cannot express it.** Measured:
+/// the first question is 9000, a reply 9001, a second reply 9002, and the second
+/// question is **9001 again** — `gh_stub`'s posted comments are numbered positionally
+/// within a path while `World::post_comment` numbers from the highest id the
+/// conversation shows, and neither knows about the other. The world that leaves has
+/// two comments sharing an id, `comment_by_id` reports a duplicate rather than
+/// choosing, and no third process can walk it. See
+/// [`an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent`],
+/// which asserts what that world does support and pins the collision.
+#[test]
+fn an_approval_below_the_question_is_no_candidate_and_the_same_words_above_it_are() {
+    let world = World::with_model_script(a_suspension_and_its_approval(APPROVAL));
+
+    // Written before anything ran, so it is below whatever question follows. A
+    // person who approved the previous change, or said "go ahead" before being
+    // asked: either way the words are an approval and the position is the point.
+    let below = world.post_comment(AUTHORIZED, APPROVAL);
+
+    let suspended = suspend(&world);
+    let question = world.the_only_request_comment().id;
+    assert!(
+        below < question,
+        "the fixture must really have put the approval below the question, or this \
+         scenario is about nothing: approval {below}, question {question}"
+    );
+    world.accept_the_ready_mutation();
+
+    // --- the walk that finds no reply ---
+    let waiting = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        waiting.code,
+        Some(10),
+        "the question stands: stdout={} stderr={}",
+        waiting.stdout,
+        waiting.stderr
+    );
+    assert_eq!(
+        world.model_calls(),
+        2,
+        "still just the first attempt's two turns: nothing was a candidate, so step \
+         7 never read anything as a decision"
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        0,
+        "and the armed transition was not dispatched"
+    );
+    assert_eq!(
+        world.pull_request(suspended.pull_request)["draft"],
+        serde_json::json!(true)
+    );
+
+    // **The declined list, and what it does not say.** The question is in it, which
+    // is the denominator — the rendering ran and reached the bundle. The approval is
+    // not, because a comment below the request comment was never declined.
+    let bytes = world.all_published_bytes();
+    let declined_question = format!(
+        "comment {question} by {FIDDLE_BOT} (the request comment is not a reply to \
+         itself)"
+    );
+    assert!(
+        bytes.contains(&declined_question),
+        "the record must carry {declined_question:?}, or nothing below examined \
+         anything: {} bytes",
+        bytes.len()
+    );
+    assert!(
+        !bytes.contains(&format!("comment {below} by")),
+        "comment {below} must appear in no declined entry: it was not read and \
+         refused, it was never a reply to this question at all"
+    );
+    assert!(
+        bytes.contains("nobody who may decide has answered it yet"),
+        "and that is what a reader is told: {}",
+        &bytes[..bytes.len().min(4000)]
+    );
+
+    // --- the same words, one position later ---
+    let above = world.post_comment(AUTHORIZED, APPROVAL);
+    assert!(
+        above > question,
+        "and the second copy must really be above it: {above} against {question}"
+    );
+
+    let acted = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        acted.code,
+        Some(0),
+        "the same bytes, by the same author, now decide: stdout={} stderr={}",
+        acted.stdout,
+        acted.stderr
+    );
+    assert_eq!(
+        world.model_calls(),
+        3,
+        "and *this* time a reply was read as a decision, which is the third turn"
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        1,
+        "the transition the earlier copy did not buy"
+    );
+    assert_eq!(
+        world.pull_request(suspended.pull_request)["draft"],
+        serde_json::json!(false),
+        "and the forge says so"
+    );
+    // Still one question. The approval was spent on the question that was standing,
+    // not on a second one asked in the meantime.
+    assert_eq!(
+        world.comments_naming(&suspended.binding.request).len(),
+        1,
+        "{:?}",
+        world.request_comments()
+    );
+}
+
+/// **An approval of the earlier change is read, is eligible, and is superseded by
+/// the later reply — and that is a different mechanism from the ordering one.**
+///
+/// # Two rules can strand an approval and this scenario reaches the first
+///
+/// When somebody approves and then changes their mind, both comments are above the
+/// question, so both are candidates. Step 7 takes the **greatest id**, which is the
+/// redirect, and the approval stays in `considered` — read, eligible, not acted on.
+/// It buys nothing, which is the claim, but it buys nothing *because a later reply
+/// superseded it* and not because it was excluded from the candidate set.
+///
+/// The ordering rule is the other one, and it is what would strand this approval
+/// below the question a redirect asks about the new change. It is proven in
+/// [`an_approval_below_the_question_is_no_candidate_and_the_same_words_above_it_are`],
+/// isolated, because it cannot be reached from here — see the tripwire below.
+///
+/// # What is asserted, and what each observation rules out
+///
+/// The approval is **not in the declined list**, and fiddle's own question is: so
+/// the list is being rendered and the approval is genuinely elsewhere. The evidence
+/// names the redirect's comment as the one acted on, so the walk did not merely fail
+/// to read the approval — it read a different comment and said which. And the
+/// transition is unspent against a world armed to accept it.
+#[test]
+fn an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent() {
+    let world = World::with_model_script(a_suspension_and_its_redirect(INSTEAD, REDIRECTION));
+    let suspended = suspend(&world);
+    let first_question = world.the_only_request_comment().id;
+    world.accept_the_ready_mutation();
+
+    // Approving change one, and then asking for something else. Both above the
+    // question, so both are candidates and the rule under test is which one decides.
+    let approved = world.post_comment(AUTHORIZED, APPROVAL);
+    let asked_in = world.post_comment(AUTHORIZED, REDIRECTION);
+    assert!(
+        approved > first_question && asked_in > approved,
+        "both replies are above the question and the redirect is the later of them: \
+         question {first_question}, approval {approved}, redirect {asked_in}"
+    );
+
+    let redirected = world.fiddle([
+        "run",
+        "--capability",
+        "propose_change",
+        INVOCATION_REF,
+        "--json",
+    ]);
+    assert_eq!(
+        redirected.code,
+        Some(10),
+        "a new question, not an approval acted on: stdout={} stderr={}",
+        redirected.stdout,
+        redirected.stderr
+    );
+    assert_eq!(
+        world.model_calls(),
+        5,
+        "the redirect reached its attempt: a walk that stopped at the interpretation \
+         spends 3"
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        0,
+        "the approval of change one bought nothing, against a world armed to accept \
+         the transition"
+    );
+    assert_eq!(
+        world.pull_request(suspended.pull_request)["draft"],
+        serde_json::json!(true),
+        "so the pull request is still a draft"
+    );
+
+    // **Which comment decided, and which was merely read.** The evidence names the
+    // redirect's comment; the declined list names fiddle's own question and nothing
+    // else. The approval is in neither, which is what "read, eligible, not acted on"
+    // looks like from outside — and the question's entry is the denominator that says
+    // the list was rendered at all.
+    let payload: serde_json::Value = serde_json::from_str(&redirected.stdout)
+        .unwrap_or_else(|error| panic!("stdout is not JSON ({error}): {}", redirected.stdout));
+    let evidence = payload["capability_executions"][0]["evidence"].to_string();
+    assert!(
+        evidence.contains(&format!("redirect:{asked_in}:")),
+        "the redirect was read from comment {asked_in}: {evidence}"
+    );
+    assert!(
+        evidence.contains("1 comment was read and not counted"),
+        "one comment was declined: {evidence}"
+    );
+    assert!(
+        evidence.contains(&format!("comment {first_question} by {FIDDLE_BOT}")),
+        "and it is fiddle's own question: {evidence}"
+    );
+    assert!(
+        !evidence.contains(&format!("comment {approved} by")),
+        "the approval is in no declined entry — it was a candidate, and being \
+         outvoted is not being refused: {evidence}"
+    );
+
+    // --- the tripwire, and what it is holding open ---
+    //
+    // The criterion this scenario belongs to is about the candidate set of the
+    // **new** question: the approval of change one is below it, so it is not a
+    // candidate for change two, and a further process finds no reply and stays
+    // suspended. **That process cannot be driven in this world**, because the
+    // fixture gives the new question an id it has already given the approval.
+    //
+    // `gh_stub`'s `posted_comments` numbers a run's own comments `9000 + i` within a
+    // conversation path and knows nothing of what a test seeded, while
+    // `World::post_comment` numbers from the highest id the conversation shows. So
+    // the question A asked is 9000, the approval 9001, the redirect 9002, and the
+    // question this run just asked is 9001 again. `comment_by_id` reports a
+    // duplicate rather than choosing from it, so step 5's re-read of the request
+    // comment fails, and `gh_stub.rs:1187-1189` is wrong to say the collision needs
+    // "the very defect a continuation exists not to have" — a redirect asking again
+    // after a reply is the ordinary case, and the converged
+    // `a_redirect_produces_a_different_change_and_asks_again_about_it` already
+    // leaves such a world behind.
+    //
+    // Pinned rather than left as a note, so it fails the day the fixture assigns
+    // ids at post time and the property becomes assertable.
+    let questions = world.request_comments();
+    assert_eq!(
+        questions.len(),
+        2,
+        "the redirect asked again: {questions:?}"
+    );
+    assert_eq!(
+        questions[1].id, approved,
+        "TRIPWIRE — this pins a fixture defect, not a property. The new question \
+         ({}) shares an id with the approval below it ({approved}), so no process \
+         can continue from this conversation. When `gh_stub` assigns a posted \
+         comment's id at post time instead of positionally, this assertion fails: \
+         replace it with `questions[1].id > approved`, run a third process, and \
+         assert it finds no reply, publishes nothing, and names no declined entry \
+         for comment {approved} — which is the ordering rule reached through the \
+         scenario the criterion describes rather than through its isolation.",
+        questions[1].id
     );
 }
 

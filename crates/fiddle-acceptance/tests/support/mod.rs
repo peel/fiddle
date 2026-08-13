@@ -1379,6 +1379,38 @@ pub fn a_suspension_and_its_redirect(instruction: &str, evidence: &str) -> Vec<R
     script
 }
 
+/// The script a redirect spends when the attempt it causes **changes nothing**.
+///
+/// **Four replies, and the fourth is the whole scenario.** Two for the first attempt,
+/// one for the interpretation, and then a redirected attempt that calls no tool and
+/// reports completion anyway. One reply rather than two, because a turn that makes no
+/// tool call is the attempt's last: `agent::attempt` prompts once and reads the typed
+/// report off whatever turn stops.
+///
+/// # Why the check passes over the tree this attempt leaves
+///
+/// It has to, or the scenario is about a failed check instead. A redirected attempt is
+/// branched at the **published head** — [`ProposeChange::redirect`] passes `head_sha`
+/// to `produce_from`, not the fixture's `HEAD` — and that commit already carries
+/// [`REPAIRED_FIXTURE`], which contains the `len - 1` the check greps for. So an
+/// attempt that writes nothing leaves a tree the check is happy with and git saw no
+/// change in, which is exactly the pair `CapabilityError::NothingProposed` is for.
+///
+/// `claimed_complete: true` and an empty `changed_files`, deliberately: the model
+/// claims it finished, and the refusal has to come from git rather than from the
+/// model's own account of itself. A script whose report claimed nothing would let the
+/// scenario pass against a build that believed reports.
+pub fn a_redirect_whose_attempt_changes_nothing(instruction: &str, evidence: &str) -> Vec<Reply> {
+    let mut script = a_real_repair();
+    script.push(redirects(instruction, evidence));
+    script.push(accepted(reports(serde_json::json!({
+        "changed_files": [],
+        "summary": "it was already the way you asked for",
+        "claimed_complete": true,
+    }))));
+    script
+}
+
 /// A turn in which the model answers the one interpretation question: is this
 /// reply an approval of this request?
 ///
@@ -2873,6 +2905,47 @@ impl World {
                 "data": { "markPullRequestReadyForReview": { "clientMutationId": null } }
             }),
         );
+    }
+
+    /// Send the one ready mutation **by hand**, addressed at
+    /// [`PULL_REQUEST_NODE_ID`], and hand back what the forge answered.
+    ///
+    /// # This exists to be the positive half of a negative assertion
+    ///
+    /// *"The pull request is still a draft"* has two ways of being true and only one
+    /// of them is a property: the mutation did not happen, or this world could not
+    /// have shown it if it had. A scenario asserting the draft survived a walk it
+    /// expected to mutate nothing needs the second reading closed **in its own
+    /// world** — that the answer scripted at call zero really accepts, and that the
+    /// stub really takes a pull request out of draft when one lands. Both hold here
+    /// or neither does, and the caller reads the draft again afterwards to say so.
+    ///
+    /// It is deliberately not a third process. A process that continued would need
+    /// the conversation to hold the question it was answering, and after a redirect
+    /// has asked again this world's comment ids are not distinct — `gh_stub`'s
+    /// posted comments are numbered positionally within a path and know nothing of
+    /// what a test seeded, so the second question can collide with a reply. That is a
+    /// fixture defect and it is not this accessor's to work around; what a scenario
+    /// needs from here is the narrow claim that the arming was live.
+    ///
+    /// **This is a fixture write and not an observation.** It moves the world, so a
+    /// caller must make every assertion about what the run did *before* calling it —
+    /// including the ones off [`World::requests`], which records this invocation like
+    /// any other. The mutation text is spelled here rather than imported for the
+    /// reason every other constant in this file is: the acceptance package depends on
+    /// neither library. The stub keys on the substring
+    /// `markPullRequestReadyForReview` and on the `id` field, which is the whole of
+    /// what it reads.
+    pub fn dispatch_the_ready_mutation(&self) -> String {
+        self.gh(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation($id: ID!) { markPullRequestReadyForReview(input: \
+             {pullRequestId: $id}) { clientMutationId } }",
+            "-f",
+            &format!("id={PULL_REQUEST_NODE_ID}"),
+        ])
     }
 
     // -- the pull requests ---------------------------------------------------
