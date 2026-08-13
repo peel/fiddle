@@ -198,7 +198,9 @@ would revert **is** caught — by `git diff --quiet` after the restore. A neighb
 your live mutation is caught by **nothing**: after the commit the mutated file *is* `HEAD`, so `cmp` against
 the pin passes and `git diff --quiet` passes. Defending against it means re-reading `git rev-parse HEAD` after
 every restore and comparing it to the sha you pinned at. The lane that found this records the sha per
-inversion and does not compare it — which is how it knew the gap was there.
+inversion and does not compare it — which is how it knew the gap was there. **One lane has since closed it**:
+its `restore.sh` restores from the manifest, verifies with `cmp` **and** `git diff --quiet`, **and re-reads
+`git rev-parse HEAD` to compare against the pinned sha.** That is the form to copy.
 
 **`git commit --only <path>` is necessary and not sufficient.** It prevents *staging* a neighbour's
 mutation, which is why four docs commits landed inside two running inversion exercises in M3 without
@@ -248,6 +250,21 @@ M3 ran 47, 27, 22 and 17 inversions per bean, each as `cargo test --workspace`. 
 milestone.
 
 ## 4. Scope
+
+**A scope claim needs a control that shows the probe could have come out the other way.** A 403 from a
+permission-gated endpoint is not yet a proof: it is consistent with the endpoint being gated for everyone, or
+with the repository being unusual. M3's live lane showed `GET /repos/{r}/collaborators` returning
+`Resource not accessible by personal access token` for two out-of-scope repositories. Its evaluator then ran
+the same endpoint **with a differently-scoped credential** and got **200 on all four**, plus a 403 on an
+unrelated public repository carrying a *different* message. Only then were the two 403s attributable to **the
+token's repository selection** rather than to the endpoint or the repositories. **Run the discriminating
+control, or say the claim rests on one credential.** Note also that a plain `GET /repos/{owner}/{repo}` was 200
+on all four with `private=false` — a successful read proves nothing about scope when the repository is public.
+
+**A heading that claims completeness must deliver it.** M3's live lane wrote "What no run has exercised" and
+named two assertions; at least four more had never been observed failing and went unnamed. The section was
+honest about each thing it listed and wrong about the shape of the list. **Either enumerate, or title it as a
+sample.**
 
 **A bean does not invalidate a converged sibling's property as a side effect.** Held five times in M3 and right
 every time. When a fix genuinely requires it, that is the *purpose* of a separate bean — reword the property
