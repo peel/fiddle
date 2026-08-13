@@ -132,6 +132,12 @@ otherwise I would have reported the receipt claim load-bearing on no evidence."*
 catch to whichever assertion fires first, so a mutation that reaches an assertion only through others proves
 something about the others.
 
+**Reproducing a two-machine failure on one machine takes a fixture that *could* have succeeded.** M3 pinned
+"a redirect cannot reach an object only another machine holds" with two repositories: the fixture is a clone
+taken **before the commit existed**, so it holds the sha and not the object, **while its own remote advertises
+it**. That last clause is the whole assertion — without it, *"nothing fetched"* and *"nothing to fetch"* are
+the same observation, and the test passes on a build that fetches eagerly.
+
 **An accessor asserted only *empty* needs a positive case beside the negative.** Three in M3 were read solely
 by a negative assertion, so a version answering "nothing" unconditionally passed everything.
 
@@ -163,6 +169,13 @@ elsewhere** — but it must say so, rather than documenting a case that cannot o
 **Pin fresh immediately before each mutation and never reuse a pin.** A reused pin silently reverted committed
 work while the `cmp` guard passed, because the guard compares the tree to the pin and says nothing when the pin
 is stale.
+
+**To reach outside your own files for evidence: mutate transiently, declare it, restore it, commit nothing.**
+M3's workspace lane needed a mutation in a file another lane held in order to observe one clause of its own
+criterion. It applied it in its own worktree with the tree clean before, restored from a manifest, verified
+`cmp` + `git diff --quiet` + an unmoved `HEAD`, spent the pin, and **said so in its report** — and the branch
+diff contains that file zero times, which is how the lead checked rather than took it on trust. That is the
+licensed form. **Committing a file you do not own is not, and neither is a mutation you do not mention.**
 
 **Delete a pin after a verified restore, or mark it `SPENT`.** A pin that outlives its run is a loaded gun
 with no safety: M3's shared scratchpad still holds `inv-565u/pin/` and `inv-565u/pristine/` where
@@ -248,6 +261,11 @@ M3 ran 47, 27, 22 and 17 inversions per bean, each as `cargo test --workspace`. 
 `capability/propose.rs` cannot affect the other 40 binaries; `human_direction` takes 35s and
 `propose_capability` 11s against multiple minutes for the workspace. This was the single largest cost in the
 milestone.
+
+**Write the command, not a phrase.** A dispatch saying "the workspace is 200s" was read as `--test workspace`,
+which is **4–7 seconds**; the 200 was `--workspace`, and the lane's 200s figure came from a cold compile
+rather than from the suite. `cargo test -p <crate> --test <binary>` and `cargo test --workspace` differ by two
+orders of magnitude and by one word.
 
 ## 4. Scope
 
