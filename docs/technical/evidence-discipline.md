@@ -81,6 +81,13 @@ over two colliding comment ids, the lead suggested shifting the base constant fr
 is relative arithmetic, so every id shifted together and the collision survived — the lane nearly recorded that
 as a pass. Mutate the relation the claim depends on, not a number the claim is expressed in.
 
+**When an inversion is masked by an earlier assertion, neutralise the mask and declare it.** M3: a lane needed
+to show a receipt-list assertion was load-bearing, but four assertions above it failed first and would have
+taken the credit. It neutralised those four in the mutation script and said so in the script, *"because
+otherwise I would have reported the receipt claim load-bearing on no evidence."* An inversion attributes its
+catch to whichever assertion fires first, so a mutation that reaches an assertion only through others proves
+something about the others.
+
 **An accessor asserted only *empty* needs a positive case beside the negative.** Three in M3 were read solely
 by a negative assertion, so a version answering "nothing" unconditionally passed everything.
 
