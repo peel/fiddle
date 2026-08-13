@@ -82,7 +82,31 @@ pub use crate::github::HumanResponse;
 /// for a conversation fiddle itself opened, and it is a number rather than an
 /// absence so that a repository whose conversation is pathological refuses
 /// visibly instead of spending a run walking it.
-const CONVERSATION_PAGES: u32 = 10;
+///
+/// # One declaration, because two reads of one conversation have to agree
+///
+/// `pub(crate)` so that `capability::propose`'s continuation reads *this*
+/// constant. It held a second `const CONVERSATION_PAGES: u32 = 10` of its own,
+/// declared honestly with the drift risk written down — and still two literals,
+/// guaranteed equal by nothing. That capability asks one conversation two
+/// questions: *is my question already here*, through
+/// [`PublishDecisionRequest::inspect`], and *has anybody answered it*, through the
+/// continuation's `DecisionWalk`. A run whose two reads saw different amounts of
+/// the same conversation could find its question and then miss the reply below it.
+/// Collapsing the declarations is what makes that unreachable; an assertion that
+/// the two matched would only have reported it.
+///
+/// The duplicate was **inert**, which is why this is the copy that survives:
+/// setting it to 1 alone moved nothing anywhere — `propose_capability` 24/24,
+/// `decision_request_effect` 26/26, `human_direction` 29/29 — while this copy
+/// carries an incidental floor from two fixtures' page counts. Equality was
+/// asserted nowhere, so the drift this closes had no test that could have seen it.
+///
+/// Not a deployment key either: a `[github.decision] max_pages` was specified and
+/// then removed, because nobody asked to configure how much of a conversation
+/// fiddle reads, and a document value that could disagree with the operation's own
+/// bound would be worse than a constant that cannot.
+pub(crate) const CONVERSATION_PAGES: u32 = 10;
 
 /// The conversation a question was put on, and where an answer will be found.
 ///
