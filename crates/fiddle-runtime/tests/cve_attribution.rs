@@ -40,22 +40,32 @@
 //! that tree when the probe asks it to. The module proxy those trees resolve
 //! against — the half a `go.mod` cannot hold — is `tests/support/go_proxy.rs`.
 //!
-//! The last section drives the **production** adapter, `cve::go::Go`, against a
-//! scripted toolchain built from that same proxy. That is the only way the
-//! offline gate can exercise the spawn, the three-name environment, the reading
-//! of `go`'s two streams and the `go.mod`/`go.sum` restore — none of which a
-//! stand-in for the adapter would touch. Nothing in either case reaches a real
-//! `go`, a module proxy or a credential.
+//! The last attribution section drives the **production** adapter,
+//! `cve::go::Go`, against a scripted toolchain built from that same proxy. That
+//! is the only way the offline gate can exercise the spawn, the three-name
+//! environment, the reading of `go`'s two streams and the `go.mod`/`go.sum`
+//! restore — none of which a stand-in for the adapter would touch. Nothing in
+//! either case reaches a real `go`, a module proxy or a credential.
+//!
+//! # And what becomes of the targets: grouping
+//!
+//! [`fiddle_runtime::cve::group`] is the other half of this file, and it is here
+//! rather than in a suite of its own because it asks the next question about the
+//! same answer: attribution says *this finding is fixed by editing that*, and
+//! grouping says *so these findings are one edit*. Its lanes need no tree, no
+//! process and no port — grouping is a pure function of findings something else
+//! already placed — which is why they are plain `#[test]` among the async ones.
 
 mod support;
 
 use fiddle_core::PackageType::{Library, Os};
 use fiddle_runtime::cve::attribute::{attribute, AttributionError, ModuleGraph, Rule, Target};
+use fiddle_runtime::cve::group::{group, select_target_version, Group, GroupError};
 use std::path::Path;
 use support::cve::{
-    absent_go, direct, finding, go, indirect_via, indirect_via_parent_without_the_fix,
-    indirect_without_a_direct_parent, module_not_needed, spawned_go, stdlib,
-    CARRIED_BY_THE_VIABLE_LINE, REACHED_WITHOUT_THE_FIX,
+    absent_go, attributed, attributed_fixed_at, attributed_os, available, direct, finding, go,
+    indirect_via, indirect_via_parent_without_the_fix, indirect_without_a_direct_parent,
+    module_not_needed, spawned_go, stdlib, CARRIED_BY_THE_VIABLE_LINE, REACHED_WITHOUT_THE_FIX,
 };
 
 /// The module every fixture tree requires directly.
@@ -64,6 +74,9 @@ const DIRECT: &str = "golang.org/x/crypto";
 const INDIRECT: &str = "golang.org/x/net";
 /// The parent that carries it, where a tree has one.
 const PARENT: &str = "gh.com/parent";
+/// A second scanner package, for the grouping lanes: *two packages, one parent*
+/// is not a claim any single package name can carry.
+const SECOND: &str = "golang.org/x/text";
 
 // ---------------------------------------------------------------------------
 // Rule 1
@@ -445,4 +458,367 @@ async fn a_toolchain_that_is_not_installed_is_a_resolver_failure() {
         other => panic!("a toolchain that cannot be run is not an answer: {other:?}"),
     }
     assert!(workspace.is_clean(), "and nothing was written on the way");
+}
+
+// ---------------------------------------------------------------------------
+// Grouping: one bump per target
+// ---------------------------------------------------------------------------
+
+/// The group in `groups` whose target is `target`, or a failure naming what was
+/// there instead.
+///
+/// Looked up rather than indexed, so a lane asserting *what the Dockerfile group
+/// holds* says that, and does not quietly also assert which position grouping
+/// happened to put it in. The one lane that is about position asserts it
+/// directly, below.
+fn group_for<'a>(groups: &'a [Group], target: &Target) -> &'a Group {
+    let targets = groups.iter().map(Group::target).collect::<Vec<_>>();
+    groups
+        .iter()
+        .find(|group| group.target() == target)
+        .unwrap_or_else(|| panic!("no group for {target:?}; there are groups for {targets:?}"))
+}
+
+/// The advisory ids a group names, in the order it names them.
+fn ids(group: &Group) -> Vec<&str> {
+    group.cves().iter().map(|cve| cve.as_str()).collect()
+}
+
+#[test]
+fn two_scanner_packages_resolving_to_one_parent_are_one_group() {
+    // Two *different* packages, which is the world rule 2 produces all over the
+    // repository this milestone replaces: a handful of vulnerable modules that
+    // all arrive through one direct requirement. Bumping that requirement is one
+    // edit, one branch and one pull request, and a grouping that keyed on the
+    // package the scanner named would open as many as there are findings.
+    let groups = group(&[
+        attributed("CVE-2026-1", INDIRECT, PARENT),
+        attributed("CVE-2026-2", SECOND, PARENT),
+    ]);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].target(), &Target::Module(PARENT.to_string()));
+    assert_eq!(groups[0].cves().len(), 2, "one bump, not two");
+    // The ids themselves, because a commit body lists them and `len() == 2` is
+    // satisfied by a group that collected two of anything.
+    assert_eq!(ids(&groups[0]), ["CVE-2026-1", "CVE-2026-2"]);
+}
+
+#[test]
+fn one_package_resolving_to_two_targets_is_two_groups() {
+    // The counterweight to the lane above, and it is what makes that one an
+    // assertion at all: a grouping that returned a single group for everything
+    // passes `len() == 1` there and fails here. One package, because the tree
+    // decides the target and not the scanner — the same module reached through
+    // two different direct requirements is two edits.
+    let groups = group(&[
+        attributed("CVE-2026-1", INDIRECT, "gh.com/a"),
+        attributed("CVE-2026-1b", INDIRECT, "gh.com/b"),
+    ]);
+    assert_eq!(groups.len(), 2);
+    // `CVE-2026-1B` upper-case, because `AdvisoryId` canonicalizes at its parse
+    // boundary and the fixture spelled it `…1b`. Asserted in the canonical
+    // spelling rather than routed around, since that is the spelling a commit
+    // body will carry and the next run's log scan will look for.
+    for (target, cve) in [("gh.com/a", "CVE-2026-1"), ("gh.com/b", "CVE-2026-1B")] {
+        let group = group_for(&groups, &Target::Module(target.to_string()));
+        assert_eq!(
+            ids(group),
+            [cve],
+            "{target} carries the other target's finding"
+        );
+    }
+}
+
+#[test]
+fn every_os_finding_lands_in_one_group_without_a_special_case() {
+    // Three distribution packages, fixed by moving one base image tag. They
+    // arrive from the scanner as three unrelated findings and there is no rule
+    // anywhere that says "collect the OS ones" — attribution gave all three the
+    // same target, and a map keyed on the target collects them because they are
+    // equal, not because anything looked at what they are.
+    let groups = group(&[
+        attributed_os("CVE-2026-1", "libssl3"),
+        attributed_os("CVE-2026-2", "zlib1g"),
+        attributed_os("CVE-2026-3", "libxml2"),
+    ]);
+    assert_eq!(
+        groups.len(),
+        1,
+        "keyed by target, so the Dockerfile collects them by construction"
+    );
+    assert_eq!(groups[0].target(), &Target::DockerfileBaseImage);
+    assert_eq!(ids(&groups[0]), ["CVE-2026-1", "CVE-2026-2", "CVE-2026-3"]);
+}
+
+#[test]
+fn the_dockerfile_group_collects_the_os_findings_and_only_those() {
+    // The lane above cannot tell "keyed by target" from "one group for
+    // everything", so the same three OS findings arrive here beside a module
+    // one. The Dockerfile group has to hold exactly the three, and the module
+    // bump has to survive as its own edit — an OS special case that swept
+    // findings into the Dockerfile would take this one with it.
+    let groups = group(&[
+        attributed_os("CVE-2026-1", "libssl3"),
+        attributed("CVE-2026-4", INDIRECT, PARENT),
+        attributed_os("CVE-2026-2", "zlib1g"),
+        attributed_os("CVE-2026-3", "libxml2"),
+    ]);
+    assert_eq!(groups.len(), 2);
+    assert_eq!(
+        ids(group_for(&groups, &Target::DockerfileBaseImage)),
+        ["CVE-2026-1", "CVE-2026-2", "CVE-2026-3"]
+    );
+    assert_eq!(
+        ids(group_for(&groups, &Target::Module(PARENT.to_string()))),
+        ["CVE-2026-4"]
+    );
+}
+
+#[test]
+fn one_advisory_reaching_a_target_twice_is_named_once() {
+    // One advisory against two packages that resolve to one parent — a single
+    // upstream flaw vendored twice, which is ordinary. The group is still one
+    // bump fixing one advisory, and the id belongs in the commit body once:
+    // Task 13's fold asks whether every id in a group is absent from a rescan,
+    // and an id listed twice is one that question has to answer twice.
+    let groups = group(&[
+        attributed("CVE-2026-1", INDIRECT, PARENT),
+        attributed("CVE-2026-1", SECOND, PARENT),
+    ]);
+    assert_eq!(ids(&groups[0]), ["CVE-2026-1"]);
+    assert_eq!(
+        groups[0].findings().len(),
+        2,
+        "both findings are still in the group; it is the id list that dedupes"
+    );
+}
+
+#[test]
+fn the_order_groups_come_back_in_does_not_depend_on_the_order_they_arrived() {
+    // A run walks the groups: one attempt, one commit and one branch each, in
+    // the order they come back. A grouping over a hash map would shuffle that
+    // between runs on one unchanged report, and the first thing anybody would
+    // notice is two runs whose evidence cannot be compared.
+    let one = group(&[
+        attributed("CVE-2026-1", INDIRECT, "gh.com/b"),
+        attributed("CVE-2026-2", SECOND, "gh.com/a"),
+        attributed_os("CVE-2026-3", "libssl3"),
+    ]);
+    let other = group(&[
+        attributed_os("CVE-2026-3", "libssl3"),
+        attributed("CVE-2026-2", SECOND, "gh.com/a"),
+        attributed("CVE-2026-1", INDIRECT, "gh.com/b"),
+    ]);
+    let targets = |groups: &[Group]| {
+        groups
+            .iter()
+            .map(|g| g.target().clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(targets(&one), targets(&other));
+    assert_eq!(
+        targets(&one),
+        [
+            Target::Module("gh.com/a".to_string()),
+            Target::Module("gh.com/b".to_string()),
+            Target::DockerfileBaseImage,
+        ],
+        "ordered by the key, so the order is a property of the report and not of \
+         the order attribution happened to finish in"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The version a group moves to
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_group_takes_the_latest_patch_inside_the_highest_fixed_minor() {
+    let version = select_target_version(
+        &["0.54.0", "0.54.3"],
+        &available(&["0.54.0", "0.54.3", "0.55.1"]),
+        "0.54.0",
+    );
+    assert_eq!(
+        version.expect("a release inside the fixed minor carries the fix"),
+        "0.54.3",
+        "latest patch in that minor, never crossing it"
+    );
+}
+
+#[test]
+fn the_latest_patch_inside_the_minor_is_numeric_and_not_lexical() {
+    // The pair `cve::version` was written for, one component along: `0.54.10`
+    // sorts *below* `0.54.3` as text and above it as a version. A selection that
+    // sorted its candidates as strings would pick `0.54.3` here and report a
+    // finding fixed by a release that does not contain the later patches.
+    let version = select_target_version(
+        &["0.54.3"],
+        &available(&["0.54.3", "0.54.10", "0.54.9"]),
+        "0.54.0",
+    );
+    assert_eq!(version.expect("a release carries the fix"), "0.54.10");
+}
+
+#[test]
+fn a_release_in_a_higher_minor_is_not_taken_even_though_it_carries_the_fix() {
+    // Nothing inside `0.54` reaches the fix and `0.55.1` is above it, so a
+    // selection that merely took the highest release carrying the fix would
+    // answer `0.55.1` — a minor crossed on this build's initiative, in a change
+    // whose whole claim is that it is the smallest one that fixes the finding.
+    // Refused instead, and the bound is named.
+    let version = select_target_version(&["0.54.3"], &available(&["0.54.0", "0.55.1"]), "0.54.0");
+    match version {
+        Err(GroupError::NoRelease { minor, .. }) => assert_eq!(minor, "0.54"),
+        other => panic!("the minor is a ceiling, not a preference: {other:?}"),
+    }
+}
+
+#[test]
+fn crossing_a_major_is_needs_work_with_the_span_named() {
+    match select_target_version(&["2.0.0"], &available(&["1.9.9"]), "1.9.9") {
+        Err(GroupError::MajorBump { from, to }) => {
+            assert_eq!((from.as_str(), to.as_str()), ("1", "2"));
+        }
+        other => panic!("must not attempt it: {other:?}"),
+    }
+
+    // And refused *because it crosses a major*, not because there was nothing to
+    // move to: here the release exists and is the one that carries the fix. A
+    // selection that reached the refusal by finding its candidate list empty
+    // would answer `Ok("2.0.0")` for this one and leave a bump nobody reviewed
+    // across an API break.
+    let reachable = select_target_version(&["2.0.0"], &available(&["1.9.9", "2.0.0"]), "1.9.9");
+    match reachable {
+        Err(error @ GroupError::MajorBump { .. }) => assert_eq!(
+            error.to_string(),
+            "requires a major version bump from 1 to 2",
+            "the span reaches the person reading the verdict, not only the type"
+        ),
+        other => panic!("an available crossing is still a crossing: {other:?}"),
+    }
+}
+
+#[test]
+fn a_groups_move_is_bounded_by_the_highest_fix_among_its_findings() {
+    // Two advisories against one module, fixed in two different minors. The
+    // group is one bump and it has to clear both, so it is the *higher* fix that
+    // says which minor bounds the move — and the two fixes are a minor apart on
+    // purpose, because inside one minor the latest patch clears both fixes
+    // whichever of them was consulted, and the lane would say nothing.
+    let groups = group(&[
+        attributed_fixed_at("CVE-2026-1", INDIRECT, INDIRECT, "0.54.0"),
+        attributed_fixed_at("CVE-2026-2", INDIRECT, INDIRECT, "0.55.2"),
+    ]);
+    let fixed = groups[0].fixed_versions();
+    assert_eq!(
+        select_target_version(
+            &fixed,
+            &available(&["0.54.0", "0.54.9", "0.55.2"]),
+            "0.24.0"
+        )
+        .expect("a release carries both fixes"),
+        "0.55.2",
+        "the lower fix in the group does not bound the move"
+    );
+
+    // And where the lower fix's minor is all that is published, the group has
+    // nothing it may move to. A selection bounded by the lower fix would answer
+    // `0.54.9` here and report both advisories fixed by a release that fixes one
+    // of them.
+    let short = select_target_version(&fixed, &available(&["0.54.0", "0.54.9"]), "0.24.0");
+    match short {
+        Err(GroupError::NoRelease { minor, fixed }) => {
+            assert_eq!((minor.as_str(), fixed.as_str()), ("0.55", "0.55.2"))
+        }
+        other => panic!("the higher fix is the bound, so nothing carries it: {other:?}"),
+    }
+}
+
+#[test]
+fn a_floating_tag_moves_to_the_pinned_tag_that_carries_the_fix() {
+    // The `Dockerfile` case, and the same function: a base image on a floating
+    // tag names no version to compare, so there is no major to cross and the
+    // bound that still applies is the minor the fix lands in. Nothing here
+    // branches on the target — this is `select_target_version` with a tag list
+    // where a module has a release list.
+    let version = select_target_version(
+        &["3.19.1"],
+        &available(&["3.19.0", "3.19.2", "latest"]),
+        "latest",
+    );
+    assert_eq!(version.expect("a pinned tag carries the fix"), "3.19.2");
+}
+
+#[test]
+fn a_floating_tag_with_no_newer_pinned_tag_is_needs_work() {
+    // The same world with the fixed tag not published, which is the one the
+    // design calls needs-work. It is the counterweight to the lane above: a
+    // selection that refused every floating tag would pass this one and fail
+    // that one, and a selection that answered `latest` — a tag whose contents
+    // nobody can pin — would pass neither.
+    let version = select_target_version(&["3.19.1"], &available(&["3.19.0", "latest"]), "latest");
+    assert!(
+        matches!(version, Err(GroupError::NoRelease { .. })),
+        "a tag that floats is not a tag that carries the fix: {version:?}"
+    );
+}
+
+#[test]
+fn a_fix_this_cannot_read_is_refused_rather_than_rounded_down() {
+    // A release candidate among the fixes. Taking the highest of the versions it
+    // *can* read would move the group to `0.54.0` and report the advisory fixed
+    // in `0.54.3-rc1` as fixed by it — the silent wrong answer `cve::version`
+    // exists to keep out, arriving here instead through a maximum taken over a
+    // set with an incomparable member.
+    let version = select_target_version(
+        &["0.54.0", "0.54.3-rc1"],
+        &available(&["0.54.0", "0.54.3"]),
+        "0.53.0",
+    );
+    match version {
+        Err(GroupError::Unreadable { version }) => assert_eq!(version, "0.54.3-rc1"),
+        other => panic!("an unreadable fix is not a fix this can bound: {other:?}"),
+    }
+}
+
+#[test]
+fn a_finding_with_no_published_fix_names_no_version_to_move_to() {
+    // Ordinary, and distinct from every other refusal here: the scanner named no
+    // fix at all, so there is nothing to select from and nothing about the
+    // available releases could change that.
+    let none: &[&str] = &[];
+    let version = select_target_version(none, &available(&["0.54.3"]), "0.54.0");
+    assert!(
+        matches!(version, Err(GroupError::NoFixedVersion)),
+        "{version:?}"
+    );
+}
+
+#[test]
+fn a_tree_already_at_the_fix_is_not_moved_backwards() {
+    // The fix is behind the tree, which happens when one group's findings were
+    // cleared by another group's bump. Selecting the latest patch inside the
+    // fixed minor would answer `0.54.3` and write a *downgrade* — a change that
+    // reintroduces whatever `0.55` fixed, presented as a security fix.
+    let version = select_target_version(&["0.54.3"], &available(&["0.54.3", "0.55.1"]), "0.55.1");
+    assert!(
+        matches!(version, Err(GroupError::AlreadyAtTheFix { .. })),
+        "the fix is below the tree, so there is no move to make: {version:?}"
+    );
+}
+
+#[test]
+fn the_proxys_v_prefix_and_the_scanners_bare_version_are_one_line() {
+    // The mixed-prefix pair, in this file's own terms: the scanner names the fix
+    // as `0.54.3` and a module proxy lists releases as `v0.54.10`. They are one
+    // line of one module, and the selection compares them as such.
+    let version =
+        select_target_version(&["0.54.3"], &available(&["v0.54.3", "v0.54.10"]), "v0.54.0");
+    assert_eq!(
+        version.expect("the proxy's releases carry the scanner's fix"),
+        "v0.54.10",
+        "handed back in the spelling the proxy printed, because that is what a \
+         `go get` has to be written with"
+    );
 }

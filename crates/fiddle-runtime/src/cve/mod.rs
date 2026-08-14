@@ -8,9 +8,13 @@
 //! the one edit that could fix it. [`go`] is the one construction of a running
 //! Go toolchain behind that: attribution's rule 2 cannot decide whether a parent
 //! carries a fix without changing a tree and asking a module proxy again, and
-//! that is where the child which does it is spawned.
+//! that is where the child which does it is spawned. [`group`] is what follows
+//! from attribution's answers: findings share targets, so the unit of work is
+//! the edit rather than the advisory, and a target on its own does not say how
+//! far it may be moved.
 
 pub mod attribute;
 pub mod go;
+pub mod group;
 pub mod project;
 pub mod version;

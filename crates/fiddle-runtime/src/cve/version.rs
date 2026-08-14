@@ -84,7 +84,18 @@ pub fn at_least(shipped: &str, fixed: &str) -> bool {
 /// fix. `collect` into an `Option` short-circuits on the first unreadable
 /// component, so that is what the missing arm means: not "no components", but
 /// "a component nobody here can compare".
-fn components(version: &str) -> Option<Vec<u64>> {
+///
+/// # Why the crate can see it
+///
+/// [`crate::cve::group`] bounds a bump to the major and minor a fix lands in,
+/// which means reading two components of a version — the same reading, over the
+/// same two producers' spellings. It calls this rather than splitting on `.`
+/// again, so there is one answer to *what does this version string mean* and one
+/// place where the leading `v` comes off. A second reader beside it would be a
+/// second place for the mixed-prefix pair in this module's header to be got
+/// wrong, and this time in a comparison of majors, where getting it wrong reads
+/// as a spurious refusal or a crossed API break.
+pub(crate) fn components(version: &str) -> Option<Vec<u64>> {
     version
         .strip_prefix('v')
         .unwrap_or(version)

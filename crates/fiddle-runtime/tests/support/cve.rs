@@ -60,8 +60,9 @@
 //! appear only where their value cannot matter.
 
 use fiddle_core::{AdvisoryId, PackageType, ProjectedFinding, Severity};
-use fiddle_runtime::cve::attribute::{Manifest, ModuleGraph, ResolverError};
+use fiddle_runtime::cve::attribute::{Manifest, ModuleGraph, ResolverError, Target};
 use fiddle_runtime::cve::go::Go;
+use fiddle_runtime::cve::group::Attributed;
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -628,12 +629,15 @@ fn run_git(dir: &Path, args: &[&str]) -> String {
 // Findings, and the module graph a tree answers about itself
 // ---------------------------------------------------------------------------
 
-/// The advisory every fixture finding is filed under.
+/// The advisory every fixture finding is filed under, where a lane does not care
+/// which advisory it is.
 ///
 /// One value, because no lane below Task 9 groups or deduplicates: a finding's
 /// identity there is the package it names, and two spellings of "some advisory"
-/// would be two things to keep in step for no assertion's benefit. The task that
-/// groups by advisory adds a builder that varies it.
+/// would be two things to keep in step for no assertion's benefit. Task 9's
+/// grouping lanes are the ones that do care — *these two findings are one bump*
+/// is a claim about two distinct advisories — so they name their own through
+/// [`attributed`], and this constant stays what the rest of the family uses.
 const FIXTURE_ADVISORY: &str = "CVE-2026-0008";
 
 /// What a fixture finding says the artefact ships, and where the fix lands.
@@ -657,14 +661,90 @@ const FINDING_FIXED: &str = "0.33.0";
 /// finding this build would have filtered out before attribution ever saw it
 /// would be a world no lane is really in.
 pub fn finding(package: &str, package_type: PackageType) -> ProjectedFinding {
+    finding_under(FIXTURE_ADVISORY, package, package_type, FINDING_FIXED)
+}
+
+/// The same finding with its advisory and its fix named.
+///
+/// Private, and [`finding`] delegates to it rather than holding a second literal:
+/// two fixture findings built field by field in one file are two things to keep
+/// in step, and the field that would drift is the one no grouping lane looks at
+/// and every attribution lane depends on.
+fn finding_under(
+    cve: &str,
+    package: &str,
+    package_type: PackageType,
+    fixed: &str,
+) -> ProjectedFinding {
     ProjectedFinding {
-        cve: AdvisoryId::parse(FIXTURE_ADVISORY).expect("a fixture advisory id parses"),
+        cve: AdvisoryId::parse(cve).expect("a fixture advisory id parses"),
         package: package.to_string(),
         current: FINDING_CURRENT.to_string(),
-        fixed_version: Some(FINDING_FIXED.to_string()),
+        fixed_version: Some(fixed.to_string()),
         severity: Severity::Critical,
         package_type,
     }
+}
+
+/// A `Library` finding under `cve`, against `package`, already attributed to the
+/// module `target`.
+///
+/// **Three arguments and not two.** Task 9's two grouping lanes are *two
+/// packages resolving to one parent* and *one package resolving to two targets*,
+/// and neither story can be told by a builder that derives the package from the
+/// advisory: the first needs two packages under one target and the second needs
+/// one package under two. A fixture that could not vary the package would leave
+/// both lanes passing against a grouping keyed on the package instead of on the
+/// target, which is the very thing they exist to distinguish.
+///
+/// Attributed, and not attributed *here*: the target is handed in because
+/// grouping is a pure operation over findings some earlier stage placed. Nothing
+/// in this helper runs a rule — see [`fiddle_runtime::cve::attribute`] for the
+/// code that does, and the lanes above for the trees it is measured against.
+pub fn attributed(cve: &str, package: &str, target: &str) -> Attributed {
+    attributed_fixed_at(cve, package, target, FINDING_FIXED)
+}
+
+/// The same, where the version the advisory is fixed in matters to the lane.
+///
+/// Separate from [`attributed`] rather than a fourth argument on it, because the
+/// grouping lanes and the version lane want opposite things: the first want the
+/// fix to be noise, and the one that asks what version a group moves to wants it
+/// to be the only thing that varies.
+pub fn attributed_fixed_at(cve: &str, package: &str, target: &str, fixed: &str) -> Attributed {
+    Attributed::new(
+        finding_under(cve, package, PackageType::Library, fixed),
+        Target::Module(target.to_string()),
+    )
+}
+
+/// An `Os` finding under `cve`, against the distribution package `package`.
+///
+/// The target is [`Target::DockerfileBaseImage`] and there is no argument for it,
+/// because there is nothing to choose: every OS finding in this build is fixed by
+/// moving one base image tag. That is the whole of why the OS lane needs no
+/// special case in the grouping — the key is already the same value for all of
+/// them — and a builder that let a lane pass a target would be inventing a
+/// distinction the domain does not have.
+pub fn attributed_os(cve: &str, package: &str) -> Attributed {
+    Attributed::new(
+        finding_under(cve, package, PackageType::Os, FINDING_FIXED),
+        Target::DockerfileBaseImage,
+    )
+}
+
+/// The releases a module proxy — or an image registry — says exist.
+///
+/// Owned strings, because that is what an adapter reading `go list -m -versions`
+/// or a tag list would hand over, and a lane that passed borrowed literals would
+/// be testing the selection against a shape no caller has.
+///
+/// Deliberately **not** sorted here. Which of these is the latest patch inside a
+/// minor is the question the subject answers, and a fixture that handed it an
+/// ordered list would answer half of it on the subject's behalf — a selection
+/// that simply took the last entry would pass every lane.
+pub fn available(versions: &[&str]) -> Vec<String> {
+    versions.iter().map(|version| version.to_string()).collect()
 }
 
 /// A fixture tree answering the questions attribution asks of `go`, in `go`'s
