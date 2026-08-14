@@ -52,6 +52,36 @@ fn every_world_is_real_files_on_disk() {
     let w = go(direct());
     assert!(w.path().join("go.mod").is_file());
     assert!(w.path().is_absolute());
+    // Task 15 asserts a commit stages `go.mod` and `go.sum` and no third path,
+    // which needs the second file to be there — and needs it absent where the
+    // shape requires nothing, or the two go.sums would be one fixture's habit
+    // rather than the tree's contents.
+    assert!(
+        w.path().join("go.sum").is_file(),
+        "a tree with requirements"
+    );
+    assert!(
+        !go(stdlib()).path().join("go.sum").exists(),
+        "a tree with no requirements has nothing to sum"
+    );
+    // Canonical, not merely absolute. This discriminates on macOS, where
+    // temporary directories live under `/var` — a symlink to `/private/var` — so
+    // a child resolving its own working directory reports a different string
+    // than the one the directory was created with. On Linux the two spellings
+    // already agree and the assertion is a no-op.
+    assert_eq!(w.path(), w.path().canonicalize().unwrap());
+}
+
+#[test]
+fn a_workspace_reads_its_go_mod_out_of_the_tree() {
+    // Not remembered from construction: a lane whose subject is a probing edit
+    // that was reverted is asking about the file, and a handle answering from
+    // memory would give the same answer before and after a revert that never
+    // happened.
+    let w = go(direct());
+    let edited = "module example.com/probed\n";
+    std::fs::write(w.path().join("go.mod"), edited).unwrap();
+    assert_eq!(w.go_mod(), edited);
 }
 
 #[test]
@@ -149,6 +179,12 @@ fn a_workspace_is_a_committed_repository_whose_record_excludes_its_own_arrangeme
         ["rev-parse --verify HEAD"],
         "the record holds what went through the handle and nothing from before it"
     );
+    // And nothing the test itself asked. `is_clean` runs git too, and a record
+    // that grew when a lane merely *looked* would put the question into its own
+    // answer — Task 15 asserts over that record with the tree checked either
+    // side of it.
+    assert!(w.is_clean());
+    assert_eq!(w.git_calls().len(), 1, "asking is not doing");
 }
 
 #[test]
