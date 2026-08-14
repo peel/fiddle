@@ -132,14 +132,16 @@ hooks/dispatch-provider.sh <provider> \
   --evidence-file evidence-{domain}.txt
 ```
 
-Then add the run-state sections the script cannot know about (positions 4 through 7 of the loading order): runtime state for runtime-configured domains, the bean's task criteria, and on iteration 2+ the diff since BASE_SHA with the prior scorecard and its guidance. External providers return their JSON scorecard as the last content block — see `skills/develop/provider-context.md` for the schema.
+Then add the run-state sections the script cannot know about (positions 4 through 7 of the loading order): runtime state for runtime-configured domains, the bean's task criteria, and on iteration 2+ the diff since BASE_SHA with the prior scorecard and its guidance. An external provider's whole reply is the scorecard JSON — see `skills/develop/provider-context.md` for the schema.
 
 Every evaluator returns one scorecard JSON with per-dimension scores under `.domains`, pass/fail criteria under `.criteria`, and a `"provider"` field naming its producer. Save it per domain and count the dispatch:
 
 ```bash
-cat > scorecard-{domain}-{provider}.json   # ← evaluator output for this domain
+hooks/dispatch-provider.sh <provider> ... > scorecard-{domain}-{provider}.json
 dispatch_count=$((dispatch_count + 1))
 ```
+
+Redirect the hook's stdout straight to the file; never hand-copy a scorecard out of provider output. The hook emits the reply already extracted from whatever transport the CLI uses — a provider whose CLI streams structured events declares an `extract` mode in `orchestrate.json` (codex sets `codex-jsonl`, for the JSONL stream `codex exec --json` produces). When it finds no reply it exits non-zero with the raw stream on stderr, so an empty or truncated scorecard fails loudly instead of reaching the merge. Reading a scorecard out of an event stream by eye is how one arrives a closing brace short, or with `criteria` nested under `.domains`.
 
 Dispatch accounting: one implementer + one evaluator per domain per iteration (2 domains = 3 dispatches). PASS_PENDING re-evaluation reuses the provider recorded in `selected-provider-{domain}.json`.
 
