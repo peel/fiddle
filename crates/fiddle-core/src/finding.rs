@@ -334,6 +334,14 @@ mod tests {
     /// habit that made the advisory-id defect — the fix is a case-insensitive
     /// alias here, and this is the assertion that should fail first and record
     /// the decision.
+    ///
+    /// **A null this table does not close, measured rather than assumed.** Every
+    /// variant is a single word, so `SCREAMING_SNAKE_CASE` and `UPPERCASE` are
+    /// the *same* rename over this set: swapping one for the other leaves all
+    /// five rows green. The distinction becomes observable the first time a grade
+    /// is spelled with two words, and that row is the one to add with it — this
+    /// is unclosable while no variant has an internal word boundary, not
+    /// unclosable in general.
     #[test]
     fn every_severity_has_the_wire_spelling_the_scanner_writes() {
         for (wire, expected) in [
