@@ -58,6 +58,20 @@ required-features = ["git-stub"]
 test = false
 doc = false
 
+# The shared fixture module, asserted about itself.
+#
+# Declared rather than auto-discovered because the module lives in a directory:
+# cargo finds `tests/*.rs` and `tests/*/main.rs`, and `main.rs` is the name the
+# two stub blocks above avoid for the reason written there. The root is named
+# after the target, following `tests/gh_stub/gh_stub.rs`.
+#
+# Without this target the module is only ever compiled as part of the suites that
+# include it, so nothing asserts that the worlds it builds differ from one
+# another — and the whole CVE milestone is written against those worlds.
+[[test]]
+name = "support"
+path = "tests/support/support.rs"
+
 [dependencies]
 fiddle-core = { path = "../fiddle-core" }
 serde.workspace = true
