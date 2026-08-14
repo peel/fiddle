@@ -25,6 +25,9 @@
 //!   [`scanner_with`] is below, and [`scanner_recording_env`] joined them in
 //!   Task 5 — the task that decided the environment allowlist, which is the
 //!   whole content of that helper and the reason it could not be written first.
+//! - Task 8.a adds [`finding`], the [`ModuleGraph`] a tree answers about
+//!   itself, and the [`Shape::IndirectWithoutADirectParent`] world that is the
+//!   read-only way to reach attribution rule 3. **Done.**
 //! - Task 11 adds `contract`, `contract_for` and `contract_scanned_by`.
 //! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
 //! - Task 19 adds `fixture` and `world_with`.
@@ -51,6 +54,8 @@
 //! output — see `docs/technical/evidence-discipline.md` on fixture values that
 //! appear only where their value cannot matter.
 
+use fiddle_core::{AdvisoryId, PackageType, ProjectedFinding, Severity};
+use fiddle_runtime::cve::attribute::{ModuleGraph, ResolverError};
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -214,6 +219,17 @@ pub enum Shape {
     IndirectVia(String),
     /// The same, where the parent's line ends before the fix.
     IndirectViaParentWithoutTheFix(String),
+    /// The vulnerable module is marked `// indirect` and there is no direct
+    /// requirement at all, so its `go mod why -m` chain runs straight from the
+    /// main module to it and offers no parent to bump instead.
+    ///
+    /// A real tree and not a contrivance: an untidied `go.mod` looks exactly
+    /// like this when the main module has come to import a package it once only
+    /// got at one remove. It is here because it is the **read-only** way to
+    /// reach attribution rule 3 — the other way is a parent that turns out not
+    /// to carry the fix, and [`PARENT_AT_THE_END_OF_ITS_LINE`] explains why no
+    /// tree on its own can say that.
+    IndirectWithoutADirectParent,
     /// The finding is in the standard library, so there is no module to bump and
     /// the tree pins a toolchain instead.
     Stdlib,
@@ -237,6 +253,11 @@ pub fn indirect_via(parent: &str) -> Shape {
 /// for what this tree can and cannot say about that.
 pub fn indirect_via_parent_without_the_fix(parent: &str) -> Shape {
     Shape::IndirectViaParentWithoutTheFix(parent.to_string())
+}
+
+/// The vulnerable module is indirect and nothing requires it directly.
+pub fn indirect_without_a_direct_parent() -> Shape {
+    Shape::IndirectWithoutADirectParent
 }
 
 /// The finding is in the Go standard library.
@@ -264,7 +285,7 @@ pub fn shipped(module: &str, version: &str) -> Shape {
 /// it was checking*, so deleting the last entry left five positions numbered 0..5
 /// and the test passed. That is a guard comparing a list to itself. Measured, not
 /// argued — the mutation is `inv-m7-all-shapes-drops-one`, and it was green.
-const SHAPES: usize = 6;
+const SHAPES: usize = 7;
 
 impl Shape {
     /// This shape's position in [`all_shapes`].
@@ -288,6 +309,7 @@ impl Shape {
             Shape::Stdlib => 3,
             Shape::ModuleNotNeeded => 4,
             Shape::Shipped { .. } => 5,
+            Shape::IndirectWithoutADirectParent => 6,
         }
     }
 
@@ -320,6 +342,15 @@ impl Shape {
             Shape::Stdlib => Vec::new(),
             Shape::ModuleNotNeeded => vec![require(UNRELATED_MODULE, UNRELATED_VERSION)],
             Shape::Shipped { module, version } => vec![require(module, version)],
+            // The indirect requirement and nothing beside it. The absence is the
+            // shape: with no direct requirement in the tree there is no hop
+            // between the main module and this one, which is what leaves
+            // attribution rule 2 with no parent to elect.
+            Shape::IndirectWithoutADirectParent => vec![(
+                INDIRECT_MODULE.to_string(),
+                INDIRECT_VERSION.to_string(),
+                true,
+            )],
         }
     }
 
@@ -388,6 +419,7 @@ pub fn all_shapes() -> [Shape; SHAPES] {
         stdlib(),
         module_not_needed(),
         shipped(DIRECT_MODULE, SHIPPED_VERSION),
+        indirect_without_a_direct_parent(),
     ]
 }
 
@@ -598,6 +630,177 @@ fn run_git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout)
         .trim_end()
         .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Findings, and the module graph a tree answers about itself
+// ---------------------------------------------------------------------------
+
+/// The advisory every fixture finding is filed under.
+///
+/// One value, because no lane below Task 9 groups or deduplicates: a finding's
+/// identity there is the package it names, and two spellings of "some advisory"
+/// would be two things to keep in step for no assertion's benefit. The task that
+/// groups by advisory adds a builder that varies it.
+const FIXTURE_ADVISORY: &str = "CVE-2026-0008";
+
+/// What a fixture finding says the artefact ships, and where the fix lands.
+///
+/// Spelled **without** a leading `v`, because that is how a scanner spells a
+/// version and the mixed-prefix pair is the trap `cve::version::at_least` exists
+/// for. A fixture that wrote `v0.33.0` here would hand every comparison the easy
+/// case and hide the one that mis-ordered in the pipeline this milestone
+/// replaces.
+const FINDING_CURRENT: &str = "0.24.0";
+const FINDING_FIXED: &str = "0.33.0";
+
+/// A finding against `package`, of `package_type`.
+///
+/// Everything except those two is fixed, and that is the point: the lanes built
+/// on this are about *where a finding is fixed*, which is a function of the
+/// package and its type alone. A builder that let a lane vary the severity would
+/// invite a test to pass because of a field attribution never reads.
+///
+/// `Critical` so the finding is one `fiddle_core::selected` acts on — a fixture
+/// finding this build would have filtered out before attribution ever saw it
+/// would be a world no lane is really in.
+pub fn finding(package: &str, package_type: PackageType) -> ProjectedFinding {
+    ProjectedFinding {
+        cve: AdvisoryId::parse(FIXTURE_ADVISORY).expect("a fixture advisory id parses"),
+        package: package.to_string(),
+        current: FINDING_CURRENT.to_string(),
+        fixed_version: Some(FINDING_FIXED.to_string()),
+        severity: Severity::Critical,
+        package_type,
+    }
+}
+
+/// A fixture tree answering the two read-only questions attribution asks of
+/// `go`, in `go`'s own output formats.
+///
+/// # Why the tree answers rather than a real `go`
+///
+/// There is no `go` in this project's development shell and there is no module
+/// proxy behind one: `go mod why` loads packages, which means source, which
+/// means a populated module cache. A lane that needed one would be a lane that
+/// runs nowhere, so the port `attribute` is written against is implemented here
+/// — the same arrangement the scanner is under, where [`ScriptedScanner`] stands
+/// in for a `wizcli` the offline gate can never reach.
+///
+/// What that leaves under test is exactly what 8.a is: the **reading** of `go`'s
+/// output and the matching of the rules over it. Nothing here decides a rule or
+/// names a target; these two methods print documents, and the subject parses
+/// them. That is the line the module header draws, and it is why both methods
+/// return text — a stand-in that answered *this module is direct* rather than
+/// *here is what `go list` printed* would be answering rule 1 on the subject's
+/// behalf.
+///
+/// # What the answers are derived from
+///
+/// The tree on disk, read on every call, so an edit to `go.mod` changes what the
+/// resolver says. Two facts are read out of it: which paths the tree requires,
+/// and which of those requirements are marked `// indirect`. The chain a
+/// `why` answer prints follows from those — the main module, then the tree's
+/// direct requirement if it has one, then the module asked about — which is what
+/// makes [`indirect_without_a_direct_parent`] produce a chain with no parent in
+/// it rather than a chain this module special-cases by shape.
+#[async_trait::async_trait]
+impl ModuleGraph for GoWorkspace {
+    async fn list(&self, module: &str) -> Result<String, ResolverError> {
+        let record = match self.requirement(module) {
+            Some((path, version, indirect)) => {
+                let mut record = serde_json::json!({
+                    "Path": path,
+                    "Version": version,
+                    // A key the subject has no use for, present so that its
+                    // tolerance of unknown keys is exercised rather than
+                    // asserted in a comment. `go list -m -json` prints a dozen
+                    // and gains more with each release.
+                    "GoVersion": GO_VERSION,
+                });
+                // Written only when true, exactly as `go` writes it: the field
+                // is `omitempty`, so a direct requirement is one with **no**
+                // `Indirect` key. A fixture that always wrote the key would let
+                // a subject that required it pass, and that subject would then
+                // read every real direct requirement as unknown.
+                if indirect {
+                    record["Indirect"] = serde_json::Value::Bool(true);
+                }
+                record
+            }
+            None if module == HOST_MODULE => serde_json::json!({
+                "Path": HOST_MODULE,
+                "Main": true,
+                "GoVersion": GO_VERSION,
+            }),
+            // What `go list -m` prints for a path outside the build list. It is
+            // not JSON, and that is the answer: there is no record.
+            None => return Ok(format!("go: module {module}: not a known dependency\n")),
+        };
+        Ok(format!(
+            "{}\n",
+            serde_json::to_string_pretty(&record).expect("a record serializes")
+        ))
+    }
+
+    async fn why(&self, module: &str) -> Result<String, ResolverError> {
+        // The `#` line names what is being explained, and `go` prints it whether
+        // or not there is a chain underneath.
+        let mut answer = format!("# {module}\n");
+        match self.requirement(module) {
+            None => answer.push_str(&format!("(main module does not need module {module})\n")),
+            Some((path, _, indirect)) => {
+                answer.push_str(&format!("{HOST_MODULE}\n"));
+                // A hop in between exactly when the tree has a direct
+                // requirement to route through. `go` prints package paths here
+                // rather than module paths; in these trees the two coincide,
+                // and a fixture that invented a package path under each module
+                // would be inventing the very thing the subject reads.
+                if indirect {
+                    if let Some((parent, _, _)) = self
+                        .go_mod_requirements()
+                        .into_iter()
+                        .find(|(_, _, indirect)| !*indirect)
+                    {
+                        answer.push_str(&format!("{parent}\n"));
+                    }
+                }
+                answer.push_str(&format!("{path}\n"));
+            }
+        }
+        Ok(answer)
+    }
+}
+
+impl GoWorkspace {
+    /// Every `require` line the tree holds now: path, version, indirect.
+    ///
+    /// **Not a `go.mod` parser**, and it must not grow into one. It reads the
+    /// single-line `require` directive [`Shape::go_mod`] writes and nothing else
+    /// — no block form, no `replace`, no `exclude`. A fixture that parsed the
+    /// whole grammar would be a second implementation of a thing `go` already
+    /// does, drifting from it, in a file whose job is to build worlds.
+    fn go_mod_requirements(&self) -> Vec<(String, String, bool)> {
+        self.go_mod()
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix("require ")?;
+                let (rest, indirect) = match rest.split_once("//") {
+                    Some((head, tail)) => (head.trim(), tail.trim() == "indirect"),
+                    None => (rest.trim(), false),
+                };
+                let (path, version) = rest.split_once(char::is_whitespace)?;
+                Some((path.to_string(), version.trim().to_string(), indirect))
+            })
+            .collect()
+    }
+
+    /// The tree's requirement on `module`, if it has one.
+    fn requirement(&self, module: &str) -> Option<(String, String, bool)> {
+        self.go_mod_requirements()
+            .into_iter()
+            .find(|(path, _, _)| path == module)
+    }
 }
 
 // ---------------------------------------------------------------------------
