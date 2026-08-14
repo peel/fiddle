@@ -315,6 +315,67 @@ mod tests {
         assert_eq!(f.cve, AdvisoryId::parse("GHSA-M5PQ-GVJ9-9VR8").unwrap());
     }
 
+    /// Every grade's wire spelling, and not only the two the other fixtures
+    /// carry.
+    ///
+    /// `MEDIUM`, `LOW` and `INFORMATIONAL` are *constructed* in the selection
+    /// tests below and deserialized nowhere else, so without this row the
+    /// `SCREAMING_SNAKE_CASE` rename is unchecked for three of five variants —
+    /// and a wrong rename does not mis-rank a finding, it fails the whole
+    /// report, because one unreadable grade refuses the document it sits in.
+    ///
+    /// **What this cannot prove.** The table is one this build wrote, so it shows
+    /// the rename covers every variant; it cannot show the table matches what
+    /// Wiz writes, and nothing local can — Wiz is testable only in CI, so the
+    /// offline gate reads a scripted stub whose spellings must agree with these.
+    /// Measuring the real surface is M4b's. The two refusals at the end are
+    /// therefore **tripwires** rather than settled properties: if the real
+    /// scanner turns out to write `high` in lower case — which is exactly the
+    /// habit that made the advisory-id defect — the fix is a case-insensitive
+    /// alias here, and this is the assertion that should fail first and record
+    /// the decision.
+    #[test]
+    fn every_severity_has_the_wire_spelling_the_scanner_writes() {
+        for (wire, expected) in [
+            ("CRITICAL", Severity::Critical),
+            ("HIGH", Severity::High),
+            ("MEDIUM", Severity::Medium),
+            ("LOW", Severity::Low),
+            ("INFORMATIONAL", Severity::Informational),
+        ] {
+            let parsed: Severity = serde_json::from_str(&format!("\"{wire}\""))
+                .unwrap_or_else(|e| panic!("{wire} must deserialize, got {e}"));
+            assert_eq!(parsed, expected);
+        }
+        assert!(
+            serde_json::from_str::<Severity>("\"SEVERE\"").is_err(),
+            "the set is closed: a grade this build cannot rank is refused, not \
+             quietly treated as harmless"
+        );
+        assert!(
+            serde_json::from_str::<Severity>("\"high\"").is_err(),
+            "tripwire, not a property: if a real scanner writes grades in lower \
+             case, add a case-insensitive alias and rewrite this assertion"
+        );
+    }
+
+    /// The same null on the other closed enum: `os` is the spelling the base
+    /// image half of this capability is selected by, and it is deserialized in
+    /// exactly one other fixture here.
+    #[test]
+    fn every_package_type_has_the_wire_spelling_the_scanner_writes() {
+        for (wire, expected) in [("library", PackageType::Library), ("os", PackageType::Os)] {
+            let parsed: PackageType = serde_json::from_str(&format!("\"{wire}\""))
+                .unwrap_or_else(|e| panic!("{wire} must deserialize, got {e}"));
+            assert_eq!(parsed, expected);
+        }
+        assert!(
+            serde_json::from_str::<PackageType>("\"OS\"").is_err(),
+            "tripwire, not a property: the case here is the scripted stub's, and \
+             the real surface is M4b's to measure"
+        );
+    }
+
     /// The negative arm beside the positive one, so a `parse` that answered
     /// `Err` unconditionally could not pass both.
     ///
