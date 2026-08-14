@@ -37,10 +37,57 @@ fn inspect_echoes_a_parsed_invocation_ref() {
     assert_eq!(v["scheme"], "beans");
 }
 
+/// **A scheme that discovers its own work is accepted with no value.**
+///
+/// ADR 019. Asserted from outside the process because the round trip is a claim
+/// about what a caller can *type*: `inspect` echoes the reference it parsed, so
+/// a bare reference rendered as `cve:` would be text the binary prints and then
+/// refuses. The unit tests pin `as_str`; this pins that the text reaching a
+/// caller is that same text.
+///
+/// The exit code is asserted as "not the usage code" rather than as `0`. What
+/// this test owns is the grammar gate — and stdout is only written once the
+/// reference has parsed, so the echoed fields are unreachable without it —
+/// while what happens *after* the gate belongs to the CVE orchestration that
+/// has not landed yet.
+#[test]
+fn inspect_accepts_a_self_discovering_scheme_with_no_value() {
+    let out = support::fiddle_command()
+        .args([
+            "inspect",
+            "cve",
+            "--config",
+            "../../tests/fixtures/fiddle.toml",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_ne!(
+        out.status.code(),
+        Some(2),
+        "`cve` is a complete reference and must not be refused as usage; stderr = {stderr}"
+    );
+    assert!(
+        !stderr.contains("<scheme>:<value>"),
+        "the grammar must not demand a value it has no use for; stderr = {stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!("a parsed reference is echoed on stdout: {e}; stderr = {stderr}")
+    });
+    assert_eq!(v["invocation_ref"], "cve", "echoed bare, never as `cve:`");
+    assert_eq!(v["scheme"], "cve");
+}
+
 /// Each malformed shape fails for its own reason, so each must be *told* its own
 /// reason. Four identical "invalid invocation ref" messages would satisfy the
 /// exit code and still leave the caller guessing, so the diagnostics are also
 /// asserted to be pairwise distinct.
+///
+/// Admitting the bare form added a fifth *shape* and no fifth defect: `cve:` is
+/// still an empty value, and a scheme written without its value is still
+/// malformed. Every row below is therefore unchanged, which is the point of
+/// running it again rather than of editing it.
 #[test]
 fn inspect_rejects_a_malformed_invocation_ref() {
     let mut diagnostics = Vec::new();
