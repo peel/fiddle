@@ -468,6 +468,12 @@ mod tests {
     /// boundary rather than at each use site: every one of these is refused
     /// before an `InvocationRef` exists at all, so no later layer can be the
     /// one that forgot to sanitise.
+    ///
+    /// The `cve:` rows are here because admitting the bare form invites exactly
+    /// one over-generalisation — *a self-discovering scheme supplies its own
+    /// input, so its values need no checking* — and `cve` is the scheme whose
+    /// values arrive from a scanner fiddle does not control. ADR 019 narrows
+    /// what may carry an external string; it does not exempt one that does.
     #[test]
     fn refuses_a_value_that_could_be_read_as_a_path() {
         for text in [
@@ -477,6 +483,8 @@ mod tests {
             "beans:a/b",
             "beans:/etc/passwd",
             "beans:a\\b",
+            "cve:../../../pwned",
+            "cve:a/b",
             "beans:.hidden",
             "beans:work/../../../pwned.json",
             "scanner:%2e%2e",
