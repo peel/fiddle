@@ -36,6 +36,7 @@
 
 pub mod agent;
 pub mod capability;
+pub mod cve;
 pub mod effect;
 pub mod evidence;
 pub mod gateway;
