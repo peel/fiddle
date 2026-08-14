@@ -17,7 +17,7 @@
 //!
 //! # The arms, and the one that matters
 //!
-//! Five of the six are ordinary. `exit-nonzero-with-file` is the one this
+//! Six of the eight are ordinary. `exit-nonzero-with-file` is the one this
 //! fixture exists for: `wizcli` exits non-zero when an organisation policy flags
 //! any finding in the tenant, including findings that have nothing to do with
 //! this scan, and it writes a perfectly good report while doing it. An adapter
@@ -153,6 +153,25 @@ fn main() {
         "no-such-image" => {
             eprintln!(
                 "wizcli: failed to inspect {}: Error response from daemon: no such image",
+                image(&args)
+            );
+            std::process::exit(3);
+        }
+        // The host a scanner reaches its images through is not listening. Not a
+        // failure of the scanner at all, which is the whole reason it is an arm:
+        // it ends exactly as `exit-nonzero-no-file` and `no-such-image` do — no
+        // banner, no artefact, the same status line — so the wording below is
+        // the only thing that can separate the three.
+        //
+        // The wording is the container client's own, and it deliberately does
+        // **not** name `DOCKER_HOST`: the real message names the socket it tried.
+        // An arm that printed the variable would let an adapter that merely
+        // passed this stream through satisfy an assertion about the remedy, and
+        // the remedy is the adapter's to add. See `ScanError::DaemonUnreachable`.
+        "no-daemon" => {
+            eprintln!(
+                "wizcli: failed to inspect {}: Cannot connect to the Docker daemon at \
+                 unix:///var/run/docker.sock. Is the docker daemon running?",
                 image(&args)
             );
             std::process::exit(3);

@@ -365,16 +365,34 @@ impl Scanner for Wizcli {
             // child's diagnostics are consulted, for the one thing they can
             // settle: whether there was anything to scan.
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                return Err(match names_an_absent_image(&stderr) {
-                    true => ScanError::ImageAbsent {
+                // Three arms out of one situation, and the order is decided
+                // rather than incidental. The daemon is asked about first
+                // because it is the more fundamental of the two: tooling that
+                // cannot reach a daemon has no way to know whether an image
+                // exists, so a complaint that mentions both is a complaint about
+                // the daemon — and an operator told their tag is absent when the
+                // host is simply down goes and searches a registry.
+                //
+                // Both predicates read the child's *raw* stderr rather than the
+                // quotation below it. `diagnostic` bounds the text at a hundred
+                // and twenty characters, so classifying on that would let a
+                // scanner with a verbose preamble push its own wording out of
+                // reach and turn a daemon that is down into a generic failure.
+                return Err(if names_an_unreachable_daemon(&stderr) {
+                    ScanError::DaemonUnreachable {
+                        stderr: self.diagnostic(&stderr),
+                    }
+                } else if names_an_absent_image(&stderr) {
+                    ScanError::ImageAbsent {
                         image: image.to_string(),
                         stderr: self.diagnostic(&stderr),
-                    },
-                    false => ScanError::Failed {
+                    }
+                } else {
+                    ScanError::Failed {
                         status: describe(&output.status),
                         stderr: self.diagnostic(&stderr),
-                    },
-                })
+                    }
+                });
             }
             // The artefact is there and this build cannot read it — bytes that
             // are not UTF-8, or a file it may not open. That is the same
@@ -446,16 +464,49 @@ fn image_digest(stdout: &str) -> String {
 
 /// Whether the scanner's complaint is that the image does not exist.
 ///
-/// The one place this module reads a child's words, and it is unavoidable: an
-/// absent image and a broken scanner both exit non-zero having written nothing,
-/// so the exit status cannot separate them and only the diagnostic can. Matched
-/// case-insensitively over the phrasings the registry and daemon tooling
-/// actually produce.
+/// One of the two places this module reads a child's words, and it is
+/// unavoidable: an absent image and a broken scanner both exit non-zero having
+/// written nothing, so the exit status cannot separate them and only the
+/// diagnostic can. Matched case-insensitively over the phrasings the registry
+/// and daemon tooling actually produce.
 fn names_an_absent_image(stderr: &str) -> bool {
     let stderr = stderr.to_ascii_lowercase();
     ["no such image", "manifest unknown", "not found in registry"]
         .iter()
         .any(|phrase| stderr.contains(phrase))
+}
+
+/// Whether the complaint is that the container daemon is not listening.
+///
+/// The second, for the same unavoidable reason as the first and one more: this
+/// failure is not the scanner's at all. A scanner reaches the images it inspects
+/// through the container runtime — which is the whole reason `PATH` is in this
+/// adapter's allowlist — so the daemon being down produces a non-zero exit and
+/// no artefact, exactly as a scanner that broke does, and only the wording tells
+/// them apart. What it buys is in [`ScanError::DaemonUnreachable`]: a different
+/// remedy and a different exit row.
+///
+/// Three phrasings, and none of them is `wizcli`'s. They are the container
+/// client's own, quoted through by whatever ran it: the first two are what the
+/// CLI prints against a socket nothing is listening on, and the third is the
+/// named-pipe wording on Windows. Matching a *substring* rather than a whole
+/// message is what lets them survive being wrapped in a scanner's own prose,
+/// which is how they will actually arrive here.
+///
+/// **This is the module's one dependency on a foreign program's wording, and it
+/// is stated as such rather than hidden.** A phrasing that changes upstream
+/// costs this arm its classification and the failure lands back in
+/// [`ScanError::Failed`] — a diagnostic that is less useful, not a scan that is
+/// wrong.
+fn names_an_unreachable_daemon(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    [
+        "cannot connect to the docker daemon",
+        "is the docker daemon running",
+        "error during connect",
+    ]
+    .iter()
+    .any(|phrase| stderr.contains(phrase))
 }
 
 /// How a finished child ended, for a diagnostic.

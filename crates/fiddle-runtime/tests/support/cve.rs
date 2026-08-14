@@ -726,18 +726,25 @@ fn scripted_credential() -> WizCredential {
 /// `exit-nonzero-with-file` is one of them is the whole of what this fixture is
 /// for; see [`arm_was_exercised`].
 ///
+/// `no-daemon` sits beside `no-such-image` because the two are neighbours: both
+/// end on the status line `exit-nonzero-no-file` ends on and neither writes an
+/// artefact, so all three differ by their diagnostic alone — which is exactly
+/// the discrimination the adapter has to make and the reason none of them can be
+/// dropped.
+///
 /// `leaks-its-credential` is the last and is not a scanner outcome at all: it is
 /// the same failure as `exit-nonzero-no-file` with a diagnostic that quotes the
 /// secret it was given. It is listed here rather than kept beside the one test
 /// that drives it so that this array stays *every* arm the stub has, which is
 /// what lets [`arm_was_exercised`] and [`arm_exits_with`] match exhaustively.
-pub const ARMS: [&str; 7] = [
+pub const ARMS: [&str; 8] = [
     "ok",
     "exit-nonzero-with-file",
     "exit-nonzero-no-file",
     "empty-file",
     "unparseable-file",
     "no-such-image",
+    "no-daemon",
     "leaks-its-credential",
 ];
 
@@ -927,6 +934,12 @@ pub fn arm_was_exercised(arm: &str, outcome: &Result<ScanReport, ScanError>) -> 
         "empty-file" => matches!(outcome, Err(ScanError::NoOutput { .. })),
         "unparseable-file" => matches!(outcome, Err(ScanError::Unparseable { .. })),
         "no-such-image" => matches!(outcome, Err(ScanError::ImageAbsent { .. })),
+        // Its own classification and not the neighbour above it. A host that is
+        // down is not an image that does not exist: one is an obstacle a repeat
+        // gets past and the other is a conclusion about the tag, and an arm list
+        // that let them share a variant would be agreeing with the collapse this
+        // arm exists to rule out.
+        "no-daemon" => matches!(outcome, Err(ScanError::DaemonUnreachable { .. })),
         other => panic!("{other} is not an arm the scripted wizcli has; see ARMS"),
     }
 }
@@ -934,7 +947,7 @@ pub fn arm_was_exercised(arm: &str, outcome: &Result<ScanReport, ScanError>) -> 
 /// The status line each arm is *defined* to end on.
 ///
 /// Every arm's exit code is a deliberate choice in the stub and every one of them
-/// is load-bearing, which is the reason this is a table over all six rather than
+/// is load-bearing, which is the reason this is a table over all of them rather than
 /// a single assertion about the one arm that provoked it:
 ///
 /// - **`exit-nonzero-with-file` exits 3.** Without this, that arm and `ok` are
@@ -948,10 +961,14 @@ pub fn arm_was_exercised(arm: &str, outcome: &Result<ScanReport, ScanError>) -> 
 /// - **`empty-file` and `unparseable-file` exit 0.** Their claim is that a *bad
 ///   artefact alone* is refused, and a scanner that also exited non-zero would
 ///   leave the refusal attributable to either.
-/// - **`exit-nonzero-no-file` and `no-such-image` exit 3**, matching
-///   `exit-nonzero-with-file` on purpose: those three differ by artefact and
+/// - **`exit-nonzero-no-file`, `no-such-image` and `no-daemon` exit 3**, matching
+///   `exit-nonzero-with-file` on purpose: those four differ by artefact and
 ///   diagnostic while ending identically, which is what makes the adapter's
-///   separation of them a fact rather than an exit-code lookup.
+///   separation of them a fact rather than an exit-code lookup. `no-daemon` is
+///   the newest of them and the one this matters most for: a daemon that is not
+///   listening reaches a different exit row from the other two, and if the
+///   status line could have been read for it, nothing would show that the
+///   wording is what decided.
 ///
 /// The arm names are matched exhaustively here for [`arm_was_exercised`]'s
 /// reason, and an unknown one panics for the same one.
@@ -961,6 +978,7 @@ pub fn arm_exits_with(arm: &str) -> i32 {
         "exit-nonzero-with-file"
         | "exit-nonzero-no-file"
         | "no-such-image"
+        | "no-daemon"
         | "leaks-its-credential" => 3,
         other => panic!("{other} is not an arm the scripted wizcli has; see ARMS"),
     }

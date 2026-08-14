@@ -13,6 +13,7 @@ mod support;
 // `Scanner` is imported for its method and not named again: the suite drives a
 // scan through the port, which is the seam a capability will hold, rather than
 // through whatever concrete adapter `scanner_with` happened to build.
+use fiddle_runtime::effect::Recurrence;
 use fiddle_runtime::scanner::{ScanError, REDACTED};
 use fiddle_runtime::Scanner as _;
 use std::collections::{BTreeSet, HashSet};
@@ -28,7 +29,7 @@ async fn the_stub_can_produce_each_unsuccessful_arm() {
     // The stub is the gate's scanner. It must be able to produce every arm the
     // adapter has to discriminate, or the failure tests built on it cannot
     // exist: a suite whose fixture can only ever succeed proves that the
-    // successful path works and says nothing at all about the other five.
+    // successful path works and says nothing at all about the other six.
     //
     // Iterated over `ARMS` rather than over a list written here, so the arms
     // this asserts about and the arms `arm_was_exercised` knows how to check
@@ -48,7 +49,7 @@ async fn the_stub_can_produce_each_unsuccessful_arm() {
         // while no longer being the situation it is named for. The status is
         // the only thing that separates those two, and `empty-file` and
         // `unparseable-file` likewise mean nothing unless they end cleanly, so
-        // it is pinned for all six. See `arm_exits_with` for each arm's.
+        // it is pinned for every arm. See `arm_exits_with` for each arm's.
         assert_eq!(
             observed_exit(arm),
             arm_exits_with(arm),
@@ -113,11 +114,11 @@ async fn a_non_zero_exit_that_wrote_a_parseable_file_is_a_success() {
 
 #[tokio::test]
 async fn every_unsuccessful_arm_is_its_own_error() {
-    // Four situations in the world, four classifications, and no two of them the
+    // Five situations in the world, five classifications, and no two of them the
     // same. The property is *pairwise* — that a caller can tell a broken scanner
-    // from a mistyped tag — and a per-arm `matches!` cannot state it: four
+    // from a mistyped tag — and a per-arm `matches!` cannot state it: five
     // assertions that each accept one variant would all pass if the adapter had
-    // collapsed three of the four into a fourth's neighbour, because each
+    // collapsed four of the five into a fifth's neighbour, because each
     // assertion only ever looks at its own arm.
     let cases = [
         (
@@ -144,6 +145,17 @@ async fn every_unsuccessful_arm_is_its_own_error() {
             "no-such-image",
             ScanError::ImageAbsent {
                 image: String::new(),
+                stderr: String::new(),
+            },
+        ),
+        // The fifth, and the one whose neighbours are the reason it is here:
+        // it ends on the same status line as the two arms above it and writes
+        // no artefact either, so the whole of what separates the three is the
+        // diagnostic. This row is what puts it in the all-pairs net rather
+        // than only in the assertions of its own test.
+        (
+            "no-daemon",
+            ScanError::DaemonUnreachable {
                 stderr: String::new(),
             },
         ),
@@ -184,13 +196,97 @@ async fn every_unsuccessful_arm_is_its_own_error() {
     }
     assert_eq!(
         variants.len(),
-        4,
-        "four causes, four distinguishable classifications"
+        5,
+        "five causes, five distinguishable classifications"
     );
     assert_eq!(
         messages.len(),
-        4,
-        "four causes, four distinguishable reasons: {messages:?}"
+        5,
+        "five causes, five distinguishable reasons: {messages:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_unreachable_docker_daemon_is_retryable_and_names_docker_host() {
+    // A scanner reaches the images it inspects through the container runtime —
+    // which is why `PATH` is in this adapter's allowlist at all — so a daemon
+    // that is not listening is a way for a scan to come back with nothing that
+    // has nothing to do with the scanner, the image or the tenant. Left in the
+    // catch-all it is indistinguishable from a scanner that ran and gave up, and
+    // the two have opposite remedies.
+    let daemon = scanner_with(support::wiz_stub("no-daemon"))
+        .scan(&image())
+        .await
+        .unwrap_err();
+
+    // Retryable, which is what `Recurrence::Correctable` says: it is the value
+    // that maps to `RunOutcome::Retryable`, and its own definition — "a network
+    // comes back" — is this situation exactly. Nothing about what the invocation
+    // asked for is wrong, so the same image, the same scanner and the same
+    // credential succeed once the host is up.
+    assert_eq!(
+        daemon.recurrence(),
+        Recurrence::Correctable,
+        "the host comes back and the same invocation works: {daemon}"
+    );
+
+    // The remedy, named. `DOCKER_HOST` is not a variable this build reads, sets,
+    // or admits to any allowlist — a workspace command still runs under four
+    // names and this adapter under five, both measured — it is the thing an
+    // operator sets in *their own* shell when their daemon is not on the default
+    // socket. A diagnostic that named only the socket sends an operator who is
+    // pointed at a remote daemon to look at a file that was never going to be
+    // there.
+    assert!(
+        daemon.to_string().contains("DOCKER_HOST"),
+        "name the operator's remedy: {daemon}"
+    );
+    // And it is *this build* that names it. The arm prints the runtime's own
+    // wording, which names the socket and not the variable — see the stub, where
+    // that omission is deliberate — so the assertion above cannot be satisfied
+    // by an adapter that merely passed a child's stderr through. This line is
+    // also what says the diagnostic being read is the one that arm wrote.
+    assert!(
+        daemon
+            .to_string()
+            .contains("Cannot connect to the Docker daemon"),
+        "this is not the diagnostic that arm wrote, so nothing above is about \
+         an unreachable daemon: {daemon}"
+    );
+
+    // Not a scan that found nothing. The two situations it must not be confused
+    // with are *run* rather than named, because the property is pairwise: an
+    // assertion that only matched this arm's own variant would still pass if one
+    // of the other two had moved onto it, and then a caller would again be
+    // unable to tell a host that is down from a scanner that is broken.
+    //
+    // `unwrap_err` above is the third of the three: a daemon-unreachable scan
+    // that came back as an empty *successful* report would have panicked there.
+    let nothing = scanner_with(support::wiz_stub("empty-file"))
+        .scan(&image())
+        .await
+        .unwrap_err();
+    assert_ne!(
+        discriminant(&daemon),
+        discriminant(&nothing),
+        "an unreachable daemon is reported as a scanner that wrote an empty \
+         report: {daemon:?}"
+    );
+    assert_ne!(
+        daemon.recurrence(),
+        nothing.recurrence(),
+        "a scanner that wrote an empty report writes the same nothing next time; \
+         a daemon that is down does not, and the two must not share an exit row"
+    );
+    let broken = scanner_with(support::wiz_stub("exit-nonzero-no-file"))
+        .scan(&image())
+        .await
+        .unwrap_err();
+    assert_ne!(
+        discriminant(&daemon),
+        discriminant(&broken),
+        "an unreachable daemon is reported as a scanner that ran and gave up, \
+         which is the classification this arm exists to leave: {daemon:?}"
     );
 }
 
