@@ -114,21 +114,24 @@ fn no_two_go_shapes_build_the_same_tree() {
     }
 }
 
-/// Every shape reaches [`all_shapes`], so the walk above is over all of them.
+/// No two entries of [`all_shapes`] are the same shape.
 ///
-/// [`Shape::index`]'s match is exhaustive, so a new shape cannot be added
-/// without being given a position; this is what makes the positions a bijection
-/// onto the list, and therefore what makes the list complete.
+/// **This does not check that the list is complete, and an earlier version of it
+/// claimed to.** It computed the positions it expected *from the list it was
+/// checking*, so deleting the last entry left five entries numbered 0..5 and the
+/// test passed — measured, `inv-m7-all-shapes-drops-one` was green. What holds the
+/// length now is the type: [`all_shapes`] returns an array of a named constant, so
+/// a deletion no longer compiles. What is left for a test is the case the type
+/// cannot see, which is two entries claiming one position.
 #[test]
-fn every_go_shape_is_listed() {
+fn no_position_in_all_shapes_is_claimed_twice() {
     let mut listed: Vec<usize> = all_shapes().iter().map(Shape::index).collect();
-    let count = listed.len();
     listed.sort_unstable();
     listed.dedup();
     assert_eq!(
         listed,
-        (0..count).collect::<Vec<_>>(),
-        "a shape whose index is missing from all_shapes is a world no test reaches"
+        (0..all_shapes().len()).collect::<Vec<_>>(),
+        "two entries of all_shapes are the same shape, so one shape is unreached"
     );
 }
 
@@ -146,20 +149,21 @@ fn no_two_reports_the_lanes_need_are_the_same_bytes() {
     }
 }
 
-/// The same completeness guard as [`every_go_shape_is_listed`], for the reports.
+/// The same guard as [`no_position_in_all_shapes_is_claimed_twice`], with the same
+/// limit, for the documents. `inv-m10-canonical-reports-drops-one` was the green
+/// mutation here.
 #[test]
-fn every_report_variant_is_listed() {
+fn no_position_in_canonical_reports_is_claimed_twice() {
     let mut listed: Vec<usize> = canonical_reports()
         .iter()
         .map(ReportVariant::index)
         .collect();
-    let count = listed.len();
     listed.sort_unstable();
     listed.dedup();
     assert_eq!(
         listed,
-        (0..count).collect::<Vec<_>>(),
-        "a variant missing from canonical_reports is a report no test reaches"
+        (0..canonical_reports().len()).collect::<Vec<_>>(),
+        "two entries of canonical_reports are the same variant"
     );
 }
 

@@ -223,14 +223,29 @@ pub fn shipped(module: &str, version: &str) -> Shape {
     }
 }
 
+/// How many shapes there are, pinning [`all_shapes`]'s length at compile time.
+///
+/// The count is here rather than inferred because an inferred one cannot be
+/// wrong: `every_go_shape_is_listed` first computed its expectation *from the list
+/// it was checking*, so deleting the last entry left five positions numbered 0..5
+/// and the test passed. That is a guard comparing a list to itself. Measured, not
+/// argued — the mutation is `inv-m7-all-shapes-drops-one`, and it was green.
+const SHAPES: usize = 6;
+
 impl Shape {
     /// This shape's position in [`all_shapes`].
     ///
-    /// The match is exhaustive, so a new shape cannot be added without being
-    /// given a position, and `every_go_shape_is_listed` checks that the positions
-    /// are a bijection onto that list. That pairing is what makes
-    /// `no_two_go_shapes_build_the_same_tree` a statement about *every* shape
-    /// rather than about the ones a list happened to name.
+    /// The match is exhaustive, so a new shape cannot be added without being given
+    /// a position, and the highest position here has to agree with [`SHAPES`] three
+    /// lines above it.
+    ///
+    /// **What the pair of guards catches, and what it does not.** Deleting a listed
+    /// shape is a *compile* error, because [`all_shapes`] returns an array of
+    /// [`SHAPES`]. Listing one twice, or giving two shapes one position, fails
+    /// `every_go_shape_is_listed`. Adding a variant and leaving it off the list is
+    /// caught by neither — nothing in Rust can enumerate an enum's variants — and
+    /// what stands in for it is that the new `index` arm cannot be written without
+    /// reading the constant it has to exceed.
     pub fn index(&self) -> usize {
         match self {
             Shape::Direct => 0,
@@ -326,12 +341,13 @@ impl Shape {
 /// Every shape there is, built from one value each.
 ///
 /// A function rather than the `const` array `mod.rs`'s [`Script::ALL`] uses,
-/// because two of these carry an owned parent path. The guard is the same one:
-/// see [`Shape::index`].
+/// because two of these carry an owned parent path — but an *array* of [`SHAPES`]
+/// rather than a `Vec`, which is the half of `ALL` that was load-bearing: with a
+/// `Vec`, deleting an entry compiled and every test stayed green.
 ///
 /// [`Script::ALL`]: super::Script::ALL
-pub fn all_shapes() -> Vec<Shape> {
-    vec![
+pub fn all_shapes() -> [Shape; SHAPES] {
+    [
         direct(),
         indirect_via(FIXTURE_PARENT),
         indirect_via_parent_without_the_fix(FIXTURE_PARENT),
@@ -750,9 +766,13 @@ pub enum ReportVariant {
     AdvisoryDescription(String),
 }
 
+/// How many document variants there are, pinning [`canonical_reports`]'s length.
+/// See [`SHAPES`] for why the count is written down rather than inferred.
+const REPORT_VARIANTS: usize = 5;
+
 impl ReportVariant {
-    /// This variant's position in [`canonical_reports`]. The guard [`Shape::index`]
-    /// describes, for the documents.
+    /// This variant's position in [`canonical_reports`]. The pair of guards
+    /// [`Shape::index`] describes, with the same limit, for the documents.
     pub fn index(&self) -> usize {
         match self {
             ReportVariant::Plain(_, _) => 0,
@@ -900,9 +920,9 @@ pub fn report_with_advisory_description(text: &str) -> Report {
 }
 
 /// One document per variant, so completeness can be checked. See
-/// [`ReportVariant::index`].
-pub fn canonical_reports() -> Vec<ReportVariant> {
-    vec![
+/// [`ReportVariant::index`], and [`all_shapes`] for why this is an array.
+pub fn canonical_reports() -> [ReportVariant; REPORT_VARIANTS] {
+    [
         ReportVariant::Plain(
             libraries(&DEFAULT_LIBRARY_CVES),
             os_packages(&DEFAULT_OS_CVES),
@@ -920,7 +940,7 @@ pub fn canonical_reports() -> Vec<ReportVariant> {
 /// there is compared here without anybody remembering to; the two extra entries
 /// are the one-sided arrays the projection has to read both of.
 pub fn distinct_reports() -> Vec<(String, Report)> {
-    let mut variants = canonical_reports();
+    let mut variants: Vec<ReportVariant> = canonical_reports().into_iter().collect();
     variants.push(ReportVariant::Plain(
         libraries(&["CVE-1"]),
         os_packages(&[]),
