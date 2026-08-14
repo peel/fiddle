@@ -591,6 +591,31 @@ impl ModuleRecord {
     }
 }
 
+/// What the build list resolves a module to, out of `go list -m -json`'s answer.
+///
+/// # Why the crate can see it, and why it is not a seventh port method
+///
+/// [`crate::cve::dedup`] drops a library finding whose tree is already at or
+/// above the fix, and the datum it needs is this field and nothing else.
+/// `go list -m -f '{{.Version}}'` would print the same string, and asking for it
+/// that way would mean a seventh [`ModuleGraph`] method, a second arm in the
+/// offline toolchain the suite drives, and a second spawn shape in
+/// [`crate::cve::go::Go`] — three copies of one question. Reusing
+/// [`ModuleGraph::list`] leaves one command and one reader of its answer, which
+/// is this function.
+///
+/// `None` is [`ModuleRecord::read`]'s `None` plus one more case that belongs
+/// with it: the **main module**'s record, which carries no `Version` at all and
+/// deserialises to an empty string through `#[serde(default)]`. An empty version
+/// handed to a comparison reads as `0`, and a caller that took it would be
+/// comparing against a version nobody published. All of them mean the same
+/// thing — *the graph does not say this module is at anything*.
+pub(crate) fn shipped_version(listed: &str) -> Option<String> {
+    ModuleRecord::read(listed)
+        .map(|record| record.version)
+        .filter(|version| !version.is_empty())
+}
+
 /// What `go mod why -m <module>` said.
 ///
 /// The output is a `#` line naming the module, then either the chain — one path

@@ -11,9 +11,15 @@
 //! that is where the child which does it is spawned. [`group`] is what follows
 //! from attribution's answers: findings share targets, so the unit of work is
 //! the edit rather than the advisory, and a target on its own does not say how
-//! far it may be moved.
+//! far it may be moved. [`dedup`] runs before all of that and decides which
+//! findings never enter it: a report names findings the tree has already moved
+//! past and findings an earlier commit on this branch already fixed, and the
+//! first of those is how a run comes to write a *downgrade* under a security
+//! fix's commit message — see [`group::GroupError::AlreadyAtTheFix`], the guard
+//! this module exists to keep unreachable.
 
 pub mod attribute;
+pub mod dedup;
 pub mod go;
 pub mod group;
 pub mod project;

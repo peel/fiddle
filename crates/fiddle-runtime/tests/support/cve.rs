@@ -33,6 +33,11 @@
 //!   spawns a `go`. **Done.** The proxy is `go_proxy.rs` rather than more of this
 //!   file, for [`document`]'s reason: a `[[bin]]` shares it, and a `[[bin]]` is
 //!   compiled against `[dependencies]` alone.
+//! - Task 10 adds [`finding_fixed_at`], [`os_finding`], [`full_clone`] and
+//!   [`forge_recording_calls`]. **Done.** [`full_clone`] is the positive half
+//!   [`shallow_clone`] needed and did not have; [`forge_recording_calls`] is a
+//!   record of what `dedup` ran and is **not** Task 17's `forge()` — read its
+//!   own doc before extending either.
 //! - Task 11 adds `contract`, `contract_for` and `contract_scanned_by`.
 //! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
 //! - Task 19 adds `fixture` and `world_with`.
@@ -61,6 +66,7 @@
 
 use fiddle_core::{AdvisoryId, PackageType, ProjectedFinding, Severity};
 use fiddle_runtime::cve::attribute::{Manifest, ModuleGraph, ResolverError, Target};
+use fiddle_runtime::cve::dedup::{DedupError, Local, Ran, Spawn};
 use fiddle_runtime::cve::go::Go;
 use fiddle_runtime::cve::group::Attributed;
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
@@ -545,6 +551,54 @@ pub fn shallow_clone() -> GoWorkspace {
     }
 }
 
+/// The same clone with its history intact, and `bodies` committed on top of it.
+///
+/// The **positive half of [`shallow_clone`]**, and it is not optional garnish: a
+/// lane that only has the truncated world cannot tell a reader that refuses one
+/// bad repository from a reader that refuses every repository. Here there is an
+/// `origin/main` to measure against and commits ahead of it to be read, so the
+/// range the subject builds is exercised rather than assumed.
+///
+/// Cloned from a real origin rather than assembled in one directory, because
+/// `origin/<base>..HEAD` is a range over a *remote-tracking* ref, and a
+/// repository that was never cloned has none. The commits are empty for
+/// [`log_of`]'s reason: the bodies are the whole content of the world, and a
+/// tree that also changed would let a lane pass on the diff instead.
+pub fn full_clone(bodies: &[&str]) -> GoWorkspace {
+    let root = TempDir::new().expect("a temporary directory for a fixture tree");
+    let shape = direct();
+    let origin = write_tree(root.path(), "origin", &shape);
+    commit_tree(&origin, &shape, "the fixture tree");
+
+    // `file://` and not a plain path, for `shallow_clone`'s reason, and so that
+    // the pair differ by exactly the `--depth` argument and nothing else.
+    let url = format!("file://{}", canonical(&origin).display());
+    run_git(root.path(), &["clone", "--quiet", &url, "host"]);
+
+    let repo = root.path().join("host");
+    for body in bodies {
+        run_git(
+            &repo,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "--allow-empty",
+                "--quiet",
+                "-m",
+                body,
+            ],
+        );
+    }
+    GoWorkspace {
+        repo: canonical(&repo),
+        root,
+        calls: Mutex::new(Vec::new()),
+    }
+}
+
 /// Write `shape`'s files into a fresh `name` directory under `parent`.
 fn write_tree(parent: &Path, name: &str, shape: &Shape) -> PathBuf {
     let repo = parent.join(name);
@@ -662,6 +716,43 @@ const FINDING_FIXED: &str = "0.33.0";
 /// would be a world no lane is really in.
 pub fn finding(package: &str, package_type: PackageType) -> ProjectedFinding {
     finding_under(FIXTURE_ADVISORY, package, package_type, FINDING_FIXED)
+}
+
+/// The distribution package every OS fixture finding is against.
+///
+/// One value, because no lane distinguishes two of them: what settles an OS
+/// finding is the branch's commit bodies, which name advisories and not
+/// packages. A builder that let a lane vary this would offer a knob that cannot
+/// change any answer, which is an invitation to write a test that passes for the
+/// wrong reason.
+const OS_PACKAGE: &str = "openssl";
+
+/// A `Library` finding against `package` whose fix lands in `fixed`.
+///
+/// The un-attributed sibling of [`attributed_fixed_at`], and it exists for the
+/// stage that runs *before* attribution: Task 10's already-fixed set is asked
+/// about a projected finding, because the whole point of it is to drop one
+/// before `go mod why` is ever run for it.
+///
+/// `fixed` is the argument because it is the only field that lane varies — the
+/// question is whether the tree is at or above it — and the package comes with
+/// it so that the finding and the tree can be made to name the same module or
+/// deliberately different ones.
+pub fn finding_fixed_at(package: &str, fixed: &str) -> ProjectedFinding {
+    finding_under(FIXTURE_ADVISORY, package, PackageType::Library, fixed)
+}
+
+/// An `Os` finding under `cve`.
+///
+/// The advisory is the argument and nothing else is, which is the shape of the
+/// question: an OS finding is settled by whether some commit body on this branch
+/// names *this advisory*. It carries a `fixedVersion` like every other fixture
+/// finding — [`finding_under`]'s — precisely so a lane can tell a commit-body
+/// answer from a version comparison that leaked across into the OS arm. A
+/// fixture that left the field empty would make that arm untestable, because
+/// then both readings would answer the same.
+pub fn os_finding(cve: &str) -> ProjectedFinding {
+    finding_under(cve, OS_PACKAGE, PackageType::Os, FINDING_FIXED)
 }
 
 /// The same finding with its advisory and its fix named.
@@ -1078,6 +1169,55 @@ pub fn log_of(bodies: &[&str]) -> CommitLog {
         repo: canonical(&repo),
         root,
         raw,
+    }
+}
+
+/// Every program the already-fixed set was read with, in order.
+///
+/// # What this is, and what it is deliberately not
+///
+/// It is not a forge, and it is not [`fiddle_runtime::cve::dedup`]'s stand-in
+/// for one. It is that module's [`Spawn`] seam — the single way it starts any
+/// program at all — wrapped so the invocations can be counted, and it hands each
+/// one straight to the real [`Local`] underneath. The lane it exists for asserts
+/// that **no** call was a forge call, and the reason it can assert that rather
+/// than merely observe an empty list is that the list is not empty: the `git`
+/// reads are in it, so a recorder that had never been wired in is a reading the
+/// lane can exclude.
+///
+/// Recording and delegating rather than answering is [`GoWorkspace::git`]'s
+/// arrangement, and for the same reason: a fixture that answered would be
+/// deciding what git says, and what the lane is about is what the subject *ran*.
+///
+/// **Task 17 brings `forge()` and the `scripted_gh_*` builders**, which are a
+/// different object — a scripted `gh` that answers pull request queries for the
+/// lanes that legitimately make them. Nothing here should grow into that: this
+/// one proves an absence and needs no arms at all.
+pub struct RecordedCalls {
+    calls: Mutex<Vec<String>>,
+}
+
+impl RecordedCalls {
+    /// Each invocation as `program arg arg`, in the order it was made.
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl Spawn for RecordedCalls {
+    fn run(&self, program: &str, args: &[&str], dir: &Path) -> Result<Ran, DedupError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("{program} {}", args.join(" ")));
+        Local.run(program, args, dir)
+    }
+}
+
+/// A [`RecordedCalls`] with nothing in it yet.
+pub fn forge_recording_calls() -> RecordedCalls {
+    RecordedCalls {
+        calls: Mutex::new(Vec::new()),
     }
 }
 
