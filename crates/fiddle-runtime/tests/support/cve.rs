@@ -21,10 +21,10 @@
 //!
 //! - Task 4 adds `scanner_with` and `scanner_recording_env`, and replaces
 //!   [`wiz_stub`]'s derived path with the `env!` cargo guarantees.
-//!   **Done, in part:** [`wiz_stub`] now names the binary the way cargo
-//!   guarantees, and [`scanner_with`] is below. `scanner_recording_env` is not,
-//!   deliberately — see [`scanner_with`] for why a helper whose whole content is
-//!   the environment allowlist could not be written before the allowlist was.
+//!   **Done.** [`wiz_stub`] names the binary the way cargo guarantees,
+//!   [`scanner_with`] is below, and [`scanner_recording_env`] joined them in
+//!   Task 5 — the task that decided the environment allowlist, which is the
+//!   whole content of that helper and the reason it could not be written first.
 //! - Task 11 adds `contract`, `contract_for` and `contract_scanned_by`.
 //! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
 //! - Task 19 adds `fixture` and `world_with`.
@@ -51,7 +51,8 @@
 //! output — see `docs/technical/evidence-discipline.md` on fixture values that
 //! appear only where their value cannot matter.
 
-use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, Wizcli};
+use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -690,6 +691,29 @@ pub fn image() -> String {
 /// that fails has failed on the arm rather than on a loaded machine.
 const SCRIPTED_SCAN_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The tenant identifier every scripted scan authenticates as.
+///
+/// **Not a sentinel, and deliberately not in [`ALL_SENTINELS`].** The three
+/// sentinels above are read by assertions that a value *never* appears; this one
+/// is read by an assertion that it *does* — it is how a test says "the
+/// diagnostic I am looking at is the one that arm wrote" before going on to
+/// assert that the secret beside it was taken out. A client id is a public
+/// identifier and is not redacted, for the reason [`WizCredential`] gives: a
+/// failed authentication that names no account is one nobody can act on.
+pub const FIXTURE_CLIENT_ID: &str = "fiddle-client-1c93f0a5";
+
+/// The credential every scripted scan is given.
+///
+/// One value for every arm, so that the credential the boundary tests assert
+/// about is the credential an ordinary scan runs under — a secret planted only
+/// in the test that looks for it would be a secret nothing else could leak.
+fn scripted_credential() -> WizCredential {
+    WizCredential {
+        client_id: FIXTURE_CLIENT_ID.to_string(),
+        client_secret: SENTINEL_SECRET.to_string(),
+    }
+}
+
 /// Every arm the scripted scanner has.
 ///
 /// A fixed-length array rather than a `Vec` or a slice literal at each use, for
@@ -701,13 +725,20 @@ const SCRIPTED_SCAN_TIMEOUT: Duration = Duration::from_secs(60);
 /// The first two are the arms a scan *succeeds* on. That
 /// `exit-nonzero-with-file` is one of them is the whole of what this fixture is
 /// for; see [`arm_was_exercised`].
-pub const ARMS: [&str; 6] = [
+///
+/// `leaks-its-credential` is the last and is not a scanner outcome at all: it is
+/// the same failure as `exit-nonzero-no-file` with a diagnostic that quotes the
+/// secret it was given. It is listed here rather than kept beside the one test
+/// that drives it so that this array stays *every* arm the stub has, which is
+/// what lets [`arm_was_exercised`] and [`arm_exits_with`] match exhaustively.
+pub const ARMS: [&str; 7] = [
     "ok",
     "exit-nonzero-with-file",
     "exit-nonzero-no-file",
     "empty-file",
     "unparseable-file",
     "no-such-image",
+    "leaks-its-credential",
 ];
 
 /// A scanner that runs `program`.
@@ -719,15 +750,11 @@ pub const ARMS: [&str; 6] = [
 /// so `scanner_with(..).scan(..)` is a single expression that still has its
 /// scratch directory when the child writes into it.
 ///
-/// # `scanner_recording_env` is deliberately not here yet
-///
-/// The extension convention in this file's header lists it beside this function
-/// as Task 4's. It is not written, because its whole content is the environment
-/// allowlist — the set of names the adapter builds around the credential — and
-/// that set is Task 5's to decide and to assert. A helper written now would be a
-/// guess at an allowlist, and the assertion built on it would be an assertion
-/// that the guess had not changed. It belongs here, in this section, on the day
-/// there is an allowlist for it to record.
+/// Every scanner this module builds carries [`scripted_credential`], including
+/// the ones whose test never mentions a credential. That is the point: the
+/// boundary assertions are about the environment an *ordinary* scan runs under,
+/// and a secret supplied only where it is looked for could not have leaked from
+/// anywhere else.
 pub fn scanner_with(program: ProgramRef) -> ScriptedScanner {
     let scratch = TempDir::new().expect("a temporary directory for a scan's report");
     ScriptedScanner {
@@ -737,9 +764,28 @@ pub fn scanner_with(program: ProgramRef) -> ScriptedScanner {
             scratch.path().to_path_buf(),
             SCRIPTED_SCAN_TIMEOUT,
             CancellationToken::new(),
+            scripted_credential(),
         ),
         scratch,
     }
+}
+
+/// A scanner whose child writes down what it was started with.
+///
+/// The extension convention in this file's header assigned this to Task 4, which
+/// left it out on purpose: its whole content is the environment allowlist, and
+/// that set was Task 5's to decide and to assert.
+///
+/// What it turned out to be is *nothing*, and that is the honest shape of it. The
+/// scripted scanner records its argv and its environment on **every** arm — see
+/// that program's header for why a `record-env` arm would have been the wrong
+/// construction — so this is an ordinary successful scan, and the recording is
+/// read back through [`ScriptedScanner`]. The function exists anyway, because the
+/// convention is that a suite names the world it wants rather than the arm that
+/// happens to produce it, and because a caller reading `scanner_with(wiz_stub(
+/// "ok"))` would have no way to know a record was waiting for it.
+pub fn scanner_recording_env() -> ScriptedScanner {
+    scanner_with(wiz_stub("ok"))
 }
 
 /// A [`Wizcli`] and the scratch directory it writes into, with one lifetime.
@@ -749,7 +795,8 @@ pub fn scanner_with(program: ProgramRef) -> ScriptedScanner {
 /// not through a concrete type the capability never sees.
 pub struct ScriptedScanner {
     wizcli: Wizcli,
-    /// Held only for its [`Drop`], exactly as [`GoWorkspace::root`] is.
+    /// Held for its [`Drop`], as [`GoWorkspace::root`] is — and read, unlike that
+    /// one, because the child's record lands in it.
     scratch: TempDir,
 }
 
@@ -757,6 +804,90 @@ pub struct ScriptedScanner {
 impl Scanner for ScriptedScanner {
     async fn scan(&self, image: &str) -> Result<ScanReport, ScanError> {
         self.wizcli.scan(image).await
+    }
+}
+
+/// What the scripted scanner writes its record into, so a suite can assert that
+/// a path the adapter handed the child points back inside this scan's own
+/// directory rather than at something ambient.
+const CHILD_RECORD: &str = "child.json";
+
+impl ScriptedScanner {
+    /// This scan's scratch directory.
+    pub fn scratch(&self) -> &str {
+        self.scratch
+            .path()
+            .to_str()
+            .expect("a temporary directory whose path is UTF-8")
+    }
+
+    /// Every environment variable the child actually received.
+    ///
+    /// Read off the disk on each call rather than cached, so that a record from
+    /// a scan that has not happened yet is a panic naming the missing file — a
+    /// cached empty map would make "the child received nothing" indistinguishable
+    /// from "nobody has scanned".
+    ///
+    /// A [`BTreeMap`], so the names come back in one order whatever order the
+    /// operating system handed them over in: an allowlist assertion that had to
+    /// sort its expectation to match would be an assertion nobody could read.
+    pub fn child_env(&self) -> BTreeMap<String, String> {
+        self.child()["env"]
+            .as_array()
+            .expect("the scripted scanner records its environment as an array")
+            .iter()
+            .map(|entry| {
+                let entry = entry.as_str().expect("an environment entry is a string");
+                // `splitn(2, ..)`, because a value may contain `=` and only the
+                // first one separates a name from what it holds.
+                let (name, value) = entry
+                    .split_once('=')
+                    .unwrap_or_else(|| panic!("{entry} is not a NAME=VALUE entry"));
+                (name.to_string(), value.to_string())
+            })
+            .collect()
+    }
+
+    /// The names alone, in order. See [`ScriptedScanner::child_env`].
+    pub fn child_env_names(&self) -> Vec<String> {
+        self.child_env().into_keys().collect()
+    }
+
+    /// The child's whole `argv`, including the program itself.
+    ///
+    /// Whole, because the property asserted over it is that a value does *not*
+    /// appear anywhere in it, and a record that dropped a position would be a
+    /// record that could not have found the value there.
+    pub fn child_argv(&self) -> Vec<String> {
+        self.child()["argv"]
+            .as_array()
+            .expect("the scripted scanner records its argv as an array")
+            .iter()
+            .map(|argument| {
+                argument
+                    .as_str()
+                    .expect("an argument is a string")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// The record itself, or a panic naming what is missing.
+    ///
+    /// Panics rather than returning an [`Option`], because every path that
+    /// reaches it has already run a scan: an absent record means the child never
+    /// started, and reporting that as an empty environment would turn a fixture
+    /// that failed to spawn into a boundary assertion that passed.
+    fn child(&self) -> serde_json::Value {
+        let record = self.scratch.path().join(CHILD_RECORD);
+        let raw = std::fs::read_to_string(&record).unwrap_or_else(|source| {
+            panic!(
+                "no record at {}, so no child of this scan was observed: {source}",
+                record.display()
+            )
+        });
+        serde_json::from_str(&raw)
+            .unwrap_or_else(|source| panic!("{} is not a record: {source}", record.display()))
     }
 }
 
@@ -786,7 +917,13 @@ impl Scanner for ScriptedScanner {
 pub fn arm_was_exercised(arm: &str, outcome: &Result<ScanReport, ScanError>) -> bool {
     match arm {
         "ok" | "exit-nonzero-with-file" => outcome.is_ok(),
-        "exit-nonzero-no-file" => matches!(outcome, Err(ScanError::Failed { .. })),
+        // `leaks-its-credential` shares this outcome with the arm above it, and
+        // must: what separates them is what the diagnostic *says*, not what the
+        // scan came back as, so an arm list that told them apart here would be
+        // asserting the wrong thing about both.
+        "exit-nonzero-no-file" | "leaks-its-credential" => {
+            matches!(outcome, Err(ScanError::Failed { .. }))
+        }
         "empty-file" => matches!(outcome, Err(ScanError::NoOutput { .. })),
         "unparseable-file" => matches!(outcome, Err(ScanError::Unparseable { .. })),
         "no-such-image" => matches!(outcome, Err(ScanError::ImageAbsent { .. })),
@@ -821,7 +958,10 @@ pub fn arm_was_exercised(arm: &str, outcome: &Result<ScanReport, ScanError>) -> 
 pub fn arm_exits_with(arm: &str) -> i32 {
     match arm {
         "ok" | "empty-file" | "unparseable-file" => 0,
-        "exit-nonzero-with-file" | "exit-nonzero-no-file" | "no-such-image" => 3,
+        "exit-nonzero-with-file"
+        | "exit-nonzero-no-file"
+        | "no-such-image"
+        | "leaks-its-credential" => 3,
         other => panic!("{other} is not an arm the scripted wizcli has; see ARMS"),
     }
 }

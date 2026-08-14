@@ -36,6 +36,21 @@
 //! scanner with — `gh_stub` is arranged the same way and its header gives the
 //! same reason.
 //!
+//! # Why it records its own environment and argv on every arm
+//!
+//! The adapter's environment is an allowlist, and the only honest way to assert
+//! an allowlist is against what a child *received* — a `Command` nobody spawned
+//! proves that a builder was called and nothing more. So every arm writes
+//! [`CHILD_RECORD`] beside the report before it does anything else, exactly as
+//! `gh_stub` records every request it answers.
+//!
+//! Unconditionally, and not behind a `record-env` arm, because a recording arm
+//! would be a *different invocation* from the ones every other test drives: the
+//! environment it captured would be the environment of the arm that captures
+//! environments, and nothing would then connect it to the scans under test. This
+//! way the record comes from the same command line and the same spawn as an
+//! ordinary scan.
+//!
 //! # Why it prints the shared documents rather than embedding one
 //!
 //! `tests/support/document.rs` is where a scanner document is written down, and
@@ -52,7 +67,7 @@
 mod document;
 
 use document::{libraries, os_packages, report_with, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The version this scanner announces. Not a version any real `wizcli` has, so
 /// an assertion that finds it cannot have been satisfied by a scanner somebody
@@ -65,6 +80,15 @@ const STUB_VERSION: &str = "0.0.0-fiddle-stub";
 /// and a short one would let a reader that truncates pass.
 const STUB_DIGEST: &str = "sha256:6f1b0d2c9a4e7385bd1c05fa9e37642c8b0d5713ae629f04c8d17b6a3e59042d";
 
+/// What this process was given, written where the suite can read it back.
+///
+/// Beside the report rather than in a directory of its own, because the scratch
+/// directory is the one location a test and a child already agree about: the
+/// adapter names it in `--json-output-file`, so no second channel — and no
+/// environment variable, which the allowlist would not carry anyway — has to be
+/// invented to say where this goes.
+const CHILD_RECORD: &str = "child.json";
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arm = args
@@ -73,6 +97,11 @@ fn main() {
         .expect("the arm is the first argument, passed through the adapter's `args` seam");
     let report = output_file(&args)
         .expect("--json-output-file <path> must be passed by the adapter under test");
+    // Before the arm runs, so that an arm which exits mid-way still leaves a
+    // record: the credential-boundary questions are about what was *handed* to
+    // this process, and they are as worth asking of a failed scan as of a
+    // successful one.
+    record(&report);
 
     match arm.as_str() {
         // A scan that worked. Both package arrays are populated, because the
@@ -128,8 +157,48 @@ fn main() {
             );
             std::process::exit(3);
         }
+        // A scanner that quotes its own configuration back at you when
+        // authentication fails, which is not a strange thing for a tool to do.
+        // It is here so that "no diagnostic carries the credential" is a claim
+        // with something behind it: this arm really does print the secret it was
+        // given, on the stream the adapter passes through into `ScanError`, so
+        // an adapter that did not redact would fail rather than pass for the
+        // want of anything to redact. Nothing is written, so the classification
+        // is `Failed` — the leak is the subject, not the arm's outcome.
+        "leaks-its-credential" => {
+            banner(&args);
+            eprintln!(
+                "wizcli: client {} rejected the secret {}",
+                std::env::var("WIZ_CLIENT_ID").unwrap_or_default(),
+                std::env::var("WIZ_CLIENT_SECRET").unwrap_or_default()
+            );
+            std::process::exit(3);
+        }
         other => panic!("unknown arm {other}"),
     }
+}
+
+/// Write down every argument and every environment variable this process was
+/// started with.
+///
+/// The whole environment, not the names the adapter is expected to have set: an
+/// assertion that a sixth name arrived can only be made against a record that
+/// would have carried a sixth name.
+///
+/// Arguments include this program's own path, because that is what `argv` is —
+/// and a record that dropped it would be a record of what the test expected
+/// rather than of what the operating system saw.
+fn record(report: &Path) {
+    let record = report.with_file_name(CHILD_RECORD);
+    let argv: Vec<String> = std::env::args().collect();
+    let env: Vec<String> = std::env::vars()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    std::fs::write(
+        &record,
+        serde_json::json!({ "argv": argv, "env": env }).to_string(),
+    )
+    .unwrap_or_else(|source| panic!("could not write {}: {source}", record.display()));
 }
 
 /// The document the successful arms write.
