@@ -129,6 +129,29 @@ pub fn wiz_stub(arm: &str) -> ProgramRef {
     }
 }
 
+/// A scanner that is not installed.
+///
+/// The one situation the scripted `wizcli` cannot be asked for, and not by
+/// oversight: an absent program is a spawn that never happened, so there is no
+/// process left to script an arm in. It is reached the only way it can be — by
+/// pointing the operator seam at a path holding nothing — which is why it is a
+/// [`ProgramRef`] here rather than a seventh entry in [`ARMS`].
+///
+/// Sited under the stub's own build directory so the path is one cargo really
+/// owns, rather than a name in a system directory that a host could turn out to
+/// have. The suffix makes it unmistakable in the diagnostic the adapter reports.
+pub fn absent_scanner() -> ProgramRef {
+    let program = format!("{}-which-is-not-installed", env!("CARGO_BIN_EXE_wiz_stub"));
+    assert!(
+        !Path::new(&program).exists(),
+        "{program} exists, so it cannot stand for a scanner that is not installed"
+    );
+    ProgramRef {
+        program,
+        args: Vec::new(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Go trees on disk
 // ---------------------------------------------------------------------------
@@ -750,6 +773,12 @@ impl Scanner for ScriptedScanner {
 /// reading the exit code first, and the capability will go dark the next time
 /// somebody's tenant flags an unrelated finding.
 ///
+/// **Which is exactly why this is not the whole check.** Those two arms share an
+/// outcome by design, so this function cannot tell them apart and must not try:
+/// the moment it could, the adapter would have to be discriminating on the status
+/// line. What separates them is the status itself, and it is asserted by
+/// [`arm_exits_with`] against [`observed_exit`] — see those two.
+///
 /// **An unknown arm panics.** Returning `false` would be a failing assertion in
 /// the caller, which is a worse diagnostic: a typo in an arm name would read as
 /// *the stub cannot produce this situation* rather than as *there is no such
@@ -763,4 +792,75 @@ pub fn arm_was_exercised(arm: &str, outcome: &Result<ScanReport, ScanError>) -> 
         "no-such-image" => matches!(outcome, Err(ScanError::ImageAbsent { .. })),
         other => panic!("{other} is not an arm the scripted wizcli has; see ARMS"),
     }
+}
+
+/// The status line each arm is *defined* to end on.
+///
+/// Every arm's exit code is a deliberate choice in the stub and every one of them
+/// is load-bearing, which is the reason this is a table over all six rather than
+/// a single assertion about the one arm that provoked it:
+///
+/// - **`exit-nonzero-with-file` exits 3.** Without this, that arm and `ok` are
+///   indistinguishable from outside — [`arm_was_exercised`] maps both to a
+///   successful report, correctly — and the fixture would still pass having
+///   quietly stopped exiting non-zero at all. Then the suite's evidence for *the
+///   artefact decides, not the status line* would be a scan that never had a
+///   status line to ignore. 3 rather than 1 for the reason the stub gives at that
+///   arm: 1 is what a generic failure exits with, so an assertion satisfied by 1
+///   is not yet an assertion about a policy hit.
+/// - **`empty-file` and `unparseable-file` exit 0.** Their claim is that a *bad
+///   artefact alone* is refused, and a scanner that also exited non-zero would
+///   leave the refusal attributable to either.
+/// - **`exit-nonzero-no-file` and `no-such-image` exit 3**, matching
+///   `exit-nonzero-with-file` on purpose: those three differ by artefact and
+///   diagnostic while ending identically, which is what makes the adapter's
+///   separation of them a fact rather than an exit-code lookup.
+///
+/// The arm names are matched exhaustively here for [`arm_was_exercised`]'s
+/// reason, and an unknown one panics for the same one.
+pub fn arm_exits_with(arm: &str) -> i32 {
+    match arm {
+        "ok" | "empty-file" | "unparseable-file" => 0,
+        "exit-nonzero-with-file" | "exit-nonzero-no-file" | "no-such-image" => 3,
+        other => panic!("{other} is not an arm the scripted wizcli has; see ARMS"),
+    }
+}
+
+/// What the operating system saw the stub exit with, asking it for `arm`.
+///
+/// # Why this runs the program a second time
+///
+/// The adapter reads the artefact first and consults the status only to
+/// disambiguate its *absence*, so on a successful scan there is nothing in a
+/// [`ScanReport`] that the exit code reached — and there must not be, or the
+/// policy-hit arm stops being a case the adapter ignores. The status is therefore
+/// only observable by running the program and looking, which is what this does.
+///
+/// It is still the subprocess contract: [`wiz_stub`] supplies the program and the
+/// arm, exactly as a scan would, and nothing here links the stub as a library.
+/// The two arguments added after it are the stub's own documented argv — a report
+/// path and an image reference, both of which it requires of any caller — and not
+/// a copy of how the adapter happens to build its command line. Deriving them
+/// from the adapter would make this a test of `Wizcli`; what is under test here is
+/// the fixture's ability to produce the situation.
+///
+/// Panics rather than returning an [`Option`], because a status with no code is a
+/// death by signal: no arm has one, so it would mean the fixture crashed, and a
+/// crash reported as a mismatched exit code sends the reader to the wrong file.
+pub fn observed_exit(arm: &str) -> i32 {
+    let scratch = TempDir::new().expect("a temporary directory for a scan's report");
+    let stub = wiz_stub(arm);
+    let output = std::process::Command::new(&stub.program)
+        .args(&stub.args)
+        .arg("--json-output-file")
+        .arg(scratch.path().join("scan.json"))
+        .arg(image())
+        .output()
+        .unwrap_or_else(|source| panic!("could not run the scripted wizcli for {arm}: {source}"));
+    output.status.code().unwrap_or_else(|| {
+        panic!(
+            "the scripted wizcli died by signal on {arm}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
 }
