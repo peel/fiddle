@@ -25,7 +25,11 @@
 //! of it: the executor that walks validate → identity → postcondition → policy →
 //! authorize → delegate → observe, the envelope no caller can forge, and the
 //! vocabulary in which the difference between a refused write and a lost answer
-//! is made. `process` is private and holds the one thing every child this runtime
+//! is made. `scanner` is the fourth spawn site and the only one that changes
+//! nothing out there: a container scanner run as a subprocess, whose success is
+//! the report it wrote rather than the status it exited with — which is the
+//! inverse of the usual rule and is why the port states it. `process` is private
+//! and holds the one thing every child this runtime
 //! spawns has in common: a deadline it cannot outlive and a process group that
 //! dies with it. What a child may *see* is never shared; only the bound is.
 //!
@@ -47,6 +51,7 @@ pub mod journal;
 pub mod orchestration;
 pub mod ports;
 pub(crate) mod process;
+pub mod scanner;
 pub mod stub;
 pub mod workspace;
 
@@ -99,5 +104,6 @@ pub use orchestration::{
     attempt, observe, run, AttemptContext, AttemptRecord, RunContext, RunReport,
 };
 pub use ports::{ChangePort, WorkItemPort};
+pub use scanner::{ScanError, ScanReport, Scanner, Wizcli};
 pub use stub::{StubChangePort, StubWorkItemPort};
 pub use workspace::{WorkspaceCommand, WorkspaceError, WorkspacePath};

@@ -17,6 +17,13 @@ gh-stub = []
 # feature of its own rather than one shared switch, so that neither fixture can
 # be pulled into a build by a caller reaching for the other.
 git-stub = []
+# And for the scripted `wizcli` the CVE gate drives. Unlike the two above, this
+# fixture is not standing in for a program the suite could reach if it tried
+# harder: Wiz is testable only in CI, so the offline gate scans through this and
+# through nothing else, permanently. It is still `required-features` and still
+# off by default, because "a permanent fixture" and "shipped in the product" are
+# not the same thing.
+wiz-stub = []
 
 # The scripted `gh` the deterministic suite points `[github] cli.program` at.
 #
@@ -55,6 +62,22 @@ doc = false
 name = "git_stub"
 path = "tests/git_stub/git_stub.rs"
 required-features = ["git-stub"]
+test = false
+doc = false
+
+# The scripted `wizcli` the CVE gate points the scanner's `program` seam at. The
+# two blocks above argue for every line of this one.
+#
+# One thing is specific to this fixture: it includes `tests/support/document.rs`
+# so the documents it writes to disk are the ones the projection lanes assert
+# against. That module reaches `serde_json` and deliberately nothing else,
+# because a `[[bin]]` is compiled against `[dependencies]` alone — a fixture
+# module that reached `tempfile` could not be shared with a stub, which is why
+# the documents live apart from the Go trees in `tests/support/cve.rs`.
+[[bin]]
+name = "wiz_stub"
+path = "tests/wiz_stub/wiz_stub.rs"
+required-features = ["wiz-stub"]
 test = false
 doc = false
 
@@ -102,4 +125,4 @@ tempfile.workspace = true
 # targets, so the scripted `gh` exists for `cargo test` and for nothing else. A
 # plain default feature would put it in the release build; leaving it to
 # `--all-features` would break the single-target test command.
-fiddle-runtime = { path = ".", features = ["gh-stub", "git-stub"] }
+fiddle-runtime = { path = ".", features = ["gh-stub", "git-stub", "wiz-stub"] }

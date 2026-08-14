@@ -21,6 +21,10 @@
 //!
 //! - Task 4 adds `scanner_with` and `scanner_recording_env`, and replaces
 //!   [`wiz_stub`]'s derived path with the `env!` cargo guarantees.
+//!   **Done, in part:** [`wiz_stub`] now names the binary the way cargo
+//!   guarantees, and [`scanner_with`] is below. `scanner_recording_env` is not,
+//!   deliberately — see [`scanner_with`] for why a helper whose whole content is
+//!   the environment allowlist could not be written before the allowlist was.
 //! - Task 11 adds `contract`, `contract_for` and `contract_scanned_by`.
 //! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
 //! - Task 19 adds `fixture` and `world_with`.
@@ -34,6 +38,11 @@
 //! world in one file. So the stub is where a document meets the disk, and that
 //! stub's arms should print these bytes rather than embed a second copy of them.
 //!
+//! Those builders live in `document.rs` and are re-exported here, so callers are
+//! unaffected. The split is what makes the rule above satisfiable: the stub is a
+//! `[[bin]]`, a `[[bin]]` sees `[dependencies]` only, and this file reaches
+//! `tempfile` — see that file's header.
+//!
 //! # A sentinel is only evidence if something planted it
 //!
 //! The four constants below are all read by assertions of the form *"this string
@@ -42,9 +51,20 @@
 //! output — see `docs/technical/evidence-discipline.md` on fixture values that
 //! appear only where their value cannot matter.
 
+use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, Wizcli};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 use tempfile::TempDir;
+use tokio_util::sync::CancellationToken;
+
+// The scanner documents, which the scripted `wizcli` includes as well. Glob
+// re-exported rather than named one by one so that a builder added there is
+// reachable as `support::cve::*` without a second edit here — the split is a
+// compilation constraint and must not become an interface.
+#[path = "document.rs"]
+mod document;
+pub use document::*;
 
 // ---------------------------------------------------------------------------
 // Sentinels
@@ -61,13 +81,6 @@ pub const SENTINEL: &str = "fiddle-sentinel-9f14c2a7";
 /// The scanner credential specifically, planted so that "no credential reaches
 /// `argv`" is a fact about a process rather than a claim about one.
 pub const SENTINEL_SECRET: &str = "fiddle-secret-3b8e51d0";
-
-/// Advisory prose, planted where a scanner document carries a description.
-///
-/// The projection is meant to carry six fields and no free text, and a report
-/// whose description is something innocuous cannot tell *dropped the prose* apart
-/// from *there was no prose*.
-pub const SENTINEL_PROSE: &str = "fiddle-prose-c47a06f9";
 
 /// A host filesystem fact, planted where one could leak into published output.
 ///
@@ -95,26 +108,23 @@ pub struct ProgramRef {
     pub args: Vec<String>,
 }
 
-/// Where Task 4 will build the scripted `wizcli`, and which arm to ask it for.
+/// The scripted `wizcli`, and which arm to ask it for.
 ///
-/// This fixes the *location* so that Task 4 has one place to satisfy instead of
-/// inventing its own, and it deliberately does not require the binary to exist:
-/// the path is derived from a sibling stub cargo already builds rather than from
-/// `env!("CARGO_BIN_EXE_wiz_stub")`, which would not compile until the `[[bin]]`
-/// is declared.
+/// `CARGO_BIN_EXE_<name>` is the construction cargo promises, and it is what
+/// every other suite in this crate uses. It replaces the sibling-of-`gh_stub`
+/// derivation this function carried while the `[[bin]]` did not yet exist — that
+/// one assumed the two stubs land in one directory, which is cargo's layout
+/// rather than anything cargo guarantees.
 ///
-/// **The derivation is a placeholder and should not survive Task 4.** It assumes
-/// the two stubs land in one directory, which is cargo's layout rather than
-/// anything cargo promises; `CARGO_BIN_EXE_<name>` is the construction that is
-/// promised, and it is what every other suite in this crate uses.
-/// `the_derived_stub_path_is_a_placeholder_until_task_4_declares_the_binary` in
-/// `support.rs` fails on the day the swap becomes possible.
+/// The arm is the stub's **first** argument, ahead of everything the adapter
+/// appends, because it arrives through the same `args` seam an operator would
+/// use to wrap a real `wizcli` — see [`ProgramRef`]. That the fixture is selected
+/// through the product's own seam rather than through the environment is the
+/// same arrangement `gh_stub` is under, and for the same reason: the environment
+/// is pinned, so it cannot carry the test's own plumbing.
 pub fn wiz_stub(arm: &str) -> ProgramRef {
     ProgramRef {
-        program: Path::new(env!("CARGO_BIN_EXE_gh_stub"))
-            .with_file_name("wiz_stub")
-            .display()
-            .to_string(),
+        program: env!("CARGO_BIN_EXE_wiz_stub").to_string(),
         args: vec![arm.to_string()],
     }
 }
@@ -638,319 +648,119 @@ pub fn log_of(bodies: &[&str]) -> CommitLog {
 }
 
 // ---------------------------------------------------------------------------
-// Scanner documents
+// The scripted scanner
 // ---------------------------------------------------------------------------
 
-/// Library packages a scanner document can report, cycled by position so that two
-/// advisory ids produce two different packages.
-const LIBRARY_PACKAGES: [(&str, &str, &str); 3] = [
-    ("golang.org/x/crypto", "v0.31.0", "v0.35.0"),
-    ("golang.org/x/net", "v0.24.0", "v0.28.0"),
-    ("github.com/docker/docker", "v24.0.7", "v24.0.9"),
+/// The image every scanner test scans.
+///
+/// A tag rather than a digest, because a tag is what a caller has: resolving one
+/// to the digest a report is filed under is the scanner's job, and a fixture
+/// that handed over a digest would let an adapter that never resolved anything
+/// pass. The value is not an image anybody can pull, which is the point — the
+/// gate is offline, and the only thing that ever answers for it is
+/// [`wiz_stub`].
+pub fn image() -> String {
+    "ghcr.io/acme/widget:fiddle-fixture".to_string()
+}
+
+/// How long a scripted scan may take. Far longer than any arm needs, so a test
+/// that fails has failed on the arm rather than on a loaded machine.
+const SCRIPTED_SCAN_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Every arm the scripted scanner has.
+///
+/// A fixed-length array rather than a `Vec` or a slice literal at each use, for
+/// [`all_shapes`]'s reason: deleting an entry has to be a compile error, and
+/// with a `Vec` it was not — the loop simply got shorter and every test stayed
+/// green. [`arm_was_exercised`] matches on these names exhaustively, so the two
+/// halves cannot drift apart in the other direction either.
+///
+/// The first two are the arms a scan *succeeds* on. That
+/// `exit-nonzero-with-file` is one of them is the whole of what this fixture is
+/// for; see [`arm_was_exercised`].
+pub const ARMS: [&str; 6] = [
+    "ok",
+    "exit-nonzero-with-file",
+    "exit-nonzero-no-file",
+    "empty-file",
+    "unparseable-file",
+    "no-such-image",
 ];
 
-/// The same for OS packages, whose versions are a distribution's and not a
-/// module's — which is why the two arrays cannot share a projection rule.
-const OS_PACKAGES: [(&str, &str, &str); 3] = [
-    ("libssl3", "3.0.11-r0", "3.0.12-r0"),
-    ("busybox", "1.36.1-r5", "1.36.1-r7"),
-    ("zlib", "1.3-r0", "1.3.1-r0"),
-];
-
-/// The advisory description a document carries unless a test asked for prose.
+/// A scanner that runs `program`.
 ///
-/// Innocuous, and it has to be: a default of [`SENTINEL_PROSE`] would put the
-/// sentinel in every world, and "the prose did not cross the boundary" would then
-/// be untestable because no document lacks it.
-const BENIGN_DESCRIPTION: &str = "a benign advisory summary";
-
-/// What the library array holds when a variant does not say.
-const DEFAULT_LIBRARY_CVES: [&str; 1] = ["CVE-2026-0001"];
-
-/// What the OS array holds when a variant does not say.
-const DEFAULT_OS_CVES: [&str; 1] = ["CVE-2026-0002"];
-
-/// A vulnerable package, as a scanner reports one.
-#[derive(Debug, Clone)]
-struct Package {
-    name: String,
-    version: String,
-    vulnerabilities: Vec<serde_json::Value>,
-}
-
-/// The `libraries` half of a scanner document.
+/// Returns a [`Scanner`] rather than a [`Wizcli`] because the scratch directory
+/// has to outlive the scan and a temporary directory is owned, not borrowed: a
+/// bare adapter handed a path whose `TempDir` had already dropped would look for
+/// a report in a directory that no longer exists. [`ScriptedScanner`] holds both,
+/// so `scanner_with(..).scan(..)` is a single expression that still has its
+/// scratch directory when the child writes into it.
 ///
-/// A type of its own, and so is [`OsPackages`], for one reason:
-/// `report_with(libraries(..), os_packages(..))` takes two arrays of the same
-/// shape, and two `Vec`s could be handed over the wrong way round with nothing to
-/// notice. A projection bug and a transposed fixture look identical in the
-/// result, so the transposition is made a compile error instead.
-#[derive(Debug, Clone)]
-pub struct Libraries(Vec<Package>);
-
-/// The `osPackages` half. See [`Libraries`].
-#[derive(Debug, Clone)]
-pub struct OsPackages(Vec<Package>);
-
-/// Library packages, one per advisory id.
-pub fn libraries(cves: &[&str]) -> Libraries {
-    Libraries(packages(cves, &LIBRARY_PACKAGES))
-}
-
-/// OS packages, one per advisory id.
-pub fn os_packages(cves: &[&str]) -> OsPackages {
-    OsPackages(packages(cves, &OS_PACKAGES))
-}
-
-fn packages(cves: &[&str], table: &[(&str, &str, &str); 3]) -> Vec<Package> {
-    cves.iter()
-        .enumerate()
-        .map(|(at, cve)| {
-            let (name, current, fixed) = table[at % table.len()];
-            Package {
-                name: name.to_string(),
-                version: current.to_string(),
-                vulnerabilities: vec![vulnerability(cve, Some(fixed), BENIGN_DESCRIPTION)],
-            }
-        })
-        .collect()
-}
-
-/// One reported vulnerability.
+/// # `scanner_recording_env` is deliberately not here yet
 ///
-/// `HIGH` because that is the severity the selection rule admits on its own: a
-/// fixture at a lower severity would be selected only through `hasExploit`, and
-/// then every test about selection would be about the other arm.
-fn vulnerability(cve: &str, fixed: Option<&str>, description: &str) -> serde_json::Value {
-    let mut value = serde_json::json!({
-        "name": cve,
-        "severity": "HIGH",
-        "hasExploit": false,
-        "description": description,
-    });
-    // Absent rather than null where there is no fix, because absent is what the
-    // reference pipeline produces and the two are not the same document.
-    if let Some(fixed) = fixed {
-        value["fixedVersion"] = serde_json::Value::String(fixed.to_string());
-    }
-    value
-}
-
-fn as_json(packages: &[Package]) -> serde_json::Value {
-    serde_json::Value::Array(
-        packages
-            .iter()
-            .map(|package| {
-                serde_json::json!({
-                    "name": package.name,
-                    "version": package.version,
-                    "vulnerabilities": package.vulnerabilities,
-                })
-            })
-            .collect(),
-    )
-}
-
-/// Which scanner document a world holds.
-#[derive(Debug, Clone)]
-pub enum ReportVariant {
-    /// The ordinary document: whatever the two arrays were given.
-    Plain(Libraries, OsPackages),
-    /// No `osPackages` key at all.
-    OsAbsent,
-    /// An `osPackages` key holding an empty array.
-    OsEmpty,
-    /// One advisory reported twice, once with a fix and once without.
-    DuplicateCve(String),
-    /// A document carrying advisory prose.
-    AdvisoryDescription(String),
-}
-
-/// How many document variants there are, pinning [`canonical_reports`]'s length.
-/// See [`SHAPES`] for why the count is written down rather than inferred.
-const REPORT_VARIANTS: usize = 5;
-
-impl ReportVariant {
-    /// This variant's position in [`canonical_reports`]. The pair of guards
-    /// [`Shape::index`] describes, with the same limit, for the documents.
-    pub fn index(&self) -> usize {
-        match self {
-            ReportVariant::Plain(_, _) => 0,
-            ReportVariant::OsAbsent => 1,
-            ReportVariant::OsEmpty => 2,
-            ReportVariant::DuplicateCve(_) => 3,
-            ReportVariant::AdvisoryDescription(_) => 4,
-        }
-    }
-
-    /// A short name for a failure message. Derived from the variant rather than
-    /// written beside each construction, so it cannot label the wrong document.
-    pub fn label(&self) -> String {
-        match self {
-            ReportVariant::Plain(Libraries(l), OsPackages(o)) => {
-                format!("plain({} libraries, {} os packages)", l.len(), o.len())
-            }
-            ReportVariant::OsAbsent => "os-absent".to_string(),
-            ReportVariant::OsEmpty => "os-empty".to_string(),
-            ReportVariant::DuplicateCve(cve) => format!("duplicate({cve})"),
-            ReportVariant::AdvisoryDescription(_) => "advisory-description".to_string(),
-        }
-    }
-
-    fn render(&self) -> Report {
-        let mut result = serde_json::Map::new();
-        match self {
-            ReportVariant::Plain(Libraries(l), OsPackages(o)) => {
-                result.insert("libraries".to_string(), as_json(l));
-                result.insert("osPackages".to_string(), as_json(o));
-            }
-            // The key is left out entirely, which is the whole of this world: a
-            // reader that treats absent as empty and one that refuses cannot be
-            // told apart by a document that has the key.
-            ReportVariant::OsAbsent => {
-                result.insert(
-                    "libraries".to_string(),
-                    as_json(&packages(&DEFAULT_LIBRARY_CVES, &LIBRARY_PACKAGES)),
-                );
-            }
-            ReportVariant::OsEmpty => {
-                result.insert(
-                    "libraries".to_string(),
-                    as_json(&packages(&DEFAULT_LIBRARY_CVES, &LIBRARY_PACKAGES)),
-                );
-                result.insert("osPackages".to_string(), serde_json::json!([]));
-            }
-            // Two packages, one advisory, one fix between them. The rule this is
-            // for splits fixable from upstream-blocked by subtraction, and a
-            // document where the id appears once cannot show a filter putting it
-            // in both sets.
-            ReportVariant::DuplicateCve(cve) => {
-                let (fixable_name, fixable_version, fixed) = LIBRARY_PACKAGES[0];
-                let (blocked_name, blocked_version, _) = LIBRARY_PACKAGES[1];
-                result.insert(
-                    "libraries".to_string(),
-                    as_json(&[
-                        Package {
-                            name: fixable_name.to_string(),
-                            version: fixable_version.to_string(),
-                            vulnerabilities: vec![vulnerability(
-                                cve,
-                                Some(fixed),
-                                BENIGN_DESCRIPTION,
-                            )],
-                        },
-                        Package {
-                            name: blocked_name.to_string(),
-                            version: blocked_version.to_string(),
-                            vulnerabilities: vec![vulnerability(cve, None, BENIGN_DESCRIPTION)],
-                        },
-                    ]),
-                );
-                result.insert("osPackages".to_string(), serde_json::json!([]));
-            }
-            ReportVariant::AdvisoryDescription(prose) => {
-                let (name, version, fixed) = LIBRARY_PACKAGES[0];
-                result.insert(
-                    "libraries".to_string(),
-                    as_json(&[Package {
-                        name: name.to_string(),
-                        version: version.to_string(),
-                        vulnerabilities: vec![vulnerability(
-                            DEFAULT_LIBRARY_CVES[0],
-                            Some(fixed),
-                            prose,
-                        )],
-                    }]),
-                );
-                result.insert("osPackages".to_string(), serde_json::json!([]));
-            }
-        }
-        Report {
-            raw: serde_json::to_string_pretty(&serde_json::json!({ "result": result }))
-                .expect("a document built from json! values serializes"),
-        }
-    }
-}
-
-/// A scanner document, as bytes.
-///
-/// The scanner version and the image digest are not in here. Those are what the
-/// *scan* recorded rather than what the document said, and Task 5 resolves them
-/// at the adapter. If it turns out `wizcli` puts them in the file after all, the
-/// fields belong here and this note is what should change.
-#[derive(Debug, Clone)]
-pub struct Report {
-    raw: String,
-}
-
-impl Report {
-    /// The bytes a scanner would have written.
-    ///
-    /// Pretty-printed, which no parser cares about and a failing `assert_ne!`
-    /// does: the two documents a lane could not tell apart are readable side by
-    /// side.
-    pub fn raw(&self) -> &str {
-        &self.raw
-    }
-}
-
-/// A document holding exactly these two arrays.
-pub fn report_with(libraries: Libraries, os_packages: OsPackages) -> Report {
-    ReportVariant::Plain(libraries, os_packages).render()
-}
-
-/// A document with no `osPackages` key.
-pub fn report_with_os_absent() -> Report {
-    ReportVariant::OsAbsent.render()
-}
-
-/// A document whose `osPackages` key holds an empty array.
-pub fn report_with_os_empty() -> Report {
-    ReportVariant::OsEmpty.render()
-}
-
-/// A document reporting `cve` twice, once with a fix and once without.
-pub fn report_with_duplicate_cve_one_fixed_one_not(cve: &str) -> Report {
-    ReportVariant::DuplicateCve(cve.to_string()).render()
-}
-
-/// A document whose advisory carries `text` as its description.
-pub fn report_with_advisory_description(text: &str) -> Report {
-    ReportVariant::AdvisoryDescription(text.to_string()).render()
-}
-
-/// One document per variant, so completeness can be checked. See
-/// [`ReportVariant::index`], and [`all_shapes`] for why this is an array.
-pub fn canonical_reports() -> [ReportVariant; REPORT_VARIANTS] {
-    [
-        ReportVariant::Plain(
-            libraries(&DEFAULT_LIBRARY_CVES),
-            os_packages(&DEFAULT_OS_CVES),
+/// The extension convention in this file's header lists it beside this function
+/// as Task 4's. It is not written, because its whole content is the environment
+/// allowlist — the set of names the adapter builds around the credential — and
+/// that set is Task 5's to decide and to assert. A helper written now would be a
+/// guess at an allowlist, and the assertion built on it would be an assertion
+/// that the guess had not changed. It belongs here, in this section, on the day
+/// there is an allowlist for it to record.
+pub fn scanner_with(program: ProgramRef) -> ScriptedScanner {
+    let scratch = TempDir::new().expect("a temporary directory for a scan's report");
+    ScriptedScanner {
+        wizcli: Wizcli::new(
+            PathBuf::from(program.program),
+            program.args,
+            scratch.path().to_path_buf(),
+            SCRIPTED_SCAN_TIMEOUT,
+            CancellationToken::new(),
         ),
-        ReportVariant::OsAbsent,
-        ReportVariant::OsEmpty,
-        ReportVariant::DuplicateCve("CVE-2026-0777".to_string()),
-        ReportVariant::AdvisoryDescription(SENTINEL_PROSE.to_string()),
-    ]
+        scratch,
+    }
 }
 
-/// Every document a lane needs to tell from every other, labelled.
+/// A [`Wizcli`] and the scratch directory it writes into, with one lifetime.
 ///
-/// Built on top of [`canonical_reports`] rather than beside it, so a variant added
-/// there is compared here without anybody remembering to; the two extra entries
-/// are the one-sided arrays the projection has to read both of.
-pub fn distinct_reports() -> Vec<(String, Report)> {
-    let mut variants: Vec<ReportVariant> = canonical_reports().into_iter().collect();
-    variants.push(ReportVariant::Plain(
-        libraries(&["CVE-1"]),
-        os_packages(&[]),
-    ));
-    variants.push(ReportVariant::Plain(
-        libraries(&[]),
-        os_packages(&["CVE-1"]),
-    ));
-    variants
-        .into_iter()
-        .map(|variant| (variant.label(), variant.render()))
-        .collect()
+/// It implements the port rather than exposing the adapter, so a suite drives a
+/// scan through [`Scanner::scan`] — the seam a real capability will hold — and
+/// not through a concrete type the capability never sees.
+pub struct ScriptedScanner {
+    wizcli: Wizcli,
+    /// Held only for its [`Drop`], exactly as [`GoWorkspace::root`] is.
+    scratch: TempDir,
+}
+
+#[async_trait::async_trait]
+impl Scanner for ScriptedScanner {
+    async fn scan(&self, image: &str) -> Result<ScanReport, ScanError> {
+        self.wizcli.scan(image).await
+    }
+}
+
+/// Did asking the stub for `arm` actually reach the situation `arm` names?
+///
+/// The map from an arm to its outcome, in one place, so that every suite driving
+/// the scripted scanner agrees about what each arm means. Two things are worth
+/// reading rather than skimming:
+///
+/// **The first two arms are successes.** `exit-nonzero-with-file` is a scanner
+/// that exited non-zero having written a perfectly good report, which is what an
+/// organisation policy hit looks like — and a scan is judged by its artefact, not
+/// by its status line. If that arm ever starts failing, the adapter has begun
+/// reading the exit code first, and the capability will go dark the next time
+/// somebody's tenant flags an unrelated finding.
+///
+/// **An unknown arm panics.** Returning `false` would be a failing assertion in
+/// the caller, which is a worse diagnostic: a typo in an arm name would read as
+/// *the stub cannot produce this situation* rather than as *there is no such
+/// situation*.
+pub fn arm_was_exercised(arm: &str, outcome: &Result<ScanReport, ScanError>) -> bool {
+    match arm {
+        "ok" | "exit-nonzero-with-file" => outcome.is_ok(),
+        "exit-nonzero-no-file" => matches!(outcome, Err(ScanError::Failed { .. })),
+        "empty-file" => matches!(outcome, Err(ScanError::NoOutput { .. })),
+        "unparseable-file" => matches!(outcome, Err(ScanError::Unparseable { .. })),
+        "no-such-image" => matches!(outcome, Err(ScanError::ImageAbsent { .. })),
+        other => panic!("{other} is not an arm the scripted wizcli has; see ARMS"),
+    }
 }

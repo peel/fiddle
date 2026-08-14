@@ -1,17 +1,19 @@
 //! Running a child process under a bound it cannot outlive.
 //!
-//! There are two places in this runtime where control passes to a program this
-//! project did not write: a check runner inside a workspace
-//! ([`workspace::command`](crate::workspace::command)) and the `gh` invocation
-//! that carries the GitHub credential ([`github::cli`](crate::github::cli)).
+//! There are several places in this runtime where control passes to a program
+//! this project did not write: a check runner inside a workspace
+//! ([`workspace::command`](crate::workspace::command)), the `gh` invocation that
+//! carries the GitHub credential ([`github::cli`](crate::github::cli)), the
+//! `git push` that carries its own ([`git::publish`](crate::git::publish)), and
+//! the container scanner ([`scanner`](crate::scanner)).
 //! They share nothing about *what* the child may see — the workspace builds a
 //! four-name environment around a scratch `HOME`, `gh` builds a five-name one
-//! with no `HOME` at all, and keeping those two sets apart is the whole of M1's
+//! with no `HOME` at all, and keeping those sets apart is the whole of M1's
 //! and M2's isolation argument. What they do share is the harder half: a child
 //! that must die when its deadline passes or its attempt is cancelled, and that
 //! must take its own descendants with it when it goes.
 //!
-//! That half lives here, once, so the second spawn site inherits the reasoning
+//! That half lives here, once, so every later spawn site inherits the reasoning
 //! rather than a copy of it. The environment is deliberately *not* this
 //! module's business: a caller hands in a [`Command`] it has already built, and
 //! the allowlist it built stays in the module that can argue for it.

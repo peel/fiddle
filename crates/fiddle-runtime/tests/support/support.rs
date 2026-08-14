@@ -264,13 +264,26 @@ fn each_sentinel_is_unmistakable_for_another() {
 }
 
 #[test]
-fn the_derived_stub_path_is_a_placeholder_until_task_4_declares_the_binary() {
-    // A tripwire rather than a comment, so it fails on the day the blocker is
-    // removed instead of being noticed some time after. See `wiz_stub`.
+fn the_scripted_scanner_is_a_binary_that_exists() {
+    // What replaces `the_derived_stub_path_is_a_placeholder_until_task_4_
+    // declares_the_binary`, a tripwire on this binary's *absence* which fired,
+    // as designed, on the day the `[[bin]]` landed.
+    //
+    // Inverted rather than deleted, because the claim worth keeping is the one
+    // the tripwire stood in for: `wiz_stub` names a program that is really on
+    // disk. `CARGO_BIN_EXE_wiz_stub` is a compile-time string, so a
+    // `required-features` line that stopped building the target would leave
+    // every scanner suite unable to spawn — and the adapter classifies that as a
+    // scanner which is not installed, which is a plausible-looking error rather
+    // than an obviously broken fixture.
+    let stub = support::wiz_stub("ok");
     assert!(
-        !Path::new(&support::wiz_stub("ok").program).exists(),
-        "the wiz_stub binary now exists, so Task 4 has landed: replace the sibling \
-         derivation in `wiz_stub` with env!(\"CARGO_BIN_EXE_wiz_stub\"), which cargo \
-         guarantees, and delete this test"
+        Path::new(&stub.program).exists(),
+        "{} is not on disk, so no suite can drive a scan",
+        stub.program
     );
+    // The arm is the *first* argument and everything the adapter appends comes
+    // after it. A stub handed its arm anywhere else would read one of the
+    // adapter's own flags as an arm name and panic.
+    assert_eq!(stub.args, vec!["ok".to_string()]);
 }
