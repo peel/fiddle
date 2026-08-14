@@ -15,10 +15,14 @@
 //! the run ended, `published` holds the
 //! bound every piece of free text a run publishes is subject to, and `report`
 //! holds the document a run publishes to say all of that to a later reader.
+//! `finding` holds the projection boundary in the other direction: the six
+//! fields a scanner's report is allowed to become, and the one canonical
+//! spelling an advisory id has once it is inside.
 
 pub mod assessment;
 pub mod decision;
 pub mod effect;
+pub mod finding;
 pub mod identity;
 pub mod observation;
 pub mod outcome;
@@ -35,6 +39,7 @@ pub use decision::{
     HumanDecisionRequest, InterpretedHumanDecision, MarkerError, MARKER_VERSION,
 };
 pub use effect::{effect_id, payload_hash, EffectId, EffectKind, PayloadHash, ProposedEffect};
+pub use finding::{selected, AdvisoryId, AdvisoryIdError, PackageType, ProjectedFinding, Severity};
 pub use identity::{
     AttemptId, CapabilityId, InvocationRef, InvocationRefError, InvocationScheme, WorkRef,
 };
