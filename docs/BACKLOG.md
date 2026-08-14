@@ -1709,3 +1709,24 @@ The general shape is worth keeping beyond this milestone: **an effect whose targ
 Origin: fiddle:challenge --phase define during M4 seed planning (epic fiddle-eph7, seed fiddle-q7ct)
 Tags: #debt #risk #infrastructure
 Status: 2026-08-13 — split recorded in the RFC and the tracker; the effect-identity and allowlist findings are recorded in the M4a design spec and must survive into bean bodies, since docs/specs/ is gitignored.
+
+### 2026-08-14 — A plan's test snippets named real APIs with wrong shapes, and the lane that hit it was the third to find a DEFINE defect
+The M4a plan's task bodies carry Rust test snippets written during planning without being compiled. Several name a real API with the wrong shape: `assess(&view)` against the real `assess(work, expected_marker)`; `Observation::NotApplicable` against the real `NotApplicable { reason: String }`; `ChangeSetState::none()`, which has zero hits repo-wide; and `WorkStateView { .. }` as a struct literal where the constructor is `without_publication`. All four confirmed against the tree.
+
+The plan format already forbids "references to types, functions, or methods not defined in any task". This is the adjacent sin it does not name: referencing a type that *does* exist, with a signature that does not. The rule worth adding for later milestones is that a snippet against existing code is only evidence if it was compiled, and a plan that cannot compile its snippets should say they are intent rather than presenting them as code.
+
+Three DEFINE defects in this epic were found by something other than the lead's own review, which is the pattern worth recording rather than any one of them: a bean requiring helpers whose types no earlier bean builds; an assertion passing for two different causes (`is_err()` satisfied both by a refused field and by invalid JSON); and this one. Two were found by implementer lanes and one by the convergence machinery.
+
+Origin: implementation (epic fiddle-eph7, Task 2 lane fiddle-uwk0)
+Tags: #debt #infrastructure
+Status: 2026-08-14 — recorded on epic fiddle-eph7 as an instruction to every remaining lane: verify signatures against the tree, adapt, preserve intent, report the adaptation, and never add a shim to make a snippet compile as written.
+
+### 2026-08-14 — assess's fallback narrowed its extent while its arm count stayed three, and one guard is single-witness
+Two findings from the Task 2 lane about `crates/fiddle-core/src/assessment.rs`, both reported rather than left for a reader to discover.
+
+`docs/technical/SYSTEM.md` states that exit 20's `assess → Blocked` route has exactly three arms. That count is **unchanged** at `43cb3d7`, verified site by site at both shas. But the fallback's *extent* narrows: it previously caught `(NotApplicable work item, Available changes)` and no longer does, so the clause "the fallback for a view M0's orchestration cannot act on" remains true while no longer covering the trackerless case. The reason string is byte-unchanged and no test asserts it.
+
+Separately, the work-item half of the fail-closed guard is **single-witness**: under the arm-merge inversion only `an_unavailable_work_item_blocks_too` failed, because `unavailable_source_is_blocked` makes the *changes* half unavailable, which the narrowed guard still catches. That state is pre-existing, but the change makes it more load-bearing — there is now an adjacent arm that can swallow exactly that case where before there was only the fallback.
+
+Origin: implementation (epic fiddle-eph7, Task 2 lane fiddle-uwk0, reported as concerns with DONE_WITH_CONCERNS)
+Tags: #debt #risk
