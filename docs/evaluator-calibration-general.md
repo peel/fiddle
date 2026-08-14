@@ -907,3 +907,201 @@ a fourth already asserted zero on the line above. It read as a completeness chec
 **And distrust a null closed only by a table the lane wrote itself.** The same hand wrote the code and the
 expectation, so the table proves the sorter and not the expectation. The closure worth full marks pairs it
 with one assertion over a real invocation.
+
+## M4 — CVE mitigation
+
+Anchors for the milestone that gives fiddle its first product workflow. Every M4 bean changes code, so
+the 2026-07-29 doc-only correction does not apply to any of them.
+
+**M4 split into M4a and M4b on 2026-08-13.** These anchors are written once and shared, because the
+properties do not change when the milestone boundary moves. Which milestone exercises each:
+
+| Criterion | Milestone |
+|---|---|
+| `m4-injection-boundary` | M4a |
+| `m4-scanner-observation-integrity` | M4a, re-measured against the real scanner in M4b |
+| `m4-attribution-and-dedup` | M4a |
+| `m4-disposition-completeness` | M4a |
+| `m4-fix-evidence-strength` | M4a |
+| `m4-ci-evidence-discipline` | **M4b** |
+| `m4-credential-and-workspace-boundary` | M4a for `wizcli` and the workspace; M4b for the real credential |
+
+M4b's seed adds its own criteria for deployment parity and lane discipline. A criterion listed here as
+M4a's must not be quietly re-scored in M4b to make a lane look complete — that is the criterion-set
+identity failure the method section above names, wearing a milestone boundary as its disguise.
+
+**M4 inherits M3's explicit thresholds** — `correctness: 7`, `domain_spec_fidelity: 8`,
+`code_quality: 6` — rather than reverting to `thresholds: {}`. M3's reversal closed the measurement gap
+recorded above, and reverting would reopen it on the largest milestone since M2.
+
+**What M4 is a port of, and why that changes scoring.** M4 reimplements a working system: the
+`cve-fix` skill in `snowplow-incubator/snowplow-identities`, 658 lines, whose rules were each earned by
+a failure in production. A bean is therefore scored against **the behaviour of that skill** as well as
+against the RFC. Reinventing one of its rules more simply is not elegance, it is a regression, unless
+the bean says which named failure the simpler rule still survives. Three of its rules exist because a
+plausible-and-wrong version shipped first: dedup by PR search, `sort -V` on mixed `v` prefixes, and
+folding on a reverted group's rescan.
+
+**The scope rule, stated once.** M4 is scored on what the deterministic shell can *prove about the
+world* after the model finished, never on whether the model chose a good version bump. A model that
+picked a needlessly large upgrade is not a defect in a bean; a shell that reports a fix because a
+version string changed is. The question behind every criterion: **if the mitigation had silently not
+worked, which assertion here would have failed?** A bean whose evidence for a fix is the diff it wrote
+has proven that it wrote a diff.
+
+**The division of labour is itself scored.** M4's rule is *agent when necessary, determinism where
+needed*: a rule earned by a measurement failure becomes Rust, a rule describing what good judgment
+looks like becomes prompt, and the model may propose an edit but never return a verdict. Score against
+that line in both directions. A bean that hands a model the version comparison, the attribution rules,
+the already-fixed scan or the fold rule has reintroduced a dated silent failure and should be marked
+down on `correctness` even if its tests pass — because the tests will pass, that being the nature of the
+failure. A bean that hard-codes a *judgment* — deciding mechanically whether a bump forced the same
+rename at every call site — has replaced a reading of code with a pattern match, and should say what its
+rule refuses that a reader would accept.
+
+The agent's necessary surface in this milestone is **one step**, the uniform mechanical migration. A
+bean that widens it is answerable for why, and "the model could also do this part" is not a reason —
+the milestone's value is that the decisions became mechanical.
+
+**Inversions remain the standard, and for this milestone one is decisive and cheap:** replace the
+mitigation with a no-op and re-run the lane. Every assertion that still passes was never about the fix.
+
+### `m4-injection-boundary`
+
+What crosses from the scanner into the model, and what must not.
+
+- **Poor (1–3).** The model can read raw scan output, or the projection passes through advisory
+  descriptions, policy text or any other scanner-authored prose. The boundary is asserted by reading
+  the code rather than by a test. Free-form text reaches a prompt and nobody can say which field
+  carried it.
+- **Acceptable (4–7).** The deterministic shell performs the projection and the bounded attempt
+  receives the projected fields only. Extra fields are refused rather than ignored — the projection is
+  the contract. A test proves the model-visible payload contains none of the scanner's prose.
+- **Excellent (8–10).** The property is asserted against the **serialized outbound request**, not
+  against the builder that produced it, in the same shape as
+  `binary_repair::the_serialized_request_offers_four_tools_and_carries_no_host_fact`: a sentinel string
+  planted in an advisory description is searched for in every request body and found in none. The bean
+  states that this boundary was previously a `jq` expression in a workflow step and is now typed and
+  tested, because that is the milestone's central safety improvement rather than an incidental one.
+
+### `m4-scanner-observation-integrity`
+
+The scan as an observation, and what an unsuccessful one may look like.
+
+- **Poor (1–3).** The scanner's exit code is trusted, so a legitimate non-zero policy hit is read as a
+  failed scan — or conversely a failure is read as clean. Only `.result.libraries[]` is read, so OS
+  findings are silently invisible. `--by-policy-hits=DISABLED` is absent or treated as cosmetic. The
+  scanner version and image digest are unrecorded, so no later re-scan is comparable.
+- **Acceptable (4–7).** Success is *the file was written and parses*, never the exit code, and the bean
+  says why — org policy flags unrelated findings and v1 defaults to BLOCK-policy hits only, which
+  hides a HIGH transitive finding. Both package arrays are read and an empty `osPackages` is
+  distinguished from an absent one. Scanner version and image digest are recorded before parsing.
+  Every unsuccessful arm reaches `Retryable` with a reason naming which one fired.
+- **Excellent (8–10).** Each unsuccessful arm has its own test rather than one test standing for the
+  family, and an inversion collapsing any two onto one reason makes a named test fail. A reader can
+  tell "found nothing" from "did not scan" from the bundle alone. The negative check prints its
+  denominator — how many findings were considered, not only how many selected.
+
+### `m4-attribution-and-dedup`
+
+Which module actually gets edited, and how a run knows what is already done.
+
+- **Poor (1–3).** Groups are keyed on the scanner's package name, so one bump splits across groups or
+  two unrelated bumps merge. Parent viability is reasoned about rather than measured. Already-fixed is
+  determined by searching pull requests, or from a PR body, or from any prose about the tree.
+  Mixed-prefix versions are compared without stripping `v` from both operands. A second PR is opened
+  when one is already open.
+- **Acceptable (4–7).** Attribution runs before grouping and is read-only. The four rules are matched
+  top-down, parent viability is **measured** by bump-tidy-confirm with a revert on failure, and no
+  target is invented. Groups key on the resolved target, so OS findings need no special case.
+  Already-fixed is read from the tree for libraries and from commit bodies for OS findings, with `v`
+  stripped from both operands. One PR per repository, reused at the remote tip, never a second.
+- **Excellent (8–10).** The two traps are asserted, not merely avoided: a test compares `v2.52.9`
+  against `2.52.14` and fails if the strip is removed, and a test proves no code path consults PR
+  search or PR bodies for already-fixed — the mechanism that dropped `CVE-2026-45045` on 2026-08-12
+  because a merged `grpc` PR's body mentioned it as unrelated leftover. The fold rule's **negative**
+  case is tested: a `needs-work` group's rescan must not be folded on, because its bump was reverted
+  and folding would record as fixed something nothing fixed. A `needs-work` group's ids are proved
+  absent from every commit body.
+
+### `m4-disposition-completeness`
+
+Six outcomes, and whether each means what it says.
+
+- **Poor (1–3).** A `NoChange` carries no reason, or one reason covers several causes. A scanner
+  failure reports as a clean result. An open-PR hit is inferred from a branch name rather than an
+  observed PR. "Every group needs work" and "nothing was affected" are the same value. The happy path
+  is the only one tested. A `needs-work` group stops the run.
+- **Acceptable (4–7).** All six rows are reachable, each carries evidence for its own reason, and no
+  two causes produce an identical observable result. `Retryable` is genuinely separate from every
+  `NoChange`. A `needs-work` group does not stop the run and clean groups still land. There is no
+  draft state, no `needs-human` label and no suspension — judgment cases are reverted and reported.
+- **Excellent (8–10).** **Each disposition fails under a mutation its neighbours survive**, and the
+  bean names the mutation per row. A `NoChange` is checkable from the bundle without the process. Rows
+  sharing an exit code say what distinguishes them, because no exit code discriminates a reason — the
+  gap ADR 013 named and M3 widened. Every input CVE has exactly one verdict line, none missing and
+  none duplicated, asserted rather than assumed.
+
+### `m4-fix-evidence-strength`
+
+What establishes the vulnerability is gone, as opposed to that something changed.
+
+- **Poor (1–3).** Evidence is the diff, the model's report, or a version string that moved. The rescan
+  is skipped, or only the group's own ids are checked so a bump trading one vulnerability for another
+  passes. Checks are chained with `&&` so one exit code stands for five. `go fmt` is scored on exit
+  code alone, ignoring that printed output is itself the failure.
+- **Acceptable (4–7).** All five checks run as separate commands with their own recorded results, and
+  `go fmt` requires exit 0 **and** no output. Both rescan conditions hold: the group's ids absent from
+  both package arrays, **and** no new HIGH or CRITICAL appearing that was not in the input. A rescan
+  at a different scanner version is recorded as provisional rather than as proof. Regression evidence
+  is stated with its limits, and `go test`'s absence is explained rather than silent.
+- **Excellent (8–10).** The decisive assertion is present and named: with the mitigation replaced by a
+  no-op, the fix-evidence assertion **fails**. Condition b has its own test driven by a bump that
+  clears its own CVE and introduces a new HIGH — the case a lane is most likely to omit because the
+  happy path never exercises it. Exploitability and reachability are explicitly disclaimed, and "unused
+  here" is never inferred from dependency depth.
+
+### `m4-ci-evidence-discipline`
+
+Reading a failed check, and what a second attempt may learn from it.
+
+- **Poor (1–3).** Any non-success conclusion triggers a retry, so `cancelled`, `timed_out`, `neutral`
+  and `stale` all count as fix failures. A `queued` or `in_progress` check is read as evidence either
+  way. The check's sha is not compared, so a stale check speaks for a new candidate. Log prose reaches
+  the next attempt's decision. The retry is unbounded, or bounded by a number the configuration does
+  not hold.
+- **Acceptable (4–7).** The check must belong to the candidate sha. Non-failure and non-terminal
+  conclusions are classified distinctly and none is a fix failure. Structured failure content reaches
+  the next attempt and prose reaches no decision — M3's rule applied to a build log, which is exactly
+  the surface it was written for. The retry is bounded by the bound the configuration declares.
+- **Excellent (8–10).** One test per wrong answer rather than one for the family, and the partial-rerun
+  hazard is handled: an absent job in a rerun's archive is not a passing one. The second attempt starts
+  in a fresh process with no prior conversation and no serialized agent state, proved by a test that
+  deletes everything else first. `max_capability_attempts` has a consumer, closing ADR 013's gap rather
+  than adding a second unconsumed bound. `AttemptsExhausted` is proved distinguishable from a passing
+  PR.
+
+### `m4-credential-and-workspace-boundary`
+
+A third credential channel, a pinned allowlist that must grow by exactly the right names, and one
+absence that has to survive.
+
+- **Poor (1–3).** The scanner credential is passed in `argv`, or reaches the model, the workspace, a
+  log, or the bundle. The adapter inherits an ambient configuration directory, so which credential it
+  used is not a fact about the process. Names are added to the workspace allowlist without updating the
+  assertion that pins it, so the set silently stops being pinned — or an authority is admitted beside
+  the locators on the same argument. A general comment-edit path is added to reach the PR body.
+- **Acceptable (4–7).** One credential-carrying construction, `env_clear` plus an allowlist pinned by
+  an updated assertion naming the new exact set, and a scratch configuration directory. The credential
+  travels through the environment, or the deviation is recorded with its reason. Each admitted name is
+  justified as a locator; `GOFLAGS`, `GOPRIVATE` and a credential-bearing `GOPROXY` are refused. The
+  pull-request body update is narrow to a PR body.
+- **Excellent (8–10).** The boundary is asserted against what the child actually received, not against
+  the builder, and a sentinel credential value is searched for in stdout, diagnostics and the bundle
+  and found in none. The locator-versus-authority test is restated at the point of change, so the next
+  person adding a name answers the same question rather than citing this one as precedent. The bean
+  states why the PR-body operation must not generalize: `SYSTEM.md` records that nothing in
+  `fiddle-runtime` edits a comment and that **the absence is load-bearing**, because
+  `DecisionError::RequestEdited` refuses a request comment whose timestamps disagree precisely because
+  no such path exists. A comment-edit path would silently retire an M3 safety property, and a bean that
+  adds one has broken M3 to build M4.

@@ -1683,3 +1683,29 @@ directions: it neither enumerates the grant nor calls the success unexplained.
 
 **Nothing here widened or exercised a credential.** The gated-endpoint table this entry's parent records was
 re-verified by the lane that resolved the discrepancy; this entry copies it and measured nothing at GitHub.
+
+### 2026-08-13 — Jira and Slack belong inside the CVE capability, and the milestone table gained a row for it
+Raised by the user during M4 planning: CVE remediation should eventually own its Jira filing and Slack notification rather than leaving them to host-workflow steps. The argument for moving them is not tidiness — routed through the effect executor they gain stable effect identity and postcondition reads, so an interrupted run cannot double-file a ticket or repost a message, which the current `curl` steps cannot promise.
+
+Decided rather than deferred vaguely: `docs/fiddle-agentic-factory-prd.md`'s M5 row gains CVE verdict reporting as a policy-checked Jira effect, and a new **M9 — Notification channel** row adds a narrow outbound notification port with Slack as its first implementation. M9 is last because it is the only milestone whose absence changes nothing observable, and its gate is therefore an equality proof — the same scenario with the channel configured and unconfigured must produce the identical typed outcome, exit code and evidence bundle.
+
+Two properties the RFC now states explicitly at the CVE agent section, because both are the reason the split existed rather than accidents of it: the mitigation decision stays trackerless permanently, so no ticket state or notification gates, informs or deduplicates a mitigation and requirement 22 keeps its "without requiring Jira"; and the capability holds neither credential, receiving an executor already bound to its own capability identity. The reference pipeline keeps Jira credentials out of the model run deliberately, and moving the work must keep that rather than trade it for convenience.
+
+Origin: user direction during M4 seed planning (epic fiddle-eph7, seed fiddle-q7ct)
+Tags: #feature #idea
+Status: 2026-08-13 — recorded in the RFC (M5 row, new M9 row, CVE agent section) and in the tracker: M5 `fiddle-gyyo` body carries the added scope, M9 epic `fiddle-w4co` and seed `fiddle-tb0q` created under `fiddle-30ey`, blocked by M8 `fiddle-is3b`.
+
+### 2026-08-13 — M4 split into capability and integration, and the effect identity that would have silently no-opped
+Two outcomes of challenging the M4 design, recorded because the second is a defect that would have shipped looking successful.
+
+**The split.** M4 became M4a — CVE mitigation capability (`fiddle-eph7`, seed `fiddle-q7ct`) and M4b — CVE workflow integration (`fiddle-rwdm`, seed `fiddle-5cyx`), with `docs/fiddle-agentic-factory-prd.md` gaining a row for each and M5 rewired to wait on M4b. Sizing was the trigger — the combined scope exceeded M3, which ran 39 beans and lost two lanes to an individual spend limit at roughly 40 — but the better argument is that the halves are proved differently. M4a's claim is about decisions and gates offline against a scripted scanner and a scripted forge; M4b's is about deployment against a real forge, scanner and CI. Merged, the gate would need a credential to say anything, contradicting M0's constraint that the acceptance lane is never gated on a secret.
+
+**The defect the challenge found.** The shared-PR model regenerates the pull request body on every run as CVEs accumulate. `fiddle_core::effect::effect_id` derives from `(project, invocation_ref, kind, target)` and never from the payload; the shared PR's natural target is repo + head + base, which does not change between runs, and a nightly `scanner:<component>` reference is stable. So the second run computes the same effect identity, step 3 finds the postcondition already satisfied, and the executor performs no mutation — the accumulated CVE table never appears and **nothing reports a failure**, because the pull request that was opened on run one is real. Not a refusal, a silent no-op. The fix is to carry a digest of the intended body in the target, which is what M2's identity derivation is for and what M3 already did when it made a moved head a different question: a changed body is a new effect that applies, an unchanged body is idempotent.
+
+The general shape is worth keeping beyond this milestone: **an effect whose target is stable but whose payload is meant to change is invisible to postcondition inspection.** Any future operation that updates rather than creates has this hazard, and the identity is where it is fixed, not the postcondition.
+
+**A third finding, which removed work rather than adding it.** The design was going to widen the workspace command's pinned four-name environment allowlist to admit `DOCKER_HOST`, with an ADR — M4's only incursion into the boundary M1 and M2 fixed. Measured instead: under `env_clear` plus `PATH`, `HOME` and `LANG`, `docker version` reaches the daemon, because the CLI defaults to the Unix socket and *setting* `DOCKER_HOST` wrongly is what breaks it. Go needs nothing either, since `GOMODCACHE` and `GOCACHE` default under the scratch `HOME` the workspace already supplies outside the worktree. No ADR is owed and `workspace::a_workspace_command_inherits_no_credential` keeps pinning four names.
+
+Origin: fiddle:challenge --phase define during M4 seed planning (epic fiddle-eph7, seed fiddle-q7ct)
+Tags: #debt #risk #infrastructure
+Status: 2026-08-13 — split recorded in the RFC and the tracker; the effect-identity and allowlist findings are recorded in the M4a design spec and must survive into bean bodies, since docs/specs/ is gitignored.
