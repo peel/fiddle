@@ -9,18 +9,24 @@
 //! at any time. The caller that knows the configuration computes the marker
 //! with [`correlation_key`] and passes it in.
 //!
-//! Two rules are encoded here rather than left to callers:
+//! Three rules are encoded here rather than left to callers:
 //!
 //! - An unobservable source is [`CapabilityAssessment::Blocked`]. It is never
 //!   read as "nothing there" and never as success, because a source that failed
 //!   to answer said nothing at all about whether the work is done.
+//! - A source that does not *apply* is not an unobservable one. A run that
+//!   addresses no tracker item has no work item by design, so
+//!   [`Observation::NotApplicable`] in that half decides on the change set alone
+//!   rather than blocking. The two must stay apart in both directions: merged
+//!   into the rule above, every trackerless run fails; merged the other way, a
+//!   broken tracker read passes for one.
 //! - A change set carrying a marker that is *not* this invocation's correlation
 //!   key is `Blocked`, never [`CapabilityAssessment::Satisfied`]. A foreign
 //!   marker is another writer's evidence; claiming it would report work this
 //!   invocation cannot account for as its own.
 
 use crate::identity::CapabilityId;
-use crate::observation::{Observation, WorkStateView};
+use crate::observation::{ChangeSetState, Observation, WorkStateView};
 use crate::report::EvidenceRef;
 
 /// The one capability M0 can execute.
@@ -121,7 +127,9 @@ pub fn correlation_key(project: &str, invocation_ref: &str) -> String {
 /// Total over the observation space, and ordered so the fail-closed cases win:
 /// an unobservable source is decided before anything is read out of the other
 /// half of the view, since a half-observed world cannot support a conclusion
-/// about the whole one.
+/// about the whole one. That ordering is also what keeps the trackerless arm
+/// below honest — it is reached only once every *failed* read has been taken,
+/// so it can never turn a failure into a proceed.
 pub fn assess(work: &WorkStateView, expected_marker: &str) -> CapabilityAssessment {
     match (&work.work_item, &work.changes) {
         // Either source failing is enough: fiddle did not see the world, so it
@@ -142,39 +150,81 @@ pub fn assess(work: &WorkStateView, expected_marker: &str) -> CapabilityAssessme
                 source: change_source,
                 ..
             },
-        ) => {
-            let evidence = vec![
+        ) => decide_on_marker(
+            value,
+            expected_marker,
+            vec![
                 EvidenceRef(work_source.0.clone()),
                 EvidenceRef(change_source.0.clone()),
-            ];
-            match &value.marker {
-                // A readable change set with no marker is a real observation of
-                // work that has not been done, not an absence.
-                None => CapabilityAssessment::NotStarted { evidence },
+            ],
+        ),
 
-                Some(marker) if marker == expected_marker => {
-                    CapabilityAssessment::Satisfied { evidence }
-                }
+        // A run that addresses no tracker item has no work item to read, and
+        // that absence is a decision rather than a failure — every case where a
+        // source *failed* was taken by the arm above. So the change set alone
+        // decides, by exactly the same marker rule, and it is the only source
+        // there is to cite: `NotApplicable` names none, and citing one anyway
+        // would claim a read that never happened.
+        //
+        // Deliberately its own arm and not folded into either neighbour. Sharing
+        // one with the `Unavailable` arm would fail every trackerless run;
+        // widening that arm to admit `Unavailable` would let a tracker fiddle
+        // could not read pass for a tracker it was never asked about.
+        (
+            Observation::NotApplicable { .. },
+            Observation::Available {
+                value,
+                source: change_source,
+                ..
+            },
+        ) => decide_on_marker(
+            value,
+            expected_marker,
+            vec![EvidenceRef(change_source.0.clone())],
+        ),
 
-                // Design §4.3: `Satisfied` requires a *matching* marker. Both
-                // markers are named so an operator can see the collision rather
-                // than only that one happened.
-                Some(marker) => CapabilityAssessment::Blocked {
-                    reason: format!(
-                        "change set carries marker {marker}, expected {expected_marker}: \
-                         the change set was written by a different invocation"
-                    ),
-                    evidence,
-                },
-            }
-        }
-
-        // A source that does not apply to this invocation leaves M0's
-        // orchestration with no world to act on; it is not an error, but it is
-        // not a basis for executing either.
+        // What is left has no change set to read, so nothing here says whether
+        // the work was done: an invocation this orchestration cannot act on. It
+        // is not an error, but it is not a basis for executing either.
         _ => CapabilityAssessment::Blocked {
             reason: "source not applicable to the M0 orchestration".to_string(),
             evidence: vec![],
+        },
+    }
+}
+
+/// The verdict a *readable* change set supports, given the sources it was read
+/// from.
+///
+/// Factored out because two arms of [`assess`] reach it — a run whose work item
+/// was read, and a run that has none by design — and the marker rule is
+/// identical for both: whether the work is done is a fact about the change set,
+/// and a tracker item never was the thing that settled it.
+///
+/// The evidence is an argument rather than derived here, because it is the one
+/// thing that genuinely differs: a tracked run has two sources to cite and a
+/// trackerless run has one, and neither may cite a source it did not read.
+fn decide_on_marker(
+    changes: &ChangeSetState,
+    expected_marker: &str,
+    evidence: Vec<EvidenceRef>,
+) -> CapabilityAssessment {
+    match &changes.marker {
+        // A readable change set with no marker is a real observation of work
+        // that has not been done, not an absence.
+        None => CapabilityAssessment::NotStarted { evidence },
+
+        Some(marker) if marker == expected_marker => CapabilityAssessment::Satisfied { evidence },
+
+        // Design §4.3: `Satisfied` requires a *matching* marker. Both markers
+        // are named so an operator can see the collision rather than only that
+        // one happened.
+        Some(marker) => CapabilityAssessment::Blocked {
+            reason: format!(
+                "change set carries marker {marker}, expected {expected_marker}: \
+                 the change set was written by a different invocation"
+            ),
+            evidence,
         },
     }
 }
@@ -247,6 +297,15 @@ mod tests {
         Observation::Unavailable {
             source: SourceRef("stub:changes/x.json".into()),
             reason: "unreadable".into(),
+        }
+    }
+
+    /// The work item of a run that addresses no tracker item at all. No source
+    /// was consulted, so there is none to name — which is exactly what
+    /// distinguishes it from [`unavailable`], where a named source failed.
+    fn trackerless_work() -> Observation<WorkItemState> {
+        Observation::NotApplicable {
+            reason: "a self-discovering run addresses no tracker item".into(),
         }
     }
 
@@ -337,6 +396,79 @@ mod tests {
             }
             other => panic!("an unobservable work item must block, got {other:?}"),
         }
+    }
+
+    /// A run that addresses no tracker item has no work item *by design*, and
+    /// absent-by-design is not an obstacle: a trackerless orchestration reaches
+    /// a verdict about its change set rather than the fallback that refuses to
+    /// conclude.
+    ///
+    /// Its counterpart is `an_unavailable_work_item_blocks_too` directly above,
+    /// where a work item fiddle *failed to read* still blocks. The two are
+    /// separate match arms and must stay separate, because the distinction is
+    /// the property: collapse them one way and a broken tracker read is
+    /// indistinguishable from a trackerless run, collapse them the other way and
+    /// every trackerless run is `Blocked`.
+    #[test]
+    fn a_not_applicable_work_item_does_not_block() {
+        let assessed = assess(&view(trackerless_work(), changes_with(None)), "aaaa");
+        let CapabilityAssessment::NotStarted { evidence } = assessed else {
+            panic!(
+                "a trackerless run has no work item by design; that is not an obstacle, \
+                 got {assessed:?}"
+            );
+        };
+        // It cites the one source it actually read. There is no work item source
+        // to name — `NotApplicable` carries none — and naming one anyway would
+        // claim a read that never happened.
+        assert_eq!(
+            evidence,
+            vec![EvidenceRef("stub:changes/x.json".into())],
+            "a trackerless verdict cites the change set it read and nothing else"
+        );
+    }
+
+    /// The trackerless arm is not a bypass of exactly-once. A run with no work
+    /// item still decides on the marker: its own marker is `Satisfied` and
+    /// another invocation's is `Blocked`.
+    ///
+    /// Without this, an arm answering `NotStarted` for every trackerless view
+    /// would satisfy the test above while re-executing on every run — the same
+    /// verdict from two different worlds, which is an assertion about neither.
+    #[test]
+    fn a_trackerless_run_still_decides_on_the_marker() {
+        let own_marker = view(trackerless_work(), changes_with(Some("aaaa")));
+        assert!(
+            matches!(
+                assess(&own_marker, "aaaa"),
+                CapabilityAssessment::Satisfied { .. }
+            ),
+            "a trackerless run that already wrote its own marker is done"
+        );
+
+        let foreign_marker = view(trackerless_work(), changes_with(Some("bbbb")));
+        match assess(&foreign_marker, "aaaa") {
+            CapabilityAssessment::Blocked { reason, .. } => assert!(
+                reason.contains("bbbb") && reason.contains("aaaa"),
+                "diagnostic must name both markers: {reason}"
+            ),
+            other => panic!("a trackerless run must not claim a foreign marker, got {other:?}"),
+        }
+    }
+
+    /// The fail-closed ordering survives the trackerless arm. A run with no work
+    /// item and an *unreadable* change set is still `Blocked` — the new arm
+    /// requires an observable change set and does not mean "a trackerless run
+    /// always proceeds".
+    #[test]
+    fn a_trackerless_run_with_an_unreadable_change_set_still_blocks() {
+        assert!(
+            matches!(
+                assess(&view(trackerless_work(), unavailable()), "aaaa"),
+                CapabilityAssessment::Blocked { .. }
+            ),
+            "a trackerless run still needs a change set it can read"
+        );
     }
 
     /// Every verdict must be citable: an assessment over a fully observed world
