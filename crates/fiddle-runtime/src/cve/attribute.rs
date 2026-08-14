@@ -42,19 +42,40 @@
 //! paraphrased would be a second place for this module's reading of `go` to be
 //! wrong, silently.
 //!
-//! # This half is read-only
+//! # Rule 2's viability is measured, not guessed
 //!
 //! Rule 2's parent is *viable* only when a newer release inside the parent's own
 //! current minor resolves the named module to at least the finding's
 //! `fixedVersion`, and that is not a fact any tree on disk holds — it lives in
-//! whatever answers the module proxy. Establishing it means bumping the parent,
-//! running `go mod tidy`, confirming with [`crate::cve::version::at_least`], and
-//! restoring `go.mod`/`go.sum` when it fails. That probe mutates a tree and this
-//! module does not: **[`ModuleGraph`] has no mutating method**, so the seam is
-//! held by the port's shape rather than by a comment. See
-//! [`the_direct_parent_in_the_chain`] for exactly where the probe attaches and
-//! what rule 2 answers until it does.
+//! whatever answers the module proxy. Nothing in a version string says it either:
+//! a parent one patch behind the fix and a parent whose whole line ends below it
+//! are pinned at versions that look exactly alike.
+//!
+//! So it is established by doing it. [`the_parent_carries_the_fix`] captures the
+//! two files it is about to change, runs `go get <parent>@<its own minor>`, runs
+//! `go mod tidy`, asks `go list -m -json` what the named module now resolves to,
+//! and puts the tree back when the answer falls short. Three commands and a
+//! confirm, in that order, because each of them is load-bearing: without the
+//! tidy, the build list still holds the pre-bump requirement and every parent
+//! reads as non-viable; without the confirm, a bump that changed nothing reads as
+//! a fix.
+//!
+//! **A probe that fails restores `go.mod` and `go.sum`; a probe that succeeds
+//! does not.** The restore is scoped to the failure on purpose — a successful
+//! probe's bump *is* the edit rule 2 prescribes, and unwinding it would mean
+//! discovering the same version twice and having nothing to show if the second
+//! answer differed from the first.
+//!
+//! # Where a real `go` comes from
+//!
+//! [`ModuleGraph`] is a port, and [`crate::cve::go::Go`] is the adapter that
+//! spawns a real `go` behind it under [`crate::process::run_bounded`]. The
+//! offline gate drives that adapter against a scripted toolchain rather than
+//! against a stand-in for the adapter, so the spawn, the environment, the reading
+//! of `go`'s two streams and the restore are all under test — see
+//! `tests/go_stub/go_stub.rs`.
 
+use crate::cve::version;
 use fiddle_core::{PackageType, ProjectedFinding};
 
 /// Which of the four rules produced a target.
@@ -161,23 +182,52 @@ pub enum AttributionError {
     Resolver(#[from] ResolverError),
 }
 
-/// The read-only questions attribution asks about a Go module graph.
+/// The two files a viability probe may change, as they stood before it ran.
+///
+/// Bytes rather than a promise that the port will remember them. A port that
+/// snapshotted internally would make "the tree was put back" a property of
+/// whichever implementation happened to be behind it, and the restore in
+/// [`the_parent_carries_the_fix`] would be a call with nothing observable on the
+/// other side of it. Here the subject holds what it is going to hand back, and
+/// an adapter that ignored it would be visibly ignoring an argument.
+///
+/// `go_sum` is optional because a module with no requirements has no `go.sum`,
+/// and restoring one that was never there would leave a file behind — which is
+/// the same defect as leaving a bump behind, wearing a different name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Manifest {
+    /// `go.mod`, which every module has.
+    pub go_mod: String,
+    /// `go.sum`, when the tree had one.
+    pub go_sum: Option<String>,
+}
+
+/// The questions attribution asks about a Go module graph, and the probe it runs
+/// to answer the one that cannot be asked.
 ///
 /// A port rather than a direct `go` invocation, for the reason the scanner is
-/// one: the decision this module makes is a function of two commands' output,
-/// and a suite that had to have a module proxy and a populated module cache in
-/// order to assert anything about that function would assert nothing about it
-/// at all. The adapter that spawns a real `go` under
-/// [`crate::process::run_bounded`] belongs with the mutating half, which has to
-/// spawn one anyway to run `go mod tidy`.
+/// one: the decision this module makes is a function of a handful of commands'
+/// output, and a suite that had to have a module proxy and a populated module
+/// cache in order to assert anything about that function would assert nothing
+/// about it at all. [`crate::cve::go::Go`] is the adapter that spawns a real one.
 ///
-/// **Both methods return `go`'s output as text, including the text it prints
-/// when it is refusing.** Parsing lives on this side of the port, so a stand-in
-/// cannot quietly answer a *decision* where a real `go` answers a document —
-/// and so [`AttributionError::NoTarget`] has something real to quote.
+/// **Every command here returns `go`'s output as text, including the text it
+/// prints when it is refusing.** Parsing lives on this side of the port, so a
+/// stand-in cannot quietly answer a *decision* where a real `go` answers a
+/// document — and so [`AttributionError::NoTarget`] has something real to quote.
+/// A non-zero exit is likewise an answer and not a [`ResolverError`]: `go list
+/// -m -json` refusing a path is how rules 3 and 4 are reached, and a `go get`
+/// that finds no matching version is a parent that cannot be bumped, which the
+/// confirm below is about to conclude anyway.
 ///
-/// There is no method here that changes a tree, and that absence is the split
-/// between this task and the one that measures parent viability.
+/// # Four of the six change a tree, and that is the whole of rule 2
+///
+/// [`ModuleGraph::get`] and [`ModuleGraph::tidy`] write `go.mod` and `go.sum`;
+/// [`ModuleGraph::manifest`] and [`ModuleGraph::restore`] are what make that
+/// safe. They are on the port rather than beside it because the probe is the
+/// port's whole reason for existing in the mutating direction — a subject that
+/// reached around it to touch files itself would be a subject the offline gate
+/// could not drive.
 #[async_trait::async_trait]
 pub trait ModuleGraph: Sync {
     /// `go list -m -json <module>` — the module's record in the build list.
@@ -185,6 +235,25 @@ pub trait ModuleGraph: Sync {
 
     /// `go mod why -m <module>` — the chain by which the main module needs it.
     async fn why(&self, module: &str) -> Result<String, ResolverError>;
+
+    /// `go.mod` and `go.sum` as they stand now, so a failed probe can undo
+    /// itself. Not a `go` command: it is file bytes, and it is taken before the
+    /// first write rather than reconstructed after it.
+    async fn manifest(&self) -> Result<Manifest, ResolverError>;
+
+    /// `go get <module>@<query>` — move a requirement to the highest release the
+    /// query names.
+    ///
+    /// `query` is a *prefix* — `v1.2`, not `v1.2.7` — because rule 2 asks about
+    /// the parent's own minor and an exact version would be a different question.
+    async fn get(&self, module: &str, query: &str) -> Result<String, ResolverError>;
+
+    /// `go mod tidy` — re-resolve the build list, so a moved requirement reaches
+    /// the modules it brings with it.
+    async fn tidy(&self) -> Result<String, ResolverError>;
+
+    /// Put `manifest` back on disk, undoing whatever the probe wrote.
+    async fn restore(&self, manifest: &Manifest) -> Result<(), ResolverError>;
 }
 
 /// Work out what editing `finding` means, or refuse.
@@ -254,17 +323,23 @@ where
             });
         }
 
-        // Rule 2, then rule 3. These are the overlapping pair, and the only
-        // thing separating them is whether the chain offers a parent to bump
-        // instead.
+        // Rule 2, then rule 3. These are the overlapping pair, and there are two
+        // ways to miss rule 2: the chain offers no parent to bump instead, and
+        // the parent it offers turns out not to carry the fix. The second is the
+        // measured one, and it is measured *here* rather than folded into the
+        // walk above, so that "there is a parent" and "it works" stay two
+        // questions — a walk that returned only viable parents could not say
+        // which of the two a fall-through happened for.
         if let Some(parent) =
             the_direct_parent_in_the_chain(chain, package, graph, resolved).await?
         {
-            return Ok(Attribution {
-                target: Target::Module(parent),
-                rule: Rule::Two,
-                resolved: resolved.take(),
-            });
+            if the_parent_carries_the_fix(&parent, finding, graph, resolved).await? {
+                return Ok(Attribution {
+                    target: Target::Module(parent.path),
+                    rule: Rule::Two,
+                    resolved: resolved.take(),
+                });
+            }
         }
 
         return Ok(Attribution {
@@ -291,21 +366,26 @@ where
     })
 }
 
+/// A candidate parent: the path rule 2 would target, and where it is pinned.
+///
+/// The version travels with the path because the probe needs it and only the walk
+/// has it: *the parent's own current minor* is a fact about the record that
+/// elected the parent, and re-reading it later would be a second `go list` whose
+/// answer could differ from the one the election was made on.
+struct Parent {
+    path: String,
+    version: String,
+}
+
 /// The first module in `chain` that the main module requires directly.
 ///
-/// # Where the viability probe attaches
-///
-/// The design's rule 2 has two halves: *the first direct requirement in the
-/// chain*, and *and it can carry the fix*. This function is the first half. The
-/// second is measured — bump the parent, `go mod tidy`, confirm the named module
-/// resolves to at least `fixedVersion`, restore `go.mod`/`go.sum` if it does not
-/// — and it mutates the tree, which is the seam this task stops at. Until it
-/// lands, a parent that exists is taken as a parent that works, and rule 3 is
-/// reached only through its other arm: a chain with no direct requirement in it
-/// at all. That is a real world rather than a placeholder — an untidied `go.mod`
-/// marks a module `// indirect` while the main module imports it directly — but
-/// it is not the whole of rule 3, and a reader should not take the tests over it
-/// as evidence that a non-viable parent falls through.
+/// This is the first half of the design's rule 2 — *the first direct requirement
+/// in the chain* — and only that half. The second, *and it can carry the fix*, is
+/// [`the_parent_carries_the_fix`], which the caller runs over what this returns.
+/// Keeping them apart is what lets rule 3 be reached two ways and lets each way
+/// be a separate world in the suite: a chain with no direct requirement in it at
+/// all — an untidied `go.mod` marks a module `// indirect` while the main module
+/// imports it directly — and a parent whose line ends below the fix.
 ///
 /// # Why each candidate is asked rather than assumed
 ///
@@ -321,7 +401,7 @@ async fn the_direct_parent_in_the_chain<G>(
     package: &str,
     graph: &G,
     resolved: &mut Transcript,
-) -> Result<Option<String>, ResolverError>
+) -> Result<Option<Parent>, ResolverError>
 where
     G: ModuleGraph + ?Sized,
 {
@@ -333,11 +413,131 @@ where
         }
         let listed = resolved.record(graph.list(hop).await?, "go", ["list", "-m", "-json", hop]);
         match ModuleRecord::read(&listed) {
-            Some(record) if !record.indirect && !record.main => return Ok(Some(hop.clone())),
+            Some(record) if !record.indirect && !record.main => {
+                return Ok(Some(Parent {
+                    path: hop.clone(),
+                    version: record.version,
+                }))
+            }
             _ => continue,
         }
     }
     Ok(None)
+}
+
+/// Bump, tidy, confirm — and put the tree back when the answer is no.
+///
+/// The second half of rule 2, and the only place in this module that changes
+/// anything. What it establishes cannot be established any other way: whether a
+/// release inside `parent`'s own minor resolves the finding's package to at least
+/// its `fixedVersion` is a fact about the module proxy, and the only instrument
+/// this build has for asking a module proxy is `go`.
+///
+/// # The order, and why each step cannot be dropped
+///
+/// 1. **Capture.** [`ModuleGraph::manifest`] first, before anything writes, so
+///    the restore below hands back the tree as it was rather than as it became.
+/// 2. **`go get <parent>@<minor>`.** A prefix query, so `go` picks the highest
+///    release *inside* the minor — see [`its_own_minor`].
+/// 3. **`go mod tidy`.** The bump moves the parent; what the finding is about is
+///    the module the parent brings in, and that only follows once the build list
+///    is resolved again. Skip this and every parent reads as non-viable.
+/// 4. **`go list -m -json <package>`.** The confirm, over the tree the bump
+///    moved, compared with [`crate::cve::version::at_least`] — which strips a
+///    leading `v` from both operands, because `go` prints one and the scanner
+///    does not.
+///
+/// # Every uncertain answer is `false`
+///
+/// A finding with no `fixedVersion`, a parent pinned at something with no minor
+/// in it, and a post-bump record `go` did not print are all *not viable*. That is
+/// the same fail-closed direction [`crate::cve::version`] argues for: falling
+/// through to rule 3 raises the named module itself, which is a correct fix
+/// reached by a blunter route, where a rule 2 asserted on an unread answer is a
+/// pull request that bumps a parent for no reason and leaves the CVE.
+///
+/// The first two are settled *before* the capture, so they cost no write and have
+/// nothing to undo; only the third reaches the restore. Ordering them that way is
+/// why the two reads sit in one `let else` above rather than beside the confirm.
+///
+/// # Only a failure restores
+///
+/// A successful probe leaves the bump on the tree. It is the edit rule 2
+/// prescribes, it has just been confirmed to fix the finding, and reproducing it
+/// later would mean resolving the same query a second time with nothing to say if
+/// the two answers differed.
+async fn the_parent_carries_the_fix<G>(
+    parent: &Parent,
+    finding: &ProjectedFinding,
+    graph: &G,
+    resolved: &mut Transcript,
+) -> Result<bool, ResolverError>
+where
+    G: ModuleGraph + ?Sized,
+{
+    let package = finding.package.as_str();
+    // Both read before the tree is touched, so the two "nothing to measure"
+    // cases cost no write at all rather than a write and an undo.
+    let (Some(fixed), Some(minor)) = (
+        finding.fixed_version.as_deref(),
+        its_own_minor(&parent.version),
+    ) else {
+        return Ok(false);
+    };
+
+    let before = graph.manifest().await?;
+    let target = format!("{}@{minor}", parent.path);
+    resolved.record(
+        graph.get(&parent.path, &minor).await?,
+        "go",
+        ["get", target.as_str()],
+    );
+    resolved.record(graph.tidy().await?, "go", ["mod", "tidy"]);
+    let listed = resolved.record(
+        graph.list(package).await?,
+        "go",
+        ["list", "-m", "-json", package],
+    );
+
+    let carried =
+        ModuleRecord::read(&listed).is_some_and(|record| version::at_least(&record.version, fixed));
+    if !carried {
+        graph.restore(&before).await?;
+    }
+    Ok(carried)
+}
+
+/// A version as the `go get` query for its own minor: `v1.2.7` becomes `v1.2`.
+///
+/// A prefix query is what makes "a newer release inside the parent's own current
+/// minor" expressible to `go` at all — it resolves one to the highest release
+/// carrying it. Naming an exact version would need this build to already know
+/// what the proxy holds, which is the very thing it is asking.
+///
+/// `None` for anything whose first two components are not numbers — an empty
+/// `Version`, a `latest` that arrived where a version was expected. The caller
+/// reads `None` as *not viable*, which is the fail-closed answer.
+///
+/// A pseudo-version's `v0.0.0-20230101120000-abcdef123456` is **not** rejected
+/// here, and deliberately not: its minor is `v0.0`, that is a query `go get` can
+/// take, and a module line with no tagged release under it simply has no matching
+/// version — a refusal the confirm turns into rule 3 with the tree put back.
+/// Rejecting it here would be a second fail-closed path guarding the same case,
+/// and the two could disagree.
+fn its_own_minor(version: &str) -> Option<String> {
+    let mut components = version.split('.');
+    let major = components.next()?;
+    let minor = components.next()?;
+    match major
+        .strip_prefix('v')
+        .unwrap_or(major)
+        .parse::<u64>()
+        .is_ok()
+        && minor.parse::<u64>().is_ok()
+    {
+        true => Some(format!("{major}.{minor}")),
+        false => None,
+    }
 }
 
 /// What `go list -m -json <module>` said, when it said anything readable.
@@ -367,6 +567,15 @@ struct ModuleRecord {
     /// Whether this record is the main module itself.
     #[serde(default, rename = "Main")]
     main: bool,
+    /// What the build list resolves this module to.
+    ///
+    /// Read twice and for two different purposes: it is the parent's own minor
+    /// that rule 2's probe bumps inside, and it is the answer the probe's confirm
+    /// compares against `fixedVersion`. `#[serde(default)]` because the main
+    /// module's record carries no `Version` at all — an empty string there is
+    /// the honest reading, and it is one [`its_own_minor`] refuses.
+    #[serde(default, rename = "Version")]
+    version: String,
 }
 
 impl ModuleRecord {

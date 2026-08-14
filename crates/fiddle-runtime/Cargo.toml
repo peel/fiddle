@@ -24,6 +24,13 @@ git-stub = []
 # off by default, because "a permanent fixture" and "shipped in the product" are
 # not the same thing.
 wiz-stub = []
+# And for the scripted `go` the attribution gate drives. Permanent for the same
+# reason `wiz-stub` is, and for a sharper one: rule 2's parent viability is
+# measured by changing a tree and asking a module proxy again, and this project's
+# dev shell has neither a Go toolchain nor a proxy. The adapter that spawns a real
+# `go` is production code and ships; what this fixture replaces is the toolchain
+# it spawns, so the offline gate can drive bump → tidy → confirm → revert.
+go-stub = []
 
 # The scripted `gh` the deterministic suite points `[github] cli.program` at.
 #
@@ -81,6 +88,20 @@ required-features = ["wiz-stub"]
 test = false
 doc = false
 
+# The scripted `go` the attribution suite points `cve::go::Go`'s `program` seam
+# at. Every line is argued for three blocks above; only the shared module differs.
+#
+# It includes `tests/support/go_proxy.rs`, which is where the offline `go` and the
+# module proxy behind it are written down once — the same constraint `wiz_stub` is
+# under, and the same consequence: that module reaches `serde_json` and nothing
+# else, because a `[[bin]]` is compiled against `[dependencies]` alone.
+[[bin]]
+name = "go_stub"
+path = "tests/go_stub/go_stub.rs"
+required-features = ["go-stub"]
+test = false
+doc = false
+
 # The shared fixture module, asserted about itself.
 #
 # Declared rather than auto-discovered because the module lives in a directory:
@@ -125,4 +146,4 @@ tempfile.workspace = true
 # targets, so the scripted `gh` exists for `cargo test` and for nothing else. A
 # plain default feature would put it in the release build; leaving it to
 # `--all-features` would break the single-target test command.
-fiddle-runtime = { path = ".", features = ["gh-stub", "git-stub", "wiz-stub"] }
+fiddle-runtime = { path = ".", features = ["gh-stub", "git-stub", "wiz-stub", "go-stub"] }

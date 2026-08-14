@@ -19,39 +19,43 @@
 //!    selection raises it for every consumer;
 //! 4. an `OS` finding goes to the `Dockerfile` base image tag.
 //!
-//! Task 8 was split along a seam that runs through rule 2. **8.a — this suite —
-//! is the read-only half**: the rules matched over `go list -m -json` and
-//! `go mod why -m`, with nothing written to any tree. **8.b is rule 2's measured
-//! viability probe**: bump the parent, `go mod tidy`, confirm with
-//! `version::at_least`, and on failure restore `go.mod`/`go.sum` and fall to
-//! rule 3.
+//! Task 8 was split along a seam that runs through rule 2. **8.a is the
+//! read-only half**: the rules matched over `go list -m -json` and `go mod why
+//! -m`, with nothing written to any tree. **8.b is rule 2's measured viability
+//! probe**: bump the parent, `go mod tidy`, confirm with `version::at_least`,
+//! and on failure restore `go.mod`/`go.sum` and fall to rule 3. Both halves are
+//! now here.
 //!
-//! That seam has a consequence this file should be read knowing. There are two
-//! ways to have "no such parent": the chain holds no direct requirement at all,
-//! which is read-only and is asserted here; or the parent it holds cannot carry
-//! the fix, which is only knowable by probing and is 8.b's. So **rule 3 is
-//! exercised here through its read-only arm only**, and the plan's own rule 3
-//! scenario — a parent a minor short of the fix — is not reachable from this
-//! side of the seam. It cannot be faked either: what makes a parent non-viable
-//! is that no published version carries the fix, and `tests/support/cve.rs` says
-//! in so many words that this is not a fact a `go.mod` can hold.
+//! Rule 3 is therefore reached two ways, and both are asserted. The chain may
+//! hold no direct requirement at all — an untidied `go.mod`, and a world a tree
+//! can build on its own — or the parent it holds may turn out not to carry the
+//! fix, which nothing but a probe can establish. The two are separate tests
+//! because they are separate reasons, and a suite that only had the first would
+//! be taking rule 2's second half on trust.
 //!
-//! # Nothing here runs `go`
+//! # Nothing here needs a Go toolchain, and one lane spawns one anyway
 //!
-//! [`ModuleGraph`] is a port, and `GoWorkspace` implements it by answering out
-//! of the tree on disk in `go`'s own output formats. That is the same
-//! arrangement the scanner is under — a port with a scripted stand-in — and it
-//! is what keeps this suite offline and credential-free. What is under test is
-//! therefore the reading of `go`'s output and the matching of the rules over it,
-//! which is the whole of 8.a; the adapter that spawns a real `go` belongs with
-//! 8.b, which has to spawn one anyway to run `go mod tidy`.
+//! [`ModuleGraph`] is a port. Most lanes drive it in process: `GoWorkspace`
+//! answers out of the tree on disk in `go`'s own output formats, and writes to
+//! that tree when the probe asks it to. The module proxy those trees resolve
+//! against — the half a `go.mod` cannot hold — is `tests/support/go_proxy.rs`.
+//!
+//! The last section drives the **production** adapter, `cve::go::Go`, against a
+//! scripted toolchain built from that same proxy. That is the only way the
+//! offline gate can exercise the spawn, the three-name environment, the reading
+//! of `go`'s two streams and the `go.mod`/`go.sum` restore — none of which a
+//! stand-in for the adapter would touch. Nothing in either case reaches a real
+//! `go`, a module proxy or a credential.
 
 mod support;
 
 use fiddle_core::PackageType::{Library, Os};
 use fiddle_runtime::cve::attribute::{attribute, AttributionError, ModuleGraph, Rule, Target};
+use std::path::Path;
 use support::cve::{
-    direct, finding, go, indirect_via, indirect_without_a_direct_parent, module_not_needed, stdlib,
+    absent_go, direct, finding, go, indirect_via, indirect_via_parent_without_the_fix,
+    indirect_without_a_direct_parent, module_not_needed, spawned_go, stdlib,
+    CARRIED_BY_THE_VIABLE_LINE, REACHED_WITHOUT_THE_FIX,
 };
 
 /// The module every fixture tree requires directly.
@@ -116,6 +120,112 @@ async fn an_indirect_finding_with_no_direct_parent_targets_the_module_itself() {
     .expect("an indirect requirement with no parent has a target");
     assert_eq!(attributed.target(), &Target::Module(INDIRECT.to_string()));
     assert_eq!(attributed.rule(), Rule::Three);
+}
+
+/// Rule 3's other arm: a chain that *does* offer a parent, where the parent
+/// turns out not to carry the fix.
+///
+/// Viability is measured rather than guessed — bump the parent inside its own
+/// minor, `go mod tidy`, and confirm the named module now resolves to at least
+/// the finding's `fixedVersion`. This world is the one where the confirm says
+/// no, so the probing edit has to come back off the tree and rule 3 has to
+/// answer instead.
+#[tokio::test]
+async fn a_parent_that_does_not_carry_the_fix_falls_through_and_reverts() {
+    let ws = go(indirect_via_parent_without_the_fix(PARENT));
+    let attributed = attribute(&finding(INDIRECT, Library), &ws)
+        .await
+        .expect("a parent that cannot carry the fix still leaves rule 3 a target");
+    assert_eq!(attributed.target(), &Target::Module(INDIRECT.to_string()));
+    assert_eq!(attributed.rule(), Rule::Three);
+    assert!(
+        ws.is_clean(),
+        "the probing edit is reverted, not left behind:\n{}",
+        ws.go_mod()
+    );
+}
+
+/// The probe writes, and only a probe that failed is unwritten.
+///
+/// `is_clean()` in the test above says nothing on its own: a probe that never
+/// touched a tree leaves it just as clean as one that undid itself, so that
+/// assertion is only evidence if something really dirtied the tree first. This is
+/// where that is established, and it establishes it by *contrast* rather than by
+/// inspecting the fixture. The two worlds run the same code over the same finding
+/// and differ in one fact — what the parent's line reaches — and they end in
+/// opposite states: the viable one keeps a `go.mod` naming a version that was not
+/// in it before, the doomed one is back where it started while the transcript
+/// still holds the version the confirm read.
+///
+/// Four separate changes are caught here, which is what makes it worth the
+/// length. Never bumping fails the viable world's `!is_clean()`. Skipping the
+/// tidy leaves the build list pre-bump, so the viable world drops to rule 3.
+/// A confirm that always says yes gives the doomed world rule 2. A revert that
+/// does nothing leaves the doomed world dirty.
+#[tokio::test]
+async fn the_probe_really_writes_and_only_a_failed_one_is_undone() {
+    let viable = go(indirect_via(PARENT));
+    let attributed = attribute(&finding(INDIRECT, Library), &viable)
+        .await
+        .expect("a parent that carries the fix has a target");
+    assert_eq!(attributed.rule(), Rule::Two);
+    assert!(
+        !viable.is_clean(),
+        "a probe that wrote nothing measured nothing, so rule 2 was guessed:\n{}",
+        viable.go_mod()
+    );
+    assert!(
+        viable.go_mod().contains(CARRIED_BY_THE_VIABLE_LINE),
+        "the tree does not hold the version the bump resolved to:\n{}",
+        viable.go_mod()
+    );
+
+    let doomed = go(indirect_via_parent_without_the_fix(PARENT));
+    let attributed = attribute(&finding(INDIRECT, Library), &doomed)
+        .await
+        .expect("a parent that cannot carry the fix still leaves rule 3 a target");
+    assert_eq!(attributed.rule(), Rule::Three);
+    // The version only a bump could have produced, in the transcript — so the
+    // probe demonstrably happened — and *not* in the tree, so it was undone.
+    assert!(
+        attributed.resolved().contains(REACHED_WITHOUT_THE_FIX),
+        "the confirm never read a bumped tree:\n{}",
+        attributed.resolved()
+    );
+    assert!(
+        !doomed.go_mod().contains(REACHED_WITHOUT_THE_FIX),
+        "the probing edit is still on the tree:\n{}",
+        doomed.go_mod()
+    );
+    assert!(doomed.is_clean(), "and neither is anything else it wrote");
+}
+
+/// Every command the probe ran, in the order the design names them.
+///
+/// The transcript is what a pull request has to be able to state, and rule 2's
+/// claim — *this parent carries the fix* — is only checkable if the three
+/// commands that established it travel with it. Asserted as an ordered sequence
+/// rather than as three `contains`, because bump-tidy-confirm is an *order*: a
+/// confirm read before the tidy is the pre-bump build list, and a transcript that
+/// listed the three in any arrangement would say nothing about which happened.
+#[tokio::test]
+async fn rule_two_records_the_bump_the_tidy_and_the_confirm_it_measured_with() {
+    let attributed = attribute(&finding(INDIRECT, Library), &go(indirect_via(PARENT)))
+        .await
+        .expect("a target");
+    let resolved = attributed.resolved();
+
+    let mut at = 0;
+    for command in [
+        "$ go get gh.com/parent@v1.2",
+        "$ go mod tidy",
+        "$ go list -m -json golang.org/x/net",
+    ] {
+        let found = resolved[at..].find(command).unwrap_or_else(|| {
+            panic!("the probe's transcript has no `{command}` after position {at}:\n{resolved}")
+        });
+        at += found + command.len();
+    }
 }
 
 /// Rules 2 and 3 are the only pair that can both match, so this is where
@@ -228,4 +338,111 @@ async fn stdlib_and_an_unneeded_module_are_needs_work_not_an_invented_target() {
             && !unneeded_refusal.contains("crypto/tls"),
         "the unneeded-module refusal is about the other world's module:\n{unneeded_refusal}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The adapter that really spawns a `go`
+// ---------------------------------------------------------------------------
+
+/// The same two verdicts, through a real child process.
+///
+/// Everything above answers the port in process, which is fast and is the right
+/// place to establish what the *rules* do. It leaves one thing untested and it is
+/// the thing that ships: `cve::go::Go` builds a command, clears an environment,
+/// spawns under `process::run_bounded`, reads two streams and puts two files
+/// back. None of that is exercised by a stand-in for the adapter, and none of it
+/// is exercised by the offline gate unless something drives the adapter itself.
+///
+/// So these lanes script only the toolchain — `tests/go_stub/go_stub.rs`, which
+/// answers out of the same `go_proxy` the in-process stand-in does — and run the
+/// production adapter over it. Both worlds are here rather than one, for the
+/// reason the in-process pair are: an adapter that never wrote would pass a lane
+/// that only checked the reverted world.
+#[tokio::test]
+async fn the_adapter_that_spawns_a_go_measures_both_verdicts_and_reverts_one() {
+    let viable = go(indirect_via(PARENT));
+    let attributed = attribute(&finding(INDIRECT, Library), &spawned_go(&viable))
+        .await
+        .expect("a spawned toolchain answers a viable parent");
+    assert_eq!(attributed.target(), &Target::Module(PARENT.to_string()));
+    assert_eq!(attributed.rule(), Rule::Two);
+    assert!(
+        !viable.is_clean(),
+        "a child that changed nothing on disk cannot have measured a bump:\n{}",
+        viable.go_mod()
+    );
+
+    let doomed = go(indirect_via_parent_without_the_fix(PARENT));
+    let attributed = attribute(&finding(INDIRECT, Library), &spawned_go(&doomed))
+        .await
+        .expect("and a parent whose line ends short of the fix");
+    assert_eq!(attributed.target(), &Target::Module(INDIRECT.to_string()));
+    assert_eq!(attributed.rule(), Rule::Three);
+    assert!(
+        attributed.resolved().contains(REACHED_WITHOUT_THE_FIX),
+        "the child never confirmed against a bumped tree:\n{}",
+        attributed.resolved()
+    );
+    assert!(
+        doomed.is_clean(),
+        "the adapter left its probing edit behind:\n{}",
+        doomed.go_mod()
+    );
+}
+
+/// What a `go` child receives, asserted against what one actually got.
+///
+/// The adapter's environment is an allowlist, and an allowlist is only honest
+/// against a record from a real child — a `Command` nobody spawned proves that a
+/// builder was called and nothing more. Three names exactly, so a fourth cannot
+/// arrive without this assertion changing, and `HOME` pointed outside the module
+/// root so a toolchain's caches cannot land in the tree whose diff is the
+/// evidence.
+///
+/// A rule 1 world on purpose: it runs no probe, so the last assertion says that
+/// *reading* a module graph changes nothing at all. Without it a leak of writes
+/// into the read path would show up only as a puzzling failure somewhere in
+/// Task 15's commit.
+#[tokio::test]
+async fn a_go_child_gets_three_names_and_a_home_outside_the_tree() {
+    let workspace = go(direct());
+    let graph = spawned_go(&workspace);
+    attribute(&finding(DIRECT, Library), &graph)
+        .await
+        .expect("a direct requirement has a target");
+
+    assert_eq!(graph.child_env_names(), ["HOME", "LANG", "PATH"]);
+    let home = graph.child_env()["HOME"].clone();
+    assert_eq!(home, graph.home().display().to_string());
+    assert!(
+        !Path::new(&home).starts_with(workspace.path()),
+        "{home} is inside the tree whose diff is the evidence"
+    );
+    assert!(
+        workspace.is_clean(),
+        "asking a module graph a question changed the tree:\n{}",
+        workspace.go_mod()
+    );
+}
+
+/// A toolchain that is not installed is a resolver failure, not a missing target.
+///
+/// The distinction [`AttributionError`] exists for, and the only lane that
+/// reaches it. It matters in the direction that is easy to get wrong: a spawn
+/// that failed produces no output, an adapter that handed that back as *`go` said
+/// nothing* would leave the rules matched over an empty document, and the
+/// finding would come out attributed to itself under rule 3 — a bump nobody
+/// asked for, produced by a toolchain that never ran.
+#[tokio::test]
+async fn a_toolchain_that_is_not_installed_is_a_resolver_failure() {
+    let workspace = go(indirect_via(PARENT));
+    let outcome = attribute(&finding(INDIRECT, Library), &absent_go(&workspace)).await;
+    match outcome {
+        Err(AttributionError::Resolver(source)) => assert!(
+            source.command.contains("go_stub-which-is-not-installed"),
+            "the failure does not name the program it tried to run: {source}"
+        ),
+        other => panic!("a toolchain that cannot be run is not an answer: {other:?}"),
+    }
+    assert!(workspace.is_clean(), "and nothing was written on the way");
 }

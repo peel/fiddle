@@ -28,6 +28,11 @@
 //! - Task 8.a adds [`finding`], the [`ModuleGraph`] a tree answers about
 //!   itself, and the [`Shape::IndirectWithoutADirectParent`] world that is the
 //!   read-only way to reach attribution rule 3. **Done.**
+//! - Task 8.b adds the module proxy those trees resolve against, [`go_stub`],
+//!   and [`spawned_go`] — the same world reached through the adapter that really
+//!   spawns a `go`. **Done.** The proxy is `go_proxy.rs` rather than more of this
+//!   file, for [`document`]'s reason: a `[[bin]]` shares it, and a `[[bin]]` is
+//!   compiled against `[dependencies]` alone.
 //! - Task 11 adds `contract`, `contract_for` and `contract_scanned_by`.
 //! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
 //! - Task 19 adds `fixture` and `world_with`.
@@ -55,7 +60,8 @@
 //! appear only where their value cannot matter.
 
 use fiddle_core::{AdvisoryId, PackageType, ProjectedFinding, Severity};
-use fiddle_runtime::cve::attribute::{ModuleGraph, ResolverError};
+use fiddle_runtime::cve::attribute::{Manifest, ModuleGraph, ResolverError};
+use fiddle_runtime::cve::go::Go;
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -71,6 +77,18 @@ use tokio_util::sync::CancellationToken;
 #[path = "document.rs"]
 mod document;
 pub use document::*;
+
+// The offline `go` and the module proxy behind it, shared with the scripted
+// toolchain the same way. Named rather than glob re-exported: what a lane wants
+// from it is the handful of constants that say where a probe can reach, and the
+// rest is machinery this file drives on the lane's behalf.
+#[path = "go_proxy.rs"]
+mod go_proxy;
+// Allowed unused for the reason `mod.rs`'s `wiz_stub` re-export is: this module
+// is compiled once per suite, and only the attribution lane names these.
+#[allow(unused_imports)]
+pub use go_proxy::{CARRIED_BY_THE_VIABLE_LINE, REACHED_WITHOUT_THE_FIX};
+use go_proxy::{FIXTURE_PARENT, GO_VERSION, HOST_MODULE, INDIRECT_MODULE, INDIRECT_VERSION};
 
 // ---------------------------------------------------------------------------
 // Sentinels
@@ -162,23 +180,9 @@ pub fn absent_scanner() -> ProgramRef {
 // Go trees on disk
 // ---------------------------------------------------------------------------
 
-/// The module path every fixture tree calls itself, standing in for the host
-/// repository under repair.
-const HOST_MODULE: &str = "example.com/host";
-
-/// The language version every fixture tree declares. One value, so that a
-/// difference between two trees is never an accident of this line.
-const GO_VERSION: &str = "1.23";
-
 /// The module a *direct* finding is in, and the version it is pinned at.
 const DIRECT_MODULE: &str = "golang.org/x/crypto";
 const DIRECT_VERSION: &str = "v0.31.0";
-
-/// The module an *indirect* finding is in. Reached through a parent rather than
-/// required by the host, which is the whole of what makes attribution rule 2
-/// different from rule 1.
-const INDIRECT_MODULE: &str = "golang.org/x/net";
-const INDIRECT_VERSION: &str = "v0.24.0";
 
 /// A parent with room above it, and a parent with none.
 ///
@@ -190,6 +194,15 @@ const INDIRECT_VERSION: &str = "v0.24.0";
 /// probe in attribution rule 2 to genuinely succeed and genuinely fail has to
 /// supply the upstream half as well — a `replace` onto a local module tree, or a
 /// scripted `go` — because nothing offline can conjure a version that exists.
+///
+/// **Task 8.b supplied it**, and it is `go_proxy::UPSTREAM`. Read that table
+/// beside these two constants: the `v1.2` line reaches a release that carries the
+/// fix and the `v1.9` line reaches one that does not, so the two versions below
+/// are no longer *only* the closest thing a tree can say — they are the key the
+/// proxy resolves each shape's probe through. `v1.9.9` is still where the line
+/// ends in the sense that matters, which is that nothing in it carries the fix;
+/// the releases above it exist so that a probe has something to write and the
+/// revert has something to undo.
 const PARENT_A_MINOR_BEHIND: &str = "v1.2.0";
 const PARENT_AT_THE_END_OF_ITS_LINE: &str = "v1.9.9";
 
@@ -197,10 +210,6 @@ const PARENT_AT_THE_END_OF_ITS_LINE: &str = "v1.9.9";
 /// `go mod why -m <the finding's module>` answers that it is not needed.
 const UNRELATED_MODULE: &str = "gh.com/unrelated";
 const UNRELATED_VERSION: &str = "v1.0.0";
-
-/// The parent [`all_shapes`] uses, so the listed shapes are built from one value
-/// rather than from three spellings of "some parent".
-const FIXTURE_PARENT: &str = "gh.com/parent";
 
 /// What [`all_shapes`] ships already fixed: a tree pinned *above* the version a
 /// finding names as fixed, which is the case `version::at_least` exists for.
@@ -375,31 +384,14 @@ impl Shape {
 
     /// The `go.sum` this shape writes, or `None` where it requires nothing.
     ///
-    /// The hashes are fabricated and cannot be otherwise: a real one is the
-    /// digest of a module zip that no offline fixture holds. What the file is for
-    /// is the *path* — Task 15 asserts a commit stages `go.mod` and `go.sum` and
-    /// no third thing, which needs the second file to exist. A lane that needs
-    /// `go mod tidy` to actually verify against it has to bring a module cache.
+    /// Built by `go_proxy::sum_for`, which is also what the offline `go` rewrites
+    /// the file with after a bump — one construction, so a tree the proxy has
+    /// touched and a tree it has not are the same bytes when the versions agree.
+    /// Were they two, every probe would leave a `go.sum` that differs from `HEAD`
+    /// for reasons that have nothing to do with a bump, and `is_clean()` would be
+    /// answering about the fixture.
     fn go_sum(&self) -> Option<String> {
-        let requirements = self.requirements();
-        if requirements.is_empty() {
-            return None;
-        }
-        // 43 characters and a pad: a `h1:` line is base64 over a 32-byte digest,
-        // and go rejects one that is not the right length before it ever gets as
-        // far as disagreeing about the value.
-        let digest = format!("h1:{}=", "A".repeat(43));
-        let mut lines: Vec<String> = requirements
-            .iter()
-            .flat_map(|(module, version, _)| {
-                [
-                    format!("{module} {version} {digest}"),
-                    format!("{module} {version}/go.mod {digest}"),
-                ]
-            })
-            .collect();
-        lines.sort();
-        Some(format!("{}\n", lines.join("\n")))
+        go_proxy::sum_for(&self.requirements())
     }
 }
 
@@ -675,8 +667,8 @@ pub fn finding(package: &str, package_type: PackageType) -> ProjectedFinding {
     }
 }
 
-/// A fixture tree answering the two read-only questions attribution asks of
-/// `go`, in `go`'s own output formats.
+/// A fixture tree answering the questions attribution asks of `go`, in `go`'s
+/// own output formats, without a process.
 ///
 /// # Why the tree answers rather than a real `go`
 ///
@@ -687,119 +679,254 @@ pub fn finding(package: &str, package_type: PackageType) -> ProjectedFinding {
 /// — the same arrangement the scanner is under, where [`ScriptedScanner`] stands
 /// in for a `wizcli` the offline gate can never reach.
 ///
-/// What that leaves under test is exactly what 8.a is: the **reading** of `go`'s
-/// output and the matching of the rules over it. Nothing here decides a rule or
-/// names a target; these two methods print documents, and the subject parses
-/// them. That is the line the module header draws, and it is why both methods
-/// return text — a stand-in that answered *this module is direct* rather than
-/// *here is what `go list` printed* would be answering rule 1 on the subject's
-/// behalf.
+/// What that leaves under test is the **reading** of `go`'s output, the matching
+/// of the rules over it, and — since 8.b — the probe that measures rule 2's
+/// viability. Nothing here decides a rule or names a target: every method prints
+/// a document or writes a file, exactly as `go` does, and the subject parses.
+/// That is the line the module header draws, and it is why they return text — a
+/// stand-in that answered *this parent is viable* rather than *here is what `go
+/// list` printed* would be answering rule 2 on the subject's behalf.
+///
+/// # This is the cheap half of a pair
+///
+/// [`spawned_go`] is the other: the same worlds, reached through the production
+/// adapter that really spawns a child. Both are backed by `go_proxy`, which is
+/// the single implementation of the offline toolchain — so a lane that runs here
+/// and a lane that runs there cannot be shown different documents.
 ///
 /// # What the answers are derived from
 ///
 /// The tree on disk, read on every call, so an edit to `go.mod` changes what the
-/// resolver says. Two facts are read out of it: which paths the tree requires,
-/// and which of those requirements are marked `// indirect`. The chain a
-/// `why` answer prints follows from those — the main module, then the tree's
-/// direct requirement if it has one, then the module asked about — which is what
-/// makes [`indirect_without_a_direct_parent`] produce a chain with no parent in
-/// it rather than a chain this module special-cases by shape.
+/// resolver says. That is not a convenience: the probe's confirm *is* the same
+/// `go list` asked again after a bump, and a stand-in that remembered its first
+/// answer could not tell a parent that carried the fix from one that did not.
 #[async_trait::async_trait]
 impl ModuleGraph for GoWorkspace {
     async fn list(&self, module: &str) -> Result<String, ResolverError> {
-        let record = match self.requirement(module) {
-            Some((path, version, indirect)) => {
-                let mut record = serde_json::json!({
-                    "Path": path,
-                    "Version": version,
-                    // A key the subject has no use for, present so that its
-                    // tolerance of unknown keys is exercised rather than
-                    // asserted in a comment. `go list -m -json` prints a dozen
-                    // and gains more with each release.
-                    "GoVersion": GO_VERSION,
-                });
-                // Written only when true, exactly as `go` writes it: the field
-                // is `omitempty`, so a direct requirement is one with **no**
-                // `Indirect` key. A fixture that always wrote the key would let
-                // a subject that required it pass, and that subject would then
-                // read every real direct requirement as unknown.
-                if indirect {
-                    record["Indirect"] = serde_json::Value::Bool(true);
-                }
-                record
-            }
-            None if module == HOST_MODULE => serde_json::json!({
-                "Path": HOST_MODULE,
-                "Main": true,
-                "GoVersion": GO_VERSION,
-            }),
-            // What `go list -m` prints for a path outside the build list. It is
-            // not JSON, and that is the answer: there is no record.
-            None => return Ok(format!("go: module {module}: not a known dependency\n")),
-        };
-        Ok(format!(
-            "{}\n",
-            serde_json::to_string_pretty(&record).expect("a record serializes")
-        ))
+        Ok(self.go(&["list", "-m", "-json", module]))
     }
 
     async fn why(&self, module: &str) -> Result<String, ResolverError> {
-        // The `#` line names what is being explained, and `go` prints it whether
-        // or not there is a chain underneath.
-        let mut answer = format!("# {module}\n");
-        match self.requirement(module) {
-            None => answer.push_str(&format!("(main module does not need module {module})\n")),
-            Some((path, _, indirect)) => {
-                answer.push_str(&format!("{HOST_MODULE}\n"));
-                // A hop in between exactly when the tree has a direct
-                // requirement to route through. `go` prints package paths here
-                // rather than module paths; in these trees the two coincide,
-                // and a fixture that invented a package path under each module
-                // would be inventing the very thing the subject reads.
-                if indirect {
-                    if let Some((parent, _, _)) = self
-                        .go_mod_requirements()
-                        .into_iter()
-                        .find(|(_, _, indirect)| !*indirect)
-                    {
-                        answer.push_str(&format!("{parent}\n"));
-                    }
-                }
-                answer.push_str(&format!("{path}\n"));
+        Ok(self.go(&["mod", "why", "-m", module]))
+    }
+
+    async fn manifest(&self) -> Result<Manifest, ResolverError> {
+        Ok(Manifest {
+            go_mod: self.go_mod(),
+            go_sum: std::fs::read_to_string(self.repo.join("go.sum")).ok(),
+        })
+    }
+
+    async fn get(&self, module: &str, query: &str) -> Result<String, ResolverError> {
+        Ok(self.go(&["get", &format!("{module}@{query}")]))
+    }
+
+    async fn tidy(&self) -> Result<String, ResolverError> {
+        Ok(self.go(&["mod", "tidy"]))
+    }
+
+    async fn restore(&self, manifest: &Manifest) -> Result<(), ResolverError> {
+        std::fs::write(self.repo.join("go.mod"), &manifest.go_mod).unwrap();
+        let go_sum = self.repo.join("go.sum");
+        match &manifest.go_sum {
+            Some(contents) => std::fs::write(&go_sum, contents).unwrap(),
+            // Removed, not left alone: a probe that created a `go.sum` in a tree
+            // that had none has changed the tree, and a restore that only ever
+            // wrote files would leave it behind.
+            None => {
+                let _ = std::fs::remove_file(&go_sum);
             }
         }
-        Ok(answer)
+        Ok(())
     }
 }
 
 impl GoWorkspace {
-    /// Every `require` line the tree holds now: path, version, indirect.
+    /// Run the offline `go` in this tree and hand back what it said.
     ///
-    /// **Not a `go.mod` parser**, and it must not grow into one. It reads the
-    /// single-line `require` directive [`Shape::go_mod`] writes and nothing else
-    /// — no block form, no `replace`, no `exclude`. A fixture that parsed the
-    /// whole grammar would be a second implementation of a thing `go` already
-    /// does, drifting from it, in a file whose job is to build worlds.
+    /// Stdout when there is any and stderr otherwise, which is `Answer::text` —
+    /// the same rule `fiddle_runtime::cve::go::Go` applies to a finished child.
+    /// Written as one call rather than inlined at six methods so the in-process
+    /// stand-in cannot start reading the two streams differently from the
+    /// spawning one.
+    fn go(&self, args: &[&str]) -> String {
+        go_proxy::run(&self.repo, args).text()
+    }
+
+    /// Every `require` line the tree holds now: path, version, indirect.
     fn go_mod_requirements(&self) -> Vec<(String, String, bool)> {
-        self.go_mod()
-            .lines()
-            .filter_map(|line| {
-                let rest = line.trim().strip_prefix("require ")?;
-                let (rest, indirect) = match rest.split_once("//") {
-                    Some((head, tail)) => (head.trim(), tail.trim() == "indirect"),
-                    None => (rest.trim(), false),
-                };
-                let (path, version) = rest.split_once(char::is_whitespace)?;
-                Some((path.to_string(), version.trim().to_string(), indirect))
+        go_proxy::requirements(&self.repo)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The same worlds, through the adapter that really spawns a `go`
+// ---------------------------------------------------------------------------
+
+/// How long a scripted `go` may take. Far longer than any command needs, so a
+/// test that fails has failed on the answer rather than on a loaded machine.
+const SCRIPTED_GO_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The scripted `go`.
+///
+/// `CARGO_BIN_EXE_<name>` is the construction cargo promises, exactly as
+/// [`wiz_stub`] uses it. Unlike that one it takes no arm: `go` is a program with
+/// subcommands, and which document comes back is a function of the tree it runs
+/// in rather than of a fixture switch — see that program's header for why an arm
+/// would defeat the probe it exists to make measurable.
+pub fn go_stub() -> ProgramRef {
+    ProgramRef {
+        program: env!("CARGO_BIN_EXE_go_stub").to_string(),
+        args: Vec::new(),
+    }
+}
+
+/// `workspace`'s tree, answered by a real child process.
+///
+/// The point of it is what runs, not what answers: [`Go`] is **production code**
+/// — it spawns under `crate::process::run_bounded`, in an environment built from
+/// nothing, reads the child's two streams and puts `go.mod`/`go.sum` back — and
+/// this is the only way the offline gate can drive any of that. Only the
+/// toolchain is scripted, which is the arrangement [`ScriptedScanner`] is under.
+///
+/// The lanes that reach for it are the ones whose subject is the probe itself.
+/// Everything a lane can establish without a process it should establish against
+/// [`GoWorkspace`] directly, which is the same worlds and no spawn.
+pub fn spawned_go(workspace: &GoWorkspace) -> SpawnedGo {
+    let home = TempDir::new().expect("a temporary directory for a toolchain's caches");
+    let stub = go_stub();
+    SpawnedGo {
+        go: Go::new(
+            PathBuf::from(stub.program),
+            stub.args,
+            workspace.path().to_path_buf(),
+            home.path().to_path_buf(),
+            SCRIPTED_GO_TIMEOUT,
+            CancellationToken::new(),
+        ),
+        home,
+    }
+}
+
+/// A [`Go`] and the throwaway `HOME` it points its child at, with one lifetime.
+///
+/// The home is owned here for [`ScriptedScanner`]'s reason: a `TempDir` that
+/// dropped while the adapter still held its path would point a child at a
+/// directory that no longer exists. It implements the port rather than exposing
+/// the adapter, so a suite drives attribution through the seam the capability
+/// will hold.
+pub struct SpawnedGo {
+    go: Go,
+    /// Held for its [`Drop`], as [`GoWorkspace::root`] is.
+    home: TempDir,
+}
+
+#[async_trait::async_trait]
+impl ModuleGraph for SpawnedGo {
+    async fn list(&self, module: &str) -> Result<String, ResolverError> {
+        self.go.list(module).await
+    }
+
+    async fn why(&self, module: &str) -> Result<String, ResolverError> {
+        self.go.why(module).await
+    }
+
+    async fn manifest(&self) -> Result<Manifest, ResolverError> {
+        self.go.manifest().await
+    }
+
+    async fn get(&self, module: &str, query: &str) -> Result<String, ResolverError> {
+        self.go.get(module, query).await
+    }
+
+    async fn tidy(&self) -> Result<String, ResolverError> {
+        self.go.tidy().await
+    }
+
+    async fn restore(&self, manifest: &Manifest) -> Result<(), ResolverError> {
+        self.go.restore(manifest).await
+    }
+}
+
+/// A toolchain that is not installed.
+///
+/// Reached the only way it can be — by pointing the operator seam at a path
+/// holding nothing — for [`absent_scanner`]'s reason: an absent program is a
+/// spawn that never happened, so there is nothing left to script. Sited under the
+/// stub's own build directory so the path is one cargo really owns.
+pub fn absent_go(workspace: &GoWorkspace) -> SpawnedGo {
+    let program = format!("{}-which-is-not-installed", env!("CARGO_BIN_EXE_go_stub"));
+    assert!(
+        !Path::new(&program).exists(),
+        "{program} exists, so it cannot stand for a toolchain that is not installed"
+    );
+    let home = TempDir::new().expect("a temporary directory for a toolchain's caches");
+    SpawnedGo {
+        go: Go::new(
+            PathBuf::from(program),
+            Vec::new(),
+            workspace.path().to_path_buf(),
+            home.path().to_path_buf(),
+            SCRIPTED_GO_TIMEOUT,
+            CancellationToken::new(),
+        ),
+        home,
+    }
+}
+
+/// Where the scripted `go` writes down what it was started with.
+const GO_CHILD_RECORD: &str = "child.json";
+
+impl SpawnedGo {
+    /// The `HOME` the child is given, so a lane can assert that a toolchain's
+    /// caches land outside the tree whose diff is the evidence.
+    pub fn home(&self) -> &Path {
+        self.home.path()
+    }
+
+    /// Every environment variable the child actually received.
+    ///
+    /// Read off the disk on each call rather than cached, and a [`BTreeMap`] so
+    /// the names come back in one order whatever order the operating system
+    /// handed them over in — [`ScriptedScanner::child_env`] gives the whole of
+    /// the argument, and this is the same record answering it for a different
+    /// spawn site.
+    pub fn child_env(&self) -> BTreeMap<String, String> {
+        self.child()["env"]
+            .as_array()
+            .expect("the scripted go records its environment as an array")
+            .iter()
+            .map(|entry| {
+                let entry = entry.as_str().expect("an environment entry is a string");
+                let (name, value) = entry
+                    .split_once('=')
+                    .unwrap_or_else(|| panic!("{entry} is not a NAME=VALUE entry"));
+                (name.to_string(), value.to_string())
             })
             .collect()
     }
 
-    /// The tree's requirement on `module`, if it has one.
-    fn requirement(&self, module: &str) -> Option<(String, String, bool)> {
-        self.go_mod_requirements()
-            .into_iter()
-            .find(|(path, _, _)| path == module)
+    /// The names alone, in order. See [`SpawnedGo::child_env`].
+    pub fn child_env_names(&self) -> Vec<String> {
+        self.child_env().into_keys().collect()
+    }
+
+    /// The record itself, or a panic naming what is missing.
+    ///
+    /// Panics rather than returning an [`Option`], because every path that
+    /// reaches it has already run a command: an absent record means no child
+    /// started, and reporting that as an empty environment would turn a fixture
+    /// that failed to spawn into a boundary assertion that passed.
+    fn child(&self) -> serde_json::Value {
+        let record = self.home.path().join(GO_CHILD_RECORD);
+        let raw = std::fs::read_to_string(&record).unwrap_or_else(|source| {
+            panic!(
+                "no record at {}, so no child of this adapter was observed: {source}",
+                record.display()
+            )
+        });
+        serde_json::from_str(&raw)
+            .unwrap_or_else(|source| panic!("{} is not a record: {source}", record.display()))
     }
 }
 
