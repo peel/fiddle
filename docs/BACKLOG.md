@@ -1730,3 +1730,25 @@ Separately, the work-item half of the fail-closed guard is **single-witness**: u
 
 Origin: implementation (epic fiddle-eph7, Task 2 lane fiddle-uwk0, reported as concerns with DONE_WITH_CONCERNS)
 Tags: #debt #risk
+
+### 2026-08-14 — Three descriptions still say an invocation reference is `<scheme>:<value>`, and one of them is a diagnostic that now misleads
+ADR 019 admits a bare reference, so `<scheme>:<value>` is no longer the whole grammar. Three descriptions outside the M4a Task 1 lane's Files block were left stale deliberately rather than widened into it:
+
+- `crates/fiddle-cli/src/cli.rs:61` and `:104` — the `inspect` and `run` positional help both read "as `<scheme>:<value>`". ADR 019 quotes the `run` one specifically, so the ADR and the help text now disagree.
+- `crates/fiddle-runtime/src/orchestration.rs:86` — "The canonical `<scheme>:<value>` text of the invocation."
+- `InvocationRefError::Malformed`'s own diagnostic still says the form must be `<scheme>:<value>`, so a caller who mistypes `cev` is given guidance that omits the legal bare form. This is the one that actively misleads rather than merely under-describing.
+
+A related latent bug in the same area **was** fixed by that lane, and is worth recording as the reason to take the rest seriously: `UnknownScheme`'s message hardcoded "beans, jira, scheduled, scanner" in its `#[error]` attribute, so adding a fifth scheme left it naming four of five — a caller who correctly typed `cve` before the variant existed would have been told there is no such scheme. It is now derived from `ALL` with a test over every scheme.
+
+Origin: implementation (epic fiddle-eph7, Task 1 lane fiddle-typ7, reported as a concern with DONE_WITH_CONCERNS)
+Tags: #debt
+
+### 2026-08-14 — ADR 011's traversal table enumerated two schemes, and the one whose values come from outside was not among them
+The M4a Task 1 lane's ninth mutation exempted standalone-scheme values from ADR 011's character class — the plausible over-generalisation of ADR 019, that "a self-discovering scheme supplies its own input". It was caught by that lane's new test **and by nothing else in the workspace**, because `refuses_a_value_that_could_be_read_as_a_path`, the test that reads as the canonical list, enumerated only `beans` and `scanner`.
+
+`cve` is precisely the scheme whose *valued* form carries a scanner-supplied advisory id — an input fiddle does not control — so it was the one most needing a row and the one that had none. Rows for `cve:../../../pwned` and `cve:a/b` were added to that table.
+
+The general shape, worth carrying beyond this milestone: **a test that reads as an exhaustive list over a closed set is a null the moment the set grows.** ADR 019 admits a fifth scheme; nothing made the traversal table notice.
+
+Origin: implementation (epic fiddle-eph7, Task 1 lane fiddle-typ7, found by its own inversion)
+Tags: #debt #risk #security
