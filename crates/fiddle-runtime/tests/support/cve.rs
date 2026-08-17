@@ -113,6 +113,20 @@
 //!   [`LANDING_CREATED`] is a file `git checkout` cannot put back. Neither is
 //!   decoration — see each one's own doc.
 //! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
+//! - **Task 18 adds nothing here, deliberately.** It landed before Task 17 and
+//!   needed a forge, so the obvious move was to bring `forge()` forward. It did
+//!   not: what a single-operation suite needs is a scratch directory for the
+//!   scripted `gh` and a way to read its requests back, which is what
+//!   `pull_request_effect.rs` and `ready_effect.rs` already each keep privately,
+//!   and a `forge()` shaped to one operation's needs is worse than no `forge()` —
+//!   Task 17 would have inherited a name it had to widen rather than a blank
+//!   page. `cve_shared_pr.rs` therefore has a local `Forge` of its own, and Task
+//!   17 owes it nothing. What Task 17 *does* inherit is in `gh_stub`: the
+//!   by-number pull-request route now replays landed `PATCH` body rewrites over
+//!   the seed, and `apply_effect` records a `PATCH` as a mutation. A `forge()`
+//!   that arranges a shared pull request should seed `pulls_by_number/{n}.json`
+//!   with a `body`, and can then read the rewrite back through the client rather
+//!   than out of the fixture.
 //! - Task 19 adds `fixture` and `world_with`.
 //!
 //! # What a scanner document here is, and is not

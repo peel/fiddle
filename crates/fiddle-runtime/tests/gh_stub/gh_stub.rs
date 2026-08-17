@@ -653,7 +653,13 @@ fn open_pull_request_for(dir: &Path, body: &str) {
 /// within a thread. Numbering per path would leave two conversations' first comments
 /// sharing an id, and a fixture cannot both do that and answer a by-id read.
 fn apply_effect(dir: &Path, key: &str, body: &str, mode: &str) {
-    if !key.starts_with("POST") && !key.starts_with("DELETE") {
+    // `PATCH` alongside the other two, because a body update is a mutation and a
+    // world that dropped it could not answer the one question
+    // `EnsurePullRequestBody`'s postcondition asks — *does the pull request say
+    // this now?* Read out of this log by [`landed_body_rewrites`], so the answer a
+    // second run gets is a rewrite that really landed, including the ones whose
+    // answer was lost on the way home.
+    if !key.starts_with("POST") && !key.starts_with("DELETE") && !key.starts_with("PATCH") {
         return; // a read changes nothing
     }
     let mut landed = serde_json::json!({ "key": key, "body": body, "mode": mode });
@@ -940,7 +946,7 @@ fn pull_request_by_number(dir: &Path, path: &str) -> Option<(u16, String)> {
             file.display()
         )
     });
-    Some((200, landed_transitions_applied(dir, body)))
+    Some((200, landed_transitions_applied(dir, number, body)))
 }
 
 /// One seeded pull request, brought up to date with the ready transitions that
@@ -956,17 +962,67 @@ fn pull_request_by_number(dir: &Path, path: &str) -> Option<(u16, String)> {
 /// `markPullRequestReadyForReview` is addressed by. A mutation for some other
 /// pull request therefore does not take this one out of draft, which is the
 /// distinction a fixture keyed on "a mutation happened" would lose.
-fn landed_transitions_applied(dir: &Path, body: String) -> String {
-    let mut pull_request = parse(&body);
-    let node_id = pull_request["node_id"].as_str().unwrap_or_default();
-    if node_id.is_empty() || !readied_node_ids(dir).iter().any(|id| id == node_id) {
+///
+/// The body rewrite is the second transition this route replays, and it is keyed
+/// on the **number** rather than on a node id because `PATCH /pulls/{n}` is
+/// addressed by one. Same rule either way: a rewrite of some other pull request
+/// does not change this one's body.
+fn landed_transitions_applied(dir: &Path, number: &str, body: String) -> String {
+    let readied = {
+        let node_id = parse(&body)["node_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        !node_id.is_empty() && readied_node_ids(dir).iter().any(|id| id == &node_id)
+    };
+    let rewritten = landed_body_rewrites(dir, number);
+    if !readied && rewritten.is_none() {
         return body;
     }
-    // `draft` and nothing else. The transition takes a pull request out of draft;
-    // a fixture that also rewrote the state or the head would be answering
-    // questions this mutation does not ask.
-    pull_request["draft"] = serde_json::Value::Bool(false);
+
+    let mut pull_request = parse(&body);
+    if readied {
+        // `draft` and nothing else. The transition takes a pull request out of
+        // draft; a fixture that also rewrote the state or the head would be
+        // answering questions this mutation does not ask.
+        pull_request["draft"] = serde_json::Value::Bool(false);
+    }
+    if let Some(rewritten) = rewritten {
+        pull_request["body"] = serde_json::Value::String(rewritten);
+    }
     pull_request.to_string()
+}
+
+/// The body the **last** landed `PATCH` left on this pull request, if any.
+///
+/// The last and not the first, because that is what a sequence of rewrites means:
+/// a run that corrects its own description twice leaves the second sentence
+/// standing, and a fixture that answered the first would let a stale body pass as
+/// a satisfied postcondition.
+///
+/// Read out of the world log, so these are the writes that really happened —
+/// including, and this is the point of the log, the ones whose answer was lost on
+/// the way back. A `PATCH` that carried no `body` key changes nothing here: the
+/// endpoint's other fields are none of this route's business, and inventing an
+/// empty description for one would be the fixture answering a question the
+/// request did not ask.
+fn landed_body_rewrites(dir: &Path, number: &str) -> Option<String> {
+    let key = format!("_pulls_{number}");
+    std::fs::read_to_string(dir.join("world"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|landed| {
+            landed["key"]
+                .as_str()
+                .is_some_and(|k| k.starts_with("PATCH_repos_") && k.ends_with(&key))
+        })
+        .filter_map(|landed| {
+            parse(landed["body"].as_str().unwrap_or_default())["body"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .next_back()
 }
 
 /// The node ids a landed `markPullRequestReadyForReview` took out of draft.

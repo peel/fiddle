@@ -38,7 +38,9 @@ pub use decision::{
     decision_request_id, parse_marker, render_marker, ActorRef, DecisionBinding, DecisionRequestId,
     HumanDecisionRequest, InterpretedHumanDecision, MarkerError, MARKER_VERSION,
 };
-pub use effect::{effect_id, payload_hash, EffectId, EffectKind, PayloadHash, ProposedEffect};
+pub use effect::{
+    content_digest, effect_id, payload_hash, EffectId, EffectKind, PayloadHash, ProposedEffect,
+};
 pub use finding::{selected, AdvisoryId, AdvisoryIdError, PackageType, ProjectedFinding, Severity};
 pub use identity::{
     AttemptId, CapabilityId, InvocationRef, InvocationRefError, InvocationScheme, WorkRef,

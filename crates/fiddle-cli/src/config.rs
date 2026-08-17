@@ -856,6 +856,8 @@ pub struct PolicyTable {
     pub publish_decision_request: DeploymentRule,
     #[serde(default = "allow")]
     pub ensure_pull_request_ready: DeploymentRule,
+    #[serde(default = "allow")]
+    pub ensure_pull_request_body: DeploymentRule,
 }
 
 /// What an absent rule means.
@@ -877,6 +879,7 @@ impl Default for PolicyTable {
             ensure_check_requested: allow(),
             publish_decision_request: allow(),
             ensure_pull_request_ready: allow(),
+            ensure_pull_request_body: allow(),
         }
     }
 }
@@ -895,6 +898,7 @@ impl DeploymentPolicy for PolicyTable {
             EffectKind::EnsureCheckRequested => self.ensure_check_requested,
             EffectKind::PublishDecisionRequest => self.publish_decision_request,
             EffectKind::EnsurePullRequestReady => self.ensure_pull_request_ready,
+            EffectKind::EnsurePullRequestBody => self.ensure_pull_request_body,
         }
     }
 }
@@ -2157,7 +2161,7 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
     /// reaches — which is the state `publish_decision_request` and
     /// `ensure_pull_request_ready` were in between the task that added them and
     /// this one.
-    const RULE_KEYS: [(&str, EffectKind); 5] = [
+    const RULE_KEYS: [(&str, EffectKind); EffectKind::ALL.len()] = [
         ("ensure_branch_published", EffectKind::EnsureBranchPublished),
         ("ensure_pull_request", EffectKind::EnsurePullRequest),
         ("ensure_check_requested", EffectKind::EnsureCheckRequested),
@@ -2169,7 +2173,37 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
             "ensure_pull_request_ready",
             EffectKind::EnsurePullRequestReady,
         ),
+        (
+            "ensure_pull_request_body",
+            EffectKind::EnsurePullRequestBody,
+        ),
     ];
+
+    /// The list above holds every kind this build has, rather than however many
+    /// somebody remembered.
+    ///
+    /// Its length is [`EffectKind::ALL`]'s, so a kind added without a line here
+    /// is a compile error rather than a lane that quietly stops covering it. The
+    /// length alone would still admit a list that named one kind twice and
+    /// another not at all, which is what this asserts away.
+    #[test]
+    fn the_rule_keys_cover_every_effect_kind() {
+        let named: std::collections::BTreeSet<_> =
+            RULE_KEYS.iter().map(|(_, kind)| kind.as_str()).collect();
+        assert_eq!(named.len(), RULE_KEYS.len(), "a kind is listed twice");
+        for kind in EffectKind::ALL {
+            assert!(
+                named.contains(kind.as_str()),
+                "{} has no rule key, so no document can gate it",
+                kind.as_str()
+            );
+        }
+        // And each key really is the kind's own wire spelling, which is what
+        // makes the document's vocabulary and the identity's one word.
+        for (key, kind) in RULE_KEYS {
+            assert_eq!(key, kind.as_str());
+        }
+    }
 
     /// **Each key answers for its own effect kind, and for no other.**
     ///

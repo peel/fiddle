@@ -39,10 +39,30 @@
 //! exists")` would be a client whose correctness depends on English. The
 //! classification comes from the status code and from what the read finds, which
 //! are the two things GitHub has committed to.
+//!
+//! # The second operation here inverts the first one's rule, on purpose
+//!
+//! [`EnsurePullRequestBody`] rewrites the body of a pull request that already
+//! exists, and its target carries a **digest of the body** — the very thing
+//! [`pull_request_target`] is careful to keep out of its own. The two are not in
+//! tension; they are the same rule applied to two different questions.
+//!
+//! `EnsurePullRequest` asks *"is there a pull request for this head and base"*.
+//! Its object is a head-and-base pair, which a repeat run names identically, so
+//! the identity is stable by construction and a reworded body must not make a
+//! second object.
+//!
+//! `EnsurePullRequestBody` asks *"does this pull request say this"*. Its object
+//! is the same pull request on every run, so a target of repository and number
+//! alone would give two different sentences one identity — and the second run
+//! would spend the first one's, find a postcondition it believed satisfied, and
+//! rewrite nothing without saying so. The digest is what makes "say one thing"
+//! and "say another" two effects. [`EffectKind::EnsurePullRequestBody`] states
+//! the same thing from `fiddle-core`'s side, and `cve_shared_pr.rs` is the suite.
 
 use crate::effect::{AuthorizedEffect, EffectContext, IntegrationOperation, ObservedState};
 use crate::github::{encode, GhError};
-use fiddle_core::HumanDecisionRequirement;
+use fiddle_core::{content_digest, HumanDecisionRequirement};
 
 /// An open pull request, as it was observed to be.
 ///
@@ -375,6 +395,250 @@ impl IntegrationOperation for EnsurePullRequest {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The body of a pull request that already exists
+// ---------------------------------------------------------------------------
+
+/// A pull request observed to be saying what a run wanted it to say.
+///
+/// The `body` is carried because it is what was read, and because it is the only
+/// evidence the receipt can offer that the sentence in the world is this run's
+/// sentence rather than a previous run's. A receipt naming only the number would
+/// record that *something* was written.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PullRequestBody {
+    pub number: u64,
+    pub body: String,
+}
+
+impl ObservedState for PullRequestBody {
+    type Value = PullRequestBody;
+
+    fn describe(&self) -> String {
+        format!(
+            "pull request #{} carries the intended body ({} characters)",
+            self.number,
+            self.body.chars().count()
+        )
+    }
+
+    /// The number, because that is what a person and a later process both look
+    /// the object up by. Deliberately not the digest: a reference is for finding
+    /// the object again, and the digest names the content rather than the object.
+    fn reference(&self) -> Option<String> {
+        Some(self.number.to_string())
+    }
+
+    fn into_value(self) -> PullRequestBody {
+        self
+    }
+}
+
+/// The canonical target identity for rewriting one pull request's body.
+///
+/// `{repo}#{pr}@body:{digest}` — the same `{repo}#{pr}@…` shape
+/// [`pull_request_ready_target`](super::pull_request_ready_target) uses, with
+/// `body:` in front of the digest so the two are distinguishable in a receipt a
+/// person reads. They could not collide even without it — a head sha is 40 hex
+/// characters and a digest is 16, and the kind is a framed input to the identity
+/// besides — but a target is printed as well as hashed.
+///
+/// **The digest is the load-bearing part**, and [`content_digest`] rather than a
+/// second definition of one: the target is recomputed by a later *build*, and two
+/// spellings of "the digest of this body" that drifted apart would leave a fresh
+/// process failing to recognise a rewrite it had really performed and performing
+/// it again.
+///
+/// A digest and not the body. A target is hashed into an identity and is also
+/// carried in a receipt, so splicing in prose somebody wrote would make both
+/// unbounded, and would put the whole payload into the one field that is supposed
+/// to name *what* is being acted on rather than *how*.
+pub fn pull_request_body_target(repo: &str, pr: u64, body: &str) -> String {
+    format!("{repo}#{pr}@body:{}", content_digest(body))
+}
+
+/// Make one pull request say what this run wants it to say.
+///
+/// **Narrow to a pull request's body.** There is no comment-editing counterpart
+/// in this crate and there must not be: `DecisionError::RequestEdited` refuses a
+/// request comment whose `created_at` and `updated_at` disagree, and it is
+/// entitled to read that as tampering only because fiddle itself cannot be the
+/// editor. `cve_shared_pr::no_comment_edit_path_exists` walks the workspace for
+/// it rather than leaving the absence to be remembered.
+pub struct EnsurePullRequestBody {
+    /// `owner/name`, as the API path spells it.
+    repo: String,
+    /// The pull request's number, which is what both the read and the write are
+    /// addressed by.
+    pr: u64,
+    /// The body this run intends. Identity *and* payload — see
+    /// [`EnsurePullRequestBody::payload`] for why it is in both.
+    body: String,
+}
+
+impl EnsurePullRequestBody {
+    pub fn new(repo: String, pr: u64, body: String) -> Self {
+        Self { repo, pr, body }
+    }
+
+    /// The canonical target identity to propose this effect under.
+    pub fn target(&self) -> String {
+        pull_request_body_target(&self.repo, self.pr, &self.body)
+    }
+
+    /// The one path this operation uses, for the read and for the write alike.
+    ///
+    /// One spelling rather than two, for [`EnsurePullRequest::head_label`]'s
+    /// reason: a read addressed at one object and a write addressed at another
+    /// would be a postcondition that could never observe its own mutation.
+    fn path(&self) -> String {
+        format!("/repos/{}/pulls/{}", self.repo, self.pr)
+    }
+
+    /// The body this pull request currently carries.
+    ///
+    /// Two absences and they mean different things. A `body` key that is JSON
+    /// `null` is GitHub's own spelling of *a pull request with no description*,
+    /// which is a real state and reads as the empty string — a run intending an
+    /// empty body against one would correctly find its postcondition satisfied. A
+    /// `body` key that is **missing** is a `gh` answering something this client
+    /// cannot read, and it is refused rather than defaulted: defaulting it to
+    /// empty would turn an unreadable answer into "the description is blank" and
+    /// dispatch a rewrite against a pull request nobody looked at.
+    fn read(&self, response: &serde_json::Value) -> Result<String, GhError> {
+        match &response["body"] {
+            serde_json::Value::Null if response.get("body").is_some() => Ok(String::new()),
+            serde_json::Value::String(body) => Ok(body.clone()),
+            _ => Err(GhError::Malformed(format!(
+                "{} carried no readable body",
+                self.path()
+            ))),
+        }
+    }
+
+    /// The request the mutation would send: the one field this operation writes.
+    ///
+    /// A method rather than three lines inside
+    /// [`EnsurePullRequestBody::apply`], for
+    /// [`EnsurePullRequestReady::mutation`](super::EnsurePullRequestReady)'s
+    /// reason — `apply` needs an [`AuthorizedEffect`], which is unforgeable
+    /// outside [`crate::effect`], so nothing can reach it from a test and the
+    /// *narrowness* of the write would otherwise be a fact nothing that runs
+    /// could observe.
+    ///
+    /// One key, and that is the claim. `PATCH /repos/{o}/{r}/pulls/{n}` also
+    /// accepts `title`, `state` and `base`; sending any of them would let a body
+    /// update close a pull request or retarget it, which is not what anybody
+    /// proposed and not what the payload hash was minted over.
+    fn request(&self) -> serde_json::Value {
+        serde_json::json!({ "body": self.body })
+    }
+}
+
+#[async_trait::async_trait]
+impl IntegrationOperation for EnsurePullRequestBody {
+    type State = PullRequestBody;
+
+    /// Unattended.
+    ///
+    /// A body is a *description* of a proposal that already exists. Rewriting it
+    /// merges nothing, moves no branch, and does not put the change in front of
+    /// reviewers — [`EnsurePullRequestReady`](super::EnsurePullRequestReady) is
+    /// the act that does that, and it is the one whose minimum is `Human`. The
+    /// CVE capability's whole reason for this effect is to keep one shared
+    /// proposal's description honest as it learns more, and a description that
+    /// needed an approval per revision would be a description that went stale.
+    ///
+    /// A deployment may still strengthen this to `Human` or `Deny` through
+    /// `github.policy.ensure_pull_request_body`, and has no spelling that weakens
+    /// it — [`combine`](fiddle_core::combine)'s rule, not this method's.
+    fn minimum(&self) -> HumanDecisionRequirement {
+        HumanDecisionRequirement::Automatic
+    }
+
+    /// The canonical payload: the three facts this operation acts on.
+    ///
+    /// The body is in here as well as in the target, and that is not a
+    /// duplication to remove — it is the same pairing
+    /// [`EnsurePullRequestReady`](super::EnsurePullRequestReady) makes with its
+    /// head sha, and for the same two reasons. The target is what the identity is
+    /// derived over, so two bodies are two effects; the payload is what step 6
+    /// compares against the envelope, so a caller that proposed one body and
+    /// built the operation with another is refused *before* the mutation rather
+    /// than merely being a different effect.
+    ///
+    /// [`serde_json::Map`] is sorted, so the rendering is order-stable whatever
+    /// order the keys are written in here.
+    fn payload(&self) -> String {
+        serde_json::Value::Object(serde_json::Map::from_iter([
+            ("body".to_string(), self.body.clone().into()),
+            ("pr".to_string(), self.pr.into()),
+            ("repo".to_string(), self.repo.clone().into()),
+        ]))
+        .to_string()
+    }
+
+    /// Does this pull request already say this?
+    ///
+    /// Called twice by the executor, before the mutation and after it, and both
+    /// calls do the same thing: read the pull request and compare what it says
+    /// with what this run intends.
+    ///
+    /// **The comparison is over content and not over a record.** Nothing here
+    /// asks whether an effect with this identity was performed before — there is
+    /// no such record to ask, by `fiddle-core`'s design — so an unchanged body is
+    /// idempotent because the world already holds the sentence, which is a fact a
+    /// fresh process can establish with one read. That is what makes the identity
+    /// and the postcondition two independent defences rather than one: the digest
+    /// in the target keeps a *changed* body from being mistaken for work already
+    /// done, and this read keeps an *unchanged* one from being rewritten.
+    ///
+    /// Byte equality, and deliberately not a normalizing comparison. Trailing
+    /// whitespace and line endings are content as far as GitHub is concerned, and
+    /// a client that judged two spellings equivalent would be judging the digest
+    /// in its own target wrong — the target hashes the bytes.
+    ///
+    /// No arm turns a failed read into an absence. A pull request addressed by
+    /// number either exists or answers 404, so an error here is a repository this
+    /// process cannot read rather than a body that disagrees — and reading an
+    /// outage as "it says something else" is how a rewrite gets dispatched at an
+    /// object nobody looked at.
+    async fn inspect(&self, ctx: &EffectContext) -> Result<Option<PullRequestBody>, GhError> {
+        let response = ctx.gh.api("GET", &self.path(), None, &ctx.cancel).await?;
+        let held = self.read(&response.body)?;
+
+        Ok((held == self.body).then_some(PullRequestBody {
+            number: self.pr,
+            body: held,
+        }))
+    }
+
+    /// One `PATCH /repos/{repo}/pulls/{pr}`, and the only line here that changes
+    /// anything.
+    ///
+    /// `body` is a REST field, unlike `draft` —
+    /// [ADR 018](../../../docs/technical/decisions/018-a-graphql-200-is-not-a-success.md)
+    /// records the measurement that `draft` is not, which is why the transition
+    /// out of draft is GraphQL and this is not. The endpoint's documented set is
+    /// `title`, `body`, `state`, `base` and `maintainer_can_modify`, and
+    /// [`EnsurePullRequestBody::request`] sends exactly one of them.
+    ///
+    /// The response is discarded, body and all. It is what GitHub said about its
+    /// own write, and the executor's next act is to read the pull request back —
+    /// which is the answer, because a write whose answer was lost on the way home
+    /// arrives as nothing at all and the world still changed.
+    async fn apply(
+        &self,
+        ctx: &EffectContext,
+        _authorized: &AuthorizedEffect<Self>,
+    ) -> Result<(), GhError> {
+        ctx.gh
+            .api("PATCH", &self.path(), Some(&self.request()), &ctx.cancel)
+            .await
+            .map(|_response| ())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,6 +670,109 @@ mod tests {
         assert_ne!(
             ensure("a title", "main").target(),
             ensure("a title", "release").target()
+        );
+    }
+
+    fn rewriting(body: &str) -> EnsurePullRequestBody {
+        EnsurePullRequestBody::new("peel/fiddle".to_string(), 7, body.to_string())
+    }
+
+    /// The inverse of its neighbour above, and the reason both are stated in one
+    /// file: a reader who has just been told that a body is *never* in a target
+    /// needs the next paragraph to be why this one's is.
+    #[test]
+    fn the_body_target_carries_a_digest_and_never_the_body() {
+        let ours = rewriting("covers 1 CVE");
+
+        assert_eq!(
+            ours.target(),
+            format!("peel/fiddle#7@body:{}", content_digest("covers 1 CVE"))
+        );
+        assert!(!ours.target().contains("covers"), "{}", ours.target());
+        assert_ne!(ours.target(), rewriting("covers 3 CVEs").target());
+        // And the *other* pull request's rewrite is a different effect even when
+        // the sentence is the same, or one capability's body update would be read
+        // as evidence for another's.
+        assert_ne!(
+            ours.target(),
+            EnsurePullRequestBody::new("peel/fiddle".to_string(), 8, "covers 1 CVE".to_string())
+                .target()
+        );
+    }
+
+    /// A `null` description and an unreadable answer are different facts, and
+    /// only one of them is a state the world is really in.
+    ///
+    /// GitHub sends `"body": null` for a pull request nobody wrote a description
+    /// for, so refusing that would make an ordinary object unreadable. A response
+    /// with no `body` key at all is a `gh` answering something this client cannot
+    /// parse, and defaulting *that* to empty would dispatch a rewrite against a
+    /// pull request whose description nobody actually saw.
+    #[test]
+    fn an_absent_description_is_read_and_an_absent_field_is_refused() {
+        let ours = rewriting("covers 1 CVE");
+
+        assert_eq!(
+            ours.read(&serde_json::json!({"body": null})).unwrap(),
+            "",
+            "no description is a description of nothing"
+        );
+        assert_eq!(
+            ours.read(&serde_json::json!({"body": "covers 1 CVE"}))
+                .unwrap(),
+            "covers 1 CVE"
+        );
+        assert!(
+            ours.read(&serde_json::json!({"number": 7})).is_err(),
+            "a response with no body field said nothing about the description"
+        );
+        assert!(
+            ours.read(&serde_json::json!({"body": 4})).is_err(),
+            "and neither did one whose description is not text"
+        );
+    }
+
+    /// The write carries the body and nothing else.
+    ///
+    /// Unreachable through the executor — `apply` needs an [`AuthorizedEffect`],
+    /// which nothing outside [`crate::effect`] can build — so the narrowness is
+    /// asserted here or nowhere. `PATCH /pulls/{n}` also accepts `state` and
+    /// `base`, and a request that grew either would let a body update close a
+    /// pull request or retarget it against a payload hash minted over neither.
+    #[test]
+    fn the_write_sends_the_body_and_no_other_field() {
+        let request = rewriting("covers 1 CVE").request();
+
+        assert_eq!(request, serde_json::json!({"body": "covers 1 CVE"}));
+        assert_eq!(
+            request.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["body"]
+        );
+    }
+
+    /// The read and the write address one object, so the postcondition can
+    /// observe the mutation it followed.
+    #[test]
+    fn the_read_and_the_write_share_one_path() {
+        assert_eq!(rewriting("a").path(), "/repos/peel/fiddle/pulls/7");
+    }
+
+    /// The body moves the payload as well as the target, and that is a second
+    /// property rather than a restatement. The target makes two bodies two
+    /// effects; the payload is what makes a caller that proposed one body and
+    /// built the operation with another refusable at step 6.
+    #[test]
+    fn a_changed_body_moves_the_payload_that_step_six_checks() {
+        use fiddle_core::payload_hash;
+
+        assert_ne!(
+            payload_hash(&rewriting("covers 1 CVE").payload()),
+            payload_hash(&rewriting("covers 3 CVEs").payload())
+        );
+        assert_eq!(
+            payload_hash(&rewriting("covers 1 CVE").payload()),
+            payload_hash(&rewriting("covers 1 CVE").payload()),
+            "and the payload is canonical: the same request hashes the same"
         );
     }
 

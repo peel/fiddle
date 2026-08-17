@@ -262,6 +262,7 @@ pub fn config_check_json(config: &Config) -> String {
                 "ensure_check_requested": rule(github.policy.ensure_check_requested),
                 "publish_decision_request": rule(github.policy.publish_decision_request),
                 "ensure_pull_request_ready": rule(github.policy.ensure_pull_request_ready),
+                "ensure_pull_request_body": rule(github.policy.ensure_pull_request_body),
             },
             // **Who may promote a change, and how the deployment is matched to
             // them.** `matched_on` is a fact about the *kind* of identity rather
@@ -425,6 +426,7 @@ pub fn config_check_human(config: &Config) -> String {
              \n  github.policy.ensure_check_requested = {}\
              \n  github.policy.publish_decision_request = {}\
              \n  github.policy.ensure_pull_request_ready = {}\
+             \n  github.policy.ensure_pull_request_body = {}\
              \n  github.decision.authorized = {}",
             github.repo,
             github.base,
@@ -457,6 +459,7 @@ pub fn config_check_human(config: &Config) -> String {
             rule(github.policy.ensure_check_requested),
             rule(github.policy.publish_decision_request),
             rule(github.policy.ensure_pull_request_ready),
+            rule(github.policy.ensure_pull_request_body),
             // The ids as the document wrote them, followed by what they are
             // matched on and by the fact that nothing reads them yet — a person
             // needs the consequence, which is that naming an approver does not
