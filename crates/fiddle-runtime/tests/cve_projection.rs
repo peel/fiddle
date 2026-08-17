@@ -29,8 +29,8 @@ use fiddle_runtime::cve::project::{project, Arm};
 use fiddle_runtime::scanner::ScanReport;
 use support::cve::{
     libraries, os_packages, report_with, report_with_advisory_description,
-    report_with_duplicate_cve_one_fixed_one_not, report_with_os_absent, report_with_os_empty,
-    Report, DEFAULT_LIBRARY_CVES, SENTINEL_PROSE,
+    report_with_duplicate_cve_one_fixed_one_not, report_with_libraries_absent,
+    report_with_os_absent, report_with_os_empty, Report, DEFAULT_LIBRARY_CVES, SENTINEL_PROSE,
 };
 
 // ---------------------------------------------------------------------------
@@ -139,6 +139,44 @@ fn an_empty_os_array_differs_from_an_absent_one() {
         .expect("a fixture document projects")
         .os_arm(),
         Arm::Present
+    );
+}
+
+/// The same distinction on the other array, and the half that says the
+/// projection answers *which array went unreported* rather than one fact about
+/// `osPackages`.
+///
+/// It matters because the two arms mean different things and are still read the
+/// same way. An empty `osPackages` is a distroless runtime's ordinary state; an
+/// absent `libraries` is a broken scan of a Go project. Neither reading belongs
+/// here — [`Projection`] reports what the document said and `evaluate` decides
+/// what it is worth — and a projection that answered `Absent` for a `libraries`
+/// key it had read, or `Present` for one it had not, would take that decision
+/// away by getting the fact wrong.
+///
+/// [`Projection`]: fiddle_runtime::cve::project::Projection
+#[test]
+fn an_absent_library_array_is_reported_as_absent() {
+    assert_eq!(
+        project(&scanned(&report_with_libraries_absent()))
+            .expect("a fixture document projects")
+            .library_arm(),
+        Arm::Absent
+    );
+    // The same control the OS rows have, and needed for the same reason: both
+    // arms above are satisfied by a `library_arm` that never answers anything
+    // else.
+    assert_eq!(
+        project(&scanned(&report_with_os_absent()))
+            .expect("a fixture document projects")
+            .library_arm(),
+        Arm::Present
+    );
+    assert_eq!(
+        project(&scanned(&report_with(libraries(&[]), os_packages(&[]))))
+            .expect("a fixture document projects")
+            .library_arm(),
+        Arm::Empty
     );
 }
 

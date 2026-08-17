@@ -84,20 +84,33 @@
 //!   clears the group's own advisory, so (a) passes, and only (b) sees the new
 //!   `HIGH`. It is the whole reason two conditions are needed rather than one.
 //!
-//! And a third thing, which is not a condition but a limit on what the first two
-//! can prove. A finding leaves a scan for two different reasons: the tree
-//! changed, or the *feed* moved. If the rescan ran at a different scanner
-//! version from the scan the input came from, an absence is no longer evidence
-//! about the tree, so the result is recorded as [`RescanVerdict::Provisional`]
-//! and **does not satisfy [`Evaluation::accepted`]**. That is why accepted and
-//! rejected are two questions here rather than one negation: a provisional
-//! rescan is neither.
+//! # Two limits on what a clean answer proves
 //!
-//! Note which way round provisionality applies. Conditions (a) and (b) are
-//! *positive* observations — an id is present, a finding is present — and a
-//! moved feed does not conjure a record into a report about a tree that no
-//! longer has the package. It is the **absence** that a moved feed can fake, so
-//! provisionality qualifies the clean answer and not the dirty ones.
+//! Both conditions are satisfied by an **absence**, and an absence has two ways
+//! of arriving that have nothing to do with the tree.
+//!
+//! - **The feed moved.** A finding leaves a scan because the tree changed *or*
+//!   because the advisory feed did. If the rescan ran at a different scanner
+//!   version from the scan the input came from, an absence is no longer evidence
+//!   about the tree, and the result is [`RescanVerdict::Provisional`].
+//! - **Nobody looked.** A document carrying no `osPackages` key has not reported
+//!   that the OS findings are gone; it has said nothing about OS packages at
+//!   all, and both conditions were therefore answered about half an image. That
+//!   is [`RescanVerdict::NotObserved`], and it is why
+//!   `crate::cve::project::Arm` distinguishes an absent array from an empty one:
+//!   an empty `osPackages` is a distroless runtime's ordinary state and *is* an
+//!   observation, and a rule that collapsed the two would refuse every such
+//!   image forever.
+//!
+//! Neither **satisfies [`Evaluation::accepted`]**, and neither is a refusal
+//! either. That is why accepted and rejected are two questions here rather than
+//! one negation: an unproved rescan is neither.
+//!
+//! Note which way round both limits apply. Conditions (a) and (b) are *positive*
+//! observations — an id is present, a finding is present — and neither a moved
+//! feed nor a missing array conjures a record into a report about a tree that no
+//! longer has the package. It is the **absence** that they can fake, so they
+//! qualify the clean answer and not the dirty ones.
 //!
 //! # What this module still does not decide
 //!
@@ -112,7 +125,7 @@ mod in_workspace;
 
 pub use in_workspace::{InWorkspace, Rescan};
 
-use crate::cve::project::project;
+use crate::cve::project::{project, Arm};
 use crate::scanner::{ScanError, ScanReport};
 use async_trait::async_trait;
 use fiddle_core::{AdvisoryId, Severity};
@@ -332,6 +345,38 @@ pub enum RescanVerdict {
     /// Both conditions held, at a different scanner version. Carries
     /// [`Reason::Provisional`].
     Provisional(Reason),
+
+    /// Both conditions held, over a document that carried no such package array
+    /// at all — so they were answered about half an image.
+    ///
+    /// **Silence is not clearance.** Conditions (a) and (b) are both satisfied
+    /// by an *absence*, and an array the scanner never wrote supplies absences
+    /// for free: it did not say the OS findings were gone, it said nothing about
+    /// OS packages. Reading that as proof is the same error as reading a CVE
+    /// *mentioned* in a merged pull request's body as one that pull request
+    /// *fixed* — the misfire [`crate::cve::dedup`] exists to refuse — and this
+    /// arm refuses it here.
+    ///
+    /// **Absence, not emptiness.** An `osPackages` holding no packages is the
+    /// ordinary state of a distroless runtime and *is* an observation: the
+    /// scanner looked and found none. [`Arm`] is the type that keeps the two
+    /// apart, and collapsing them here would refuse every distroless image
+    /// forever rather than only the scans that went quiet.
+    ///
+    /// Not a refusal, for [`RescanVerdict::Provisional`]'s reason: nothing went
+    /// wrong with the tree, and a scanner that stopped emitting an array would
+    /// otherwise make every honest repair in a run look broken. What is missing
+    /// is proof.
+    NotObserved {
+        /// The array the rescan's document did not carry: `libraries` or
+        /// `osPackages`.
+        ///
+        /// Named rather than left to the reader, for
+        /// [`RescanVerdict::StillReported`]'s reason: an operator has to be able
+        /// to tell a scanner that stopped reporting OS packages from one that
+        /// stopped reporting libraries, and the two have different causes.
+        array: &'static str,
+    },
 
     /// Condition (a) failed: these advisories are still reported.
     ///
@@ -571,8 +616,14 @@ impl Evaluation {
     pub fn reason(&self) -> Option<&Reason> {
         match &self.rescan {
             RescanVerdict::Provisional(reason) | RescanVerdict::NewFinding(reason) => Some(reason),
+            // `NotObserved` is here rather than carrying a reason of its own
+            // because [`Reason`] is closed at Task 12's two variants and Task
+            // 16 owns the rest of it. Nothing is lost: the arm names the array
+            // it is about, which is the whole of what a reader needs, and
+            // [`Evaluation::rescan`] is what a caller that wants it reads.
             RescanVerdict::NotCompared
             | RescanVerdict::Cleared
+            | RescanVerdict::NotObserved { .. }
             | RescanVerdict::StillReported(_)
             | RescanVerdict::Unreadable(_) => None,
         }
@@ -584,11 +635,12 @@ impl Evaluation {
     /// [`Evaluation::rejected`].** Every check passed by its own declared
     /// criterion, every advisory the group set out to clear is gone from both
     /// package arrays, nothing appeared that was not in the input, and the
-    /// rescan ran at the scanner version the input was scanned at. Anything
-    /// short of that is not accepted — including
-    /// [`RescanVerdict::Provisional`], which is the case this method exists to
-    /// exclude: an absence observed through a moved feed is not evidence about a
-    /// tree.
+    /// rescan both reported on both arrays and ran at the scanner version the
+    /// input was scanned at. Anything short of that is not accepted — including
+    /// [`RescanVerdict::Provisional`] and [`RescanVerdict::NotObserved`], which
+    /// are the two cases this method exists to exclude: an absence observed
+    /// through a moved feed is not evidence about a tree, and an absence from an
+    /// array nobody reported on is not an observation at all.
     pub fn accepted(&self) -> bool {
         self.first_failure().is_none() && matches!(self.rescan, RescanVerdict::Cleared)
     }
@@ -600,10 +652,11 @@ impl Evaluation {
     /// one, and a contract that accepted a tree because `docker` was missing
     /// would be a gate that gets weaker as a machine gets more broken.
     ///
-    /// A provisional rescan is **not** refused, and that is the whole of why
-    /// this and [`Evaluation::accepted`] are two questions. Nothing went wrong
-    /// with the tree; what is missing is proof, and reporting an unproved repair
-    /// as a failed one would throw away work over a scanner upgrade.
+    /// A provisional rescan is **not** refused, and neither is one that went
+    /// quiet about a package array. That is the whole of why this and
+    /// [`Evaluation::accepted`] are two questions. Nothing went wrong with the
+    /// tree; what is missing is proof, and reporting an unproved repair as a
+    /// failed one would throw away work over a scanner upgrade.
     pub fn rejected(&self) -> bool {
         self.first_failure().is_some()
             || matches!(
@@ -742,15 +795,17 @@ pub async fn evaluate(contract: &Contract, tree: &impl Tree) -> Result<Evaluatio
 }
 
 /// Put both rescan conditions to the report the rescan wrote, and say what the
-/// version it ran at lets that answer prove.
+/// document it was answered over lets that answer prove.
 ///
 /// The order is deliberate and it is not the order the conditions are numbered
 /// in the design. An unreadable document comes first because the two conditions
-/// cannot be asked of it at all; then (a), then (b), and the version comparison
-/// **last** — because it qualifies only the clean answer. A moved feed can make
-/// an advisory disappear from a report; it cannot make one appear in a report
-/// about a tree that no longer carries the package, so a surviving id and a new
-/// finding are facts either way and are refused without qualification.
+/// cannot be asked of it at all; then (a), then (b), and the two *qualifiers* —
+/// what the scanner reported on, and what version it ran at — **last**, because
+/// they qualify only the clean answer. Neither a moved feed nor a missing array
+/// can make an advisory appear in a report about a tree that no longer carries
+/// the package; both can make one disappear. So a surviving id and a new finding
+/// are facts either way and are refused without qualification, and it is the
+/// clean answer that has to earn the right to be called proof.
 fn judge(repair: &Repair, report: &ScanReport) -> RescanVerdict {
     // Through the projection rather than over `report.document` directly. It is
     // the code that reads *both* package arrays and the code the OS half of
@@ -796,8 +851,33 @@ fn judge(repair: &Repair, report: &ScanReport) -> RescanVerdict {
         });
     }
 
-    // What the two answers above are worth. A string comparison and not a
-    // version-order one: the question is whether the *same* scanner looked
+    // What the two answers above are worth, and the first of the two limits on
+    // it. Both conditions are satisfied by an *absence*, and an array the
+    // document does not carry supplies absences for free: the scanner did not
+    // say the OS findings were gone, it said nothing about OS packages at all.
+    //
+    // Last, with the version comparison, and for the same reason: a surviving id
+    // and a new finding are *positive* observations, and no silence about the
+    // other array makes one of them stop being true. Before the version
+    // comparison, because a scan that did not look at half the image is a weaker
+    // document than one that looked at all of it with a different feed, and
+    // where both hold that is the one to say first.
+    //
+    // Both arms, through the pair, for `cve::project`'s reason for iterating its
+    // own: two call sites are free to grow a difference, and the difference this
+    // one would grow is a rule that refuses silence about OS packages and
+    // accepts it about libraries.
+    for (array, arm) in [
+        ("libraries", projection.library_arm()),
+        ("osPackages", projection.os_arm()),
+    ] {
+        if arm == Arm::Absent {
+            return RescanVerdict::NotObserved { array };
+        }
+    }
+
+    // The second limit. A string comparison and not a version-order one: the
+    // question is whether the *same* scanner looked
     // twice, and "newer" and "older" are the same answer to it — either way a
     // different feed was consulted and an absence stopped being about the tree.
     if report.scanner_version != repair.scanned_at {

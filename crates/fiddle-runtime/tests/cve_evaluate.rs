@@ -484,6 +484,135 @@ async fn a_repaired_tree_whose_rescan_clears_the_group_is_accepted() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// What the conditions were answered over
+// ---------------------------------------------------------------------------
+
+/// A rescan that never reported on `osPackages` has not proved the group clear.
+///
+/// **Both conditions above are satisfied by an absence, and an array the
+/// document does not carry supplies absences for free.** The scanner did not say
+/// the OS findings were gone; it said nothing about OS packages at all, and
+/// reading that silence as clearance is the misfire this milestone exists to
+/// refuse — the same shape as reading a CVE *mentioned* in a merged pull
+/// request's body as a CVE that pull request *fixed*.
+///
+/// Every other question is arranged to hold, so the missing array is the only
+/// thing that can be deciding this: the group's advisory is not reported, every
+/// finding that is reported was in the input, the scanner version matches, and
+/// all five checks are green. See [`contract_for_a_partially_reported_rescan`].
+///
+/// [`contract_for_a_partially_reported_rescan`]: support::cve::contract_for_a_partially_reported_rescan
+#[tokio::test]
+async fn an_absent_os_array_in_a_rescan_is_not_proof() {
+    let r = evaluate(
+        &contract_for_a_partially_reported_rescan(),
+        &tree_whose_rescan_omits_the_os_array(),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert!(
+        r.first_failure().is_none(),
+        "the scanner wrote its artefact, so no check failed"
+    );
+    assert!(
+        !r.accepted(),
+        "half the image was not looked at, so nothing about it was proved"
+    );
+    assert!(
+        !r.rejected(),
+        "and nothing went wrong with the tree either — what is missing is proof"
+    );
+    assert_eq!(
+        r.rescan(),
+        &RescanVerdict::NotObserved {
+            array: "osPackages"
+        },
+        "and the record says which half of the image went unreported"
+    );
+}
+
+/// The positive half, and the reason the rule above is not simply "refuse
+/// everything".
+///
+/// **The same document with one key changed.** `report_with_os_empty` is
+/// `report_with_os_absent` with `osPackages` present and holding no packages,
+/// which is the ordinary state of a distroless runtime — design §2.3 says so in
+/// those words — and *is* an observation: the scanner looked and reported none.
+/// A rule that collapsed absent into empty would refuse every distroless image
+/// forever, and this lane is what makes that failure visible rather than
+/// silently conservative.
+#[tokio::test]
+async fn a_rescan_reporting_no_os_packages_is_still_proof() {
+    let r = evaluate(
+        &contract_for_a_partially_reported_rescan(),
+        &tree_whose_rescan_reports_no_os_packages(),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert!(
+        r.accepted(),
+        "an empty osPackages is what the scanner observed, not what it declined to say"
+    );
+    assert_eq!(r.rescan(), &RescanVerdict::Cleared);
+}
+
+/// The mirror on the other array, and the half that says what the rule is
+/// really about.
+///
+/// With only the `osPackages` lane, the rule is satisfied by an implementation
+/// that special-cases one key — and the defect is not about that key. It is that
+/// a rescan can only prove a clean result over the parts of the image it
+/// actually reported on, and a document with no `libraries` at all reports on no
+/// more of it than one with no `osPackages`.
+#[tokio::test]
+async fn an_absent_library_array_in_a_rescan_is_not_proof_either() {
+    let r = evaluate(
+        &contract_for_a_partially_reported_rescan(),
+        &tree_whose_rescan_omits_the_library_array(),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert!(r.first_failure().is_none());
+    assert!(!r.accepted());
+    assert!(!r.rejected());
+    assert_eq!(
+        r.rescan(),
+        &RescanVerdict::NotObserved { array: "libraries" }
+    );
+}
+
+/// An unreported array does not excuse an advisory that is still there.
+///
+/// The tree's rescan omits `osPackages` **and** still reports the very advisory
+/// the group set out to clear, in `libraries`. A surviving id is a positive
+/// observation and no silence elsewhere qualifies it, so this is refused
+/// outright rather than held as unproved — the same way round as the scanner
+/// version comparison, and for the same reason.
+///
+/// Without this lane, the rule above is satisfied by one that answers
+/// `NotObserved` before looking at anything, which would turn every refusal in
+/// this file into a shrug the moment a scanner dropped an array.
+#[tokio::test]
+async fn an_advisory_still_reported_is_refused_even_where_an_array_is_missing() {
+    let r = evaluate(
+        &contract_for(&["CVE-2026-2"]),
+        &tree_whose_rescan_omits_the_os_array_and_reports(&["CVE-2026-2"]),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert!(r.rejected(), "an id that is there is there");
+    assert!(!r.accepted());
+    assert!(matches!(
+        r.rescan(),
+        RescanVerdict::StillReported(ids) if ids.len() == 1
+    ));
+}
+
 /// A rescan whose document this build cannot read is not evidence of anything.
 ///
 /// The scanner wrote its artefact, so the fifth check passes by its declared

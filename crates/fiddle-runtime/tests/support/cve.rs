@@ -60,6 +60,15 @@
 //!   bare check list, because a rescan cannot be judged without the premise it
 //!   is compared against and a second argument alongside the checks would let a
 //!   caller pair one attempt's premise with another's contract.
+//!
+//!   Then [`contract_for_a_partially_reported_rescan`] and the three worlds it
+//!   is put to — [`tree_whose_rescan_omits_the_os_array`],
+//!   [`tree_whose_rescan_reports_no_os_packages`] and
+//!   [`tree_whose_rescan_omits_the_library_array`] — which are the first
+//!   consumers of Task 6's absent-versus-empty distinction. The first two are
+//!   [`report_with_os_absent`] and [`report_with_os_empty`] unmodified, so the
+//!   pair really does differ in one key rather than in two documents that were
+//!   written to look alike.
 //! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
 //! - Task 19 adds `fixture` and `world_with`.
 //!
@@ -1775,6 +1784,26 @@ pub fn contract_scanned_by(version: &str) -> Contract {
     contract
 }
 
+/// The premise the three one-array-missing worlds are judged under.
+///
+/// **Every condition is arranged to hold, so that the array is the only thing
+/// left that can decide anything.** `must_clear` is [`REPAIRED_ADVISORY`], which
+/// none of Task 6's documents reports, so condition (a) is satisfied; the input
+/// is widened to every advisory those documents *do* carry, so condition (b) is
+/// too; and the scanner version matches on both sides, so the comparison is not
+/// provisional either. A lane that skipped the widening would see its tree
+/// refused for reporting a finding that appeared, and would be asserting
+/// nothing about the missing array.
+///
+/// The widening reads the constants rather than restating their values: a lane
+/// naming `CVE-2026-0001` here would go quietly wrong the day
+/// [`DEFAULT_LIBRARY_CVES`] changed.
+pub fn contract_for_a_partially_reported_rescan() -> Contract {
+    let mut already_reported: Vec<&str> = DEFAULT_LIBRARY_CVES.to_vec();
+    already_reported.extend(DEFAULT_OS_CVES);
+    and_the_input_also_reported(contract_for(&[REPAIRED_ADVISORY]), &already_reported)
+}
+
 /// Canonical advisory ids, parsed the way every other value of this type is.
 fn advisories(cves: &[&str]) -> Vec<AdvisoryId> {
     cves.iter()
@@ -1953,6 +1982,64 @@ pub fn tree_whose_rescan_reports_in_os_array(cves: &[&str]) -> ScriptedTree {
 /// version is the only thing left that can decide whether the absence is proof.
 pub fn tree_rescanned_by(version: &str) -> ScriptedTree {
     tree_reporting(report_with(libraries(&[]), os_packages(&[])), version)
+}
+
+/// A [`green_tree`] whose rescan wrote a document with **no `osPackages` key**.
+///
+/// Task 6's own fixture, unmodified. Its pair is
+/// [`tree_whose_rescan_reports_no_os_packages`], which is the same document with
+/// the key present and holding no packages — the two differ in nothing else, so
+/// a lane running both is asking exactly *does the key's absence mean something
+/// its emptiness does not*. Neither is buildable from
+/// [`tree_whose_rescan_reports`], because an array a caller passes is an array
+/// the document carries.
+pub fn tree_whose_rescan_omits_the_os_array() -> ScriptedTree {
+    tree_reporting(report_with_os_absent(), FIXTURE_SCANNER_VERSION)
+}
+
+/// A [`green_tree`] whose rescan reported on `osPackages` and found none — the
+/// distroless shape, and the positive half of the pair above.
+///
+/// Without it, "an absent array is not proof" is indistinguishable from "an
+/// image with no OS findings can never be proved repaired", which would refuse
+/// every distroless runtime forever.
+pub fn tree_whose_rescan_reports_no_os_packages() -> ScriptedTree {
+    tree_reporting(report_with_os_empty(), FIXTURE_SCANNER_VERSION)
+}
+
+/// A [`green_tree`] whose rescan wrote a document with **no `libraries` key**.
+///
+/// The mirror of [`tree_whose_rescan_omits_the_os_array`], and it is not
+/// redundant for the reason [`tree_whose_rescan_reports_in_os_array`]'s sibling
+/// is not: a rule that named one array would leave the other half of the image
+/// readable as clear from silence, and only a lane per side can tell a rule
+/// about *an unreported array* from a rule about `osPackages`.
+pub fn tree_whose_rescan_omits_the_library_array() -> ScriptedTree {
+    tree_reporting(report_with_libraries_absent(), FIXTURE_SCANNER_VERSION)
+}
+
+/// [`tree_whose_rescan_reports`]'s world with the `osPackages` key taken out
+/// altogether: an advisory still reported in `libraries`, and silence about the
+/// other half of the image.
+///
+/// Task 6's [`report_with_os_absent`] cannot serve here — its library array is
+/// fixed, and this world needs a *named* advisory in it — so the key is removed
+/// from a real document rather than a second one being written out by hand, for
+/// [`tree_whose_rescan_is_unreadable`]'s reason.
+pub fn tree_whose_rescan_omits_the_os_array_and_reports(cves: &[&str]) -> ScriptedTree {
+    let mut report = rescan_report(
+        report_with(libraries(cves), os_packages(&[])),
+        FIXTURE_SCANNER_VERSION,
+    );
+    report.document["result"]
+        .as_object_mut()
+        .expect("a fixture scanner document's result is an object")
+        .remove("osPackages");
+    ScriptedTree {
+        scripted: BTreeMap::new(),
+        scanner: Scanned::AsReport(report),
+        ran: Mutex::new(Vec::new()),
+    }
 }
 
 /// A [`green_tree`] whose rescan wrote a document this build cannot read as a

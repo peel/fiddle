@@ -173,6 +173,14 @@ pub enum ReportVariant {
     OsAbsent,
     /// An `osPackages` key holding an empty array.
     OsEmpty,
+    /// No `libraries` key at all.
+    ///
+    /// The mirror of [`ReportVariant::OsAbsent`], and it is here because the two
+    /// halves are the same claim: a document missing either array is a scanner
+    /// that reported on half the image, and a reader deciding anything from the
+    /// silence is deciding it from nothing. Only the OS half had a world until
+    /// the rescan judgement needed both.
+    LibrariesAbsent,
     /// One advisory reported twice, once with a fix and once without.
     DuplicateCve(String),
     /// A document carrying advisory prose.
@@ -184,7 +192,7 @@ pub enum ReportVariant {
 /// `SHAPES` records: a guard that computes its expectation from the list it is
 /// checking is a list compared to itself, and it stayed green when an entry was
 /// deleted.
-const REPORT_VARIANTS: usize = 5;
+const REPORT_VARIANTS: usize = 6;
 
 impl ReportVariant {
     /// This variant's position in [`canonical_reports`]. The match is exhaustive,
@@ -197,6 +205,7 @@ impl ReportVariant {
             ReportVariant::OsEmpty => 2,
             ReportVariant::DuplicateCve(_) => 3,
             ReportVariant::AdvisoryDescription(_) => 4,
+            ReportVariant::LibrariesAbsent => 5,
         }
     }
 
@@ -211,6 +220,7 @@ impl ReportVariant {
             ReportVariant::OsEmpty => "os-empty".to_string(),
             ReportVariant::DuplicateCve(cve) => format!("duplicate({cve})"),
             ReportVariant::AdvisoryDescription(_) => "advisory-description".to_string(),
+            ReportVariant::LibrariesAbsent => "libraries-absent".to_string(),
         }
     }
 
@@ -236,6 +246,15 @@ impl ReportVariant {
                     as_json(&packages(&DEFAULT_LIBRARY_CVES, &LIBRARY_PACKAGES)),
                 );
                 result.insert("osPackages".to_string(), serde_json::json!([]));
+            }
+            // The same omission on the other side. The library half it leaves
+            // out is the half the two arms above hold constant, so the three
+            // documents differ in exactly which array is missing.
+            ReportVariant::LibrariesAbsent => {
+                result.insert(
+                    "osPackages".to_string(),
+                    as_json(&packages(&DEFAULT_OS_CVES, &OS_PACKAGES)),
+                );
             }
             // Two packages, one advisory, one fix between them. The rule this is
             // for splits fixable from upstream-blocked by subtraction, and a
@@ -327,6 +346,11 @@ pub fn report_with_os_empty() -> Report {
     ReportVariant::OsEmpty.render()
 }
 
+/// A document with no `libraries` key. See [`ReportVariant::LibrariesAbsent`].
+pub fn report_with_libraries_absent() -> Report {
+    ReportVariant::LibrariesAbsent.render()
+}
+
 /// A document reporting `cve` twice, once with a fix and once without.
 pub fn report_with_duplicate_cve_one_fixed_one_not(cve: &str) -> Report {
     ReportVariant::DuplicateCve(cve.to_string()).render()
@@ -349,6 +373,7 @@ pub fn canonical_reports() -> [ReportVariant; REPORT_VARIANTS] {
         ReportVariant::OsEmpty,
         ReportVariant::DuplicateCve("CVE-2026-0777".to_string()),
         ReportVariant::AdvisoryDescription(SENTINEL_PROSE.to_string()),
+        ReportVariant::LibrariesAbsent,
     ]
 }
 

@@ -33,6 +33,11 @@
 //! document verbatim precisely so this distinction still exists by the time it
 //! reaches here.
 //!
+//! Both arrays' arms are kept, and [`crate::evaluate`] is the consumer: a rescan
+//! can only prove a clean result over the parts of the image it actually
+//! reported on, and an advisory absent from an array the document does not carry
+//! is absent the way a question nobody asked has no answer.
+//!
 //! # Subtraction, not a filter
 //!
 //! One advisory can be reported twice, against two packages, once with a fix and
@@ -90,6 +95,7 @@ pub struct Projection {
     findings: Vec<ProjectedFinding>,
     fixable: Vec<usize>,
     upstream_blocked: Vec<usize>,
+    library_arm: Arm,
     os_arm: Arm,
 }
 
@@ -114,15 +120,30 @@ impl Projection {
 
     /// What the scanner said about `osPackages`.
     ///
-    /// Exposed for the OS array and not for `libraries`, because they are not
-    /// symmetric in practice: a Go project always declares dependencies, so an
-    /// absent `libraries` is a broken scan, while an empty `osPackages` is the
-    /// ordinary state of a distroless runtime and is the answer a caller has to
-    /// be able to tell from silence. A caller that needs the same distinction
-    /// for `libraries` should expose it here in the change that needs it —
-    /// [`packages`] already computes it.
+    /// The two arrays are not symmetric in what their arms *mean*. An empty
+    /// `osPackages` is the ordinary state of a distroless runtime and is a real
+    /// observation — the scanner looked and reported none — which is the answer
+    /// a caller has to be able to tell from silence, and is why this arm was the
+    /// one exposed first. An absent `libraries`, by contrast, is a broken scan
+    /// for a Go project rather than an ordinary state.
+    ///
+    /// They are symmetric in what an *absence* is worth, which is nothing: see
+    /// [`Projection::library_arm`].
     pub fn os_arm(&self) -> Arm {
         self.os_arm
+    }
+
+    /// What the scanner said about `libraries`.
+    ///
+    /// Exposed in the change that needed it, as the note this doc replaced said
+    /// it should be. The caller is the rescan judgement in
+    /// [`crate::evaluate`], which cannot prove a clean result over an array the
+    /// scanner never reported on — and for that question the two arrays *are*
+    /// symmetric, whatever [`Projection::os_arm`] says about their arms: an
+    /// advisory absent from an array the document does not carry is absent the
+    /// way a question nobody asked has no answer, on either side.
+    pub fn library_arm(&self) -> Arm {
+        self.library_arm
     }
 }
 
@@ -160,11 +181,10 @@ pub enum ProjectionError {
 /// the rule lives in the pure crate where it is argued for rather than being
 /// restated here in terms this file could get wrong.
 pub fn project(report: &ScanReport) -> Result<Projection, ProjectionError> {
-    // The library arm is computed and not kept — see [`Projection::os_arm`] for
-    // why only one of the two is exposed. It goes through the same reader so
-    // that a `libraries` key of the wrong shape is refused rather than read as
-    // no libraries at all.
-    let (_, library_packages) = packages(&report.document, "libraries")?;
+    // Both arms are kept. The same reader answers both, so that a key of the
+    // wrong shape on either side is refused rather than read as no packages at
+    // all — and so that neither arm can be the one somebody forgot to compute.
+    let (library_arm, library_packages) = packages(&report.document, "libraries")?;
     let (os_arm, os_packages) = packages(&report.document, "osPackages")?;
 
     let mut findings = Vec::new();
@@ -209,6 +229,7 @@ pub fn project(report: &ScanReport) -> Result<Projection, ProjectionError> {
         findings,
         fixable,
         upstream_blocked,
+        library_arm,
         os_arm,
     })
 }
