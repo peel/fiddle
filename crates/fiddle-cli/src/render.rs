@@ -280,6 +280,38 @@ pub fn config_check_json(config: &Config) -> String {
             })),
         });
     }
+    if let Some(scanner) = &config.scanner {
+        body["scanner"] = serde_json::json!({
+            "cli": { "program": scanner.cli.program, "args": scanner.cli.args },
+            // The names, never the values. The third and fourth `EnvRef`s in the
+            // schema, echoed exactly as the first two are — and the reason is
+            // sharper here than anywhere else: `client_secret` is the one value
+            // this whole build redacts on the way out of a child process, so a
+            // `config check` that printed it would undo the redaction from the
+            // one command an operator runs to confirm their document.
+            "client_id": { "env": scanner.client_id.env },
+            "client_secret": { "env": scanner.client_secret.env },
+            "timeout": scanner.timeout.to_string(),
+        });
+    }
+    if let Some(cve) = config
+        .orchestration
+        .as_ref()
+        .and_then(|orchestration| orchestration.cve.as_ref())
+    {
+        body["orchestration"] = serde_json::json!({
+            "cve": {
+                "image": cve.image,
+                // Echoed because it is a bound an operator set and cannot
+                // otherwise confirm — and because for the whole of M4a it was a
+                // key the PRD documented and nothing read, which is exactly the
+                // state a `config check` that echoes it makes impossible to
+                // repeat unnoticed.
+                "max_findings": cve.max_findings,
+                "go": { "program": cve.go.program, "args": cve.go.args },
+            },
+        });
+    }
     payload(CONFIG_CHECK_SCHEMA, body)
 }
 

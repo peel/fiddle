@@ -970,3 +970,131 @@ fn config_check_refuses_a_document_naming_both_check_shapes() {
          got: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The two tables M4 adds (Task 20.a)
+// ---------------------------------------------------------------------------
+
+/// The scanner and the sweep, written the way an operator would write them.
+const SWEEP: &str = r#"
+[scanner]
+cli = { program = "wizcli", args = ["scan"] }
+client_id = { env = "WIZ_CLIENT_ID" }
+client_secret = { env = "WIZ_CLIENT_SECRET" }
+timeout = "20m"
+
+[orchestration.cve]
+image = "ghcr.io/acme/icecube:latest"
+max_findings = 3
+go = { program = "go", args = [] }
+"#;
+
+/// **The bound the PRD documents is a bound the document can set.**
+///
+/// `[orchestration.cve] max_findings` was in the product document's
+/// configuration example and in no reader for the whole of M4a, so the number a
+/// deployment believed it had set was a constant in the runtime — the same
+/// number, which is exactly why nobody noticed. This is what makes the two
+/// distinguishable: the document says `3`, and `3` is what comes back.
+///
+/// The image is asserted beside it and is not decoration: it is the one key in
+/// this table with no default, because a guessed image would scan whichever tag
+/// this build shipped with.
+#[test]
+fn the_sweep_table_loads_and_reports_the_bound_the_document_set() {
+    let cve = checked(&format!("{AGENTIC}{SWEEP}"))["orchestration"]["cve"].clone();
+    assert_eq!(
+        cve,
+        serde_json::json!({
+            "image": "ghcr.io/acme/icecube:latest",
+            "max_findings": 3,
+            "go": { "program": "go", "args": [] },
+        }),
+        "a bound nothing reports back is a bound an operator cannot confirm: {cve}"
+    );
+}
+
+/// **The scanner's two credentials are echoed by name and never by value.**
+///
+/// The rule every `EnvRef` in this schema is under, and it is sharpest here:
+/// `client_secret` is the value the whole of `fiddle_runtime::scanner`'s
+/// redaction exists for, so a `config check` that printed it would undo that
+/// redaction from the one command an operator runs to confirm a document.
+///
+/// The variables are *exported with a sentinel* before the check runs, which is
+/// what makes the absence mean something: a payload that omits a value nobody
+/// set is not evidence about anything.
+#[test]
+fn the_scanner_table_names_its_credentials_and_prints_neither() {
+    let out = check_with_env(
+        &format!("{AGENTIC}{SWEEP}"),
+        &["--json"],
+        &[
+            ("WIZ_CLIENT_ID", "wiz-client-id-sentinel-9f21"),
+            ("WIZ_CLIENT_SECRET", "wiz-client-secret-sentinel-9f21"),
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        payload["scanner"]["client_id"]["env"], "WIZ_CLIENT_ID",
+        "{payload}"
+    );
+    assert_eq!(
+        payload["scanner"]["client_secret"]["env"], "WIZ_CLIENT_SECRET",
+        "{payload}"
+    );
+    for sentinel in [
+        "wiz-client-id-sentinel-9f21",
+        "wiz-client-secret-sentinel-9f21",
+    ] {
+        assert!(
+            !stdout.contains(sentinel),
+            "a credential reached stdout: {stdout}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&out.stderr).contains(sentinel),
+            "a credential reached a diagnostic"
+        );
+    }
+}
+
+/// A document that omits both tables still loads, and reports neither.
+///
+/// The property every optional table in this schema has, asserted for the two
+/// new ones: "absent is a legal document" and never "absent is filled in
+/// silently". A deployment that never scans has not left these blank — it has
+/// described a deployment that does not scan, and a `config check` inventing an
+/// image for it would be the guess the schema refuses.
+#[test]
+fn a_document_that_never_scans_reports_no_scanner_and_no_sweep() {
+    let payload = checked(AGENTIC);
+    assert!(payload.get("scanner").is_none(), "{payload}");
+    assert!(payload.get("orchestration").is_none(), "{payload}");
+}
+
+/// `fiddle config check` with `env` restored to the child.
+///
+/// The mirror of [`check_with`]'s credential-free default, and the half removal
+/// alone cannot make: removing a variable shows fiddle does not need it, while
+/// supplying one and finding it on no surface shows fiddle does not print it.
+fn check_with_env(text: &str, extra: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fiddle.toml");
+    std::fs::write(&path, text).unwrap();
+    let mut command = support::fiddle_command();
+    command
+        .args(["config", "check", "--config", path.to_str().unwrap()])
+        .args(extra)
+        .env_remove(CREDENTIAL);
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    command.output().unwrap()
+}
