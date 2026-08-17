@@ -115,11 +115,13 @@
 //! # What this module still does not decide
 //!
 //! What to *do* with any of it. [`Reason`] is introduced here with the two
-//! variants an evaluation can produce, and Task 16's disposition extends it with
-//! one variant per row of the table it owns. The split is deliberate: evaluation
-//! produces a result and disposition consumes it, in that order, and a module
-//! that decided both would be the one place a "no findings left" could quietly
-//! become "open a pull request".
+//! variants an evaluation can produce, and [`crate::cve::verdict`] has now
+//! extended it with the seven a *disposition* can — one per row of Design §3's
+//! table. The split is deliberate: evaluation produces a result and disposition
+//! consumes it, in that order, and a module that decided both would be the one
+//! place a "no findings left" could quietly become "open a pull request".
+//! Nothing here produces one of the seven, and nothing there produces one of
+//! these two.
 
 mod in_workspace;
 
@@ -702,10 +704,11 @@ impl Evaluation {
     pub fn reason(&self) -> Option<&Reason> {
         match &self.rescan {
             RescanVerdict::Provisional(reason) | RescanVerdict::NewFinding(reason) => Some(reason),
-            // `NotObserved` is here rather than carrying a reason of its own
-            // because [`Reason`] is closed at Task 12's two variants and Task
-            // 16 owns the rest of it. Nothing is lost: the arm names the array
-            // it is about, which is the whole of what a reader needs, and
+            // `NotObserved` is here rather than carrying a reason of its own,
+            // and it stays that way now that [`Reason`] has grown its
+            // disposition half: those seven are what a *run* came to, and this
+            // is what one rescan observed. Nothing is lost — the arm names the
+            // array it is about, which is the whole of what a reader needs, and
             // [`Evaluation::rescan`] is what a caller that wants it reads.
             RescanVerdict::NotCompared
             | RescanVerdict::Cleared

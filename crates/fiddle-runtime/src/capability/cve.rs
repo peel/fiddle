@@ -502,10 +502,13 @@ pub enum GroupStatus {
 
 /// Why a group is being left for a person.
 ///
-/// **Not [`crate::evaluate::Reason`]**, which is closed at the two variants an
-/// *evaluation* can produce and which Task 16's disposition extends. These are
-/// the reasons a *group* stops, one per row of [`GroupStatus::of`]'s table, and
-/// two of the three are things an evaluation has no vocabulary for.
+/// **Not [`crate::evaluate::Reason`]**, which is now closed at nine — the two an
+/// *evaluation* produces and the seven a *disposition* does. These are the
+/// reasons a *group* stops, one per row of [`GroupStatus::of`]'s table, and they
+/// stayed separate through that extension rather than being folded into it: two
+/// of the three are things an evaluation has no vocabulary for, and a run's
+/// reason and a group's reason are different fields of different records — a
+/// run has one and holds several groups.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NeedsWork {
     /// The attempt edited something the scope rules do not allow it to.
