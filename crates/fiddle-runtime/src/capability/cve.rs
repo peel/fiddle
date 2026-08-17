@@ -69,14 +69,17 @@ use crate::agent::{attempt_briefed, AgentBudget, Brief, RepairReport, ToolHost, 
 use crate::cve::attribute::Target;
 use crate::cve::fold::{fold_commit_argv, Landed};
 use crate::cve::group::Group;
+use crate::effect::{Executor, IntegrationOperation};
 use crate::evaluate::{Evaluation, RescanVerdict};
-use crate::github::{find_labelled_pull_request, SharedPullRequest};
+use crate::github::{
+    find_labelled_pull_request, EnsureBranchPublished, EnsurePullRequest, SharedPullRequest,
+};
 use crate::workspace::{
     Content, FileEdit, Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath,
 };
 use crate::{GhCli, GhError};
 use async_trait::async_trait;
-use fiddle_core::{AttemptId, ProjectedFinding};
+use fiddle_core::{AttemptId, CapabilityId, EffectKind, ProjectedFinding, ProposedEffect};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -1236,6 +1239,22 @@ pub enum Approved {
         number: u64,
         /// Its head branch, bare.
         branch: String,
+        /// What that branch is at on the remote, as the forge reported it. See
+        /// [`SharedPullRequest::head_sha`], and [`Checkout`] for what a run does
+        /// with it.
+        head_sha: String,
+        /// The branch it is proposed into.
+        ///
+        /// Carried on this arm as well as on the fresh one, and not because a
+        /// reuse cuts anything from it. Two things need it. The base revision is
+        /// **observed on both arms** — Design §4 wants the bundle to carry the
+        /// base revision *and* the pull request's head whichever the attempt ran
+        /// against, because a run that recorded only one of them cannot be read
+        /// afterwards. And [`EnsurePullRequest`]'s postcondition is a head *and
+        /// a base*: a publication that guessed the base would fail to recognise
+        /// the very pull request this arm was built from, and would propose a
+        /// second.
+        base: String,
         /// Every other open labelled pull request, ascending.
         duplicates: Vec<u64>,
     },
@@ -1274,8 +1293,33 @@ impl Approved {
     /// chances to spell it `HEAD`.
     pub fn from(&self) -> String {
         match self {
-            Approved::Reuse { branch, .. } => format!("origin/{branch}"),
-            Approved::Fresh { base, .. } => format!("origin/{base}"),
+            Approved::Reuse { branch, .. } => origin_ref(branch),
+            Approved::Fresh { base, .. } => origin_ref(base),
+        }
+    }
+
+    /// The branch this run's work is proposed into, bare.
+    ///
+    /// The same value on both arms and read for the same purpose: it is what
+    /// `origin/<base>` in [`Checkout::base_revision`] is resolved from, and what
+    /// a pull request's postcondition is matched on.
+    pub fn base(&self) -> &str {
+        match self {
+            Approved::Reuse { base, .. } | Approved::Fresh { base, .. } => base,
+        }
+    }
+
+    /// The remote tip of the shared pull request's head, or `None` for a fresh
+    /// cut, where there is no pull request and therefore no head to have one.
+    ///
+    /// **The forge's observation, not git's.** It is what the bundle records as
+    /// `pr_head` and what [`check_out`] makes the worktree at, so the revision a
+    /// reader sees in the bundle is the revision the attempt provably ran
+    /// against — see [`Checkout`] on the race this closes.
+    pub fn pr_head(&self) -> Option<&str> {
+        match self {
+            Approved::Reuse { head_sha, .. } => Some(head_sha),
+            Approved::Fresh { .. } => None,
         }
     }
 
@@ -1359,6 +1403,16 @@ fn dated_branch(today: &str) -> String {
 /// satisfies it by construction — [`BRANCH_STEM`] is under [`PUSHABLE_PREFIX`] —
 /// and checking it anyway costs one comparison and means the rule is stated once
 /// rather than being true of one arm by accident.
+///
+/// # `base` is the fresh arm's, and the reuse arm takes the pull request's own
+///
+/// They are the same branch in every ordinary configuration and they are not the
+/// same *fact*. `base` is what this deployment is configured to propose into; a
+/// pull request that already exists was proposed into whatever it was proposed
+/// into, and that is what its postcondition is matched on. A publication that
+/// substituted the configured base for the observed one would fail to recognise
+/// the pull request this arm was built from and would propose a second — which is
+/// the one outcome the shared-PR model exists to prevent.
 pub fn plan(
     found: Option<SharedPullRequest>,
     base: &str,
@@ -1368,6 +1422,8 @@ pub fn plan(
         Some(shared) => Approved::Reuse {
             number: shared.number,
             branch: shared.head,
+            head_sha: shared.head_sha,
+            base: shared.base,
             duplicates: shared.duplicates,
         },
         None => Approved::Fresh {
@@ -1412,6 +1468,432 @@ pub async fn plan_shared_pull_request(
 ) -> Result<Approved, PlanError> {
     let found = find_labelled_pull_request(gh, repo, CVE_LABEL, cancel).await?;
     Ok(plan(found, base, today)?)
+}
+
+// ---------------------------------------------------------------------------
+// Which revision the attempt's tree is made at, and both of the ones it saw
+// ---------------------------------------------------------------------------
+
+/// The remote a run fetches from and pushes to.
+///
+/// Written once here and once in [`crate::git::publish`], which is one more time
+/// than ideal and cannot be helped: that module's is the name the push's argument
+/// vector is asserted on, and this one is the name a fetch refspec is built from.
+/// They are the same convention — a clone has exactly one remote and it is
+/// `origin` — and a deployment that had renamed it would fail on the fetch here
+/// before anything had been committed, which is the direction to fail in.
+const REMOTE: &str = "origin";
+
+/// Which of the two revisions a run observed the attempt's tree was made at.
+///
+/// Design §4: *the observation carries the base revision **and** the open PR's
+/// head, and the bundle says which of the two the attempt actually ran against. A
+/// run that recorded only one of them cannot be read afterwards.* This is the
+/// "which".
+///
+/// The two spellings are the two keys [`Checkout::observed`] writes, so a reader
+/// of a bundle finds the value of `attempt_tree` beside a key of the same name
+/// rather than having to be told the mapping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttemptTree {
+    /// Nothing was open, so the tree is `origin/<base>`.
+    BaseRevision,
+    /// A pull request was reused, so the tree is its remote tip.
+    PrHead,
+}
+
+impl AttemptTree {
+    /// The name the bundle carries, and the name of the key holding the value.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AttemptTree::BaseRevision => "base_revision",
+            AttemptTree::PrHead => "pr_head",
+        }
+    }
+}
+
+/// The two revisions a run observed, and — by which variant it is — which of
+/// them the attempt's worktree was made at.
+///
+/// # Why this is an enum and not three fields
+///
+/// Because the invariant is *the attempt ran at one of the two revisions this
+/// value carries*, and three fields would let a caller build one that says
+/// `attempt_tree: PrHead` with no pull request head in it. [`Checkout::revision`]
+/// is then total, with no unreachable arm and no `unwrap` — the same device
+/// [`Approved`] uses one step earlier, where only one variant names a pull
+/// request number.
+///
+/// **The base revision is on both variants.** That is the sentence of Design §4
+/// above, made structural: there is no way to build a checkout that recorded only
+/// the revision it used.
+///
+/// # The revision is the forge's observation, not git's second look
+///
+/// On the reuse arm the tree is made at [`Approved::pr_head`] — the sha
+/// `GET /pulls/{n}` reported — rather than at whatever `origin/<head>` resolves to
+/// once the fetch has run. The two are the same object in the ordinary case and
+/// they can differ: somebody pushes to the shared branch between the discovery
+/// read and the fetch. Taking the fetched tip would leave the bundle naming one
+/// revision and the attempt having run at another, which is the reading failure
+/// this whole observation exists to prevent; taking the observed sha means the
+/// bundle is right by construction, and the push that follows is refused as a
+/// non-fast-forward — reported, and never forced.
+///
+/// What [`check_out`] does still need the fetch for is that the object be
+/// *present*: a sha nothing brought into the store is a `git worktree add` that
+/// fails, which is the failure to have rather than a silent branch from somewhere
+/// else.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Checkout {
+    /// Nothing open: the attempt's tree is the base revision.
+    AtBaseRevision {
+        /// What `origin/<base>` resolved to after the fetch.
+        base_revision: String,
+    },
+
+    /// A pull request reused: the attempt's tree is its remote tip, and the base
+    /// revision is observed beside it and used by nothing here.
+    AtPullRequestHead {
+        base_revision: String,
+        /// The sha the forge reported for the pull request's head.
+        pr_head: String,
+    },
+}
+
+impl Checkout {
+    /// The revision a worktree for this run is created at.
+    pub fn revision(&self) -> &str {
+        match self {
+            Checkout::AtBaseRevision { base_revision } => base_revision,
+            Checkout::AtPullRequestHead { pr_head, .. } => pr_head,
+        }
+    }
+
+    /// What `origin/<base>` was observed to be, on both arms.
+    pub fn base_revision(&self) -> &str {
+        match self {
+            Checkout::AtBaseRevision { base_revision }
+            | Checkout::AtPullRequestHead { base_revision, .. } => base_revision,
+        }
+    }
+
+    /// The reused pull request's remote tip, or `None` when none was open.
+    pub fn pr_head(&self) -> Option<&str> {
+        match self {
+            Checkout::AtBaseRevision { .. } => None,
+            Checkout::AtPullRequestHead { pr_head, .. } => Some(pr_head),
+        }
+    }
+
+    /// Which of the two the attempt ran against.
+    pub fn attempt_tree(&self) -> AttemptTree {
+        match self {
+            Checkout::AtBaseRevision { .. } => AttemptTree::BaseRevision,
+            Checkout::AtPullRequestHead { .. } => AttemptTree::PrHead,
+        }
+    }
+
+    /// What the run's bundle records about which tree this was.
+    ///
+    /// Three keys and no more. `pr_head` is `null` rather than absent on the
+    /// fresh arm, because a reader asking *was a pull request reused* must be able
+    /// to get an answer rather than a missing key that could equally mean a run of
+    /// an older build.
+    ///
+    /// A [`serde_json::Value`] rather than a place in
+    /// [`WorkStateView`](fiddle_core::WorkStateView), which is a closed set of
+    /// four named ports belonging to M0's assessment and not to this capability.
+    /// Where these three keys are placed in the published bundle is the wiring
+    /// task's; what they are, and that a run produces all three, is this one's.
+    pub fn observed(&self) -> serde_json::Value {
+        serde_json::json!({
+            "base_revision": self.base_revision(),
+            "pr_head": self.pr_head(),
+            "attempt_tree": self.attempt_tree().as_str(),
+        })
+    }
+}
+
+/// Bring the remote refs this run cares about into the store, and say which
+/// revision the attempt's worktree is to be made at.
+///
+/// `git` runs in **the repository the worktrees will be branched from**, not in a
+/// worktree — there is not one yet, and choosing its revision is what this
+/// answers. [`Workspace::create_at`] is the caller's next call and it deliberately
+/// fetches nothing; this is the fetch that makes the revision it is handed
+/// resolvable.
+///
+/// # Why the base is fetched on the arm that does not use it
+///
+/// Two reasons and either would do. The bundle records it — see [`Checkout`] —
+/// and [`crate::cve::dedup`]'s commit-log scan reads
+/// `git log origin/<base>..HEAD` to recover which advisories the branch already
+/// covers, which needs `origin/<base>` to be a ref that exists and is current. A
+/// run that skipped it on the reuse arm would read an empty range and re-fix
+/// everything the branch already carries.
+///
+/// # The refspec is explicit, and the `+` is not a force push
+///
+/// `git fetch origin <ref>` alone updates `FETCH_HEAD` and updates
+/// `refs/remotes/origin/<ref>` only if the clone happens to have been configured
+/// with a matching refspec — which a `--single-branch` clone has not, and which is
+/// exactly the clone a CI checkout produces. Naming the destination makes the
+/// remote-tracking ref a fact about this call rather than about the clone's
+/// configuration.
+///
+/// The `+` forces the *local* remote-tracking ref to match the remote, which is
+/// the whole job of a remote-tracking ref: without it a fetch after somebody
+/// force-pushed the shared branch fails, and the run then works from a tip that
+/// no longer exists. It is not `push --force`, `--force-with-lease`, `reset`,
+/// `rebase` or `--amend`; nothing here writes to the remote or rewrites any local
+/// history, which is what Design §2.7's list forbids.
+pub async fn check_out<G>(git: &G, approved: &Approved) -> Result<Checkout, CapabilityError>
+where
+    G: Git + ?Sized,
+{
+    fetch(git, approved.base()).await?;
+
+    let Some(pr_head) = approved.pr_head() else {
+        // **The fresh arm's revision is [`Approved::from`]**, read through that
+        // accessor rather than rebuilt here, because the one sentence this guard
+        // exists for — never local `HEAD`, never local `main` — is written on it,
+        // and two call sites spelling it would be two chances to spell it `HEAD`.
+        return Ok(Checkout::AtBaseRevision {
+            base_revision: resolve(git, &approved.from()).await?,
+        });
+    };
+
+    // The reuse arm cannot use `from()` for either of its two revisions and that
+    // is not an oversight: `from()` answers `origin/<head>` here, which is the
+    // *branch* the tip is on rather than the base, and the revision the tree is
+    // made at is the sha the forge reported rather than whatever that ref
+    // resolves to. So the base is named through the same helper `from()` is built
+    // from, which is what keeps one spelling of `origin/<x>` in this module.
+    let base_revision = resolve(git, &origin_ref(approved.base())).await?;
+
+    fetch(git, approved.branch()).await?;
+    // Resolved rather than trusted, and this is the line that makes the fetch
+    // above load-bearing rather than decorative: `<sha>^{commit}` fails unless the
+    // store really holds that object *as a commit*. A `worktree add` at an absent
+    // revision would fail too, and later, after the workspace root and the scratch
+    // home had been created — so the failure is taken here, where it names the
+    // revision the forge reported and nothing has been built yet.
+    let pr_head = resolve(git, &format!("{pr_head}^{{commit}}")).await?;
+
+    Ok(Checkout::AtPullRequestHead {
+        base_revision,
+        pr_head,
+    })
+}
+
+/// The remote-tracking ref for `branch`.
+///
+/// One spelling, used by [`Approved::from`] and by [`check_out`]'s base
+/// observation. A second would be a second chance to write a bare branch name
+/// where a remote-tracking one belongs, which is the whole hazard Design §4 names.
+fn origin_ref(branch: &str) -> String {
+    format!("{REMOTE}/{branch}")
+}
+
+/// Bring `branch` from the remote into `refs/remotes/origin/<branch>`.
+async fn fetch<G>(git: &G, branch: &str) -> Result<(), CapabilityError>
+where
+    G: Git + ?Sized,
+{
+    // `--no-tags` because a tag is a ref this run has no use for and every use
+    // for not creating: fetching them by default is how a mirror of somebody
+    // else's release history arrives in a clone that only wanted one branch.
+    git.run(&[
+        "fetch",
+        "--no-tags",
+        "--quiet",
+        REMOTE,
+        &format!("+refs/heads/{branch}:refs/remotes/{REMOTE}/{branch}"),
+    ])
+    .await
+    .map(|_output| ())
+}
+
+/// What `revision` names, as a full object name.
+///
+/// `--verify` and a single argument, so a revision git cannot resolve is a
+/// non-zero exit — [`Git`]'s `Err` — rather than the string echoed back. Without
+/// it, `git rev-parse origin/nope` prints `origin/nope` and exits 128, and a
+/// caller reading stdout alone would carry a branch name forward as a sha.
+async fn resolve<G>(git: &G, revision: &str) -> Result<String, CapabilityError>
+where
+    G: Git + ?Sized,
+{
+    let printed = git
+        .run(&["rev-parse", "--verify", "--quiet", revision])
+        .await?;
+    Ok(printed.trim().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Publishing the shared work, and every external mutation through the executor
+// ---------------------------------------------------------------------------
+
+/// The host facts one publication of the shared work needs.
+///
+/// [`Approved`] already carries everything that was *decided* — the branch, the
+/// base, the pull request being reused and the anomaly note. This carries what
+/// nothing here can derive: which repository, whose fork the head lives on, what
+/// the pull request is called, what this run has to say for itself, and the commit
+/// the landing left on the branch.
+pub struct SharedPublication {
+    /// `owner/name`, as an API path spells it.
+    pub repo: String,
+    /// The owner the head branch lives under. Qualifying the head is what stops
+    /// a lookup matching a branch of that name in another repository —
+    /// `pull_request_effect.rs` states it in full.
+    pub head_owner: String,
+    /// The title, naming no advisory. The shared pull request outlives any one
+    /// run's findings, which is the same reason the commit subject names none.
+    pub title: String,
+    /// What this run has to say about what it did, before the anomaly note is
+    /// appended. See [`shared_body`].
+    pub summary: String,
+    /// The commit the branch must point at for the push's postcondition to hold.
+    ///
+    /// Supplied rather than resolved here for [`EnsureBranchPublished`]'s reason:
+    /// an operation that read `HEAD` for itself could publish a commit its own
+    /// proposal never named, with the payload hash still matching because the
+    /// payload would never have carried it.
+    pub head_sha: String,
+}
+
+/// What one publication of the shared work left behind.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedWork {
+    /// The branch, as the remote was *observed* to hold it.
+    pub branch: String,
+    /// What it was observed to point at — never what the push reported.
+    pub head_sha: String,
+    /// The one shared pull request: reused, or opened by this run.
+    pub pull_request: u64,
+}
+
+/// Publish the branch and make sure the one shared pull request exists — both
+/// through the effect executor, and nothing else in this capability touches the
+/// forge at all.
+///
+/// # The routing is the point, and it is structural
+///
+/// [`AuthorizedEffect`](crate::effect::AuthorizedEffect) has no constructor
+/// outside `effect/mod.rs`, so an [`IntegrationOperation`] cannot be applied
+/// except by a walk of the authorization order — which announces every step it
+/// takes to the attempt's journal. The consequence is what
+/// `cve_shared_pr::every_external_mutation_passes_the_effect_executor` asserts: a
+/// mutation reaching the forge outside a recorded `apply` window is not something
+/// this function can produce, and the lane is what says nothing beside it does
+/// either.
+///
+/// **A local commit is not one of these.** [`land`] runs `git add` and
+/// `git commit` in the worktree and journals nothing, deliberately: an effect is
+/// an *external* mutation, whose defining problem is that a lost answer leaves a
+/// change out there that a fresh process has to recognise. A commit in a worktree
+/// this process created, which is thrown away unless it is pushed, has none of
+/// that — journaling it would put a record of something unrecoverable beside the
+/// records a recovery is meant to act on.
+///
+/// # Both arms propose the pull request, and the reuse arm mutates nothing
+///
+/// There is no `if reused { skip }` here, and the absence is the mechanism rather
+/// than an oversight. [`EnsurePullRequest`]'s own postcondition read finds the
+/// open, labelled pull request for this head and base, the executor's step 3 sees
+/// it already holds, and no create is dispatched. One code path, and *never a
+/// second pull request* is the executor's idempotence rather than a branch
+/// somebody has to keep correct.
+///
+/// # `capability` is a parameter, and step 1 is what makes that safe
+///
+/// The proposing capability is not something a proposal should get to choose, and
+/// here it is an argument — because the capability that will call this is
+/// registered by a later task and this function must not name an id that does not
+/// exist yet. It is safe because the executor is *bound* to one capability and its
+/// step 1 refuses any proposal made under another: a caller passing somebody
+/// else's id gets a refusal on the first effect, before anything is dispatched.
+pub async fn publish_shared_work(
+    executor: &Executor<'_>,
+    capability: CapabilityId,
+    approved: &Approved,
+    config: &SharedPublication,
+) -> Result<SharedWork, CapabilityError> {
+    // 1. The branch. Nothing after it can be proposed without it: a pull request
+    //    needs a head that exists on the remote.
+    let publish_branch = EnsureBranchPublished::new(
+        config.repo.clone(),
+        approved.branch().to_string(),
+        config.head_sha.clone(),
+    );
+    let published = executor
+        .execute(
+            ProposedEffect {
+                capability,
+                kind: EffectKind::EnsureBranchPublished,
+                target: publish_branch.target(),
+                payload: publish_branch.payload(),
+            },
+            publish_branch,
+        )
+        .await?;
+
+    // 2. The pull request, carrying the label that is the only thing which will
+    //    find it again. Applied as part of the create rather than afterwards: a
+    //    pull request without it is invisible to the next run's discovery read,
+    //    which then opens a second — see [`CVE_LABEL`].
+    let open = EnsurePullRequest::new(
+        config.repo.clone(),
+        config.head_owner.clone(),
+        approved.branch().to_string(),
+        approved.base().to_string(),
+        config.title.clone(),
+        shared_body(&config.summary, approved),
+        false,
+    )
+    .labelled(vec![CVE_LABEL.to_string()]);
+    let opened = executor
+        .execute(
+            ProposedEffect {
+                capability,
+                kind: EffectKind::EnsurePullRequest,
+                target: open.target(),
+                payload: open.payload(),
+            },
+            open,
+        )
+        .await?;
+
+    Ok(SharedWork {
+        branch: published.value.branch,
+        // The sha the *remote* was observed to hold, which is what the receipt
+        // carries and the reason it carries it.
+        head_sha: published.value.sha,
+        pull_request: opened.value.number,
+    })
+}
+
+/// The body a publication proposes: what the run did, and the anomaly if there
+/// was one.
+///
+/// Two paragraphs and one rule — the note goes **last**, so a body that grows a
+/// per-advisory table above it does not push the one sentence a person has to act
+/// on out of sight. It is absent entirely on an ordinary run, which is
+/// [`Approved::note`]'s own rule: a warning printed every time is a warning nobody
+/// reads.
+///
+/// Separated from [`publish_shared_work`] because it is pure, and because Task
+/// 18's [`EnsurePullRequestBody`](crate::github::EnsurePullRequestBody) rewrites
+/// this same body on a later run — a digest of it is that effect's identity, so
+/// two spellings of one body would be two effects and a pull request would be
+/// rewritten for having been described twice.
+pub fn shared_body(summary: &str, approved: &Approved) -> String {
+    match approved.note() {
+        Some(note) => format!("{summary}\n\n{note}"),
+        None => summary.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -1477,6 +1959,29 @@ mod tests {
                 "an unfixed finding must not render an empty version: {task}"
             );
         }
+    }
+
+    /// The fetch refspec and the ref the checkout resolves name **the same
+    /// branch on the same remote**.
+    ///
+    /// Two strings built in two places out of one branch name, and a run whose
+    /// halves disagreed would fetch one ref and then resolve another — which
+    /// succeeds, silently, whenever the clone happens to already hold the second
+    /// one from an earlier run. That is the stale-ref failure this whole guard is
+    /// about, arrived at from the inside.
+    #[test]
+    fn what_is_fetched_and_what_is_resolved_are_one_ref() {
+        let fresh = plan(None, "main", "20260817").expect("nothing open is not a refusal");
+
+        // The destination half of the refspec `fetch` writes.
+        assert_eq!(
+            format!("refs/remotes/{}", origin_ref(fresh.base())),
+            format!("refs/remotes/{REMOTE}/main")
+        );
+        // And what the fresh arm goes on to resolve, which is `Approved::from`
+        // itself rather than a second derivation beside it.
+        assert_eq!(fresh.from(), origin_ref(fresh.base()));
+        assert_eq!(fresh.from(), "origin/main");
     }
 
     /// The scope rules are in the prompt and the mechanical ones are not, asserted

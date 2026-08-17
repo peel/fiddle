@@ -631,6 +631,25 @@ pub struct SharedPullRequest {
     /// Its head branch, bare — no `refs/heads/` and no owner qualification,
     /// because what a caller does with it is check it out and push it.
     pub head: String,
+    /// **The commit that branch is at on the remote**, as the forge reports it.
+    ///
+    /// The tip and not a name, because a name is what a run must not check out:
+    /// a clone this process did not create holds whatever local
+    /// `security/cve-remediation-…` the last thing to run in it left behind, and
+    /// a checkout by branch name would silently pick that up. Design §4 —
+    /// *check out its head branch at the **remote tip*** — is a statement about
+    /// this field.
+    ///
+    /// It is also half of what the bundle records. A run that worked in a tree
+    /// and could not say which revision that tree was cannot be read afterwards,
+    /// which is the failure Design §4's last paragraph on the shared-PR model is
+    /// about.
+    ///
+    /// Read from `head.sha` and **checked rather than defaulted**, for the same
+    /// reason `head.ref` is: an empty string here would be carried forward as a
+    /// revision, and `git worktree add ""` is a worktree at `HEAD`, which is
+    /// precisely the local tip this field exists to avoid.
+    pub head_sha: String,
     /// The branch it is proposed into.
     pub base: String,
     /// Read by a person and decided on by nothing, like every other title in
@@ -757,6 +776,13 @@ pub async fn find_labelled_pull_request(
     let head = pull_request.body["head"]["ref"]
         .as_str()
         .ok_or_else(|| GhError::Malformed(format!("pull request #{number} carried no head ref")))?;
+    // The third fact this read exists to produce, and the one that says *where*
+    // rather than *what*. See [`SharedPullRequest::head_sha`] for why an absent
+    // one is a malformed answer rather than a blank to be carried forward.
+    let head_sha = pull_request.body["head"]["sha"]
+        .as_str()
+        .filter(|sha| !sha.trim().is_empty())
+        .ok_or_else(|| GhError::Malformed(format!("pull request #{number} carried no head sha")))?;
     let base = pull_request.body["base"]["ref"]
         .as_str()
         .ok_or_else(|| GhError::Malformed(format!("pull request #{number} carried no base ref")))?;
@@ -764,6 +790,7 @@ pub async fn find_labelled_pull_request(
     Ok(Some(SharedPullRequest {
         number,
         head: head.to_string(),
+        head_sha: head_sha.to_string(),
         base: base.to_string(),
         title: pull_request.body["title"]
             .as_str()

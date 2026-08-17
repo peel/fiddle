@@ -580,6 +580,7 @@ fn pull_requests(dir: &Path) -> Vec<serde_json::Value> {
     all.iter()
         .map(|pr| {
             let head = pr["head"].as_str().unwrap_or_default().to_string();
+            let bare = head.split_once(':').map(|(_, r)| r).unwrap_or(&head);
             let number = pr["number"].as_u64().unwrap_or_else(|| {
                 while named.contains(&next) {
                     next += 1;
@@ -600,7 +601,17 @@ fn pull_requests(dir: &Path) -> Vec<serde_json::Value> {
                 // beside the bare `ref`, and the base is a `ref` alone.
                 "head": {
                     "label": head,
-                    "ref": head.split_once(':').map(|(_, r)| r).unwrap_or(&head),
+                    "ref": bare,
+                    // The tip, read out of the bare repository beside this script
+                    // for [`bare_repository_ref`]'s reason. A head sha is a fact
+                    // about the remote, and a fixture that invented one could
+                    // report a tip the remote does not hold — which is precisely
+                    // the disagreement a run that checks the reported sha out
+                    // would then be unable to survive. `null` when the remote has
+                    // no such branch, so a world that never put one there gets a
+                    // malformed answer rather than a blank carried forward as a
+                    // revision.
+                    "sha": bare_repository_ref(&dir.join("remote.git"), bare),
                 },
                 "base": { "ref": pr["base"].as_str().unwrap_or_default() },
                 // Carried because the listing really does: GitHub's pulls

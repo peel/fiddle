@@ -148,6 +148,28 @@
 //!   that arranges a shared pull request should seed `pulls_by_number/{n}.json`
 //!   with a `body`, and can then read the rewrite back through the client rather
 //!   than out of the fixture.
+//! - **Task 17.b adds [`RemoteWorld`] and [`remote_world`]** — a clone whose
+//!   local refs are deliberately stale against the remote they came from — and
+//!   [`RemoteWorld::bump_into`], which writes a group's bump into a worktree the
+//!   caller has already created. **Done.** It is here rather than beside
+//!   `cve_shared_pr.rs` for the reason 17.a's `Forge` is not: this one is built
+//!   out of [`shipped`], [`direct`], `DIRECT_MODULE` and `LANDING_BUMPED_VERSION`,
+//!   all of which are private to this file, so a copy beside a suite would be a
+//!   second spelling of the tree every landing lane is already judged over.
+//!
+//!   Its **remote is the caller's** and that is load-bearing: the scripted `gh`
+//!   answers ref reads out of `remote.git` beside its own scratch directory, so
+//!   the value of the world is that `git` and `gh` see one repository through two
+//!   doors. See [`RemoteWorld`]'s own doc for the four commits it arranges and why
+//!   every one of them has to be distinct.
+//!
+//!   17.b still adds no `forge()`, for 17.a's stated reason: the only suite that
+//!   wants one is `cve_shared_pr.rs`, which widened its local one again — with a
+//!   `remote.git` beside the stub directory, `Forge::seed_branch`, `Forge::pr`,
+//!   `Forge::mutations` and a real [`FileJournal`] the effect steps are read back
+//!   out of.
+//!
+//!   [`FileJournal`]: fiddle_runtime::journal::FileJournal
 //! - Task 19 adds `fixture` and `world_with`.
 //!
 //! # What a scanner document here is, and is not
@@ -3143,6 +3165,15 @@ pub fn ask_git(dir: &Path, args: &[&str]) -> String {
     run_git(dir, args)
 }
 
+/// The same, for the questions whose *failure* is the answer.
+///
+/// `git rev-parse --verify --quiet <ref>` exits non-zero for a ref that is not
+/// there, and that is what "does this world already hold it?" is: a fixture
+/// reaching for [`ask_git`] would panic on the case it was asking about.
+pub fn try_ask_git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    try_run_git(dir, args)
+}
+
 /// A [`GoWorkspace`] as the one seam Task 15's landing runs git through.
 ///
 /// The tree *is* the recorder, rather than a wrapper holding one, because
@@ -3166,5 +3197,269 @@ impl Git for GoWorkspace {
                 stderr,
             })
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A clone whose local refs disagree with the remote's (Task 17.b)
+// ---------------------------------------------------------------------------
+
+/// The file the seed repository puts on the shared branch and nowhere else.
+///
+/// Its presence in a worktree is the second, independent witness that the
+/// checkout took the pull request's tip: a lane could compare shas and be reading
+/// two copies of one mistake, and this is a file that is simply there or not.
+pub const ON_THE_SHARED_BRANCH: &str = "shared_branch_marker.txt";
+
+/// The file the seed repository puts on `main` after the clone was taken.
+///
+/// The base half of the same witness, and the reason the base moves at all: a
+/// remote whose `main` never advanced past the clone would make
+/// `origin/main` and the clone's own `main` the same commit, and *the fetch
+/// happened* would be indistinguishable from *nothing needed to*.
+pub const ONLY_ON_THE_REMOTE_BASE: &str = "moved_on.txt";
+
+/// A clone whose local refs are **stale**, beside the remote they are stale
+/// against.
+///
+/// # What this world exists to make falsifiable
+///
+/// Design §4 says a run checks the shared pull request out at the **remote tip**
+/// and cuts a fresh branch from `origin/<base>` — *never local `HEAD` or local
+/// `main`*. Neither half of that can be tested in a clone whose local refs agree
+/// with the remote's, because every candidate rule then produces the same commit.
+///
+/// So this world arranges the disagreement the rule is about, and arranges it the
+/// way a real one arises: a clone is taken, the remote moves on, and the clone
+/// accumulates local work of its own. Four distinct commits come out of it —
+/// [`RemoteWorld::base_revision`] and [`RemoteWorld::pr_head`] on the remote,
+/// [`RemoteWorld::stale_main`] and [`RemoteWorld::stale_head`] in the clone — and
+/// a checkout that reached for a local ref lands on one this world can name.
+///
+/// # The remote is the caller's
+///
+/// It is passed in rather than built here because the scripted `gh` answers ref
+/// reads out of a bare repository beside *its* scratch directory, and the whole
+/// value of this world is that `git` and `gh` are looking at one remote through
+/// two doors. A world that built its own would let a push land somewhere the
+/// forge could never see, and every postcondition read would then be answered
+/// about a different repository.
+pub struct RemoteWorld {
+    /// The clone the run works from, and the record of what it ran in there.
+    ///
+    /// It is the [`Git`] seam [`check_out`](fiddle_runtime::capability::cve)
+    /// fetches through, so [`GoWorkspace::git_calls`] is what a lane reads to see
+    /// which ref the subject actually named.
+    pub tree: GoWorkspace,
+
+    /// The group whose outcome a landing in this world commits.
+    pub group: Group,
+
+    /// What `refs/heads/<base>` is at on the remote — and what a fresh cut must
+    /// be made from.
+    pub base_revision: String,
+
+    /// What the shared branch is at on the remote, or `None` when this world has
+    /// none. The commit a reuse must be made at.
+    pub pr_head: Option<String>,
+
+    /// What the clone's own `main` is at: a local commit the remote has never
+    /// seen. A run that branched from local `main` lands here.
+    pub stale_main: String,
+
+    /// What the clone's own copy of the shared branch is at, or `None` when this
+    /// world has none. A run that checked out the branch *by name* lands here.
+    pub stale_head: Option<String>,
+}
+
+/// Build [`RemoteWorld`] in `remote`, optionally with a shared branch already
+/// open on it.
+///
+/// # Construction does not record
+///
+/// Every git below goes through [`run_git`] against the seed repository or the
+/// clone's path, never through [`GoWorkspace::git`] — [`GoWorkspace::git_calls`]'s
+/// own rule. The list a lane reads back is therefore exactly what the subject ran,
+/// and its being non-empty is evidence the seam was wired in at all.
+pub fn remote_world(remote: &Path, head_branch: Option<&str>, cves: &[&str]) -> RemoteWorld {
+    run_git(
+        remote.parent().expect("the remote has a parent directory"),
+        &[
+            "-c",
+            "init.defaultBranch=main",
+            "init",
+            "--quiet",
+            "--bare",
+            &remote.display().to_string(),
+        ],
+    );
+
+    // The seed: a repository that pushes the remote's history into place. Kept
+    // apart from the clone so that the commits the clone must *not* have are
+    // never in its store to begin with — a fixture that made them in the clone
+    // and then reset would leave the objects behind, and `git worktree add` at a
+    // sha the store happens to hold is exactly the accident this world is here to
+    // exclude.
+    let seed_root = TempDir::new().expect("a temporary directory for the seed repository");
+    let seed = write_tree(seed_root.path(), "seed", &direct());
+    commit_tree(
+        &seed,
+        &direct(),
+        "the base, as it was when the clone was taken",
+    );
+    let cloned_from = run_git(&seed, &["rev-parse", "HEAD"]);
+    run_git(
+        &seed,
+        &["remote", "add", "origin", &remote.display().to_string()],
+    );
+    run_git(
+        &seed,
+        &["push", "--quiet", "origin", "HEAD:refs/heads/main"],
+    );
+
+    // The clone, taken here — so its `origin/main` is `cloned_from` and every
+    // commit below is one it has to fetch.
+    let root = TempDir::new().expect("a temporary directory for the clone");
+    let repo = root.path().join("clone");
+    run_git(
+        root.path(),
+        &[
+            "clone",
+            "--quiet",
+            &remote.display().to_string(),
+            &repo.display().to_string(),
+        ],
+    );
+
+    // The remote moves on, on `main`.
+    std::fs::write(seed.join(ONLY_ON_THE_REMOTE_BASE), "the base moved on\n")
+        .expect("the seed repository is writable");
+    commit_paths(
+        &seed,
+        &[ONLY_ON_THE_REMOTE_BASE],
+        "chore: the base moved on",
+    );
+    let base_revision = run_git(&seed, &["rev-parse", "HEAD"]);
+    run_git(
+        &seed,
+        &["push", "--quiet", "origin", "HEAD:refs/heads/main"],
+    );
+
+    // And, when this world has one, a shared branch off the commit the clone was
+    // taken at — a sibling of the base's new tip rather than a descendant, which
+    // is what a pull request branch actually is.
+    let pr_head = head_branch.map(|branch| {
+        run_git(
+            &seed,
+            &["checkout", "--quiet", "-b", "shared", &cloned_from],
+        );
+        std::fs::write(
+            seed.join(ON_THE_SHARED_BRANCH),
+            "opened by an earlier run\n",
+        )
+        .expect("the seed repository is writable");
+        commit_paths(&seed, &[ON_THE_SHARED_BRANCH], "fix: an earlier run's bump");
+        let head = run_git(&seed, &["rev-parse", "HEAD"]);
+        run_git(
+            &seed,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!("HEAD:refs/heads/{branch}"),
+            ],
+        );
+        head
+    });
+
+    // The clone's own work, which the remote has never seen. `main` first…
+    std::fs::write(repo.join("stale.txt"), "left behind by an earlier run\n")
+        .expect("the clone is writable");
+    commit_paths(&repo, &["stale.txt"], "chore: a commit only this clone has");
+    let stale_main = run_git(&repo, &["rev-parse", "HEAD"]);
+
+    // …and then a local branch of the *same name* as the shared one, pointing
+    // somewhere else entirely. This is the stale ref Design §4 is about: a
+    // `security/cve-remediation-…` yesterday's run left in the same clone.
+    let stale_head = head_branch.map(|branch| {
+        run_git(
+            &repo,
+            &["branch", "--no-track", branch, cloned_from.as_str()],
+        );
+        run_git(&repo, &["rev-parse", &format!("refs/heads/{branch}")])
+    });
+
+    // The premises, asserted here rather than in each lane. Every one of these
+    // being distinct is what makes a checkout assertion falsifiable; a world in
+    // which two of them coincided would let a lane pass against the wrong rule.
+    let distinct: Vec<&String> = [
+        Some(&base_revision),
+        pr_head.as_ref(),
+        Some(&stale_main),
+        stale_head.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let mut deduped = distinct.clone();
+    deduped.sort();
+    deduped.dedup();
+    assert_eq!(
+        deduped.len(),
+        distinct.len(),
+        "the remote's tips and the clone's stale refs must all differ, or a \
+         checkout that took the wrong one would be indistinguishable: {distinct:?}"
+    );
+    assert_ne!(
+        run_git(&repo, &["rev-parse", "refs/remotes/origin/main"]),
+        base_revision,
+        "the clone's idea of origin/main has to be stale before the run fetches, \
+         or the fetch is doing nothing observable"
+    );
+
+    RemoteWorld {
+        tree: GoWorkspace {
+            repo: canonical(&repo),
+            root,
+            calls: Mutex::new(Vec::new()),
+        },
+        group: group_of(cves),
+        base_revision,
+        pr_head,
+        stale_main,
+        stale_head,
+    }
+}
+
+impl RemoteWorld {
+    /// Write the group's bump into `worktree` and answer the paths it changed.
+    ///
+    /// Written into the *worktree* rather than inherited from the clone, for
+    /// [`landing_worktree`]'s reason: `git worktree add` branches at a commit and
+    /// not at the dirty tree beside it, so a lane that assumed otherwise would
+    /// land a commit of nothing and read its own emptiness as success.
+    ///
+    /// The premise is asserted here: git must really see these two paths change,
+    /// or a landing has nothing to commit and every assertion below it is about a
+    /// branch that never moved.
+    pub fn bump_into(&self, worktree: &Path) -> Vec<WorkspacePath> {
+        let bumped = shipped(DIRECT_MODULE, LANDING_BUMPED_VERSION);
+        std::fs::write(worktree.join("go.mod"), bumped.go_mod()).expect("the worktree is writable");
+        std::fs::write(
+            worktree.join("go.sum"),
+            bumped
+                .go_sum()
+                .expect("a tree with a requirement has a go.sum"),
+        )
+        .expect("the worktree is writable");
+        assert!(
+            !run_git(
+                worktree,
+                &["status", "--porcelain", "--", "go.mod", "go.sum"]
+            )
+            .is_empty(),
+            "the bump has to have changed the worktree, or the landing commits nothing"
+        );
+        workspace_paths(&["go.mod", "go.sum"])
     }
 }

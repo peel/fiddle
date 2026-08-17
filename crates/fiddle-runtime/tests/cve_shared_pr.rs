@@ -103,13 +103,13 @@
 mod support;
 
 use fiddle_core::{
-    content_digest, effect_id, EffectId, EffectKind, ProposedEffect, FIXTURE_REPAIR,
+    content_digest, effect_id, AttemptId, EffectId, EffectKind, ProposedEffect, FIXTURE_REPAIR,
 };
 use fiddle_runtime::capability::cve::{
-    plan, plan_shared_pull_request, Approved, PlanError, Refusal, BRANCH_STEM, CVE_LABEL,
-    PUSHABLE_PREFIX,
+    check_out, plan, plan_shared_pull_request, publish_shared_work, Approved, Checkout, PlanError,
+    Refusal, SharedPublication, SharedWork, BRANCH_STEM, CVE_LABEL, PUSHABLE_PREFIX,
 };
-use fiddle_runtime::capability::land;
+use fiddle_runtime::capability::{land, GroupStatus, InWorktree};
 use fiddle_runtime::effect::{
     EffectContext, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
     IntegrationOperation, ReadRetry,
@@ -118,12 +118,17 @@ use fiddle_runtime::github::{
     find_labelled_pull_request, pull_request_body_target, EnsurePullRequest, EnsurePullRequestBody,
     PullRequest,
 };
-use fiddle_runtime::GhCli;
+use fiddle_runtime::journal::{AttemptTrace, FileJournal, JOURNAL_DIR};
+use fiddle_runtime::workspace::Workspace;
+use fiddle_runtime::{GhCli, GitCli};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use support::cve::{landing_world, LandingWorld};
+use support::cve::{
+    ask_git, landing_world, remote_world, try_ask_git, LandingWorld, RemoteWorld,
+    ONLY_ON_THE_REMOTE_BASE, ON_THE_SHARED_BRANCH,
+};
 use support::{unreachable_git, Deployment, INVOCATION_REF, PROJECT};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -171,6 +176,37 @@ const SEEDED_BODY: &str = "opened by fiddle, contents to follow";
 /// the deadline; `github_cli` owns the process bounds.
 const PATIENT: Duration = Duration::from_secs(60);
 
+/// Git's empty tree, which every repository can name whether or not it has ever
+/// stored one. See [`Forge::seed_branch`].
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// The invocation the driven lanes run under, as a report directory names it.
+///
+/// Any stable string would do; it is the directory `<report.dir>/.attempts/`
+/// holds this attempt's journal under, and nothing reads it back but this file.
+const SLUG: &str = "beans-w-1";
+
+/// The advisory the driven lanes' one clean group is about.
+///
+/// A different year and number from every other id in this crate's CVE suites, so
+/// a commit body found on the branch cannot be some other fixture's.
+const LANDED_CVE: &str = "CVE-2026-4242";
+
+/// A commit the pure decision is handed and does nothing with.
+///
+/// The unit lane below takes no forge and no git, so nothing can resolve this;
+/// it is a full object name because that is what the field carries, and a value
+/// no world in this file produces so that a lane finding it somewhere real would
+/// be visible.
+const A_TIP: &str = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee";
+
+/// What a driven run has to say for itself, before the anomaly note.
+///
+/// Deliberately not prose any assertion below matches on: what this file is about
+/// is the shape of the body, not its wording, and a lane that pinned the wording
+/// would fail the day the disposition table lands in it.
+const RUN_SUMMARY: &str = "fiddle mitigated the advisories listed below.";
+
 // ---------------------------------------------------------------------------
 // The world one body update runs against
 // ---------------------------------------------------------------------------
@@ -188,12 +224,49 @@ const PATIENT: Duration = Duration::from_secs(60);
 struct Forge {
     dir: TempDir,
     steps: Mutex<Vec<&'static str>>,
+    /// One entry per traced step, carrying what the outside world held at the
+    /// moment the executor announced it. See [`Watched`] and
+    /// [`Forge::mutations_outside_an_effect`].
+    watched: Mutex<Vec<Watched>>,
+    /// The production fan-out to an attempt's journal, attached by the driver
+    /// that has a `<report.dir>` to write one into and left empty by every lane
+    /// that does not — which is [`AttemptTrace`]'s own arrangement, silently
+    /// discarding while no attempt owns it.
+    trace: AttemptTrace,
 }
 
 impl EffectTrace for Forge {
-    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
+    fn step(&self, kind: EffectKind, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
+        // Read *before* the work behind the step, which is the same moment the
+        // journal's record is written and the reason the record is worth
+        // writing: a window opened at `apply` and closed at
+        // `observe_postcondition` therefore brackets exactly the mutations that
+        // step dispatched.
+        self.watched.lock().unwrap().push(Watched {
+            kind,
+            step,
+            mutations: self.mutations().len(),
+            remote_branches: self.remote_branches(),
+        });
+        self.trace.step(kind, step);
     }
+}
+
+/// What the world held at one announced step of the authorization order.
+///
+/// The two counts are the two channels a mutation can reach the outside world
+/// through, and both are needed: a pull request create is an HTTP request the
+/// scripted `gh` records, and a branch publication is a `git push` that records
+/// nothing anywhere — it is only visible as a ref that was not on the remote
+/// before and is after.
+struct Watched {
+    kind: EffectKind,
+    step: ExecutionStep,
+    /// How many mutations the forge had recorded by this point.
+    mutations: usize,
+    /// Which branches the remote held by this point.
+    remote_branches: Vec<String>,
 }
 
 impl Forge {
@@ -238,10 +311,118 @@ impl Forge {
     fn empty() -> Self {
         let dir = TempDir::new().unwrap();
         std::fs::create_dir_all(dir.path().join("config")).unwrap();
-        Self {
+        let forge = Self {
             dir,
             steps: Mutex::new(Vec::new()),
+            watched: Mutex::new(Vec::new()),
+            trace: AttemptTrace::new(),
+        };
+        // **The remote is part of an empty world, not an extra a lane opts into.**
+        // The scripted `gh` reads a pull request's head sha and a branch ref out
+        // of `remote.git` beside its own scratch directory — see
+        // `tests/gh_stub/gh_stub.rs` — so a forge without one answers `null` for
+        // a head it visibly holds, and the discovery read then reports a
+        // malformed pull request. Building it here means every lane's world can
+        // be asked *what is the remote actually at*, which is the question this
+        // half of the task is entirely about.
+        ask_git(
+            forge.dir.path(),
+            &[
+                "-c",
+                "init.defaultBranch=main",
+                "init",
+                "--quiet",
+                "--bare",
+                "remote.git",
+            ],
+        );
+        forge
+    }
+
+    /// The bare repository both adapters see: `git` over a path, the scripted
+    /// `gh` over its ref files.
+    fn remote(&self) -> PathBuf {
+        self.dir.path().join("remote.git")
+    }
+
+    /// Put `branch` on the remote, at a commit of its own, and answer the sha.
+    ///
+    /// Plumbing rather than a working tree, because what a lane arranging a
+    /// *pull request* needs from the remote is a ref that resolves — the head sha
+    /// the forge then reports. The commit carries the empty tree and the branch's
+    /// own name as its message, which is enough to make two branches two commits;
+    /// a lane that needs real files on the branch builds a
+    /// [`remote_world`](support::cve::remote_world) instead, and that one pushes.
+    ///
+    /// **A branch the remote already holds is left exactly where it is**, and
+    /// that is not tidiness. A lane that builds a
+    /// [`remote_world`](support::cve::remote_world) has already pushed real
+    /// history onto the shared branch, and then seeds the pull request that is
+    /// open on it; a `seed_branch` that overwrote would replace the tip the
+    /// checkout is about with a commit carrying an empty tree, and every
+    /// assertion downstream would be about the fixture's second thoughts.
+    fn seed_branch(&self, branch: &str) -> String {
+        let remote = self.remote();
+        let named = format!("refs/heads/{branch}");
+        if let Ok(existing) = try_ask_git(&remote, &["rev-parse", "--verify", "--quiet", &named]) {
+            return existing;
         }
+        let commit = ask_git(
+            &remote,
+            &[
+                // Per invocation, for `support::cve`'s reason: a CI runner has no
+                // `user.email` and `commit-tree` refuses outright without one.
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit-tree",
+                // The empty tree, which every git can name whether or not the
+                // repository has stored it.
+                EMPTY_TREE,
+                "-m",
+                branch,
+            ],
+        );
+        ask_git(&remote, &["update-ref", &named, &commit]);
+        commit
+    }
+
+    /// What the remote holds for the head of pull request `number`.
+    ///
+    /// Read out of the **remote** rather than out of the seed a test wrote, so
+    /// that "the worktree is at the pull request's tip" is an agreement between
+    /// two independent readings of one repository — git's, through the checkout,
+    /// and this one — rather than one fixture value compared with itself.
+    fn pr(&self, number: u64) -> SeededPullRequest {
+        let seed: Vec<serde_json::Value> = serde_json::from_str(
+            &std::fs::read_to_string(self.dir.path().join("pulls_seed")).unwrap_or_default(),
+        )
+        .unwrap_or_default();
+        let head = seed
+            .iter()
+            .find(|pr| pr["number"].as_u64() == Some(number))
+            .and_then(|pr| pr["head"].as_str())
+            .unwrap_or_else(|| panic!("this world holds no pull request numbered {number}"))
+            .to_string();
+        let branch = head.split_once(':').map(|(_, r)| r).unwrap_or(&head);
+        SeededPullRequest {
+            head_sha: ask_git(
+                &self.remote(),
+                &["rev-parse", &format!("refs/heads/{branch}")],
+            ),
+        }
+    }
+
+    /// Every branch the remote holds, in ref order.
+    fn remote_branches(&self) -> Vec<String> {
+        ask_git(
+            &self.remote(),
+            &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        )
+        .lines()
+        .map(str::to_string)
+        .collect()
     }
 
     /// Put an open pull request in the world, at a number of the test's choosing.
@@ -269,6 +450,14 @@ impl Forge {
     /// run that settled on one would commit onto history its base already
     /// carries.
     fn seed_pull_request_in_state(&self, number: u64, head: &str, labels: &[&str], state: &str) {
+        // The branch goes on the remote first, because a pull request whose head
+        // is not a ref is not a state GitHub will produce: `POST /pulls` refuses
+        // a head that does not exist. Until 17.b the fixture could get away with
+        // it, because nothing read a head sha; now the discovery read does, and a
+        // world seeded without one would be asking the client to survive an
+        // answer the real forge cannot give.
+        self.seed_branch(head);
+
         let path = self.dir.path().join("pulls_seed");
         let mut seed: Vec<serde_json::Value> =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_default())
@@ -345,6 +534,31 @@ impl Forge {
             self.gh(),
             unreachable_git(),
             self.dir.path().to_path_buf(),
+            CancellationToken::new(),
+        )
+    }
+
+    /// The same, with a `git` that really runs, pushing out of `worktree`.
+    ///
+    /// The **real** `git` and not `git_stub`: what the driven lanes are about is a
+    /// ref that appears on a remote the scripted `gh` then reads back through its
+    /// own door, and a fixture that only claimed to have pushed would leave the
+    /// postcondition read with nothing to find. `effect_protocol.rs` makes the same
+    /// choice for the same reason.
+    ///
+    /// Its credential is a sentinel that reaches no network: the remote is a path
+    /// on this filesystem, so the five names `GitCli` builds for
+    /// `credential.https://github.com` are set and never consulted.
+    fn context_pushing_from(&self, worktree: &Path) -> EffectContext {
+        EffectContext::new(
+            self.gh(),
+            GitCli::new(
+                PathBuf::from("git"),
+                "ghp_never_reaches_a_network".to_string(),
+                "FIDDLE_GITHUB_TOKEN",
+                PATIENT,
+            ),
+            worktree.to_path_buf(),
             CancellationToken::new(),
         )
     }
@@ -438,6 +652,194 @@ impl Forge {
 
     fn steps(&self) -> Vec<&'static str> {
         self.steps.lock().unwrap().clone()
+    }
+
+    /// Every request that could have changed the forge, in arrival order.
+    ///
+    /// Read off the **requests** rather than off the world log, and the
+    /// distinction is the whole routing claim: the world log holds what landed,
+    /// and what this lane excludes is a mutation *dispatched* outside the
+    /// executor — one the forge happened to refuse is still one that reached it.
+    ///
+    /// Anything that is not a `GET`. Not a list of the verbs this build happens
+    /// to use today: a `PUT` or a `DELETE` added by a later change is exactly the
+    /// mutation nobody would remember to widen a list for.
+    fn mutations(&self) -> Vec<String> {
+        self.requests()
+            .iter()
+            .filter(|argv| method_of(argv).as_deref() != Some("GET"))
+            .map(|argv| argv.join(" "))
+            .collect()
+    }
+
+    /// Every mutation that did **not** happen inside an effect's apply window.
+    ///
+    /// A window opens where the executor announced [`ExecutionStep::Apply`] for a
+    /// kind and closes where it announced [`ExecutionStep::ObservePostcondition`]
+    /// for the same kind, and the bounds are the mutation counts read at those two
+    /// moments. Every mutation this process dispatched has an index; one that lies
+    /// in no window is one that reached the forge without a recorded effect step,
+    /// which is exactly what this file's Hard Constraint excludes.
+    ///
+    /// **Not a count comparison.** Two mutations for one effect is the ordinary
+    /// case here — a create is a `POST /pulls` and then a `POST
+    /// /issues/{n}/labels`, inside one apply — so `mutations().len() ==
+    /// applies().len()` would be false for a correct run and true for several
+    /// wrong ones. What the routing claim is actually about is *which* step each
+    /// mutation happened under, and an index in a window is that.
+    fn mutations_outside_an_effect(&self) -> Vec<String> {
+        let mutations = self.mutations();
+        let covered = self.apply_windows();
+        mutations
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| !covered.iter().any(|(from, to)| (from..to).contains(&at)))
+            .map(|(_, what)| what.clone())
+            .collect()
+    }
+
+    /// `[apply, observe)` in mutation indices, one per effect that applied.
+    fn apply_windows(&self) -> Vec<(usize, usize)> {
+        let watched = self.watched.lock().unwrap();
+        let mut windows = Vec::new();
+        for (at, opened) in watched.iter().enumerate() {
+            if opened.step != ExecutionStep::Apply {
+                continue;
+            }
+            // The matching close is the next `observe_postcondition` announced
+            // for the same kind. Matched on the kind rather than taken as the
+            // next step of any kind, so two effects whose walks somehow
+            // interleaved could not have one's window swallow the other's.
+            let closed = watched[at + 1..]
+                .iter()
+                .find(|later| {
+                    later.kind == opened.kind && later.step == ExecutionStep::ObservePostcondition
+                })
+                // An apply the executor never came back from — a lost answer —
+                // leaves the window open to the end, which is the honest bound:
+                // whatever it dispatched is still attributable to it.
+                .map(|later| later.mutations)
+                .unwrap_or(usize::MAX);
+            windows.push((opened.mutations, closed));
+        }
+        windows
+    }
+
+    /// Which branches the remote gained during `kind`'s apply window.
+    ///
+    /// The other channel a mutation travels on, and the one no request log can
+    /// see: `EnsureBranchPublished` changes the world with a `git push`, which
+    /// leaves nothing behind at the forge's API at all. A ref that appeared
+    /// between the apply and the observe appeared because of that push.
+    fn branches_gained_during(&self, kind: EffectKind) -> Vec<String> {
+        let watched = self.watched.lock().unwrap();
+        let before = watched
+            .iter()
+            .find(|it| it.kind == kind && it.step == ExecutionStep::Apply)
+            .map(|it| it.remote_branches.clone())
+            .unwrap_or_default();
+        let after = watched
+            .iter()
+            .find(|it| it.kind == kind && it.step == ExecutionStep::ObservePostcondition)
+            .map(|it| it.remote_branches.clone())
+            .unwrap_or_default();
+        after
+            .into_iter()
+            .filter(|branch| !before.contains(branch))
+            .collect()
+    }
+
+    /// Attach the journal of the attempt the driver is running, so the executor's
+    /// steps are recorded where a recovery would look for them.
+    ///
+    /// The production [`FileJournal`], writing the production `.jsonl`, rather
+    /// than a recorder of this file's own: the claim is about *the journal's*
+    /// effect steps, and a bespoke sink would prove only that this suite can count
+    /// its own callbacks.
+    fn journalling(&self, report_dir: &Path, attempt: &AttemptId) -> Journal {
+        self.trace.attach(Arc::new(FileJournal::new(
+            report_dir,
+            SLUG,
+            attempt,
+            INVOCATION_REF,
+        )));
+        Journal {
+            path: report_dir
+                .join(JOURNAL_DIR)
+                .join(SLUG)
+                .join(format!("{}.jsonl", attempt.0)),
+        }
+    }
+}
+
+/// What the forge holds for one seeded pull request, read back out of the
+/// remote.
+struct SeededPullRequest {
+    head_sha: String,
+}
+
+/// The `--method` of one recorded `gh` invocation.
+///
+/// Every request this client makes carries one — `GhCli::api` writes
+/// `--method <verb> <path>` — so a recorded invocation without it is a `gh`
+/// spawned by something other than that client, which is a finding rather than a
+/// `GET` to be assumed.
+fn method_of(argv: &[String]) -> Option<String> {
+    argv.iter()
+        .position(|a| a == "--method")
+        .and_then(|at| argv.get(at + 1))
+        .cloned()
+}
+
+/// One attempt's journal, read back off disk.
+///
+/// A reader rather than a recorder. What it answers is what a *fresh process*
+/// picking through `<report.dir>/.attempts/` would find, which is the only reason
+/// the journal is written at all.
+struct Journal {
+    path: PathBuf,
+}
+
+impl Journal {
+    fn records(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(&self.path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
+    }
+
+    /// Every effect kind the journal's `effect_step` records name.
+    ///
+    /// Resolved back through [`EffectKind::ALL`] rather than compared as strings,
+    /// so a kind the journal spells in a way no [`EffectKind`] does is a `None`
+    /// this drops rather than a name that silently matches nothing.
+    fn effect_steps_kinds(&self) -> Vec<EffectKind> {
+        self.kinds_where(|_| true)
+    }
+
+    /// The subset that reached [`ExecutionStep::Apply`] — the ones that were
+    /// allowed to change something.
+    fn kinds_that_applied(&self) -> Vec<EffectKind> {
+        self.kinds_where(|step| step == ExecutionStep::Apply.as_str())
+    }
+
+    fn kinds_where(&self, wanted: impl Fn(&str) -> bool) -> Vec<EffectKind> {
+        let mut kinds: Vec<EffectKind> = self
+            .records()
+            .iter()
+            .filter(|record| record["record"] == "effect_step")
+            .filter(|record| wanted(record["step"].as_str().unwrap_or_default()))
+            .filter_map(|record| {
+                let named = record["kind"].as_str()?;
+                EffectKind::ALL
+                    .iter()
+                    .copied()
+                    .find(|k| k.as_str() == named)
+            })
+            .collect();
+        kinds.dedup();
+        kinds
     }
 }
 
@@ -730,6 +1132,11 @@ async fn decide(forge: &Forge) -> Result<Approved, PlanError> {
 #[tokio::test]
 async fn a_created_pull_request_carries_the_label_that_finds_it() {
     let forge = Forge::empty();
+    // The head has to be on the remote before a pull request can be opened from
+    // it — GitHub refuses a create whose head is not a ref, and since 17.b the
+    // discovery read asks what that ref is at. In a real run the branch is there
+    // because `EnsureBranchPublished` put it there one effect earlier.
+    forge.seed_branch(SHARED_HEAD);
 
     let receipt = open_the_shared_pull_request(&forge, SHARED_HEAD, &[CVE_LABEL]).await;
 
@@ -1131,6 +1538,431 @@ async fn a_plain_issue_carrying_the_label_is_not_the_shared_pull_request() {
 }
 
 // ---------------------------------------------------------------------------
+// The tree the attempt runs in, and every mutation that leaves this process
+// ---------------------------------------------------------------------------
+
+/// Everything one whole run of this half left behind.
+///
+/// Assembled by [`publish`] and read by the three lanes below. Every field is
+/// something *observed* after the fact — the worktree's own `HEAD`, the journal
+/// on disk, the receipts' values — rather than something the driver was told.
+struct Published {
+    /// Which branch the run settled on, and how.
+    approved: Approved,
+    /// The two revisions it saw and which it used.
+    checkout: Checkout,
+    /// What the worktree the attempt ran in was actually sitting on, asked of
+    /// git after the checkout and before anything was committed.
+    worktree_head: String,
+    /// The branch, its observed head and the one pull request.
+    work: SharedWork,
+    /// Every commit body the worktree held before the landing, and after it.
+    /// The pair is what says the landing really committed.
+    history_before_landing: String,
+    history_after_landing: String,
+    /// How many records the attempt's journal gained while the landing ran.
+    journal_grew_across_the_landing: usize,
+    /// The journal itself, read back off disk.
+    journal: Journal,
+    /// Held so that the journal's file outlives this value.
+    _reports: TempDir,
+}
+
+impl Published {
+    /// The bundle this run would publish, with the checkout's three keys under
+    /// `observations`.
+    ///
+    /// **Assembled here rather than read off a `ReportBundle`, and that is a
+    /// statement about scope rather than a shortcut.** `observations` in a
+    /// published bundle is `fiddle_core::WorkStateView` — a closed set of four
+    /// named ports belonging to M0's assessment — and there is no slot in it for a
+    /// capability's own facts. Widening it, and the `fiddle-cli` rendering that
+    /// serializes it, is the wiring task's; what a run *produces* for those three
+    /// keys is this one's, and [`Checkout::observed`] is the whole of it. A lane
+    /// that asserted against a bundle this milestone cannot yet publish would be
+    /// asserting against a shim.
+    fn bundle(&self) -> serde_json::Value {
+        serde_json::json!({ "observations": self.checkout.observed() })
+    }
+
+    /// Did the landing's commit stay out of the effect journal?
+    ///
+    /// Two halves and neither is enough. The commit must have *happened* — a run
+    /// that committed nothing would satisfy "no effect was recorded for it" for
+    /// the wrong reason — and the journal must not have grown while it did.
+    fn local_commits_are_not_effects(&self) -> bool {
+        self.history_after_landing != self.history_before_landing
+            && self.journal_grew_across_the_landing == 0
+    }
+}
+
+/// The whole of what this half does, in the order it does it.
+///
+/// Written out here rather than hidden behind a helper per step, because the
+/// order *is* part of what the lanes below are about: discover, decide, fetch and
+/// check out, land, and only then publish. `?`-free and panicking on the way,
+/// because every failure here is a fixture failure — the refusal arm has its own
+/// driver, [`discover_then_land`], one section down.
+///
+/// **One driver and not two.** The plan's sketch had `publish` and
+/// `publish_fresh`; which arm is taken is a property of the world the forge holds
+/// rather than of the driver, so two would be one function called twice with the
+/// difference written in the wrong place.
+async fn publish(forge: &Forge, world: &RemoteWorld) -> Published {
+    let cancel = CancellationToken::new();
+    let attempt = AttemptId("01JCVEPUBLISH0000000000000".to_string());
+    let reports = TempDir::new().expect("a temporary directory for the attempt journal");
+    let journal = forge.journalling(reports.path(), &attempt);
+
+    let approved = plan_shared_pull_request(&forge.gh(), REPO, BASE, TODAY, &cancel)
+        .await
+        .expect("a head under the pushable prefix");
+
+    // The fetch and the two revisions, run in the clone the worktrees are branched
+    // from — there is no worktree yet, and which revision it is made at is what
+    // this answers.
+    let checkout = check_out(&world.tree, &approved)
+        .await
+        .expect("the remote holds the refs this run named");
+
+    let root = TempDir::new().expect("a temporary directory for the worktree");
+    let workspace = Workspace::create_at(
+        world.tree.path(),
+        root.path(),
+        &attempt,
+        checkout.revision(),
+        cancel.clone(),
+    )
+    .expect("a worktree at the revision the checkout named");
+    let worktree_head = ask_git(workspace.root(), &["rev-parse", "HEAD"]);
+    let history_before_landing = ask_git(workspace.root(), &["log", "--format=%B"]);
+
+    let changed = world.bump_into(workspace.root());
+    let before = journal.records().len();
+    land(
+        &InWorktree::new(&workspace, PATIENT),
+        &world.group,
+        &GroupStatus::Clean,
+        &changed,
+    )
+    .await
+    .expect("a clean group over a tree that really changed");
+    let journal_grew_across_the_landing = journal.records().len() - before;
+    let history_after_landing = ask_git(workspace.root(), &["log", "--format=%B"]);
+    let landed = ask_git(workspace.root(), &["rev-parse", "HEAD"]);
+
+    let deployment = Deployment(fiddle_core::DeploymentRule::Allow);
+    let ctx = forge.context_pushing_from(workspace.root());
+    let executor = Executor::new(
+        FIXTURE_REPAIR,
+        PROJECT.to_string(),
+        INVOCATION_REF.to_string(),
+        &deployment,
+        &ctx,
+        forge,
+        ReadRetry::none(),
+    );
+    let work = publish_shared_work(
+        &executor,
+        FIXTURE_REPAIR,
+        &approved,
+        &SharedPublication {
+            repo: REPO.to_string(),
+            head_owner: OWNER.to_string(),
+            title: SHARED_TITLE.to_string(),
+            summary: RUN_SUMMARY.to_string(),
+            head_sha: landed,
+        },
+    )
+    .await
+    .expect("a branch this capability may push to, and one pull request");
+
+    Published {
+        approved,
+        checkout,
+        worktree_head,
+        work,
+        history_before_landing,
+        history_after_landing,
+        journal_grew_across_the_landing,
+        journal,
+        _reports: reports,
+    }
+}
+
+/// **Reuse runs in the pull request's remote tip, and the bundle says so.**
+///
+/// Three claims, and the world is built so that each of them has a wrong answer
+/// available to be caught. [`remote_world`] leaves a *stale local branch of the
+/// same name* in the clone, pointing at a different commit, and a local `main`
+/// the remote has never seen — so a checkout by branch name and a checkout from
+/// local `HEAD` both land somewhere this lane can name.
+///
+/// The head sha is compared against what the **remote** holds rather than against
+/// a fixture constant: the forge reports it out of `remote.git` and the worktree
+/// resolves it through the fetch, which makes the agreement evidence rather than
+/// one value compared with itself.
+///
+/// The observations are the second half and they are a separate claim. Design §4:
+/// *the observation carries the base revision **and** the open PR's head, and the
+/// bundle says which of the two the attempt actually ran against.* A run that
+/// recorded only the one it used would satisfy the first assertion here and fail
+/// the second, which is the point of there being two.
+#[tokio::test]
+async fn reusing_a_pull_request_checks_out_its_remote_tip_and_records_both_revisions() {
+    let forge = Forge::empty();
+    let world = remote_world(&forge.remote(), Some(SHARED_HEAD), &[LANDED_CVE]);
+    forge.seed_pull_request(41, SHARED_HEAD, &[CVE_LABEL]);
+    // Read **before** the run, because the run pushes onto this very branch: the
+    // tip afterwards is the commit the landing added, and a lane that read it
+    // then would be comparing the worktree against its own output.
+    let tip = forge.pr(41).head_sha;
+
+    let out = publish(&forge, &world).await;
+
+    assert_eq!(out.approved.reused(), Some(41));
+    assert_eq!(
+        out.worktree_head, tip,
+        "the remote tip, never a local branch left by an earlier run"
+    );
+    // The two wrong answers, named. Without these the assertion above would hold
+    // in a clone whose local refs happened to agree with the remote's, which is
+    // every clone until the day it is not.
+    assert_ne!(
+        out.worktree_head,
+        world
+            .stale_head
+            .clone()
+            .expect("this world has a stale local branch of the same name"),
+        "checking the branch out by name would land here"
+    );
+    assert_ne!(
+        out.worktree_head, world.stale_main,
+        "and branching from local HEAD would land here"
+    );
+    // A second, independent witness that is not a sha at all: the file only the
+    // shared branch carries.
+    assert!(
+        workspace_holds(&world, &out.worktree_head, ON_THE_SHARED_BRANCH),
+        "the tree the attempt ran in has to be the shared branch's tree"
+    );
+
+    let obs = out.bundle()["observations"].clone();
+    assert!(
+        obs["base_revision"].is_string() && obs["pr_head"].is_string(),
+        "both are observed; the bundle says which the attempt ran against: {obs}"
+    );
+    assert_eq!(obs["attempt_tree"], "pr_head");
+    assert_eq!(obs["pr_head"], out.worktree_head, "{obs}");
+    assert_eq!(
+        obs["base_revision"], world.base_revision,
+        "the base is observed on this arm too, and it is the remote's: {obs}"
+    );
+    assert_ne!(
+        obs["base_revision"], obs["pr_head"],
+        "a world in which the two coincided could not tell them apart: {obs}"
+    );
+
+    // And the publication that followed added to the pull request it reused.
+    // Stated here as well as in the read-only lane because this is the arm where
+    // a create really could have been dispatched and was not: the executor's own
+    // step 3 found the postcondition holding, which is what makes *never a
+    // second* idempotence rather than a branch somebody has to keep correct.
+    assert_eq!(out.work.pull_request, 41);
+    assert_eq!(forge.creation_requests(), 0, "never a second");
+    assert_eq!(forge.open_pull_requests(), 1);
+    assert_eq!(
+        out.work.head_sha,
+        ask_git(
+            &forge.remote(),
+            &["rev-parse", &format!("refs/heads/{SHARED_HEAD}")]
+        ),
+        "the receipt carries what the remote was observed to hold, and the branch \
+         has moved on from {tip} to the commit the landing added"
+    );
+}
+
+/// **Every external mutation passes the effect executor.**
+///
+/// M2's invariant: [`AuthorizedEffect`] has no constructor outside
+/// `effect/mod.rs`, so this asserts *routing* rather than merely behaviour — what
+/// it excludes is a mutation reaching the forge without a recorded effect step.
+///
+/// [`AuthorizedEffect`]: fiddle_runtime::effect::AuthorizedEffect
+///
+/// # Why it is a window and not a count
+///
+/// The obvious form is `mutations().len() == applies().len()`, and it is wrong in
+/// both directions. One effect here dispatches *two* requests — the create and
+/// then the label on the object it created — so the equality is false for a
+/// correct run; and two zeros are equal, so it is true for a run that did
+/// nothing. What the constraint is actually about is *which step each mutation
+/// happened under*, so each is attributed to the apply window it fell inside, and
+/// what the lane reports is the ones that fell in none.
+///
+/// # Both channels, because there are two
+///
+/// A pull request create is an HTTP request the scripted `gh` writes down. A
+/// branch publication is a `git push`, which leaves nothing at the forge's API at
+/// all — it is visible only as a ref the remote did not have before. A lane that
+/// checked the request log alone would report a clean routing for a build that
+/// pushed from anywhere it liked.
+///
+/// # And the negative half
+///
+/// A local commit is not an external mutation and is deliberately not journaled
+/// as one. That is asserted with its premise attached: the landing must really
+/// have committed, or "no effect was recorded for it" holds for the wrong reason.
+#[tokio::test]
+async fn every_external_mutation_passes_the_effect_executor() {
+    let forge = Forge::empty();
+    let world = remote_world(&forge.remote(), None, &[LANDED_CVE]);
+
+    let out = publish(&forge, &world).await;
+
+    let kinds = out.journal.effect_steps_kinds();
+    assert!(
+        kinds.contains(&EffectKind::EnsureBranchPublished),
+        "the journal must name the branch effect: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&EffectKind::EnsurePullRequest),
+        "and the pull request effect: {kinds:?}"
+    );
+    // The premise for everything below: both really *applied*, so there were
+    // windows to attribute mutations to. A walk that found every postcondition
+    // already satisfied would leave `kinds` above populated and every window
+    // absent, and the routing claim would then be a claim about nothing.
+    let applied = out.journal.kinds_that_applied();
+    assert!(
+        applied.contains(&EffectKind::EnsureBranchPublished)
+            && applied.contains(&EffectKind::EnsurePullRequest),
+        "both effects had work to do in an empty world: {applied:?}"
+    );
+
+    // Premise two: mutations really reached the forge. Without it the assertion
+    // that follows is satisfied by a run that dispatched nothing.
+    let mutations = forge.mutations();
+    assert!(
+        !mutations.is_empty(),
+        "no request that could change the forge was dispatched at all, so this \
+         lane is measuring nothing"
+    );
+    assert_eq!(
+        forge.mutations_outside_an_effect(),
+        Vec::<String>::new(),
+        "these reached the forge outside any effect's apply window; every one of \
+         the {} dispatched must fall inside one",
+        mutations.len()
+    );
+
+    // The other channel. The branch is on the remote, and it got there during the
+    // branch effect's apply — not before it, and not after the walk had finished.
+    assert_eq!(
+        forge.branches_gained_during(EffectKind::EnsureBranchPublished),
+        [out.approved.branch().to_string()],
+        "the push must have happened inside the branch effect's apply window; the \
+         remote's branches are now {:?}",
+        forge.remote_branches()
+    );
+
+    assert!(
+        out.local_commits_are_not_effects(),
+        "a local commit is not an external mutation and is deliberately not \
+         journaled as one — the landing committed ({} record(s) added)",
+        out.journal_grew_across_the_landing
+    );
+    assert!(
+        out.history_after_landing.contains(LANDED_CVE),
+        "and it is *this group's* commit rather than any commit at all: {}",
+        out.history_after_landing
+    );
+    // And the whole of what was published is the one branch and the one pull
+    // request, so "every mutation is accounted for" is a claim about a run that
+    // really did something.
+    assert_eq!(out.work.branch, out.approved.branch());
+    assert_eq!(forge.creation_requests(), 1, "one create, and only one");
+    assert_eq!(forge.open_pull_requests(), 1);
+}
+
+/// **With nothing open, the branch is dated and cut from the remote.**
+///
+/// The fresh arm of the checkout, driven rather than planned:
+/// `with_nothing_open_a_dated_branch_is_cut_from_an_origin_ref` asserts what
+/// [`Approved::from`] *names*, and this asserts what the run then *ran* — the
+/// fetch it made and the tree it ended up in.
+///
+/// The recorded git calls are the subject's own, because [`remote_world`]
+/// deliberately does not record its construction: a list holding the fixture's
+/// `clone` and `commit` would make "the subject named origin/main" an assertion
+/// about what this file did.
+#[tokio::test]
+async fn a_fresh_branch_is_cut_from_the_remote_and_is_dated() {
+    let forge = Forge::empty();
+    let world = remote_world(&forge.remote(), None, &[LANDED_CVE]);
+
+    let out = publish(&forge, &world).await;
+
+    assert!(
+        out.approved.branch().starts_with(BRANCH_STEM),
+        "{}",
+        out.approved.branch()
+    );
+    assert!(out.approved.branch().ends_with(TODAY), "and dated");
+
+    let calls = world.tree.git_calls();
+    assert!(
+        calls.iter().any(|call| call.contains("origin/main")),
+        "never local HEAD or local main; a stale local main contaminated a prior \
+         run. The subject ran: {calls:?}"
+    );
+    // And it is not merely *mentioned*: the tree the attempt ran in is the
+    // remote's base and neither of the clone's own commits.
+    assert_eq!(out.worktree_head, world.base_revision);
+    assert_ne!(
+        out.worktree_head, world.stale_main,
+        "branching from local main would land here"
+    );
+    assert!(
+        workspace_holds(&world, &out.worktree_head, ONLY_ON_THE_REMOTE_BASE),
+        "the base moved on after the clone was taken, and the attempt has to be \
+         standing on the commit that moved it"
+    );
+
+    // The fresh arm's observations, which are the other half of Design §4's
+    // sentence: there is no pull request, and the bundle says so rather than
+    // leaving a reader to guess from a missing key.
+    let obs = out.bundle()["observations"].clone();
+    assert_eq!(obs["attempt_tree"], "base_revision");
+    assert_eq!(obs["base_revision"], world.base_revision);
+    // `get` and not `obs["pr_head"]`, because indexing a JSON object with a key
+    // it does not hold answers `Null` — so the obvious spelling would pass for a
+    // run that wrote no such key at all, which is precisely the *absent versus
+    // null* distinction [`Checkout::observed`] is written to keep. Measured: a
+    // probe that recorded only the revision it used left this lane green.
+    assert!(
+        obs.get("pr_head").is_some_and(|it| it.is_null()),
+        "no pull request was open, and the bundle has to say so rather than \
+         leaving a reader to read a missing key as an old build: {obs}"
+    );
+}
+
+/// Whether the commit `revision` carries `path`.
+///
+/// Asked of the clone rather than of the worktree, which no longer exists by the
+/// time a lane reads a [`Published`] — the workspace's `Drop` removed it, which is
+/// the invariant `no_worktree_survives_the_attempt` is about. The commit is still
+/// in the store, because a worktree shares the object store it was branched from.
+fn workspace_holds(world: &RemoteWorld, revision: &str, path: &str) -> bool {
+    ask_git(
+        world.tree.path(),
+        &["ls-tree", "--name-only", revision, path],
+    )
+    .lines()
+    .any(|line| line == path)
+}
+
+// ---------------------------------------------------------------------------
 // The push guard, and why it comes first
 // ---------------------------------------------------------------------------
 
@@ -1284,6 +2116,7 @@ fn the_decision_is_taken_over_the_observation_alone() {
     let outside = SharedPullRequest {
         number: 41,
         head: "feature/not-security".to_string(),
+        head_sha: A_TIP.to_string(),
         base: BASE.to_string(),
         title: SHARED_TITLE.to_string(),
         duplicates: Vec::new(),
@@ -1296,6 +2129,7 @@ fn the_decision_is_taken_over_the_observation_alone() {
     let inside = SharedPullRequest {
         number: 41,
         head: SHARED_HEAD.to_string(),
+        head_sha: A_TIP.to_string(),
         base: BASE.to_string(),
         title: SHARED_TITLE.to_string(),
         duplicates: vec![57, 63],
@@ -1303,10 +2137,21 @@ fn the_decision_is_taken_over_the_observation_alone() {
     let approved = plan(Some(inside), BASE, TODAY).expect("a pushable head");
     assert_eq!(approved.reused(), Some(41));
     assert_eq!(approved.duplicates(), [57, 63]);
+    assert_eq!(
+        approved.pr_head(),
+        Some(A_TIP),
+        "the tip the observation named is carried through, because it is what the \
+         attempt's tree is made at"
+    );
 
     let fresh = plan(None, BASE, TODAY).expect("nothing open is not a refusal");
     assert_eq!(fresh.reused(), None);
     assert_eq!(fresh.branch(), format!("{BRANCH_STEM}{TODAY}"));
+    assert_eq!(
+        fresh.pr_head(),
+        None,
+        "there is no pull request, so there is no head for one to have"
+    );
 }
 
 // ---------------------------------------------------------------------------
