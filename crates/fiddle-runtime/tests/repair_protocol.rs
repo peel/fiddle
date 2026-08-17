@@ -44,7 +44,7 @@ use fiddle_runtime::agent::AgentBudget;
 use fiddle_runtime::capability::{Capability, ExecutionGrant, FixtureRepair, RepairConfig};
 use fiddle_runtime::core::{correlation_key, AttemptId, NextAction, RunOutcome, FIXTURE_REPAIR};
 use fiddle_runtime::journal::FileJournal;
-use fiddle_runtime::orchestration::{self, RunContext, RunReport};
+use fiddle_runtime::orchestration::{self, Addressed, RunContext, RunReport};
 use fiddle_runtime::workspace::WorkspaceCommand;
 use fiddle_runtime::{StubChangePort, StubWorkItemPort};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
@@ -667,7 +667,7 @@ impl Fixture {
         orchestration::run(&RunContext {
             project: PROJECT,
             invocation_ref: INVOCATION_REF,
-            work_id: WORK_ID,
+            addressed: Addressed::WorkItem(WORK_ID),
             attempt: &attempt,
             work_items: &StubWorkItemPort::new(self.stub_root()),
             changes: &StubChangePort::new(self.stub_root()),

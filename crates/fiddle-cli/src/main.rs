@@ -10,8 +10,8 @@ use fiddle_core::{
 use fiddle_runtime::effect::{EffectContext, Executor};
 use fiddle_runtime::human::interpret::InterpretationBounds;
 use fiddle_runtime::{
-    AgentBudget, AttemptContext, AttemptTrace, Capability, FixtureRepair, GatewayError, GhCli,
-    GitCli, ProposeChange, ProposeConfig, PublishChange, PublishConfig, RepairConfig,
+    Addressed, AgentBudget, AttemptContext, AttemptTrace, Capability, FixtureRepair, GatewayError,
+    GhCli, GitCli, ProposeChange, ProposeConfig, PublishChange, PublishConfig, RepairConfig,
     StubChangePort, StubMark, StubWorkItemPort, WorkspaceCommand, CAPABILITIES,
 };
 use std::path::{Path, PathBuf};
@@ -138,6 +138,9 @@ enum Selection {
     /// to a person — the hybrid capability, whose run suspends rather than
     /// completing.
     Propose,
+    /// One sweep of a container image's advisories: scan, bump, judge, land,
+    /// and one shared pull request for the repository.
+    Mitigate,
 }
 
 impl Selection {
@@ -148,6 +151,7 @@ impl Selection {
             Selection::Repair => fiddle_core::FIXTURE_REPAIR,
             Selection::Publish => fiddle_core::PUBLISH_CHANGE,
             Selection::Propose => fiddle_core::PROPOSE_CHANGE,
+            Selection::Mitigate => fiddle_core::CVE_MITIGATE,
         }
     }
 
@@ -168,6 +172,8 @@ impl Selection {
             Ok(Selection::Publish)
         } else if requested == fiddle_core::PROPOSE_CHANGE.0 {
             Ok(Selection::Propose)
+        } else if requested == fiddle_core::CVE_MITIGATE.0 {
+            Ok(Selection::Mitigate)
         } else {
             Err(UnknownCapability {
                 requested: requested.to_string(),
@@ -363,9 +369,16 @@ fn ports(config: &config::Config) -> (StubWorkItemPort, StubChangePort) {
 /// *reported* to the caller instead of aborting the command. That is why
 /// `inspect` still exits 0 over a missing fixture root — it succeeded at
 /// looking, and what it saw was that it could not see.
+///
+/// **What the ports are asked about is [`Addressed::of`]'s to decide**, and this
+/// line used to decide it itself, wrongly: it passed `reference.value()`, which
+/// for the one scheme that stands alone is the empty string. `fiddle inspect cve`
+/// therefore reported `Blocked` with source `stub:work/.json` — an empty value
+/// interpolated into a path, a file that was never going to be there, and a
+/// diagnostic naming a work item nobody had asked about.
 fn observe(config: &config::Config, reference: &InvocationRef) -> WorkStateView {
     let (work_items, changes) = ports(config);
-    fiddle_runtime::observe(&work_items, &changes, reference.value())
+    fiddle_runtime::observe(&work_items, &changes, Addressed::of(reference))
 }
 
 /// The build identity every bundle this binary publishes carries.
@@ -607,7 +620,12 @@ async fn resolve_forge(
                     .ok_or_else(|| missing("github.workflow"))?,
             ),
         ),
-        Selection::Propose => {
+        // The two arms whose attempt *creates* the tree it publishes from, and
+        // they answer identically: the path is `attempt_worktree`'s to derive,
+        // it does not exist yet, and neither capability requests a workflow —
+        // `propose_change` asks a person instead, and `cve_mitigate` is judged by
+        // the checks `[workspace] checks` declares, inside the worktree.
+        Selection::Propose | Selection::Mitigate => {
             let workspace = config
                 .workspace
                 .as_ref()
@@ -1057,6 +1075,196 @@ fn build_capability<'a>(
                 },
             )))
         }
+
+        // **The arm every M4 module was waiting for.** Eighteen tasks built the
+        // scan, the projection, the dedup, the budget, the attribution, the
+        // grouping, the migration, the evaluation, the landing, the shared
+        // publication and the disposition, and none of them had a caller on a
+        // production path. This is the caller.
+        //
+        // Five tables, each refused by its own name and in the order an operator
+        // can act on: what to scan and what to bump it with, the tree to do it
+        // in, the model that does the one step arithmetic cannot, the forge it
+        // is published to, and only then the two credentials.
+        Selection::Mitigate => {
+            let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
+            let scanner = config
+                .scanner
+                .as_ref()
+                .ok_or_else(|| missing("[scanner]"))?;
+            let sweep = config
+                .orchestration
+                .as_ref()
+                .and_then(|orchestration| orchestration.cve.as_ref())
+                .ok_or_else(|| missing("[orchestration.cve]"))?;
+            let agent = config.agent.as_ref().ok_or_else(|| missing("[agent]"))?;
+            let workspace = config
+                .workspace
+                .as_ref()
+                .ok_or_else(|| missing("[workspace]"))?;
+            // The five checks of design §2.6, and a document declaring none is
+            // refused here rather than passing an empty contract to `evaluate`.
+            // An empty check list is not a permissive one: every group would end
+            // with no failing check, the rescan alone would decide, and the
+            // milestone's own rule — *the check decides, not the model* — would
+            // be decided by nothing.
+            if workspace.checks.is_empty() {
+                return Err(missing("[[workspace.checks]]").into());
+            }
+            // The one command the `run_check` tool offers a model. Distinct from
+            // the list above, and named separately in the document for that
+            // reason: what a model may run to see whether its edit builds is not
+            // what decides whether the group is clean.
+            let check = workspace
+                .check
+                .as_ref()
+                .ok_or_else(|| missing("workspace.check"))?;
+            let forge = forge.ok_or_else(|| missing("[github]"))?;
+
+            // Only now, and only on this arm — the repairing arm's order, for
+            // the repairing arm's reason: a deployment missing a table is told
+            // about the table rather than about two variables it would also have
+            // had to export.
+            let credential = resolve_credential(&agent.api_key.env)?;
+            let model = fiddle_runtime::completion_model(
+                &agent.base_url,
+                credential,
+                &agent.api_key.env,
+                &agent.model,
+            )
+            .map_err(GatewayUnavailable)?;
+            // The tenant pair, resolved through the same one function every other
+            // credential in this binary goes through, and never stored on a
+            // configuration type: `WizCredential` is built here and handed
+            // straight to the adapters that carry it.
+            let tenant = || -> Result<fiddle_runtime::WizCredential, CredentialAbsent> {
+                Ok(fiddle_runtime::WizCredential {
+                    client_id: resolve_credential(&scanner.client_id.env)?,
+                    client_secret: resolve_credential(&scanner.client_secret.env)?,
+                })
+            };
+
+            // A `^C` has to reach five kinds of child here: the scan, the `go`
+            // that resolves and bumps the module graph, the attempt's tools, the
+            // five checks, and the `gh` and `git` an effect spawns. They all stop
+            // through the one token.
+            cancel_on_interrupt(cancel);
+
+            // The repairing arm's two axes, matched for the repairing arm's
+            // reason: adding a variant is a compile error here instead of a
+            // document that loads and quietly means something else.
+            let config::Isolation::GitWorktree = workspace.isolation;
+            let config::Cleanup::Always = workspace.cleanup;
+
+            // Two scratch directories and not one. Both scanners write their
+            // report under a fixed filename, so a shared directory would have the
+            // first rescan overwrite the input scan's artefact — the one document
+            // every verdict in the run is measured against.
+            let scans = config.report.dir.join("scan");
+            let rescans = config.report.dir.join("rescan");
+
+            let executor = Executor::new(
+                fiddle_core::CVE_MITIGATE,
+                config.project.name.clone(),
+                reference.as_str(),
+                &github.policy,
+                &forge.ctx,
+                &forge.trace,
+                github.read_retry.as_read_retry(),
+            );
+
+            Ok(Box::new(fiddle_runtime::CveMitigate::new(
+                executor,
+                // The same context the executor holds, borrowed for the one
+                // forge read that is not an effect: discovering the shared pull
+                // request. See `capability::mitigate`.
+                &forge.ctx,
+                fiddle_runtime::Wizcli::new(
+                    PathBuf::from(&scanner.cli.program),
+                    scanner.cli.args.clone(),
+                    scans,
+                    scanner.timeout.as_duration(),
+                    cancel.clone(),
+                    tenant()?,
+                ),
+                model,
+                fiddle_runtime::MitigateConfig {
+                    repo: github.repo.to_string(),
+                    // The publishing arm's derivation and its reason: a head from
+                    // a fork is not something this milestone can produce, and
+                    // `repo` is refused at parse time unless it has an owner.
+                    head_owner: github.repo.owner.clone(),
+                    base: github.base.clone(),
+                    // Payload, and it names no advisory: the shared pull request
+                    // outlives any one run's findings, which is the same reason a
+                    // clean group's commit subject names none.
+                    title: format!("{}: dependency advisories", config.project.name),
+                    project: config.project.name.clone(),
+                    stub_root: config.stub.root.clone(),
+                    // The tree the sweep branches its worktree from, and the one
+                    // `github.work` would otherwise have named. It is
+                    // `workspace.fixture` because that is the key meaning *the
+                    // repository under repair*, and a sweep repairs one.
+                    tree: workspace
+                        .fixture
+                        .as_ref()
+                        .ok_or_else(|| missing("workspace.fixture"))?
+                        .clone(),
+                    workspace_root: workspace.root.clone(),
+                    image: sweep.image.clone(),
+                    scratch: rescans,
+                    rescan_credential: tenant()?,
+                    go: WorkspaceCommand {
+                        program: sweep.go.program.clone(),
+                        args: sweep.go.args.clone(),
+                        timeout: workspace.command_timeout.as_duration(),
+                    },
+                    checks: workspace
+                        .checks
+                        .iter()
+                        .map(|check| fiddle_runtime::evaluate::Check {
+                            program: check.program.clone(),
+                            args: check.args.clone(),
+                            success: match check.success {
+                                config::Success::ExitZero => {
+                                    fiddle_runtime::evaluate::Success::ExitZero
+                                }
+                                config::Success::ExitZeroAndNoOutput => {
+                                    fiddle_runtime::evaluate::Success::ExitZeroAndNoOutput
+                                }
+                                config::Success::ArtefactWritten => {
+                                    fiddle_runtime::evaluate::Success::ArtefactWritten
+                                }
+                            },
+                        })
+                        .collect(),
+                    check: WorkspaceCommand {
+                        program: check.program.clone(),
+                        args: check.args.clone(),
+                        timeout: workspace.command_timeout.as_duration(),
+                    },
+                    // The repairing arm's budget, handed over as configured
+                    // rather than pre-tightened, for the repairing arm's reason.
+                    budget: AgentBudget {
+                        max_turns: agent.max_turns,
+                        max_tokens: agent.max_tokens,
+                        deadline: agent.deadline.as_duration(),
+                        max_changed_files: agent.max_changed_files,
+                        tool_timeout: agent.tool_timeout.as_duration(),
+                    },
+                    command_timeout: workspace.command_timeout.as_duration(),
+                    findings: fiddle_runtime::cve::verdict::Budget::of(sweep.max_findings),
+                    report_dir: config.report.dir.clone(),
+                    // **The one clock read on this path**, taken here rather than
+                    // inside the decision that uses it: `plan` is pure so that
+                    // every rule it encodes can be asserted without a clock, and
+                    // a branch name is a fact a caller has to be able to
+                    // reproduce.
+                    today: fiddle_runtime::capability::cve::today_utc(),
+                    cancel: cancel.clone(),
+                },
+            )))
+        }
     }
 }
 
@@ -1208,7 +1416,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 // that difference is decided — `propose_change`'s is derived rather
                 // than named by the document, because the tree its attempt publishes
                 // is the tree its attempt creates.
-                Selection::Publish | Selection::Propose => {
+                Selection::Publish | Selection::Propose | Selection::Mitigate => {
                     Some(resolve_forge(&config, &cli.config, &cancel, selection, &reference).await?)
                 }
                 // Neither of these reaches a forge, so neither resolves a forge

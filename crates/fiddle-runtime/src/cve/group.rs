@@ -236,6 +236,32 @@ pub enum GroupError {
         fixed: String,
     },
 
+    /// This build could not work out what to move, or what it could move to.
+    ///
+    /// **The one variant that is about fiddle rather than about upstream**, and
+    /// it is here because the alternative was to report one of the four above
+    /// for a question nobody asked. Two producers reach it and both are honest
+    /// only when they say so:
+    ///
+    /// - A finding the four attribution rules place nowhere. `go` was asked and
+    ///   does not know the path, and it is not an OS package either, so there is
+    ///   no file this build could name as the one to edit.
+    /// - A target whose published releases this build cannot enumerate. That is
+    ///   every `Target::DockerfileBaseImage`: selecting a base-image tag needs a
+    ///   registry this build does not talk to, and answering
+    ///   [`GroupError::NoRelease`] from an empty candidate list would say
+    ///   *upstream has published nothing* about a registry nobody read.
+    ///
+    /// `why` is the upstream value's own text, carried verbatim for the reason
+    /// this enum's header gives: the rationale a verdict reports is the error's
+    /// own `Display`, so a sentence composed here would be one that drifted from
+    /// whatever produced it.
+    #[error("this build could not select a move: {why}")]
+    Unselectable {
+        /// The upstream refusal, in its own words.
+        why: String,
+    },
+
     /// The tree is already at or above the fix, so there is no move to make.
     ///
     /// Dropping such a finding is the already-fixed set's job — this is the

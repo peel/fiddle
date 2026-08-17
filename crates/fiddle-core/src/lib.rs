@@ -31,8 +31,8 @@ pub mod published;
 pub mod report;
 
 pub use assessment::{
-    assess, correlation_key, derive_next, CapabilityAssessment, NextAction, FIXTURE_REPAIR,
-    PROPOSE_CHANGE, PUBLISH_CHANGE, STUB_MARK,
+    assess, correlation_key, derive_next, CapabilityAssessment, NextAction, CVE_MITIGATE,
+    FIXTURE_REPAIR, PROPOSE_CHANGE, PUBLISH_CHANGE, STUB_MARK,
 };
 pub use decision::{
     decision_request_id, parse_marker, render_marker, ActorRef, DecisionBinding, DecisionRequestId,
@@ -46,8 +46,8 @@ pub use identity::{
     AttemptId, CapabilityId, InvocationRef, InvocationRefError, InvocationScheme, WorkRef,
 };
 pub use observation::{
-    ChangeSetState, Observation, Publication, ReviewState, SourceRef, VerificationState,
-    WorkItemState, WorkStateView,
+    ChangeSetState, Observation, Publication, ReviewState, SourceRef, TreeObservation,
+    VerificationState, WorkItemState, WorkStateView,
 };
 pub use outcome::{Mode, RunOutcome, UnknownMode};
 pub use policy::{combine, DeploymentRule, HumanDecisionRequirement, PolicyDecision};

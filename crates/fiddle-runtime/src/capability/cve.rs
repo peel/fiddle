@@ -67,6 +67,7 @@ use super::propose::COMMITTER;
 use super::CapabilityError;
 use crate::agent::{attempt_briefed, AgentBudget, Brief, RepairReport, ToolHost, ToolReceipts};
 use crate::cve::attribute::Target;
+use crate::cve::dedup::{Local, Spawn};
 use crate::cve::fold::{fold_commit_argv, Landed};
 use crate::cve::group::Group;
 use crate::effect::{Executor, IntegrationOperation};
@@ -79,7 +80,7 @@ use crate::workspace::{
 };
 use crate::{GhCli, GhError};
 use async_trait::async_trait;
-use fiddle_core::{AttemptId, CapabilityId, EffectKind, ProjectedFinding, ProposedEffect};
+use fiddle_core::{CapabilityId, EffectKind, ProjectedFinding, ProposedEffect};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -704,18 +705,20 @@ impl GroupStatus {
 /// the others, and grouping them keeps the model — the one value with a
 /// credential behind it — visibly separate.
 ///
-/// There is no attempt id here. It arrives at [`GroupMigration::migrate`], which
-/// is the call that *is* one attempt, so there is nowhere for a second one to be
-/// supplied from — the defect `ExecutionGrant`'s doc records, avoided by
-/// construction rather than by remembering.
+/// There is no attempt id here, and **no tree and no workspace root either**.
+/// All three were supplied by whoever built this until a run existed to own
+/// them, and each moved out for its own reason:
+///
+/// - The attempt id arrives on the [`ExecutionGrant`](super::ExecutionGrant), so
+///   there is nowhere for a second one to be supplied from — the defect that
+///   type's doc records, avoided by construction rather than by remembering.
+/// - The tree and the root moved to the *caller*, because
+///   [`GroupMigration::migrate`] no longer creates the worktree it works in: a
+///   run mitigates several groups onto **one** branch, and each landing has to
+///   be a commit in the tree the next group starts from. A worktree per group
+///   would put each group's commit in a different `HEAD`, and the push at the
+///   end would carry one of them. See [`GroupMigration::migrate`]'s own header.
 pub struct MigrationConfig {
-    /// The repository being mitigated. Each attempt branches a worktree from it
-    /// and never writes to it.
-    pub tree: PathBuf,
-
-    /// Where per-attempt worktrees are created.
-    pub workspace_root: PathBuf,
-
     /// The command the `run_check` tool runs.
     ///
     /// **Not the check that decides anything.** M4's verdict comes from
@@ -821,15 +824,35 @@ where
     /// how the tree got into the state the model is looking at, not something the
     /// model has any part in deciding.
     ///
-    /// # Why the workspace is held across the whole function
+    /// # The worktree is the run's, and this does not create or destroy one
     ///
-    /// Its `Drop` guard is what removes the worktree, so it must outlive every
-    /// path out — an early return, a `?`, a panic. The `Arc` exists only because
-    /// the tools reach the same workspace; nothing outside this scope keeps a
-    /// clone.
+    /// It used to. `migrate` branched a worktree of a configured tree at that
+    /// tree's `HEAD` and dropped it before returning, which settled two questions
+    /// wrongly at once and left a third unanswerable:
+    ///
+    /// - **`HEAD` is the wrong revision.** [`check_out`] is what says which
+    ///   revision every worktree in a run is made at — the base, or the shared
+    ///   pull request's remote tip — and its answer had nowhere to go.
+    /// - **The landing had nowhere to happen.** [`land`] commits *in the
+    ///   worktree*, through [`InWorktree`], and a worktree dropped before this
+    ///   function returns is gone by the time its caller holds the attempt. So
+    ///   `land` could not be called from a production path at all.
+    /// - **One branch, several groups.** A run puts every clean group's commit on
+    ///   one branch and pushes once. A worktree per group would leave each commit
+    ///   on a different detached `HEAD`.
+    ///
+    /// So the caller creates the workspace, at [`Checkout::revision`], and keeps
+    /// it for the whole run. What 14.a refused — *handing the workspace back*, so
+    /// that a caller could classify at its leisure in a tree the attempt no longer
+    /// owns — is still refused: [`classify`] runs below, before this returns, and
+    /// nothing about the diff is left for a caller to compute.
+    ///
+    /// The `Arc` is the tools' — [`ToolHost`] holds one — and this function
+    /// borrows the caller's rather than making one, so there is exactly one
+    /// workspace and one `Drop` for it.
     pub async fn migrate(
         &self,
-        attempt: &AttemptId,
+        workspace: &Arc<Workspace>,
         group: &Group,
     ) -> Result<MigrationAttempt, CapabilityError> {
         let findings: Vec<&ProjectedFinding> = group
@@ -839,15 +862,8 @@ where
             .collect();
         let task = migration_task(&findings);
 
-        let workspace = Arc::new(Workspace::create(
-            &self.config.tree,
-            &self.config.workspace_root,
-            attempt,
-            self.config.cancel.clone(),
-        )?);
-
         let host = ToolHost {
-            workspace: Arc::clone(&workspace),
+            workspace: Arc::clone(workspace),
             cancel: self.config.cancel.clone(),
             check: self.config.check.clone(),
             receipts: Arc::clone(&self.receipts),
@@ -864,17 +880,16 @@ where
         )
         .await?;
 
-        // Asked of git rather than of the report, and asked before the workspace
-        // is dropped, because the worktree is what git is being asked about.
+        // Asked of git rather than of the report, because the worktree is what
+        // git is being asked about.
         //
-        // **And classified here, for the same reason but a sharper version of
-        // it.** The scope rules are about the bytes inside the changed files,
-        // and this workspace's `Drop` removes the worktree those bytes are in
-        // the moment this function returns. The alternative — handing the
-        // workspace back so a caller could classify at its leisure — was
-        // rejected in 14.a: it lets a caller keep a worktree alive past the
-        // attempt that owns it, which is the one invariant
-        // `no_worktree_survives_the_attempt` is about.
+        // **And classified here, which is 14.a's rule and survives the worktree
+        // becoming the run's.** The scope rules are about the bytes inside the
+        // changed files, and the alternative — answering with the workspace so a
+        // caller could classify at its leisure — was rejected there and is still
+        // refused: nothing about the diff leaves this function uncomputed, so no
+        // caller can classify a tree that a later group has already moved on
+        // from. What changed is only who owns the `Drop`.
         //
         // The path list is taken *from the edits* rather than asked for
         // separately, so that what was classified and what is reported as
@@ -972,6 +987,86 @@ impl Git for InWorktree<'_> {
             _ => Err(CapabilityError::Workspace(WorkspaceError::Git {
                 command: args.join(" "),
                 stderr: result.stderr,
+            })),
+        }
+    }
+}
+
+/// The other production one: git in the repository the worktrees are branched
+/// from.
+///
+/// [`InWorktree`] is the adapter for everything that happens *inside* an
+/// attempt's tree, and there is exactly one thing that has to happen outside one:
+/// [`check_out`], which fetches the refs a run cares about and resolves the
+/// revision the worktree will be made at. There is no worktree yet when it runs —
+/// choosing its revision is what it answers — so there is no [`Workspace`] to
+/// compose, and this is the seam that was missing.
+///
+/// # It composes [`crate::cve::dedup::Local`], and adds no spawn of its own
+///
+/// That is the same arrangement [`InWorktree`] is under, pointed at the other
+/// tree. `commit_log_dedup` already runs plain `git` in *this* directory, with
+/// the ambient environment and no deadline, and its own header argues the case:
+/// a local repository read carries no credential, so it does not go through the
+/// one credential-carrying `git` this crate builds. Reusing that spawn rather
+/// than writing a second one is what keeps the number of ways this crate starts
+/// a `git` in the base repository at one.
+///
+/// **One thing is genuinely wider here and is worth saying rather than
+/// inheriting.** [`crate::cve::dedup::Local`]'s doc says every command it runs is
+/// a local read "with no network in it", and two of [`check_out`]'s four are
+/// `git fetch`. So the deployment assumption is explicit: the checkout this run
+/// is pointed at is one that can already reach its own remote — which is what a
+/// CI checkout is, and what a developer's clone is. A repository whose remote
+/// needs a credential this process holds and the checkout does not is a
+/// deployment this adapter does not serve, and it fails at the fetch, by name,
+/// before anything has been committed.
+///
+/// The spawn is blocking, so it is moved off the runtime rather than run on it:
+/// a `fetch` can take seconds, and the only other task alive during a run is the
+/// interrupt handler.
+pub struct InRepository {
+    repository: PathBuf,
+}
+
+impl InRepository {
+    /// Run git in `repository` — the tree the run's worktree is branched from.
+    pub fn new(repository: impl Into<PathBuf>) -> Self {
+        InRepository {
+            repository: repository.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl Git for InRepository {
+    async fn run(&self, args: &[&str]) -> Result<String, CapabilityError> {
+        let repository = self.repository.clone();
+        let owned: Vec<String> = args.iter().map(|argument| argument.to_string()).collect();
+        let spelled = owned.join(" ");
+        let ran = tokio::task::spawn_blocking(move || {
+            let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+            Local.run("git", &borrowed, &repository)
+        })
+        .await
+        // A panic inside the blocking pool is not something this can recover
+        // from and is not something a caller can act on differently from a git
+        // that would not start, so it arrives as the same refusal.
+        .map_err(|joined| {
+            CapabilityError::Workspace(WorkspaceError::Git {
+                command: spelled.clone(),
+                stderr: joined.to_string(),
+            })
+        })??;
+
+        match ran.ok {
+            true => Ok(ran.stdout),
+            // [`Git`]'s contract: a non-zero exit is an `Err` and never a status
+            // a caller interprets, because there is no call in this stage where
+            // failing is an answer.
+            false => Err(CapabilityError::Workspace(WorkspaceError::Git {
+                command: spelled,
+                stderr: ran.stderr,
             })),
         }
     }
@@ -1496,6 +1591,59 @@ fn dated_branch(today: &str) -> String {
     format!("{BRANCH_STEM}{today}")
 }
 
+/// Today, in UTC, as `YYYY-MM-DD`.
+///
+/// **The one clock read in this milestone, and it is deliberately not inside
+/// [`plan`].** That function is pure precisely so every rule it encodes can be
+/// asserted without a clock, and its own header says `today` is supplied "because
+/// a branch name is a fact a caller has to be able to reproduce in a diagnostic
+/// and in a test". This is what the binary supplies it from, kept beside the
+/// value it produces so there is one spelling of the format the branch name
+/// carries.
+///
+/// UTC and never local time. A branch name is compared across machines — a
+/// nightly job's runner and the laptop of whoever is looking at the pull request
+/// — and two of them in different zones would cut two branches for one day.
+///
+/// The arithmetic is Howard Hinnant's `civil_from_days`, written out rather than
+/// taken as a dependency: it is fifteen lines of integer arithmetic that has not
+/// changed since the Gregorian calendar was adopted, against a crate this
+/// workspace would otherwise have no reason to carry. A clock before 1970 is not
+/// a case this build has: `duration_since` refuses it, and a machine whose clock
+/// is that wrong would cut a branch nobody could find whatever this returned, so
+/// the epoch is the honest answer rather than a panic in a nightly job.
+pub fn today_utc() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or(0);
+    let (year, month, day) = civil_from_days(seconds.div_euclid(86_400));
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// The civil date `days` after 1970-01-01, by the era arithmetic that makes the
+/// leap rule branchless.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    // Shift the epoch to 0000-03-01, which puts the leap day at the end of a
+    // year and makes every 400-year era identical.
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    // March is month 0 in this frame, so the two adjustments below put January
+    // and February back into the following calendar year.
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_prime + 2) / 5 + 1) as u32;
+    let month = match month_prime < 10 {
+        true => month_prime + 3,
+        false => month_prime - 9,
+    } as u32;
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    (year, month, day)
+}
+
 /// Decide which branch this run works on, given what the forge was observed to
 /// hold.
 ///
@@ -2008,6 +2156,42 @@ pub fn shared_body(summary: &str, approved: &Approved) -> String {
 mod tests {
     use super::*;
     use fiddle_core::{AdvisoryId, PackageType, Severity};
+
+    /// **The branch's date is a real calendar date**, over the three cases the
+    /// arithmetic can get wrong.
+    ///
+    /// A dated branch is what stops a run pushing onto a name that has already
+    /// been merged and deleted, so the date has to advance and has to be a date
+    /// — and the era arithmetic below is the only thing in this crate that has to
+    /// be right about a leap year. The days are counted from the epoch, which is
+    /// exactly what [`today_utc`] hands it.
+    #[test]
+    fn the_calendar_arithmetic_agrees_with_the_calendar() {
+        // The epoch itself, a leap day, and the day after a century that is not
+        // a leap year — the three the naive `year % 4` rule gets wrong.
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(59), (1970, 3, 1));
+        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
+        assert_eq!(civil_from_days(11_017), (2000, 3, 1));
+        assert_eq!(civil_from_days(20_683), (2026, 8, 18));
+    }
+
+    /// And the rendering the branch name carries is fixed-width, so
+    /// `security/cve-remediation-2026-01-02` sorts and reads the way a person
+    /// expects rather than as `2026-1-2`.
+    #[test]
+    fn today_renders_zero_padded_and_the_branch_is_under_the_pushable_prefix() {
+        let today = today_utc();
+        assert_eq!(today.len(), 10, "{today}");
+        assert!(
+            today.chars().enumerate().all(|(at, character)| match at {
+                4 | 7 => character == '-',
+                _ => character.is_ascii_digit(),
+            }),
+            "{today}"
+        );
+        assert!(dated_branch(&today).starts_with(PUSHABLE_PREFIX));
+    }
 
     /// A finding whose every field is a value nothing else in this file spells,
     /// so that "the rendering carries the projection" cannot be satisfied by a

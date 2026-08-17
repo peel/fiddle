@@ -220,6 +220,61 @@ impl Go {
     pub fn root(&self) -> &Path {
         &self.root
     }
+
+    /// Every release of `module` the proxy will admit, newest last, in the
+    /// spelling `go` printed.
+    ///
+    /// # Why this is inherent and not a [`ModuleGraph`] method
+    ///
+    /// [`ModuleGraph`] is the port *attribution* is written against, and
+    /// attribution never asks this: its four rules are about the build list and
+    /// the requirement chain, and none of them needs to know what else has been
+    /// published. Widening the port would make every stand-in in the suite
+    /// implement a method the subject under test does not call — which is the
+    /// same objection [`crate::cve::dedup::library_is_at_the_fix`] makes to
+    /// adding a `version` method beside `list`.
+    ///
+    /// The caller is [`select_target_version`](crate::cve::group::select_target_version),
+    /// whose `available` argument had no producer at all until this existed. That
+    /// is the gap this closes: the selection's three bounds — no downgrade, no
+    /// major crossed, the minor as ceiling and floor — are arithmetic over a
+    /// release list, and a build that could not obtain one could not apply them.
+    ///
+    /// # The spelling is `go`'s, and it is handed on unaltered
+    ///
+    /// `go list -m -versions <module>` prints the module path and then its
+    /// versions, space-separated, on one line: `example.com/m v0.1.0 v0.2.0`. The
+    /// first field is dropped and nothing else is touched — no `v` is stripped
+    /// and nothing is re-sorted — because `select_target_version` answers *in the
+    /// spelling the release list used* and a `go get` has to be written with the
+    /// `v`. Ordering is not assumed either: that function takes the highest
+    /// candidate rather than the last one.
+    ///
+    /// A module the proxy knows nothing about prints its path and no versions,
+    /// which is an empty list rather than a failure — *nothing is published to
+    /// move to* is an answer, and it is the answer
+    /// [`GroupError::NoRelease`](crate::cve::group::GroupError::NoRelease)
+    /// exists to report.
+    ///
+    /// # Nothing here filters the words, and nothing needs to
+    ///
+    /// [`Go::run`] answers with stderr when stdout is empty, so a `go` that
+    /// complained rather than listed hands back prose — and this splits prose
+    /// into "versions" just as happily as it splits a release line. That is safe
+    /// rather than merely tolerable: `select_target_version` refuses every
+    /// candidate whose major and minor it cannot read, so a word that is not a
+    /// version cannot *become* the answer; it can only fail to be one, which is
+    /// the same outcome as the empty list above. A filter here would be a second
+    /// opinion about what a version is, and this crate keeps exactly one — in
+    /// [`crate::cve::version`].
+    pub async fn versions(&self, module: &str) -> Result<Vec<String>, ResolverError> {
+        let printed = self.run(&["list", "-m", "-versions", module]).await?;
+        Ok(printed
+            .split_whitespace()
+            .skip(1)
+            .map(str::to_string)
+            .collect())
+    }
 }
 
 #[async_trait]

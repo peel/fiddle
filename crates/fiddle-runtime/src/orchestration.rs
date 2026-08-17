@@ -69,9 +69,84 @@ use std::sync::Arc;
 pub fn observe(
     work_items: &dyn WorkItemPort,
     changes: &dyn ChangePort,
-    work_id: &str,
+    addressed: Addressed<'_>,
 ) -> WorkStateView {
-    WorkStateView::without_publication(work_items.observe(work_id), changes.observe(work_id))
+    let work_item = match addressed {
+        Addressed::WorkItem(work_id) => work_items.observe(work_id),
+        // **The port is not asked, and that is the whole of this arm.** It is
+        // not asked with an empty id and it is not asked with the slug either: a
+        // reference with no value names no work item, so there is nothing to
+        // read and a read that happened anyway could only fail. It used to
+        // happen: `fiddle inspect cve` observed `stub:work/.json`, an empty
+        // value interpolated into a path, and reported `Blocked` because the
+        // file it invented was not there.
+        //
+        // `NotApplicable` is what [`fiddle_core::assess`] has a trackerless arm
+        // for, and until something built one that arm was unreachable.
+        Addressed::NoWorkItem { .. } => fiddle_core::Observation::NotApplicable {
+            reason: "this invocation names no work item, so no tracker was consulted".to_string(),
+        },
+    };
+    WorkStateView::without_publication(work_item, changes.observe(addressed.change_set()))
+}
+
+/// What an invocation addresses, and therefore which of the two local ports has
+/// a question to answer.
+///
+/// # Why this is a type and not a `work_id` both ports are handed
+///
+/// Because for one scheme the two ports are not asked about the same thing, and
+/// a single string cannot say so. `cve` [stands
+/// alone](fiddle_core::InvocationScheme::stands_alone): a sweep discovers its own
+/// findings and addresses no tracker row. Both halves of that matter and they
+/// pull in opposite directions —
+///
+/// - the **work item** must not be read, because there is no id to read one by;
+/// - the **change set** must still be read and written, because that is where
+///   the correlation marker lives and it is the only thing that makes a repeat
+///   of the same invocation `Complete` rather than a second run of the work.
+///
+/// So the change set gets an id and the work item gets none, which is exactly
+/// what these two variants say.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Addressed<'a> {
+    /// A tracker item. Both ports answer about it, under one id.
+    WorkItem(&'a str),
+
+    /// No tracker item at all, and the id the change set is filed under.
+    NoWorkItem {
+        /// [`InvocationRef::slug`](fiddle_core::InvocationRef::slug), which for a
+        /// reference with no value is the scheme alone — `cve`. A path component
+        /// and never an empty one, which is what the empty `value()` was.
+        change_set: &'a str,
+    },
+}
+
+impl<'a> Addressed<'a> {
+    /// What `reference` addresses.
+    ///
+    /// Decided on the *value* rather than on the scheme, and that is the honest
+    /// test rather than the convenient one: `cve:CVE-2026-1234` remediates one
+    /// finding a caller handed in and is as much a named piece of work as
+    /// `beans:x` is, while `cve` names nothing. The grammar already guarantees
+    /// the two cannot be confused — a present value is never empty — so the
+    /// emptiness *is* the question.
+    pub fn of(reference: &'a fiddle_core::InvocationRef) -> Self {
+        match reference.value() {
+            "" => Addressed::NoWorkItem {
+                change_set: reference.scheme().as_str(),
+            },
+            value => Addressed::WorkItem(value),
+        }
+    }
+
+    /// The id the change set is filed under, which both variants have.
+    pub fn change_set(&self) -> &'a str {
+        match self {
+            Addressed::WorkItem(work_id) => work_id,
+            Addressed::NoWorkItem { change_set } => change_set,
+        }
+    }
 }
 
 /// Everything one run acts on: who it is for, what it may touch, and what it
@@ -85,8 +160,9 @@ pub struct RunContext<'a> {
     pub project: &'a str,
     /// The canonical `<scheme>:<value>` text of the invocation.
     pub invocation_ref: &'a str,
-    /// The work item both ports are asked about.
-    pub work_id: &'a str,
+    /// What this invocation addresses — and therefore whether the work-item
+    /// port is asked at all. See [`Addressed`].
+    pub addressed: Addressed<'a>,
     /// The attempt this run *is*, minted by [`attempt`] and borrowed here.
     ///
     /// Borrowed rather than minted: an id names an attempt, one attempt is one
@@ -104,7 +180,7 @@ pub struct RunContext<'a> {
 impl RunContext<'_> {
     /// What this run's ports say about the world right now.
     pub fn observe(&self) -> WorkStateView {
-        observe(self.work_items, self.changes, self.work_id)
+        observe(self.work_items, self.changes, self.addressed)
     }
 
     /// The same, plus whatever the capability saw of a forge.
@@ -336,7 +412,15 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
     let capability_id = authorised.capability_id();
     match ctx
         .capability
-        .execute(authorised.grant, ctx.work_id, ctx.invocation_ref)
+        .execute(
+            authorised.grant,
+            // The change set's id and not the work item's, because writing the
+            // correlation marker is what a capability does with this argument
+            // and a trackerless run has a change set to write. They are the same
+            // string for every reference that names a work item.
+            ctx.addressed.change_set(),
+            ctx.invocation_ref,
+        )
         .await
     {
         Ok(evidence) => {
@@ -590,7 +674,7 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
     } = run(&RunContext {
         project: ctx.project,
         invocation_ref: &invocation,
-        work_id: ctx.reference.value(),
+        addressed: Addressed::of(ctx.reference),
         attempt: &attempt_id,
         work_items: ctx.work_items,
         changes: ctx.changes,
@@ -667,12 +751,16 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
 /// the failing arm cannot come to disagree about whether a capability's
 /// observation of a forge is worth publishing. It is, on both.
 fn with_publication(view: WorkStateView, capability: &dyn Capability) -> WorkStateView {
-    match capability.publication() {
+    let observed = match capability.publication() {
         Some(publication) => {
             WorkStateView::with_publication(view.work_item, view.changes, publication)
         }
         None => view,
-    }
+    };
+    // Applied after, and to both arms, because the two answers are independent:
+    // see [`Capability::tree_observation`]. A capability that made no worktree
+    // returns `None` and the view is unchanged, key and all.
+    observed.at_revision(capability.tree_observation())
 }
 
 /// `earned` first, then whatever the capability observed of its own run.
@@ -895,7 +983,7 @@ mod tests {
         RunContext {
             project: PROJECT,
             invocation_ref: INVOCATION_REF,
-            work_id: WORK_ID,
+            addressed: Addressed::WorkItem(WORK_ID),
             attempt,
             work_items,
             changes,

@@ -60,6 +60,97 @@ pub struct Config {
     /// — it has described a deployment that does not publish.
     #[serde(default)]
     pub github: Option<GitHub>,
+    /// The container scanner a sweep runs, and the tenant it runs as. Optional
+    /// for the reason every table above it is: a deployment that never scans has
+    /// not left this blank, it has described a deployment that does not scan.
+    #[serde(default)]
+    pub scanner: Option<Scanner>,
+    /// What a run *does*, as distinct from what it is allowed to reach. One
+    /// sub-table today; see [`Orchestration`].
+    #[serde(default)]
+    pub orchestration: Option<Orchestration>,
+}
+
+/// `[scanner]` — the container scanner, and the tenant it authenticates as.
+///
+/// Its own table rather than keys under `[orchestration.cve]`, because it is the
+/// same kind of thing as `[github]`: a program this deployment reaches, a
+/// credential it reaches it with, and a bound on how long one call may take. What
+/// the sweep *does* with the findings is the other table's.
+///
+/// **The two credentials are [`EnvRef`]s and there is nowhere to write a value.**
+/// That is not a convention here — `EnvRef` has no `String` variant, so a
+/// document carrying a resolved secret does not parse.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scanner {
+    /// The scanner program and its leading arguments, as the operator seam
+    /// spells it. [`ProgramRef`]'s header argues for the shape; this is the
+    /// third seam of the three it was written for.
+    #[serde(default = "default_wizcli")]
+    pub cli: ProgramRef,
+
+    /// The service account's identifier. Not a secret — see
+    /// `fiddle_runtime::scanner::WizCredential`, which says why it is
+    /// deliberately not redacted.
+    pub client_id: EnvRef,
+
+    /// The service account's secret. Written as a variable name and never a
+    /// value.
+    pub client_secret: EnvRef,
+
+    /// Ceiling on one scan. Container scans are minutes rather than seconds, and
+    /// a rescan runs once per attempted group, so the default is generous
+    /// against a cold image pull and short enough that a hung one is noticed.
+    #[serde(default = "default_scan_timeout")]
+    pub timeout: HumanDuration,
+}
+
+/// `[orchestration]` — what a run does with what it observed.
+///
+/// One sub-table, and the nesting is the PRD's own spelling rather than this
+/// module's choice: `[orchestration.cve] max_findings = 5` is what the
+/// configuration example in the product document says, and a key wired under a
+/// different name would be one no operator reading that document could set.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Orchestration {
+    #[serde(default)]
+    pub cve: Option<OrchestrationCve>,
+}
+
+/// `[orchestration.cve]` — the CVE sweep's own decisions.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrchestrationCve {
+    /// The image a sweep scans, in whatever spelling the scanner accepts.
+    ///
+    /// No default and no guess. A defaulted image would scan whichever tag this
+    /// build happened to ship with and open pull requests about somebody else's
+    /// container.
+    pub image: String,
+
+    /// How many fixable findings one run may take, the remainder deferred to the
+    /// next.
+    ///
+    /// **The key the PRD names, wired at last.** It was in the product
+    /// document's configuration example and in no reader, so the bound a
+    /// deployment believed it had set was
+    /// `fiddle_runtime::cve::verdict::Budget::DEFAULT_MAX_FINDINGS` — the same
+    /// number, which is exactly why nobody noticed. Defaulted to that constant
+    /// so a document that omits it means what it has always meant.
+    #[serde(default = "default_max_findings")]
+    pub max_findings: usize,
+
+    /// The Go toolchain the module graph is asked through.
+    ///
+    /// A seam for [`ProgramRef`]'s reason and for one more that is specific to
+    /// it: this is the program that resolves the build list, applies the bump and
+    /// re-tidies it, and the offline gate substitutes a scripted `go` through it
+    /// rather than through the environment, which `fiddle_runtime::cve::go` pins
+    /// to an allowlist.
+    #[serde(default = "default_go")]
+    pub go: ProgramRef,
 }
 
 /// Identity of the project a fiddle run acts on.
@@ -1131,6 +1222,30 @@ fn default_command_timeout() -> HumanDuration {
 
 fn default_workspace_root() -> PathBuf {
     PathBuf::from(".fiddle/workspaces")
+}
+
+fn default_wizcli() -> ProgramRef {
+    ProgramRef {
+        program: "wizcli".to_string(),
+        args: Vec::new(),
+    }
+}
+
+fn default_go() -> ProgramRef {
+    ProgramRef {
+        program: "go".to_string(),
+        args: Vec::new(),
+    }
+}
+
+fn default_scan_timeout() -> HumanDuration {
+    HumanDuration::secs(20 * 60)
+}
+
+/// The PRD's own value, and the same number
+/// `fiddle_runtime::cve::verdict::Budget::DEFAULT_MAX_FINDINGS` holds.
+fn default_max_findings() -> usize {
+    5
 }
 
 fn default_gh() -> ProgramRef {

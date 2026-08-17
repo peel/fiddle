@@ -182,6 +182,42 @@ pub struct Publication {
     pub verification: Observation<VerificationState>,
 }
 
+/// Which revision a run's attempt worked at, and the other one it saw.
+///
+/// # Why a value here and not three keys the capability writes somewhere
+///
+/// Because there was nowhere else. This is Design §4's sentence —
+/// *the observation carries the base revision **and** the open pull request's
+/// head, and the record says which of the two the attempt actually ran against;
+/// a run that recorded only one of them cannot be read afterwards* — and the
+/// only durable record a run leaves is its bundle, whose `observations` is a
+/// [`WorkStateView`]. That was a closed set of four ports belonging to M0's
+/// assessment, so a capability with a fact of its own about *the tree* had it
+/// produced and unplaced.
+///
+/// A named struct rather than a free-form object: the three keys are a contract
+/// a reader parses, and a `serde_json::Value` here would make them whatever the
+/// last capability to write one happened to emit.
+///
+/// `attempt_tree` is the *name* of the field holding the revision that was used,
+/// so a reader finds the value beside a key of the same name rather than having
+/// to be told the mapping.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct TreeObservation {
+    /// What `origin/<base>` resolved to. Present on both arms, which is the
+    /// half of Design §4's sentence a run is most likely to drop.
+    pub base_revision: String,
+    /// The reused pull request's remote tip, and `null` where none was open.
+    ///
+    /// `null` rather than absent, so a reader asking *was a pull request
+    /// reused* gets an answer instead of a missing key that could equally mean
+    /// an older build.
+    pub pr_head: Option<String>,
+    /// Which of the two above the attempt's worktree was made at, named as the
+    /// key that holds it.
+    pub attempt_tree: String,
+}
+
 /// Everything a run observed about one invocation, in one value.
 ///
 /// The observations are carried side by side rather than merged, so a readable
@@ -193,6 +229,14 @@ pub struct Publication {
 /// reads `observations` by path — `observations.work_item.available.value.status`
 /// — never as a key set, so two more keys are invisible to a reader that does
 /// not want them and are the whole payload to one that does.
+///
+/// [`WorkStateView::tree`] is the third appended the same way and the first that
+/// is *absent* rather than neutral when it does not apply. The other four are
+/// always serialized because [`Observation::NotApplicable`] is a real answer to
+/// each of them — the question was asked and does not apply — whereas "which
+/// revision did the attempt run at" is not a question a capability that creates
+/// no worktree can be asked at all. So it is `None` and `skip_serializing_if`,
+/// and every bundle M0, M1, M2 and M3 have ever published is byte-identical.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct WorkStateView {
     pub work_item: Observation<WorkItemState>,
@@ -201,6 +245,10 @@ pub struct WorkStateView {
     pub review: Observation<ReviewState>,
     /// What CI says about the head that was published.
     pub verification: Observation<VerificationState>,
+    /// Which revision this run's attempt worked at, where the capability made a
+    /// worktree and therefore had to choose one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tree: Option<TreeObservation>,
 }
 
 impl WorkStateView {
@@ -245,6 +293,11 @@ impl WorkStateView {
             verification: Observation::NotApplicable {
                 reason: "no forge was consulted, so no checks are expected".to_string(),
             },
+            // No worktree has been made at the moment either of this
+            // constructor's three callers runs, so there is no revision to have
+            // chosen. A capability that does choose one answers through
+            // [`WorkStateView::at_revision`], after the fact.
+            tree: None,
         }
     }
 
@@ -271,7 +324,21 @@ impl WorkStateView {
             changes,
             review: publication.review,
             verification: publication.verification,
+            tree: None,
         }
+    }
+
+    /// The same view, saying which revision the attempt worked at.
+    ///
+    /// Applied *after* whichever of the two constructors above built the view,
+    /// rather than as a fifth argument to both, because the two facts are
+    /// independent: a capability may reach a forge and make no worktree
+    /// (`publish_change`), or make one and reach no forge. Folding the revision
+    /// into `with_publication` would tie them together and make one of those two
+    /// unsayable.
+    pub fn at_revision(mut self, tree: Option<TreeObservation>) -> Self {
+        self.tree = tree;
+        self
     }
 }
 
@@ -347,12 +414,19 @@ mod tests {
             verification: Observation::NotApplicable {
                 reason: "no checks are expected".to_string(),
             },
+            tree: None,
         };
 
         let json: serde_json::Value = serde_json::to_value(&view).unwrap();
         for key in ["work_item", "changes", "review", "verification"] {
             assert!(json.get(key).is_some(), "{key} must be present");
         }
+        // And the fifth is *absent* rather than null, which is what keeps every
+        // bundle published before it byte-identical. See [`WorkStateView::tree`].
+        assert!(
+            json.get("tree").is_none(),
+            "a view with no worktree behind it must not carry the key at all: {json}"
+        );
         // The two paths `m0_skeleton` and `inspect_observations` read, spelled
         // exactly as they spell them.
         assert_eq!(json["work_item"]["available"]["value"]["status"], "open");

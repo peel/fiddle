@@ -251,6 +251,7 @@ mod tests {
                 verification: Observation::NotApplicable {
                     reason: "nothing to verify".to_string(),
                 },
+                tree: None,
             },
         };
 

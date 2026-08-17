@@ -73,8 +73,9 @@ pub use agent::{AgentBudget, Direction, ToolHost, ToolReceipt, ToolReceipts};
 // reimplement the derivation — which is the drift the function exists to make
 // impossible. See `capability::propose`.
 pub use capability::{
-    attempt_worktree, Capability, CapabilityError, ExecutionGrant, FixtureRepair, ProposeChange,
-    ProposeConfig, PublishChange, PublishConfig, RepairConfig, StubMark, CAPABILITIES,
+    attempt_worktree, Capability, CapabilityError, CveMitigate, ExecutionGrant, FixtureRepair,
+    MitigateConfig, ProposeChange, ProposeConfig, PublishChange, PublishConfig, RepairConfig,
+    StubMark, CAPABILITIES,
 };
 // `mint_attempt_id` is deliberately *not* re-exported beside these, for the
 // same reason publication is not re-exported beside [`attempt`]: minting an id
@@ -111,7 +112,7 @@ pub use human::{
 };
 pub use journal::{AttemptJournal, AttemptTrace};
 pub use orchestration::{
-    attempt, observe, run, AttemptContext, AttemptRecord, RunContext, RunReport,
+    attempt, observe, run, Addressed, AttemptContext, AttemptRecord, RunContext, RunReport,
 };
 pub use ports::{ChangePort, WorkItemPort};
 pub use scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};

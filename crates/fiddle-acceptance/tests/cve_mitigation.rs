@@ -68,11 +68,14 @@
 //! *to*, and [`the_build_is_satisfied_by_the_checked_in_registry_and_not_by_a_warm_module_cache`]
 //! is the lane that proves it rather than asserting it.
 
+mod support;
+
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use support::Scenario;
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -798,4 +801,152 @@ fn read_fixture_file(name: &str, file: &str) -> String {
     let path = fixture(name).join(file);
     std::fs::read_to_string(&path)
         .unwrap_or_else(|source| panic!("{} does not read: {source}", path.display()))
+}
+
+// ---------------------------------------------------------------------------
+// Registration, driven through the compiled binary (Task 20.a)
+// ---------------------------------------------------------------------------
+//
+// Everything below observes exit codes, `--json` payloads and files on disk,
+// through `support::Scenario`, which resolves the binary with
+// `support::fiddle_binary()`. Nothing here calls a library function, so what is
+// asserted is what a caller at a shell would see.
+//
+// The *scenario* lanes — a vulnerable fixture yielding one pull request, an
+// already-fixed one yielding an evidenced no-change, an unusable scanner exiting
+// 11, a sentinel credential reaching no surface — are Task 20.b's. They need a
+// world with a scripted scanner, a scripted `go`, a module proxy and a forge in
+// it, and building that world is that task. What 20.a owns is whether the id
+// exists at all, and the two run-level facts that could not be asserted until it
+// did.
+
+/// **A registered capability is selectable, and an unregistered one is refused.**
+///
+/// The distinction is in the *diagnostic* rather than in the exit code, and it
+/// has to be: both invocations exit 2, so an assertion on the code alone would
+/// pass for two different reasons. A selectable capability is refused for
+/// something its **configuration** does not describe; an unknown one is refused
+/// as an unknown id, and the diagnostic lists what this build can run.
+///
+/// `cve_mitigat` is a typo of the real id rather than a nonsense word, which is
+/// the mistake an operator actually makes and the one a prefix match would let
+/// through.
+#[test]
+fn the_mitigating_capability_is_selectable_and_an_unknown_one_is_not() {
+    let scenario = Scenario::new();
+
+    let selected = scenario.run_raw_with(&["--capability", "cve_mitigate"], "cve");
+    let refused = String::from_utf8_lossy(&selected.stderr).to_string();
+    assert_eq!(
+        selected.status.code(),
+        Some(2),
+        "stdout = {}",
+        String::from_utf8_lossy(&selected.stdout)
+    );
+    assert!(
+        !refused.contains("unknown capability"),
+        "a registered id must reach its builder, and this one was rejected at the \
+         flag: {refused}"
+    );
+    assert!(
+        refused.contains("cve_mitigate") && refused.contains("[github]"),
+        "the refusal must name the capability and the table its deployment has \
+         not described: {refused}"
+    );
+
+    let mistyped = scenario.run_raw_with(&["--capability", "cve_mitigat"], "cve");
+    let unknown = String::from_utf8_lossy(&mistyped.stderr).to_string();
+    assert_eq!(mistyped.status.code(), Some(2));
+    assert!(
+        unknown.contains("unknown capability"),
+        "an id this build cannot run must be refused as one: {unknown}"
+    );
+    assert!(
+        unknown.contains("cve_mitigate"),
+        "the diagnostic lists every id this build can execute, and the new one \
+         is among them: {unknown}"
+    );
+}
+
+/// **A trackerless run does not exit 20.**
+///
+/// `fiddle_core::assess` has had an arm for a work item that does not apply
+/// since Task 2, and until this milestone nothing built one: every production
+/// caller passed a reference whose value named a tracker row. Both of Task 2's
+/// arm-merge inversions therefore ran green, and *a trackerless run does not fail*
+/// was asserted nowhere. This is the run-level half.
+///
+/// Two assertions and they are deliberately not one. The exit code alone would
+/// pass for the wrong reason — a run can exit 0 without the trackerless arm
+/// having been anywhere near it — so the observation is checked too: the work
+/// item is `not_applicable`, it carries no `available` and no `unavailable`, and
+/// nothing in the payload names a source under `stub:work/`. That last one is
+/// what says the port was *not asked*, rather than asked and found wanting.
+///
+/// The capability is the default one, and that is the point rather than an
+/// economy: what is under test is the *assessment* of a reference that names no
+/// work item, which is upstream of every capability and identical for all five.
+#[test]
+fn a_run_over_a_trackerless_reference_is_not_a_failed_run() {
+    let scenario = Scenario::new();
+
+    let payload = scenario.run_json("cve", 0);
+
+    assert_eq!(
+        payload["outcome"], "completed",
+        "a reference that names no work item is a run fiddle can act on: {payload}"
+    );
+    let work_item = &payload["observations"]["work_item"];
+    assert!(
+        work_item["not_applicable"]["reason"].is_string(),
+        "the work item must be reported as a question that does not apply: {payload}"
+    );
+    assert!(
+        work_item.get("available").is_none() && work_item.get("unavailable").is_none(),
+        "a question that does not apply has no answer and no failure: {payload}"
+    );
+    assert!(
+        !payload.to_string().contains("stub:work/"),
+        "no port may be asked to read a work id that does not exist: {payload}"
+    );
+
+    // And the change set *is* read and written, under the reference's own slug —
+    // which is what makes a repeat of the same sweep `complete` rather than a
+    // second run of the work. A trackerless run that recorded nothing would be
+    // one no later invocation could recognise.
+    assert_eq!(
+        scenario.read_change_marker("cve"),
+        Some(scenario.expected_marker("cve")),
+        "the marker is filed under the slug, because the empty value is not a name"
+    );
+}
+
+/// The read-only half of the same fact: `fiddle inspect cve` succeeds and
+/// derives an action, over a reference that names no work item.
+///
+/// Separate from the lane above because `inspect` and `run` reach the ports
+/// through one call and are supposed to agree — and because this one is what a
+/// person types first. Before Task 20.a it exited 0 reporting `blocked` with
+/// source `stub:work/.json`: the empty value interpolated into a path, a file
+/// that was never going to be there, and a diagnostic about a work item nobody
+/// had asked about.
+#[test]
+fn inspecting_a_trackerless_reference_derives_an_action_rather_than_a_block() {
+    let scenario = Scenario::new();
+
+    let payload = scenario.inspect_json("cve");
+
+    assert_eq!(payload["invocation_ref"], "cve", "{payload}");
+    assert!(
+        payload["next_action"]["execute"].is_object(),
+        "a trackerless reference with no change set recorded is work to do: {payload}"
+    );
+    assert!(
+        payload["assessment"].get("blocked").is_none(),
+        "nothing about this world is unobservable: {payload}"
+    );
+    assert!(
+        !payload.to_string().contains("stub:work/"),
+        "the work-item port names no source, because it was not consulted: {payload}"
+    );
 }

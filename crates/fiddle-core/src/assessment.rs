@@ -54,6 +54,19 @@ pub const PUBLISH_CHANGE: CapabilityId = CapabilityId("publish_change");
 /// that run is going to complete or suspend.
 pub const PROPOSE_CHANGE: CapabilityId = CapabilityId("propose_change");
 
+/// The capability M4 adds: clear the advisories a container scan reported, by
+/// bumping the dependencies that carry them.
+///
+/// Here beside the other four for their reason, and it is worth restating once
+/// more because this is the first capability whose invocation names *no work
+/// item*: an id is a name, naming reaches nothing, and `derive_next` has to be
+/// able to say what a run is about — including a run whose
+/// [`InvocationRef`](crate::InvocationRef) is the bare scheme `cve` and whose
+/// work item is therefore [`Observation::NotApplicable`] rather than a tracker
+/// row somebody opened. That arm of [`assess`] was written before anything could
+/// reach it; this is what reaches it.
+pub const CVE_MITIGATE: CapabilityId = CapabilityId("cve_mitigate");
+
 /// What fiddle concludes about the capability this invocation is about.
 ///
 /// Serialized externally tagged, so the variant name is the observable

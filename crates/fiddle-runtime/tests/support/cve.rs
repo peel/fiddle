@@ -228,7 +228,7 @@ use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wiz
 use fiddle_runtime::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -2884,8 +2884,6 @@ impl MigrationWorld {
                 .map(|arg| arg.to_string()),
         );
         MigrationConfig {
-            tree: self.tree.path().to_path_buf(),
-            workspace_root: self.workspace_root(),
             check: WorkspaceCommand {
                 program: go.program,
                 args,
@@ -2917,6 +2915,25 @@ impl MigrationWorld {
     /// The attempt id every migration lane runs under, as the runtime wants it.
     pub fn attempt(&self) -> AttemptId {
         AttemptId(MIGRATION_ATTEMPT.to_string())
+    }
+
+    /// The worktree a migration of this world's group runs in.
+    ///
+    /// Built here rather than by `GroupMigration::migrate`, which no longer
+    /// creates one: a run mitigates several groups onto one branch and each
+    /// landing has to be a commit in the tree the next group starts from, so the
+    /// worktree belongs to whoever owns the run. Under [`HOST_ROOT`] for the
+    /// reason [`MigrationWorld::workspace_root`] gives.
+    pub fn workspace(&self) -> Arc<Workspace> {
+        Arc::new(
+            Workspace::create(
+                self.tree.path(),
+                &self.workspace_root(),
+                &self.attempt(),
+                CancellationToken::new(),
+            )
+            .expect("a worktree of the migration world's tree"),
+        )
     }
 }
 
