@@ -17,9 +17,19 @@
 //! first of those is how a run comes to write a *downgrade* under a security
 //! fix's commit message — see [`group::GroupError::AlreadyAtTheFix`], the guard
 //! this module exists to keep unreachable.
+//!
+//! [`fold`] is the second of those two questions asked again, at the other end
+//! of a run and against different evidence. [`dedup`] runs before any group and
+//! reads the branch's history; [`fold`] runs between groups and reads what the
+//! previous group's *rescan* observed, because one bump routinely clears
+//! advisories filed against a later group and re-attempting them would open a
+//! repair against a tree that already carries the fix. Both are refusals to
+//! work, and both are dangerous in the same direction — the fold's whole
+//! discipline is about the absences it must not read as proof.
 
 pub mod attribute;
 pub mod dedup;
+pub mod fold;
 pub mod go;
 pub mod group;
 pub mod project;

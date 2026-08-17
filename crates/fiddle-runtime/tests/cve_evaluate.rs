@@ -72,11 +72,36 @@
 //! only lane in this file that asserts the affirmative: without it, every
 //! assertion here is satisfied by a runner that accepts nothing.
 //!
+//! # What the next group does with all of that
+//!
+//! The last family is [`fiddle_runtime::cve::fold`], and it is here rather than
+//! in a suite of its own because it reads nothing but an [`Evaluation`]: a
+//! rescan reports on the whole image, so one group's clean result can show that
+//! a *later* group's advisories have gone too, and the rule that decides whether
+//! to believe it is a rule about the verdicts above.
+//!
+//! Every lane in it but one asserts `Proceed`, which is the shape of the risk:
+//! folding wrongly records advisories as fixed that nothing fixed, refusing
+//! wrongly costs one redundant attempt.
+//! [`a_group_cleared_by_an_earlier_committed_bump_is_recorded_without_a_file_change`]
+//! is the positive control the refusals need — it is
+//! [`a_tree_that_passes_every_check_is_not_rejected`]'s argument again, and
+//! without it a rule that never folds satisfies the whole family.
+//!
+//! The three refusals are three different ways an absence arrives without a tree
+//! having been repaired — a bump that is not on the branch, a feed that moved,
+//! and an array nobody reported on — and
+//! [`a_partially_cleared_group_proceeds`] is the fourth thing, about the rule
+//! being over *every* id rather than any.
+//!
+//! [`Evaluation`]: fiddle_runtime::evaluate::Evaluation
 //! [`Success`]: fiddle_runtime::evaluate::Success
 
 mod support;
 
 use fiddle_core::Severity;
+use fiddle_runtime::cve::dedup::FixedInCommits;
+use fiddle_runtime::cve::fold::{fold, fold_commit_argv, Fold};
 use fiddle_runtime::evaluate::{evaluate, Outcome, Reason, RescanVerdict, Success};
 use support::cve::*;
 
@@ -654,4 +679,176 @@ async fn a_contract_with_no_repair_premise_is_never_accepted() {
     assert!(!r.rejected());
     assert!(!r.accepted(), "there was no premise to prove");
     assert_eq!(r.rescan(), &RescanVerdict::NotCompared);
+}
+
+// ---------------------------------------------------------------------------
+// The fold rule (Task 13)
+// ---------------------------------------------------------------------------
+//
+// A rescan reports on the whole image, not on the group that caused it, so it
+// can show that a *later* group's advisories have gone too. One base image bump
+// clears a dozen OS findings filed against a dozen groups, and re-attempting
+// each of them would open a repair against a tree that already has the fix.
+//
+// Every lane below except the first asserts `Proceed`, and that is the shape of
+// the risk rather than an accident of what was easy to write: folding wrongly
+// records advisories as fixed that nothing fixed, on a branch that gets merged
+// and in a report a person reads, while refusing wrongly costs one redundant
+// attempt. `a_group_cleared_by_an_earlier_committed_bump_…` is the positive
+// control the other four need — without it a rule that never folds passes all of
+// them and `AlreadyResolved` is unreachable.
+
+/// The one lane that folds, and the reason the four refusals below mean
+/// anything.
+///
+/// An earlier group ended clean and its bump was committed. Its rescan reported
+/// nothing, so this group's advisory is gone from a document this rule is
+/// willing to rest on, and the work is already done. Nothing is edited — the
+/// commit that records it changes no file at all, which is what
+/// `a_fold_is_recorded_without_rewriting_anything` is about.
+#[tokio::test]
+async fn a_group_cleared_by_an_earlier_committed_bump_is_recorded_without_a_file_change() {
+    let prior = rescan_from_committed_clean_group(&[]).await;
+
+    assert_eq!(
+        fold(&group_of(&["CVE-2026-5"]), Some(&prior)),
+        Fold::AlreadyResolved
+    );
+}
+
+/// The negative case, and the one the rule exists for.
+///
+/// The earlier group's bump was reverted, so it is not on the branch. Its rescan
+/// is a perfectly accurate document about a tree that no longer exists — its own
+/// verdict is `Cleared`, which the fixture asserts — and folding on it would
+/// record this group's advisory as fixed by a change nobody will merge.
+///
+/// Its pair is `a_clean_group_whose_bump_was_not_committed_is_not_foldable`. The
+/// two approach the same fact from opposite sides, which is what shows the rule
+/// consults the branch rather than inferring it from the verdict.
+#[tokio::test]
+async fn a_needs_work_groups_rescan_is_not_foldable() {
+    let prior = rescan_from_needs_work_group(&[]).await;
+
+    assert_eq!(
+        fold(&group_of(&["CVE-2026-5"]), Some(&prior)),
+        Fold::Proceed,
+        "its bump was reverted, so nothing on the branch fixes this group"
+    );
+}
+
+/// The same hazard reached from the other side: the group ended clean and the
+/// commit did not happen.
+///
+/// Without this lane the rule is satisfied by one that reads only "did this end
+/// clean", and a clean group whose commit failed would be folded on — a rescan
+/// describing a tree the branch does not carry, exactly as above.
+#[tokio::test]
+async fn a_clean_group_whose_bump_was_not_committed_is_not_foldable() {
+    let prior = rescan_from_a_clean_group_that_was_not_committed(&[]).await;
+
+    assert_eq!(
+        fold(&group_of(&["CVE-2026-5"]), Some(&prior)),
+        Fold::Proceed,
+        "a clean verdict about a tree the branch does not carry is not a fix"
+    );
+}
+
+/// Every id, not merely one.
+///
+/// The earlier rescan cleared `CVE-2026-5` and still reports `CVE-2026-6`, and
+/// both belong to this group — one edit fixing two advisories. The edit is still
+/// owed, and folding here would drop `CVE-2026-6` with nothing left to report it
+/// missing.
+///
+/// The premise is the interesting half: the surviving id is *in this group*, so
+/// a rule reading `any` rather than `all` folds and loses it.
+#[tokio::test]
+async fn a_partially_cleared_group_proceeds() {
+    let prior = rescan_from_committed_clean_group(&["CVE-2026-6"]).await;
+
+    assert_eq!(
+        fold(&group_of(&["CVE-2026-5", "CVE-2026-6"]), Some(&prior)),
+        Fold::Proceed,
+        "every id must be absent, not merely one"
+    );
+}
+
+/// The first group of a run has no earlier rescan, so there is nothing to fold
+/// on.
+#[tokio::test]
+async fn the_first_group_of_a_run_proceeds() {
+    assert_eq!(fold(&group_of(&["CVE-2026-5"]), None), Fold::Proceed);
+}
+
+/// An absence seen through a moved advisory feed is not evidence about the tree,
+/// **even though the bump was committed**.
+///
+/// `Provisional` is not a refusal over in `evaluate` — nothing went wrong with
+/// the tree — so a disposition may keep such a bump on the branch and flag it.
+/// That makes committed-and-provisional a reachable state, and it is the lane
+/// that shows the clean gate decides something the branch gate cannot: here the
+/// branch does carry the tree, and the document still proves nothing.
+#[tokio::test]
+async fn a_provisional_rescan_is_not_foldable_even_though_its_bump_was_committed() {
+    let prior = rescan_from_a_committed_group_at_another_scanner_version().await;
+
+    assert_eq!(
+        fold(&group_of(&["CVE-2026-5"]), Some(&prior)),
+        Fold::Proceed,
+        "a finding leaves a scan because the tree changed or because the feed did"
+    );
+}
+
+/// Silence about half the image is not a fold.
+///
+/// The earlier rescan's document carried no `osPackages` key, so it did not
+/// report that the OS findings were gone — it said nothing about OS packages.
+/// Every id is absent from such a document for free, which makes this the lane
+/// where folding on absence is cheapest and most wrong. It is
+/// `cve::project::Arm`'s absent-versus-empty distinction reaching the rule that
+/// would otherwise be fooled by it.
+#[tokio::test]
+async fn an_array_the_rescan_never_reported_on_is_not_a_fold() {
+    let prior = rescan_from_a_committed_group_that_reported_on_one_array().await;
+
+    assert_eq!(
+        fold(&group_of(&["CVE-2026-5"]), Some(&prior)),
+        Fold::Proceed,
+        "an array the scanner never wrote supplies absences for free"
+    );
+}
+
+/// What recording a fold *is*, and the flag pair the whole hazard hides behind.
+///
+/// A fold changes no file, so `--allow-empty` is what makes it a commit at all.
+/// `--amend` is the obvious alternative and is forbidden: on a branch this run is
+/// reusing, the commit before this one may belong to a previous run and already
+/// be pushed, so amending it would require a force-push this system does not do.
+/// The defect is invisible on a fresh branch and only ever arrives on a reused
+/// one, which is why it is pinned here rather than left to whoever wires the
+/// committer.
+///
+/// The body names the advisories because `cve::dedup`'s log scan reads commit
+/// bodies for ids: a fold whose body named none would be invisible to the next
+/// run, which would then re-derive the whole decision.
+#[test]
+fn a_fold_is_recorded_without_rewriting_anything() {
+    let argv = fold_commit_argv(&group_of(&["CVE-2026-5", "CVE-2026-6"]));
+
+    assert!(
+        argv.contains(&"--allow-empty".to_string()),
+        "a fold changes no file, so without this there is no commit: {argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|argument| argument == "--amend"),
+        "amending could rewrite a previous run's pushed commit: {argv:?}"
+    );
+    let body = argv.last().expect("a commit message");
+    for cve in ["CVE-2026-5", "CVE-2026-6"] {
+        assert!(
+            FixedInCommits::read(body).names(cve),
+            "the next run's log scan reads this body for ids, and {cve} is not in {body:?}"
+        );
+    }
 }

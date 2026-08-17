@@ -69,6 +69,17 @@
 //!   [`report_with_os_absent`] and [`report_with_os_empty`] unmodified, so the
 //!   pair really does differ in one key rather than in two documents that were
 //!   written to look alike.
+//! - Task 13 adds [`group_of`] and the five prior rescans a fold decision is
+//!   taken against: [`rescan_from_committed_clean_group`],
+//!   [`rescan_from_needs_work_group`],
+//!   [`rescan_from_a_clean_group_that_was_not_committed`],
+//!   [`rescan_from_a_committed_group_at_another_scanner_version`] and
+//!   [`rescan_from_a_committed_group_that_reported_on_one_array`]. **Done.**
+//!   They are `async` where every other builder here is not, and that is not a
+//!   fold that needs awaiting: a [`PriorRescan`] is built from a real
+//!   [`Evaluation`], so the "this group ended clean" half of each world is
+//!   Task 12's judgement of a real tree rather than a flag this file set. The
+//!   `await` is [`evaluate`]'s, and the rule under test is sync.
 //! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
 //! - Task 19 adds `fixture` and `world_with`.
 //!
@@ -97,9 +108,13 @@
 use fiddle_core::{AdvisoryId, PackageType, ProjectedFinding, Severity};
 use fiddle_runtime::cve::attribute::{Manifest, ModuleGraph, ResolverError, Target};
 use fiddle_runtime::cve::dedup::{DedupError, Local, Ran, Spawn};
+use fiddle_runtime::cve::fold::{Landed, PriorRescan};
 use fiddle_runtime::cve::go::Go;
-use fiddle_runtime::cve::group::Attributed;
-use fiddle_runtime::evaluate::{Answered, Check, Contract, Repair, Success, Tree, Unanswered};
+use fiddle_runtime::cve::group::{group, Attributed, Group};
+use fiddle_runtime::evaluate::{
+    evaluate, Answered, Check, Contract, Evaluation, Repair, RescanVerdict, Success, Tree,
+    Unanswered,
+};
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -2209,4 +2224,179 @@ impl Tree for ScriptedTree {
             Scanned::AsReport(report) => Ok(report.clone()),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The fold rule's worlds (Task 13)
+// ---------------------------------------------------------------------------
+
+/// The group a fold decision is *about*, naming `cves`.
+///
+/// One target for all of them, because that is what makes this one group rather
+/// than several: `cve::group` keys on [`Target`] alone, so findings sharing a
+/// target are one edit. The package varies with the advisory only so that no
+/// two findings in a group are the same value — nothing in the fold reads it.
+///
+/// Panics unless exactly one group comes back, which is the premise the lane
+/// depends on and not an assertion it makes: a builder that quietly returned the
+/// first of two would let a lane about *every id in this group* run against a
+/// group holding one of them.
+pub fn group_of(cves: &[&str]) -> Group {
+    let findings: Vec<Attributed> = cves
+        .iter()
+        .map(|cve| attributed(cve, &format!("package-for-{cve}"), FOLD_TARGET))
+        .collect();
+    let mut groups = group(&findings);
+    assert_eq!(
+        groups.len(),
+        1,
+        "a fold lane's group is one edit, and {cves:?} produced {} of them",
+        groups.len()
+    );
+    groups.remove(0)
+}
+
+/// The module every [`group_of`] finding is attributed to.
+///
+/// Its own value rather than one of the attribution family's, so that a fold
+/// lane cannot start passing because some unrelated fixture's target happens to
+/// agree with it.
+const FOLD_TARGET: &str = "example.com/folded";
+
+/// The advisory the *earlier* group in a fold lane set out to clear.
+///
+/// Never one of the ids a fold lane then asks about: the question is always
+/// whether a **later** group's advisories are covered by this bump, and reusing
+/// the id would make the answer true for the wrong reason — the earlier group
+/// cleared its own advisory by definition.
+const EARLIER_GROUPS_ADVISORY: &str = "CVE-2026-9001";
+
+/// The rescan left behind by a group that ended clean and whose bump was
+/// committed — the one provenance the fold rule may rest on.
+///
+/// `still_reported` is what the rescan *still* found: an empty list is an image
+/// with nothing left in it, and a non-empty one is the findings some later group
+/// still owns. Those ids are widened into the contract's input so that condition
+/// (b) does not read them as findings that appeared — without that, this world
+/// would be refused for the wrong reason and the lane would be asserting nothing
+/// about the fold.
+///
+/// The premise is asserted rather than assumed. A world that quietly stopped
+/// being accepted would turn `a_group_cleared_by_an_earlier_committed_bump…`
+/// into a lane that passes against a rule that never folds.
+pub async fn rescan_from_committed_clean_group(still_reported: &[&str]) -> PriorRescan {
+    let evaluation = cleanly_evaluated(still_reported).await;
+    assert!(
+        evaluation.accepted(),
+        "this world's premise is a group that ended clean"
+    );
+    PriorRescan::of(&evaluation, Landed::Committed)
+}
+
+/// The same rescan, from a group that ended **needs-work** — so its bump was
+/// reverted and the branch does not carry the tree this document describes.
+///
+/// The group is needs-work because `go vet` failed, and for nothing to do with
+/// the rescan: its verdict is still [`RescanVerdict::Cleared`], which is the
+/// sharpest form of the hazard. The document is an accurate account of a tree
+/// that no longer exists, and everything about it *looks* foldable.
+///
+/// Both halves of that premise are asserted, because a world that failed to be
+/// clean-looking would make the lane pass for the ordinary reason instead of the
+/// interesting one.
+pub async fn rescan_from_needs_work_group(still_reported: &[&str]) -> PriorRescan {
+    let evaluation = evaluate(
+        &contract_for_a_fold(still_reported),
+        &tree_whose_rescan_reports(still_reported).where_check(GO_VET, exit(1), stdout("")),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert_eq!(
+        evaluation.rescan(),
+        &RescanVerdict::Cleared,
+        "the rescan itself is clean — the group is needs-work for another reason"
+    );
+    assert!(
+        !evaluation.accepted(),
+        "a failed check is what makes this group needs-work"
+    );
+    PriorRescan::of(&evaluation, Landed::Reverted)
+}
+
+/// A rescan from a group that ended clean and whose bump was **not** committed.
+///
+/// The other side of [`rescan_from_needs_work_group`], and the reason the two
+/// facts are two: a clean group whose commit did not happen leaves exactly the
+/// same hazard as a reverted one — a rescan describing a tree the branch does
+/// not carry — and a rule that inferred the branch from the verdict would fold
+/// on it.
+pub async fn rescan_from_a_clean_group_that_was_not_committed(
+    still_reported: &[&str],
+) -> PriorRescan {
+    let evaluation = cleanly_evaluated(still_reported).await;
+    assert!(evaluation.accepted());
+    PriorRescan::of(&evaluation, Landed::Reverted)
+}
+
+/// A rescan whose absences were observed through a **different scanner
+/// version**, from a group whose bump *was* committed.
+///
+/// Committed and not reverted, deliberately. [`RescanVerdict::Provisional`] is
+/// not a refusal over in `evaluate` — nothing went wrong with the tree — so a
+/// disposition may well keep the bump and flag it, which makes this a reachable
+/// state rather than a contrived one. It is the world that proves the fold's
+/// clean gate does something the branch gate does not.
+pub async fn rescan_from_a_committed_group_at_another_scanner_version() -> PriorRescan {
+    let evaluation = evaluate(
+        &contract_scanned_by("wizcli/0.0.0-the-version-the-input-was-scanned-at"),
+        &tree_rescanned_by(FIXTURE_SCANNER_VERSION),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert!(
+        matches!(evaluation.rescan(), RescanVerdict::Provisional(_)),
+        "this world's premise is an absence seen through a moved feed"
+    );
+    PriorRescan::of(&evaluation, Landed::Committed)
+}
+
+/// A rescan whose document carried **no `osPackages` key at all**, from a group
+/// whose bump was committed.
+///
+/// The scanner did not report that the OS findings were gone; it said nothing
+/// about OS packages. Every id a fold might ask about is therefore absent from
+/// this document for free, which is the purest form of claiming proof from
+/// silence — and committed, for [`rescan_from_a_committed_group_at_another_scanner_version`]'s
+/// reason.
+pub async fn rescan_from_a_committed_group_that_reported_on_one_array() -> PriorRescan {
+    let evaluation = evaluate(
+        &contract_for_a_partially_reported_rescan(),
+        &tree_whose_rescan_omits_the_os_array(),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert!(
+        matches!(evaluation.rescan(), RescanVerdict::NotObserved { .. }),
+        "this world's premise is an array the scanner never reported on"
+    );
+    PriorRescan::of(&evaluation, Landed::Committed)
+}
+
+/// An evaluation that is accepted, over a rescan still reporting `still_reported`.
+fn contract_for_a_fold(still_reported: &[&str]) -> Contract {
+    and_the_input_also_reported(contract_for(&[EARLIER_GROUPS_ADVISORY]), still_reported)
+}
+
+/// The shared half of the two worlds that end clean: five green checks over a
+/// rescan reporting exactly `still_reported`.
+async fn cleanly_evaluated(still_reported: &[&str]) -> Evaluation {
+    evaluate(
+        &contract_for_a_fold(still_reported),
+        &tree_whose_rescan_reports(still_reported),
+    )
+    .await
+    .expect("an evaluation that was not cancelled")
 }
