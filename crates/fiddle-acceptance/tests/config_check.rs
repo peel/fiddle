@@ -766,3 +766,207 @@ fn config_check_reports_the_gh_program_the_document_pins() {
     );
     assert_eq!(github["timeout"], "90s", "{github}");
 }
+
+// ---------------------------------------------------------------------------
+// The ordered check list, each check carrying its own success criterion.
+//
+// M1 shipped one check and one meaning of success — the process exited zero.
+// M4 runs several in order, and they do not agree on what success is: a build
+// succeeds by exiting zero, a formatter succeeds by exiting zero *and printing
+// nothing*, and a scanner succeeds by *writing its artefact* whatever it exits.
+//
+// The criterion is therefore written in the document, next to the check it
+// judges. The alternative — recognising `go fmt` or `wizcli` by name and
+// applying the meaning that program is known to have — would make an
+// operator's rename a change of meaning, and a wrapper script the same. There
+// is no such recognition anywhere, and the scenarios below are what would
+// notice if one appeared.
+// ---------------------------------------------------------------------------
+
+/// The three checks the milestone was specified against, each declaring a
+/// different criterion, written the way an operator would write them.
+///
+/// Kept as one constant so the scenarios below can *subtract* from a document
+/// that is otherwise known to be accepted, which is how the both-shapes
+/// scenario tells a semantic refusal from a syntactic one.
+const CHECK_LIST: &str = r#"
+[[workspace.checks]]
+program = "go"
+args = ["build", "./..."]
+success = "exit-zero"
+
+[[workspace.checks]]
+program = "go"
+args = ["fmt", "./..."]
+success = "exit-zero-and-no-output"
+
+[[workspace.checks]]
+program = "wizcli"
+args = ["scan"]
+success = "artefact-written"
+"#;
+
+/// The list loads, keeps the order it was written in, and each entry reports
+/// back the criterion *it* declared rather than one derived from anything.
+#[test]
+fn config_check_reports_each_check_with_the_criterion_it_declared() {
+    let checks = checked(&format!("{AGENTIC}{CHECK_LIST}"))["workspace"]["checks"].clone();
+    assert_eq!(
+        checks,
+        serde_json::json!([
+            { "program": "go", "args": ["build", "./..."], "success": "exit-zero" },
+            { "program": "go", "args": ["fmt", "./..."], "success": "exit-zero-and-no-output" },
+            { "program": "wizcli", "args": ["scan"], "success": "artefact-written" },
+        ]),
+        "the list is ordered and each criterion is the declared one: {checks}"
+    );
+}
+
+/// And the plain rendering says it too, since an operator running `config
+/// check` without `--json` is the reader most likely to be confirming that the
+/// scanner is not about to be judged by an exit status.
+#[test]
+fn the_plain_rendering_discloses_each_check_and_its_criterion() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fiddle.toml");
+    std::fs::write(&path, format!("{AGENTIC}{CHECK_LIST}")).unwrap();
+    let out = support::fiddle_command()
+        .args(["config", "check", "--config", path.to_str().unwrap()])
+        .env_remove(CREDENTIAL)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        stdout.contains("workspace.checks[0] = \"go\" \"build\" \"./...\" (success: exit-zero)"),
+        "each check is rendered with the criterion it declared: {stdout}"
+    );
+    assert!(
+        stdout.contains("workspace.checks[2] = \"wizcli\" \"scan\" (success: artefact-written)"),
+        "including the one whose success is not its exit status: {stdout}"
+    );
+    // The index is in the line because the order is a fact about the list, and
+    // an operator confirming a document is confirming that too.
+    assert!(
+        stdout.find("workspace.checks[0]").unwrap() < stdout.find("workspace.checks[2]").unwrap(),
+        "{stdout}"
+    );
+}
+
+/// **The criterion comes from the document, never from the program's name.**
+///
+/// Two checks running the *same* command, differing only in what they declare
+/// success to be, and the payload keeps them apart. Nothing that inferred a
+/// meaning from `go fmt` could produce two different answers for one command,
+/// so this is the scenario that would fail the day somebody adds a lookup
+/// table keyed on a program name.
+#[test]
+fn one_command_declared_two_ways_keeps_two_meanings() {
+    let document = format!(
+        "{AGENTIC}\n\
+         [[workspace.checks]]\nprogram = \"go\"\nargs = [\"fmt\", \"./...\"]\n\
+         success = \"exit-zero\"\n\n\
+         [[workspace.checks]]\nprogram = \"go\"\nargs = [\"fmt\", \"./...\"]\n\
+         success = \"exit-zero-and-no-output\"\n"
+    );
+    let checks = checked(&document)["workspace"]["checks"].clone();
+    assert_eq!(checks[0]["success"], "exit-zero", "{checks}");
+    assert_eq!(checks[1]["success"], "exit-zero-and-no-output", "{checks}");
+}
+
+/// A check that declares nothing is refused, *including* one whose program a
+/// reader would happily guess the meaning of. `go fmt` is the most guessable
+/// command in the list and it still has to say what it means.
+#[test]
+fn config_check_refuses_a_check_that_declares_no_criterion() {
+    let out = check(&format!(
+        "{AGENTIC}\n[[workspace.checks]]\nprogram = \"go\"\nargs = [\"fmt\", \"./...\"]\n"
+    ));
+    assert_eq!(out.status.code(), Some(2), "a criterion is not optional");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("success"),
+        "the diagnostic must name the missing key, got: {stderr}"
+    );
+}
+
+/// The set is closed, so a criterion nobody implemented is refused at its line
+/// rather than accepted and then never honoured.
+#[test]
+fn config_check_refuses_a_criterion_outside_the_closed_set() {
+    let out = check(&format!(
+        "{AGENTIC}\n[[workspace.checks]]\nprogram = \"go\"\nsuccess = \"no-output\"\n"
+    ));
+    assert_eq!(out.status.code(), Some(2), "the set of criteria is closed");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("no-output") && stderr.contains("exit-zero-and-no-output"),
+        "the diagnostic must name what was written and what was available, \
+         got: {stderr}"
+    );
+}
+
+/// The singular `check` M1 shipped still loads on its own, unchanged.
+#[test]
+fn config_check_still_accepts_the_singular_check_on_its_own() {
+    let workspace = checked(&format!(
+        "{AGENTIC}check = {{ program = \"cargo\", args = [\"test\"] }}\n"
+    ))["workspace"]
+        .clone();
+    assert_eq!(workspace["check"]["program"], "cargo", "{workspace}");
+    assert_eq!(workspace["checks"], serde_json::json!([]), "{workspace}");
+}
+
+/// **A contradiction is refused, never ranked.**
+///
+/// A document naming both shapes has said two things about what judges a
+/// repair, and there is no reading of it that is what the operator meant:
+/// running the singular one, running the list, or running both are three
+/// different milestones. So it is refused, and the operator picks.
+///
+/// The hard part of this scenario is not the refusal, it is proving *why* it
+/// refused. A malformed document also exits 2, and a test that could not tell
+/// the two apart would pass just as happily against a schema that resolved the
+/// contradiction by precedence and a document with a typo in it. So the same
+/// bytes are run three ways: with the singular line removed, with the list
+/// removed, and whole. The first two are accepted, which is what establishes
+/// that every byte in the third parses — leaving *naming both* as the only
+/// thing that can have caused the refusal.
+#[test]
+fn config_check_refuses_a_document_naming_both_check_shapes() {
+    const SINGULAR: &str = "check = { program = \"cargo\", args = [\"test\"] }\n";
+    let both = format!("{AGENTIC}{SINGULAR}{CHECK_LIST}");
+
+    // Half one, alone: accepted.
+    assert_eq!(
+        check(&both.replace(SINGULAR, "")).status.code(),
+        Some(0),
+        "the list alone is a document this schema accepts"
+    );
+    // Half two, alone: accepted. Between them these two runs cover every byte
+    // of `both`, so nothing in it is a syntax error.
+    assert_eq!(
+        check(&both.replace(CHECK_LIST, "")).status.code(),
+        Some(0),
+        "the singular check alone is a document this schema accepts"
+    );
+
+    // Together: refused, and the refusal is the semantic one.
+    let out = check(&both);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("check") && stderr.contains("checks"),
+        "the diagnostic must name both shapes so the operator knows which two \
+         lines are in conflict, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("expected") || stderr.contains("checks"),
+        "a bare TOML syntax complaint would mean this scenario proved nothing, \
+         got: {stderr}"
+    );
+}

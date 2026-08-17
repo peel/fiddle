@@ -294,16 +294,20 @@ impl<'de> serde::de::Visitor<'de> for EnvRefVisitor {
 /// still loads — an M0-shaped deployment configures neither — and a capability
 /// that needs one refuses by name when it is absent, at the moment it is
 /// needed.
+/// The strictness lives on [`WorkspaceDocument`], which is what serde actually
+/// deserializes, for [`ReadRetryTable`]'s reason: this table now carries a
+/// constraint *between* two of its keys, and a constraint between keys can only
+/// be applied once all of them have been read. This type is reachable only
+/// through the conversion below, so a `Workspace` naming both check shapes
+/// cannot be parsed into existence.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "WorkspaceDocument")]
 pub struct Workspace {
     /// Where per-attempt worktrees are created.
-    #[serde(default = "default_workspace_root")]
     pub root: PathBuf,
 
     /// The repository an attempt branches its worktree from and never writes
     /// to.
-    #[serde(default)]
     pub fixture: Option<PathBuf>,
 
     /// The command that decides whether a repair earned the correlation
@@ -313,23 +317,161 @@ pub struct Workspace {
     /// [`Workspace::command_timeout`], which is documented as the ceiling on any
     /// single command run inside the workspace, *the check included*. A second
     /// place to write it down is a second place for the two to disagree.
-    #[serde(default)]
+    ///
+    /// **This stays for M1's capability, and stays a `ProgramRef`.** M1's one
+    /// check has one meaning of success — the process exited zero — and every
+    /// document already written against it keeps loading unchanged. A document
+    /// that wants several, or one that wants a criterion other than the exit
+    /// status, writes [`Workspace::checks`] instead. A document that writes both
+    /// is refused; see the conversion below.
     pub check: Option<ProgramRef>,
 
+    /// The checks a repair is judged by, in the order they run.
+    ///
+    /// Empty when the document names none, which is the same document as one
+    /// naming `checks = []`; a deployment configuring no list is the M1 shape
+    /// and reaches [`Workspace::check`] instead.
+    pub checks: Vec<CheckRef>,
+
     /// How an attempt is isolated from the repository under repair.
-    #[serde(default)]
     pub isolation: Isolation,
 
     /// Ceiling on any single command run inside the workspace, the check
     /// included. 15m is the reference configuration's value — long enough for a
     /// cold `cargo test`, short enough that a hung one is noticed within a
     /// coffee break.
-    #[serde(default = "default_command_timeout")]
     pub command_timeout: HumanDuration,
 
     /// What happens to the worktree when the attempt ends.
-    #[serde(default)]
     pub cleanup: Cleanup,
+}
+
+/// The same table before its own constraint has been applied.
+///
+/// The defaults live here rather than on [`Workspace`], because this is the type
+/// serde fills in: a `#[serde(default)]` on a struct reached only through
+/// `TryFrom` would never fire.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkspaceDocument {
+    #[serde(default = "default_workspace_root")]
+    root: PathBuf,
+    #[serde(default)]
+    fixture: Option<PathBuf>,
+    #[serde(default)]
+    check: Option<ProgramRef>,
+    #[serde(default)]
+    checks: Vec<CheckRef>,
+    #[serde(default)]
+    isolation: Isolation,
+    #[serde(default = "default_command_timeout")]
+    command_timeout: HumanDuration,
+    #[serde(default)]
+    cleanup: Cleanup,
+}
+
+impl TryFrom<WorkspaceDocument> for Workspace {
+    type Error = String;
+
+    /// **A contradiction is refused rather than ranked.**
+    ///
+    /// A document naming both shapes has said two things about what judges a
+    /// repair, and none of the three ways to reconcile them is safely the
+    /// operator's intent: running the singular one ignores a list somebody
+    /// wrote, running the list ignores the check M1 documents, and running both
+    /// invents an ordering nobody asked for. A precedence rule would pick one of
+    /// those silently and be wrong for the other two deployments, so there is no
+    /// precedence rule — the operator picks, in the file, where the mistake is.
+    fn try_from(document: WorkspaceDocument) -> Result<Self, String> {
+        if document.check.is_some() && !document.checks.is_empty() {
+            return Err(
+                "`[workspace] check` and `[[workspace.checks]]` are two answers \
+                 to one question — what judges a repair — and this document \
+                 gives both. There is no precedence between them, because \
+                 quietly running one and ignoring the other would be wrong for \
+                 whichever deployment meant the other. Keep `check` for a single \
+                 check whose success is exit zero, or move it into the list as \
+                 an entry declaring its own `success`, but not both"
+                    .to_string(),
+            );
+        }
+        Ok(Self {
+            root: document.root,
+            fixture: document.fixture,
+            check: document.check,
+            checks: document.checks,
+            isolation: document.isolation,
+            command_timeout: document.command_timeout,
+            cleanup: document.cleanup,
+        })
+    }
+}
+
+/// One check in [`Workspace::checks`]: a program, its arguments, and **what
+/// success means for this check**.
+///
+/// The three fields are written out rather than flattening a [`ProgramRef`] in,
+/// because `#[serde(flatten)]` and `deny_unknown_fields` cannot both hold — a
+/// flattened struct makes every unknown key look like one the other half might
+/// claim, so serde stops refusing them. `check = { program = "make", timeout =
+/// "5m" }` being refused at its line is a property [`ProgramRef`] already has a
+/// test for, and this list must not be the shape where a mistyped key goes
+/// quiet.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckRef {
+    /// The program to run, resolved against the runner's `PATH`.
+    pub program: String,
+
+    /// Its arguments, already separated. Defaulted empty for
+    /// [`ProgramRef::args`]' reason.
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    /// **No default, deliberately.** Defaulting to `exit-zero` would let a
+    /// document look complete while the scanner in it was judged by the one
+    /// criterion it is known not to answer — `wizcli` exits non-zero on the
+    /// findings it was run to produce. A criterion that has to be written down
+    /// is a criterion an operator has decided.
+    pub success: Success,
+}
+
+/// What it means for a check to have succeeded.
+///
+/// **A closed set, and each check names its own member.** The three came from
+/// three real programs that disagree: a build succeeds by exiting zero, a
+/// formatter succeeds by exiting zero *and printing nothing* — it reports the
+/// files it would rewrite on stdout and still exits zero — and a scanner
+/// succeeds by *writing its artefact*, whatever it exits, because a non-zero
+/// exit is how it reports findings rather than how it reports failure.
+///
+/// The alternative was to recognise the program: `if program == "wizcli"`, or a
+/// table mapping known commands to the meaning each is known to have. That is
+/// rejected outright, and it is the property this type exists to make
+/// unavailable. Such a rule would mean an operator renaming a check, pinning it
+/// to an absolute path, or putting a wrapper script in front of it had silently
+/// changed what the check *decides* — a rename is the last edit anybody expects
+/// to alter behaviour, and the failure would show up as a green run that should
+/// have been red. With the criterion declared, a rename is a rename. **No code
+/// anywhere may derive a `Success` from a program name.**
+///
+/// Closed rather than a string for [`Isolation`]'s reason: `success =
+/// "no-output"` is refused at the line it was written on, where a `String` would
+/// have accepted it and left the operator believing they had configured
+/// something.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Success {
+    /// The process exited zero. M1's only meaning, and a build's.
+    ExitZero,
+
+    /// The process exited zero and wrote nothing to stdout or stderr — the
+    /// formatter shape, where the output *is* the complaint.
+    ExitZeroAndNoOutput,
+
+    /// The artefact was written, whatever the process exited. The scanner shape;
+    /// `fiddle_runtime`'s `wizcli` adapter is the implementation of it.
+    ArtefactWritten,
 }
 
 /// A program this deployment runs, and the arguments it runs it with.
@@ -1197,6 +1339,227 @@ check = { program = "cargo", args = ["test", "--offline"] }
         assert!(
             with(r#"check = { args = ["test"] }"#).is_err(),
             "a check with no program names nothing to run"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The ordered check list. See [`Success`] for why the criterion is written
+    // in the document rather than recognised from the program.
+    // -----------------------------------------------------------------------
+
+    /// An M0-shaped document with a `[workspace]` for the list to hang off.
+    /// Deliberately without a singular `check`, so each scenario below adds
+    /// exactly the lines it is about.
+    const WORKSPACE_ONLY: &str = "[project]\nname=\"p\"\n[stub]\nroot=\"s\"\n\
+                                  [report]\ndir=\"r\"\n[workspace]\n";
+
+    /// The three programs the milestone was specified against, which disagree
+    /// about what success is.
+    const THREE_CHECKS: &str = r#"
+[[workspace.checks]]
+program = "go"
+args = ["build", "./..."]
+success = "exit-zero"
+
+[[workspace.checks]]
+program = "go"
+args = ["fmt", "./..."]
+success = "exit-zero-and-no-output"
+
+[[workspace.checks]]
+program = "wizcli"
+args = ["scan"]
+success = "artefact-written"
+"#;
+
+    /// `[[workspace.checks]]` is a table array, so the order the document writes
+    /// is the order the checks run in — and each entry's criterion is the one
+    /// that entry declared.
+    #[test]
+    fn checks_declare_their_own_success_criterion() {
+        let workspace = toml::from_str::<Config>(&format!("{WORKSPACE_ONLY}{THREE_CHECKS}"))
+            .unwrap()
+            .workspace
+            .unwrap();
+        assert_eq!(workspace.checks.len(), 3);
+        assert_eq!(workspace.checks[0].success, Success::ExitZero);
+        assert_eq!(workspace.checks[1].success, Success::ExitZeroAndNoOutput);
+        assert_eq!(workspace.checks[2].success, Success::ArtefactWritten);
+        // The order is part of the claim, so the programs are pinned too: a
+        // schema that sorted or deduplicated would still satisfy the three
+        // assertions above by accident.
+        assert_eq!(
+            workspace
+                .checks
+                .iter()
+                .map(|c| (c.program.as_str(), c.args.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("go", vec!["build".to_string(), "./...".to_string()]),
+                ("go", vec!["fmt".to_string(), "./...".to_string()]),
+                ("wizcli", vec!["scan".to_string()]),
+            ]
+        );
+    }
+
+    /// **The criterion is read from the document, never inferred from the
+    /// program.**
+    ///
+    /// The same command twice, declaring two different criteria, and both
+    /// survive. No rule keyed on a program name could produce two answers for
+    /// one command, so this is what fails the day such a rule is written — and
+    /// it is the property that makes an operator's rename safe: if `go fmt`
+    /// does not *mean* anything to this code, then neither does `./scripts/fmt`
+    /// or `/opt/go/bin/go`.
+    #[test]
+    fn one_command_declared_two_ways_keeps_both_meanings() {
+        let checks = toml::from_str::<Config>(&format!(
+            "{WORKSPACE_ONLY}\n\
+             [[workspace.checks]]\nprogram = \"go\"\nargs = [\"fmt\", \"./...\"]\n\
+             success = \"exit-zero\"\n\n\
+             [[workspace.checks]]\nprogram = \"go\"\nargs = [\"fmt\", \"./...\"]\n\
+             success = \"exit-zero-and-no-output\"\n"
+        ))
+        .unwrap()
+        .workspace
+        .unwrap()
+        .checks;
+        assert_eq!(checks[0].success, Success::ExitZero);
+        assert_eq!(
+            checks[1].success,
+            Success::ExitZeroAndNoOutput,
+            "one command, two declarations, two meanings"
+        );
+    }
+
+    /// A criterion is required of every check, including the two whose meaning
+    /// a reader would cheerfully guess — which is exactly why guessing is not
+    /// on offer.
+    #[test]
+    fn every_check_must_declare_a_criterion_however_familiar_its_program() {
+        for entry in [
+            "program = \"go\"\nargs = [\"fmt\", \"./...\"]\n",
+            "program = \"wizcli\"\nargs = [\"scan\"]\n",
+        ] {
+            let error =
+                toml::from_str::<Config>(&format!("{WORKSPACE_ONLY}[[workspace.checks]]\n{entry}"))
+                    .expect_err("a check that declares nothing must be refused");
+            assert!(
+                error.message().contains("success"),
+                "the diagnostic must name the missing key, got: {}",
+                error.message()
+            );
+        }
+    }
+
+    /// The set is closed, so a criterion nobody implemented is refused at the
+    /// line it was written on rather than accepted and never honoured.
+    #[test]
+    fn a_criterion_outside_the_closed_set_is_refused_with_the_set() {
+        let error = toml::from_str::<Config>(&format!(
+            "{WORKSPACE_ONLY}[[workspace.checks]]\nprogram = \"go\"\nsuccess = \"no-output\"\n"
+        ))
+        .expect_err("`no-output` is not a criterion this deployment can honour");
+        let message = error.message();
+        assert!(
+            message.contains("no-output") && message.contains("artefact-written"),
+            "the diagnostic must name what was written and what was available, \
+             got: {message}"
+        );
+    }
+
+    /// A mistyped key inside a check is refused, which is what the three fields
+    /// are written out longhand for — see [`CheckRef`].
+    #[test]
+    fn an_unknown_key_inside_a_check_is_refused() {
+        let error = toml::from_str::<Config>(&format!(
+            "{WORKSPACE_ONLY}[[workspace.checks]]\nprogram = \"go\"\n\
+             success = \"exit-zero\"\ntimeout = \"5m\"\n"
+        ))
+        .expect_err("a check is bounded by workspace.command_timeout, not by itself");
+        assert!(
+            error.message().contains("timeout"),
+            "got: {}",
+            error.message()
+        );
+    }
+
+    /// M1's shape, unchanged: one check, no list, and no criterion to write
+    /// because the singular check has always meant exit zero.
+    #[test]
+    fn the_singular_check_still_loads_for_the_m1_capability() {
+        let workspace = toml::from_str::<Config>(&format!(
+            "{WORKSPACE_ONLY}check = {{ program = \"cargo\", args = [\"test\"] }}\n"
+        ))
+        .expect("every document written against M1 keeps loading")
+        .workspace
+        .unwrap();
+        assert_eq!(workspace.check.expect("the M1 check").program, "cargo");
+        assert!(
+            workspace.checks.is_empty(),
+            "an unwritten list is empty, not invented from the singular check"
+        );
+    }
+
+    /// **Refused because both shapes are named — and provably not for any other
+    /// reason.**
+    ///
+    /// A malformed document is also an `Err`, so `is_err()` alone would pass
+    /// against a schema that resolved the contradiction by precedence and a
+    /// document with a typo in it. Three things separate those cases here: the
+    /// bytes parse as TOML before any schema sees them; each half loads on its
+    /// own, which between them covers every line of the whole; and the
+    /// diagnostic names the two keys in conflict and lands on the table they
+    /// were written in.
+    #[test]
+    fn naming_both_shapes_is_refused_rather_than_resolved_by_precedence() {
+        const SINGULAR: &str = "check = { program = \"cargo\", args = [\"test\"] }\n";
+        let both = format!("{WORKSPACE_ONLY}{SINGULAR}{THREE_CHECKS}");
+
+        // Well-formed TOML. Not "the schema accepted it" — a generic parse, so
+        // the refusal below cannot be a syntax complaint wearing a schema's
+        // clothes.
+        toml::from_str::<toml::Table>(&both)
+            .expect("the document must be well-formed TOML for its refusal to mean anything");
+
+        // And each half is a document this schema accepts, which is what rules
+        // out any line of `both` being individually at fault.
+        assert!(toml::from_str::<Config>(&both.replace(SINGULAR, "")).is_ok());
+        assert!(toml::from_str::<Config>(&both.replace(THREE_CHECKS, "")).is_ok());
+
+        let error = toml::from_str::<Config>(&both)
+            .expect_err("a contradiction is refused, never silently ranked");
+        let message = error.message().to_string();
+        assert!(
+            message.contains("`[workspace] check`") && message.contains("`[[workspace.checks]]`"),
+            "the diagnostic must name both shapes so the operator knows which \
+             two lines conflict: {message}"
+        );
+        assert!(
+            message.contains("no precedence"),
+            "and must say that neither wins, since a reader's first guess is \
+             that one of them quietly does: {message}"
+        );
+
+        // Refused somewhere an operator can go and edit, the way an empty
+        // approver list is.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiddle.toml");
+        std::fs::write(&path, &both).unwrap();
+        let ConfigError::Invalid(invalid) = load(&path).unwrap_err() else {
+            panic!("a document naming both shapes is an invalid document");
+        };
+        let offset = invalid
+            .span
+            .expect("miette needs somewhere to point")
+            .offset();
+        assert_eq!(
+            line_of(&both, offset),
+            both.lines()
+                .position(|line| line.starts_with("[workspace]"))
+                .unwrap()
+                + 1,
+            "the caret belongs on the table holding the contradiction"
         );
     }
 

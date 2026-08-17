@@ -200,6 +200,17 @@ pub fn config_check_json(config: &Config) -> String {
                 "program": check.program,
                 "args": check.args,
             })),
+            // The ordered list, each entry carrying back the criterion the
+            // document declared for it. Reported as an array rather than folded
+            // into `check`, because the two are different keys with different
+            // meanings and a document may name only one of them; an operator
+            // confirming a document should see which of the two shapes this one
+            // is written in.
+            "checks": workspace.checks.iter().map(|check| serde_json::json!({
+                "program": check.program,
+                "args": check.args,
+                "success": success(check.success),
+            })).collect::<Vec<_>>(),
             "isolation": isolation(workspace.isolation),
             "command_timeout": workspace.command_timeout.to_string(),
             "cleanup": cleanup(workspace.cleanup),
@@ -297,6 +308,20 @@ fn isolation(isolation: crate::config::Isolation) -> &'static str {
     }
 }
 
+/// The spelling a document writes a success criterion as. See [`isolation`] —
+/// and here the match matters more than it does there, because a criterion
+/// reported under the wrong name is an operator confirming a check that means
+/// something else. Reporting it at all is the point: the criterion is a
+/// *declared* fact about the document, so an operator must be able to read back
+/// what they declared.
+fn success(success: crate::config::Success) -> &'static str {
+    match success {
+        crate::config::Success::ExitZero => "exit-zero",
+        crate::config::Success::ExitZeroAndNoOutput => "exit-zero-and-no-output",
+        crate::config::Success::ArtefactWritten => "artefact-written",
+    }
+}
+
 /// The spelling a document writes a cleanup policy as. See [`isolation`].
 fn cleanup(cleanup: crate::config::Cleanup) -> &'static str {
     match cleanup {
@@ -368,6 +393,19 @@ pub fn config_check_human(config: &Config) -> String {
             workspace.command_timeout,
             cleanup(workspace.cleanup),
         ));
+        // One line per check, indexed the way the document orders them, and each
+        // carrying its criterion. An operator reading this back is checking two
+        // things a JSON payload would not help them with — that the order is the
+        // one they meant, and that the scanner is not about to be judged by an
+        // exit status. Written only when the document has a list, so an M1-shaped
+        // one renders exactly as it always did.
+        for (index, check) in workspace.checks.iter().enumerate() {
+            out.push_str(&format!(
+                "\n  workspace.checks[{index}] = {} (success: {})",
+                check_line(check),
+                success(check.success),
+            ));
+        }
     }
     if let Some(github) = &config.github {
         out.push_str(&format!(
@@ -457,6 +495,17 @@ pub fn config_check_human(config: &Config) -> String {
 fn program_line(program: &crate::config::ProgramRef) -> String {
     std::iter::once(&program.program)
         .chain(program.args.iter())
+        .map(|token| format!("{token:?}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The program half of a check, quoted token by token. See [`program_line`],
+/// whose reasoning this shares exactly; the criterion is rendered by its caller
+/// because it is not part of what will be executed.
+fn check_line(check: &crate::config::CheckRef) -> String {
+    std::iter::once(&check.program)
+        .chain(check.args.iter())
         .map(|token| format!("{token:?}"))
         .collect::<Vec<_>>()
         .join(" ")
