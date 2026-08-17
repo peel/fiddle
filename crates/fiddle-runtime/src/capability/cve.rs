@@ -528,6 +528,111 @@ pub enum NeedsWork {
     Unproved(RescanVerdict),
 }
 
+/// The sentence a needs-work verdict reports, and **the wording is the
+/// interface**.
+///
+/// Written here for the reason [`GroupError`](crate::cve::group::GroupError)
+/// spells out on its own enum: the rationale a verdict carries is this value's
+/// own `Display`, so a reader looking for what an operator will see in the
+/// ticket finds it beside the variant that decided it rather than in the module
+/// that prints it. [`crate::cve::verdict`] copies this text into a
+/// [`Verdict`](crate::cve::verdict::Verdict) and alters nothing.
+///
+/// Each arm names the thing that was found and not merely which rule fired,
+/// which is [`ForbiddenShape`]'s argument arrived at one layer out: by the time
+/// anybody reads a verdict the worktree is gone, so a sentence that said only
+/// *an out-of-scope edit* would leave nothing to act on.
+impl std::fmt::Display for NeedsWork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NeedsWork::OutOfScope(shape) => write!(f, "{shape}"),
+            NeedsWork::CheckFailed { check } => {
+                write!(f, "`{check}` did not pass over the tree the attempt left")
+            }
+            // The rescan arm is the one that is *not* something wrong with the
+            // tree, and the wording keeps that distinction: a repair that may
+            // well be fine and cannot be shown to be. See `NeedsWork::Unproved`.
+            NeedsWork::Unproved(verdict) => write!(f, "{}", unproved_sentence(verdict)),
+        }
+    }
+}
+
+/// What a [`RescanVerdict`] that is not `Cleared` leaves a person to act on.
+///
+/// A free function rather than a `Display` on [`RescanVerdict`] itself, because
+/// that type is `crate::evaluate`'s and the sentence is this capability's: the
+/// same verdict is read by [`Evaluation::accepted`] as a boolean and by a
+/// reviewer as prose, and only the second wants words.
+///
+/// [`RescanVerdict::Cleared`] is in the match because the match has no wildcard
+/// — a verdict added to that enum has to be ruled on here rather than defaulting
+/// to a sentence that would then be wrong. Reaching it means a caller asked for
+/// the rationale of a group that passed, which is a bug in the caller and says
+/// so.
+fn unproved_sentence(verdict: &RescanVerdict) -> String {
+    match verdict {
+        RescanVerdict::Cleared => {
+            "the rescan proved this group clean, so there is nothing to report".to_string()
+        }
+        RescanVerdict::NotCompared => {
+            "no rescan was compared, so the repair is unproved".to_string()
+        }
+        RescanVerdict::Provisional(_) => {
+            "the rescan ran at a different scanner version, so the comparison is provisional"
+                .to_string()
+        }
+        RescanVerdict::NotObserved { array } => {
+            format!("the rescan reported no `{array}` array at all, so it proved nothing about it")
+        }
+        RescanVerdict::StillReported(cves) => format!(
+            "still reported after the bump: {}",
+            cves.iter()
+                .map(|cve| cve.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        RescanVerdict::NewFinding(_) => {
+            "the bump introduced a finding the input scan did not report".to_string()
+        }
+        RescanVerdict::Unreadable(why) => {
+            format!("the rescan wrote a document this build cannot read: {why}")
+        }
+    }
+}
+
+/// What an operator has to go and undo, named with the evidence for it.
+///
+/// The path is first in every arm because it is what a person opens.
+impl std::fmt::Display for ForbiddenShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ForbiddenShape::AddedSkip { path, line } => {
+                write!(f, "{path} added a skipped test: {line}")
+            }
+            ForbiddenShape::ChangedTestAssertion { path, assertion } => {
+                write!(f, "{path} no longer asserts: {assertion}")
+            }
+            ForbiddenShape::ReplaceDirective { path, directive } => {
+                write!(f, "{path} gained a replace directive: {directive}")
+            }
+            ForbiddenShape::NewControlFlow {
+                path,
+                keyword,
+                before,
+                after,
+            } => write!(
+                f,
+                "{path} went from {before} to {after} `{keyword}` keywords, \
+                 which is new control flow rather than a migration"
+            ),
+            ForbiddenShape::UnreadableEdit { path } => write!(
+                f,
+                "{path} was changed and this build cannot read its bytes as text"
+            ),
+        }
+    }
+}
+
 impl GroupStatus {
     /// The first-match-wins table Design §2 puts in the *Rust* column.
     ///

@@ -26,6 +26,13 @@
 //! repair against a tree that already carries the fix. Both are refusals to
 //! work, and both are dangerous in the same direction — the fold's whole
 //! discipline is about the absences it must not read as proof.
+//!
+//! [`verdict`] is the last of them and the only one that reads *all* of the
+//! above. Everything else here answers a question about one finding, one group
+//! or one tree; that module answers the one the host asks — *what happened?* —
+//! and Design §3 makes it a pair rather than a single word, because a scanner
+//! that never ran and a scan that found nothing are two situations an outcome
+//! alone reports identically.
 
 pub mod attribute;
 pub mod dedup;
@@ -33,4 +40,5 @@ pub mod fold;
 pub mod go;
 pub mod group;
 pub mod project;
+pub mod verdict;
 pub mod version;

@@ -38,7 +38,14 @@
 /// neighbours have been corrected for — see [`crate::PayloadHash`]. A consumer
 /// that wants to group by advisory should add the derive in the same change as
 /// the grouping.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// `Serialize` **is** here, added in the same change as its one consumer: the
+/// verdict report of `fiddle_runtime::cve::verdict`, whose first field is an
+/// advisory id. A newtype serializes as its inner value, so what reaches the
+/// document is the canonical upper-case spelling and not an object — the
+/// symmetric counterpart of the [`serde::Deserialize`] below, and the reason a
+/// report written by one run and read by the next round-trips.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct AdvisoryId(String);
 
 /// Why an advisory id was refused.
@@ -116,7 +123,14 @@ impl<'de> serde::Deserialize<'de> for AdvisoryId {
 /// wildcard, so a grade added without a decision fails to compile instead of
 /// being sorted silently into "not selected", which is the failure that presents
 /// as *the scanner found nothing*.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
+///
+/// `Serialize` under the **same** rename as the deserializer, added in the same
+/// change as its one consumer — the verdict report of
+/// `fiddle_runtime::cve::verdict`. One `rename_all` governs both directions, so
+/// a grade this build read as `HIGH` is a grade it writes as `HIGH`; two
+/// attributes would be two spellings to keep in step, and the drift would show
+/// up as a report nothing could feed back in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Severity {
     Critical,

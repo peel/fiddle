@@ -278,19 +278,41 @@ pub struct Repair {
     pub scanned_at: String,
 }
 
-/// Why an evaluation reached the disposition it did.
+/// Why an evaluation reached the disposition it did, and why a *run* did.
 ///
-/// **A closed set, introduced here with the two variants an *evaluation* can
-/// produce.** Task 16's disposition adds one variant per row of its table —
-/// `NothingToDo`, `AlreadyFixed`, `PullRequest` and the rest — and the ownership
-/// is split that way because evaluation produces a result and disposition
-/// consumes it, in that order. Nothing here should grow a variant about what to
-/// do next; nothing there should grow one about what a report said.
+/// **A closed set of nine, filled in two halves.** The first two variants are an
+/// *evaluation*'s and were introduced here; the seven after them are a
+/// *disposition*'s, one per row of Design §3's table, and were added by
+/// [`crate::cve::verdict`]. The ownership is split that way because evaluation
+/// produces a result and disposition consumes it, in that order — nothing in the
+/// first half should grow a variant about what to do next, and nothing in the
+/// second should grow one about what a report said.
+///
+/// They are one enum rather than two because they are one field: a run's record
+/// carries exactly one reason, and a reader asking *why did this run come out
+/// like that?* should not have to know which of two stages authored the answer.
 ///
 /// A reason is *not* produced for an ordinary failing check. That is what
 /// [`Evaluation::first_failure`] already names, in the check's own words, and a
 /// second spelling of it here would be a second thing to keep in step with the
 /// contract's own list.
+///
+/// # Six of the seven are fieldless, and the seventh is not, and that is a
+/// decision
+///
+/// The evidence for a row lives on
+/// [`Disposition`](crate::cve::verdict::Disposition) — the verdicts, the
+/// deferred list, the already-fixed set, the branch — because it is needed
+/// whichever row was reached. A reason carrying a copy of it would be a second
+/// place for the same fact, and the two would disagree the first time one of
+/// them was filtered. What those six carry is *which row*, and nothing else.
+///
+/// [`Reason::ScanUnusable`] is the exception because it is the only row where
+/// the disposition holds no evidence at all: there is no projection, so there
+/// are no verdicts, nothing deferred and nothing already fixed. Its diagnostic
+/// has nowhere else to be, and a `Retryable` outcome whose text said only
+/// *retryable* would tell an operator to repeat a run without saying what to fix
+/// first.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Reason {
     /// Condition (b): the rescan reports a finding the input scan did not.
@@ -318,6 +340,70 @@ pub enum Reason {
         scanned_at: String,
         /// What the rescan reported for itself.
         rescanned_at: String,
+    },
+
+    // -----------------------------------------------------------------------
+    // Design §3's table. One variant per row, added by `crate::cve::verdict`.
+    // -----------------------------------------------------------------------
+    /// The scan ran and both of the projection's sets were empty: there is
+    /// nothing in this image this capability acts on.
+    ///
+    /// **Not the same as [`Reason::ScanUnusable`]**, and the pair is the whole
+    /// point of the table. Both are produced from an absence of findings; one is
+    /// an absence the scanner *reported* and the other is an absence caused by
+    /// there being no report. A run that returned one word for both would make a
+    /// broken scanner indistinguishable from a clean image, and the broken
+    /// scanner is the one nobody would chase.
+    NothingToDo,
+
+    /// The fixable set was empty and there were findings to report anyway.
+    ///
+    /// No group was formed, so no branch was cut and no tree was touched — Design
+    /// §3 row 2. The run has real output, and confusing it with
+    /// [`Reason::NothingToDo`] would throw that output away.
+    VerdictsOnly,
+
+    /// The shared pull request already covers everything this run would have
+    /// done.
+    ///
+    /// Distinguished from [`Reason::AlreadyFixed`] by where the fix *is*: this
+    /// one is on a branch awaiting review, so the action it implies is to go and
+    /// merge it, and that one is already in the tree and implies nothing.
+    AlreadyInProgress,
+
+    /// Every finding the scan reported had already been dealt with — the tree is
+    /// at or above the fix, or a commit on this branch already names it.
+    AlreadyFixed,
+
+    /// At least one group ended clean, so a branch carries commits and a pull
+    /// request is open on it.
+    ///
+    /// *At least* one, not all. Design §2.7: a needs-work group does not stop
+    /// the run, remaining groups still process and clean ones still land — so a
+    /// run with one of each reaches this row and reports the other as a verdict.
+    PullRequest,
+
+    /// Bounded attempts ran and not one of them could be shown safe, so every
+    /// edit was reverted.
+    ///
+    /// The difference from [`Reason::VerdictsOnly`] is whether anything was
+    /// *attempted*. There, no move existed to make; here, a move was made,
+    /// judged, and taken back — which is a thing a person can give direction
+    /// about.
+    UnsafeWithoutDirection,
+
+    /// The scanner is absent, unreachable, wrote nothing, or wrote a document
+    /// this build cannot read.
+    ///
+    /// **The one row that is not `Completed`.** Design §3: *`Retryable`, never
+    /// `NoChange`* — the world was not observed, so the run has concluded
+    /// nothing about it, and repeating the invocation once somebody has fixed
+    /// what the diagnostic names is exactly what should happen.
+    ScanUnusable {
+        /// What went wrong, in the producer's own words —
+        /// [`ScanError`](crate::scanner::ScanError)'s text, or a rescan's
+        /// [`RescanVerdict::Unreadable`].
+        why: String,
     },
 }
 

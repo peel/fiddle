@@ -112,6 +112,23 @@
 //!   name and staging by directory produce different commits, and
 //!   [`LANDING_CREATED`] is a file `git checkout` cannot put back. Neither is
 //!   decoration — see each one's own doc.
+//! - **Task 16 adds one thing, and it is in [`document`] rather than here:**
+//!   [`unfixed_libraries`], a library array whose advisories name no published
+//!   fix. Design §3's second row is the *fixable* set being empty while there is
+//!   still something to report, and until now no builder in this family could
+//!   produce a document that reached it — [`libraries`] writes a `fixedVersion`
+//!   for every advisory it is given. It is in `document.rs` for that file's own
+//!   reason: a scanner document is bytes a `[[bin]]` also has to be able to
+//!   print.
+//!
+//!   Its seven **worlds** are local to `cve_dispositions.rs`, on 17.a's and
+//!   18's stated precedent rather than in spite of the convention. Each is one
+//!   `Run` value with a caller of exactly one, composed entirely out of pieces
+//!   already here — [`report_with`], [`contract_for`], [`tree_whose_rescan_reports`],
+//!   [`scanner_with`], [`available`] — so nothing about a document, a tree or an
+//!   evaluation is spelled a second time. What a second suite would want from
+//!   that lane is the *world builders*, and there is no second suite; if Task 20
+//!   needs one, it moves then and there is one shape to move.
 //! - **Task 17.a adds nothing here either, and for Task 18's reason rather than
 //!   in spite of it.** This list assigned it `forge()` and the `scripted_gh_*`
 //!   builders; it has neither, because the only suite that wants one is

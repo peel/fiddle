@@ -99,6 +99,23 @@ pub fn libraries(cves: &[&str]) -> Libraries {
     Libraries(packages(cves, &LIBRARY_PACKAGES))
 }
 
+/// Library packages whose advisories name **no published fix**.
+///
+/// Added by Task 16, which is the first lane that needs an *upstream-blocked*
+/// finding: Design §3's second row is the fixable set being empty while there is
+/// still something to report, and every other builder here writes a
+/// `fixedVersion` so no document produced by them can reach it.
+///
+/// The field is **absent** rather than `null` or `""`, which is what
+/// [`vulnerability`] does with a `None` and what the reference pipeline
+/// produces. That matters here more than anywhere else: `fiddle_core::selected`
+/// treats all three alike, so a fixture that wrote one of the other two would
+/// still be selected and would still be blocked, and the lane would pass without
+/// ever having produced the document a real scanner writes.
+pub fn unfixed_libraries(cves: &[&str]) -> Libraries {
+    Libraries(unfixed_packages(cves, &LIBRARY_PACKAGES))
+}
+
 /// OS packages, one per advisory id.
 pub fn os_packages(cves: &[&str]) -> OsPackages {
     OsPackages(packages(cves, &OS_PACKAGES))
@@ -113,6 +130,23 @@ fn packages(cves: &[&str], table: &[(&str, &str, &str); 3]) -> Vec<Package> {
                 name: name.to_string(),
                 version: current.to_string(),
                 vulnerabilities: vec![vulnerability(cve, Some(fixed), BENIGN_DESCRIPTION)],
+            }
+        })
+        .collect()
+}
+
+/// [`packages`] with the fix withheld. The package's own name and version still
+/// come from the table, so a blocked finding and a fixable one against the same
+/// position differ in exactly one key.
+fn unfixed_packages(cves: &[&str], table: &[(&str, &str, &str); 3]) -> Vec<Package> {
+    cves.iter()
+        .enumerate()
+        .map(|(at, cve)| {
+            let (name, current, _fixed) = table[at % table.len()];
+            Package {
+                name: name.to_string(),
+                version: current.to_string(),
+                vulnerabilities: vec![vulnerability(cve, None, BENIGN_DESCRIPTION)],
             }
         })
         .collect()
