@@ -698,6 +698,31 @@ async fn only_a_run_that_committed_something_names_the_branch_it_committed_to() 
     );
 }
 
+/// A clean image is not an image somebody had already fixed.
+///
+/// The row that is hardest to keep honest, because the wrong answer is
+/// plausible: *every finding in this scan is already fixed* is a natural way to
+/// write the already-fixed test and it is **vacuously true** of a scan that
+/// reported no findings. The run then says somebody had already dealt with the
+/// vulnerabilities of an image that has none, which nobody would chase — and the
+/// pairwise set is otherwise the only thing that notices.
+#[test]
+fn a_clean_image_is_not_an_image_somebody_had_already_fixed() {
+    let reached = disposition(&clean_scan_no_findings());
+
+    assert_eq!(reached.reason(), &Reason::NothingToDo);
+    assert!(
+        reached.already_fixed().is_empty(),
+        "there was nothing to have been fixed"
+    );
+    assert_ne!(
+        reached.reason(),
+        disposition(&fixed_in_the_tree()).reason(),
+        "and the world that really was already fixed reaches the other row, so \
+         this is not an assertion two worlds could both satisfy"
+    );
+}
+
 /// The two rows that are both *the fix already exists* are told apart by where
 /// it is.
 #[test]
