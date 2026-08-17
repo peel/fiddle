@@ -1,5 +1,56 @@
-//! `ensure_pull_request_body`: the effect whose object never changes, so its
-//! *content* has to enter its identity.
+//! The one shared pull request: how a run finds it, what it may do to it, and
+//! why its body update needs a content-addressed identity.
+//!
+//! Two subjects, and they are the same object seen from two ends. Task 17.a
+//! asks *which pull request is this run's, and may it work there at all* — a
+//! read and a refusal, before a tree exists. Task 18 asks *how does a rewrite of
+//! that pull request's body stay honest across runs* — an identity question,
+//! after everything else has happened. They share a file because they share the
+//! object, and because a reader who wonders why a body update needs a digest has
+//! to know first that there is only ever one pull request for it to be about.
+//!
+//! # Discovery: the label is the only thing that identifies it
+//!
+//! Nothing else can. The branch name is dated, so it changes; the title names no
+//! advisory, because the pull request outlives any one run's findings; the body
+//! is prose a rescan rewrites. Design §4's model is one pull request per
+//! repository, and `security/cve` is what makes that one findable — so a pull
+//! request created without it is invisible to the next run, which opens a
+//! second, which is the state the whole model exists to prevent.
+//!
+//! `a_created_pull_request_carries_the_label_that_finds_it` and
+//! `a_pull_request_created_without_the_label_is_invisible_to_the_next_run` are a
+//! pair and neither means much alone: the first would pass against a discovery
+//! read that ignored labels entirely, and the second is what rules that out.
+//! The same shape recurs throughout this half — the anomaly note has a
+//! *no-anomaly* negative, the postcondition's label gate has a *labelled* half
+//! beside its unlabelled one, and the ordering test runs one driver over two
+//! worlds so that "nothing was committed" is not "this driver never commits".
+//!
+//! **The label reaches the world only by being sent.** `gh_stub` derives a pull
+//! request's labels from the seed a test wrote plus the `POST
+//! /issues/{n}/labels` calls that really landed, so a create that skipped its
+//! second request produces an object the discovery read genuinely cannot find.
+//! Nothing here asserts that a request was *made*; every claim is about what the
+//! world holds afterwards, read back through the client.
+//!
+//! # The refusal, and why it is a value rather than a check
+//!
+//! A pull request carrying the label whose head is outside `security/` is an
+//! ordinary mistake — a person labels their own branch, meaning *this is about
+//! the CVEs* — and it is one a run must not work around. Committing onto that
+//! branch writes to somebody else's work; opening a second pull request is the
+//! duplicate. So it stops, and it has to stop *before* the commit, because a run
+//! that commits and then fails to push has already done the damage.
+//!
+//! `plan` answers `Result<Approved, Refusal>` and only `Approved` names a
+//! branch, so after a refusal there is nothing for a checkout or a commit to be
+//! addressed at. That is the structural half.
+//! `the_prefix_refusal_reaches_the_run_before_any_commit` is the driven half,
+//! over a real git tree whose history is asserted unchanged.
+//!
+//! # Bodies: the effect whose object never changes, so its *content* has to
+//! enter its identity
 //!
 //! Every other effect in this build acts on something a repeat run names
 //! identically and correctly so — a branch, a head-and-base pair, a pull request
@@ -54,22 +105,57 @@ mod support;
 use fiddle_core::{
     content_digest, effect_id, EffectId, EffectKind, ProposedEffect, FIXTURE_REPAIR,
 };
-use fiddle_runtime::effect::{
-    EffectContext, EffectOutcome, EffectTrace, ExecutionStep, Executor, IntegrationOperation,
-    ReadRetry,
+use fiddle_runtime::capability::cve::{
+    plan, plan_shared_pull_request, Approved, PlanError, Refusal, BRANCH_STEM, CVE_LABEL,
+    PUSHABLE_PREFIX,
 };
-use fiddle_runtime::github::{pull_request_body_target, EnsurePullRequestBody};
+use fiddle_runtime::capability::land;
+use fiddle_runtime::effect::{
+    EffectContext, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
+    IntegrationOperation, ReadRetry,
+};
+use fiddle_runtime::github::{
+    find_labelled_pull_request, pull_request_body_target, EnsurePullRequest, EnsurePullRequestBody,
+    PullRequest,
+};
 use fiddle_runtime::GhCli;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
+use support::cve::{landing_world, LandingWorld};
 use support::{unreachable_git, Deployment, INVOCATION_REF, PROJECT};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
 /// The repository the scripted `gh` answers for.
 const REPO: &str = "peel/r";
+
+/// The owner the head branch lives under, and the one the lookup qualifies it
+/// with. A head that is not owner-qualified matches a branch of that name in any
+/// repository, which `pull_request_effect.rs` states in full.
+const OWNER: &str = "peel";
+
+/// The branch every pull request in this file is proposed into.
+const BASE: &str = "main";
+
+/// The head branch of the shared pull request these lanes arrange.
+///
+/// A real one of this capability's own making: `security/cve-remediation-` plus
+/// a date, which is what [`BRANCH_STEM`] renders and what the pushable prefix
+/// admits. Dated to a *different* day from [`TODAY`] on purpose — a reused
+/// branch is whichever day's branch is still open, and a fixture that dated it
+/// today could not tell reuse from a fresh cut.
+const SHARED_HEAD: &str = "security/cve-remediation-20260813";
+
+/// The day a fresh branch in this file would be cut on.
+const TODAY: &str = "20260817";
+
+/// The title the shared pull request carries.
+///
+/// Deliberately naming no advisory, for the reason `capability::cve`'s commit
+/// subject names none: the shared pull request outlives any one run's findings.
+const SHARED_TITLE: &str = "fiddle: mitigate reported advisories";
 
 /// The shared pull request's number. The stub numbers from 7 rather than 1, so an
 /// assertion on an external reference cannot pass by accident against an index.
@@ -117,10 +203,8 @@ impl Forge {
     /// operation under test, so the world these tests make claims about is not
     /// built by the code the claims are about.
     fn holding_the_shared_pull_request() -> Self {
-        let dir = TempDir::new().unwrap();
-        // Empty, and stays empty: it is what a real `gh` would be pinned to, and
-        // it is what makes the operator's keyring unreachable.
-        std::fs::create_dir_all(dir.path().join("config")).unwrap();
+        let world = Self::empty();
+        let dir = &world.dir;
 
         let by_number = dir.path().join("pulls_by_number");
         std::fs::create_dir_all(&by_number).unwrap();
@@ -142,28 +226,123 @@ impl Forge {
         )
         .unwrap();
 
+        world
+    }
+
+    /// A world holding nothing at all: no pull request, no issue, no label.
+    ///
+    /// The starting point for the discovery lanes, which arrange what they need
+    /// through [`Forge::seed_pull_request`] and [`Forge::seed_issue`] — or, in
+    /// the one lane whose subject is a *create*, by driving the operation and
+    /// then reading the world back through the client.
+    fn empty() -> Self {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("config")).unwrap();
         Self {
             dir,
             steps: Mutex::new(Vec::new()),
         }
     }
 
+    /// Put an open pull request in the world, at a number of the test's choosing.
+    ///
+    /// **The number is named rather than positional**, and that is what makes
+    /// `several_open_pull_requests_take_the_lowest_and_note_the_rest` a real
+    /// test. The stub's default numbering is the seed's own order, so a world
+    /// seeded 57, 41, 63 would come out 7, 8, 9 and "the lowest" would be
+    /// indistinguishable from "the first". Naming the numbers lets the arrival
+    /// order and the numeric order disagree, which is the only arrangement in
+    /// which the three candidate rules — lowest, first, last — give three
+    /// different answers.
+    ///
+    /// Arranged through the stub's own seed rather than by driving the code
+    /// under test, so a world this file makes claims about is not built by the
+    /// thing the claims are about.
+    fn seed_pull_request(&self, number: u64, head: &str, labels: &[&str]) {
+        self.seed_pull_request_in_state(number, head, labels, "open");
+    }
+
+    /// The same, for a pull request that is not open.
+    ///
+    /// Only the label search needs one, and only to be shown ignoring it: a
+    /// closed pull request is a branch that has been merged or abandoned, and a
+    /// run that settled on one would commit onto history its base already
+    /// carries.
+    fn seed_pull_request_in_state(&self, number: u64, head: &str, labels: &[&str], state: &str) {
+        let path = self.dir.path().join("pulls_seed");
+        let mut seed: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_default())
+                .unwrap_or_default();
+        seed.push(serde_json::json!({
+            "number": number,
+            "state": state,
+            "head": format!("{OWNER}:{head}"),
+            "base": BASE,
+            "title": SHARED_TITLE,
+            "body": SEEDED_BODY,
+            "labels": labels,
+        }));
+        std::fs::write(&path, serde_json::Value::Array(seed).to_string()).unwrap();
+    }
+
+    /// Put a plain issue — not a pull request — in the world, carrying `labels`.
+    ///
+    /// The issues listing is where a label search is answered, and GitHub's own
+    /// answer mixes issues and pull requests: a pull request *is* an issue there,
+    /// and the only thing that says which is the `pull_request` key. A label
+    /// somebody put on an ordinary issue is therefore in front of the discovery
+    /// read, and a reader that took the lowest number of whatever came back
+    /// would settle on an object with no head branch at all.
+    fn seed_issue(&self, number: u64, labels: &[&str]) {
+        let path = self.dir.path().join("issues_seed");
+        let mut seed: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_default())
+                .unwrap_or_default();
+        seed.push(serde_json::json!({
+            "number": number,
+            "title": "a person's own note about advisories",
+            "labels": labels,
+        }));
+        std::fs::write(&path, serde_json::Value::Array(seed).to_string()).unwrap();
+    }
+
+    /// Make the issues listing ignore the `labels` and `state` parameters.
+    ///
+    /// The counterpart of `pull_request_effect.rs`'s `answer_without_filtering`,
+    /// and it stands for the same thing: anything between this client and GitHub
+    /// that answers a filtered read with something wider — a proxy, a cached
+    /// page, a parameter GitHub stops honouring. The discovery read's own check
+    /// is what has to hold then, and this is how it is asked.
+    fn answer_the_label_search_without_filtering(&self) {
+        std::fs::write(self.dir.path().join("issues_unfiltered"), "yes").unwrap();
+    }
+
+    /// The scripted `gh`, on its own rather than inside an [`EffectContext`].
+    ///
+    /// The discovery read is a plain read and takes a client, not a context —
+    /// it proposes no effect, because it changes nothing. Built from the same
+    /// four arguments the context's is, so the two cannot address different
+    /// worlds.
+    fn gh(&self) -> GhCli {
+        GhCli::new(
+            PathBuf::from(env!("CARGO_BIN_EXE_gh_stub")),
+            // The scratch directory arrives in `argv` because the adapter's
+            // environment has room for exactly five names.
+            vec![
+                "--stub-dir".to_string(),
+                self.dir.path().display().to_string(),
+            ],
+            "ghp_never_reaches_a_network".to_string(),
+            "FIDDLE_GITHUB_TOKEN",
+            self.dir.path().join("config"),
+            PATIENT,
+        )
+    }
+
     /// A context whose `gh` is the scripted one and whose `git` cannot be run.
     fn context(&self) -> EffectContext {
         EffectContext::new(
-            GhCli::new(
-                PathBuf::from(env!("CARGO_BIN_EXE_gh_stub")),
-                // The scratch directory arrives in `argv` because the adapter's
-                // environment has room for exactly five names.
-                vec![
-                    "--stub-dir".to_string(),
-                    self.dir.path().display().to_string(),
-                ],
-                "ghp_never_reaches_a_network".to_string(),
-                "FIDDLE_GITHUB_TOKEN",
-                self.dir.path().join("config"),
-                PATIENT,
-            ),
+            self.gh(),
             unreachable_git(),
             self.dir.path().to_path_buf(),
             CancellationToken::new(),
@@ -215,6 +394,46 @@ impl Forge {
                         .any(|a| a == &format!("/repos/{REPO}/pulls/{PR}"))
             })
             .count()
+    }
+
+    /// How many pull-request creates were *dispatched*, landed or not.
+    ///
+    /// Narrowed to the pulls collection rather than counting every `POST` under
+    /// `/repos`, because a create is no longer this operation's only write: the
+    /// label goes on through `POST /repos/{repo}/issues/{n}/labels`, and a
+    /// counter that swept both would report two creates for one pull request and
+    /// make `never a second` unfalsifiable in the wrong direction.
+    fn creation_requests(&self) -> usize {
+        self.requests()
+            .iter()
+            .filter(|argv| {
+                let method = argv
+                    .iter()
+                    .position(|a| a == "--method")
+                    .and_then(|at| argv.get(at + 1));
+                method.map(String::as_str) == Some("POST")
+                    && argv.iter().any(|a| a == &format!("/repos/{REPO}/pulls"))
+            })
+            .count()
+    }
+
+    /// The object count: every open pull request this world holds, however it
+    /// came to exist.
+    ///
+    /// The seed plus the creates that really landed, which is the same pair the
+    /// stub's own listing is built from — so this counts objects rather than
+    /// requests, and a create whose answer was lost still counts once.
+    fn open_pull_requests(&self) -> usize {
+        let seeded: Vec<serde_json::Value> = serde_json::from_str(
+            &std::fs::read_to_string(self.dir.path().join("pulls_seed")).unwrap_or_default(),
+        )
+        .unwrap_or_default();
+        let landed = std::fs::read_to_string(self.dir.path().join("world"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains(&format!("POST_repos_{}_pulls", REPO.replace('/', "_"))))
+            .count();
+        seeded.len() + landed
     }
 
     fn steps(&self) -> Vec<&'static str> {
@@ -428,6 +647,666 @@ fn the_target_names_the_repository_the_number_and_the_published_digest() {
         target.contains(&content_digest("covers 1 CVE")),
         "the target must carry fiddle_core's digest and not a second one: {target}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Discovery: the label is what finds the one shared pull request
+// ---------------------------------------------------------------------------
+
+/// Walk the authorization order for one pull request create, carrying `labels`.
+///
+/// Through the executor rather than by calling the operation, because a label
+/// applied outside it would be a mutation that reached the forge without an
+/// effect step — the epic's Hard Constraint — and because the postcondition read
+/// is the whole of what says the label really landed.
+async fn open_the_shared_pull_request(
+    forge: &Forge,
+    head: &str,
+    labels: &[&str],
+) -> EffectReceipt<PullRequest> {
+    let operation = EnsurePullRequest::new(
+        REPO.to_string(),
+        OWNER.to_string(),
+        head.to_string(),
+        BASE.to_string(),
+        SHARED_TITLE.to_string(),
+        "opened by fiddle, contents to follow".to_string(),
+        false,
+    )
+    .labelled(labels.iter().map(|it| it.to_string()).collect());
+    let proposed = ProposedEffect {
+        capability: FIXTURE_REPAIR,
+        kind: EffectKind::EnsurePullRequest,
+        target: operation.target(),
+        payload: operation.payload(),
+    };
+    let deployment = Deployment(fiddle_core::DeploymentRule::Allow);
+    let ctx = forge.context();
+    Executor::new(
+        FIXTURE_REPAIR,
+        PROJECT.to_string(),
+        INVOCATION_REF.to_string(),
+        &deployment,
+        &ctx,
+        forge,
+        ReadRetry::none(),
+    )
+    .execute(proposed, operation)
+    .await
+    .expect("a pull request create against a world that holds none")
+}
+
+/// The discovery read, exactly as the next run would make it.
+async fn discover(forge: &Forge) -> Option<fiddle_runtime::github::SharedPullRequest> {
+    find_labelled_pull_request(&forge.gh(), REPO, CVE_LABEL, &CancellationToken::new())
+        .await
+        .expect("the label search is readable")
+}
+
+/// Discover and decide, which is the whole of what this lane does before a run
+/// may touch a tree.
+async fn decide(forge: &Forge) -> Result<Approved, PlanError> {
+    plan_shared_pull_request(&forge.gh(), REPO, BASE, TODAY, &CancellationToken::new()).await
+}
+
+/// **The label is what makes the created pull request findable next time.**
+///
+/// The criterion's own words: *a PR without it is invisible to the next run,
+/// which then opens a second*. So the claim is not that a label was sent — a
+/// request is a claim about a request — but that the object the create left
+/// behind is found **by the same observation the next run makes**, which is the
+/// only thing that decides whether a second gets opened.
+///
+/// Both halves are read out of the world rather than out of the fixture. The
+/// receipt's value is the executor's step 8 observation, and
+/// [`discover`] is a second, independent read through a *different endpoint*:
+/// the create went to `/pulls`, the label to `/issues/{n}/labels`, and the
+/// search reads `/issues?labels=`. Three endpoints and one object, which is what
+/// makes the agreement between them evidence.
+///
+/// Its inversion is the test below, and the two are a pair: this one would pass
+/// against a discovery read that answered every open pull request whatever it
+/// was labelled, and that one is what rules it out.
+#[tokio::test]
+async fn a_created_pull_request_carries_the_label_that_finds_it() {
+    let forge = Forge::empty();
+
+    let receipt = open_the_shared_pull_request(&forge, SHARED_HEAD, &[CVE_LABEL]).await;
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert!(
+        receipt.value.labels.contains(&CVE_LABEL.to_string()),
+        "the postcondition read found the pull request carrying the label: {:?}",
+        receipt.value
+    );
+
+    let found = discover(&forge)
+        .await
+        .expect("the run that created it must be able to find it again");
+    assert_eq!(found.number, receipt.value.number);
+    assert_eq!(
+        found.head, SHARED_HEAD,
+        "and at the branch it was opened on"
+    );
+    assert!(
+        found.duplicates.is_empty(),
+        "one pull request, so nothing to note: {:?}",
+        found.duplicates
+    );
+
+    // **One effect, two requests** — which is what *as part of creating* can
+    // mean, given that the create endpoint has no `labels` parameter and the
+    // label lives on the issues collection. The two requests are inside one
+    // authorization walk, so there is exactly one apply step, and a label call
+    // that failed would fail the effect rather than leaving a create reported as
+    // a success.
+    assert_eq!(
+        forge
+            .steps()
+            .iter()
+            .filter(|step| **step == ExecutionStep::Apply.as_str())
+            .count(),
+        1,
+        "the label is not a second effect: {:?}",
+        forge.steps()
+    );
+    let posts: Vec<String> = forge
+        .requests()
+        .iter()
+        .filter(|argv| argv.iter().any(|a| a == "POST"))
+        .filter_map(|argv| argv.iter().find(|a| a.starts_with('/')).cloned())
+        .collect();
+    assert_eq!(
+        posts,
+        [
+            format!("/repos/{REPO}/pulls"),
+            format!("/repos/{REPO}/issues/{}/labels", receipt.value.number),
+        ],
+        "the create, and then the label on the object it created — in that order, \
+         because the label is addressed by a number that does not exist until the \
+         create has run"
+    );
+}
+
+/// **An unlabelled pull request for this head and base is not this effect having
+/// happened.**
+///
+/// The case is the one the two-request shape cannot make impossible: a process
+/// dies between the create and the label, and leaves a pull request the next run
+/// cannot find. What the postcondition can do is refuse to call that done — and
+/// that is what this asserts, directly against
+/// [`IntegrationOperation::inspect`], because it is a claim about the *read* and
+/// no walk of the executor would separate it from what the create did.
+///
+/// Both directions, and the pair is the test. Against the unlabelled world the
+/// answer is `None`, which is what makes the executor dispatch and what makes
+/// step 8 report a postcondition that does not hold; against the labelled one it
+/// is `Some`, which is what stops an already-correct pull request being touched
+/// again. A gate that ignored labels would answer `Some` to both.
+#[tokio::test]
+async fn an_unlabelled_pull_request_is_not_the_labelled_effect_having_happened() {
+    let operation = EnsurePullRequest::new(
+        REPO.to_string(),
+        OWNER.to_string(),
+        SHARED_HEAD.to_string(),
+        BASE.to_string(),
+        SHARED_TITLE.to_string(),
+        "opened by fiddle, contents to follow".to_string(),
+        false,
+    )
+    .labelled(vec![CVE_LABEL.to_string()]);
+
+    let unlabelled = Forge::empty();
+    unlabelled.seed_pull_request(41, SHARED_HEAD, &[]);
+    assert_eq!(
+        operation.inspect(&unlabelled.context()).await.unwrap(),
+        None,
+        "the pull request exists and the postcondition does not hold"
+    );
+
+    let labelled = Forge::empty();
+    labelled.seed_pull_request(41, SHARED_HEAD, &[CVE_LABEL]);
+    let observed = operation
+        .inspect(&labelled.context())
+        .await
+        .unwrap()
+        .expect("the same head and base, and this time it carries the label");
+    assert_eq!(observed.number, 41);
+    assert_eq!(observed.labels, [CVE_LABEL]);
+}
+
+/// A label somebody else added does not make the postcondition fail.
+///
+/// The check is a superset and not an equality, and this is why: a person is
+/// entitled to put `needs-triage` on a pull request fiddle opened. An operation
+/// that demanded its own labels exactly would find a postcondition it could never
+/// satisfy — it would re-apply its labels on every run and still not match — and
+/// would report a mismatch that is not one.
+#[tokio::test]
+async fn a_label_a_person_added_does_not_unsatisfy_the_postcondition() {
+    let operation = EnsurePullRequest::new(
+        REPO.to_string(),
+        OWNER.to_string(),
+        SHARED_HEAD.to_string(),
+        BASE.to_string(),
+        SHARED_TITLE.to_string(),
+        "opened by fiddle, contents to follow".to_string(),
+        false,
+    )
+    .labelled(vec![CVE_LABEL.to_string()]);
+
+    let forge = Forge::empty();
+    forge.seed_pull_request(41, SHARED_HEAD, &[CVE_LABEL, "needs-triage"]);
+
+    let observed = operation
+        .inspect(&forge.context())
+        .await
+        .unwrap()
+        .expect("ours is there, beside somebody else's");
+    assert_eq!(observed.labels, [CVE_LABEL, "needs-triage"]);
+}
+
+/// The inversion, and the reason the label is not decoration.
+///
+/// A create that carried no label really happens — the pull request is in the
+/// world and the effect committed — and the discovery read finds **nothing**.
+/// The next run therefore proposes a create of its own, which is the second pull
+/// request this whole model exists to prevent.
+///
+/// This is what stops its neighbour above passing for the wrong reason. Without
+/// it, a discovery read that ignored the label and answered every open pull
+/// request would satisfy that test exactly as well.
+#[tokio::test]
+async fn a_pull_request_created_without_the_label_is_invisible_to_the_next_run() {
+    let forge = Forge::empty();
+
+    let receipt = open_the_shared_pull_request(&forge, SHARED_HEAD, &[]).await;
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(
+        forge.open_pull_requests(),
+        1,
+        "the pull request really exists; it is only the label that is missing"
+    );
+    assert!(
+        receipt.value.labels.is_empty(),
+        "and it carries none: {:?}",
+        receipt.value
+    );
+
+    assert!(
+        discover(&forge).await.is_none(),
+        "an unlabelled pull request is invisible to the discovery read, so the \
+         next run would open a second one"
+    );
+}
+
+/// A pull request already open is worked on, and no second is created.
+///
+/// The count is over *creates dispatched*, not over the objects the world holds:
+/// a run that dispatched a create and had it refused as a duplicate would leave
+/// the object count at one and would still have got the model wrong, because the
+/// only thing that stopped it was GitHub.
+#[tokio::test]
+async fn an_existing_open_pull_request_is_reused_and_never_duplicated() {
+    let forge = Forge::empty();
+    forge.seed_pull_request(41, SHARED_HEAD, &[CVE_LABEL]);
+
+    let approved = decide(&forge)
+        .await
+        .expect("a head under the pushable prefix");
+
+    assert_eq!(approved.reused(), Some(41));
+    assert_eq!(
+        approved.branch(),
+        SHARED_HEAD,
+        "the run adds to the pull request's own branch rather than cutting one"
+    );
+    assert!(
+        !approved.branch().contains(TODAY),
+        "and it is emphatically not today's fresh branch: {}",
+        approved.branch()
+    );
+    assert!(approved.duplicates().is_empty());
+    assert_eq!(forge.creation_requests(), 0, "never a second");
+    assert_eq!(forge.open_pull_requests(), 1);
+}
+
+/// With nothing open, a dated branch is cut **from an origin ref**.
+///
+/// The origin half is the one that is easy to lose and the one that has already
+/// cost a run: a branch cut from local `HEAD` carries whatever the previous run
+/// left in the worktree, and a branch cut from local `main` carries whatever that
+/// happened to be fetched to. Design §4 says *never branch from local `HEAD` or
+/// local `main`*, and this is where that is held.
+#[tokio::test]
+async fn with_nothing_open_a_dated_branch_is_cut_from_an_origin_ref() {
+    let forge = Forge::empty();
+
+    let approved = decide(&forge)
+        .await
+        .expect("an empty world plans a fresh cut");
+
+    assert_eq!(approved.reused(), None);
+    assert_eq!(approved.branch(), format!("{BRANCH_STEM}{TODAY}"));
+    assert!(
+        approved.branch().starts_with(PUSHABLE_PREFIX),
+        "a branch this capability cuts must satisfy its own push guard: {}",
+        approved.branch()
+    );
+    assert_eq!(
+        approved.from(),
+        format!("origin/{BASE}"),
+        "the remote's base, and never local HEAD or local main"
+    );
+    assert_eq!(
+        forge.creation_requests(),
+        0,
+        "the create is not this lane's"
+    );
+}
+
+/// Reuse checks out the **remote** tip of the pull request's branch.
+///
+/// The same rule as its neighbour above, stated for the other arm, and it is a
+/// separate claim rather than a restatement: a fresh cut has no local branch to
+/// be tempted by, and a reused one does — a `security/cve-remediation-…` left
+/// behind by yesterday's run in the same clone is exactly the stale thing
+/// `origin/` excludes.
+#[tokio::test]
+async fn reuse_names_the_remote_tip_of_the_pull_requests_branch() {
+    let forge = Forge::empty();
+    forge.seed_pull_request(41, SHARED_HEAD, &[CVE_LABEL]);
+
+    let approved = decide(&forge)
+        .await
+        .expect("a head under the pushable prefix");
+
+    assert_eq!(approved.from(), format!("origin/{SHARED_HEAD}"));
+    assert!(!approved.from().contains("HEAD"), "{}", approved.from());
+}
+
+/// **Several open pull requests: the lowest, and the rest noted.**
+///
+/// Seeded 57, 41, 63 — arrival order and numeric order deliberately disagreeing,
+/// because that is the only arrangement in which *lowest*, *first* and *last*
+/// give three different answers. Taking the first would answer 57 and taking the
+/// last would answer 63.
+///
+/// The note is the second half of the criterion and is not decoration: GitHub
+/// will not create a second pull request for one head and base, so more than one
+/// open labelled pull request is something a person did, and a person is who
+/// closes the extras. A run that quietly picked one and said nothing would leave
+/// the anomaly to be discovered by whoever eventually merged the wrong one.
+#[tokio::test]
+async fn several_open_pull_requests_take_the_lowest_and_note_the_rest() {
+    let forge = Forge::empty();
+    for number in [57u64, 41, 63] {
+        forge.seed_pull_request(
+            number,
+            &format!("{BRANCH_STEM}2026080{number}"),
+            &[CVE_LABEL],
+        );
+    }
+
+    let approved = decide(&forge).await.expect("every head is pushable here");
+
+    assert_eq!(approved.reused(), Some(41), "the lowest, not the first");
+    assert_eq!(
+        approved.duplicates(),
+        [57, 63],
+        "ascending, and both of them"
+    );
+
+    let note = approved
+        .note()
+        .expect("an anomaly a person made is an anomaly a person is told about");
+    assert!(
+        note.contains("57") && note.contains("63"),
+        "the note must name the ones a person has to close: {note}"
+    );
+    assert!(
+        !note.contains("41"),
+        "and must not name the one being reused, which is not a duplicate: {note}"
+    );
+    assert_eq!(forge.creation_requests(), 0, "and never another");
+}
+
+/// One pull request is not an anomaly, so there is nothing to note.
+///
+/// The negative half of the test above. Without it, a `note()` that returned the
+/// same paragraph however many pull requests were open would satisfy that one and
+/// would put an anomaly warning on every ordinary run's body.
+#[tokio::test]
+async fn one_open_pull_request_is_not_an_anomaly_and_is_not_noted() {
+    let forge = Forge::empty();
+    forge.seed_pull_request(41, SHARED_HEAD, &[CVE_LABEL]);
+
+    assert_eq!(decide(&forge).await.unwrap().note(), None);
+}
+
+/// A label search answered wider than it was asked is narrowed by this client.
+///
+/// The same rule `EnsurePullRequest::read` applies to the pull-request listing,
+/// and it is here for the same reason: the filtering is GitHub's and confirming
+/// that what came back is what was asked for is this client's. What stands in for
+/// a widened answer is anything between here and GitHub — a proxy, a cached page,
+/// a parameter that stops being honoured.
+///
+/// The unlabelled pull request is the *lower* number, so a client that trusted
+/// the server's filter would settle on it and not on the one carrying the label.
+#[tokio::test]
+async fn a_label_search_answered_without_its_filter_is_narrowed_here() {
+    let forge = Forge::empty();
+    forge.seed_pull_request(12, "feature/somebody-elses-work", &[]);
+    forge.seed_pull_request(41, SHARED_HEAD, &[CVE_LABEL]);
+    forge.answer_the_label_search_without_filtering();
+
+    let found = discover(&forge)
+        .await
+        .expect("one pull request carries the label");
+
+    assert_eq!(
+        found.number, 41,
+        "the unlabelled #12 is lower and must still not be settled on"
+    );
+    assert!(found.duplicates.is_empty());
+}
+
+/// A **closed** pull request carrying the label is not the one to work in.
+///
+/// The other half of what the query asks for, re-checked here for the reason the
+/// label half is. A closed pull request is a branch that has been merged or
+/// abandoned: committing onto it puts a bump on history the base already
+/// carries, or on a branch the remote has deleted — and the merged case is the
+/// worse one, because the push succeeds.
+///
+/// #12 is again the *lower* number, so a client that took the lowest of whatever
+/// came back would settle on it.
+#[tokio::test]
+async fn a_closed_pull_request_carrying_the_label_is_not_settled_on() {
+    let forge = Forge::empty();
+    forge.seed_pull_request_in_state(
+        12,
+        "security/cve-remediation-20260701",
+        &[CVE_LABEL],
+        "closed",
+    );
+    forge.seed_pull_request(41, SHARED_HEAD, &[CVE_LABEL]);
+    forge.answer_the_label_search_without_filtering();
+
+    let found = discover(&forge).await.expect("the open one is still found");
+
+    assert_eq!(found.number, 41, "#12 is closed and merged or abandoned");
+    assert!(
+        found.duplicates.is_empty(),
+        "and a closed pull request is not an anomaly to report: {:?}",
+        found.duplicates
+    );
+}
+
+/// A plain issue carrying the label is not a pull request and is not taken.
+///
+/// GitHub's label search is over *issues*, and a pull request is an issue there —
+/// which is why the search finds one at all, and why it also finds things that
+/// are not. `security/cve` on an ordinary issue is entirely plausible; a reader
+/// that took the lowest number of whatever came back would settle on an object
+/// with no head branch, no base and nothing to commit onto.
+#[tokio::test]
+async fn a_plain_issue_carrying_the_label_is_not_the_shared_pull_request() {
+    let forge = Forge::empty();
+    forge.seed_issue(9, &[CVE_LABEL]);
+    forge.seed_pull_request(41, SHARED_HEAD, &[CVE_LABEL]);
+
+    let found = discover(&forge)
+        .await
+        .expect("the pull request is still found");
+
+    assert_eq!(found.number, 41, "#9 is an issue, not a pull request");
+    assert!(
+        found.duplicates.is_empty(),
+        "and it is not an anomaly either: {:?}",
+        found.duplicates
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The push guard, and why it comes first
+// ---------------------------------------------------------------------------
+
+/// **A head outside the pushable prefix is refused, and refused as a value.**
+///
+/// The failure being prevented is an ordering failure: a run that checked out
+/// `feature/not-security`, committed a bump onto it and *then* discovered it may
+/// not push there has already written to a branch somebody else owns, and has to
+/// be unwound by hand.
+///
+/// It is refused rather than worked around, because there is no safe workaround.
+/// Opening a second pull request is the thing this model exists to prevent, and
+/// pushing anyway is the thing the prefix exists to prevent.
+#[tokio::test]
+async fn a_head_branch_outside_the_pushable_prefix_stops_before_committing() {
+    let forge = Forge::empty();
+    forge.seed_pull_request(41, "feature/not-security", &[CVE_LABEL]);
+
+    let refused = decide(&forge)
+        .await
+        .expect_err("a head outside the pushable prefix is not something to work around");
+
+    assert!(
+        matches!(
+            &refused,
+            PlanError::Refused(Refusal::HeadOutsideThePushablePrefix { number: 41, .. })
+        ),
+        "{refused}"
+    );
+    // Both halves in the message, because an operator reading it has to know
+    // which branch was refused *and* what would have been acceptable. A refusal
+    // naming only one of them sends them to the source.
+    let said = refused.to_string();
+    assert!(said.contains("feature/not-security"), "{said}");
+    assert!(said.contains(PUSHABLE_PREFIX), "{said}");
+    assert!(said.contains("41"), "{said}");
+}
+
+/// The refusal reaches the run **before** anything is committed.
+///
+/// Two worlds and one driver. The driver is the order a run works in — discover
+/// the shared pull request, decide which branch to work on, and only then land a
+/// group onto a tree — and the only difference between the two worlds is the head
+/// branch of the pull request that is already open.
+///
+/// Both assertions are needed and neither is enough. The refused world's tree
+/// must be untouched, which is the criterion; the pushable world's tree must be
+/// *committed to* by the same driver, which is what says the untouched tree is
+/// untouched because of the guard rather than because the driver never commits
+/// anything. That second half is the one an inversion moves: put the guard after
+/// the landing and the refused world grows a commit.
+#[tokio::test]
+async fn the_prefix_refusal_reaches_the_run_before_any_commit() {
+    let refused_world = landing_world(&["CVE-2026-4242"]);
+    let refused_forge = Forge::empty();
+    refused_forge.seed_pull_request(41, "feature/not-security", &[CVE_LABEL]);
+    let before = refused_world.tree.all_commit_bodies();
+
+    let outcome = discover_then_land(&refused_forge, &refused_world).await;
+
+    assert!(matches!(outcome, Err(PlanError::Refused(_))), "{outcome:?}");
+    assert_eq!(
+        refused_world.tree.all_commit_bodies(),
+        before,
+        "the history must be exactly what it was, so nothing was committed"
+    );
+    assert!(
+        refused_world.tree.git_calls().is_empty(),
+        "and no git command ran at all: {:?}",
+        refused_world.tree.git_calls()
+    );
+
+    // The same driver, the same group, the same tree shape — and a head branch
+    // this capability may push to.
+    let allowed_world = landing_world(&["CVE-2026-4242"]);
+    let allowed_forge = Forge::empty();
+    allowed_forge.seed_pull_request(41, SHARED_HEAD, &[CVE_LABEL]);
+    let before = allowed_world.tree.all_commit_bodies();
+
+    discover_then_land(&allowed_forge, &allowed_world)
+        .await
+        .expect("a pushable head lets the landing run");
+
+    assert_ne!(
+        allowed_world.tree.all_commit_bodies(),
+        before,
+        "so the driver really does commit when the guard lets it"
+    );
+    assert!(
+        allowed_world
+            .tree
+            .head_commit_body()
+            .contains("CVE-2026-4242"),
+        "and it is this group's commit: {}",
+        allowed_world.tree.head_commit_body()
+    );
+}
+
+/// The order a run works in: decide first, commit second.
+///
+/// Written out here rather than hidden inside a helper, because the order *is*
+/// the subject. `?` on the plan is what makes the landing below it unreachable
+/// after a refusal — there is no branch to commit onto, because [`Approved`] is
+/// the only value that names one.
+async fn discover_then_land(forge: &Forge, world: &LandingWorld) -> Result<Approved, PlanError> {
+    let approved =
+        plan_shared_pull_request(&forge.gh(), REPO, BASE, TODAY, &CancellationToken::new()).await?;
+
+    land(
+        &world.tree,
+        &world.group,
+        &fiddle_runtime::capability::GroupStatus::Clean,
+        &world.changed,
+    )
+    .await
+    .expect("a clean group over a tree that really changed");
+
+    Ok(approved)
+}
+
+/// The prefix and the branch this capability cuts cannot drift apart.
+///
+/// Two constants and one convention. A pushable prefix that stopped matching the
+/// stem would refuse every branch this capability cut for itself, which is a
+/// failure the discovery lanes above could not see: they arrange a *reused*
+/// branch, and a fresh cut is the arm they never take.
+#[test]
+fn the_branch_this_capability_cuts_satisfies_its_own_push_guard() {
+    assert!(
+        BRANCH_STEM.starts_with(PUSHABLE_PREFIX),
+        "{BRANCH_STEM} is not under {PUSHABLE_PREFIX}"
+    );
+    // And the values themselves, once, so neither can be quietly changed to
+    // something that still satisfies the relation above and means nothing:
+    // `x/` and `x/y-` would pass it.
+    assert_eq!(PUSHABLE_PREFIX, "security/");
+    assert_eq!(BRANCH_STEM, "security/cve-remediation-");
+    assert_eq!(CVE_LABEL, "security/cve");
+}
+
+/// The pure decision, stated without a forge.
+///
+/// `plan` is the half that refuses, and it takes no client, no context and no
+/// `Git`. That is the structural half of *before any commit*: the value it
+/// answers on a refusal names no branch, so there is nothing for a checkout or a
+/// commit to be addressed at.
+#[test]
+fn the_decision_is_taken_over_the_observation_alone() {
+    use fiddle_runtime::github::SharedPullRequest;
+
+    let outside = SharedPullRequest {
+        number: 41,
+        head: "feature/not-security".to_string(),
+        base: BASE.to_string(),
+        title: SHARED_TITLE.to_string(),
+        duplicates: Vec::new(),
+    };
+    assert!(matches!(
+        plan(Some(outside), BASE, TODAY),
+        Err(Refusal::HeadOutsideThePushablePrefix { .. })
+    ));
+
+    let inside = SharedPullRequest {
+        number: 41,
+        head: SHARED_HEAD.to_string(),
+        base: BASE.to_string(),
+        title: SHARED_TITLE.to_string(),
+        duplicates: vec![57, 63],
+    };
+    let approved = plan(Some(inside), BASE, TODAY).expect("a pushable head");
+    assert_eq!(approved.reused(), Some(41));
+    assert_eq!(approved.duplicates(), [57, 63]);
+
+    let fresh = plan(None, BASE, TODAY).expect("nothing open is not a refusal");
+    assert_eq!(fresh.reused(), None);
+    assert_eq!(fresh.branch(), format!("{BRANCH_STEM}{TODAY}"));
 }
 
 // ---------------------------------------------------------------------------

@@ -61,8 +61,10 @@
 //! the same thing from `fiddle-core`'s side, and `cve_shared_pr.rs` is the suite.
 
 use crate::effect::{AuthorizedEffect, EffectContext, IntegrationOperation, ObservedState};
-use crate::github::{encode, GhError};
+use crate::github::comments::has_a_next_page;
+use crate::github::{encode, GhCli, GhError};
 use fiddle_core::{content_digest, HumanDecisionRequirement};
+use tokio_util::sync::CancellationToken;
 
 /// An open pull request, as it was observed to be.
 ///
@@ -77,6 +79,15 @@ pub struct PullRequest {
     pub head: String,
     pub base: String,
     pub title: String,
+    /// Every label the object was observed to carry, in the order the listing
+    /// gave them.
+    ///
+    /// **Not payload, unlike the title.** A label is the discriminator a later
+    /// run finds this object by — see [`find_labelled_pull_request`] — so it is
+    /// the one field here that something downstream really does decide on, and
+    /// carrying it is what lets a receipt say that the postcondition included
+    /// it. Empty for every operation that asked for none.
+    pub labels: Vec<String>,
 }
 
 impl ObservedState for PullRequest {
@@ -138,6 +149,23 @@ pub struct EnsurePullRequest {
     /// gated act — it is the moment the change enters a review queue — and this
     /// field is only the state it starts in.
     draft: bool,
+    /// The labels the pull request must carry when this effect is done.
+    ///
+    /// **Part of the postcondition, not payload**, and that is the whole of why
+    /// this field exists. M4's shared-pull-request model finds the one open
+    /// proposal by reading a label back off the forge, so a pull request created
+    /// without its label is invisible to the next run — which then opens a
+    /// second, which is the state the model exists to prevent. A label is
+    /// therefore not a description of the object like the title is; it is what
+    /// makes the object findable, and
+    /// [`inspect`](IntegrationOperation::inspect) refuses to call the effect
+    /// satisfied until the world shows it.
+    ///
+    /// Empty for a caller that wants none, and empty is the M2 spelling: every
+    /// clause below that touches this field is inert on an empty list, so the
+    /// operations that existed before it behave exactly as they did — including
+    /// their payload bytes.
+    labels: Vec<String>,
 }
 
 impl EnsurePullRequest {
@@ -158,7 +186,34 @@ impl EnsurePullRequest {
             title,
             body,
             draft,
+            labels: Vec::new(),
         }
+    }
+
+    /// Require the pull request this effect leaves behind to carry `labels`.
+    ///
+    /// # A second step rather than an eighth argument
+    ///
+    /// Not only because eight positional arguments is one past what this
+    /// workspace's lint allows — that is true and it is the smaller reason. A
+    /// label is not an eighth thing the create is *made of*, beside the title and
+    /// the base; the create endpoint cannot even carry one. It is an additional
+    /// *requirement placed on the object*, applied by a second request and
+    /// checked by the postcondition, and a separate call is what says so.
+    ///
+    /// It also reads where it matters. `Vec::new()` in eighth position at a call
+    /// site that wanted a label is a thing an eye slides over; a missing
+    /// `.labelled(…)` is a line that is not there, and the pull request it opens
+    /// is one the next run cannot find. The defence against that is not the
+    /// argument list — it is [`inspect`](IntegrationOperation::inspect), which
+    /// refuses to call the effect done over a pull request that does not carry
+    /// what was asked for.
+    ///
+    /// The default is the safe direction: no labels, which is exactly M2's and
+    /// M3's behaviour and exactly their payload bytes.
+    pub fn labelled(mut self, labels: Vec<String>) -> Self {
+        self.labels = labels;
+        self
     }
 
     /// The `draft` key, present only when this run is drafting.
@@ -175,6 +230,60 @@ impl EnsurePullRequest {
     fn draft_key(&self) -> Option<(String, serde_json::Value)> {
         self.draft
             .then(|| ("draft".to_string(), serde_json::Value::Bool(true)))
+    }
+
+    /// The `labels` key, present only when this run is asking for labels.
+    ///
+    /// Absent rather than `[]` when there are none, for exactly
+    /// [`draft_key`](EnsurePullRequest::draft_key)'s reason and with exactly its
+    /// consequence: [`serde_json::Map`] is sorted, an omitted key moves no other
+    /// byte, and so every payload written before this field existed hashes as it
+    /// always did. M2's two pull-request operations ask for no labels, and their
+    /// canonical payloads are unchanged to the byte.
+    ///
+    /// It is in the *payload* and not in the create request, because the create
+    /// endpoint has no such parameter — see
+    /// [`labels_path`](EnsurePullRequest::labels_path). The payload's job is to
+    /// be the whole of what this operation was asked to bring about, so that
+    /// step 6 can refuse a caller that proposed one thing and built another; a
+    /// payload that omitted the labels would let a proposal for an unlabelled
+    /// pull request be satisfied by an operation that labelled one, and the
+    /// reverse.
+    fn labels_key(&self) -> Option<(String, serde_json::Value)> {
+        (!self.labels.is_empty()).then(|| ("labels".to_string(), self.labels.clone().into()))
+    }
+
+    /// `POST` here to put labels on the pull request numbered `pr`.
+    ///
+    /// # The create cannot carry them, and this is not a design choice
+    ///
+    /// `POST /repos/{owner}/{repo}/pulls` takes `title`, `head`, `head_repo`,
+    /// `base`, `body`, `maintainer_can_modify`, `draft` and `issue`, and there is
+    /// no `labels` among them; GraphQL's `createPullRequest` has no `labelIds`
+    /// either. A label is applied through the *issues* collection, because at
+    /// GitHub a pull request is an issue and labels belong to issues.
+    ///
+    /// So "the label is applied as part of creating the pull request" cannot mean
+    /// one request, and the design's actual requirement — *not a follow-up step
+    /// that can fail on its own* — is met the only way it can be: both requests
+    /// are inside one [`apply`](IntegrationOperation::apply), under one effect
+    /// identity, with one postcondition that includes the label. A label call
+    /// that fails fails **the effect**, and the executor's step 8 then reads a
+    /// world in which the postcondition does not hold. There is no arrangement in
+    /// which this operation reports success over an unlabelled pull request.
+    ///
+    /// What that leaves is a window rather than a hole, and it is worth naming
+    /// because it is irreducible: a process that dies between the two requests
+    /// leaves a pull request with no label, and nothing can label an object that
+    /// does not exist yet. The next run's discovery read does not find it, and the
+    /// run after that meets GitHub's 422 for a head and base that already has an
+    /// open pull request — which classifies `Unknown`, forces the postcondition
+    /// read, finds the label still absent, and fails **loudly**, naming the
+    /// object. That is the whole of what this operation can promise: never a
+    /// silent second pull request, and never a success reported over a pull
+    /// request the next run cannot find.
+    fn labels_path(&self, pr: u64) -> String {
+        format!("/repos/{}/issues/{pr}/labels", self.repo)
     }
 
     /// The canonical target identity to propose this effect under.
@@ -245,8 +354,48 @@ impl EnsurePullRequest {
             // Payload, so its absence is not a reason to refuse the object: a
             // pull request with no title is still this run's pull request.
             title: listed["title"].as_str().unwrap_or_default().to_string(),
+            labels: label_names(listed),
         })
     }
+
+    /// Does this observed pull request carry every label this run asked for?
+    ///
+    /// **A superset and not an equality.** A person is entitled to add labels of
+    /// their own to a pull request fiddle opened — `needs-triage`, a milestone's
+    /// tag — and an operation that read those as a postcondition violation would
+    /// re-apply its own labels on every run and would report a mismatch it could
+    /// never resolve.
+    ///
+    /// Vacuously true for an operation that asked for none, which is what leaves
+    /// M2's two callers behaving exactly as they did.
+    fn carries_the_labels(&self, observed: &PullRequest) -> bool {
+        self.labels
+            .iter()
+            .all(|wanted| observed.labels.contains(wanted))
+    }
+}
+
+/// The `name` of every label on a listed issue or pull request.
+///
+/// GitHub sends labels as objects — `{"id":…, "name":"security/cve", …}` — and
+/// only the name is a thing anybody in this build asks about. A label with no
+/// readable name is dropped rather than refused: it is somebody else's label, it
+/// cannot be the one being looked for, and refusing the whole object over it
+/// would let an unrelated label make the shared pull request unfindable.
+///
+/// A free function because both readers need it and they are readers of two
+/// different endpoints — the pulls listing and the issues listing — which agree
+/// about this one shape.
+fn label_names(listed: &serde_json::Value) -> Vec<String> {
+    listed["labels"]
+        .as_array()
+        .map(|labels| {
+            labels
+                .iter()
+                .filter_map(|label| label["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[async_trait::async_trait]
@@ -291,6 +440,7 @@ impl IntegrationOperation for EnsurePullRequest {
             ("title".to_string(), self.title.clone().into()),
         ]);
         request.extend(self.draft_key());
+        request.extend(self.labels_key());
         serde_json::Value::Object(request).to_string()
     }
 
@@ -352,7 +502,19 @@ impl IntegrationOperation for EnsurePullRequest {
 
         match listed.as_slice() {
             [] => Ok(None),
-            [one] => self.read(one).map(Some),
+            // The label is part of the postcondition, so a pull request that
+            // exists and is not labelled is *not* this effect having happened.
+            // Absence rather than an error, and the distinction is the whole
+            // reason this arm reads the way it does: `None` before the create
+            // means "there is work to do", and `None` after one means step 8
+            // found the postcondition unsatisfied and says so. An error here
+            // would be a client refusing to read a world it read perfectly well.
+            //
+            // Inert for an operation that asked for no labels — see
+            // [`EnsurePullRequest::carries_the_labels`] — so M2's behaviour is untouched.
+            [one] => self
+                .read(one)
+                .map(|found| self.carries_the_labels(&found).then_some(found)),
             // Two open pull requests for one head and base is the state this
             // milestone exists to prevent, and it is reported rather than
             // resolved by picking one. GitHub will not create the second, so
@@ -362,15 +524,37 @@ impl IntegrationOperation for EnsurePullRequest {
         }
     }
 
-    /// One `POST /repos/{repo}/pulls`, and the only line here that changes
-    /// anything.
+    /// `POST /repos/{repo}/pulls`, and — when this run asked for labels — the
+    /// `POST` that puts them on. The only lines here that change anything.
     ///
-    /// The response is deliberately discarded, number and all. It is what GitHub
-    /// said, and the executor's next act is to read the world back; a receipt
-    /// built from this value would be a receipt for a response rather than for
-    /// an observation, which is the thing step 8 exists to prevent — and in this
-    /// operation there may be no response at all, because the ordinary
+    /// # Two requests and one effect
+    ///
+    /// [`labels_path`](EnsurePullRequest::labels_path) states why there cannot be
+    /// one request and what that costs. What matters here is what the pair is
+    /// *not*: it is not two effects, not two identities, and not two chances to
+    /// report success. Both are inside this call, so a failed label call is a
+    /// failed effect, and the executor reads the world back afterwards either
+    /// way.
+    ///
+    /// The create is unconditional and comes first, because the label is
+    /// addressed by a number that does not exist until it has run.
+    ///
+    /// # The response is discarded except for the one thing it is authoritative
+    /// about
+    ///
+    /// It stays discarded as far as the *receipt* is concerned — the receipt
+    /// comes from step 8's observation, for the reason it always did, and this
+    /// operation may have no response at all because the ordinary
     /// duplicate-prevention answer is a refusal.
+    ///
+    /// What is read out of it is the number of the pull request GitHub has just
+    /// said it created, used as the *address of the next request in this same
+    /// call*. That is a different thing from believing a response about the state
+    /// of the world: nothing downstream of here trusts it, and if it is wrong the
+    /// label lands somewhere else and step 8 finds the postcondition unsatisfied.
+    /// The alternative — re-running [`lookup_path`](EnsurePullRequest::lookup_path)
+    /// to find the number of the object just created — is a second read whose
+    /// answer could only be less authoritative than the create's own.
     async fn apply(
         &self,
         ctx: &EffectContext,
@@ -383,16 +567,210 @@ impl IntegrationOperation for EnsurePullRequest {
             ("base".to_string(), self.base.clone().into()),
         ]);
         body.extend(self.draft_key());
-        ctx.gh
+        let created = ctx
+            .gh
             .api(
                 "POST",
                 &format!("/repos/{}/pulls", self.repo),
                 Some(&serde_json::Value::Object(body)),
                 &ctx.cancel,
             )
+            .await?;
+
+        if self.labels.is_empty() {
+            return Ok(());
+        }
+
+        // Checked rather than defaulted, and this is the one place the create's
+        // answer is load-bearing. A create whose response carries no number is a
+        // `gh` answering something this client cannot use to address the label,
+        // and guessing a number would put somebody else's pull request in a
+        // category that means *fiddle is working on this*.
+        let number = created.body["number"].as_u64().ok_or_else(|| {
+            GhError::Malformed(format!(
+                "the create answered {} with no pull request number, so the \
+                 {:?} it must carry cannot be addressed",
+                created.status, self.labels
+            ))
+        })?;
+
+        ctx.gh
+            .api(
+                "POST",
+                &self.labels_path(number),
+                Some(&serde_json::json!({ "labels": self.labels })),
+                &ctx.cancel,
+            )
             .await
             .map(|_response| ())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Finding the one shared pull request, by the label that discriminates it
+// ---------------------------------------------------------------------------
+
+/// How many labelled issues one page of the search is asked for.
+///
+/// GitHub's maximum. A second page is refused rather than followed — see
+/// [`find_labelled_pull_request`] — so this is not a page size so much as the
+/// ceiling on an anomaly that is still readable.
+const SEARCH_PAGE: u32 = 100;
+
+/// The one open pull request a capability shares, and the anomaly if there is
+/// one.
+///
+/// This is what a *discovery* read answers, and it is deliberately not
+/// [`PullRequest`]: that one is an effect's observed postcondition, built by the
+/// operation that is about to act on it, and this one is a run finding out what
+/// the world already holds before it has proposed anything at all.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedPullRequest {
+    /// The lowest open pull request carrying the label. The one to work on.
+    pub number: u64,
+    /// Its head branch, bare — no `refs/heads/` and no owner qualification,
+    /// because what a caller does with it is check it out and push it.
+    pub head: String,
+    /// The branch it is proposed into.
+    pub base: String,
+    /// Read by a person and decided on by nothing, like every other title in
+    /// this module.
+    pub title: String,
+    /// Every *other* open pull request carrying the label, ascending.
+    ///
+    /// Empty in the ordinary case, and that is the case. GitHub will not create
+    /// a second pull request for one head and base, so more than one open
+    /// labelled pull request is something a person did — and a person is who
+    /// closes the extras, which is why these are carried out to be reported
+    /// rather than resolved here.
+    pub duplicates: Vec<u64>,
+}
+
+/// Find the one open pull request in `repo` carrying `label`.
+///
+/// # Why the label and not an identity
+///
+/// `effect_id` prevents a *duplicate effect*; this finds *existing work*, and
+/// they are different jobs that earlier drafts of the M4 design conflated — ADR
+/// 019 records the correction. A fresh process asking "is somebody already
+/// working on this?" has no run of its own to recompute an identity from, and the
+/// pull request it is looking for may have been opened weeks ago by a
+/// differently-configured deployment. The label is a fact about the object.
+///
+/// # Why not a search, and why not the pulls listing
+///
+/// **Not GitHub's full-text search**, which matches pull request *bodies*, and
+/// this design's own bodies list advisories that are still present after a
+/// rescan: a mention is evidence a CVE was *seen*, never that it was fixed. That
+/// misfired on 2026-08-12 and Design §4 records the incident.
+///
+/// **Not `GET /pulls`**, which has no label parameter at all — a client would
+/// have to page every open pull request in the repository and filter locally.
+/// Labels belong to issues at GitHub, a pull request *is* an issue there, and
+/// `GET /issues?labels=` is the documented server-side filter. Its answer mixes
+/// the two, so the `pull_request` key is what tells them apart, and an ordinary
+/// issue somebody labelled `security/cve` is exactly the kind of thing that would
+/// otherwise be settled on.
+///
+/// # What is checked rather than trusted
+///
+/// The filtering is GitHub's and confirming that what came back is what was asked
+/// for is this client's — [`EnsurePullRequest::read`]'s rule, applied to a second
+/// endpoint. A widened answer is not hypothetical: a proxy, a cached page, or a
+/// parameter that stops being honoured all produce one, and the object that gets
+/// settled on then is somebody else's branch.
+///
+/// A second page is refused. `state=open` and one label is not a query that
+/// should ever fill a hundred pull requests, and the claim being made is *the
+/// lowest*, which cannot be made over a page. Reading the first page and calling
+/// it the whole answer is precisely how a run picks a pull request that is not
+/// the one a person was looking at.
+///
+/// No arm turns a failed read into an absence. The listing answers `200` with
+/// `[]` when nothing carries the label, so an error is the repository being
+/// unreadable — and reading an outage as "nothing is open" is how the second
+/// pull request gets opened.
+pub async fn find_labelled_pull_request(
+    gh: &GhCli,
+    repo: &str,
+    label: &str,
+    cancel: &CancellationToken,
+) -> Result<Option<SharedPullRequest>, GhError> {
+    let path = format!(
+        "/repos/{repo}/issues?labels={}&state=open&per_page={SEARCH_PAGE}",
+        encode(label)
+    );
+    let response = gh.api("GET", &path, None, cancel).await?;
+
+    if has_a_next_page(response.link.as_deref()) {
+        return Err(GhError::Malformed(format!(
+            "{path} answered more than one page, so no pull request on it can be \
+             called the lowest"
+        )));
+    }
+
+    // Checked rather than defaulted, for the listing's reason: a 200 whose body
+    // is not a list is a `gh` answering something this client cannot read, and
+    // defaulting it to empty would turn that into "nothing is open".
+    let listed = response.body.as_array().ok_or_else(|| {
+        GhError::Malformed(format!(
+            "{path} answered {} with something that is not a list",
+            response.status
+        ))
+    })?;
+
+    let mut numbers: Vec<u64> = listed
+        .iter()
+        // A pull request and not an ordinary issue. `pull_request` is the only
+        // thing in this answer that says which, and its absence is GitHub's own
+        // spelling of "this is an issue".
+        .filter(|it| it.get("pull_request").is_some_and(|it| !it.is_null()))
+        // And really carrying the label, whatever the query was answered with.
+        .filter(|it| label_names(it).iter().any(|name| name == label))
+        // And really open. Both halves of the query are re-checked, not just the
+        // interesting one: a closed pull request that reached this list is a
+        // branch that has been merged or abandoned, and a run that settled on it
+        // would commit onto history the base already carries — or onto a branch
+        // the remote no longer has. `open` and not "not closed", because a state
+        // this client cannot read is not a state it should work in.
+        .filter(|it| it["state"].as_str() == Some("open"))
+        .filter_map(|it| it["number"].as_u64())
+        .collect();
+    numbers.sort_unstable();
+
+    let Some((&number, duplicates)) = numbers.split_first() else {
+        return Ok(None);
+    };
+
+    // The head and base are the two facts this read exists to produce and the
+    // two the issues listing does not carry — it answers about an issue, and an
+    // issue has no branches. One more read, addressed at the one object that was
+    // chosen, rather than a listing of every open pull request filtered locally.
+    let pull_request = gh
+        .api(
+            "GET",
+            &format!("/repos/{repo}/pulls/{number}"),
+            None,
+            cancel,
+        )
+        .await?;
+    let head = pull_request.body["head"]["ref"]
+        .as_str()
+        .ok_or_else(|| GhError::Malformed(format!("pull request #{number} carried no head ref")))?;
+    let base = pull_request.body["base"]["ref"]
+        .as_str()
+        .ok_or_else(|| GhError::Malformed(format!("pull request #{number} carried no base ref")))?;
+
+    Ok(Some(SharedPullRequest {
+        number,
+        head: head.to_string(),
+        base: base.to_string(),
+        title: pull_request.body["title"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        duplicates: duplicates.to_vec(),
+    }))
 }
 
 // ---------------------------------------------------------------------------

@@ -33,8 +33,8 @@ pub use cli::{GhCli, GhError, GhResponse, RetryAdvice};
 // client that happens to read one.
 pub use comments::{read_conversation, read_one_comment, HumanResponse};
 pub use pulls::{
-    pull_request_body_target, pull_request_target, EnsurePullRequest, EnsurePullRequestBody,
-    PullRequest, PullRequestBody,
+    find_labelled_pull_request, pull_request_body_target, pull_request_target, EnsurePullRequest,
+    EnsurePullRequestBody, PullRequest, PullRequestBody, SharedPullRequest,
 };
 pub use ready::{pull_request_ready_target, EnsurePullRequestReady, ReadyPullRequest};
 pub use refs::{branch_name, branch_target, BranchRef, EnsureBranchPublished};

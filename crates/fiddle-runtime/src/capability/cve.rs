@@ -55,6 +55,13 @@
 //! command [`ToolHost`] carries for the `run_check` tool. Both of those read a
 //! [`MigrationAttempt`], and this module deliberately reaches no verdict for them
 //! to have to undo.
+//!
+//! # And the decision that comes before any of it: which tree to work in
+//!
+//! [`plan_shared_pull_request`] is the other half of this file and it runs
+//! *first*, before a worktree exists and before a model is consulted. It answers
+//! one question — which branch does this run add to — and it is the only thing
+//! here that can refuse the run outright. See the section it opens.
 
 use super::propose::COMMITTER;
 use super::CapabilityError;
@@ -63,9 +70,11 @@ use crate::cve::attribute::Target;
 use crate::cve::fold::{fold_commit_argv, Landed};
 use crate::cve::group::Group;
 use crate::evaluate::{Evaluation, RescanVerdict};
+use crate::github::{find_labelled_pull_request, SharedPullRequest};
 use crate::workspace::{
     Content, FileEdit, Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath,
 };
+use crate::{GhCli, GhError};
 use async_trait::async_trait;
 use fiddle_core::{AttemptId, ProjectedFinding};
 use std::collections::BTreeSet;
@@ -1111,6 +1120,298 @@ where
     call.extend(argv.iter().map(|argument| argument.as_str()));
     git.run(&call).await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Which branch this run adds to, decided before it touches a tree
+// ---------------------------------------------------------------------------
+
+/// The label that makes the shared pull request findable.
+///
+/// **The discriminator, and not decoration.** Design §4's whole model is one
+/// pull request per repository rather than one per advisory, and nothing else
+/// identifies it: the branch name is dated so it changes, the title names no
+/// advisory, and the body is prose that a rescan rewrites. A pull request opened
+/// without this label is invisible to [`plan_shared_pull_request`], and the next
+/// run opens a second one.
+///
+/// ADR 019 records why this rather than an identity: `effect_id` prevents a
+/// duplicate *effect*, and this finds existing *work*. A run discovering the
+/// world for itself has no earlier run's identity to recompute.
+pub const CVE_LABEL: &str = "security/cve";
+
+/// What a branch this capability may push to is named.
+///
+/// # A constant, and deliberately not a configuration key
+///
+/// It is the same fact as [`CVE_LABEL`] and [`BRANCH_STEM`], written a third
+/// time: all three are `security/…`, and they are one convention rather than
+/// three settings. Making one of them configurable would let a deployment set a
+/// prefix that admits no branch this capability cuts, or that admits branches
+/// nothing here would ever push — and the misconfiguration's symptom is exactly
+/// the failure the guard exists to prevent, discovered after a commit.
+/// `the_branch_this_capability_cuts_satisfies_its_own_push_guard` is what holds
+/// the three together.
+///
+/// It is also **not** M2's `fiddle/` namespace, which
+/// [`branch_name`](crate::github::branch_name) derives for a branch named after
+/// an effect identity. That one is per-run and opaque; this one is a durable,
+/// human-legible branch a person may look at for weeks, and a security team that
+/// grants push to `security/*` is granting it to a name they can read.
+///
+/// The trailing `/` is part of it. Without one, `security-theatre/x` would be
+/// admitted by a prefix meant to name a namespace.
+pub const PUSHABLE_PREFIX: &str = "security/";
+
+/// What a fresh branch is called, before the date.
+///
+/// Dated, because merged branches persist on the remote: a fixed name would
+/// eventually be pushed onto a branch that had already been merged and deleted —
+/// or worse, one that had been merged and not deleted, whose history is already
+/// in the base. Design §4 states it.
+pub const BRANCH_STEM: &str = "security/cve-remediation-";
+
+/// Why a run may not proceed against the pull request it found.
+///
+/// One variant, and it is the whole of what this decision can refuse. Everything
+/// else the discovery read can answer is a situation to work in: nothing open is
+/// a fresh cut, one open is a reuse, and several open is a reuse with a note.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum Refusal {
+    /// The open pull request's head is a branch this capability may not push to.
+    ///
+    /// **Refused rather than worked around, because there is no workaround.**
+    /// Opening a second pull request is the state the shared-PR model exists to
+    /// prevent; pushing to the branch anyway is the state the prefix exists to
+    /// prevent. What is left is to stop, and to stop *before* a commit — a run
+    /// that checked the branch out, committed a bump onto it and only then found
+    /// it could not push has written to a branch somebody else owns.
+    ///
+    /// Reachable by an ordinary mistake rather than by malice: a person adds
+    /// `security/cve` to their own pull request, meaning *this is about the CVEs*,
+    /// and fiddle now believes that branch is its shared one.
+    #[error(
+        "pull request #{number} carries the shared label and its head branch \
+         `{head}` is not under `{prefix}`, which is the only namespace this \
+         capability may push to"
+    )]
+    HeadOutsideThePushablePrefix {
+        number: u64,
+        head: String,
+        prefix: &'static str,
+    },
+}
+
+/// Everything that can stop this decision being reached.
+///
+/// Two variants and they are different kinds of fact, which is why they are not
+/// one. A [`PlanError::Read`] is the forge being unreadable and says nothing
+/// about the world; a [`PlanError::Refused`] is the world having been read
+/// perfectly well and found to be one this run must not act in. A caller
+/// reporting a run's reason has to be able to tell them apart — the first
+/// invites another attempt and the second does not.
+#[derive(Debug, thiserror::Error)]
+pub enum PlanError {
+    /// The label search, or the pull request it named, could not be read.
+    #[error("the shared pull request could not be looked up: {0}")]
+    Read(#[from] GhError),
+
+    /// The world was read, and this run may not proceed in it.
+    #[error("{0}")]
+    Refused(#[from] Refusal),
+}
+
+/// The branch this run works on, and how it came to be chosen.
+///
+/// **The only value that names a branch**, and that is the structural half of
+/// *refuse before any commit*: [`plan`] answers this or a [`Refusal`], so after a
+/// refusal there is nothing for a checkout, a commit or a push to be addressed
+/// at. The ordering is not a convention a caller has to remember.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Approved {
+    /// A shared pull request is already open; add to its branch.
+    Reuse {
+        /// The pull request being added to — the lowest, when there is more
+        /// than one.
+        number: u64,
+        /// Its head branch, bare.
+        branch: String,
+        /// Every other open labelled pull request, ascending.
+        duplicates: Vec<u64>,
+    },
+
+    /// Nothing is open; cut a dated branch and open one at the end.
+    Fresh {
+        /// [`BRANCH_STEM`] plus the date.
+        branch: String,
+        /// The branch it is cut from, bare — [`Approved::from`] is what turns it
+        /// into the ref that is actually checked out.
+        base: String,
+    },
+}
+
+impl Approved {
+    /// The branch this run commits onto.
+    pub fn branch(&self) -> &str {
+        match self {
+            Approved::Reuse { branch, .. } | Approved::Fresh { branch, .. } => branch,
+        }
+    }
+
+    /// The ref the worktree is created at, and it is a **remote-tracking ref in
+    /// both arms**.
+    ///
+    /// Design §4: *never branch from local `HEAD` or local `main`*. Both are the
+    /// same hazard seen twice — a clone this process did not create is a clone
+    /// whose local refs are whatever the last thing to run in it left behind, and
+    /// a `security/cve-remediation-…` from yesterday's run is exactly the kind of
+    /// stale local branch a reuse would otherwise pick up. `origin/` is what says
+    /// *the tip the forge is showing*, which is the tip the open pull request is
+    /// actually about.
+    ///
+    /// Written here rather than at the call site because it is the one sentence
+    /// this whole guard is for, and two call sites spelling it would be two
+    /// chances to spell it `HEAD`.
+    pub fn from(&self) -> String {
+        match self {
+            Approved::Reuse { branch, .. } => format!("origin/{branch}"),
+            Approved::Fresh { base, .. } => format!("origin/{base}"),
+        }
+    }
+
+    /// The pull request being added to, or `None` for a fresh cut.
+    pub fn reused(&self) -> Option<u64> {
+        match self {
+            Approved::Reuse { number, .. } => Some(*number),
+            Approved::Fresh { .. } => None,
+        }
+    }
+
+    /// Every other open labelled pull request, ascending, and empty ordinarily.
+    pub fn duplicates(&self) -> &[u64] {
+        match self {
+            Approved::Reuse { duplicates, .. } => duplicates,
+            Approved::Fresh { .. } => &[],
+        }
+    }
+
+    /// What the shared pull request's body has to say about this run's
+    /// situation, or `None` when there is nothing to say.
+    ///
+    /// Today that is the duplicate anomaly and nothing else, which is why it is
+    /// an `Option<String>` rather than a report type: one sentence, produced in
+    /// one case. The rest of the body — the per-advisory disposition rows — is
+    /// `cve::verdict`'s, and a shape invented here for it would be one that lane
+    /// then had to fit into.
+    ///
+    /// **`None` when there is one pull request**, which is the ordinary run.
+    /// A note that appeared every time would be an anomaly warning on a body
+    /// nobody would then read.
+    pub fn note(&self) -> Option<String> {
+        duplicate_note(self.duplicates())
+    }
+}
+
+/// The sentence a run puts in the body when it found more than one.
+///
+/// It names the extras and asks for them to be closed, and it does not close
+/// them. Two open labelled pull requests is a state GitHub itself will not
+/// produce — it refuses a second for one head and base — so it is something a
+/// person did, and undoing somebody's deliberate act because a nightly job found
+/// it surprising is not this run's decision to take. What the run can do is make
+/// sure the person who did it finds out.
+///
+/// The numbers and not the branches, because a number is what a person clicks.
+fn duplicate_note(duplicates: &[u64]) -> Option<String> {
+    if duplicates.is_empty() {
+        return None;
+    }
+    let listed: Vec<String> = duplicates.iter().map(|it| format!("#{it}")).collect();
+    Some(format!(
+        "More than one open pull request carries `{CVE_LABEL}`. This run added to \
+         the lowest-numbered one and opened nothing new; {} {} still open and \
+         should be closed by hand.",
+        listed.join(", "),
+        match duplicates.len() {
+            1 => "is",
+            _ => "are",
+        }
+    ))
+}
+
+/// The branch a run with nothing open cuts for itself.
+fn dated_branch(today: &str) -> String {
+    format!("{BRANCH_STEM}{today}")
+}
+
+/// Decide which branch this run works on, given what the forge was observed to
+/// hold.
+///
+/// **Pure, and takes no [`Git`], no [`Workspace`] and no client.** That is what
+/// makes it possible to answer *before any commit*: there is nothing here that
+/// could commit, and the value it produces on a refusal names no branch for a
+/// caller to commit onto. `plan_shared_pull_request` is the one that reads.
+///
+/// # One guard over one branch, both arms
+///
+/// The prefix is checked against *the branch this run will push*, whichever way
+/// it was arrived at, rather than only against a discovered head. A fresh cut
+/// satisfies it by construction — [`BRANCH_STEM`] is under [`PUSHABLE_PREFIX`] —
+/// and checking it anyway costs one comparison and means the rule is stated once
+/// rather than being true of one arm by accident.
+pub fn plan(
+    found: Option<SharedPullRequest>,
+    base: &str,
+    today: &str,
+) -> Result<Approved, Refusal> {
+    let approved = match found {
+        Some(shared) => Approved::Reuse {
+            number: shared.number,
+            branch: shared.head,
+            duplicates: shared.duplicates,
+        },
+        None => Approved::Fresh {
+            branch: dated_branch(today),
+            base: base.to_string(),
+        },
+    };
+
+    if !approved.branch().starts_with(PUSHABLE_PREFIX) {
+        return Err(Refusal::HeadOutsideThePushablePrefix {
+            // A refusal can only come from the reuse arm, because a fresh branch
+            // is this capability's own name. `unwrap_or_default` rather than an
+            // `expect` so an unreachable case is a `#0` in a diagnostic rather
+            // than a panic in a nightly job.
+            number: approved.reused().unwrap_or_default(),
+            head: approved.branch().to_string(),
+            prefix: PUSHABLE_PREFIX,
+        });
+    }
+    Ok(approved)
+}
+
+/// Read the forge and decide, which is the whole of what happens before a run
+/// touches a tree.
+///
+/// Two steps and no third: [`find_labelled_pull_request`] observes, [`plan`]
+/// decides. Split that way because the observation needs a process and the
+/// decision needs nothing at all, so every rule the decision encodes is testable
+/// without one — and because a reader asking *what does this refuse* has one
+/// function to read rather than a read interleaved with a rule.
+///
+/// `today` is supplied rather than read from a clock. A branch name is a fact a
+/// caller has to be able to reproduce in a diagnostic and in a test, and a
+/// function that reached for the wall clock would name a different branch every
+/// midnight with nothing able to say which.
+pub async fn plan_shared_pull_request(
+    gh: &GhCli,
+    repo: &str,
+    base: &str,
+    today: &str,
+    cancel: &CancellationToken,
+) -> Result<Approved, PlanError> {
+    let found = find_labelled_pull_request(gh, repo, CVE_LABEL, cancel).await?;
+    Ok(plan(found, base, today)?)
 }
 
 #[cfg(test)]

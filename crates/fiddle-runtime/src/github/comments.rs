@@ -272,7 +272,15 @@ pub async fn read_one_comment(
 /// superseded. The one case §5.6 exists to protect is the case a truncation
 /// defeats. A module whose whole subject is completeness must not resolve doubt
 /// toward incompleteness.
-fn has_a_next_page(link: Option<&str>) -> bool {
+///
+/// `pub(crate)` rather than private, because [`crate::github::pulls`]'s label
+/// search asks the same question of a different collection and the answer must
+/// not be arrived at twice. Its own reason for asking is stated there and is a
+/// different one from this module's — it refuses a second page outright where
+/// this one follows it — but *what a `Link` header means* is one fact, and two
+/// readings of it that drifted would leave one of the two collections silently
+/// truncated.
+pub(crate) fn has_a_next_page(link: Option<&str>) -> bool {
     let header = link.unwrap_or_default().trim();
     if header.is_empty() {
         // The one unambiguous end. GitHub omits the header entirely on a

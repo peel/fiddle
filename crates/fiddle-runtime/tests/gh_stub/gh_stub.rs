@@ -305,6 +305,21 @@ fn response_body(dir: &Path, status: u16, mode: &str, key: &str) -> String {
     if status < 400 && is_conversation_comment_post(key) {
         return serde_json::json!({ "id": last_posted_comment_id(dir, key) }).to_string();
     }
+    // A pull request create answers with the pull request it created, because
+    // the real endpoint does and because a label is applied through
+    // `/issues/{n}/labels` — a path there is no way to address without the
+    // number. Read *after* [`apply_effect`] has appended this create, and read
+    // through [`pull_requests`], so the number the create answers is the number
+    // the listing will report it under: a fixture whose two halves disagreed
+    // would let a client that invented one pass a test asserting the one it
+    // reads back.
+    if status < 400 && is_pull_request_create(key) {
+        let number = pull_requests(dir)
+            .last()
+            .and_then(|pr| pr["number"].as_u64())
+            .unwrap_or_else(|| panic!("a create landed under {key} and the world holds none"));
+        return serde_json::json!({ "number": number }).to_string();
+    }
     match status >= 400 {
         true => serde_json::json!({ "message": format!("scripted {status}") }).to_string(),
         false => "{}".to_string(),
@@ -533,6 +548,15 @@ fn percent_decode(value: &str) -> String {
 /// own `POST`s created. Numbers are positional and start at 7 rather than 1, so
 /// a test asserting on an external reference cannot pass by accident against an
 /// index or a count.
+/// A seed entry may name its own number, and the numbers a world holds must be
+/// distinct, so a positional default has to skip over the named ones.
+///
+/// A named number is what makes an anomaly arrangeable: the shared-pull-request
+/// lanes seed 57, 41 and 63 in that order precisely so that *the lowest*, *the
+/// first* and *the last* are three different answers, which positional numbering
+/// makes impossible. Unnamed entries keep the old rule — `7 + i` and never `1`,
+/// so an assertion on an external reference cannot pass against an index — and
+/// take the next free number at or above it.
 fn pull_requests(dir: &Path) -> Vec<serde_json::Value> {
     let seeded = read_pull_request_seed(dir);
     let created = std::fs::read_to_string(dir.join("world"))
@@ -549,15 +573,28 @@ fn pull_requests(dir: &Path) -> Vec<serde_json::Value> {
         })
         .collect::<Vec<_>>();
 
-    seeded
-        .into_iter()
-        .chain(created)
-        .enumerate()
-        .map(|(i, pr)| {
+    let all: Vec<serde_json::Value> = seeded.into_iter().chain(created).collect();
+    let named: Vec<u64> = all.iter().filter_map(|pr| pr["number"].as_u64()).collect();
+
+    let mut next = 7u64;
+    all.iter()
+        .map(|pr| {
             let head = pr["head"].as_str().unwrap_or_default().to_string();
+            let number = pr["number"].as_u64().unwrap_or_else(|| {
+                while named.contains(&next) {
+                    next += 1;
+                }
+                let mine = next;
+                next += 1;
+                mine
+            });
             serde_json::json!({
-                "number": 7 + i,
-                "state": "open",
+                "number": number,
+                // Named by the seed when a test needs a closed one, and `open`
+                // otherwise — which is every world that predates the label
+                // search. A closed pull request is reachable only by asking for
+                // one, so no existing lane's world changed shape.
+                "state": pr["state"].as_str().unwrap_or("open"),
                 "title": pr["title"].as_str().unwrap_or_default(),
                 // GitHub's own shape: the head is a `label` of `owner:branch`
                 // beside the bare `ref`, and the base is a `ref` alone.
@@ -566,9 +603,69 @@ fn pull_requests(dir: &Path) -> Vec<serde_json::Value> {
                     "ref": head.split_once(':').map(|(_, r)| r).unwrap_or(&head),
                 },
                 "base": { "ref": pr["base"].as_str().unwrap_or_default() },
+                // Carried because the listing really does: GitHub's pulls
+                // listing answers full pull request objects, and
+                // `EnsurePullRequest`'s postcondition now asks whether the one
+                // it found is labelled.
+                "labels": labels_of(dir, number, pr),
+                // A create sends a body and the object keeps it, so a pull
+                // request this world created can be read by number like one it
+                // was seeded with.
+                "body": pr["body"].clone(),
+                "draft": pr["draft"].as_bool().unwrap_or(false),
             })
         })
         .collect()
+}
+
+/// Every label the world holds for pull request `number`.
+///
+/// Two sources, one list, for [`pull_requests`]'s reason. A seeded entry names
+/// its labels directly — a world a test arranged — and a created one acquires
+/// them through the `POST /repos/{o}/{r}/issues/{n}/labels` that
+/// `EnsurePullRequest::apply` makes after the create, read out of the **world
+/// log** so that only the label calls that really landed count.
+///
+/// That second half is the whole of what makes
+/// `a_created_pull_request_carries_the_label_that_finds_it` a test rather than a
+/// tautology: the label reaches this world only by the client actually sending
+/// it, so a create that skipped the second request produces a pull request this
+/// function reports as unlabelled — and the discovery read then cannot find it.
+fn labels_of(dir: &Path, number: u64, seeded: &serde_json::Value) -> Vec<serde_json::Value> {
+    let name =
+        |it: &serde_json::Value| serde_json::json!({ "name": it.as_str().unwrap_or_default() });
+    let mut labels: Vec<serde_json::Value> = seeded["labels"]
+        .as_array()
+        .map(|it| it.iter().map(name).collect())
+        .unwrap_or_default();
+
+    let applied = format!("_issues_{number}_labels");
+    for landed in std::fs::read_to_string(dir.join("world"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+    {
+        let key = landed["key"].as_str().unwrap_or_default();
+        if !key.starts_with("POST") || !key.ends_with(&applied) {
+            continue;
+        }
+        let body = parse(landed["body"].as_str().unwrap_or("{}"));
+        if let Some(sent) = body["labels"].as_array() {
+            labels.extend(sent.iter().map(name));
+        }
+    }
+    labels
+}
+
+/// The plain issues — not pull requests — a test put in the world.
+///
+/// A separate seed because they are separate objects, and the discovery read's
+/// whole difficulty is that GitHub's label search answers about both: a pull
+/// request *is* an issue there, and only the `pull_request` key says which is
+/// which. A world that could not hold a labelled ordinary issue could not put
+/// that confusion in front of a client.
+fn read_issue_seed(dir: &Path) -> Vec<serde_json::Value> {
+    read_seed(dir, "issues_seed")
 }
 
 fn read_pull_request_seed(dir: &Path) -> Vec<serde_json::Value> {
@@ -688,6 +785,15 @@ fn is_conversation_comment_post(key: &str) -> bool {
     key.starts_with("POST_repos_") && key.contains("_issues_") && key.ends_with("_comments")
 }
 
+/// Whether `key` is a `POST` onto the **pulls collection** — a create.
+///
+/// Ends at `_pulls`, so `POST_repos_o_r_pulls_7_reviews` and anything else
+/// addressed at a pull request that already exists is not one. The distinction
+/// matters because only a create has a number to answer with.
+fn is_pull_request_create(key: &str) -> bool {
+    key.starts_with("POST_repos_") && key.ends_with("_pulls")
+}
+
 /// The id a comment posted **now** gets: one above the highest the world already
 /// holds, and never below [`FIRST_POSTED_COMMENT`].
 ///
@@ -764,6 +870,68 @@ fn world_answer(dir: &Path, key: &str, path: &str) -> (u16, String) {
     // rather than as the missing route it is.
     if let Some(answer) = pull_request_by_number(dir, path) {
         return answer;
+    }
+    // The label search, which is answered about **issues** because that is where
+    // GitHub keeps labels — and a pull request is an issue there, which is the
+    // whole reason the endpoint can answer this question and the whole reason its
+    // answer needs telling apart. Placed before the pulls listing because the
+    // key contains neither `pulls` nor a number, so nothing above would claim it.
+    if key.starts_with("GET_repos") && key.contains("_issues") && !key.contains("comments") {
+        // Filtered, for the pulls listing's reason: a stub that answered every
+        // labelled object whatever it was asked would let a client with no label
+        // in its query pass, which is the exact defect the label-as-discriminator
+        // model exists to prevent. `issues_unfiltered` switches it off so a test
+        // can put an object the client never asked for in front of it.
+        let unfiltered = dir.join("issues_unfiltered").exists();
+        let asked: Vec<String> = query_param(path, "labels")
+            .unwrap_or_default()
+            .split(',')
+            .filter(|it| !it.is_empty())
+            .map(str::to_string)
+            .collect();
+
+        // Pull requests carry `pull_request`; plain issues do not. Nothing else
+        // in the answer distinguishes them, which is GitHub's own arrangement.
+        let pulls = pull_requests(dir).into_iter().map(|pr| {
+            let number = pr["number"].as_u64().unwrap_or_default();
+            serde_json::json!({
+                "number": number,
+                "state": pr["state"],
+                "title": pr["title"],
+                "labels": pr["labels"],
+                "pull_request": { "url": format!("/repos/o/r/pulls/{number}") },
+            })
+        });
+        let issues = read_issue_seed(dir).into_iter().map(|issue| {
+            serde_json::json!({
+                "number": issue["number"],
+                "state": "open",
+                "title": issue["title"],
+                "labels": issue["labels"]
+                    .as_array()
+                    .map(|it| it
+                        .iter()
+                        .map(|name| serde_json::json!({ "name": name }))
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            })
+        });
+
+        let matches: Vec<_> = pulls
+            .chain(issues)
+            .filter(|it| {
+                unfiltered
+                    || (asked.iter().all(|wanted| {
+                        it["labels"].as_array().is_some_and(|held| {
+                            held.iter().any(|l| l["name"].as_str() == Some(wanted))
+                        })
+                    }) && match query_param(path, "state") {
+                        Some(state) => it["state"].as_str() == Some(state.as_str()),
+                        None => true,
+                    })
+            })
+            .collect();
+        return (200, serde_json::Value::Array(matches).to_string());
     }
     if key.starts_with("GET_repos") && key.contains("pulls") {
         // The list endpoint filters, and the filtering is the fixture's real
@@ -940,12 +1108,36 @@ fn pull_request_by_number(dir: &Path, path: &str) -> Option<(u16, String)> {
     number.parse::<u64>().ok()?;
 
     let file = dir.join("pulls_by_number").join(format!("{number}.json"));
-    let body = std::fs::read_to_string(&file).unwrap_or_else(|_| {
-        panic!(
-            "nothing scripted at {}; a pull request is answered from its file or not at all",
-            file.display()
-        )
-    });
+    let body = match std::fs::read_to_string(&file) {
+        Ok(scripted) => scripted,
+        // Not scripted, but **the world holds it** — because it was seeded into
+        // the listing or created by a `POST` that really landed. Answering from
+        // the world is not "the answer to an oversight" the panic below refuses;
+        // it is the same object the listing is already describing, and GitHub
+        // answers about it by number too. A fixture whose two routes disagreed
+        // about a pull request it visibly holds would be the defect, not the
+        // convenience.
+        //
+        // Kept behind the file, so every test that scripted one keeps exactly the
+        // bytes it wrote — including the deliberately incomplete ones.
+        Err(_) => match pull_requests(dir)
+            .into_iter()
+            .find(|pr| pr["number"].as_u64().map(|it| it.to_string()).as_deref() == Some(*number))
+        {
+            Some(held) => held.to_string(),
+            // Still a panic, and for the reason it always was: the tempting
+            // default is a 404 — a pull request nobody opened, which is a real
+            // thing the world does — but that is a *scenario*, and a fixture
+            // that produced it for a number nothing holds would answer a
+            // question nobody asked.
+            None => panic!(
+                "nothing scripted at {} and no pull request numbered {number} in this \
+                 world; a pull request is answered from its file, from the world, or \
+                 not at all",
+                file.display()
+            ),
+        },
+    };
     Some((200, landed_transitions_applied(dir, number, body)))
 }
 

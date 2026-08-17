@@ -112,7 +112,28 @@
 //!   name and staging by directory produce different commits, and
 //!   [`LANDING_CREATED`] is a file `git checkout` cannot put back. Neither is
 //!   decoration — see each one's own doc.
-//! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
+//! - **Task 17.a adds nothing here either, and for Task 18's reason rather than
+//!   in spite of it.** This list assigned it `forge()` and the `scripted_gh_*`
+//!   builders; it has neither, because the only suite that wants one is
+//!   `cve_shared_pr.rs`, which already keeps a local `Forge` — and a second
+//!   `forge()` here, used by nobody, is precisely the duplicate this list exists
+//!   to prevent. What 17.a did instead was *widen the local one*: `empty()`,
+//!   `seed_pull_request` with a named number, `seed_issue`, `gh()` on its own,
+//!   and the two counts a duplicate hides between. If 17.b or Task 20 needs a
+//!   forge from another suite, it moves then and there is one shape to move.
+//!
+//!   What every suite **does** inherit is in `gh_stub`, and it is additive:
+//!   `GET /repos/{o}/{r}/issues?labels=…&state=open` answers the label search
+//!   over pull requests *and* plain issues, distinguished by a `pull_request`
+//!   key exactly as GitHub distinguishes them, and `issues_unfiltered` is its
+//!   `pulls_unfiltered`. A seed entry may now **name its own number**, so a world
+//!   can be arranged in which the lowest, the first and the last are three
+//!   different pull requests; unnamed entries keep `7 + i` and skip the named
+//!   ones. A create answers with the number it created, because a label is
+//!   applied through `/issues/{n}/labels` and there is no way to address that
+//!   without one. The by-number route falls back to the world when nothing is
+//!   scripted for a number the world visibly holds — a number it does not hold
+//!   is still a panic naming the file.
 //! - **Task 18 adds nothing here, deliberately.** It landed before Task 17 and
 //!   needed a forge, so the obvious move was to bring `forge()` forward. It did
 //!   not: what a single-operation suite needs is a scratch directory for the
@@ -1379,10 +1400,12 @@ pub fn log_of(bodies: &[&str]) -> CommitLog {
 /// arrangement, and for the same reason: a fixture that answered would be
 /// deciding what git says, and what the lane is about is what the subject *ran*.
 ///
-/// **Task 17 brings `forge()` and the `scripted_gh_*` builders**, which are a
-/// different object — a scripted `gh` that answers pull request queries for the
-/// lanes that legitimately make them. Nothing here should grow into that: this
-/// one proves an absence and needs no arms at all.
+/// **This is not `cve_shared_pr.rs`'s `Forge`**, which is a scratch directory
+/// for the scripted `gh` and the way a lane reads its requests back. That one
+/// answers pull request and label queries for the lanes that legitimately make
+/// them; this one proves an absence and needs no arms at all. Task 17.a widened
+/// that one rather than bringing a `forge()` here — see the note in this
+/// module's header — so nothing here should grow into it.
 pub struct RecordedCalls {
     calls: Mutex<Vec<String>>,
 }
