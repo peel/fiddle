@@ -59,7 +59,8 @@
 use super::CapabilityError;
 use crate::agent::{attempt_briefed, AgentBudget, Brief, RepairReport, ToolHost, ToolReceipts};
 use crate::cve::group::Group;
-use crate::workspace::{Workspace, WorkspaceCommand, WorkspacePath};
+use crate::evaluate::{Evaluation, RescanVerdict};
+use crate::workspace::{Content, FileEdit, Workspace, WorkspaceCommand, WorkspacePath};
 use fiddle_core::{AttemptId, ProjectedFinding};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -178,6 +179,396 @@ fn migration_task(findings: &[&ProjectedFinding]) -> String {
     )
 }
 
+// ---------------------------------------------------------------------------
+// Classifying the diff the attempt left behind
+// ---------------------------------------------------------------------------
+
+/// Go's own failure-reporting calls, and the two assertion libraries a Go
+/// project is most likely to reach for.
+///
+/// A **named list rather than a heuristic**, because "is this line an
+/// assertion" has no syntactic answer in Go: the language has no `assert`, and a
+/// test fails by calling a method on its `*testing.T`. `t.Errorf` and `t.Fatalf`
+/// are covered by their prefixes, which is why they are not spelled again.
+///
+/// A line matching one of these on the *removed* side is the whole rule, and
+/// that is deliberate: a **changed** assertion is a removed line and an added
+/// one, so one condition covers both halves of Design §2.5's "any changed or
+/// removed test assertion". An assertion that is only *added* is not matched,
+/// and should not be — a migration that had to re-spell a call inside a new
+/// assertion has still stopped the group through the removed line it replaced.
+const ASSERTIONS: [&str; 4] = ["t.Error", "t.Fatal", "assert.", "require."];
+
+/// The three spellings of skipping a Go test.
+///
+/// Matched with the receiver left open — `.Skip(` rather than `t.Skip(` —
+/// because the receiver is whatever the test named its `*testing.T`, and a rule
+/// that only knew `t` would be defeated by a table-driven test whose parameter
+/// is `tt`.
+const SKIPS: [&str; 3] = [".Skip(", ".Skipf(", ".SkipNow("];
+
+/// Go keywords that introduce a branch, a loop or a scheduled call.
+///
+/// **Counted as tokens, never matched as substrings.** `notify` contains `if`,
+/// and a substring rule would put every group that renamed a notifier back to a
+/// person. See [`keywords`].
+///
+/// `go` and `defer` are here beside the branches because the question the scope
+/// rules ask is not "is this a branch" but "did the attempt write behaviour that
+/// was not there". A goroutine and a deferred close are both that, and both are
+/// exactly the kind of thing a bump's migration should stop for.
+const CONTROL_FLOW: [&str; 11] = [
+    "if", "else", "for", "switch", "select", "case", "goto", "break", "continue", "go", "defer",
+];
+
+/// One thing the scope rules forbid, and the evidence for it.
+///
+/// Each variant carries what was found rather than only which rule fired, for
+/// [`RescanVerdict::StillReported`]'s reason: an operator reading *this group
+/// needs work* has to be able to see the line without going and diffing the
+/// worktree, which by then no longer exists.
+///
+/// # What is not here, and why it is not a gap being hidden
+///
+/// Design §2.5 names **five** things that stop a group, and the fifth — *any
+/// non-uniform source edit* — is not a variant. It is not detectable from a
+/// diff: whether two call-site edits are "the same rename" is the judgement the
+/// model was asked to make, and a classifier that guessed at it would be the
+/// mechanical-rule-in-the-prompt mistake made in the other direction. What
+/// catches a non-uniform edit is the half that was always going to: `go build`
+/// and `go vet` fail on the call site the model missed, and
+/// [`GroupStatus::of`]'s second row refuses the group. The four below are the
+/// ones a diff can settle, and they are exactly the four that a *green* build
+/// would otherwise let through — an added `t.Skip` makes the tests pass, a
+/// weakened assertion makes them pass, a `replace` directive makes the build
+/// pass, and new control flow can make all of them pass.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ForbiddenShape {
+    /// A test the attempt switched off.
+    AddedSkip {
+        /// The file it was added to.
+        path: String,
+        /// The line, as written.
+        line: String,
+    },
+
+    /// An assertion that a `_test.go` file used to make and does not now.
+    ChangedTestAssertion {
+        /// The file it left.
+        path: String,
+        /// The assertion, as it read before.
+        assertion: String,
+    },
+
+    /// A `replace` directive the attempt put in a `go.mod`.
+    ReplaceDirective {
+        /// The `go.mod` it was written to.
+        path: String,
+        /// The directive, as written.
+        directive: String,
+    },
+
+    /// More of some control-flow keyword than the file had before.
+    NewControlFlow {
+        /// The file it appeared in.
+        path: String,
+        /// Which keyword.
+        keyword: &'static str,
+        /// How many the file had.
+        before: usize,
+        /// How many it has now.
+        after: usize,
+    },
+
+    /// A changed file whose bytes this build cannot read as text.
+    ///
+    /// **Forbidden rather than ignored**, and that is the fail-closed direction.
+    /// The scope rules are an allowlist — three kinds of edit are in scope and
+    /// no others — so an edit that cannot be read cannot be shown to be one of
+    /// the three. Every edit a bump's migration legitimately makes is to Go
+    /// source, a `go.mod`, a `go.sum` or a `Dockerfile`, all of which are text.
+    UnreadableEdit {
+        /// The file.
+        path: String,
+    },
+}
+
+/// Every forbidden shape in `edits`, in path order.
+///
+/// **All of them, not the first.** [`GroupStatus::of`] only needs one to refuse
+/// a group, but an operator fixing the group by hand wants the list, and a
+/// classifier that stopped early would make *how much is wrong here* a question
+/// nobody could answer without re-running the attempt.
+///
+/// Every rule is applied to the files it is about — the assertion rule only to
+/// `_test.go`, the directive rule only to a `go.mod` — because a rule applied
+/// everywhere is a rule that fires on a `README` mentioning `t.Skip`.
+///
+/// # The limits, stated rather than discovered
+///
+/// This reads lines, not Go. A control-flow keyword inside a string literal or
+/// a comment is counted, so a model that rewrote the message `"stop if empty"`
+/// adds an `if` as far as this is concerned. That is a false *needs-work*, which
+/// costs one group a person's attention; the alternative is a Go parser in a
+/// crate that has no business having one, and every error it made would be a
+/// false *clean*. The direction is chosen, not settled by accident.
+fn classify(edits: &[FileEdit]) -> Vec<ForbiddenShape> {
+    let mut found = Vec::new();
+    for edit in edits {
+        let path = edit.path.as_str();
+
+        // Refused *before* any line rule rather than beside them. Both non-text
+        // states render as no lines at all, so every line of a readable side
+        // would look added — or removed — against an opaque one, and the file
+        // would then be reported under whichever rules those phantom lines
+        // happened to match. One shape that says "this could not be read" is
+        // worth more than four that were invented from a side nobody read.
+        if edit.unreadable() {
+            found.push(ForbiddenShape::UnreadableEdit {
+                path: path.to_string(),
+            });
+            continue;
+        }
+
+        if is_go_test(path) {
+            for line in edit.added() {
+                if SKIPS.iter().any(|skip| line.contains(skip)) {
+                    found.push(ForbiddenShape::AddedSkip {
+                        path: path.to_string(),
+                        line: line.trim().to_string(),
+                    });
+                }
+            }
+            // The *removed* side, which is both halves of "changed or removed".
+            // See [`ASSERTIONS`].
+            for line in edit.removed() {
+                if ASSERTIONS.iter().any(|call| line.contains(call)) {
+                    found.push(ForbiddenShape::ChangedTestAssertion {
+                        path: path.to_string(),
+                        assertion: line.trim().to_string(),
+                    });
+                }
+            }
+        }
+
+        if is_go_mod(path) {
+            for line in edit.added() {
+                if replaces(line) {
+                    found.push(ForbiddenShape::ReplaceDirective {
+                        path: path.to_string(),
+                        directive: line.trim().to_string(),
+                    });
+                }
+            }
+        }
+
+        // Go source only, `_test.go` included. The keywords are Go's, and two of
+        // them are words other file types spell for their own reasons — a
+        // `go.mod` opens with a `go` directive, and a `Dockerfile` that builds a
+        // Go project says `golang` and may well say `go` — so a rule applied to
+        // every changed path would refuse a group for a manifest line that means
+        // nothing of the kind.
+        if is_go(path) {
+            for keyword in CONTROL_FLOW {
+                let before = keywords(side(&edit.before), keyword);
+                let after = keywords(side(&edit.after), keyword);
+                // Strictly more, not merely different. A migration that *removed*
+                // a branch has not written behaviour that was not there, and the
+                // scope rules are about what the attempt added.
+                if after > before {
+                    found.push(ForbiddenShape::NewControlFlow {
+                        path: path.to_string(),
+                        keyword,
+                        before,
+                        after,
+                    });
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Whether `path` is Go source.
+///
+/// `go.mod` is not, and the suffix says so on its own: it ends `.mod`.
+fn is_go(path: &str) -> bool {
+    path.ends_with(".go")
+}
+
+/// Whether `path` is a Go test file, by the only definition Go has — the one
+/// the toolchain itself uses and the one [`SCOPE_RULES`] quotes to the model.
+fn is_go_test(path: &str) -> bool {
+    path.ends_with("_test.go")
+}
+
+/// Whether `path` is a module manifest.
+///
+/// The nested spelling is checked too, because a repository with more than one
+/// module has a `go.mod` per module and a `replace` in any of them is the same
+/// redirection. Anchored on the separator rather than matched as a suffix, so a
+/// file called `nogo.mod` is not one.
+fn is_go_mod(path: &str) -> bool {
+    path == "go.mod" || path.ends_with("/go.mod")
+}
+
+/// Whether an added `go.mod` line introduces a module replacement.
+///
+/// Two conditions, because `go.mod` has two spellings and a rule that knew only
+/// the first would be defeated by reformatting. `replace <old> => <new>` is a
+/// single line carrying the keyword; a `replace ( … )` block puts the keyword on
+/// a line of its own and every entry inside it on a line that does not carry it.
+/// What those entries have instead is `=>`, and no other directive in the
+/// `go.mod` grammar uses that operator — `module`, `go`, `toolchain`, `require`,
+/// `exclude` and `retract` are all keyword-and-arguments — so between them the
+/// two conditions catch a replacement added either way.
+///
+/// Both can hold of one line, which is why this answers a `bool` rather than
+/// pushing a shape per condition: a single-line directive is one thing the rules
+/// forbid, not two.
+fn replaces(line: &str) -> bool {
+    let line = line.trim();
+    line.contains("=>")
+        || line
+            .strip_prefix("replace")
+            .is_some_and(|rest| rest.starts_with([' ', '\t', '(']))
+}
+
+/// One side of an edit, as text.
+///
+/// A collapse local to this module rather than [`Content`]'s own, which is
+/// private precisely because it is only sound where the caller has already
+/// disposed of [`Content::Opaque`]. This one has: [`classify`] refuses an
+/// unreadable edit and moves on before it counts anything, so the only state
+/// being flattened here is [`Content::Absent`] — a file that is not there, which
+/// really does contain no keywords.
+fn side(content: &Content) -> &str {
+    match content {
+        Content::Text(text) => text,
+        Content::Absent | Content::Opaque => "",
+    }
+}
+
+/// How many times `keyword` appears in `text` as a whole word.
+///
+/// Splitting on everything that cannot be in a Go identifier is what makes this
+/// a token count: `notify`, `elsewhere` and `switching` each split into one word
+/// that is not a keyword, where a substring search finds `if`, `else` and
+/// `switch` in them.
+fn keywords(text: &str, keyword: &str) -> usize {
+    text.split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|word| *word == keyword)
+        .count()
+}
+
+/// How a group's one attempt ended.
+///
+/// **Deliberately separate from [`Fold`](crate::cve::fold::Fold)**, which says
+/// whether to *run* an attempt. That one is decided before an attempt and over
+/// another group's evidence, this one after one and over its own, and a single
+/// type would let a caller ask a group that never ran how it went.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GroupStatus {
+    /// The tree is proved better than the one it started from, and everything
+    /// the attempt did was in scope. Commit it.
+    Clean,
+
+    /// Leave it for a person, and revert. See [`NeedsWork`].
+    NeedsWork {
+        /// Which of the three ways it ended up here.
+        reason: NeedsWork,
+    },
+}
+
+/// Why a group is being left for a person.
+///
+/// **Not [`crate::evaluate::Reason`]**, which is closed at the two variants an
+/// *evaluation* can produce and which Task 16's disposition extends. These are
+/// the reasons a *group* stops, one per row of [`GroupStatus::of`]'s table, and
+/// two of the three are things an evaluation has no vocabulary for.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NeedsWork {
+    /// The attempt edited something the scope rules do not allow it to.
+    OutOfScope(ForbiddenShape),
+
+    /// A check refused the tree. Carries the check's own command line, which is
+    /// how [`CheckResult`](crate::evaluate::CheckResult) names itself.
+    CheckFailed {
+        /// The earliest failing check, in declared order.
+        check: String,
+    },
+
+    /// Every check passed and the rescan still did not prove the tree better.
+    ///
+    /// A third row rather than a second spelling of the first, because the two
+    /// are different situations for an operator: a failing check is something
+    /// wrong with the tree, and this is a repair that may well be fine and
+    /// cannot be shown to be — a moved scanner feed, an array nobody reported
+    /// on. [`Evaluation::accepted`] collapses them; this keeps them apart.
+    Unproved(RescanVerdict),
+}
+
+impl GroupStatus {
+    /// The first-match-wins table Design §2 puts in the *Rust* column.
+    ///
+    /// Three rows, in this order, and the order is the substance:
+    ///
+    /// 1. **A forbidden shape refuses the group whatever the checks said.** It
+    ///    has to come first, because the shapes are precisely the edits that
+    ///    make a check pass when it should not: a `t.Skip` turns a failing test
+    ///    green, and a table that consulted the checks first would call that
+    ///    group clean and commit it.
+    /// 2. **Otherwise the checks decide**, earliest failure first.
+    /// 3. **And a rescan that proved nothing is not a pass** — see
+    ///    [`Evaluation::accepted`], whose exact condition rows 2 and 3 together
+    ///    reproduce. `Clean` is returned if and only if `accepted()` is true and
+    ///    nothing was out of scope; `a_clean_group_is_exactly_an_accepted_one`
+    ///    is what holds that rather than this comment.
+    ///
+    /// # What this function is not given
+    ///
+    /// A [`MigrationAttempt`], and therefore a [`RepairReport`], and therefore
+    /// `claimed_complete`. That is the point of the signature: *the model's
+    /// claim is branched on nowhere* is not a property of the body below, which
+    /// anybody could later edit — it is a property of what the body can reach,
+    /// and the claim is not among it. The claim is still recorded, on
+    /// [`MigrationAttempt::report`], where a disposition publishes it beside the
+    /// verdict that overruled it.
+    pub fn of(evaluation: &Evaluation, forbidden: &[ForbiddenShape]) -> GroupStatus {
+        // Row 1. The *first* shape in path order, because [`classify`] returns
+        // every one it found and this row needs a reason rather than a list —
+        // the list is on [`MigrationAttempt::forbidden`], where an operator
+        // reads it.
+        if let Some(shape) = forbidden.first() {
+            return GroupStatus::NeedsWork {
+                reason: NeedsWork::OutOfScope(shape.clone()),
+            };
+        }
+
+        // Row 2. The check's own command line, which is how a `CheckResult`
+        // names itself, so the refusal an operator reads is the thing they would
+        // type to see it again.
+        if let Some(failed) = evaluation.first_failure() {
+            return GroupStatus::NeedsWork {
+                reason: NeedsWork::CheckFailed {
+                    check: failed.name.clone(),
+                },
+            };
+        }
+
+        // Row 3. `Cleared` is the one arm that is proof — every other one is a
+        // rescan that did not compare, could not be read, or contradicted the
+        // repair. Matching the arm that passes and defaulting the rest is what
+        // makes a verdict added to [`RescanVerdict`] tomorrow fail closed here.
+        match evaluation.rescan() {
+            RescanVerdict::Cleared => GroupStatus::Clean,
+            unproved => GroupStatus::NeedsWork {
+                reason: NeedsWork::Unproved(unproved.clone()),
+            },
+        }
+    }
+}
+
 /// Everything one migration attempt needs that is not the model.
 ///
 /// One struct rather than five arguments, for [`super::RepairConfig`]'s reason:
@@ -223,9 +614,13 @@ pub struct MigrationConfig {
 /// list the model authored is a claim about something fiddle can simply go and
 /// look at.
 ///
-/// Nothing here is a verdict, and there is deliberately no field that could be
-/// mistaken for one. Task 14.b classifies the diff these paths name; the checks
-/// decide.
+/// [`MigrationAttempt::forbidden`] is the third kind and is neither of the
+/// first two: it is what the *scope rules* make of what git saw, computed while
+/// the worktree still existed. It is still not a verdict — a group with no
+/// forbidden shape is not thereby clean, because the checks have not been asked
+/// yet. [`GroupStatus::of`] is the only thing here that answers, and it is a
+/// free function over this and an [`Evaluation`] rather than a method, so that
+/// the report cannot reach it.
 #[derive(Debug)]
 pub struct MigrationAttempt {
     /// What the model said it did.
@@ -234,6 +629,10 @@ pub struct MigrationAttempt {
     /// What git saw change in the worktree, under the ignore rules the project
     /// had committed before the attempt began.
     pub changed: Vec<WorkspacePath>,
+
+    /// Every shape in that diff the scope rules forbid, in path order, and
+    /// empty where there was none. See [`classify`].
+    pub forbidden: Vec<ForbiddenShape>,
 }
 
 /// One bounded agent attempt at the migration a bump forced.
@@ -339,9 +738,28 @@ where
 
         // Asked of git rather than of the report, and asked before the workspace
         // is dropped, because the worktree is what git is being asked about.
-        let changed = workspace.changed_files()?;
+        //
+        // **And classified here, for the same reason but a sharper version of
+        // it.** The scope rules are about the bytes inside the changed files,
+        // and this workspace's `Drop` removes the worktree those bytes are in
+        // the moment this function returns. The alternative — handing the
+        // workspace back so a caller could classify at its leisure — was
+        // rejected in 14.a: it lets a caller keep a worktree alive past the
+        // attempt that owns it, which is the one invariant
+        // `no_worktree_survives_the_attempt` is about.
+        //
+        // The path list is taken *from the edits* rather than asked for
+        // separately, so that what was classified and what is reported as
+        // changed cannot be two different answers to one question.
+        let edits = workspace.edits()?;
+        let changed = edits.iter().map(|edit| edit.path.clone()).collect();
+        let forbidden = classify(&edits);
 
-        Ok(MigrationAttempt { report, changed })
+        Ok(MigrationAttempt {
+            report,
+            changed,
+            forbidden,
+        })
     }
 }
 

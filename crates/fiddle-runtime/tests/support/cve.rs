@@ -91,6 +91,14 @@
 //!   carrying [`HOST_ROOT`]. Task 14.a's whole criterion is a set of absences,
 //!   and an absence is only evidence when the thing was there to be carried —
 //!   see the section below on sentinels, and [`MigrationWorld`]'s own doc.
+//! - Task 14.b adds [`MIGRATION_TEST_SOURCE`] and [`MIGRATION_TEST_BEFORE`] to
+//!   that same world, and makes [`MIGRATION_SOURCE_BEFORE`] public. **Done.**
+//!   Three of the four shapes the scope rules forbid are rules about a
+//!   `_test.go` file, so a world holding only `main.go` could not reach them;
+//!   and the *before* contents are public because a lane scripting an edit has
+//!   to write the whole file, so a script that spelled the original out again
+//!   would be a second copy to keep in step. See [`MIGRATION_TEST_BEFORE`]'s own
+//!   doc for the one property of it that is easy to lose.
 //! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
 //! - Task 19 adds `fixture` and `world_with`.
 //!
@@ -2476,7 +2484,7 @@ pub const MIGRATION_SOURCE: &str = "main.go";
 
 /// What that file holds before the migration: one call site, in the shape a
 /// forced rename would have to reach.
-const MIGRATION_SOURCE_BEFORE: &str = "\
+pub const MIGRATION_SOURCE_BEFORE: &str = "\
 package main
 
 func main() {
@@ -2484,6 +2492,48 @@ func main() {
 }
 
 func legacyName() {}
+";
+
+/// The test file a migration world's tree also holds (Task 14.b).
+///
+/// Added because three of Task 14.b's four forbidden shapes are rules **about a
+/// `_test.go` file** — an added `t.Skip`, a changed or removed assertion, and
+/// the uniformity requirement that names `*_test.go` explicitly — and a world
+/// with no test file could not reach any of them. Committed alongside
+/// [`MIGRATION_SOURCE`], so an attempt that does not touch it does not appear in
+/// `git status`: Task 14.a's `the_attempt_really_edits_the_tree_through_the_tools`
+/// asserts the changed set is exactly `main.go`, and that stays true.
+pub const MIGRATION_TEST_SOURCE: &str = "main_test.go";
+
+/// What that file holds before the migration.
+///
+/// Three properties, each of which a lane depends on:
+///
+/// - **It calls the function a bump's migration renames**, so a *uniform* edit
+///   has to reach this file too — which is what makes [`MIGRATION_TEST_SOURCE`]
+///   a real call site rather than decoration.
+/// - **It makes exactly one assertion**, so a lane that weakens one is changing
+///   the only one there is.
+/// - **Its assertion message names no function.** That is the detail worth
+///   writing down: a message reading `"legacyName must run"` would be rewritten
+///   by an honest uniform rename, the `t.Errorf` line would leave the file, and
+///   the *clean* fixture would classify as a changed test assertion. The
+///   fixture would then be measuring the classifier against a world where clean
+///   is unreachable.
+/// - **It already carries one `if`**, so `new control flow` is a lane about a
+///   count going *up* rather than about a keyword appearing in a file that had
+///   none.
+pub const MIGRATION_TEST_BEFORE: &str = "\
+package main
+
+import \"testing\"
+
+func TestLegacyName(t *testing.T) {
+\tlegacyName()
+\tif testing.Short() {
+\t\tt.Errorf(\"this test must run even in short mode\")
+\t}
+}
 ";
 
 /// Everything one bounded migration attempt is driven from, **and the three
@@ -2566,7 +2616,12 @@ pub async fn migration_world() -> MigrationWorld {
     // an attempt *changed* rather than a file the fixture left untracked.
     std::fs::write(tree.path().join(MIGRATION_SOURCE), MIGRATION_SOURCE_BEFORE)
         .expect("the fixture tree is writable");
-    tree.git(&["add", "--", MIGRATION_SOURCE]);
+    std::fs::write(
+        tree.path().join(MIGRATION_TEST_SOURCE),
+        MIGRATION_TEST_BEFORE,
+    )
+    .expect("the fixture tree is writable");
+    tree.git(&["add", "--", MIGRATION_SOURCE, MIGRATION_TEST_SOURCE]);
     tree.git(&[
         "-c",
         "user.email=t@t",

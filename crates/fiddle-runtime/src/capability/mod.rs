@@ -47,7 +47,9 @@ pub mod publish;
 pub mod repair;
 pub mod stub;
 
-pub use cve::{GroupMigration, MigrationAttempt, MigrationConfig};
+pub use cve::{
+    ForbiddenShape, GroupMigration, GroupStatus, MigrationAttempt, MigrationConfig, NeedsWork,
+};
 pub use propose::{attempt_worktree, ProposeChange, ProposeConfig};
 pub use publish::{PublishChange, PublishConfig};
 pub use repair::{FixtureRepair, RepairConfig};
