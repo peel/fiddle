@@ -42,16 +42,28 @@
 //! on the binary crate so a runner can name a criterion would invert the
 //! layering. The mapping is one `match` in the crate that owns the document.
 //!
-//! # What this module does not own
+//! # What this file does not own
 //!
 //! It does not spawn. [`Tree`] is the seam, and the whole of the reason is that
-//! *starting a program in the tree under repair* needs things this module has no
+//! *starting a program in the tree under repair* needs things this file has no
 //! business holding: a workspace with its four-name environment, a scanner
-//! credential, a scratch directory for an artefact, and a deadline. The
-//! capability that owns those builds the tree; this module owns the order and
-//! the criteria. It is the same split [`crate::scanner`] keeps between its port
-//! and its one adapter, and the same one `crate::process` keeps between a bound
-//! every child shares and an environment no two spawn sites share.
+//! credential, a scratch directory for an artefact, and a deadline. This file
+//! owns the order and the criteria; [`InWorkspace`] is where those four things
+//! are held and where the port is really implemented. It is the same split
+//! [`crate::scanner`] keeps between its port and its one adapter, and the same
+//! one `crate::process` keeps between a bound every child shares and an
+//! environment no two spawn sites share.
+//!
+//! [`InWorkspace`] is that implementation, and it is in this module rather than
+//! at the capability that will wire it because a port with no production
+//! implementation is a port nothing can be measured against: every claim here
+//! about *five separate commands* would rest on a recorder written to agree with
+//! it. `cve_evaluate_spawn` is that measurement, over real children in a real
+//! worktree.
+
+mod in_workspace;
+
+pub use in_workspace::{InWorkspace, Rescan};
 
 use crate::scanner::{ScanError, ScanReport};
 use async_trait::async_trait;
@@ -167,6 +179,28 @@ pub enum Unanswered {
         program: String,
         /// What the operating system said.
         source: std::io::Error,
+    },
+
+    /// The check did not finish within its bound and was killed.
+    ///
+    /// A third kind rather than one of the two beside it, because it is neither.
+    /// The program was there and it started, so [`Unanswered::NotStarted`] would
+    /// be a claim about the machine that is not true; and nobody asked for the
+    /// attempt to end, so [`Unanswered::Cancelled`] would abandon an evaluation
+    /// that should still be produced. What it is not either is an *answer*: a
+    /// killed child has no exit status and printed however much of its output it
+    /// had reached, and recording that as a failing check would report a `docker
+    /// build` that hung on a loaded machine identically to one the repair broke.
+    ///
+    /// It is here rather than in the first version of this enum because that
+    /// version had no implementation of [`Tree`] that could reach it — a
+    /// scripted tree answers or it does not, and only a real deadline over a
+    /// real child makes the case occur. See [`InWorkspace`].
+    TimedOut {
+        /// The program that was killed.
+        program: String,
+        /// The bound it overran.
+        timeout: std::time::Duration,
     },
 
     /// The attempt was cancelled, so this check and every check after it was
@@ -364,6 +398,16 @@ pub async fn evaluate(contract: &[Check], tree: &impl Tree) -> Result<Evaluation
                 Err(Unanswered::NotStarted { program, source }) => {
                     (Outcome::NotRun(not_started(&program, &source)), false)
                 }
+                // Unanswered for the same reason and recorded the same way: the
+                // check produced no observation, so it did not pass, and the
+                // record says which of the two situations an operator is
+                // looking at rather than inventing an exit status for it.
+                Err(Unanswered::TimedOut { program, timeout }) => (
+                    Outcome::NotRun(format!(
+                        "{program} did not finish within {timeout:?} and was killed"
+                    )),
+                    false,
+                ),
                 Err(Unanswered::Cancelled) => return Err(Cancelled),
             },
 

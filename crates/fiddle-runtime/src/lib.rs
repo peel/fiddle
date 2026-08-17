@@ -32,7 +32,11 @@
 //! that scan and four commands beside it add up to: an ordered contract of
 //! checks, each judged by the criterion its own declaration names rather than by
 //! one aggregate exit code, so a tree with a build error is still vetted and a
-//! formatter that exits zero while printing a filename still fails.
+//! formatter that exits zero while printing a filename still fails. Its
+//! `InWorkspace` is where that contract stops being a shape and becomes
+//! processes: it starts each check's own program inside the attempt's worktree
+//! and builds each rescan's scanner out of the check's own program, adding no
+//! spawn site of its own — the two it composes are `workspace` and `scanner`.
 //! `process` is private
 //! and holds the one thing every child this runtime
 //! spawns has in common: a deadline it cannot outlive and a process group that

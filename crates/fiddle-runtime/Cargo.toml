@@ -31,6 +31,15 @@ wiz-stub = []
 # `go` is production code and ships; what this fixture replaces is the toolchain
 # it spawns, so the offline gate can drive bump → tidy → confirm → revert.
 go-stub = []
+# And for the scripted check the evaluation gate drives. Permanent for the same
+# reason the two above are: the five checks of design §2.6 are `go build`,
+# `go fmt`, `go vet`, `docker build` and a `wizcli` rescan, and this dev shell
+# has no Go toolchain, no container daemon and no scanner. The adapter that
+# spawns them — `evaluate::InWorkspace` — is production code and ships; what this
+# fixture replaces is the five programs it spawns, so the offline gate can show
+# that each check really became a child of its own, started with the program and
+# the arguments its own declaration named.
+check-stub = []
 
 # The scripted `gh` the deterministic suite points `[github] cli.program` at.
 #
@@ -102,6 +111,17 @@ required-features = ["go-stub"]
 test = false
 doc = false
 
+# The scripted check the evaluation suite points a `Check`'s own `program` at.
+# Every line is argued for in the three blocks above; this one shares no module
+# with the suite at all, because what it has to say it says through the record it
+# writes rather than through a document whose bytes anybody else asserts on.
+[[bin]]
+name = "check_stub"
+path = "tests/check_stub/check_stub.rs"
+required-features = ["check-stub"]
+test = false
+doc = false
+
 # The shared fixture module, asserted about itself.
 #
 # Declared rather than auto-discovered because the module lives in a directory:
@@ -146,4 +166,10 @@ tempfile.workspace = true
 # targets, so the scripted `gh` exists for `cargo test` and for nothing else. A
 # plain default feature would put it in the release build; leaving it to
 # `--all-features` would break the single-target test command.
-fiddle-runtime = { path = ".", features = ["gh-stub", "git-stub", "wiz-stub", "go-stub"] }
+fiddle-runtime = { path = ".", features = [
+  "gh-stub",
+  "git-stub",
+  "wiz-stub",
+  "go-stub",
+  "check-stub",
+] }
