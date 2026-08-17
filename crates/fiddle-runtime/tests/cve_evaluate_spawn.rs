@@ -51,7 +51,7 @@
 mod fixture;
 
 use fiddle_core::AttemptId;
-use fiddle_runtime::evaluate::{evaluate, Check, InWorkspace, Outcome, Rescan, Success};
+use fiddle_runtime::evaluate::{evaluate, Check, Contract, InWorkspace, Outcome, Rescan, Success};
 use fiddle_runtime::scanner::WizCredential;
 use fiddle_runtime::workspace::Workspace;
 use std::path::{Path, PathBuf};
@@ -240,7 +240,7 @@ fn declared(check: &Check) -> Vec<String> {
 async fn each_check_becomes_its_own_child_started_from_its_own_declaration() {
     let world = World::new(CancellationToken::new());
     let wrapper = world.copy_of(&stub().display().to_string(), "opt/acme/bin/tidy-sources");
-    let contract = vec![
+    let contract = Contract::of(vec![
         world.scripted(&stub(), "build", &[], Success::ExitZero),
         world.scripted(
             &wrapper,
@@ -251,7 +251,7 @@ async fn each_check_becomes_its_own_child_started_from_its_own_declaration() {
         world.scripted(&stub(), "vet", &[], Success::ExitZero),
         world.scripted(&stub(), "docker", &[], Success::ExitZero),
         world.rescan(&scanner(), "ok"),
-    ];
+    ]);
 
     let r = evaluate(&contract, &world.tree(AMPLE))
         .await
@@ -263,11 +263,14 @@ async fn each_check_becomes_its_own_child_started_from_its_own_declaration() {
             .iter()
             .map(|c| c.name.clone())
             .collect::<Vec<_>>(),
-        contract.iter().map(Check::name).collect::<Vec<_>>()
+        contract.checks.iter().map(Check::name).collect::<Vec<_>>()
     );
     // Four processes, because a record is written once per invocation and there
     // are four of them. This is the assertion the result list cannot make.
-    for (label, check) in ["build", "fmt", "vet", "docker"].iter().zip(&contract) {
+    for (label, check) in ["build", "fmt", "vet", "docker"]
+        .iter()
+        .zip(&contract.checks)
+    {
         assert_eq!(
             argv(&world.record(label)),
             declared(check),
@@ -286,7 +289,7 @@ async fn each_check_becomes_its_own_child_started_from_its_own_declaration() {
         .collect();
     assert_eq!(
         failed,
-        vec![contract[1].name()],
+        vec![contract.checks[1].name()],
         "only the formatter fails, and it fails on its output rather than its status"
     );
     assert!(
@@ -305,7 +308,12 @@ async fn each_check_becomes_its_own_child_started_from_its_own_declaration() {
 #[tokio::test]
 async fn a_check_runs_inside_the_tree_under_judgement() {
     let world = World::new(CancellationToken::new());
-    let contract = vec![world.scripted(&stub(), "where", &[], Success::ExitZero)];
+    let contract = Contract::of(vec![world.scripted(
+        &stub(),
+        "where",
+        &[],
+        Success::ExitZero,
+    )]);
 
     evaluate(&contract, &world.tree(AMPLE))
         .await
@@ -381,7 +389,7 @@ async fn a_check_runs_inside_the_tree_under_judgement() {
 async fn the_rescan_starts_the_program_the_check_declared() {
     let world = World::new(CancellationToken::new());
     let wrapped = world.copy_of(&scanner().display().to_string(), "opt/acme/bin/scan-images");
-    let contract = vec![world.rescan(&wrapped, "ok")];
+    let contract = Contract::of(vec![world.rescan(&wrapped, "ok")]);
 
     let r = evaluate(&contract, &world.tree(AMPLE))
         .await
@@ -419,14 +427,14 @@ async fn a_check_that_is_not_installed_is_not_run_rather_than_failed() {
     let world = World::new(CancellationToken::new());
     let absent = PathBuf::from(format!("{}-which-is-not-installed", stub().display()));
     assert!(!absent.exists(), "{} exists", absent.display());
-    let contract = vec![
+    let contract = Contract::of(vec![
         Check {
             program: absent.display().to_string(),
             args: Vec::new(),
             success: Success::ExitZero,
         },
         world.scripted(&stub(), "after", &[], Success::ExitZero),
-    ];
+    ]);
 
     let r = evaluate(&contract, &world.tree(AMPLE))
         .await
@@ -452,7 +460,7 @@ async fn a_scanner_that_is_not_installed_is_not_run_rather_than_failed() {
     let world = World::new(CancellationToken::new());
     let absent = PathBuf::from(format!("{}-which-is-not-installed", scanner().display()));
     assert!(!absent.exists(), "{} exists", absent.display());
-    let contract = vec![world.rescan(&absent, "ok")];
+    let contract = Contract::of(vec![world.rescan(&absent, "ok")]);
 
     let r = evaluate(&contract, &world.tree(AMPLE))
         .await
@@ -479,10 +487,10 @@ async fn a_scanner_that_is_not_installed_is_not_run_rather_than_failed() {
 #[tokio::test]
 async fn a_check_that_overruns_its_deadline_is_unanswered() {
     let world = World::new(CancellationToken::new());
-    let contract = vec![
+    let contract = Contract::of(vec![
         world.scripted(&stub(), "hangs", &["--hang", "yes"], Success::ExitZero),
         world.scripted(&stub(), "after-the-deadline", &[], Success::ExitZero),
-    ];
+    ]);
 
     let r = evaluate(&contract, &world.tree(Duration::from_secs(1)))
         .await
@@ -514,7 +522,12 @@ async fn a_cancelled_attempt_is_not_a_rejected_tree() {
     let cancel = CancellationToken::new();
     cancel.cancel();
     let world = World::new(cancel);
-    let contract = vec![world.scripted(&stub(), "never", &[], Success::ExitZero)];
+    let contract = Contract::of(vec![world.scripted(
+        &stub(),
+        "never",
+        &[],
+        Success::ExitZero,
+    )]);
 
     evaluate(&contract, &world.tree(AMPLE))
         .await
@@ -546,7 +559,7 @@ async fn a_cancelled_rescan_starts_no_scanner_but_cannot_say_cancelled() {
     let cancel = CancellationToken::new();
     cancel.cancel();
     let world = World::new(cancel);
-    let contract = vec![world.rescan(&scanner(), "ok")];
+    let contract = Contract::of(vec![world.rescan(&scanner(), "ok")]);
 
     let r = evaluate(&contract, &world.tree(AMPLE))
         .await

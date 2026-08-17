@@ -60,13 +60,62 @@
 //! about *five separate commands* would rest on a recorder written to agree with
 //! it. `cve_evaluate_spawn` is that measurement, over real children in a real
 //! worktree.
+//!
+//! # Two judgements, and only one of them is a check
+//!
+//! Five green checks are not the same claim as *this repair worked*. `docker
+//! build` succeeding says the image still builds; the rescan's own criterion,
+//! [`Success::ArtefactWritten`], says only that the scanner left a report
+//! behind. Neither of them reads the report, and the report is where the answer
+//! is.
+//!
+//! So there is a second judgement, over the document the rescan wrote, and it
+//! puts two conditions to it:
+//!
+//! - **(a) every advisory the group set out to fix is gone**, from *both*
+//!   package arrays. An id surviving in `osPackages` is not gone, and reading
+//!   only `libraries` is the exact defect `crate::cve::project`'s
+//!   `both_package_arrays_are_read` exists to prevent — which is why this
+//!   condition is asked through [`project`] rather than by walking the document
+//!   again here. A second reader would be a second place for that collapse to
+//!   reappear.
+//! - **(b) no finding appeared that was not in the input.** This is the one the
+//!   happy path never reaches: a bump that trades one vulnerability for another
+//!   clears the group's own advisory, so (a) passes, and only (b) sees the new
+//!   `HIGH`. It is the whole reason two conditions are needed rather than one.
+//!
+//! And a third thing, which is not a condition but a limit on what the first two
+//! can prove. A finding leaves a scan for two different reasons: the tree
+//! changed, or the *feed* moved. If the rescan ran at a different scanner
+//! version from the scan the input came from, an absence is no longer evidence
+//! about the tree, so the result is recorded as [`RescanVerdict::Provisional`]
+//! and **does not satisfy [`Evaluation::accepted`]**. That is why accepted and
+//! rejected are two questions here rather than one negation: a provisional
+//! rescan is neither.
+//!
+//! Note which way round provisionality applies. Conditions (a) and (b) are
+//! *positive* observations — an id is present, a finding is present — and a
+//! moved feed does not conjure a record into a report about a tree that no
+//! longer has the package. It is the **absence** that a moved feed can fake, so
+//! provisionality qualifies the clean answer and not the dirty ones.
+//!
+//! # What this module still does not decide
+//!
+//! What to *do* with any of it. [`Reason`] is introduced here with the two
+//! variants an evaluation can produce, and Task 16's disposition extends it with
+//! one variant per row of the table it owns. The split is deliberate: evaluation
+//! produces a result and disposition consumes it, in that order, and a module
+//! that decided both would be the one place a "no findings left" could quietly
+//! become "open a pull request".
 
 mod in_workspace;
 
 pub use in_workspace::{InWorkspace, Rescan};
 
+use crate::cve::project::project;
 use crate::scanner::{ScanError, ScanReport};
 use async_trait::async_trait;
+use fiddle_core::{AdvisoryId, Severity};
 
 /// What it means for one check to have succeeded.
 ///
@@ -136,6 +185,174 @@ impl Check {
             .collect::<Vec<_>>()
             .join(" ")
     }
+}
+
+/// The whole of what a tree is judged against: the checks, and the repair the
+/// rescan is read for.
+///
+/// **Two origins in one value, and they are kept visibly apart.** [`checks`] is
+/// read from the operator's document — it is configuration, the same for every
+/// attempt in a run. [`repair`] is this attempt's: which advisories *this group*
+/// set out to clear, what the input scan reported, and which scanner said so. A
+/// runner cannot judge a rescan without both, and a signature that took them
+/// separately would let a caller pass the second attempt's premise with the
+/// first attempt's checks and get an answer that looked fine.
+///
+/// [`checks`]: Contract::checks
+/// [`repair`]: Contract::repair
+#[derive(Clone, Debug)]
+pub struct Contract {
+    /// The checks, in the order they run.
+    pub checks: Vec<Check>,
+
+    /// What the rescan is compared against, or `None` where nothing set out to
+    /// be fixed.
+    ///
+    /// `None` is not an error and is not a shortcut: a contract can legitimately
+    /// be run over a tree nobody claimed to have repaired — the check list is
+    /// still meaningful on its own — and in that case there is no group's
+    /// advisory to look for and no earlier scan to compare a version with. What
+    /// it must never do is *pass*: with no premise there is nothing that could
+    /// have been proved, so the rescan is [`RescanVerdict::NotCompared`] and
+    /// [`Evaluation::accepted`] is false. Forgetting to supply one therefore
+    /// fails closed.
+    pub repair: Option<Repair>,
+}
+
+impl Contract {
+    /// A contract of `checks` with nothing claimed about a repair.
+    ///
+    /// The spelling every caller that only wants to run commands should use, so
+    /// that `repair: None` is a decision somebody wrote down rather than a field
+    /// they did not notice.
+    pub fn of(checks: Vec<Check>) -> Self {
+        Self {
+            checks,
+            repair: None,
+        }
+    }
+}
+
+/// What this attempt set out to do, and what its rescan is measured against.
+///
+/// Every field is a fact about the scan the repair *started* from. That is the
+/// point of gathering them into one type: the rescan alone cannot say whether an
+/// advisory is missing because the tree was fixed or because it was never
+/// reported, and it cannot say whether the same feed was consulted twice.
+#[derive(Clone, Debug)]
+pub struct Repair {
+    /// Every advisory this group set out to clear — condition (a).
+    ///
+    /// The group's, not the scan's. A run repairs one bump target at a time and
+    /// the other groups' findings are still in the image, so a condition (a)
+    /// asked over the whole input would refuse every honest repair.
+    pub must_clear: Vec<AdvisoryId>,
+
+    /// Every advisory the input scan reported — condition (b)'s baseline.
+    ///
+    /// A superset of [`Repair::must_clear`], and the distinction is load-bearing
+    /// in the other direction: condition (b) asks whether a finding is *new*, and
+    /// a baseline of only this group's advisories would read every one of the
+    /// other groups' untouched findings as one that just appeared.
+    pub input: Vec<AdvisoryId>,
+
+    /// The scanner version the input scan reported for itself.
+    ///
+    /// Not an `Option`. Every [`ScanReport`] carries one — it is read from the
+    /// child's banner before the document is parsed — so a caller that has an
+    /// input scan has this, and a `None` arm here would be an unreachable
+    /// branch whose only real use would be to skip the comparison.
+    pub scanned_at: String,
+}
+
+/// Why an evaluation reached the disposition it did.
+///
+/// **A closed set, introduced here with the two variants an *evaluation* can
+/// produce.** Task 16's disposition adds one variant per row of its table —
+/// `NothingToDo`, `AlreadyFixed`, `PullRequest` and the rest — and the ownership
+/// is split that way because evaluation produces a result and disposition
+/// consumes it, in that order. Nothing here should grow a variant about what to
+/// do next; nothing there should grow one about what a report said.
+///
+/// A reason is *not* produced for an ordinary failing check. That is what
+/// [`Evaluation::first_failure`] already names, in the check's own words, and a
+/// second spelling of it here would be a second thing to keep in step with the
+/// contract's own list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Reason {
+    /// Condition (b): the rescan reports a finding the input scan did not.
+    ///
+    /// The advisory and its grade travel, because the sentence an operator needs
+    /// is *this bump traded CVE-A for CVE-B* and a variant with no id in it
+    /// cannot say which one appeared.
+    NewFindingAppeared {
+        /// The advisory that was not in the input.
+        cve: AdvisoryId,
+        /// How the rescan graded it.
+        severity: Severity,
+    },
+
+    /// The rescan ran at a different scanner version from the scan the input
+    /// came from, so an advisory that left the scan may have left because the
+    /// feed moved rather than because the tree changed.
+    ///
+    /// Both versions travel rather than a boolean, because the remedy depends on
+    /// which way the move went and on how far: an operator who can see `1.2.3`
+    /// against `1.3.0` can decide to rescan the input at the new version, and one
+    /// told only "provisional" can decide nothing.
+    Provisional {
+        /// What the input scan reported for itself.
+        scanned_at: String,
+        /// What the rescan reported for itself.
+        rescanned_at: String,
+    },
+}
+
+/// What the rescan's own document said, once both conditions had been put to it.
+///
+/// Separate from [`CheckResult::passed`] on purpose. A check's verdict is a
+/// function of the criterion its declaration named and of nothing else — that is
+/// the property the whole of [`Success`] exists to hold — and *the group's
+/// advisory is still in the report* is not a criterion any declaration names. It
+/// is a second reading of what the fifth check produced, so it is recorded as a
+/// second thing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RescanVerdict {
+    /// Nothing was compared: the contract carried no [`Repair`], or no artefact
+    /// check produced a report to read.
+    ///
+    /// Not a pass. See [`Contract::repair`] — this arm is why a missing premise
+    /// fails closed rather than accepting silently.
+    NotCompared,
+
+    /// Both conditions held, at the scanner version the input was scanned at.
+    /// This is the one arm that is *proof*.
+    Cleared,
+
+    /// Both conditions held, at a different scanner version. Carries
+    /// [`Reason::Provisional`].
+    Provisional(Reason),
+
+    /// Condition (a) failed: these advisories are still reported.
+    ///
+    /// Carries the ids rather than a count, because a group that cleared three
+    /// of four is a different situation from one that cleared none, and an
+    /// operator reading the record should not have to diff two reports to find
+    /// out which.
+    StillReported(Vec<AdvisoryId>),
+
+    /// Condition (b) failed. Carries [`Reason::NewFindingAppeared`].
+    NewFinding(Reason),
+
+    /// The rescan wrote a document this build cannot read as a scan report, and
+    /// why.
+    ///
+    /// It refuses the tree, for the reason the artefact criterion refuses one:
+    /// a scan that produced nothing usable is not evidence that the repair
+    /// worked, and a gate that excused it would get weaker exactly when the
+    /// scanner started misbehaving. Task 16's `ScanUnusable` is the disposition
+    /// row this arm feeds.
+    Unreadable(String),
 }
 
 /// What a check's program left behind — the answer a check produced.
@@ -309,10 +526,12 @@ pub struct CheckResult {
     pub outcome: Outcome,
 }
 
-/// Every check's result, in the order the contract declared them.
+/// Every check's result, in the order the contract declared them, and what the
+/// rescan's own report said.
 #[derive(Debug)]
 pub struct Evaluation {
     checks: Vec<CheckResult>,
+    rescan: RescanVerdict,
 }
 
 impl Evaluation {
@@ -334,13 +553,65 @@ impl Evaluation {
         self.checks.iter().find(|check| !check.passed)
     }
 
-    /// Whether this tree is refused: any check that did not pass refuses it.
+    /// What the rescan's document said, once both conditions had been put to it.
+    ///
+    /// The record behind [`Evaluation::accepted`] and [`Evaluation::reason`],
+    /// exposed because the two questions those answer are deliberately coarse: a
+    /// caller that needs to tell *the group's own advisory survived* from *a new
+    /// finding appeared* — and both are refusals — reads it here.
+    pub fn rescan(&self) -> &RescanVerdict {
+        &self.rescan
+    }
+
+    /// Why this evaluation came out as it did, where there is a reason to give.
+    ///
+    /// `None` for an ordinary failing check — [`Evaluation::first_failure`] is
+    /// what names that, in the check's own words — and `None` for a clean run,
+    /// which has nothing to explain. See [`Reason`].
+    pub fn reason(&self) -> Option<&Reason> {
+        match &self.rescan {
+            RescanVerdict::Provisional(reason) | RescanVerdict::NewFinding(reason) => Some(reason),
+            RescanVerdict::NotCompared
+            | RescanVerdict::Cleared
+            | RescanVerdict::StillReported(_)
+            | RescanVerdict::Unreadable(_) => None,
+        }
+    }
+
+    /// Whether this tree is *proved* better than the one it started from.
+    ///
+    /// **The affirmative claim, and it is not the negation of
+    /// [`Evaluation::rejected`].** Every check passed by its own declared
+    /// criterion, every advisory the group set out to clear is gone from both
+    /// package arrays, nothing appeared that was not in the input, and the
+    /// rescan ran at the scanner version the input was scanned at. Anything
+    /// short of that is not accepted — including
+    /// [`RescanVerdict::Provisional`], which is the case this method exists to
+    /// exclude: an absence observed through a moved feed is not evidence about a
+    /// tree.
+    pub fn accepted(&self) -> bool {
+        self.first_failure().is_none() && matches!(self.rescan, RescanVerdict::Cleared)
+    }
+
+    /// Whether this tree is refused: any check that did not pass refuses it, and
+    /// so does a rescan that contradicted the repair.
     ///
     /// Including a check that never ran. An unanswered check is not an answered
     /// one, and a contract that accepted a tree because `docker` was missing
     /// would be a gate that gets weaker as a machine gets more broken.
+    ///
+    /// A provisional rescan is **not** refused, and that is the whole of why
+    /// this and [`Evaluation::accepted`] are two questions. Nothing went wrong
+    /// with the tree; what is missing is proof, and reporting an unproved repair
+    /// as a failed one would throw away work over a scanner upgrade.
     pub fn rejected(&self) -> bool {
         self.first_failure().is_some()
+            || matches!(
+                self.rescan,
+                RescanVerdict::StillReported(_)
+                    | RescanVerdict::NewFinding(_)
+                    | RescanVerdict::Unreadable(_)
+            )
     }
 }
 
@@ -372,9 +643,16 @@ pub struct Cancelled;
 /// The one thing that does stop the walk is a cancellation, and it stops it by
 /// abandoning the whole evaluation rather than by recording four results and a
 /// stub — see [`Cancelled`].
-pub async fn evaluate(contract: &[Check], tree: &impl Tree) -> Result<Evaluation, Cancelled> {
-    let mut checks = Vec::with_capacity(contract.len());
-    for check in contract {
+///
+/// **Then the second judgement**, over the document the rescan wrote — see this
+/// module's header, and `judge` below for the two conditions themselves. It
+/// happens after the walk rather than inside it because it is not a check: it
+/// reads a
+/// report one of the checks produced, and a contract can declare its rescan
+/// anywhere in the list.
+pub async fn evaluate(contract: &Contract, tree: &impl Tree) -> Result<Evaluation, Cancelled> {
+    let mut checks = Vec::with_capacity(contract.checks.len());
+    for check in &contract.checks {
         let (outcome, passed) = match check.success {
             // Two criteria, one command. They differ by one clause and share
             // everything else, so they share an arm rather than duplicating the
@@ -438,7 +716,112 @@ pub async fn evaluate(contract: &[Check], tree: &impl Tree) -> Result<Evaluation
             outcome,
         });
     }
-    Ok(Evaluation { checks })
+
+    // The *last* report, where a contract somehow declares two artefact checks.
+    // The rescan is the thing that ran over the repaired tree last, and an
+    // earlier scan in the same contract is a scan of something else. `rev` says
+    // that in one word rather than leaving it to the order a `find` happens to
+    // walk in.
+    let report = checks.iter().rev().find_map(|check| match &check.outcome {
+        Outcome::Scanned(report) => Some(report),
+        // Named rather than gathered under a wildcard, for the reason
+        // `InWorkspace::run`'s last arm gives: an outcome added later that also
+        // carries a document has to be ruled on here, and a wildcard would
+        // silently leave it unjudged — which is the direction that accepts.
+        Outcome::Finished(_) | Outcome::NoArtefact(_) | Outcome::NotRun(_) => None,
+    });
+
+    // Both halves are required, and the `None` on either side is
+    // `NotCompared` rather than a pass. See `Contract::repair`.
+    let rescan = match (&contract.repair, report) {
+        (Some(repair), Some(report)) => judge(repair, report),
+        _ => RescanVerdict::NotCompared,
+    };
+
+    Ok(Evaluation { checks, rescan })
+}
+
+/// Put both rescan conditions to the report the rescan wrote, and say what the
+/// version it ran at lets that answer prove.
+///
+/// The order is deliberate and it is not the order the conditions are numbered
+/// in the design. An unreadable document comes first because the two conditions
+/// cannot be asked of it at all; then (a), then (b), and the version comparison
+/// **last** — because it qualifies only the clean answer. A moved feed can make
+/// an advisory disappear from a report; it cannot make one appear in a report
+/// about a tree that no longer carries the package, so a surviving id and a new
+/// finding are facts either way and are refused without qualification.
+fn judge(repair: &Repair, report: &ScanReport) -> RescanVerdict {
+    // Through the projection rather than over `report.document` directly. It is
+    // the code that reads *both* package arrays and the code the OS half of
+    // condition (a) is really about — a second walk of the document here would
+    // be a second place for the `libraries`-only collapse to come back, in the
+    // one module whose job is to catch it.
+    //
+    // It selects as well as reads, which is the right reading for both
+    // conditions: an advisory the rescan grades below what
+    // `fiddle_core::selected` acts on is one this build would not have opened a
+    // repair for, so it is neither something the group failed to clear nor
+    // something that newly demands attention.
+    let projection = match project(report) {
+        Ok(projection) => projection,
+        Err(why) => return RescanVerdict::Unreadable(why.to_string()),
+    };
+
+    // Condition (a): every advisory the group set out to fix is gone. `all()` is
+    // both arrays, in document order, which is the whole content of "gone from
+    // both" — see above.
+    let still_reported: Vec<AdvisoryId> = repair
+        .must_clear
+        .iter()
+        .filter(|&cve| projection.all().any(|finding| &finding.cve == cve))
+        .cloned()
+        .collect();
+    if !still_reported.is_empty() {
+        return RescanVerdict::StillReported(still_reported);
+    }
+
+    // Condition (b): nothing appeared that the input scan did not report. The
+    // baseline is `input` and not `must_clear`, and that is the difference
+    // between a condition that catches a traded vulnerability and one that
+    // refuses every repair of an image with more than one group's findings in
+    // it.
+    if let Some(appeared) = projection
+        .all()
+        .find(|finding| acts_on(finding.severity) && !repair.input.contains(&finding.cve))
+    {
+        return RescanVerdict::NewFinding(Reason::NewFindingAppeared {
+            cve: appeared.cve.clone(),
+            severity: appeared.severity,
+        });
+    }
+
+    // What the two answers above are worth. A string comparison and not a
+    // version-order one: the question is whether the *same* scanner looked
+    // twice, and "newer" and "older" are the same answer to it — either way a
+    // different feed was consulted and an absence stopped being about the tree.
+    if report.scanner_version != repair.scanned_at {
+        return RescanVerdict::Provisional(Reason::Provisional {
+            scanned_at: repair.scanned_at.clone(),
+            rescanned_at: report.scanner_version.clone(),
+        });
+    }
+
+    RescanVerdict::Cleared
+}
+
+/// Is a grade one condition (b) refuses a repair over?
+///
+/// `HIGH` or `CRITICAL`, which is the design's wording and the first arm of
+/// `fiddle_core::selected`. Exhaustive with no wildcard, for that function's
+/// reason: a grade added later has to be ruled on here rather than defaulting
+/// into "not new", which is the failure that presents as *the rescan found
+/// nothing*.
+fn acts_on(severity: Severity) -> bool {
+    match severity {
+        Severity::Critical | Severity::High => true,
+        Severity::Medium | Severity::Low | Severity::Informational => false,
+    }
 }
 
 /// Why a check never started, said by the runner rather than by the tree.

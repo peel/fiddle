@@ -47,10 +47,19 @@
 //!   that `fiddle-runtime` had yet to build. Task 11 converged without them,
 //!   which is what a signature-driven entry in this list is supposed to
 //!   predict.
-//! - Task 12.b adds `contract_for` and `contract_scanned_by`, which are the
+//! - Task 12.b adds [`contract_for`] and [`contract_scanned_by`], which are the
 //!   rescan-condition builders rather than more of the above: one names the
 //!   CVE ids a group must clear, the other the scanner version a rescan is
 //!   compared against, and neither has anything to say about running commands.
+//!   **Done**, together with the trees those contracts are judged over —
+//!   [`tree_whose_rescan_reports`], [`tree_whose_rescan_reports_in_os_array`],
+//!   [`tree_rescanned_by`] and [`tree_whose_rescan_is_unreadable`] — and
+//!   [`and_the_input_also_reported`], which is what separates *this group's
+//!   advisories* from *everything the input scan reported*. Task 12.a's
+//!   [`contract`] and [`contract_with`] now answer a [`Contract`] rather than a
+//!   bare check list, because a rescan cannot be judged without the premise it
+//!   is compared against and a second argument alongside the checks would let a
+//!   caller pair one attempt's premise with another's contract.
 //! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
 //! - Task 19 adds `fixture` and `world_with`.
 //!
@@ -81,7 +90,7 @@ use fiddle_runtime::cve::attribute::{Manifest, ModuleGraph, ResolverError, Targe
 use fiddle_runtime::cve::dedup::{DedupError, Local, Ran, Spawn};
 use fiddle_runtime::cve::go::Go;
 use fiddle_runtime::cve::group::Attributed;
-use fiddle_runtime::evaluate::{Answered, Check, Success, Tree, Unanswered};
+use fiddle_runtime::evaluate::{Answered, Check, Contract, Repair, Success, Tree, Unanswered};
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -1651,14 +1660,14 @@ pub const WRAPPER: &str = "/opt/acme/bin/tidy-sources --check";
 /// a reason worth not re-deciding here: the suite needs a docker-compose
 /// Postgres and a localstack under `-tags=external_deps`, and the runner starts
 /// neither.
-pub fn contract() -> Vec<Check> {
-    vec![
+pub fn contract() -> Contract {
+    Contract::of(vec![
         declared(GO_BUILD, Success::ExitZero),
         declared(GO_FMT, Success::ExitZeroAndNoOutput),
         declared(GO_VET, Success::ExitZero),
         declared(DOCKER_BUILD, Success::ExitZero),
         declared(WIZCLI_RESCAN, Success::ArtefactWritten),
-    ]
+    ])
 }
 
 /// [`contract`] with the check named `name` replaced by `command_line`,
@@ -1669,14 +1678,108 @@ pub fn contract() -> Vec<Check> {
 /// when `name` is not one of the five, because the silent alternative is a
 /// contract that grew a sixth entry and a suite that never noticed the fifth
 /// was still the original.
-pub fn contract_with(name: &str, command_line: &str, success: Success) -> Vec<Check> {
-    let mut checks = contract();
-    let at = checks
+pub fn contract_with(name: &str, command_line: &str, success: Success) -> Contract {
+    let mut contract = contract();
+    let at = contract
+        .checks
         .iter()
         .position(|check| check.name() == name)
         .unwrap_or_else(|| panic!("{name} is not one of the five checks in the contract"));
-    checks[at] = declared(command_line, success);
-    checks
+    contract.checks[at] = declared(command_line, success);
+    contract
+}
+
+/// The scanner version the rescan-condition worlds agree on unless a lane says
+/// otherwise.
+///
+/// One value shared by [`contract_for`] and the trees below, so that the version
+/// arm is *neutral* in every lane that is not about it: a fixture where the
+/// input and the rescan happened to disagree would make every condition (a) and
+/// (b) lane provisional, and the two conditions would then be asserted through
+/// a disposition they never reach.
+///
+/// Not [`wiz_stub`]'s `0.0.0-fiddle-stub`, and it does not need to be: the trees
+/// below hand a report over rather than spawning that program. See
+/// [`tree_whose_rescan_reports`].
+const FIXTURE_SCANNER_VERSION: &str = "1.2.3";
+
+/// The image digest a handed-over report is filed under.
+///
+/// Nothing asserts on it. It is here because [`ScanReport`] has no default and a
+/// blank digest would be a value that looks like a fixture forgot something, in
+/// a field the rescan conditions deliberately do not read.
+const FIXTURE_DIGEST: &str =
+    "sha256:6f1b0d2c9a4e7385bd1c05fa9e37642c8b0d5713ae629f04c8d17b6a3e59042d";
+
+/// The advisory a rescan-condition world is about, where the lane does not care
+/// which advisory it is.
+///
+/// [`FIXTURE_ADVISORY`] is deliberately not reused: that one is what the
+/// attribution and grouping families file everything under, and a rescan lane
+/// asserting *this id is gone* over the same value would be one edit away from
+/// agreeing with an unrelated fixture by accident.
+const REPAIRED_ADVISORY: &str = "CVE-2026-4242";
+
+/// [`contract`], for a group that set out to clear `cves`.
+///
+/// The input scan is taken to have reported exactly `cves` and nothing else,
+/// which is the simple world and the one condition (b) is sharpest in: anything
+/// the rescan reports is then something that appeared. A lane that needs the
+/// other shape — an input scan carrying findings this group is not fixing —
+/// wraps this in [`and_the_input_also_reported`], and the pair is what keeps
+/// condition (b) from being satisfied by "the rescan is empty".
+///
+/// The scanner version is [`FIXTURE_SCANNER_VERSION`] on both sides, so a lane
+/// about the two conditions is not also a lane about provenance.
+pub fn contract_for(cves: &[&str]) -> Contract {
+    let mut contract = contract();
+    contract.repair = Some(Repair {
+        must_clear: advisories(cves),
+        input: advisories(cves),
+        scanned_at: FIXTURE_SCANNER_VERSION.to_string(),
+    });
+    contract
+}
+
+/// The same contract, where the input scan **also** reported `cves` — findings
+/// some other group owns.
+///
+/// It widens condition (b)'s baseline and leaves condition (a)'s list alone,
+/// because that is the real difference between the two: a repair is judged on
+/// the advisories *it* set out to clear, and on whether anything appeared that
+/// the whole image did not already have.
+pub fn and_the_input_also_reported(mut contract: Contract, cves: &[&str]) -> Contract {
+    let repair = contract
+        .repair
+        .as_mut()
+        .expect("a contract with a repair premise to widen");
+    repair.input.extend(advisories(cves));
+    contract
+}
+
+/// [`contract_for`] where what varies is the scanner version the input scan ran
+/// at.
+///
+/// One advisory to clear, and which one does not matter — what the lane reading
+/// this is about is whether the *comparison* between two scanner versions
+/// decides anything. The advisory is there because a premise clearing nothing
+/// would satisfy condition (a) vacuously, and then the provisionality assertion
+/// would be about a rescan that had proved nothing to qualify.
+pub fn contract_scanned_by(version: &str) -> Contract {
+    let mut contract = contract_for(&[REPAIRED_ADVISORY]);
+    contract
+        .repair
+        .as_mut()
+        .expect("contract_for supplies a repair premise")
+        .scanned_at = version.to_string();
+    contract
+}
+
+/// Canonical advisory ids, parsed the way every other value of this type is.
+fn advisories(cves: &[&str]) -> Vec<AdvisoryId> {
+    cves.iter()
+        .map(|cve| AdvisoryId::parse(cve).expect("a fixture advisory id parses"))
+        .collect()
 }
 
 /// One check, from the command line an operator would write and the criterion
@@ -1755,12 +1858,42 @@ enum Scripted {
 /// mis-spelling arrives as "expected a failure, found none" rather than as a
 /// pass; and [`ScriptedTree::where_check`] refuses to script the same check
 /// twice, which is the other half of the same worry.
+/// What answers an [`Success::ArtefactWritten`] check in a scripted tree.
+///
+/// # Why there are two, and why the second is not a shortcut
+///
+/// [`Scanned::ByProgram`] is the ordinary one and the one the contract's own
+/// claims rest on: a real [`Wizcli`] over the scripted `wizcli`, really spawned,
+/// so *success is the artefact and not the status line* is decided by the code
+/// that owns that rule.
+///
+/// The rescan conditions cannot be reached through it, and not for want of
+/// trying. What those lanes vary is the **content** of the document and the
+/// **version** the scanner announces, and both are fixed in that program: its
+/// arms are a closed list ([`ARMS`]) whose documents come from
+/// `document.rs`, and its banner announces one build-time constant. Reaching
+/// them through the stub would mean either an arm per advisory set or an
+/// environment channel the adapter's allowlist is specifically there to refuse.
+///
+/// So those worlds hand a [`ScanReport`] over directly. What is under test in
+/// them is the *reading* of a report — two conditions and a version comparison,
+/// none of which involves a process — and the spawning half is already measured
+/// where it belongs: by `an_artefact_check_passes_at_a_non_zero_exit` here and
+/// by the whole of `cve_evaluate_spawn`. The document is still built by
+/// `document.rs`'s shared builders, so a handed-over report is the same bytes
+/// the projection lanes assert against rather than a second scanner document.
+enum Scanned {
+    /// A real adapter over the scripted `wizcli`.
+    ByProgram(ScriptedScanner),
+    /// A report handed over without a child.
+    AsReport(ScanReport),
+}
+
 pub struct ScriptedTree {
     /// By [`Check::name`], and only the checks a lane departed from.
     scripted: BTreeMap<String, Scripted>,
-    /// The scanner an [`Success::ArtefactWritten`] check reaches. Real, and
-    /// really spawned — see [`ScriptedTree::scan`].
-    scanner: ScriptedScanner,
+    /// What an [`Success::ArtefactWritten`] check reaches. See [`Scanned`].
+    scanner: Scanned,
     /// Every check this tree was asked to start, in order.
     ///
     /// A [`Mutex`] because the subject holds this by shared reference — a
@@ -1781,8 +1914,91 @@ pub struct ScriptedTree {
 pub fn green_tree() -> ScriptedTree {
     ScriptedTree {
         scripted: BTreeMap::new(),
-        scanner: scanner_with(wiz_stub("ok")),
+        scanner: Scanned::ByProgram(scanner_with(wiz_stub("ok"))),
         ran: Mutex::new(Vec::new()),
+    }
+}
+
+/// A [`green_tree`] whose rescan reports `cves` against **library** packages,
+/// at the scanner version the fixture worlds agree on.
+///
+/// An empty list is a rescan that found nothing, which is what a repair that
+/// worked looks like. See [`Scanned`] for why this world hands a report over
+/// rather than spawning the scripted `wizcli`.
+pub fn tree_whose_rescan_reports(cves: &[&str]) -> ScriptedTree {
+    tree_reporting(
+        report_with(libraries(cves), os_packages(&[])),
+        FIXTURE_SCANNER_VERSION,
+    )
+}
+
+/// The same, with `cves` in the **`osPackages`** array and nothing in
+/// `libraries`.
+///
+/// The half that catches a condition (a) reading one array: an id surviving here
+/// is not gone, and a reader that only walked `libraries` would call this tree
+/// repaired. It is `crate::cve::project`'s `both_package_arrays_are_read` asked
+/// one layer up, against the rule rather than against the projection.
+pub fn tree_whose_rescan_reports_in_os_array(cves: &[&str]) -> ScriptedTree {
+    tree_reporting(
+        report_with(libraries(&[]), os_packages(cves)),
+        FIXTURE_SCANNER_VERSION,
+    )
+}
+
+/// A [`green_tree`] whose rescan found nothing and says `version` did the
+/// looking.
+///
+/// The clean report is the point: with both conditions satisfied, the scanner
+/// version is the only thing left that can decide whether the absence is proof.
+pub fn tree_rescanned_by(version: &str) -> ScriptedTree {
+    tree_reporting(report_with(libraries(&[]), os_packages(&[])), version)
+}
+
+/// A [`green_tree`] whose rescan wrote a document this build cannot read as a
+/// scan report.
+///
+/// `result.libraries` is an object where a list of packages belongs — which is a
+/// document that parses as JSON and is still not a report, so the scanner's own
+/// artefact rule is satisfied and the failure is the projection's. Built by
+/// taking a real document and replacing that one key, rather than by writing a
+/// broken document out by hand: a second literal here would be a second scanner
+/// document, which is the thing this file's header rules out.
+pub fn tree_whose_rescan_is_unreadable() -> ScriptedTree {
+    let mut report = rescan_report(
+        report_with(libraries(&[]), os_packages(&[])),
+        FIXTURE_SCANNER_VERSION,
+    );
+    report.document["result"]["libraries"] = serde_json::json!({});
+    ScriptedTree {
+        scripted: BTreeMap::new(),
+        scanner: Scanned::AsReport(report),
+        ran: Mutex::new(Vec::new()),
+    }
+}
+
+/// A [`green_tree`] whose rescan answers with `document`, filed under `version`.
+fn tree_reporting(document: Report, version: &str) -> ScriptedTree {
+    ScriptedTree {
+        scripted: BTreeMap::new(),
+        scanner: Scanned::AsReport(rescan_report(document, version)),
+        ran: Mutex::new(Vec::new()),
+    }
+}
+
+/// One scan's report: the shared document's bytes, parsed, and the provenance a
+/// real scan would have read off the child's banner.
+///
+/// The bytes are round-tripped through the string form rather than built as a
+/// `Value` here, so the document under test is exactly what the scripted
+/// `wizcli` would have written to disk — the same construction, not a similar
+/// one.
+fn rescan_report(document: Report, version: &str) -> ScanReport {
+    ScanReport {
+        document: serde_json::from_str(document.raw())
+            .expect("a fixture scanner document is valid JSON"),
+        scanner_version: version.to_string(),
+        image_digest: FIXTURE_DIGEST.to_string(),
     }
 }
 
@@ -1833,7 +2049,7 @@ impl ScriptedTree {
     /// what `wizcli` does when it reports findings — and `exit-nonzero-no-file`,
     /// which exits the same way and leaves nothing.
     pub fn scanned_by(mut self, arm: &str) -> Self {
-        self.scanner = scanner_with(wiz_stub(arm));
+        self.scanner = Scanned::ByProgram(scanner_with(wiz_stub(arm)));
         self
     }
 
@@ -1882,20 +2098,28 @@ impl Tree for ScriptedTree {
         }
     }
 
-    /// The one arm of this fixture that really spawns something.
+    /// The arm of this fixture that can really spawn something.
     ///
-    /// It goes through the real [`Wizcli`] adapter over the scripted `wizcli`,
-    /// so *success is the artefact, not the status line* is decided by the code
-    /// that owns that rule rather than restated here. What the check declared
-    /// is what routed the runner to this method; what it *names* is
-    /// [`WIZCLI_RESCAN`], and the program actually started is the stub
-    /// [`scanned_by`] put behind the operator seam — the same substitution
-    /// every other scanner lane in this crate makes, and the reason the check's
-    /// own `program` is recorded rather than executed.
+    /// On [`Scanned::ByProgram`] it goes through the real [`Wizcli`] adapter
+    /// over the scripted `wizcli`, so *success is the artefact, not the status
+    /// line* is decided by the code that owns that rule rather than restated
+    /// here. What the check declared is what routed the runner to this method;
+    /// what it *names* is [`WIZCLI_RESCAN`], and the program actually started is
+    /// the stub [`scanned_by`] put behind the operator seam — the same
+    /// substitution every other scanner lane in this crate makes, and the reason
+    /// the check's own `program` is recorded rather than executed.
+    ///
+    /// On [`Scanned::AsReport`] there is no child, and the check is recorded all
+    /// the same: what that list carries is the claim that the runner *issued*
+    /// five separate commands, and a world that answered one of them without
+    /// spawning has still been asked.
     ///
     /// [`scanned_by`]: ScriptedTree::scanned_by
     async fn scan(&self, check: &Check) -> Result<ScanReport, ScanError> {
         self.ran.lock().unwrap().push(check.name());
-        self.scanner.scan(&image()).await
+        match &self.scanner {
+            Scanned::ByProgram(scanner) => scanner.scan(&image()).await,
+            Scanned::AsReport(report) => Ok(report.clone()),
+        }
     }
 }

@@ -41,11 +41,43 @@
 //! place — the first by one that always demands no output, the second by one
 //! that never does.
 //!
+//! # Five green checks are not the same claim as "this repair worked"
+//!
+//! The third part of the suite is about the second judgement: the two conditions
+//! the *rescan's own document* has to satisfy, which no check's criterion reads.
+//!
+//! Condition (a) is that every advisory the group set out to clear is gone from
+//! **both** package arrays, and
+//! [`condition_a_checks_both_package_arrays`] is the half that matters —
+//! a reader walking only `libraries` calls an image with a surviving
+//! `osPackages` finding repaired, which is the same collapse
+//! `cve_projection`'s `both_package_arrays_are_read` exists to prevent.
+//!
+//! Condition (b) is that nothing appeared that the input scan did not report,
+//! and it needs a lane of its own because **the happy path never reaches it**:
+//! on a clean rescan (a) already answers, so (b) is only ever exercised by a
+//! bump that clears its own advisory and brings a new one —
+//! [`condition_b_catches_a_bump_that_trades_one_vulnerability_for_another`].
+//! Its opposite number is
+//! [`a_finding_the_input_already_reported_is_not_a_new_one`], without which the
+//! condition is satisfied by "the rescan must be empty", and that would refuse
+//! every repair of an image carrying more than one group's findings.
+//!
+//! And [`a_rescan_at_a_different_scanner_version_is_provisional_not_proof`] is
+//! about what those two answers are *worth*. A finding leaves a scan for two
+//! reasons — the tree changed, or the feed moved — so an absence observed
+//! through a different scanner version is not evidence about the tree. It is
+//! paired with
+//! [`a_repaired_tree_whose_rescan_clears_the_group_is_accepted`], which is the
+//! only lane in this file that asserts the affirmative: without it, every
+//! assertion here is satisfied by a runner that accepts nothing.
+//!
 //! [`Success`]: fiddle_runtime::evaluate::Success
 
 mod support;
 
-use fiddle_runtime::evaluate::{evaluate, Outcome, Success};
+use fiddle_core::Severity;
+use fiddle_runtime::evaluate::{evaluate, Outcome, Reason, RescanVerdict, Success};
 use support::cve::*;
 
 /// `gofmt -l` exits zero and names the files it would rewrite, so the status
@@ -269,4 +301,228 @@ async fn a_tree_that_passes_every_check_is_not_rejected() {
     assert!(r.checks().iter().all(|c| c.passed));
     assert!(r.first_failure().is_none());
     assert!(!r.rejected());
+}
+
+// ---------------------------------------------------------------------------
+// The rescan conditions
+// ---------------------------------------------------------------------------
+
+/// A bump that clears its own advisory and brings a new one.
+///
+/// **The lane condition (b) exists for, and the one the happy path can never
+/// reach.** The group set out to clear `CVE-2026-1` and it is gone, so condition
+/// (a) is satisfied and a runner asking only that question calls this tree
+/// repaired. What the rescan actually reports is a `HIGH` that was not in the
+/// input — a dependency bumped past its vulnerability into a different one — and
+/// only condition (b) sees it.
+///
+/// `first_failure()` is asserted to be `None`, and that is what stops the
+/// assertion passing for two reasons: all five checks were green, so the
+/// refusal cannot have come from a command and must have come from the document.
+#[tokio::test]
+async fn condition_b_catches_a_bump_that_trades_one_vulnerability_for_another() {
+    let r = evaluate(
+        &contract_for(&["CVE-2026-1"]),
+        &tree_whose_rescan_reports(&["CVE-2026-NEW-HIGH"]),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert!(r.rejected());
+    assert!(!r.accepted());
+    assert!(
+        r.first_failure().is_none(),
+        "every check was green, so only the rescan's document can have refused this"
+    );
+    // Named, not merely matched: a variant with the wrong advisory in it would
+    // satisfy `matches!` and would be reporting the finding the group fixed as
+    // the one that appeared.
+    match r.reason() {
+        Some(Reason::NewFindingAppeared { cve, severity }) => {
+            assert_eq!(cve.as_str(), "CVE-2026-NEW-HIGH");
+            assert_eq!(*severity, Severity::High);
+        }
+        other => panic!("expected the new finding to be named, found {other:?}"),
+    }
+}
+
+/// The other half of condition (b), and the half that keeps it honest.
+///
+/// Without it, "no finding appeared that was not in the input" is satisfied by a
+/// rule that demands an *empty* rescan — and that rule refuses every real
+/// repair, because an image carries more than one group's findings and a bump
+/// that fixes one group leaves the rest exactly where they were. Here
+/// `CVE-2026-OTHER` is somebody else's, it was in the input, and it is still
+/// there afterwards. That is a repair that worked.
+#[tokio::test]
+async fn a_finding_the_input_already_reported_is_not_a_new_one() {
+    let contract = and_the_input_also_reported(contract_for(&["CVE-2026-1"]), &["CVE-2026-OTHER"]);
+    let r = evaluate(&contract, &tree_whose_rescan_reports(&["CVE-2026-OTHER"]))
+        .await
+        .expect("an evaluation that was not cancelled");
+
+    assert!(
+        r.accepted(),
+        "the group's own advisory is gone and nothing appeared that was not already there"
+    );
+    assert!(!r.rejected());
+    assert_eq!(r.rescan(), &RescanVerdict::Cleared);
+}
+
+/// An advisory surviving in `osPackages` is not gone.
+///
+/// Condition (a) is *both* arrays, and a reader that walked only `libraries`
+/// would find this tree clean — the same collapse `cve_projection`'s
+/// `both_package_arrays_are_read` exists to prevent, asserted here against the
+/// rule rather than against the projection. Its sibling below is the ordinary
+/// half; either alone is satisfied by a reader that looks in one place.
+#[tokio::test]
+async fn condition_a_checks_both_package_arrays() {
+    let r = evaluate(
+        &contract_for(&["CVE-2026-2"]),
+        &tree_whose_rescan_reports_in_os_array(&["CVE-2026-2"]),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert!(r.rejected(), "an id surviving in osPackages is not gone");
+    assert!(!r.accepted());
+    assert!(
+        r.first_failure().is_none(),
+        "the scanner wrote its artefact, so no check failed; the document is what refused this"
+    );
+    assert_eq!(
+        r.rescan(),
+        &RescanVerdict::StillReported(vec![
+            fiddle_core::AdvisoryId::parse("CVE-2026-2").expect("a fixture advisory id parses")
+        ]),
+        "and it says which advisory survived, not merely that one did"
+    );
+}
+
+/// The ordinary half of the pair above: the same advisory, in the array a reader
+/// would think to look in.
+///
+/// It is not redundant. With only the `osPackages` lane, a condition (a) that
+/// read `osPackages` *instead of* `libraries` — the same one-array bug, mirrored
+/// — passes everything this suite asks.
+#[tokio::test]
+async fn condition_a_catches_an_id_surviving_in_libraries() {
+    let r = evaluate(
+        &contract_for(&["CVE-2026-2"]),
+        &tree_whose_rescan_reports(&["CVE-2026-2"]),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert!(r.rejected());
+    assert!(r.first_failure().is_none());
+    assert!(matches!(r.rescan(), RescanVerdict::StillReported(ids) if ids.len() == 1));
+}
+
+/// A rescan at a different scanner version has not proved anything.
+///
+/// The tree's rescan is clean: both conditions hold, and a runner comparing only
+/// findings accepts it. But an advisory leaves a scan for two different reasons
+/// — the tree changed, or the feed moved — and the two are indistinguishable
+/// from a report whose scanner is not the one the input was scanned with. So the
+/// result is provisional, and provisional is **not** accepted.
+///
+/// It is not rejected either, and the pair of assertions is the point: nothing
+/// went wrong with the tree, so reporting this as a failed repair would throw
+/// the work away over a scanner upgrade. Both versions are asserted, because a
+/// `Provisional` carrying two equal strings would be a variant nobody could act
+/// on.
+#[tokio::test]
+async fn a_rescan_at_a_different_scanner_version_is_provisional_not_proof() {
+    let r = evaluate(&contract_scanned_by("1.2.3"), &tree_rescanned_by("1.3.0"))
+        .await
+        .expect("an evaluation that was not cancelled");
+
+    assert!(
+        !r.accepted(),
+        "the finding may have left the scan because the feed moved, not the tree"
+    );
+    assert!(!r.rejected(), "and nothing went wrong with the tree either");
+    match r.reason() {
+        Some(Reason::Provisional {
+            scanned_at,
+            rescanned_at,
+        }) => {
+            assert_eq!(scanned_at, "1.2.3");
+            assert_eq!(rescanned_at, "1.3.0");
+        }
+        other => panic!("expected a provisional rescan naming both versions, found {other:?}"),
+    }
+}
+
+/// The affirmative, and the only lane in this file that asserts it.
+///
+/// The same world as the one above with **one thing changed**: the rescan ran at
+/// the version the input was scanned at. Every check passed, the group's
+/// advisory is gone, nothing appeared, and the same scanner said so twice — so
+/// this is a repair that is proved rather than merely unrefuted.
+///
+/// Without it, every assertion in this file holds for a runner that accepts
+/// nothing, and `accepted()` measures nothing. It is also the fix-evidence
+/// assertion: hand this lane a tree that was never repaired — a rescan still
+/// reporting the advisory the group set out to clear — and `accepted()` is
+/// false.
+#[tokio::test]
+async fn a_repaired_tree_whose_rescan_clears_the_group_is_accepted() {
+    let r = evaluate(&contract_scanned_by("1.2.3"), &tree_rescanned_by("1.2.3"))
+        .await
+        .expect("an evaluation that was not cancelled");
+
+    assert!(r.checks().iter().all(|c| c.passed));
+    assert!(r.accepted());
+    assert!(!r.rejected());
+    assert_eq!(r.rescan(), &RescanVerdict::Cleared);
+    assert!(
+        r.reason().is_none(),
+        "a proved repair has nothing to explain"
+    );
+}
+
+/// A rescan whose document this build cannot read is not evidence of anything.
+///
+/// The scanner wrote its artefact, so the fifth check passes by its declared
+/// criterion — and the document is still not a scan report. Refusing it is the
+/// same direction the artefact criterion already takes for a scan that produced
+/// nothing usable: a gate that excused an unreadable report would get weaker
+/// exactly when the scanner started misbehaving.
+#[tokio::test]
+async fn a_rescan_this_build_cannot_read_is_not_evidence() {
+    let r = evaluate(
+        &contract_for(&["CVE-2026-1"]),
+        &tree_whose_rescan_is_unreadable(),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert!(r.rejected());
+    assert!(!r.accepted());
+    assert!(
+        r.first_failure().is_none(),
+        "the artefact was written, so the check itself passed"
+    );
+    assert!(matches!(r.rescan(), RescanVerdict::Unreadable(_)));
+}
+
+/// A contract that claims no repair cannot be accepted, whatever the checks say.
+///
+/// Five green checks and a scanner that wrote a report — and nothing said what
+/// this attempt set out to fix, so there is no advisory to look for and no
+/// earlier scan to compare a version with. The safe direction is the one a
+/// forgotten premise falls in: not refused, because nothing went wrong, and
+/// never accepted, because nothing was proved.
+#[tokio::test]
+async fn a_contract_with_no_repair_premise_is_never_accepted() {
+    let r = evaluate(&contract(), &green_tree())
+        .await
+        .expect("an evaluation that was not cancelled");
+
+    assert!(!r.rejected());
+    assert!(!r.accepted(), "there was no premise to prove");
+    assert_eq!(r.rescan(), &RescanVerdict::NotCompared);
 }
