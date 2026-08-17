@@ -28,7 +28,12 @@
 //! is made. `scanner` is the fourth spawn site and the only one that changes
 //! nothing out there: a container scanner run as a subprocess, whose success is
 //! the report it wrote rather than the status it exited with — which is the
-//! inverse of the usual rule and is why the port states it. `process` is private
+//! inverse of the usual rule and is why the port states it. `evaluate` is what
+//! that scan and four commands beside it add up to: an ordered contract of
+//! checks, each judged by the criterion its own declaration names rather than by
+//! one aggregate exit code, so a tree with a build error is still vetted and a
+//! formatter that exits zero while printing a filename still fails.
+//! `process` is private
 //! and holds the one thing every child this runtime
 //! spawns has in common: a deadline it cannot outlive and a process group that
 //! dies with it. What a child may *see* is never shared; only the bound is.
@@ -42,6 +47,7 @@ pub mod agent;
 pub mod capability;
 pub mod cve;
 pub mod effect;
+pub mod evaluate;
 pub mod evidence;
 pub mod gateway;
 pub mod git;

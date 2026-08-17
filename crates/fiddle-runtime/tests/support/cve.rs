@@ -38,7 +38,19 @@
 //!   [`shallow_clone`] needed and did not have; [`forge_recording_calls`] is a
 //!   record of what `dedup` ran and is **not** Task 17's `forge()` — read its
 //!   own doc before extending either.
-//! - Task 11 adds `contract`, `contract_for` and `contract_scanned_by`.
+//! - Task 12.a adds the check contract and the trees it is judged over:
+//!   [`contract`], [`contract_with`], [`green_tree`], [`tree_where`], [`exit`],
+//!   [`stdout`] and the five command lines [`GO_BUILD`] … [`WIZCLI_RESCAN`].
+//!   **Done.** An earlier version of this list assigned them to Task 11, which
+//!   could never have added them: that task's scope was `crates/fiddle-cli`,
+//!   and every one of these names a type — [`Check`], [`Success`], [`Tree`] —
+//!   that `fiddle-runtime` had yet to build. Task 11 converged without them,
+//!   which is what a signature-driven entry in this list is supposed to
+//!   predict.
+//! - Task 12.b adds `contract_for` and `contract_scanned_by`, which are the
+//!   rescan-condition builders rather than more of the above: one names the
+//!   CVE ids a group must clear, the other the scanner version a rescan is
+//!   compared against, and neither has anything to say about running commands.
 //! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
 //! - Task 19 adds `fixture` and `world_with`.
 //!
@@ -69,6 +81,7 @@ use fiddle_runtime::cve::attribute::{Manifest, ModuleGraph, ResolverError, Targe
 use fiddle_runtime::cve::dedup::{DedupError, Local, Ran, Spawn};
 use fiddle_runtime::cve::go::Go;
 use fiddle_runtime::cve::group::Attributed;
+use fiddle_runtime::evaluate::{Answered, Check, Success, Tree, Unanswered};
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -1571,4 +1584,318 @@ pub fn observed_exit(arm: &str) -> i32 {
             String::from_utf8_lossy(&output.stderr)
         )
     })
+}
+
+// ---------------------------------------------------------------------------
+// The check contract, and the trees it is judged over
+// ---------------------------------------------------------------------------
+
+/// The five checks of design §2.6, spelled as their command lines.
+///
+/// Constants rather than literals at each use because a lane names the same
+/// check three times in one test — in the contract, in the script that breaks
+/// it, and in the assertion about which one broke — and three literals are
+/// three chances for a typo to script a check nobody runs and assert about a
+/// result nobody produced.
+///
+/// `go fmt ./...` is spelled the way the design spells it. It is the member of
+/// the five whose criterion is not its exit status: it exits zero and names the
+/// files it would rewrite, so the printed filename is the complaint. Nothing
+/// anywhere reads that out of this string — see [`Success`] — and
+/// [`WRAPPER`] is the fixture that proves it.
+pub const GO_BUILD: &str = "go build ./...";
+
+/// See [`GO_BUILD`]. The one whose output is the complaint.
+pub const GO_FMT: &str = "go fmt ./...";
+
+/// See [`GO_BUILD`].
+pub const GO_VET: &str = "go vet ./...";
+
+/// See [`GO_BUILD`].
+///
+/// With a context argument, which the design's enumeration leaves implicit:
+/// `docker build` on its own is not an invocation, and a contract holding one
+/// would be a fixture nobody could copy into a document.
+pub const DOCKER_BUILD: &str = "docker build .";
+
+/// See [`GO_BUILD`]. The rescan, and the only one of the five judged by
+/// [`Success::ArtefactWritten`].
+///
+/// Two arguments and no more, because the rest of a `wizcli` invocation is the
+/// adapter's: [`Wizcli::scan`] appends the policy flag, the output path and the
+/// image itself. What a document writes down is the program and the
+/// subcommand — the operator seam — which is exactly what this is.
+pub const WIZCLI_RESCAN: &str = "wizcli docker scan";
+
+/// An operator's formatter, pinned to an absolute path behind a wrapper script.
+///
+/// Nothing in it says `go` and nothing says `fmt`. It is the world in which
+/// "the criterion travelled with the declaration" is a claim with a
+/// counterexample available: a runner deriving its criterion from the program
+/// name has nothing here to derive it from, and one that demanded no output
+/// from everything would pass the inverse fixture — the check still spelled
+/// [`GO_FMT`] and declared [`Success::ExitZero`] — which is why the pair is
+/// only worth anything together.
+pub const WRAPPER: &str = "/opt/acme/bin/tidy-sources --check";
+
+/// The five checks a repaired tree is judged by, in the order they run.
+///
+/// All three criteria are represented, and that is what makes it a contract
+/// rather than a list: [`Success::ExitZero`] for the build, the vet and the
+/// image build, [`Success::ExitZeroAndNoOutput`] for the formatter, and
+/// [`Success::ArtefactWritten`] for the rescan. A contract carrying one
+/// criterion would let a runner that only understood exit statuses pass every
+/// lane.
+///
+/// `go test ./...` is deliberately absent, and it is absent from the design for
+/// a reason worth not re-deciding here: the suite needs a docker-compose
+/// Postgres and a localstack under `-tags=external_deps`, and the runner starts
+/// neither.
+pub fn contract() -> Vec<Check> {
+    vec![
+        declared(GO_BUILD, Success::ExitZero),
+        declared(GO_FMT, Success::ExitZeroAndNoOutput),
+        declared(GO_VET, Success::ExitZero),
+        declared(DOCKER_BUILD, Success::ExitZero),
+        declared(WIZCLI_RESCAN, Success::ArtefactWritten),
+    ]
+}
+
+/// [`contract`] with the check named `name` replaced by `command_line`,
+/// declaring `success`.
+///
+/// A *replacement* and not an addition, so the contract stays five checks and a
+/// lane's `checks().len()` assertion keeps meaning what it meant. It panics
+/// when `name` is not one of the five, because the silent alternative is a
+/// contract that grew a sixth entry and a suite that never noticed the fifth
+/// was still the original.
+pub fn contract_with(name: &str, command_line: &str, success: Success) -> Vec<Check> {
+    let mut checks = contract();
+    let at = checks
+        .iter()
+        .position(|check| check.name() == name)
+        .unwrap_or_else(|| panic!("{name} is not one of the five checks in the contract"));
+    checks[at] = declared(command_line, success);
+    checks
+}
+
+/// One check, from the command line an operator would write and the criterion
+/// they would declare beside it.
+///
+/// The split on whitespace is this fixture's convenience and is deliberately
+/// not something the product does: `fiddle_cli::config::CheckRef` takes the
+/// program and its arguments already separated, precisely because a shell
+/// string has to be split by somebody and every splitter is wrong about quoting
+/// somewhere. What a lane wants to read is one string that recomposes to
+/// [`Check::name`], and no fixture command line here has a quoted argument in
+/// it.
+fn declared(command_line: &str, success: Success) -> Check {
+    let mut words = command_line.split_whitespace().map(str::to_string);
+    let program = words
+        .next()
+        .unwrap_or_else(|| panic!("a check needs a program, and {command_line:?} names none"));
+    Check {
+        program,
+        args: words.collect(),
+        success,
+    }
+}
+
+/// A scripted exit status. See [`ScriptedTree::where_check`].
+#[derive(Debug)]
+pub struct Exit(i32);
+
+/// The exit status a scripted check leaves.
+///
+/// A newtype rather than a bare `i32` beside a bare `&str`, so that
+/// `where_check(GO_FMT, exit(0), stdout("main.go\n"))` cannot be written with
+/// its last two arguments the wrong way round: the transposition is a type
+/// error rather than a test that scripts something nobody meant.
+pub fn exit(code: i32) -> Exit {
+    Exit(code)
+}
+
+/// Scripted standard output. See [`ScriptedTree::where_check`].
+#[derive(Debug)]
+pub struct Stdout(String);
+
+/// What a scripted check prints. See [`exit`] for why it is a type.
+pub fn stdout(text: &str) -> Stdout {
+    Stdout(text.to_string())
+}
+
+/// What a tree does when a particular check is run in it.
+#[derive(Debug)]
+enum Scripted {
+    /// It ran, and left this behind.
+    Answered { exit_code: i32, stdout: String },
+    /// It never started, because the program is not on this machine.
+    CannotStart,
+}
+
+/// A tree that answers the contract however a lane scripted it, and remembers
+/// what it was asked to start.
+///
+/// # Why the world is scripted here where `dedup`'s is real
+///
+/// The Go trees above are real directories because a git history is cheap to
+/// build and the subject reads one. This is the opposite situation: a tree in
+/// which `docker build` fails and `go vet` passes cannot be built offline, and
+/// neither can one where the container daemon is missing — and those situations
+/// *are* the contract's subject. So the world is scripted and the seam is
+/// [`Tree`], which is also what makes [`ScriptedTree::ran`] possible.
+///
+/// # An unscripted check passes
+///
+/// A tree scripts only what a lane wants to go wrong; everything else exits
+/// zero, prints nothing, and passes. That makes [`green_tree`] the default and
+/// a failure the thing a lane writes down, which is the right way round — but
+/// it also means a *mis-spelled* name scripts nothing and leaves a green tree.
+/// Every lane that scripts a failure asserts which check failed, so the
+/// mis-spelling arrives as "expected a failure, found none" rather than as a
+/// pass; and [`ScriptedTree::where_check`] refuses to script the same check
+/// twice, which is the other half of the same worry.
+pub struct ScriptedTree {
+    /// By [`Check::name`], and only the checks a lane departed from.
+    scripted: BTreeMap<String, Scripted>,
+    /// The scanner an [`Success::ArtefactWritten`] check reaches. Real, and
+    /// really spawned — see [`ScriptedTree::scan`].
+    scanner: ScriptedScanner,
+    /// Every check this tree was asked to start, in order.
+    ///
+    /// A [`Mutex`] because the subject holds this by shared reference — a
+    /// runner that needed `&mut` to run a check would be a runner nobody could
+    /// hold a recorder of. It is the arrangement [`RecordedCalls`] is under.
+    ran: Mutex<Vec<String>>,
+}
+
+/// A tree that passes every check in [`contract`].
+///
+/// **The positive control, and the base every other tree is a departure from.**
+/// Without it every rejection a lane asserts is satisfied by a runner that
+/// rejects everything, and `rejected()` measures nothing.
+///
+/// Its scanner is the scripted `wizcli`'s `ok` arm, so the fifth check passes
+/// the way the other four do: by the criterion it declared, over a program that
+/// really ran.
+pub fn green_tree() -> ScriptedTree {
+    ScriptedTree {
+        scripted: BTreeMap::new(),
+        scanner: scanner_with(wiz_stub("ok")),
+        ran: Mutex::new(Vec::new()),
+    }
+}
+
+/// A [`green_tree`] in which the check named `name` does this instead.
+///
+/// The spelling `green_tree().where_check(..)` says the same thing; this one
+/// exists because what a lane with one scripted check means is a whole world
+/// rather than a departure it then applies — the same distinction
+/// [`go_with_shipped`] draws.
+pub fn tree_where(name: &str, exit: Exit, stdout: Stdout) -> ScriptedTree {
+    green_tree().where_check(name, exit, stdout)
+}
+
+impl ScriptedTree {
+    /// This tree, except that the check named `name` exits `exit` and prints
+    /// `stdout`.
+    ///
+    /// Panics when `name` is already scripted: two scripts for one check are
+    /// two things a lane believes about it, and silently keeping the second
+    /// would make `first_failure_is_the_earliest_in_declared_order` — the one
+    /// lane that scripts two checks — pass over a tree with one.
+    pub fn where_check(mut self, name: &str, exit: Exit, stdout: Stdout) -> Self {
+        self.script(
+            name,
+            Scripted::Answered {
+                exit_code: exit.0,
+                stdout: stdout.0,
+            },
+        );
+        self
+    }
+
+    /// This tree, except that the check named `name` cannot be started at all.
+    ///
+    /// The program is not on this machine — an uninstalled `docker`, not a
+    /// `docker build` that failed. The two are opposite remedies and the whole
+    /// reason [`Unanswered::NotStarted`] is not an exit status: one is an
+    /// operator's laptop to fix and the other is the repair to revert.
+    pub fn where_check_cannot_start(mut self, name: &str) -> Self {
+        self.script(name, Scripted::CannotStart);
+        self
+    }
+
+    /// This tree, scanned by the scripted `wizcli`'s `arm` arm.
+    ///
+    /// `arm` is one of [`ARMS`]. The two that matter to the contract are
+    /// `exit-nonzero-with-file`, which exits 3 and writes its report anyway —
+    /// what `wizcli` does when it reports findings — and `exit-nonzero-no-file`,
+    /// which exits the same way and leaves nothing.
+    pub fn scanned_by(mut self, arm: &str) -> Self {
+        self.scanner = scanner_with(wiz_stub(arm));
+        self
+    }
+
+    /// Every check this tree was asked to start, in order.
+    ///
+    /// What was *asked for*, not what succeeded: a check that could not start
+    /// is in here, because the claim this list carries is about the runner
+    /// having issued five separate commands rather than about what came back.
+    /// The result list is the other half and cannot show this one — five
+    /// results could be five copies of one status.
+    pub fn ran(&self) -> Vec<String> {
+        self.ran.lock().unwrap().clone()
+    }
+
+    fn script(&mut self, name: &str, scripted: Scripted) {
+        if let Some(already) = self.scripted.insert(name.to_string(), scripted) {
+            panic!("{name} was already scripted as {already:?}");
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tree for ScriptedTree {
+    async fn run(&self, check: &Check) -> Result<Answered, Unanswered> {
+        self.ran.lock().unwrap().push(check.name());
+        match self.scripted.get(&check.name()) {
+            Some(Scripted::CannotStart) => Err(Unanswered::NotStarted {
+                program: check.program.clone(),
+                // The kind and not a message, because the runner is what turns
+                // a kind into the sentence a record carries — see
+                // `fiddle_runtime::evaluate`. A fixture that wrote the sentence
+                // would be a fixture the assertion was really about.
+                source: std::io::Error::from(std::io::ErrorKind::NotFound),
+            }),
+            Some(Scripted::Answered { exit_code, stdout }) => Ok(Answered {
+                exit_code: *exit_code,
+                stdout: stdout.clone(),
+                stderr: String::new(),
+            }),
+            // Unscripted is green. See the type's own doc.
+            None => Ok(Answered {
+                exit_code: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+            }),
+        }
+    }
+
+    /// The one arm of this fixture that really spawns something.
+    ///
+    /// It goes through the real [`Wizcli`] adapter over the scripted `wizcli`,
+    /// so *success is the artefact, not the status line* is decided by the code
+    /// that owns that rule rather than restated here. What the check declared
+    /// is what routed the runner to this method; what it *names* is
+    /// [`WIZCLI_RESCAN`], and the program actually started is the stub
+    /// [`scanned_by`] put behind the operator seam — the same substitution
+    /// every other scanner lane in this crate makes, and the reason the check's
+    /// own `program` is recorded rather than executed.
+    ///
+    /// [`scanned_by`]: ScriptedTree::scanned_by
+    async fn scan(&self, check: &Check) -> Result<ScanReport, ScanError> {
+        self.ran.lock().unwrap().push(check.name());
+        self.scanner.scan(&image()).await
+    }
 }
