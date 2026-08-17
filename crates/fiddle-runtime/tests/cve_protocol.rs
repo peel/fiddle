@@ -43,15 +43,19 @@
 mod support;
 
 use fiddle_runtime::capability::{
-    ForbiddenShape, GroupMigration, GroupStatus, MigrationAttempt, NeedsWork,
+    land, record_fold, CapabilityError, ForbiddenShape, GroupMigration, GroupStatus,
+    MigrationAttempt, NeedsWork,
 };
+use fiddle_runtime::cve::dedup::FixedInCommits;
+use fiddle_runtime::cve::fold::Landed;
 use fiddle_runtime::evaluate::{evaluate, Evaluation, RescanVerdict};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
 use support::cve::{
-    contract, contract_scanned_by, exit, green_tree, migration_world, stdout, tree_rescanned_by,
-    tree_where, MigrationWorld, GO_BUILD, HOST_ROOT, MIGRATION_SOURCE as SOURCE,
-    MIGRATION_TEST_BEFORE, MIGRATION_TEST_SOURCE as TEST_SOURCE, SENTINEL_PROSE,
+    contract, contract_scanned_by, exit, green_tree, landing_world, migration_world, stdout,
+    tree_rescanned_by, tree_where, LandingWorld, MigrationWorld, GO_BUILD, HOST_ROOT,
+    LANDING_CREATED, LANDING_UNRELATED, MIGRATION_SOURCE as SOURCE, MIGRATION_TEST_BEFORE,
+    MIGRATION_TEST_SOURCE as TEST_SOURCE, SENTINEL_PROSE,
 };
 
 // ---------------------------------------------------------------------------
@@ -1079,4 +1083,490 @@ async fn a_clean_group_is_exactly_an_accepted_one() {
             reason: NeedsWork::Unproved(RescanVerdict::NotCompared)
         }
     );
+}
+
+// ---------------------------------------------------------------------------
+// The third criterion: commit named files, revert named files, rewrite nothing
+// (Task 15)
+// ---------------------------------------------------------------------------
+
+/// The advisories a landing lane's group is about.
+///
+/// Two of them, because the body has to name **every** id and a group of one
+/// cannot tell "names every id" from "names an id". Values no other fixture in
+/// this workspace spells, so a body that named them came from this group.
+const LANDED: [&str; 2] = ["CVE-2026-1", "CVE-2026-2"];
+
+/// The advisory a group that is *not* landed is about.
+///
+/// Deliberately not one of [`LANDED`]: the whole of the second criterion is that
+/// this id reaches no commit body, and an id shared with a group that does land
+/// would make the absence unassertable.
+const NOT_LANDED: &str = "CVE-2026-3";
+
+/// A status a group reaches through a failing check.
+///
+/// The *ordinary* refusal, used wherever a lane only needs "this group is not
+/// clean". The refusal that matters — a forbidden shape over green checks — has
+/// a lane of its own; see
+/// [`a_forbidden_shape_over_green_checks_reverts_rather_than_committing`].
+fn refused() -> GroupStatus {
+    GroupStatus::NeedsWork {
+        reason: NeedsWork::CheckFailed {
+            check: GO_BUILD.to_string(),
+        },
+    }
+}
+
+/// Land a clean group naming `cves`, and hand back the world it landed in.
+///
+/// The world travels with the result because it owns the temporary directory the
+/// repository is in, and because every assertion afterwards is a question about
+/// that repository.
+async fn run_group_clean(cves: &[&str]) -> (LandingWorld, Landed) {
+    let world = landing_world(cves);
+    let landed = land(
+        &world.tree,
+        &world.group,
+        &GroupStatus::Clean,
+        &world.changed,
+    )
+    .await
+    .expect("a clean group lands");
+    (world, landed)
+}
+
+/// The same for a group that is going back to a person.
+async fn run_group_needs_work(cves: &[&str]) -> (LandingWorld, Landed) {
+    let world = landing_world(cves);
+    let landed = land(&world.tree, &world.group, &refused(), &world.changed)
+        .await
+        .expect("a needs-work group reverts");
+    (world, landed)
+}
+
+/// Nothing in `calls` stages by directory.
+///
+/// Two readings of the same rule, because the plan states it as a substring rule
+/// and a substring rule is exactly as strong as the spellings somebody thought
+/// of. The token reading catches `add --all`, `add -A -- .` and an `-a` that
+/// arrived in a longer commit invocation; the substring reading is the one the
+/// criterion is written in, and keeping both means neither can be quietly
+/// satisfied by rewording.
+///
+/// One spelling deliberately does **not** trip this and is worth naming:
+/// `commit --allow-empty`, which [`fold_commit_argv`] issues, contains
+/// `commit --a` and not `commit -a`. That is the intended reading — an empty
+/// commit stages nothing at all — and the token check below confirms it rather
+/// than resting on where the hyphens fell.
+///
+/// [`fold_commit_argv`]: fiddle_runtime::cve::fold::fold_commit_argv
+fn nothing_is_staged_by_directory(calls: &[String]) {
+    assert!(
+        !calls.is_empty(),
+        "no git was recorded at all, so every negative below holds for the \
+         emptiest of reasons: the seam was never wired in"
+    );
+    for call in calls {
+        for forbidden in ["add -A", "add .", "commit -a"] {
+            assert!(
+                !call.contains(forbidden),
+                "`{forbidden}` stages what nothing classified: {call}"
+            );
+        }
+        let tokens: Vec<&str> = call.split_whitespace().collect();
+        let has = |token: &str| tokens.contains(&token);
+        assert!(
+            !(has("add") && (has("-A") || has("--all") || has("."))),
+            "an `add` that names a directory rather than the files the group \
+             edited: {call}"
+        );
+        assert!(
+            !(has("commit") && (has("-a") || has("--all"))),
+            "a `commit` that stages on the caller's behalf: {call}"
+        );
+    }
+}
+
+/// Nothing in `calls` rewrites anything that is already on the branch.
+///
+/// The six operations of the criterion, and the one worth spelling out is
+/// `--amend`: it is the obvious way to attach a further change to the commit
+/// before it, and on a branch this run is *reusing* the commit before it may
+/// belong to a previous run and already be pushed. Rewriting it would then need a
+/// force push, which is the first entry on the same list.
+fn nothing_rewrites_history(calls: &[String]) {
+    assert!(
+        !calls.is_empty(),
+        "no git was recorded at all, so this proves nothing about what ran"
+    );
+    for call in calls {
+        for forbidden in [
+            "push --force",
+            "--force-with-lease",
+            "reset",
+            "rebase",
+            "commit --amend",
+            "--amend",
+            "--no-verify",
+        ] {
+            assert!(!call.contains(forbidden), "`{forbidden}`: {call}");
+        }
+    }
+}
+
+/// **The world a landing runs in holds a dirty file the group did not edit.**
+///
+/// The denominator for the staging criterion, and a lane rather than a comment
+/// for [`the_world_holds_everything_the_prompt_must_not`]'s reason. If every
+/// dirty path in the tree were also a path the group edited, `add -A` and
+/// `add -- go.mod go.sum` would leave byte-identical commits and every assertion
+/// below would hold for a subject that staged the whole worktree.
+///
+/// It also pins the second premise the negatives rest on: **nothing is recorded
+/// before the subject runs**, so a non-empty call list afterwards is the
+/// subject's doing and not the fixture's.
+#[test]
+fn a_landing_world_has_something_outside_the_change_set_to_get_wrong() {
+    let world = landing_world(&LANDED);
+
+    let changed: Vec<&str> = world.changed.iter().map(|path| path.as_str()).collect();
+    assert_eq!(changed, ["go.mod", "go.sum"]);
+    assert!(
+        !changed.contains(&LANDING_UNRELATED),
+        "the discriminating file must be outside the change set"
+    );
+    assert!(
+        !world.tree.is_clean_at(&[LANDING_UNRELATED]),
+        "and it must be dirty, or staging by name and by directory agree"
+    );
+    assert!(
+        !world.tree.is_clean_at(&["go.mod", "go.sum"]),
+        "and the bump must really have changed the tree, or a commit of nothing \
+         would satisfy every lane below"
+    );
+    assert!(
+        world.tree.git_calls().is_empty(),
+        "construction must record nothing, or `what the subject ran` is a list \
+         holding what this fixture ran: {:?}",
+        world.tree.git_calls()
+    );
+    assert!(
+        !world.tree.all_commit_bodies().is_empty(),
+        "there has to be a history for an id to be absent from"
+    );
+}
+
+/// **A clean group commits only the files it edited, and names every advisory.**
+///
+/// Three claims, and each is measured through a different instrument so that no
+/// two of them can be satisfied by one accident:
+///
+/// - *only the files it edited* — read off the commit at `HEAD` rather than off
+///   the recorded `add`, because what the criterion is about is what reached the
+///   branch. `LANDING_UNRELATED` is dirty and stays dirty, which is the half a
+///   commit that staged everything would fail.
+/// - *names every advisory* — asked through
+///   [`FixedInCommits`], which is the reader `cve::dedup` recovers the
+///   already-fixed set with on the next run. A substring match here would be a
+///   second opinion about what naming an advisory is, and the two would be free
+///   to drift; through the real reader they cannot.
+/// - *stages by name* — over the recorded call list, which is non-empty because
+///   the fixture records nothing and the subject records everything.
+#[tokio::test]
+async fn a_clean_group_commits_only_the_files_it_edited_and_names_every_cve() {
+    let (world, landed) = run_group_clean(&LANDED).await;
+
+    assert_eq!(landed, Landed::Committed);
+    assert_eq!(
+        world.tree.staged_paths(),
+        ["go.mod", "go.sum"],
+        "the commit carries the group's own files and nothing beside them"
+    );
+    assert!(
+        world.tree.is_clean_at(&["go.mod", "go.sum"]),
+        "and they are on the branch rather than still sitting dirty"
+    );
+    assert!(
+        !world.tree.is_clean_at(&[LANDING_UNRELATED]),
+        "{LANDING_UNRELATED} was dirty and had nothing to do with this group, so \
+         it must still be dirty"
+    );
+
+    let fixed = FixedInCommits::read(&world.tree.head_commit_body());
+    for cve in LANDED {
+        assert!(
+            fixed.names(cve),
+            "the log is what recovers the fixed set for OS findings next run, \
+             and it does not name {cve}: {}",
+            world.tree.head_commit_body()
+        );
+    }
+
+    nothing_is_staged_by_directory(&world.tree.git_calls());
+    assert_eq!(
+        world.tree.git_calls().first().map(String::as_str),
+        Some("add -f -- go.mod go.sum"),
+        "staging is the group's paths, by name: {:?}",
+        world.tree.git_calls()
+    );
+}
+
+/// **A needs-work group reverts, and leaves no id in any commit body.**
+///
+/// An id in a body is a claim it was fixed, and the next run's log scan believes
+/// it — that is the same claiming-proof-from-silence failure `cve::dedup`'s
+/// header records from 2026-08-12, arriving from the other side.
+///
+/// The absence is only evidence if the reader would have found the id had it been
+/// there, so the same [`FixedInCommits`] is asked about a word this history really
+/// carries. And *no commit was made* is asserted as the history being byte-for-
+/// byte what it was, rather than as the narrower claim that one particular id is
+/// missing from it.
+///
+/// The revert is by name too: `LANDING_UNRELATED` was dirty before it and is dirty
+/// after, which is what separates `git checkout HEAD -- go.mod go.sum` from
+/// `git checkout .`.
+#[tokio::test]
+async fn a_needs_work_group_reverts_and_leaves_no_id_in_any_commit_body() {
+    let (world, landed) = run_group_needs_work(&[NOT_LANDED]).await;
+
+    assert_eq!(landed, Landed::Reverted);
+    assert!(
+        world.tree.is_clean_at(&["go.mod", "go.sum"]),
+        "the group's own files are back the way HEAD has them"
+    );
+    assert!(
+        !world.tree.is_clean_at(&[LANDING_UNRELATED]),
+        "and a revert by name left the file it was not given alone"
+    );
+
+    let bodies = world.tree.all_commit_bodies();
+    assert_eq!(
+        bodies, world.history_before,
+        "a needs-work group makes no commit at all, so the history is what it was"
+    );
+    let fixed = FixedInCommits::read(&bodies);
+    assert!(
+        !fixed.names(NOT_LANDED),
+        "an id in a body is a claim it was fixed, and the next run's log scan \
+         believes it: {bodies}"
+    );
+    assert!(
+        fixed.names("chore"),
+        "the reader really reads this history — otherwise the absence above is a \
+         fact about the reader: {bodies}"
+    );
+
+    nothing_rewrites_history(&world.tree.git_calls());
+}
+
+/// **A forbidden shape with green checks reverts rather than committing.**
+///
+/// The one case [`GroupStatus`] and [`Evaluation::accepted`] come apart on, and
+/// the one where committing lands a `t.Skip` on the branch. A landing derived
+/// from `accepted()` would pass every other lane in this section and fail here —
+/// and the damage would not stop at the commit, because `cve::fold`'s
+/// `ended_clean` still reads `accepted()`, so this group would both land *and*
+/// fold the next one.
+///
+/// The premises are what make it a divergence rather than a coincidence: the diff
+/// really carries a forbidden shape, the evaluation really is accepted, and the
+/// two really disagree.
+#[tokio::test]
+async fn a_forbidden_shape_over_green_checks_reverts_rather_than_committing() {
+    let (_migrated, attempt) = attempted(adds_a_skip()).await;
+    let evaluation = a_proved_tree().await;
+    let status = GroupStatus::of(&evaluation, &attempt.forbidden);
+
+    assert!(
+        matches!(the_one_shape(&attempt), ForbiddenShape::AddedSkip { .. }),
+        "the premise: this attempt switched a test off"
+    );
+    assert!(
+        evaluation.accepted(),
+        "the premise: every check passed and the rescan cleared, so a landing \
+         that read the evaluation would commit this"
+    );
+    assert_ne!(
+        status,
+        GroupStatus::Clean,
+        "and the status says otherwise, which is the divergence"
+    );
+
+    let world = landing_world(&LANDED);
+    let landed = land(&world.tree, &world.group, &status, &world.changed)
+        .await
+        .expect("a refused group reverts");
+
+    assert_eq!(
+        landed,
+        Landed::Reverted,
+        "GroupStatus is the commit gate, not Evaluation::accepted"
+    );
+    assert_eq!(
+        world.tree.all_commit_bodies(),
+        world.history_before,
+        "nothing was committed, so nothing on this branch claims a fix"
+    );
+    let fixed = FixedInCommits::read(&world.tree.all_commit_bodies());
+    for cve in LANDED {
+        assert!(
+            !fixed.names(cve),
+            "an out-of-scope group must not claim {cve} was fixed: {}",
+            world.tree.all_commit_bodies()
+        );
+    }
+    assert!(
+        world.tree.is_clean_at(&["go.mod", "go.sum"]),
+        "and the edit is off the tree"
+    );
+}
+
+/// **A file the attempt created is reverted too.**
+///
+/// `git checkout HEAD --` cannot put back a path `HEAD` does not carry — it
+/// refuses the pathspec, which would fail the revert for every path beside it —
+/// so a changed set holding a created file is the case a one-command revert gets
+/// wrong. Left behind, the file is still in the worktree when the *next* group
+/// stages, and a `t.Skip` in it would reach the branch under that group's commit.
+#[tokio::test]
+async fn a_file_the_attempt_created_does_not_survive_the_revert() {
+    let world = landing_world(&[NOT_LANDED]).and_a_created_file();
+    assert!(
+        !world.tree.is_clean_at(&[LANDING_CREATED]),
+        "the premise: the created file is really in the tree"
+    );
+
+    let landed = land(&world.tree, &world.group, &refused(), &world.changed)
+        .await
+        .expect("a needs-work group reverts");
+
+    assert_eq!(landed, Landed::Reverted);
+    assert!(
+        world
+            .tree
+            .is_clean_at(&["go.mod", "go.sum", LANDING_CREATED]),
+        "every path the group changed is back the way HEAD has it, creations \
+         included: {:?}",
+        world.tree.git_calls()
+    );
+    assert!(
+        !world.tree.is_clean_at(&[LANDING_UNRELATED]),
+        "and still by name — the file the revert was not given is untouched"
+    );
+    nothing_rewrites_history(&world.tree.git_calls());
+}
+
+/// **A clean group that changed nothing is refused rather than committed.**
+///
+/// Neither nearby answer is honest. `--allow-empty` would put a body naming every
+/// one of this group's advisories on the branch with no fix under it, which the
+/// next run's log scan reads as *these are done*; answering
+/// [`Landed::Committed`] with no commit would tell the fold rule the branch
+/// carries a tree it does not.
+#[tokio::test]
+async fn a_clean_group_that_changed_nothing_commits_nothing_and_says_so() {
+    let world = landing_world(&LANDED);
+
+    let refusal = land(&world.tree, &world.group, &GroupStatus::Clean, &[])
+        .await
+        .expect_err("a clean group with an empty change set is refused");
+
+    assert!(
+        matches!(refusal, CapabilityError::NothingProposed),
+        "and it is the refusal that says the tree did not change: {refusal:?}"
+    );
+    assert_eq!(
+        world.tree.all_commit_bodies(),
+        world.history_before,
+        "no commit was made, empty or otherwise"
+    );
+    let fixed = FixedInCommits::read(&world.tree.all_commit_bodies());
+    for cve in LANDED {
+        assert!(!fixed.names(cve), "and nothing claims {cve} was fixed");
+    }
+}
+
+/// **A fold is recorded as an empty commit that names every id and amends
+/// nothing.**
+///
+/// `fold_commit_argv` decides the flag pair and spawns nothing; this is the
+/// caller it was left for, so the two halves of that pair are asserted where they
+/// actually run. `--allow-empty` is what makes a fold a commit at all — a fold
+/// changes no file, which is the whole of what it is — and the *absence* of
+/// `--amend` is the load-bearing half: on a reused branch the commit before this
+/// one may belong to a previous run and already be pushed.
+///
+/// The body is read through [`FixedInCommits`] for the same reason the clean
+/// group's is: a fold that left a commit naming no advisory would be invisible to
+/// the next run's scan and the group would be re-derived from scratch.
+#[tokio::test]
+async fn a_fold_is_an_empty_commit_naming_every_id_and_amending_nothing() {
+    let world = landing_world(&LANDED);
+    let before = world.tree.staged_paths();
+
+    record_fold(&world.tree, &world.group)
+        .await
+        .expect("a fold is recorded");
+
+    assert!(
+        world.tree.staged_paths().is_empty(),
+        "a fold changes no file, and this commit carries {:?}",
+        world.tree.staged_paths()
+    );
+    assert_ne!(
+        world.tree.staged_paths(),
+        before,
+        "the premise: the commit before this one was not itself empty, so \
+         `empty` above is a fact about the fold"
+    );
+
+    let fixed = FixedInCommits::read(&world.tree.head_commit_body());
+    for cve in LANDED {
+        assert!(
+            fixed.names(cve),
+            "a fold that named no advisory is invisible to the next run: {}",
+            world.tree.head_commit_body()
+        );
+    }
+
+    let calls = world.tree.git_calls();
+    assert!(
+        calls.iter().any(|call| call.contains("--allow-empty")),
+        "a fold changes nothing, so it needs the flag to become a commit: {calls:?}"
+    );
+    nothing_rewrites_history(&calls);
+    nothing_is_staged_by_directory(&calls);
+}
+
+/// **History is never rewritten, on any path a landing can take.**
+///
+/// The criterion asserted over every call site rather than over the one a
+/// convenient lane happened to exercise: a clean landing, a refused one, and a
+/// fold. The recorded list is non-empty in each case — [`nothing_rewrites_history`]
+/// insists on it — because the fixture records nothing and the subject records
+/// everything, so an absence here is an absence from what actually ran.
+#[tokio::test]
+async fn history_is_never_rewritten() {
+    let (committed, _) = run_group_clean(&LANDED).await;
+    let (reverted, _) = run_group_needs_work(&[NOT_LANDED]).await;
+    let folded = landing_world(&LANDED);
+    record_fold(&folded.tree, &folded.group)
+        .await
+        .expect("a fold is recorded");
+
+    for (name, tree) in [
+        ("clean", &committed.tree),
+        ("needs-work", &reverted.tree),
+        ("fold", &folded.tree),
+    ] {
+        let calls = tree.git_calls();
+        assert!(
+            !calls.is_empty(),
+            "the `{name}` landing recorded nothing, so it proves nothing"
+        );
+        nothing_rewrites_history(&calls);
+        nothing_is_staged_by_directory(&calls);
+    }
 }

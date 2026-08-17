@@ -56,14 +56,22 @@
 //! [`MigrationAttempt`], and this module deliberately reaches no verdict for them
 //! to have to undo.
 
+use super::propose::COMMITTER;
 use super::CapabilityError;
 use crate::agent::{attempt_briefed, AgentBudget, Brief, RepairReport, ToolHost, ToolReceipts};
+use crate::cve::attribute::Target;
+use crate::cve::fold::{fold_commit_argv, Landed};
 use crate::cve::group::Group;
 use crate::evaluate::{Evaluation, RescanVerdict};
-use crate::workspace::{Content, FileEdit, Workspace, WorkspaceCommand, WorkspacePath};
+use crate::workspace::{
+    Content, FileEdit, Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath,
+};
+use async_trait::async_trait;
 use fiddle_core::{AttemptId, ProjectedFinding};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 /// What the model is told about the situation it is in.
@@ -761,6 +769,348 @@ where
             forbidden,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// What a group's outcome does to the branch
+// ---------------------------------------------------------------------------
+
+/// Every git this stage runs, and the one seam it runs them through.
+///
+/// **Not for substitutability.** [`crate::cve::dedup::Spawn`] gives the argument
+/// in full and it is the same one here: a test holding an implementation of this
+/// holds the *complete list* of what the landing ran, which is what turns "this
+/// never rewrites history" and "this never stages by directory" from sentences in
+/// a comment into assertions over a list. Both of those are negatives, and a
+/// negative over a list nobody kept is satisfied by keeping no list.
+///
+/// One method and not one per porcelain verb. The three criteria are about the
+/// *whole* set of invocations — a fifth verb added below has to appear in the
+/// recorded list whether or not anybody remembered to widen a trait, and a trait
+/// with a method per verb would let a new one arrive through a new method that no
+/// existing assertion walks.
+///
+/// `Ok` is stdout for the one caller that reads it — the `ls-tree` probe in
+/// [`revert`] — and a non-zero exit is an `Err` rather than a status a caller
+/// interprets, because there is no call here where failing is an answer. That is
+/// the opposite of [`crate::cve::dedup::Spawn`]'s choice, and deliberately so:
+/// dedup has exactly one call whose non-zero exit *is* the answer
+/// (`rev-parse --verify --quiet`), and this has none.
+#[async_trait]
+pub trait Git: Sync {
+    /// Run `git` with `args` in the repository this is bound to, and hand back
+    /// what it printed.
+    async fn run(&self, args: &[&str]) -> Result<String, CapabilityError>;
+}
+
+/// The production one: git inside the attempt's worktree.
+///
+/// **It composes a spawn site and adds none**, which is
+/// [`crate::evaluate::in_workspace`]'s arrangement and its reason.
+/// [`Workspace::run`] owns the four-name environment a child of an attempt sees,
+/// the relativisation applied to what it printed, and the process-group bound; a
+/// `git` spawned beside that would be a second environment to keep in step, and
+/// `workspace::a_workspace_command_inherits_no_credential` would stop being a
+/// statement about how this crate's git children actually run.
+///
+/// Borrows the workspace rather than owning it for [`InWorkspace`]'s reason: the
+/// workspace is the attempt's, its [`Drop`] removes the worktree, and a landing
+/// is one of several things that happen inside one. It has to happen *before*
+/// that drop — the commit is made in a worktree of the fixture, and a worktree
+/// shares the object store it was branched from, which is what leaves the object
+/// behind once the worktree is gone.
+///
+/// [`InWorkspace`]: crate::evaluate::in_workspace::InWorkspace
+pub struct InWorktree<'a> {
+    workspace: &'a Workspace,
+    timeout: Duration,
+}
+
+impl<'a> InWorktree<'a> {
+    /// Run git in `workspace`, giving each invocation `timeout`.
+    ///
+    /// The bound is the caller's — in practice [`AgentBudget::tool_timeout`], the
+    /// ceiling the host already set on any single program this attempt runs, which
+    /// is the same value [`super::ProposeChange`]'s committer uses. A second
+    /// wall-clock policy for git alone is one nobody has written down.
+    pub fn new(workspace: &'a Workspace, timeout: Duration) -> Self {
+        InWorktree { workspace, timeout }
+    }
+}
+
+#[async_trait]
+impl Git for InWorktree<'_> {
+    async fn run(&self, args: &[&str]) -> Result<String, CapabilityError> {
+        let command = WorkspaceCommand {
+            program: "git".to_string(),
+            args: args.iter().map(|argument| argument.to_string()).collect(),
+            timeout: self.timeout,
+        };
+        let result = self.workspace.run(&command).await?;
+        match result.exit_code {
+            0 => Ok(result.stdout),
+            _ => Err(CapabilityError::Workspace(WorkspaceError::Git {
+                command: args.join(" "),
+                stderr: result.stderr,
+            })),
+        }
+    }
+}
+
+/// Stage exactly the files this group edited and commit them, or put them back;
+/// either way, say which happened.
+///
+/// # The commit gate is [`GroupStatus`], and it is not [`Evaluation::accepted`]
+///
+/// The two come apart on exactly one case — **a forbidden shape with green
+/// checks** — and that is the case where committing lands a `t.Skip` on the
+/// branch. [`GroupStatus::of`]'s first row exists for it: the forbidden shapes
+/// are precisely the edits that make a check pass when it should not, so a
+/// landing that consulted the checks would commit the one diff the classifier
+/// was written to stop.
+///
+/// It is settled by the signature rather than by the body below. There is no
+/// [`Evaluation`] here to read — the same device [`GroupStatus::of`] uses in the
+/// other direction, where the model's claim is kept out of reach rather than left
+/// unread — so *the checks are not the commit gate* is a property of what this
+/// function can see, which nobody can edit away without changing the signature.
+///
+/// The consequence of getting it wrong is not local: [`crate::cve::fold`]'s
+/// `ended_clean` still reads `accepted()`, so a group that both landed and folded
+/// on a green-checked forbidden shape would record a *later* group's advisories
+/// as fixed by an edit that should never have been on the branch.
+///
+/// # `changed` is what git saw, not what anybody asked for
+///
+/// It is [`MigrationAttempt::changed`], which is
+/// [`Workspace::changed_files`] under the ignore rules the project had committed
+/// before the attempt began — and it is also the list [`classify`] read. Those
+/// being one list is the whole safety argument for staging by name: a commit may
+/// carry only what was classified, because a file that reached the commit by some
+/// other route reached it without any scope rule having been applied to it.
+pub async fn land<G>(
+    git: &G,
+    group: &Group,
+    status: &GroupStatus,
+    changed: &[WorkspacePath],
+) -> Result<Landed, CapabilityError>
+where
+    G: Git + ?Sized,
+{
+    match lands_as(status) {
+        Landed::Committed => {
+            stage_and_commit(git, group, changed).await?;
+            Ok(Landed::Committed)
+        }
+        Landed::Reverted => {
+            revert(git, changed).await?;
+            Ok(Landed::Reverted)
+        }
+    }
+}
+
+/// What a status does to the branch, decided once.
+///
+/// A function of [`GroupStatus`] alone, and the only place the decision is taken:
+/// [`land`] matches on what this answered rather than on the status again, so the
+/// git that follows cannot come to a different conclusion from the value that is
+/// handed back to [`crate::cve::fold`].
+///
+/// [`GroupStatus::Clean`] is the commit gate and everything else reverts. There is
+/// no third arm and no arm that inspects [`NeedsWork`]'s reason: a group refused
+/// for a failing check and a group refused for an added `t.Skip` are the same
+/// thing to a branch.
+fn lands_as(status: &GroupStatus) -> Landed {
+    match status {
+        GroupStatus::Clean => Landed::Committed,
+        GroupStatus::NeedsWork { .. } => Landed::Reverted,
+    }
+}
+
+/// Stage `changed` by name and make one commit of it.
+async fn stage_and_commit<G>(
+    git: &G,
+    group: &Group,
+    changed: &[WorkspacePath],
+) -> Result<(), CapabilityError>
+where
+    G: Git + ?Sized,
+{
+    // A clean group that changed nothing has nothing to commit, and neither
+    // nearby answer is honest: `--allow-empty` would put a body naming every one
+    // of this group's advisories on the branch with no fix under it, which the
+    // next run's log scan reads as *these are done*, and answering
+    // [`Landed::Committed`] with no commit would tell the fold rule the branch
+    // carries a tree it does not. So it is a refusal, and the same one
+    // [`super::ProposeChange`] gives for the same tree.
+    if changed.is_empty() {
+        return Err(CapabilityError::NothingProposed);
+    }
+
+    // `add -f` over the named paths and never `add -A`. Two separate reasons, and
+    // both matter:
+    //
+    // - **By name**, because the list is the one [`classify`] was applied to. A
+    //   path that reached the commit any other way reached it with no scope rule
+    //   having looked at it, and the four shapes are exactly the edits a green
+    //   build would otherwise let through.
+    // - **`-f`**, for [`super::ProposeChange::commit`]'s reason: `changed` is
+    //   derived under the ignore rules the project had committed *before* the
+    //   attempt, and an `add` honouring the worktree's own rules would let an
+    //   attempt that wrote `*` into `.gitignore` decide what gets committed. The
+    //   checks would then have passed over a tree that is not the tree the commit
+    //   carries.
+    let paths: Vec<&str> = changed.iter().map(|path| path.as_str()).collect();
+    let mut add = vec!["add", "-f", "--"];
+    add.extend_from_slice(&paths);
+    git.run(&add).await?;
+
+    // Two `-m` arguments rather than one string with a blank line in it: git's
+    // own way of separating a subject from a body, so the separation is not a
+    // `\n\n` this file has to get right.
+    let subject = commit_subject(group);
+    let body = commit_body(group);
+    let mut commit: Vec<&str> = COMMITTER
+        .iter()
+        .flat_map(|setting| ["-c", setting])
+        .collect();
+    commit.extend(["commit", "-q", "-m", subject.as_str(), "-m", body.as_str()]);
+    git.run(&commit).await?;
+    Ok(())
+}
+
+/// Put `changed` back the way `HEAD` has it, and nothing else back.
+///
+/// # Two commands, because a changed path is not always a tracked one
+///
+/// `git checkout HEAD --` is the whole of the revert for a file the attempt
+/// *edited*, and it is no part of it for a file the attempt *created*: git
+/// refuses the pathspec outright, which would fail the revert for every path
+/// beside it, and even if it did not there is no `HEAD` version of a new file to
+/// restore. `changed` holds both kinds — [`Workspace::changed_files`] is the
+/// tracked half from `git status` plus the created half from
+/// `ls-files --others` — so the two halves are separated by asking `HEAD` which
+/// paths it carries, and each is undone the only way it can be.
+///
+/// `git clean` is the created half's answer and is bounded to `--` and the named
+/// paths, exactly as the checkout is. It is the one command here that deletes,
+/// which is why it is never given a directory and never given `-d`.
+///
+/// # `HEAD --` and not a bare `--`
+///
+/// A bare `git checkout -- <path>` restores from the *index*, so a path the
+/// attempt had somehow staged would come back as the staged version rather than
+/// as the committed one. Nothing in an attempt runs git — the tool surface is
+/// read, write, list and one check — so the index should already agree with
+/// `HEAD`; naming `HEAD` makes the revert say what it means instead of resting on
+/// that.
+async fn revert<G>(git: &G, changed: &[WorkspacePath]) -> Result<(), CapabilityError>
+where
+    G: Git + ?Sized,
+{
+    // Nothing changed, so there is nothing to put back — and an unbounded
+    // `checkout` or `clean` with an empty pathspec would be the whole worktree,
+    // which is the one thing a revert by name must never become.
+    if changed.is_empty() {
+        return Ok(());
+    }
+    let paths: Vec<&str> = changed.iter().map(|path| path.as_str()).collect();
+
+    let mut probe = vec!["ls-tree", "-r", "--name-only", "-z", "HEAD", "--"];
+    probe.extend_from_slice(&paths);
+    let listed = git.run(&probe).await?;
+    let committed: BTreeSet<&str> = listed.split('\0').filter(|it| !it.is_empty()).collect();
+
+    let (edited, created): (Vec<&str>, Vec<&str>) = paths
+        .iter()
+        .copied()
+        .partition(|path| committed.contains(path));
+
+    if !edited.is_empty() {
+        let mut checkout = vec!["checkout", "HEAD", "--"];
+        checkout.extend_from_slice(&edited);
+        git.run(&checkout).await?;
+    }
+    if !created.is_empty() {
+        let mut clean = vec!["clean", "-f", "-q", "--"];
+        clean.extend_from_slice(&created);
+        git.run(&clean).await?;
+    }
+    Ok(())
+}
+
+/// The one line a clean group's commit opens with.
+///
+/// **It names no advisory**, and that is not brevity. The subject is part of the
+/// body `git log --format=%B` prints, so an id here is an id
+/// [`crate::cve::dedup::FixedInCommits`] reads — which is fine for a group that
+/// really was fixed and would be a false claim for anything else. Keeping the ids
+/// to one place means there is one place to be careful about.
+fn commit_subject(group: &Group) -> String {
+    let count = group.cves().len();
+    let advisories = match count {
+        1 => "1 advisory".to_string(),
+        many => format!("{many} advisories"),
+    };
+    match group.target() {
+        Target::Module(path) => format!("fix: bump {path} for {advisories}"),
+        Target::DockerfileBaseImage => format!("fix: bump the base image for {advisories}"),
+    }
+}
+
+/// Every advisory this group's edit fixes, one per line.
+///
+/// **Every one of them, not the first.** [`crate::cve::dedup`]'s log scan is what
+/// recovers the already-fixed set on the next run, and it matches each id
+/// independently precisely because one body may name several — so a body naming
+/// one of a group's four leaves three to be re-proposed against a tree that
+/// already carries their fix, and `group::GroupError::AlreadyAtTheFix` is then the
+/// only thing standing between that and a downgrade under a security fix's commit
+/// message.
+///
+/// A `Fixes:` trailer per id rather than a bare list, because that is what the
+/// line is for and because a person reads this log too. The scan splits on
+/// everything that is not alphanumeric or a hyphen, so the word `Fixes` joins its
+/// word set and can answer nothing wrong — see [`FixedInCommits::read`].
+///
+/// [`FixedInCommits::read`]: crate::cve::dedup::FixedInCommits::read
+fn commit_body(group: &Group) -> String {
+    group
+        .cves()
+        .iter()
+        .map(|cve| format!("Fixes: {}", cve.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Record a fold: the empty commit whose body is the whole of what it is.
+///
+/// [`fold_commit_argv`] decides the flags and the body and spawns nothing; this
+/// is the caller it was left for. The pair it settles —
+/// **`--allow-empty` and never `--amend`** — survives the move because this runs
+/// its output rather than restating it, so the flags cannot drift from the test
+/// that pins them.
+///
+/// # It does not answer [`Landed`], and that is not an omission
+///
+/// A fold *is* the decision not to attempt a group, so there is no attempt, no
+/// evaluation and no rescan. [`crate::cve::fold::PriorRescan`] is built from an
+/// [`Evaluation`] and a [`Landed`] together, and there is no evaluation here to
+/// pair one with — a `Landed::Committed` handed back from a fold would be an
+/// invitation to build a prior rescan out of somebody else's evidence, which is
+/// the exact confusion the fold rule's two gates exist to prevent.
+pub async fn record_fold<G>(git: &G, group: &Group) -> Result<(), CapabilityError>
+where
+    G: Git + ?Sized,
+{
+    let argv = fold_commit_argv(group);
+    let mut call: Vec<&str> = COMMITTER
+        .iter()
+        .flat_map(|setting| ["-c", setting])
+        .collect();
+    call.extend(argv.iter().map(|argument| argument.as_str()));
+    git.run(&call).await?;
+    Ok(())
 }
 
 #[cfg(test)]

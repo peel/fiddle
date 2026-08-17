@@ -99,6 +99,17 @@
 //!   to write the whole file, so a script that spelled the original out again
 //!   would be a second copy to keep in step. See [`MIGRATION_TEST_BEFORE`]'s own
 //!   doc for the one property of it that is easy to lose.
+//! - Task 15 adds [`LandingWorld`] and [`landing_world`] — the tree one group's
+//!   outcome is landed in — together with the four questions a landing lane asks
+//!   of a tree it did not run git on ([`GoWorkspace::staged_paths`],
+//!   [`GoWorkspace::head_commit_body`], [`GoWorkspace::all_commit_bodies`] and
+//!   [`GoWorkspace::is_clean_at`]), [`GoWorkspace::try_git`], and the
+//!   `impl Git for GoWorkspace` that makes the tree itself the subject's one
+//!   spawn seam. **Done.** Two of its parts exist to be *left alone*:
+//!   [`LANDING_UNRELATED`] is dirty and outside the changed set, so staging by
+//!   name and staging by directory produce different commits, and
+//!   [`LANDING_CREATED`] is a file `git checkout` cannot put back. Neither is
+//!   decoration — see each one's own doc.
 //! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
 //! - Task 19 adds `fixture` and `world_with`.
 //!
@@ -126,7 +137,7 @@
 
 use fiddle_core::{AdvisoryId, AttemptId, PackageType, ProjectedFinding, Severity};
 use fiddle_runtime::agent::AgentBudget;
-use fiddle_runtime::capability::MigrationConfig;
+use fiddle_runtime::capability::{CapabilityError, Git, MigrationConfig};
 use fiddle_runtime::cve::attribute::{attribute, Manifest, ModuleGraph, ResolverError, Target};
 use fiddle_runtime::cve::dedup::{DedupError, Local, Ran, Spawn};
 use fiddle_runtime::cve::fold::{Landed, PriorRescan};
@@ -138,7 +149,7 @@ use fiddle_runtime::evaluate::{
     Unanswered,
 };
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
-use fiddle_runtime::workspace::WorkspaceCommand;
+use fiddle_runtime::workspace::{WorkspaceCommand, WorkspaceError, WorkspacePath};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -541,6 +552,74 @@ impl GoWorkspace {
         run_git(&self.repo, &["status", "--porcelain"]).is_empty()
     }
 
+    /// Does the tree match its `HEAD` **at these paths**?
+    ///
+    /// [`GoWorkspace::is_clean`] over a pathspec, and the distinction is the whole
+    /// of Task 15's revert lane: a revert by explicit path puts back what it was
+    /// given and must leave everything else exactly as dirty as it found it, so a
+    /// world that could only ask about the whole tree could not tell
+    /// `git checkout HEAD -- go.mod go.sum` from `git checkout .`.
+    ///
+    /// Not recorded, for [`GoWorkspace::is_clean`]'s reason.
+    pub fn is_clean_at(&self, paths: &[&str]) -> bool {
+        let mut args = vec!["status", "--porcelain", "--"];
+        args.extend_from_slice(paths);
+        run_git(&self.repo, &args).is_empty()
+    }
+
+    /// The paths the commit at `HEAD` carries, against its parent.
+    ///
+    /// **Read off the commit rather than off the `add` that made it.** What the
+    /// staging criterion is about is what ended up on the branch, and a helper
+    /// that parsed the recorded `git add` line would be asserting that the subject
+    /// said the right thing rather than that the right thing happened — the two
+    /// come apart for a subject that names its paths and then also runs `add -A`.
+    /// The recorded call list is asserted separately and for the other half of the
+    /// claim.
+    ///
+    /// `diff-tree` and not `show --name-only`, because `show` over a root commit
+    /// lists the whole tree and would answer the same for a commit that staged
+    /// everything.
+    ///
+    /// Not recorded, for [`GoWorkspace::is_clean`]'s reason.
+    pub fn staged_paths(&self) -> Vec<String> {
+        run_git(
+            &self.repo,
+            &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+        )
+        .lines()
+        .map(|line| line.to_string())
+        .collect()
+    }
+
+    /// The raw body — subject and message together — of the commit at `HEAD`.
+    ///
+    /// `%B` and not `%b`, matching what [`FixedInCommits`] is really read out of:
+    /// `cve::dedup` runs `git log --format=%B`, so a subject line naming an
+    /// advisory is one the next run sees. A helper that read only the message body
+    /// would let an id hide in a subject.
+    ///
+    /// Not recorded, for [`GoWorkspace::is_clean`]'s reason.
+    ///
+    /// [`FixedInCommits`]: fiddle_runtime::cve::dedup::FixedInCommits
+    pub fn head_commit_body(&self) -> String {
+        run_git(&self.repo, &["log", "-1", "--format=%B"])
+    }
+
+    /// Every commit body in this repository's history, as one document.
+    ///
+    /// A `String` rather than a list, because that is the shape
+    /// [`FixedInCommits::read`] takes — it is handed `git log --format=%B`'s whole
+    /// output and splits it into words — and a lane that joined a list back
+    /// together would be reconstructing the thing the subject is measured through.
+    ///
+    /// Not recorded, for [`GoWorkspace::is_clean`]'s reason.
+    ///
+    /// [`FixedInCommits::read`]: fiddle_runtime::cve::dedup::FixedInCommits::read
+    pub fn all_commit_bodies(&self) -> String {
+        run_git(&self.repo, &["log", "--format=%B"])
+    }
+
     /// Run git in this repository, recording the invocation.
     ///
     /// The record is what makes "history is never rewritten" and "nothing staged
@@ -554,8 +633,21 @@ impl GoWorkspace {
     /// held those would make an assertion about what the code under test staged
     /// into an assertion about what this module staged.
     pub fn git(&self, args: &[&str]) -> String {
+        self.try_git(args)
+            .unwrap_or_else(|why| panic!("git {args:?} in {} failed: {why}", self.repo.display()))
+    }
+
+    /// The same, for a caller that has somewhere to put a failure.
+    ///
+    /// [`GoWorkspace::git`] panics because a fixture that failed quietly surfaces
+    /// as an unrelated assertion further down; a *subject* running git has an
+    /// error type of its own, and a seam that panicked would turn every refusal it
+    /// is supposed to report into a downed test. Both spellings record through
+    /// this one, so what a lane reads back is every invocation whichever way it
+    /// was made.
+    pub fn try_git(&self, args: &[&str]) -> Result<String, String> {
         self.calls.lock().unwrap().push(args.join(" "));
-        run_git(&self.repo, args)
+        try_run_git(&self.repo, args)
     }
 
     /// Every git invocation made through [`GoWorkspace::git`], in order.
@@ -732,20 +824,33 @@ fn canonical(path: &Path) -> PathBuf {
 /// Panics with git's own stderr, because a fixture that failed quietly surfaces
 /// as an unrelated assertion further down whichever test happened to build it.
 fn run_git(dir: &Path, args: &[&str]) -> String {
+    try_run_git(dir, args)
+        .unwrap_or_else(|why| panic!("git {args:?} in {} failed: {why}", dir.display()))
+}
+
+/// The same, answering the failure instead of panicking on it.
+///
+/// The one implementation, so the two spellings cannot disagree about what git
+/// said — see [`GoWorkspace::try_git`] for who needs which.
+///
+/// Both streams are trimmed of their trailing newline: git ends everything with
+/// one, and a caller comparing stdout to a path list would otherwise be comparing
+/// it to a path list plus a blank line.
+fn try_run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let output = std::process::Command::new("git")
         .args(args)
         .current_dir(dir)
         .output()
         .unwrap_or_else(|source| panic!("could not run git {args:?}: {source}"));
-    assert!(
-        output.status.success(),
-        "git {args:?} in {} failed: {}",
-        dir.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout)
+    let stdout = String::from_utf8_lossy(&output.stdout)
         .trim_end()
-        .to_string()
+        .to_string();
+    match output.status.success() {
+        true => Ok(stdout),
+        false => Err(String::from_utf8_lossy(&output.stderr)
+            .trim_end()
+            .to_string()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2734,5 +2839,216 @@ impl MigrationWorld {
     /// The attempt id every migration lane runs under, as the runtime wants it.
     pub fn attempt(&self) -> AttemptId {
         AttemptId(MIGRATION_ATTEMPT.to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The tree a group's outcome is landed in (Task 15)
+// ---------------------------------------------------------------------------
+
+/// The version a landing world's bump moves the direct requirement to.
+///
+/// Above [`DIRECT_VERSION`] and below [`SHIPPED_VERSION`], so it is a value no
+/// other fixture in this file spells: a lane that started passing because the
+/// bumped tree happened to equal some other world's tree would be passing for a
+/// reason nobody wrote down.
+const LANDING_BUMPED_VERSION: &str = "v0.40.0";
+
+/// A tracked file the group's edit does not touch, dirty when the landing runs.
+///
+/// **The discriminator for the whole staging criterion**, and worth stating
+/// plainly because it is easy to leave out and impossible to notice missing. If
+/// every dirty path in the tree were also a path the group edited, `add -A` and
+/// `add -- go.mod go.sum` would produce byte-identical commits and every
+/// assertion about staging by name would hold for a subject that staged by
+/// directory.
+///
+/// It also stands for a real hazard rather than a contrived one. A commit may
+/// carry only what [`classify`] was applied to, because a file that reached the
+/// commit some other way reached it with no scope rule having looked at it — and
+/// the four forbidden shapes are exactly the edits a *green* build would
+/// otherwise let through.
+///
+/// Tracked and modified rather than created, so that
+/// [`GoWorkspace::is_clean_at`] over the group's own paths is the only question a
+/// revert lane has to ask: an untracked file would leave `git status` non-empty
+/// for a reason that has nothing to do with what was reverted.
+///
+/// [`classify`]: fiddle_runtime::capability::GroupStatus
+pub const LANDING_UNRELATED: &str = "notes.txt";
+
+/// What that file holds before anything dirties it.
+const LANDING_UNRELATED_BEFORE: &str = "the host repository\n";
+
+/// A file the attempt *created*, for the half of a revert a checkout cannot do.
+///
+/// `git checkout HEAD -- <path>` refuses a pathspec `HEAD` does not carry, so a
+/// world whose changed set held only edited files could not tell a revert that
+/// handles creations from one that fails on them — or worse, from one that
+/// silently leaves the file on the branch for the *next* group's commit to stage.
+pub const LANDING_CREATED: &str = "vendor_notes.md";
+
+/// A tree with one group's bump in it, and the group that bump is for.
+///
+/// The three fields are the three arguments a landing takes, and they travel
+/// together because they have to agree: `changed` is what git would report about
+/// this tree, and a lane that assembled its own path list could hand the subject
+/// a list naming files the tree never touched.
+pub struct LandingWorld {
+    /// The repository the landing runs in, and the record of what it ran.
+    pub tree: GoWorkspace,
+
+    /// The group whose outcome is being landed.
+    pub group: Group,
+
+    /// What git saw change — [`MigrationAttempt::changed`]'s stand-in, in the
+    /// order [`Workspace::changed_files`] produces it, which is sorted.
+    ///
+    /// [`MigrationAttempt::changed`]: fiddle_runtime::capability::MigrationAttempt
+    /// [`Workspace::changed_files`]: fiddle_runtime::workspace::Workspace
+    pub changed: Vec<WorkspacePath>,
+
+    /// Every commit body the repository held before the landing ran.
+    ///
+    /// Captured here rather than by each lane, so that *no commit was made* is
+    /// the whole history being what it was rather than the narrower claim that
+    /// one particular id is missing from it — and so that a lane asking the
+    /// question does not have to build a second world to compare against.
+    pub history_before: String,
+}
+
+/// The world above, built: `go.mod` and `go.sum` bumped, one unrelated file
+/// dirty beside them, and nothing recorded yet.
+///
+/// # Construction does not record
+///
+/// Every git here goes through [`run_git`] and [`commit_paths`] rather than
+/// [`GoWorkspace::git`], which is the load-bearing half of
+/// [`GoWorkspace::git_calls`]'s own doc: a list that held the fixture's `init`,
+/// `add` and `commit` would make "the subject staged by name" an assertion about
+/// what this function staged. The list a lane reads back is therefore exactly
+/// what the subject ran, and its being non-empty is evidence the seam was wired
+/// in at all.
+///
+/// # The group is [`group_of`]'s
+///
+/// A group is a group — one target, a set of advisories — and Task 15 runs
+/// [`fold_commit_argv`] over one of these too, so a second builder would be a
+/// second fixture for one shape. The target is therefore `example.com/folded`,
+/// which is what a landing's commit subject names.
+///
+/// [`fold_commit_argv`]: fiddle_runtime::cve::fold::fold_commit_argv
+pub fn landing_world(cves: &[&str]) -> LandingWorld {
+    let tree = go(direct());
+
+    // A second commit, so the unrelated file is tracked and so `HEAD` has a
+    // parent — `diff-tree` against a root commit lists the whole tree, and
+    // [`GoWorkspace::staged_paths`] would then answer the same for a commit that
+    // staged everything.
+    std::fs::write(
+        tree.path().join(LANDING_UNRELATED),
+        LANDING_UNRELATED_BEFORE,
+    )
+    .expect("the fixture tree is writable");
+    commit_paths(
+        tree.path(),
+        &[LANDING_UNRELATED],
+        "chore: a file no bump touches",
+    );
+
+    // The bump, written as the tree a bump really leaves: `shipped` is the shape
+    // whose requirement is at a given version, so the two files are the ones the
+    // offline `go` would have rewritten rather than two strings this function
+    // invented.
+    let bumped = shipped(DIRECT_MODULE, LANDING_BUMPED_VERSION);
+    std::fs::write(tree.path().join("go.mod"), bumped.go_mod())
+        .expect("the fixture tree is writable");
+    std::fs::write(
+        tree.path().join("go.sum"),
+        bumped
+            .go_sum()
+            .expect("a tree with a requirement has a go.sum"),
+    )
+    .expect("the fixture tree is writable");
+    std::fs::write(
+        tree.path().join(LANDING_UNRELATED),
+        format!("{LANDING_UNRELATED_BEFORE}and a line nobody asked the group about\n"),
+    )
+    .expect("the fixture tree is writable");
+
+    // The premises, asserted here rather than in each lane: a world whose bump
+    // did not actually change the tree would let a commit of nothing pass every
+    // staging assertion, and a world whose unrelated file was already clean would
+    // make the discrimination above disappear.
+    assert!(
+        !tree.is_clean_at(&["go.mod", "go.sum"]),
+        "a landing world's bump has to have changed the tree"
+    );
+    assert!(
+        !tree.is_clean_at(&[LANDING_UNRELATED]),
+        "{LANDING_UNRELATED} has to be dirty, or staging by name and staging by \
+         directory produce the same commit"
+    );
+
+    LandingWorld {
+        group: group_of(cves),
+        changed: workspace_paths(&["go.mod", "go.sum"]),
+        history_before: tree.all_commit_bodies(),
+        tree,
+    }
+}
+
+impl LandingWorld {
+    /// The same world with a file the attempt created, in the changed set.
+    ///
+    /// A method rather than a second builder, so the two worlds differ by the one
+    /// thing their names say they differ by. See [`LANDING_CREATED`].
+    pub fn and_a_created_file(mut self) -> Self {
+        std::fs::write(
+            self.tree.path().join(LANDING_CREATED),
+            "vendored, by the attempt\n",
+        )
+        .expect("the fixture tree is writable");
+        self.changed = workspace_paths(&["go.mod", "go.sum", LANDING_CREATED]);
+        self
+    }
+}
+
+/// `paths` as the runtime's own containment-checked type.
+///
+/// Through [`WorkspacePath::parse`] rather than constructed, for the reason
+/// `changes::listed` gives about paths that came from git: the type is the
+/// carrier of the guarantee, and a fixture that skipped the parse would be
+/// handing the subject a path nothing had checked.
+fn workspace_paths(paths: &[&str]) -> Vec<WorkspacePath> {
+    paths
+        .iter()
+        .map(|path| WorkspacePath::parse(path).expect("a fixture path is inside the workspace"))
+        .collect()
+}
+
+/// A [`GoWorkspace`] as the one seam Task 15's landing runs git through.
+///
+/// The tree *is* the recorder, rather than a wrapper holding one, because
+/// [`GoWorkspace::git_calls`] already exists and thirteen tasks read it: a second
+/// record beside it would be a second answer to *what did this run against this
+/// tree*. Every invocation therefore lands in one list whether the subject or a
+/// lane made it — which is why the questions a lane asks
+/// ([`GoWorkspace::is_clean`] and the four accessors beside it) deliberately go
+/// round it.
+///
+/// It records and delegates rather than answering, which is [`RecordedCalls`]'s
+/// arrangement and its reason: a fixture that answered would be deciding what git
+/// says, and what these lanes are about is what the subject *ran* and what really
+/// happened to the branch because of it.
+#[async_trait::async_trait]
+impl Git for GoWorkspace {
+    async fn run(&self, args: &[&str]) -> Result<String, CapabilityError> {
+        self.try_git(args).map_err(|stderr| {
+            CapabilityError::Workspace(WorkspaceError::Git {
+                command: args.join(" "),
+                stderr,
+            })
+        })
     }
 }

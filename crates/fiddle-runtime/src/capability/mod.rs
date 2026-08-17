@@ -48,7 +48,8 @@ pub mod repair;
 pub mod stub;
 
 pub use cve::{
-    ForbiddenShape, GroupMigration, GroupStatus, MigrationAttempt, MigrationConfig, NeedsWork,
+    land, record_fold, ForbiddenShape, Git, GroupMigration, GroupStatus, InWorktree,
+    MigrationAttempt, MigrationConfig, NeedsWork,
 };
 pub use propose::{attempt_worktree, ProposeChange, ProposeConfig};
 pub use publish::{PublishChange, PublishConfig};
