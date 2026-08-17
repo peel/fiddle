@@ -43,7 +43,7 @@
 mod support;
 
 use fiddle_runtime::capability::{
-    land, record_fold, CapabilityError, ForbiddenShape, GroupMigration, GroupStatus,
+    land, record_fold, CapabilityError, ForbiddenShape, GroupMigration, GroupStatus, InWorktree,
     MigrationAttempt, NeedsWork,
 };
 use fiddle_runtime::cve::dedup::FixedInCommits;
@@ -51,11 +51,12 @@ use fiddle_runtime::cve::fold::Landed;
 use fiddle_runtime::evaluate::{evaluate, Evaluation, RescanVerdict};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
+use std::time::Duration;
 use support::cve::{
-    contract, contract_scanned_by, exit, green_tree, landing_world, migration_world, stdout,
-    tree_rescanned_by, tree_where, LandingWorld, MigrationWorld, GO_BUILD, HOST_ROOT,
-    LANDING_CREATED, LANDING_UNRELATED, MIGRATION_SOURCE as SOURCE, MIGRATION_TEST_BEFORE,
-    MIGRATION_TEST_SOURCE as TEST_SOURCE, SENTINEL_PROSE,
+    ask_git, contract, contract_scanned_by, exit, green_tree, landing_worktree, landing_world,
+    migration_world, stdout, tree_rescanned_by, tree_where, LandingWorld, MigrationWorld, GO_BUILD,
+    HOST_ROOT, LANDING_CREATED, LANDING_UNRELATED, MIGRATION_SOURCE as SOURCE,
+    MIGRATION_TEST_BEFORE, MIGRATION_TEST_SOURCE as TEST_SOURCE, SENTINEL_PROSE,
 };
 
 // ---------------------------------------------------------------------------
@@ -1569,4 +1570,62 @@ async fn history_is_never_rewritten() {
         nothing_rewrites_history(&calls);
         nothing_is_staged_by_directory(&calls);
     }
+}
+
+/// **The production seam lands through the workspace, and adds no spawn site.**
+///
+/// Every lane above drives [`GoWorkspace`] as the [`Git`] port, which is what
+/// makes the recorded call list readable — and it is also what would let the
+/// three criteria hold of a double while the product did something else. This is
+/// the other side: a real detached worktree, a real
+/// [`Workspace`](fiddle_runtime::workspace::Workspace), and [`InWorktree`]
+/// composing [`Workspace::run`] over it.
+///
+/// That composition is the whole of what [`InWorktree`] is. `Workspace::run` owns
+/// the four-name environment a child of an attempt sees and the relativisation
+/// applied to what it printed; a `git` spawned beside it would be a second
+/// environment nobody had argued for, and
+/// `workspace::a_workspace_command_inherits_no_credential` would stop being a
+/// statement about how this crate's git children run.
+///
+/// [`Workspace::run`]: fiddle_runtime::workspace::Workspace
+#[tokio::test]
+async fn the_production_seam_lands_a_group_in_a_real_worktree() {
+    let world = landing_world(&LANDED);
+    let attempt = landing_worktree(&world);
+    let root = attempt.workspace.root();
+
+    let landed = land(
+        &InWorktree::new(&attempt.workspace, Duration::from_secs(60)),
+        &world.group,
+        &GroupStatus::Clean,
+        &attempt.changed,
+    )
+    .await
+    .expect("a clean group lands in a real worktree");
+
+    assert_eq!(landed, Landed::Committed);
+    assert_eq!(
+        ask_git(
+            root,
+            &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]
+        )
+        .lines()
+        .collect::<Vec<_>>(),
+        ["go.mod", "go.sum"],
+        "the commit the product made carries the group's own files"
+    );
+
+    let body = ask_git(root, &["log", "-1", "--format=%B"]);
+    let fixed = FixedInCommits::read(&body);
+    for cve in LANDED {
+        assert!(
+            fixed.names(cve),
+            "the product's own body must name {cve}: {body}"
+        );
+    }
+    assert!(
+        ask_git(root, &["status", "--porcelain"]).is_empty(),
+        "and the worktree is clean, so nothing was left staged or unstaged"
+    );
 }

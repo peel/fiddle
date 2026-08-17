@@ -105,7 +105,9 @@
 //!   [`GoWorkspace::head_commit_body`], [`GoWorkspace::all_commit_bodies`] and
 //!   [`GoWorkspace::is_clean_at`]), [`GoWorkspace::try_git`], and the
 //!   `impl Git for GoWorkspace` that makes the tree itself the subject's one
-//!   spawn seam. **Done.** Two of its parts exist to be *left alone*:
+//!   spawn seam, plus [`LandingWorktree`], [`landing_worktree`] and [`ask_git`]
+//!   for the one lane that drives the *production* adapter over a real
+//!   [`Workspace`] instead. **Done.** Two of its parts exist to be *left alone*:
 //!   [`LANDING_UNRELATED`] is dirty and outside the changed set, so staging by
 //!   name and staging by directory produce different commits, and
 //!   [`LANDING_CREATED`] is a file `git checkout` cannot put back. Neither is
@@ -149,7 +151,7 @@ use fiddle_runtime::evaluate::{
     Unanswered,
 };
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
-use fiddle_runtime::workspace::{WorkspaceCommand, WorkspaceError, WorkspacePath};
+use fiddle_runtime::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -3025,6 +3027,83 @@ fn workspace_paths(paths: &[&str]) -> Vec<WorkspacePath> {
         .iter()
         .map(|path| WorkspacePath::parse(path).expect("a fixture path is inside the workspace"))
         .collect()
+}
+
+/// A real per-attempt worktree of a landing world's tree, with the bump in it.
+///
+/// **The production adapter's world.** Every other landing lane drives
+/// [`GoWorkspace`] as the [`Git`] seam, which is what makes the recorded call
+/// list readable — and a port whose only implementation in the suite is the
+/// test's own is a port whose production side is measured by nothing. This is
+/// that side: a real detached worktree, a real [`Workspace`], and
+/// [`InWorktree`](fiddle_runtime::capability::InWorktree) composing
+/// [`Workspace::run`] over it.
+///
+/// The bump is written **into the worktree** rather than inherited from the
+/// fixture, because `git worktree add --detach HEAD` branches at the commit and
+/// not at the dirty tree beside it — a lane that assumed otherwise would land a
+/// commit of nothing and read its own emptiness as success.
+pub struct LandingWorktree {
+    /// The worktree the landing runs in. Its [`Drop`] removes it.
+    pub workspace: Workspace,
+
+    /// What git would see change in it — the same two paths, since the same two
+    /// files were written.
+    pub changed: Vec<WorkspacePath>,
+
+    /// Where per-attempt worktrees go. Held only so that [`Drop`] removes it,
+    /// and dropped *after* the workspace because the workspace's own teardown
+    /// runs `git worktree remove` against a path underneath it.
+    _root: TempDir,
+}
+
+/// The worktree above, built from `world`'s fixture tree.
+pub fn landing_worktree(world: &LandingWorld) -> LandingWorktree {
+    let root = TempDir::new().expect("a temporary directory for worktrees");
+    let workspace = Workspace::create(
+        world.tree.path(),
+        root.path(),
+        &AttemptId(MIGRATION_ATTEMPT.to_string()),
+        CancellationToken::new(),
+    )
+    .expect("a worktree of the fixture tree");
+
+    let bumped = shipped(DIRECT_MODULE, LANDING_BUMPED_VERSION);
+    std::fs::write(workspace.root().join("go.mod"), bumped.go_mod())
+        .expect("the worktree is writable");
+    std::fs::write(
+        workspace.root().join("go.sum"),
+        bumped
+            .go_sum()
+            .expect("a tree with a requirement has a go.sum"),
+    )
+    .expect("the worktree is writable");
+    assert_eq!(
+        workspace
+            .changed_files()
+            .expect("git can describe the worktree")
+            .iter()
+            .map(|path| path.as_str().to_string())
+            .collect::<Vec<_>>(),
+        ["go.mod", "go.sum"],
+        "the premise: the bump really reached the worktree, and only it did"
+    );
+
+    LandingWorktree {
+        changed: workspace_paths(&["go.mod", "go.sum"]),
+        workspace,
+        _root: root,
+    }
+}
+
+/// git in `dir`, for a lane asking a question of a worktree.
+///
+/// The counterpart of [`GoWorkspace::is_clean`] and the four accessors beside it,
+/// for the one world that is a [`Workspace`] rather than a [`GoWorkspace`]. It is
+/// the test asking, so nothing records it — and nothing could, since the seam
+/// under test here is [`Workspace::run`] rather than this file's handle.
+pub fn ask_git(dir: &Path, args: &[&str]) -> String {
+    run_git(dir, args)
 }
 
 /// A [`GoWorkspace`] as the one seam Task 15's landing runs git through.
