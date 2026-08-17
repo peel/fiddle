@@ -26,48 +26,17 @@ mod support;
 
 use fiddle_core::{PackageType, ProjectedFinding};
 use fiddle_runtime::cve::project::{project, Arm};
-use fiddle_runtime::scanner::ScanReport;
 use support::cve::{
-    libraries, os_packages, report_with, report_with_advisory_description,
+    document_of, libraries, os_packages, report_with, report_with_advisory_description,
     report_with_duplicate_cve_one_fixed_one_not, report_with_libraries_absent,
-    report_with_os_absent, report_with_os_empty, Report, DEFAULT_LIBRARY_CVES, SENTINEL_PROSE,
+    report_with_os_absent, report_with_os_empty, scan_of, scanned, DEFAULT_LIBRARY_CVES,
+    SENTINEL_PROSE,
 };
 
-// ---------------------------------------------------------------------------
-// Putting a document where a scan would have left one
-// ---------------------------------------------------------------------------
-//
-// These two are plumbing rather than worlds, which is why they are here and not
-// in `support::cve` under that module's extension convention: they build no
-// fixture and decide nothing on a lane's behalf — they only carry the bytes a
-// fixture already produced across the one type boundary between the builders
-// and [`project`], which takes a [`ScanReport`] because that is what a real
-// capability will be holding. The moment a second suite needs them they belong
-// in the shared module, and the convention there says so.
-
-/// The document a fixture wrote, parsed.
-fn document_of(report: &Report) -> serde_json::Value {
-    serde_json::from_str(report.raw()).expect("a fixture document is JSON")
-}
-
-/// A scan that produced `document`.
-///
-/// The provenance is fixed and uninteresting: no assertion in this suite reads
-/// it, because the projection is a function of the document alone. It is spelled
-/// implausibly on purpose, so that a value from here turning up in an assertion
-/// about a real scan would be visible rather than plausible.
-fn scan_of(document: serde_json::Value) -> ScanReport {
-    ScanReport {
-        document,
-        scanner_version: "wizcli 0.0.0-fixture".to_string(),
-        image_digest: "sha256:fixture".to_string(),
-    }
-}
-
-/// The two above, for the ordinary case where a test wants a fixture scanned.
-fn scanned(report: &Report) -> ScanReport {
-    scan_of(document_of(report))
-}
+// The three helpers that put a fixture's bytes where a scan would have left them
+// used to be defined here, with a note saying they belonged in `support::cve`
+// the moment a second suite needed them. Task 14.a's migration world is that
+// second suite, so they moved and this suite reads them from there.
 
 // ---------------------------------------------------------------------------
 // The four properties

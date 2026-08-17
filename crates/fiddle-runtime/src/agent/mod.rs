@@ -197,6 +197,32 @@ fn task_for(direction: Direction<'_>) -> String {
     )
 }
 
+/// What one attempt is *told*, and the whole of what a capability may vary.
+///
+/// Two strings, and the shortness is the point. Everything else about an attempt
+/// — the four tools, the five bounds, the report schema, the audit hook — is
+/// [`attempt_briefed`]'s and is not on this value, so a capability that hands
+/// over a different brief changes the model's *instructions* and cannot change
+/// its *reach*. A brief that could add a tool would be a brief that could get
+/// outside the project, which is the property this whole module exists to hold.
+///
+/// The words are the caller's because they are domain. M1 repairs a broken Rust
+/// fixture and M3 writes a change against one; M4 carries out the migration a
+/// dependency bump forced, under scope rules a skill states in Go's vocabulary
+/// — see [`crate::capability::cve`]. None of that vocabulary belongs in the
+/// module that owns the bounded rig, and the two that share M1's words share
+/// them by naming [`attempt`] rather than by copying a constant.
+#[derive(Clone, Copy, Debug)]
+pub struct Brief<'a> {
+    /// The situation, and the tools there are. Sent to the provider as the
+    /// system text, so it is under exactly the rule the tool schemas are: a
+    /// preamble that mentioned the workspace root would leak it.
+    pub preamble: &'a str,
+
+    /// The instruction that opens the run.
+    pub task: &'a str,
+}
+
 /// The bounds one attempt runs inside, all of them the host's to choose.
 ///
 /// Five independent bounds rather than one composite, because they fail for
@@ -304,7 +330,53 @@ pub enum AgentError {
     Provider { reason: String },
 }
 
-/// Run one bounded attempt and return the model's report.
+/// Run one bounded attempt at repairing a project, and return the model's report.
+///
+/// M1's and M3's entry point, and the words are this module's: the repair
+/// [`PREAMBLE`] and [`task_for`]'s composition of [`TASK`] with whatever a person
+/// asked for. Everything below the words is [`attempt_briefed`]'s, which is where
+/// the tools, the bounds and the schema are argued for.
+///
+/// # What `direction` may and may not do to this function
+///
+/// [`Direction::Redirected`] changes the opening prompt and **nothing else**. The
+/// preamble, the four tools, the five bounds and the schema are the same objects
+/// they are on a first attempt, because the direction is a person's description of
+/// what to change and not a widening of what an attempt may do. A redirect that
+/// could add a tool would be a redirect that could reach outside the project, and
+/// whoever can write one is anybody who can comment on the pull request.
+///
+/// [`task_for`] is where the composition lives, and it is a pure function so that
+/// the boundary can be asserted without reaching a model.
+pub async fn attempt<M>(
+    model: M,
+    host: ToolHost,
+    budget: AgentBudget,
+    direction: Direction<'_>,
+) -> Result<RepairReport, AgentError>
+where
+    M: rig_core::completion::CompletionModel + 'static,
+{
+    // Bound to a local because `Brief` borrows it: the composition is a `String`
+    // and the brief is two `&str`, so that nothing downstream of here can be
+    // handed an owned prompt it might be tempted to edit.
+    let task = task_for(direction);
+    attempt_briefed(
+        model,
+        host,
+        budget,
+        Brief {
+            preamble: PREAMBLE,
+            task: &task,
+        },
+    )
+    .await
+}
+
+/// Run one bounded attempt under `brief` and return the model's report.
+///
+/// The same rig for every capability that consults a model this way, with only
+/// the words differing — see [`Brief`] for why that is the only seam there is.
 ///
 /// Generic over Rig's own [`CompletionModel`](rig_core::completion::CompletionModel)
 /// rather than over a trait of ours. A wrapper would buy a seam nobody needs and
@@ -382,28 +454,25 @@ pub enum AgentError {
 /// maps a deserialisation failure to [`AgentError::Protocol`]: a malformed
 /// report is the model failing to hold up its end, and saying so is more honest
 /// than a guarantee bought by never letting it use a tool.
-/// # What `direction` may and may not do to this function
 ///
-/// [`Direction::Redirected`] changes the opening prompt and **nothing else**. The
-/// preamble, the four tools, the five bounds and the schema are the same objects
-/// they are on a first attempt, because the direction is a person's description of
-/// what to change and not a widening of what an attempt may do. A redirect that
-/// could add a tool would be a redirect that could reach outside the project, and
-/// whoever can write one is anybody who can comment on the pull request.
+/// # What a `brief` may and may not do to this function
 ///
-/// [`task_for`] is where the composition lives, and it is a pure function so that
-/// the boundary can be asserted without reaching a model.
-pub async fn attempt<M>(
+/// It supplies the two strings and nothing else. The four tools below, the five
+/// bounds, the schema and the audit hook are constructed here on every path, so a
+/// capability cannot widen an attempt by wording it differently — and neither can
+/// anything that reaches a capability's words, which on M1's redirect arm is
+/// anybody who can comment on a pull request.
+pub async fn attempt_briefed<M>(
     model: M,
     host: ToolHost,
     budget: AgentBudget,
-    direction: Direction<'_>,
+    brief: Brief<'_>,
 ) -> Result<RepairReport, AgentError>
 where
     M: rig_core::completion::CompletionModel + 'static,
 {
     let agent = AgentBuilder::new(model)
-        .preamble(PREAMBLE)
+        .preamble(brief.preamble)
         .max_tokens(budget.max_tokens)
         // The agent-wide default, so a caller who forgets the per-request bound
         // still gets one. The per-request `max_turns` below is what this
@@ -436,7 +505,7 @@ where
     ctx.insert(bounded);
 
     let run = agent
-        .prompt_typed::<RepairReport>(task_for(direction))
+        .prompt_typed::<RepairReport>(brief.task.to_string())
         .tool_context(ctx)
         .max_turns(budget.max_turns)
         .into_future();

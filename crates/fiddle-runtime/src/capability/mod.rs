@@ -30,17 +30,24 @@
 //! holds [`ProposeChange`], the first **hybrid** one: it puts [`repair`]'s
 //! bounded attempt and its own check in front of [`publish`]'s operations, and
 //! then does the thing none of the other three can — it stops and asks, and a
-//! later process comes back and reads the answer. The run that asks ends in an
+//! later process comes back and reads the answer. [`cve`] holds
+//! [`GroupMigration`], which is not a capability at all but the one *step* inside
+//! M4's that consults a model — and is therefore where the opposite question from
+//! [`repair`]'s is settled: not what may be believed of what a model says, but how
+//! little it may be told. Every other decision in that milestone is arithmetic
+//! over facts, and none of the arithmetic is in the prompt. The run that asks ends in an
 //! `Err` on the path where everything worked, which is what
 //! [`Recurrence::Awaiting`](crate::effect::Recurrence::Awaiting) is for; the run
 //! that finds an approval is the only one in this build that performs an effect a
 //! person had to authorize.
 
+pub mod cve;
 pub mod propose;
 pub mod publish;
 pub mod repair;
 pub mod stub;
 
+pub use cve::{GroupMigration, MigrationAttempt, MigrationConfig};
 pub use propose::{attempt_worktree, ProposeChange, ProposeConfig};
 pub use publish::{PublishChange, PublishConfig};
 pub use repair::{FixtureRepair, RepairConfig};

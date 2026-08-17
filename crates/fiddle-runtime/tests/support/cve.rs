@@ -80,6 +80,17 @@
 //!   [`Evaluation`], so the "this group ended clean" half of each world is
 //!   Task 12's judgement of a real tree rather than a flag this file set. The
 //!   `await` is [`evaluate`]'s, and the rule under test is sync.
+//! - Task 14.a adds [`MigrationWorld`] and [`migration_world`] — the world one
+//!   bounded migration attempt runs in — together with [`document_of`],
+//!   [`scan_of`] and [`scanned`], which move here from `cve_projection.rs`
+//!   because that file's own note said they should the moment a second suite
+//!   needed them. **Done.** The world is unusual among these builders in that
+//!   three of its parts exist *to be leaked*: its document carries
+//!   [`SENTINEL_PROSE`], its group's targets come from real [`attribute`] calls
+//!   whose transcript names `go list -m -json`, and its worktree root is a path
+//!   carrying [`HOST_ROOT`]. Task 14.a's whole criterion is a set of absences,
+//!   and an absence is only evidence when the thing was there to be carried —
+//!   see the section below on sentinels, and [`MigrationWorld`]'s own doc.
 //! - Task 17 adds `forge()` and the `scripted_gh_*` builders.
 //! - Task 19 adds `fixture` and `world_with`.
 //!
@@ -105,17 +116,21 @@
 //! output — see `docs/technical/evidence-discipline.md` on fixture values that
 //! appear only where their value cannot matter.
 
-use fiddle_core::{AdvisoryId, PackageType, ProjectedFinding, Severity};
-use fiddle_runtime::cve::attribute::{Manifest, ModuleGraph, ResolverError, Target};
+use fiddle_core::{AdvisoryId, AttemptId, PackageType, ProjectedFinding, Severity};
+use fiddle_runtime::agent::AgentBudget;
+use fiddle_runtime::capability::MigrationConfig;
+use fiddle_runtime::cve::attribute::{attribute, Manifest, ModuleGraph, ResolverError, Target};
 use fiddle_runtime::cve::dedup::{DedupError, Local, Ran, Spawn};
 use fiddle_runtime::cve::fold::{Landed, PriorRescan};
 use fiddle_runtime::cve::go::Go;
 use fiddle_runtime::cve::group::{group, Attributed, Group};
+use fiddle_runtime::cve::project::project;
 use fiddle_runtime::evaluate::{
     evaluate, Answered, Check, Contract, Evaluation, Repair, RescanVerdict, Success, Tree,
     Unanswered,
 };
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
+use fiddle_runtime::workspace::WorkspaceCommand;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -2399,4 +2414,270 @@ async fn cleanly_evaluated(still_reported: &[&str]) -> Evaluation {
     )
     .await
     .expect("an evaluation that was not cancelled")
+}
+
+// ---------------------------------------------------------------------------
+// Putting a document where a scan would have left one
+// ---------------------------------------------------------------------------
+//
+// These three lived in `cve_projection.rs` while that suite was their only
+// caller, with a note saying they belonged here the moment a second one needed
+// them. Task 14.a is that second one: a migration's group is projected from a
+// real document, so the bytes a builder produced have to cross the same type
+// boundary into [`project`], which takes a [`ScanReport`] because that is what
+// a real capability holds.
+
+/// The document a fixture wrote, parsed.
+pub fn document_of(report: &Report) -> serde_json::Value {
+    serde_json::from_str(report.raw()).expect("a fixture document is JSON")
+}
+
+/// A scan that produced `document`.
+///
+/// The provenance is fixed and uninteresting: no assertion reads it, because a
+/// projection is a function of the document alone. It is spelled implausibly on
+/// purpose, so that a value from here turning up in an assertion about a real
+/// scan would be visible rather than plausible.
+pub fn scan_of(document: serde_json::Value) -> ScanReport {
+    ScanReport {
+        document,
+        scanner_version: "wizcli 0.0.0-fixture".to_string(),
+        image_digest: "sha256:fixture".to_string(),
+    }
+}
+
+/// The two above, for the ordinary case where a test wants a fixture scanned.
+pub fn scanned(report: &Report) -> ScanReport {
+    scan_of(document_of(report))
+}
+
+// ---------------------------------------------------------------------------
+// The world one bounded migration attempt runs in (Task 14.a)
+// ---------------------------------------------------------------------------
+
+/// The attempt every migration lane runs under.
+///
+/// Fixed rather than minted, so that a worktree path — and anything derived from
+/// one — is a function of the run rather than of the clock.
+pub const MIGRATION_ATTEMPT: &str = "01JQZX00000000000000000M4";
+
+/// How long the scripted `go` behind a migration's `run_check` may take.
+const MIGRATION_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The one Go source a migration world's tree holds.
+///
+/// [`write_tree`] writes `go.mod` and `go.sum` and nothing else, because every
+/// lane before this one asked the tree about its module graph. A migration is an
+/// edit to *source*, so this world adds a file for there to be a call site in —
+/// added here rather than in [`write_tree`], which is shared with the attribution
+/// lanes and whose committed path list is what their `is_clean` assertions are
+/// measured against.
+pub const MIGRATION_SOURCE: &str = "main.go";
+
+/// What that file holds before the migration: one call site, in the shape a
+/// forced rename would have to reach.
+const MIGRATION_SOURCE_BEFORE: &str = "\
+package main
+
+func main() {
+\tlegacyName()
+}
+
+func legacyName() {}
+";
+
+/// Everything one bounded migration attempt is driven from, **and the three
+/// things a prompt must not carry, each really present somewhere in it.**
+///
+/// The second half is the reason this is a struct and not four loose builders.
+/// `assert!(!body.contains(SENTINEL))` says nothing at all unless the sentinel
+/// was somewhere upstream of `body`, and the three exclusions Task 14.a is about
+/// each need their own upstream:
+///
+/// - **advisory prose.** [`MigrationWorld::report`] is a document carrying
+///   [`SENTINEL_PROSE`] in a `description`, and [`MigrationWorld::group`] is
+///   what [`project`] made of *that* document. So the prose was in the bytes the
+///   findings came from, and Task 6's boundary is the only reason it is not in
+///   the findings.
+/// - **a mechanical rule.** The group's targets come from real [`attribute`]
+///   calls against a real tree, not from a fixture that placed them:
+///   [`MigrationWorld::resolved`] is the resolver transcript those calls
+///   produced, and it contains `go list -m -json` verbatim because the run
+///   really ran it.
+/// - **a host fact.** [`MigrationWorld::workspace_root`] is a path carrying
+///   [`HOST_ROOT`], so the worktree the attempt works in really is under a
+///   directory whose name is the sentinel — which is the shape of the leak M1's
+///   relativisation exists for.
+///
+/// A [`MigrationWorld`] therefore *fails* the exclusions if anything copies its
+/// own contents into a prompt, rather than passing them because there was
+/// nothing to copy.
+pub struct MigrationWorld {
+    /// The Go tree the attempt branches a worktree from, as a committed git
+    /// repository. It really requires the module the document reported, which is
+    /// what lets attribution answer rule 1 rather than refuse.
+    pub tree: GoWorkspace,
+
+    /// The scanner document the findings were projected from. Carries
+    /// [`SENTINEL_PROSE`].
+    pub report: Report,
+
+    /// The one group that document produces, from the real projection and real
+    /// attribution.
+    pub group: Group,
+
+    /// Every resolver command attribution ran for this group, and what each one
+    /// printed. Carries `go list -m -json`.
+    pub resolved: String,
+
+    /// Where per-attempt worktrees go. Held so that [`Drop`] removes them; the
+    /// path a caller wants is [`MigrationWorld::workspace_root`].
+    workspaces: TempDir,
+}
+
+/// The world above, built.
+///
+/// Panics rather than returning a `Result` at every premise it depends on: a
+/// builder that quietly produced two groups, or no fixable finding, would leave
+/// a lane asserting about something other than what it says it is asserting
+/// about.
+pub async fn migration_world() -> MigrationWorld {
+    let report = report_with_advisory_description(SENTINEL_PROSE);
+    assert!(
+        report.raw().contains(SENTINEL_PROSE),
+        "the document a migration's findings come from has to carry the prose, \
+         or no exclusion asserted downstream of it means anything"
+    );
+
+    let projection = project(&scanned(&report)).expect("a fixture document projects");
+    let fixable: Vec<ProjectedFinding> = projection.fixable().cloned().collect();
+    assert!(
+        !fixable.is_empty(),
+        "a migration is about findings there is a fix to write, and this \
+         document produced none"
+    );
+
+    // A tree that really requires what the document reported, at the version it
+    // reported. Without that agreement attribution refuses — and a group whose
+    // targets were placed by a fixture would make the resolver transcript below
+    // a thing this file wrote rather than a thing the run ran.
+    let tree = go_with_shipped(&fixable[0].package, &fixable[0].current);
+    // Committed, so that `git status` over a worktree of this tree reports what
+    // an attempt *changed* rather than a file the fixture left untracked.
+    std::fs::write(tree.path().join(MIGRATION_SOURCE), MIGRATION_SOURCE_BEFORE)
+        .expect("the fixture tree is writable");
+    tree.git(&["add", "--", MIGRATION_SOURCE]);
+    tree.git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "the call site a migration rewrites",
+    ]);
+
+    let mut attributed = Vec::new();
+    let mut resolved = String::new();
+    for finding in &fixable {
+        let attribution = attribute(finding, &tree)
+            .await
+            .unwrap_or_else(|why| panic!("{} has no bump target: {why}", finding.package));
+        resolved.push_str(attribution.resolved());
+        attributed.push(Attributed::new(
+            finding.clone(),
+            attribution.target().clone(),
+        ));
+    }
+    assert!(
+        resolved.contains("go list -m"),
+        "attribution's own transcript has to name the mechanical rule, or \
+         `the prompt carries no mechanical rule` is a claim about a string \
+         nothing in this run ever held: {resolved}"
+    );
+
+    let mut groups = group(&attributed);
+    assert_eq!(
+        groups.len(),
+        1,
+        "a migration lane's group is one edit, and this document produced {} of them",
+        groups.len()
+    );
+
+    MigrationWorld {
+        group: groups.remove(0),
+        resolved,
+        tree,
+        report,
+        workspaces: TempDir::new().expect("a temporary directory for worktrees"),
+    }
+}
+
+impl MigrationWorld {
+    /// Where per-attempt worktrees are created — **a path carrying
+    /// [`HOST_ROOT`]**.
+    ///
+    /// A directory *named* for the sentinel rather than a sentinel written into
+    /// a file, because what leaks in the case M1's relativisation is about is a
+    /// path: a component of the absolute location the runtime is working in.
+    /// [`Workspace::create`] creates it, so the worktree really is under it.
+    ///
+    /// [`Workspace::create`]: fiddle_runtime::workspace::Workspace::create
+    pub fn workspace_root(&self) -> PathBuf {
+        self.workspaces
+            .path()
+            .join(HOST_ROOT.trim_start_matches('/'))
+    }
+
+    /// The configuration a migration of [`MigrationWorld::group`] runs under.
+    ///
+    /// The check is the scripted `go` answering a read-only question about the
+    /// tree. It is what the `run_check` tool runs and nothing decides anything
+    /// from it — M4's verdict is `evaluate`'s five-check contract — so what
+    /// matters here is only that a model which calls the tool gets a real child
+    /// process and a real answer rather than a refusal that would make the tool
+    /// look broken.
+    pub fn config(&self) -> MigrationConfig {
+        let go = go_stub();
+        let mut args = go.args.clone();
+        args.extend(
+            ["list", "-m", "-json", self.target_module().as_str()]
+                .iter()
+                .map(|arg| arg.to_string()),
+        );
+        MigrationConfig {
+            tree: self.tree.path().to_path_buf(),
+            workspace_root: self.workspace_root(),
+            check: WorkspaceCommand {
+                program: go.program,
+                args,
+                timeout: MIGRATION_CHECK_TIMEOUT,
+            },
+            budget: AgentBudget {
+                max_turns: 8,
+                max_tokens: 4096,
+                deadline: Duration::from_secs(300),
+                max_changed_files: 16,
+                tool_timeout: MIGRATION_CHECK_TIMEOUT,
+            },
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    /// The module this world's group edits.
+    ///
+    /// Panics on the `Dockerfile` arm, which this world cannot produce: its
+    /// document reports no OS packages, so rule 4 is unreachable from here and a
+    /// silent fallback would hide a fixture that had changed underneath the lane.
+    pub fn target_module(&self) -> String {
+        match self.group.target() {
+            Target::Module(path) => path.clone(),
+            other => panic!("this world's group edits a module, and edits {other:?}"),
+        }
+    }
+
+    /// The attempt id every migration lane runs under, as the runtime wants it.
+    pub fn attempt(&self) -> AttemptId {
+        AttemptId(MIGRATION_ATTEMPT.to_string())
+    }
 }
