@@ -242,6 +242,21 @@ where
         }
     }
 
+    /// The one tree this run works in and publishes from, derived rather than
+    /// configured.
+    ///
+    /// Through [`super::attempt_worktree`] and not a spelling of its own: the
+    /// binary calls the same function to build the [`EffectContext`] this
+    /// capability is handed, and two derivations of one path is exactly the
+    /// drift that function exists to make impossible.
+    fn worktree(&self) -> PathBuf {
+        super::attempt_worktree(
+            &self.config.workspace_root,
+            &self.config.project,
+            self.executor.invocation_ref(),
+        )
+    }
+
     /// The whole sweep, from a scan that produced a document to the branch it
     /// left behind.
     ///
@@ -269,11 +284,7 @@ where
         self.observed.lock().unwrap().tree = Some(observed_tree(&checkout));
 
         // 3. One worktree, at that revision, for every group in this run.
-        let worktree = super::attempt_worktree(
-            &self.config.workspace_root,
-            &self.config.project,
-            self.executor.invocation_ref(),
-        );
+        let worktree = self.worktree();
         let root = worktree
             .parent()
             .unwrap_or(&self.config.workspace_root)
@@ -645,6 +656,20 @@ where
                     self.executor.invocation_ref()
                 ),
                 asked: format!("{}/{invocation_ref}", self.config.project),
+            });
+        }
+        // And the tree this run publishes from is the tree its groups work in.
+        // `EnsureBranchPublished` pushes the `HEAD` of the context's worktree, so
+        // a context built for somewhere else would publish a commit this run
+        // never made, with a payload hash naming the commit it did make. Both
+        // paths are derived — one by the binary before the context existed, one
+        // by [`CveMitigate::sweep`] — so a disagreement is a fact about the
+        // caller, refused here rather than discovered after a push.
+        let worktree = self.worktree();
+        if self.context.work != worktree {
+            return Err(CapabilityError::PublishesElsewhere {
+                publishing: self.context.work.clone(),
+                working: worktree,
             });
         }
 
