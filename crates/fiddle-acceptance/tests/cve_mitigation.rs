@@ -1616,6 +1616,45 @@ impl Sweep {
         command.output().unwrap()
     }
 
+    /// Throw away the correlation marker the last run left in `<stub.root>`, so
+    /// the next one is a second *night* rather than a second look at the same
+    /// one.
+    ///
+    /// # What this is and, more importantly, what it is not
+    ///
+    /// It plants no history, writes no commit and touches neither the remote nor
+    /// the forge. The only thing it removes is `<stub.root>/changes/cve.json`,
+    /// which is M0's `StubChangePort` artefact: `orchestration::run` reads it
+    /// before the capability is reached, finds a change set already carrying
+    /// *this* invocation's marker, derives `NextAction::Complete` and executes
+    /// nothing. Two invocations in one scratch directory are therefore one run
+    /// and one no-op, whatever the forge holds.
+    ///
+    /// That is a property of the M0 stub and not of the capability. The port
+    /// reads a file under `[stub] root`, a nightly job in CI gets a fresh
+    /// checkout and therefore an empty `changes/`, and the second night's real
+    /// input is the *remote* — the branch, the pull request and the commit log,
+    /// none of which this touches. Removing the file is what makes the scratch
+    /// directory behave the way two consecutive CI jobs do, which is the world
+    /// [`a_second_run_reads_the_first_runs_own_commit_body`] is about.
+    ///
+    /// It is asserted to have been there. An arrangement that quietly removed
+    /// nothing would leave that lane's second run a no-op whose empty bundle
+    /// could be mistaken for a disposition nobody looked at closely.
+    fn forget_that_the_last_run_happened(&self) {
+        let marker = self
+            .scenario
+            .stub_root()
+            .join(format!("changes/{SWEEP_REF}.json"));
+        std::fs::remove_file(&marker).unwrap_or_else(|e| {
+            panic!(
+                "the last run must have left a correlation marker at {} for this \
+                 to be undoing anything ({e})",
+                marker.display()
+            )
+        });
+    }
+
     // -- reading what it did -------------------------------------------------
 
     /// The `--json` payload of a run, with its stderr quoted when it is not JSON.
@@ -4146,5 +4185,223 @@ fn a_run_whose_shared_body_is_unchanged_dispatches_no_rewrite() {
         sweep.pull_requests().len(),
         1,
         "and opened nothing beside the pull request it was given"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The round trip: one run's commit body, read by the next (bean `fiddle-0c4l`)
+// ---------------------------------------------------------------------------
+//
+// Every lane above hands the reader of a commit log a body **the test wrote**.
+// The two lanes just above seed one through `seed_shared_pull_request`, and
+// `an_open_pull_request_covering_the_rest_reaches_already_in_progress` seeds one
+// through `seed_shared_pull_request_saying` — and each now says at its own site
+// why it seeds. That left the producer of a `Fixes:` body and its reader proved
+// separately and never against each other: `cve::land`'s `commit_body` writes
+// one, `cve::dedup::FixedInCommits::read` parses one, and no lane made the
+// second of those read the first.
+//
+// The failure that hid there is silent in the direction nobody chases. A body
+// whose format `read` cannot parse, or a range that does not reach the earlier
+// run's commit, leaves `Run::in_progress`'s `covers` empty — so the next run
+// lands on row 3 instead of row 7 and reports work as merely *already fixed in
+// the tree* when it is in fact sitting in an open pull request somebody has to
+// go and merge. Exit 0, an empty verdict report, and a plausible-looking record.
+//
+// The lane below is the only one in this file that starts the binary twice.
+
+/// **A second run reads the first run's own commit body, and reaches row 7 by
+/// it.**
+///
+/// # No history is seeded, and that is the whole claim
+///
+/// Neither `seed_shared_pull_request` nor `seed_shared_pull_request_saying` is
+/// called. The forge starts empty and the remote holds nothing but
+/// [`SWEEP_BASE`], so the first run takes the *fresh* arm: it cuts a dated
+/// branch, commits the bump with the `Fixes:` body `cve::land` produces, pushes,
+/// and opens a labelled pull request. Between the two runs the test does
+/// nothing at all — no commit, no ref, no `pulls_seed` write. Everything the
+/// second run reads about what has already been fixed was written by the first
+/// run's own commit producer, which is what makes this a round trip rather than
+/// a second reading of a fixture.
+///
+/// # Why the document is [`SCAN_LIBRARY_ONLY`]
+///
+/// Because row 7 sits **below row 2** in `disposition`'s table, so a run with
+/// anything left to report never reaches it — and because the library half is
+/// the half that has a producer at all. Under [`SCAN_OK`] the OS advisory is one
+/// no run can settle, so it produces a verdict and the second night would land
+/// on row 2 whatever the log said. A document naming only the library advisory
+/// is a document whose every finding this build can both *fix* and *record*.
+///
+/// # What discriminates a round trip that worked from one that did not
+///
+/// Row 7 against row 3, and they are one branch apart. On the second night the
+/// worktree is made at the pull request's head, so the tree already ships
+/// [`FIXED_VERSION`] and `already_fixed`'s *tree* arm settles the library
+/// advisory on its own — which is row 3, `already_fixed`, and is exactly what
+/// this run reaches if the commit body cannot be read. `covers` is built from
+/// the log scan and from nothing else, so `already_in_progress` and the number
+/// beside it are the log's answer and only the log's.
+///
+/// So a body whose format `FixedInCommits::read` cannot parse, or a range that
+/// does not reach the first run's commit, moves this lane from row 7 to row 3.
+/// Both mutations were applied and both were caught here — see the row census
+/// above [`a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch`].
+///
+/// # The three readings beside the row
+///
+/// The row alone would be satisfied by a second run that found *some* commit
+/// naming the advisory, so the lane also pins what the first run wrote, that the
+/// second run stood on it, and that it dispatched nothing: the pushed commit's
+/// body is asserted to be `cve::land`'s trailer for the advisory the document
+/// names; the second run's tree observation names the first run's head as
+/// `attempt_tree`, so the range it scanned provably reached that commit; and the
+/// forge's mutation log is unchanged across the second run, so the pull request
+/// it reported is one it recognised rather than one it opened.
+#[test]
+fn a_second_run_reads_the_first_runs_own_commit_body() {
+    // One attempt in the whole scenario: the first night forms one group and the
+    // second forms none, so a script of one is also the assertion that the
+    // second run asks the model nothing.
+    //
+    // The rescan is [`SCAN_CLEAN`] and not [`RESCAN_CLEAN`], and the reason is
+    // arithmetic about *this* document rather than a preference. `RESCAN_CLEAN`
+    // empties the library array and carries [`SCAN_OK`]'s OS findings forward,
+    // which is a rescan reporting nothing new only when the baseline held them —
+    // and [`SCAN_LIBRARY_ONLY`]'s OS array is empty. Against this baseline it is
+    // a rescan reporting a *new* OS advisory, so `evaluate` refuses the group
+    // `NewFindingAppeared`, the first night lands nothing, and there is no body
+    // for the second night to read. Both arrays present and both empty is what
+    // this image honestly looks like once its one advisory is fixed.
+    let sweep = Sweep::scanning_rescanning(
+        VULNERABLE,
+        SCAN_LIBRARY_ONLY,
+        SCAN_CLEAN,
+        2,
+        bumps_needing_no_edit(1),
+    );
+
+    // -- the first night -----------------------------------------------------
+
+    let first = sweep.run();
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "the first night must land its work, or the second reads nothing — \
+         stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let opened = the_row_both_surfaces_agree_on(&sweep, &first, "the first night");
+    assert_eq!(
+        opened["reason"], "pull_request",
+        "the first night is row 4: it cut a branch and landed a clean group on \
+         it, which is the only way it can leave a body behind: {opened}"
+    );
+    let number = opened["pull_request"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the first night opened no pull request: {opened}"));
+    assert_ne!(
+        number, SHARED_PR,
+        "and it is a pull request this run created rather than one a fixture \
+         put there: nothing in this lane seeds a pull request, so the number \
+         must not be the seeded one"
+    );
+
+    // What the first run wrote, read out of the bare repository — so what the
+    // second run is about to scan is what a person cloning the branch would get.
+    // The trailer is asserted in full rather than as "contains the id", because
+    // the format *is* the contract between the two ends: `commit_body` writes
+    // `Fixes: <id>` and `FixedInCommits::read` splits on everything that is
+    // neither alphanumeric nor a hyphen.
+    let branch = the_one_new_branch(&sweep);
+    assert_eq!(
+        opened["branch"].as_str(),
+        Some(branch.as_str()),
+        "the row names the branch the remote holds: {opened}"
+    );
+    let commits = pushed_commits(&sweep, &branch);
+    assert_eq!(
+        commits.len(),
+        1,
+        "one group, one commit — and the body below is that commit's: {commits:?}"
+    );
+    assert!(
+        commits[0].0.contains(&format!("Fixes: {LIBRARY_CVE}")),
+        "the first run's own commit has to name the advisory it fixed, or there \
+         is nothing for the second run to read: {commits:?}"
+    );
+    let first_head = git_says(&sweep.remote, &["rev-parse", &branch]);
+
+    // The only thing that happens between the two runs, and it is not history:
+    // M0's change-set marker is discarded so that the second invocation is a
+    // second night rather than a second look at the first one. See
+    // [`Sweep::forget_that_the_last_run_happened`] — no commit, no ref, no seed,
+    // and nothing on the remote or in the forge is touched.
+    sweep.forget_that_the_last_run_happened();
+
+    // -- the second night ----------------------------------------------------
+
+    let second = sweep.run();
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    the_old_surface_says_nothing(&sweep, &second, "the second night");
+
+    assert_eq!(
+        the_row_both_surfaces_agree_on(&sweep, &second, "the second night"),
+        serde_json::json!({
+            "reason": "already_in_progress",
+            "verdicts": 0,
+            "already_fixed": [LIBRARY_CVE],
+            "deferred": [],
+            "attempts": [],
+            "branch": serde_json::Value::Null,
+            "pull_request": number,
+        }),
+        "row 7, reached through the first run's own `Fixes:` trailer: the tree \
+         arm settles the advisory too, which is row 3, so `already_in_progress` \
+         and the number beside it are the commit log's answer and nothing else's"
+    );
+
+    // That the range really reached the earlier commit, said as a revision
+    // rather than inferred from the row: the second night's worktree was made at
+    // the first night's pushed head, so `origin/main..HEAD` spans it.
+    let bundle = sweep.bundle(&second);
+    assert_eq!(
+        bundle["observations"]["tree"]["attempt_tree"], "pr_head",
+        "the second night must work in the pull request's tree, or its log scan \
+         cannot see the first night's commit: {bundle}"
+    );
+    assert_eq!(
+        bundle["observations"]["tree"]["pr_head"].as_str(),
+        Some(first_head.as_str()),
+        "and that head is the commit the first night pushed: {bundle}"
+    );
+
+    // And that the second night recognised the pull request rather than acting
+    // on it. Two readings, because either alone has a way of passing wrongly: a
+    // run that opened a second pull request would still leave the first one's
+    // number in the row above, and a run that fell over before reaching the
+    // forge would also have dispatched nothing.
+    let pulls = sweep.pull_requests();
+    assert_eq!(
+        pulls.len(),
+        1,
+        "the second night opens nothing beside the pull request it found: \
+         {pulls:?}"
+    );
+    assert_eq!(
+        sweep.mutations(),
+        vec![
+            "POST_repos_acme_r_pulls".to_string(),
+            format!("POST_repos_acme_r_issues_{number}_labels"),
+        ],
+        "exactly the first night's two mutations — the create and the label \
+         that makes the object discoverable — and nothing the second night \
+         dispatched, because a run whose work is already open lands nothing"
     );
 }
