@@ -1717,3 +1717,78 @@ fn the_forge_table_the_product_manual_documents_names_the_keys_the_schema_admits
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// ---------------------------------------------------------------------------
+// The manual that describes the schema, checked against the schema
+// ---------------------------------------------------------------------------
+
+/// A document naming every table this schema admits.
+///
+/// Assembled from the three constants above rather than written out a fourth
+/// time, and the forge half is sliced out of [`FORGE`] so the keys with no
+/// default are spelled in exactly one place.
+fn every_table() -> String {
+    let forge = FORGE.split_once("[github]").expect("FORGE names a forge").1;
+    format!("{AGENTIC}\n[github]{forge}{SWEEP}")
+}
+
+/// **Every table the schema admits is a table the system document names.**
+///
+/// `docs/technical/SYSTEM.md`'s `fiddle.toml` paragraph is where an operator goes
+/// to learn what the deployment document may contain, and this epic edited it to
+/// add `[[workspace.checks]]` and nothing else — so `[scanner]`, which carries two
+/// of the four credentials, and `[orchestration.cve]`, which decides what a sweep
+/// does, were absent from the one paragraph that enumerates the document. A
+/// deliver-phase bean recorded that rather than fixing it, which is how a second
+/// reader came to find it again.
+///
+/// The section list comes from the binary rather than from a constant here, for
+/// the reason the lane beside it reads the manual's own bytes: a transcription is
+/// the thing that drifts. `config check --json` echoes one key per table the
+/// document carried, so a table added to the schema and to nobody's prose reds
+/// here.
+///
+/// `[orchestration.cve]` is matched as a prefix because the nesting is the PRD's
+/// spelling and the paragraph names the sub-table an operator actually writes,
+/// not the parent.
+#[test]
+fn the_system_document_names_every_table_this_schema_admits() {
+    let payload = checked(&every_table());
+    // One key per table, and the two scalars — `schema` and `status` — are not
+    // tables. Discriminated by *shape* rather than by name, so a third scalar
+    // added to the payload does not arrive here as a table nobody documented.
+    let sections: Vec<String> = payload
+        .as_object()
+        .expect("the payload is an object")
+        .iter()
+        .filter(|(_, value)| value.is_object())
+        .map(|(key, _)| key.clone())
+        .collect();
+    // Non-vacuity: the document above carries every table, so a payload that
+    // echoed only the three M0 ones would mean this lane is checking almost
+    // nothing.
+    for expected in ["agent", "workspace", "github", "scanner", "orchestration"] {
+        assert!(
+            sections.iter().any(|section| section == expected),
+            "the document handed over names `{expected}` and the payload does \
+             not echo it, so this lane is checking a shorter schema than there \
+             is: {sections:?}"
+        );
+    }
+
+    let document = std::fs::read_to_string(support::repo_root().join("docs/technical/SYSTEM.md"))
+        .expect("the system document is part of the repository");
+    let paragraph = document
+        .lines()
+        .find(|line| line.starts_with("**`fiddle.toml`**"))
+        .expect("the system document describes the deployment document");
+
+    for section in &sections {
+        assert!(
+            paragraph.contains(&format!("[{section}]"))
+                || paragraph.contains(&format!("[{section}.")),
+            "`[{section}]` is a table this schema admits and the `fiddle.toml` \
+             paragraph of docs/technical/SYSTEM.md does not name it"
+        );
+    }
+}
