@@ -82,6 +82,24 @@ pub const DEFAULT_OS_CVES: [&str; 1] = ["CVE-2026-0002"];
 /// budget's arithmetic would change meaning with nobody having touched them.
 pub const SECOND_OS_CVE: &str = "CVE-2026-0005";
 
+/// A second advisory against a *library*, in the second package of
+/// [`LIBRARY_PACKAGES`] rather than the first.
+///
+/// The one document that needs it is the two-group world: a run forms one group
+/// per bump target, so two library findings against two different modules are
+/// the only shape from which a second *attemptable* group comes — every other
+/// document here has one library finding and an OS one, and the OS half is
+/// always a base image nothing can select a tag for. Without a second module
+/// there is no second group, and with no second group `cve::fold` has no earlier
+/// rescan to be consulted over.
+///
+/// A constant of its own for [`SECOND_OS_CVE`]'s reason, which applies here
+/// twice over: an extra entry in [`DEFAULT_LIBRARY_CVES`] would add a second
+/// *fixable, attributable* finding to every document, and every lane that counts
+/// attempts or bounds findings would change meaning with nobody having touched
+/// it.
+pub const SECOND_LIBRARY_CVE: &str = "CVE-2026-0003";
+
 /// A vulnerable package, as a scanner reports one.
 #[derive(Debug, Clone)]
 struct Package {

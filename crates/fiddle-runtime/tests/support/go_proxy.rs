@@ -63,10 +63,35 @@ pub const GO_VERSION: &str = "1.23";
 /// The module an *indirect* finding is in. Reached through a parent rather than
 /// required by the host, which is the whole of what makes attribution rule 2
 /// different from rule 1.
+///
+/// It is also the **second** module the two-group sweep fixture requires, there
+/// as a direct requirement. One constant for both, and deliberately: it is the
+/// second row of `document.rs`'s library table, which is what a scanner document
+/// naming two library advisories reports — and this file's whole reason for
+/// existing is that a module path spelled twice is two worlds that can come
+/// apart. The two roles never meet, because they are reached from different
+/// fixture trees: rule 2's shapes require it indirectly through
+/// [`FIXTURE_PARENT`], and `tests/fixtures/cve-two-libraries` requires it
+/// directly and has no parent in it at all.
 pub const INDIRECT_MODULE: &str = "golang.org/x/net";
 
-/// What that module is pinned at before anything probes.
+/// What that module is pinned at before anything probes, and what the two-group
+/// sweep fixture requires it at.
 pub const INDIRECT_VERSION: &str = "v0.24.0";
+
+/// What the second library advisory names as fixing it, and therefore the only
+/// release the second group of a two-group sweep can be moved to.
+///
+/// It is `document.rs`'s library table again — the second row's `fixedVersion` —
+/// and `the_two_library_fixture_is_pinned_to_what_its_world_publishes` in
+/// `fiddle-acceptance` is what fails if the two drift.
+///
+/// Published rather than merely named, in [`UPSTREAM`] below, because a whole
+/// sweep asks [`versions`] before it chooses a bump target: a module with no
+/// releases yields an empty candidate list, which is `GroupError::NoRelease` —
+/// the group would be *blocked* before it ever reached the fold rule, and the
+/// lane would pass or fail for a reason that has nothing to do with folding.
+pub const INDIRECT_FIXED: &str = "v0.28.0";
 
 /// The parent every indirect shape routes through.
 ///
@@ -161,6 +186,21 @@ const UPSTREAM: &[Release] = &[
     Release {
         module: SWEEP_MODULE,
         version: SWEEP_FIXED,
+        requires: &[],
+    },
+    // And the two releases of [`INDIRECT_MODULE`] the two-group sweep needs a
+    // target selected out of. They require nothing, exactly as the two above do,
+    // and for the same reason: nothing resolves *through* them, and a
+    // requirement here would reach `tidy` in every tree that has this module —
+    // which is every rule-2 shape.
+    Release {
+        module: INDIRECT_MODULE,
+        version: INDIRECT_VERSION,
+        requires: &[],
+    },
+    Release {
+        module: INDIRECT_MODULE,
+        version: INDIRECT_FIXED,
         requires: &[],
     },
 ];

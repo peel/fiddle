@@ -17,7 +17,7 @@
 //!
 //! # The arms, and the one that matters
 //!
-//! Ten of the twelve are ordinary. `exit-nonzero-with-file` is the one this
+//! Eleven of the thirteen are ordinary. `exit-nonzero-with-file` is the one this
 //! fixture exists for: `wizcli` exits non-zero when an organisation policy flags
 //! any finding in the tenant, including findings that have nothing to do with
 //! this scan, and it writes a perfectly good report while doing it. An adapter
@@ -47,6 +47,15 @@
 //! sets non-empty at once, which is what it takes to assert that a deferred
 //! advisory is in one of them and not the other two. All three are ordinary
 //! successful scans and none is about a scanner failing.
+//!
+//! `two-library-advisories` is the fourth of that set and the only one that is
+//! about the *shape* of a run rather than about a row. A run forms one group per
+//! bump target and attempts one group at a time, and every other document here
+//! yields exactly one attemptable group — the library finding — because its OS
+//! half is a base image no tag can be selected for. So `cve::fold`, which asks
+//! what an *earlier* group's rescan already showed, has nothing to be consulted
+//! over on any of them. Two library findings in two different modules is the
+//! smallest document from which a second group comes.
 //!
 //! # Why it selects its arm from `argv`
 //!
@@ -88,7 +97,8 @@
 mod document;
 
 use document::{
-    libraries, os_packages, report_with, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, SECOND_OS_CVE,
+    libraries, os_packages, report_with, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, SECOND_LIBRARY_CVE,
+    SECOND_OS_CVE,
 };
 use std::path::{Path, PathBuf};
 
@@ -214,6 +224,28 @@ fn main() {
                 report_with(
                     libraries(&DEFAULT_LIBRARY_CVES),
                     os_packages(&[DEFAULT_OS_CVES[0], SECOND_OS_CVE]),
+                )
+                .raw()
+                .to_string(),
+            );
+        }
+        // Two library advisories, in two different modules, and the OS array
+        // the input scans all carry.
+        //
+        // Two *modules* is the whole of it: [`libraries`] cycles its package
+        // table by position, so two ids land in `golang.org/x/crypto` and
+        // `golang.org/x/net` rather than twice in one package — and a group is
+        // keyed on the module a bump would move, so two findings in one module
+        // would be one group again. The OS finding stays for `library-clean`'s
+        // reason: it is the baseline that makes a rescan's condition (b)
+        // discriminating rather than satisfied by an empty image.
+        "two-library-advisories" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(
+                    libraries(&[DEFAULT_LIBRARY_CVES[0], SECOND_LIBRARY_CVE]),
+                    os_packages(&DEFAULT_OS_CVES),
                 )
                 .raw()
                 .to_string(),
