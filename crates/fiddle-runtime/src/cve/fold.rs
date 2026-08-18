@@ -50,6 +50,10 @@
 //! the wrong order; they are two windows onto one event, and the reconciliation is
 //! that they share an answer.
 //!
+//! The selection also has to run first for a reason that is not about clearance at
+//! all — it is what keeps an OS advisory out of a commit body — and [`plan_group`]
+//! is where that half is written down.
+//!
 //! # The direction this rule is dangerous in
 //!
 //! Folding is a claim that something is fixed. Getting it wrong in the
@@ -344,13 +348,13 @@ pub fn plan_group(
     selection: Result<String, GroupError>,
     prior: Option<&PriorRescan>,
 ) -> GroupPlan {
+    // The refusals are matched with no wildcard, so a variant added to `GroupError`
+    // has to be ruled on here. A wildcard would send it to `Blocked`, which is the
+    // safe direction for an obstacle and the wrong one for a second way of
+    // discovering that there is nothing to do — and nothing would report the choice
+    // having been made by omission.
     let target = match selection {
         Ok(target) => target,
-        // Matched with no wildcard, so a variant added to `GroupError` has to be
-        // ruled on here. A wildcard would send it to `Blocked`, which is the safe
-        // direction for an obstacle and the wrong one for a second way of
-        // discovering that there is nothing to do — and nothing would report the
-        // choice having been made by omission.
         // The clearance the tree shows. Deliberately not conditioned on `prior`:
         // minimal version selection moved the requirement whatever the previous
         // group's rescan turned out to be worth, and requiring a foldable rescan

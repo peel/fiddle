@@ -112,13 +112,16 @@ pub const CLEARING_LIBRARY_CVE: &str = "CVE-2026-0006";
 /// [`CLEARED_ROW`] past its own fix.
 ///
 /// A row rather than a position, and that is the whole reason
-/// [`libraries_in_rows`] exists. [`libraries`] hands out rows by position, so two
-/// advisories are always `x/crypto` and `x/net` — and the *order* matters here in
-/// a way it does not anywhere else: a run walks its groups in target order, so the
-/// module doing the moving has to sort before the module being moved. It does:
-/// `github.com/…` before `golang.org/…`. Which release requires which is
-/// `go_proxy.rs`'s `CLEARING_MODULE`, and that file says why the requirement is
-/// hung on this row rather than on row 0.
+/// [`libraries_in_rows`] exists: [`libraries`] hands rows out by position, so two
+/// advisories are always rows 0 and 1 — `x/crypto` and `x/net` — and this world
+/// needs rows 2 and 1. `go_proxy.rs`'s `CLEARING_MODULE` says why the raising
+/// requirement is hung on this row rather than on row 0.
+///
+/// Which of the two runs *first* is not decided here and does not need to be: a run
+/// groups by target through a `BTreeMap`, so the order is the module paths' and not
+/// the document's. `github.com/…` sorts before `golang.org/…`, which is what makes
+/// this row the earlier group — a fact worth knowing, because a world whose moving
+/// module sorted second would move nothing before the group that needed it moved.
 pub const CLEARING_ROW: usize = 2;
 
 /// The row a [`CLEARING_ROW`] bump raises past its own fix.

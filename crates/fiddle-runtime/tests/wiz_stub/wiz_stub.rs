@@ -17,7 +17,7 @@
 //!
 //! # The arms, and the one that matters
 //!
-//! Eleven of the thirteen are ordinary. `exit-nonzero-with-file` is the one this
+//! Thirteen of the fifteen are ordinary. `exit-nonzero-with-file` is the one this
 //! fixture exists for: `wizcli` exits non-zero when an organisation policy flags
 //! any finding in the tenant, including findings that have nothing to do with
 //! this scan, and it writes a perfectly good report while doing it. An adapter
@@ -48,19 +48,6 @@
 //! advisory is in one of them and not the other two. All three are ordinary
 //! successful scans and none is about a scanner failing.
 //!
-//! `bump-clears-a-later-group` and `only-the-cleared-group-reported` are a
-//! *pair*, and they are the world where a bump clears a later group's finding **in
-//! the tree** rather than in the image. The first names an advisory against the
-//! module whose next release raises another module's requirement past its own fix,
-//! plus an advisory against that other module; the second is the rescan, and what
-//! makes it a different document from `library-clean` is what it still holds — the
-//! second advisory, unchanged. That is not a scanner being unhelpful: the rescan
-//! is of an *image*, and the tree is the thing minimal version selection moved. So
-//! the fold rule is refused its clearance and the selection is the only thing that
-//! can see one, which is exactly the run that used to file the advisory as unfixed.
-//! `a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed` is
-//! the lane, and `cve::fold`'s header is where the two paths are reconciled.
-//!
 //! `two-library-advisories` is the fourth of that set and the only one that is
 //! about the *shape* of a run rather than about a row. A run forms one group per
 //! bump target and attempts one group at a time, and every other document here
@@ -69,6 +56,20 @@
 //! what an *earlier* group's rescan already showed, has nothing to be consulted
 //! over on any of them. Two library findings in two different modules is the
 //! smallest document from which a second group comes.
+//!
+//! `bump-clears-a-later-group` and `only-the-cleared-group-reported` are the fifth
+//! and sixth, and they are a *pair*: the world where a bump clears a later group's
+//! finding **in the tree** rather than in the image. The first names an advisory
+//! against the module whose next release raises another module's requirement past
+//! its own fix, plus an advisory against that other module. The second is the
+//! rescan, and what makes it a different document from `library-clean` is what it
+//! still holds — the second advisory, unchanged. That is not a scanner being
+//! unhelpful: the rescan is of an *image*, and the tree is what minimal version
+//! selection moved. So the fold rule is refused its clearance and the selection is
+//! the only thing that can see one, which is exactly the run that used to file the
+//! advisory as unfixed.
+//! `a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed` is
+//! the lane, and `cve::fold`'s header is where the two paths are reconciled.
 //!
 //! # Why it selects its arm from `argv`
 //!

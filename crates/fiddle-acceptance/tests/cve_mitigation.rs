@@ -3063,9 +3063,10 @@ fn a_group_an_earlier_bump_already_cleared_is_folded_into_an_empty_commit() {
 ///
 /// # Why the rescan still reports the cleared advisory
 ///
-/// Because otherwise this lane proves nothing about the tree. A rescan that
-/// cleared both advisories is folded by `cve::fold` on the ordinary path, and the
-/// lane would stay green over a build that had never read the tree at all. So
+/// Because otherwise this lane proves nothing about the tree. Both clearances now
+/// answer the same thing, so over a rescan that cleared both advisories every
+/// assertion below reads identically whichever of the two saw it — and the lane
+/// would stay green over a build that never consulted the tree at all. So
 /// [`RESCAN_CLEARED_STILL_REPORTED`] holds the second advisory, the fold rule
 /// answers `Proceed`, and the selection is the only thing left that can see the
 /// clearance. It is also the honest document: the scan is of an image, and a
