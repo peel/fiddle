@@ -111,8 +111,9 @@
 mod document;
 
 use document::{
-    libraries, libraries_in_rows, os_packages, report_with, CLEARED_ROW, CLEARING_LIBRARY_CVE,
-    CLEARING_ROW, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, SECOND_LIBRARY_CVE, SECOND_OS_CVE,
+    libraries, libraries_graded, libraries_in_rows, os_packages, report_with, CLEARED_ROW,
+    CLEARING_LIBRARY_CVE, CLEARING_ROW, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, SECOND_LIBRARY_CVE,
+    SECOND_OS_CVE,
 };
 use std::path::{Path, PathBuf};
 
@@ -213,6 +214,32 @@ fn main() {
                 report_with(libraries(&DEFAULT_LIBRARY_CVES), os_packages(&[]))
                     .raw()
                     .to_string(),
+            );
+        }
+        // The library advisory at **MEDIUM**, with an OS array that is present and
+        // empty.
+        //
+        // The one document in this file that reports a finding a deployment
+        // configuring no grades does *not* act on. It is the world
+        // `[orchestration.cve] severities` is asked in: under the default set the
+        // whole document selects nothing, and under a document naming `MEDIUM` the
+        // same bytes produce exactly the group `ok` produces at `HIGH`.
+        //
+        // The OS array is empty rather than the input scans' usual advisory,
+        // because a `HIGH` OS finding would be selected under either set and the
+        // run would have work to do either way — which is the one thing this arm
+        // must not have. Empty and never absent, for `library-clean`'s reason:
+        // absence is not clearance.
+        "medium-library-advisory" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(
+                    libraries_graded(&[DEFAULT_LIBRARY_CVES[0]], "MEDIUM"),
+                    os_packages(&[]),
+                )
+                .raw()
+                .to_string(),
             );
         }
         // The library advisory, and a base layer that is two advisories behind

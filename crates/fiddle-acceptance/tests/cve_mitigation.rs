@@ -1296,6 +1296,26 @@ const OS_CVE: &str = "CVE-2026-0002";
 /// finding rather than as a lane that quietly asserts about the wrong one.
 const SECOND_OS_CVE: &str = "CVE-2026-0005";
 
+/// The scanner arm reporting the library advisory at **MEDIUM**, with an empty OS
+/// array.
+///
+/// The world `[orchestration.cve] severities` is asked in. A deployment that names
+/// no grades acts on `HIGH` and `CRITICAL`, so this whole document selects nothing
+/// and the run has *nothing to do*; a deployment that names `MEDIUM` gets the same
+/// group [`SCAN_OK`] produces, from the same bytes. The pair is what makes the key
+/// wired rather than parsed — see
+/// [`the_grades_the_document_named_are_the_grades_the_run_acted_on`].
+const SCAN_MEDIUM_LIBRARY: &str = "medium-library-advisory";
+
+/// The grades that document is written with, and the one it is not.
+///
+/// `MEDIUM` beside the two a document naming none already means, because that is
+/// what an operator widening a sweep would actually write: this key is a set and
+/// not a floor, so widening it means naming every grade you want, and a lane whose
+/// document said `["MEDIUM"]` alone would be asserting about a deployment that
+/// stopped acting on `CRITICAL`.
+const GRADES_INCLUDING_MEDIUM: &[&str] = &["CRITICAL", "HIGH", "MEDIUM"];
+
 /// The scanner arm that reports **two library advisories**, in two different
 /// modules, beside the usual OS one.
 ///
@@ -1402,6 +1422,36 @@ impl Sweep {
         Sweep::scanning_rescanning(fixture, scan, RESCAN_CLEAN, findings, script)
     }
 
+    /// The same deployment with the **grades it acts on** named in its document.
+    ///
+    /// A fourth entry point for [`scanning_rescanning`]'s reason, and the knob it
+    /// varies is the one every other lane here must not touch: a document that
+    /// names no grades is what every neighbour is written as, and it means `HIGH`
+    /// and `CRITICAL`. The rescan arm is a parameter too, because a world whose
+    /// input scan reports no OS finding needs a rescan that reports none either —
+    /// [`RESCAN_CLEAN`] carries the input scans' OS advisory, which such a world
+    /// never had, and condition (b) would read it as a finding that just appeared.
+    ///
+    /// [`scanning_rescanning`]: Sweep::scanning_rescanning
+    fn scanning_grades(
+        fixture: &str,
+        scan: &str,
+        rescan: &str,
+        grades: &[&str],
+        findings: usize,
+        script: Vec<Reply>,
+    ) -> Self {
+        Sweep::deployment(
+            fixture,
+            scan,
+            rescan,
+            findings,
+            script,
+            PASSING_CHECK,
+            Some(grades),
+        )
+    }
+
     /// The same deployment with the **rescan**'s arm chosen too.
     ///
     /// A second entry point rather than a fifth argument on the one above,
@@ -1462,6 +1512,28 @@ impl Sweep {
         script: Vec<Reply>,
         check_args: &[&str],
     ) -> Self {
+        Sweep::deployment(fixture, scan, rescan, findings, script, check_args, None)
+    }
+
+    /// [`world`] with the document's grade set named, or left to its default.
+    ///
+    /// `None` writes **no `severities` line at all**, which is not the same as
+    /// writing the default's two grades: the property every lane in this file but
+    /// one rests on is that an omitting document means what this build has always
+    /// meant, and a harness that filled the key in would make that untestable from
+    /// here — the same reason `Sweep::scanning` will not default the scanner arm.
+    ///
+    /// [`world`]: Sweep::world
+    #[allow(clippy::too_many_arguments)]
+    fn deployment(
+        fixture: &str,
+        scan: &str,
+        rescan: &str,
+        findings: usize,
+        script: Vec<Reply>,
+        check_args: &[&str],
+        grades: Option<&[&str]>,
+    ) -> Self {
         let scenario = Scenario::new();
 
         // `remote.git` beside the scratch directory is the name the scripted `gh`
@@ -1483,7 +1555,7 @@ impl Sweep {
             remote,
             gateway: StubGateway::serving(script),
         };
-        let tables = sweep.tables(scan, rescan, findings, check_args);
+        let tables = sweep.tables(scan, rescan, findings, check_args, grades);
         sweep.scenario.append_config(&tables);
         sweep
     }
@@ -1505,7 +1577,14 @@ impl Sweep {
     /// document naming both shapes, and the arm that used to read it is what made
     /// this capability unbuildable; the model's `run_check` is the first entry of
     /// the list below.
-    fn tables(&self, scan: &str, rescan: &str, findings: usize, check_args: &[&str]) -> String {
+    fn tables(
+        &self,
+        scan: &str,
+        rescan: &str,
+        findings: usize,
+        check_args: &[&str],
+        grades: Option<&[&str]>,
+    ) -> String {
         format!(
             "[github]\n\
              repo = \"{SWEEP_REPO}\"\n\
@@ -1534,6 +1613,7 @@ impl Sweep {
              \n\
              [orchestration.cve]\n\
              image = \"{SWEEP_IMAGE}\"\n\
+             {severities}\
              max_findings = {findings}\n\
              go = {{ program = {go}, args = [] }}\n\
              \n\
@@ -1551,6 +1631,18 @@ impl Sweep {
              program = {wiz}\n\
              args = [\"{rescan}\"]\n\
              success = \"artefact-written\"\n",
+            // Absent where no lane named a set, so every other document in this
+            // file is byte-for-byte the one it was before this key existed.
+            severities = grades
+                .map(|grades| {
+                    let named = grades
+                        .iter()
+                        .map(|grade| format!("{grade:?}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("severities = [{named}]\n")
+                })
+                .unwrap_or_default(),
             gh = toml_string(gh_stub_binary()),
             wiz = toml_string(wiz_stub_binary()),
             go = toml_string(go_stub_binary()),
@@ -3688,6 +3780,113 @@ fn the_bound_the_document_sets_is_the_bound_the_sweep_applies() {
     assert_eq!(
         reached["reason"], "pull_request",
         "deferring a finding does not change what the run came to: {reached}"
+    );
+}
+
+/// **The grades the document named are the grades the run acted on.**
+///
+/// The sibling of the lane above, for the other key of the PRD's two-key
+/// `[orchestration.cve]` example — and the one that survived a pass longer.
+/// `severities = ["HIGH", "CRITICAL"]` was in the product document while this
+/// table's `deny_unknown_fields` admitted three other names, so a deployment that
+/// copied the manual exited 2; and the rule it would have set was a match arm in
+/// `fiddle_core::selected`, so a deployment that wanted `MEDIUM` had nowhere to
+/// write it. `config_check`'s lanes prove the key parses, defaults and
+/// round-trips. Nothing proved it reached selection, and this is that.
+///
+/// The two runs differ in **one line of the document** and in nothing else — the
+/// same scanner arm, the same tree, the same script, the same bound:
+///
+/// - naming **no grades** means `HIGH` and `CRITICAL`, so the document's one
+///   `MEDIUM` finding is not one this deployment acts on, the projection is empty,
+///   and the run has *nothing to do*;
+/// - naming **`MEDIUM`** as well makes the same bytes the group `SCAN_OK` produces
+///   at `HIGH`: one bump, one branch, one pull request carrying `go.mod` at the
+///   fixed release.
+///
+/// A key that was read and thrown away leaves both runs on the first row. A
+/// projection that ignored the set and admitted everything leaves both on the
+/// second. The mitigation is read off the remote rather than off a report, because
+/// what the key has to change is which findings a run *acts on*, not which ones it
+/// mentions.
+///
+/// The finding carries **no public exploit**, and that is what makes the pair
+/// about this key: the second selection arm is not configurable and would admit a
+/// `MEDIUM` finding with a published fix whichever grades the document named, so a
+/// fixture reporting `hasExploit: true` would produce the pull request in both
+/// runs and prove nothing.
+#[test]
+fn the_grades_the_document_named_are_the_grades_the_run_acted_on() {
+    // The rescan arm is [`SCAN_CLEAN`] rather than the usual [`RESCAN_CLEAN`]
+    // because this world's input scan reports no OS advisory: a rescan carrying
+    // one would be reporting a finding the input scan never had, which condition
+    // (b) reads as a vulnerability that just appeared — and the repair would be
+    // refused for a reason that has nothing to do with grades.
+    let by_default = Sweep::scanning_rescanning(
+        VULNERABLE,
+        SCAN_MEDIUM_LIBRARY,
+        SCAN_CLEAN,
+        2,
+        a_bump_needing_no_edit(),
+    );
+    let run = by_default.run();
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "a document with nothing this deployment acts on is not a failed run —          stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        by_default.disposition(&run),
+        nothing_to_do_publishes(),
+        "a MEDIUM finding is outside what a document naming no grades means, so          this run had nothing to act on"
+    );
+    assert_eq!(
+        by_default.pull_requests().len(),
+        0,
+        "and it proposed nothing: {:?}",
+        by_default.pull_requests()
+    );
+
+    // The same world with `severities` naming MEDIUM, which is the only
+    // difference between the two documents.
+    let widened = Sweep::scanning_grades(
+        VULNERABLE,
+        SCAN_MEDIUM_LIBRARY,
+        SCAN_CLEAN,
+        GRADES_INCLUDING_MEDIUM,
+        2,
+        a_bump_needing_no_edit(),
+    );
+    let run = widened.run();
+    let payload = widened.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        widened.disposition(&run)["reason"],
+        "pull_request",
+        "the deployment named MEDIUM, so the MEDIUM finding is work: {}",
+        widened.disposition(&run)
+    );
+    assert_eq!(
+        widened.pull_requests().len(),
+        1,
+        "exactly one pull request: {:?}",
+        widened.pull_requests()
+    );
+    let branch = the_one_new_branch(&widened);
+    let landed = pushed_file(&widened, &branch, "go.mod");
+    assert!(
+        landed.contains(&format!("{MODULE} {FIXED_VERSION}")),
+        "and the branch carries the requirement at the fixed release, which is          the whole of what acting on a finding means here: {landed}"
+    );
+    assert!(
+        !landed.contains(VULNERABLE_VERSION),
+        "and no longer at the vulnerable one: {landed}"
     );
 }
 
