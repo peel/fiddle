@@ -839,6 +839,15 @@ fn the_two_library_fixture_is_pinned_to_what_its_world_publishes() {
 /// would leave the pair with a Dockerfile that cannot describe it, and the
 /// diff lane above would not notice, because both halves would be wrong
 /// identically.
+///
+/// **Nor does the product, and that is a decision rather than a gap in the
+/// harness.** Design §2.1's Prepare ends in `docker build`; ADR 020 puts that
+/// half in the host workflow, because a build that pulls base layers cannot live
+/// in an offline credential-free gate and a *stubbed* build would produce a
+/// digest meaning nothing. What fiddle does instead is publish the digest it
+/// scanned beside the revision it remediated —
+/// `observations.tree.scanned_image_digest`, asserted in
+/// [`a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch`].
 #[test]
 fn each_dockerfile_copies_only_files_its_fixture_has() {
     for name in [VULNERABLE, FIXED] {
@@ -1114,6 +1123,20 @@ const SENTINEL_SECRET: &str = "fiddle-secret-3b8e51d0";
 /// scanner's banner, so a lane can tell a scan that happened from one that did
 /// not.
 const SWEEP_IMAGE: &str = "ghcr.io/acme/icecube:latest";
+
+/// What the scripted scanner resolves [`SWEEP_IMAGE`] to, and publishes in its
+/// banner.
+///
+/// `fiddle-runtime`'s own `tests/wiz_stub/wiz_stub.rs:STUB_DIGEST`, spelled again
+/// rather than imported, for [`SENTINEL_SECRET`]'s reason — this package depends
+/// on neither library. Keeping the value identical is what lets a reader
+/// searching the repository find both halves.
+///
+/// It is deliberately unlike [`SWEEP_IMAGE`]: a lane that found the tag where it
+/// expected the digest would be finding the name that can move, which is the
+/// whole failure the key exists to prevent.
+const SCANNED_DIGEST: &str =
+    "sha256:6f1b0d2c9a4e7385bd1c05fa9e37642c8b0d5713ae629f04c8d17b6a3e59042d";
 
 /// The scanner arm every ordinary sweep runs: a scan that worked, over both
 /// package arrays.
@@ -1968,6 +1991,15 @@ fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
     // base, PR head, and which the attempt ran against* — asserted at the run
     // level for the first time. Nothing was open, so the attempt ran at the base,
     // and the base is the sha the remote really holds for it.
+    //
+    // And beside it the fourth key, which is ADR 020's half of a question this
+    // milestone could otherwise not answer: *which image were these verdicts
+    // measured against?* Fiddle does not build the image it scans — the host
+    // workflow does — so the pair here is a correspondence made checkable rather
+    // than one this run verified. Asserted in the same object literal as the
+    // three revisions on purpose: the pair is one record, and a run that
+    // published a revision with no digest beside it would be the thing the key
+    // exists to prevent.
     let bundle = sweep.bundle(&run);
     assert_eq!(
         bundle["observations"]["tree"],
@@ -1975,8 +2007,37 @@ fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
             "base_revision": git_says(&sweep.remote, &["rev-parse", SWEEP_BASE]),
             "pr_head": serde_json::Value::Null,
             "attempt_tree": "base_revision",
+            "scanned_image_digest": SCANNED_DIGEST,
         }),
         "{bundle}"
+    );
+    // The digest and never the tag. The configuration named
+    // `ghcr.io/acme/icecube:latest`; what the bundle has to carry is what the
+    // scan *resolved* that to, because a tag is a name whoever pushes next can
+    // move and two scans of one tag are not two scans of one image. Publishing
+    // the tag is the plausible wrong answer — it is the value the capability
+    // already holds in its own configuration — and the equality above catches
+    // it today.
+    //
+    // These two are not that assertion again in weaker form. They are the case
+    // the equality cannot see: a **fixture** edit that changes what the stub
+    // announces. `SCANNED_DIGEST` and `wiz_stub.rs`'s `STUB_DIGEST` are the same
+    // value spelled twice, so moving both to something tag-shaped leaves the
+    // equality green while the bundle no longer names an image by its bytes.
+    // What is pinned here is the *shape of the fact*, which is not free to
+    // follow the fixture.
+    let published = bundle["observations"]["tree"]["scanned_image_digest"]
+        .as_str()
+        .unwrap_or_default();
+    assert_ne!(
+        published, SWEEP_IMAGE,
+        "the bundle must name what the scan resolved, not the tag it was \
+         handed: {bundle}"
+    );
+    assert!(
+        published.starts_with("sha256:"),
+        "and it must be a digest rather than any other spelling of the image: \
+         {bundle}"
     );
 
     // The run is filed under this capability's own vocabulary and not a
@@ -2562,6 +2623,19 @@ fn an_unusable_scanner_exits_eleven_and_reaches_no_forge() {
             .is_some_and(|why| why.contains("wizcli")),
         "the row's diagnostic lives on the outcome, and has to actually be \
          there: {bundle}"
+    );
+    // And the other direction of the pair `observations.tree` carries. That key
+    // holds a scanned image's digest beside the revision that was remediated
+    // (ADR 020), and its worth depends on the two never being published apart:
+    // a digest with no revision beside it, or a revision with no digest, would
+    // be half a correspondence that reads like a whole one. Here the scan
+    // produced no document, so `sweep` was never entered, so there is no
+    // revision — and the key has to be **absent entirely** rather than present
+    // with an empty digest or a null revision in it.
+    assert!(
+        bundle["observations"].get("tree").is_none(),
+        "a run with no scan document chose no revision and measured nothing, so \
+         it must publish neither half of the pair: {bundle}"
     );
 }
 
@@ -3680,6 +3754,7 @@ fn a_second_run_over_a_shared_pull_request_rewrites_its_body_and_works_in_its_tr
             "base_revision": base_revision,
             "pr_head": seeded_head,
             "attempt_tree": "pr_head",
+            "scanned_image_digest": SCANNED_DIGEST,
         }),
         "{bundle}"
     );

@@ -117,6 +117,17 @@ pub struct ScanReport {
     /// Which image it looked at, by digest rather than by tag: a tag is a name
     /// somebody can move, and two scans of one tag are not necessarily two scans
     /// of one image.
+    ///
+    /// **Its consumer is the bundle, and for most of M4a it had none.** This was
+    /// parsed here, carried, and read by nothing — so the fact that made a scan
+    /// attributable died with the process, and Design §2.2's *the digest is what
+    /// makes a later re-scan comparable* was true of a field rather than of any
+    /// artefact. It now reaches
+    /// [`TreeObservation::scanned_image_digest`](fiddle_core::TreeObservation),
+    /// paired with the revision the run remediated, which is ADR 020's half of
+    /// the correspondence fiddle can assert without building the image.
+    /// [`scanner_version`](Self::scanner_version) never had that problem: it is
+    /// the rescan's `Repair::scanned_at`.
     pub image_digest: String,
 }
 

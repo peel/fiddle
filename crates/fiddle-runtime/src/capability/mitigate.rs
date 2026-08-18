@@ -291,7 +291,12 @@ where
         //    repository the worktree will be branched from, because there is not
         //    one yet — choosing its revision is what this answers.
         let checkout = check_out(&InRepository::new(&self.config.tree), &approved).await?;
-        self.observed.lock().unwrap().tree = Some(observed_tree(&checkout));
+        // And this line is the only place in the build where the scanned image
+        // and the remediated revision are both in hand. See [`observed_tree`]:
+        // the scan happened in `execute`, before there was a tree to speak of,
+        // and `Checkout` never sees a scanner — so the pair can be made here or
+        // nowhere.
+        self.observed.lock().unwrap().tree = Some(observed_tree(&checkout, report));
 
         // 3. One worktree, at that revision, for every group in this run.
         let worktree = self.worktree();
@@ -827,16 +832,62 @@ impl<M, S> CveMitigate<'_, M, S> {
     }
 }
 
-/// The three keys a run records about which tree its attempt worked in.
+/// The four keys a run records about which tree its attempt worked in and which
+/// image its verdicts were measured against.
 ///
 /// Built from [`Checkout`] rather than from three fields the capability tracked,
 /// so a bundle saying `attempt_tree: pr_head` provably has a pull request head in
 /// it — the invariant that enum exists for.
-fn observed_tree(checkout: &Checkout) -> TreeObservation {
+///
+/// # Fiddle does not build the image it scans, and this is where that is visible
+///
+/// Design §2.1's Prepare is *a detached worktree at the observed revision, then
+/// `docker build`*. Only the first half is here, and the second half is not
+/// missing — it is the **host workflow's**, decided 2026-08-18 and recorded in
+/// ADR 020. Building inside this capability would put `docker build` in the
+/// offline, credential-free gate, and a build that pulls base layers is not
+/// something the scripted-stub approach carrying `wizcli`, `gh`, `git` and `go`
+/// extends to: a stubbed build yields an image whose digest means nothing, which
+/// is precisely the correspondence at issue.
+///
+/// So nothing in this build connects the two, and the ordering is why it cannot.
+/// [`Capability::execute`] scans the statically configured `[orchestration.cve]
+/// image` **before** [`CveMitigate::sweep`] is entered, so the document every
+/// verdict is measured against is chosen before a worktree exists — and it
+/// describes whatever image currently carries that tag.
+/// `an_unusable_scanner_exits_eleven_and_reaches_no_forge` holds that order from
+/// outside the process, by the worktree root not existing when the scan produced
+/// nothing.
+///
+/// # What the pair does instead, which is not nothing
+///
+/// It makes the correspondence **checkable** rather than assumed. A bundle that
+/// says *these verdicts are about digest `sha256:…` and I remediated revision
+/// `abc…`* can be checked by the workflow that did the build, or by a person; one
+/// that says neither cannot be, and until this the digest was parsed by
+/// [`crate::scanner::wizcli`] and read by nothing at all.
+///
+/// The pairing is structural: `report` is a parameter rather than a field this
+/// function could be called without, and [`TreeObservation`] has no `Default` —
+/// so no run records a revision whose image is unknown. The other direction holds
+/// by the ordering above: `sweep` is only entered with a document, and it is the
+/// only producer of this value, so a run that scanned and made no tree publishes
+/// **no `tree` key at all** rather than a half-pair a reader could mistake for a
+/// correspondence.
+///
+/// What it still does not do is *verify* the pair, and ADR 020's consequences
+/// name what would: the builder declaring the revision it built at, checked here
+/// against `checkout.revision()`. Nothing populates such a field today, which is
+/// why this records rather than refuses.
+fn observed_tree(checkout: &Checkout, report: &ScanReport) -> TreeObservation {
     TreeObservation {
         base_revision: checkout.base_revision().to_string(),
         pr_head: checkout.pr_head().map(str::to_string),
         attempt_tree: checkout.attempt_tree().as_str().to_string(),
+        // The scanner's own resolution, not `self.config.image`. The tag is the
+        // name that was handed to the scan; the digest is what it turned out to
+        // be, and recording the tag would record the very thing that can move.
+        scanned_image_digest: report.image_digest.clone(),
     }
 }
 

@@ -195,13 +195,29 @@ pub struct Publication {
 /// assessment, so a capability with a fact of its own about *the tree* had it
 /// produced and unplaced.
 ///
-/// A named struct rather than a free-form object: the three keys are a contract
+/// A named struct rather than a free-form object: the four keys are a contract
 /// a reader parses, and a `serde_json::Value` here would make them whatever the
 /// last capability to write one happened to emit.
 ///
 /// `attempt_tree` is the *name* of the field holding the revision that was used,
 /// so a reader finds the value beside a key of the same name rather than having
 /// to be told the mapping.
+///
+/// # Why the scanned image's digest is in here rather than beside it
+///
+/// Because the pair is the point, and a sibling key could be read apart from it.
+/// [`scanned_image_digest`](Self::scanned_image_digest) is not a fact about a
+/// tree; it is the other half of a question only both halves answer — *which
+/// image were these verdicts measured against, and which tree was remediated?*
+/// A run that published one without the other would leave a reader to assume the
+/// connection, which is exactly the assumption ADR 020 exists to stop being
+/// silent.
+///
+/// This struct has no `Default` and one producer, so a field rather than a
+/// second `Option` on [`WorkStateView`] makes the pairing the compiler's: there
+/// is no way to record the revision without recording the digest beside it. The
+/// same device the base revision already gets from being on both arms of
+/// `Checkout` one layer down.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct TreeObservation {
     /// What `origin/<base>` resolved to. Present on both arms, which is the
@@ -216,6 +232,24 @@ pub struct TreeObservation {
     /// Which of the two above the attempt's worktree was made at, named as the
     /// key that holds it.
     pub attempt_tree: String,
+    /// The digest the scan resolved its image reference to, as the scanner
+    /// reported it.
+    ///
+    /// **The digest and never the configured tag.** A tag is a name somebody can
+    /// move, and the whole reason this key exists is that the tag names whatever
+    /// currently carries it rather than the thing that was measured.
+    ///
+    /// # What this asserts, and what it does not
+    ///
+    /// It asserts that *this run's verdicts were measured against these bytes*
+    /// and *this run remediated the revision beside it*. It does **not** assert
+    /// that the image was built from that revision: fiddle does not build the
+    /// image it scans — the host workflow does, which is ADR 020. So the pair is
+    /// a correspondence made **checkable** by whoever did build it, not one this
+    /// build verified. Anything stronger would need the builder to declare the
+    /// revision it built at, which nothing populates today; ADR 020's
+    /// consequences say who owes it.
+    pub scanned_image_digest: String,
 }
 
 /// Everything a run observed about one invocation, in one value.
