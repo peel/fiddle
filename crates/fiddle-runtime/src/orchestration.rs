@@ -19,6 +19,14 @@
 //!   it started with; design §4.7 shows `"next_action": "complete"` for a
 //!   successful first run, and a completed run that advertised work still to do
 //!   would send its caller round the loop for nothing.
+//!
+//!   With one exception, and it is not a caveat on that sentence but the case the
+//!   sentence does not cover. A reference with no [completion
+//!   state](fiddle_core::WorkStateView::has_completion_state) re-derives
+//!   `Execute`, because nothing about such a world can ever say the work is
+//!   accounted for. That is the honest reading for a sweep — there is always
+//!   another night's scan to do — and it is why the *outcome* and not the next
+//!   action is what says this run finished. [`concluded`] carries the argument.
 //! - Its *outcome* comes out of that same re-derivation, through [`concluded`].
 //!   Not a branch either, and deliberately not an assertion: the two fields of a
 //!   bundle a caller switches on are computed from one value, so no observation
@@ -103,8 +111,14 @@ pub fn observe(
 ///
 /// - the **work item** must not be read, because there is no id to read one by;
 /// - the **change set** must still be read and written, because that is where
-///   the correlation marker lives and it is the only thing that makes a repeat
-///   of the same invocation `Complete` rather than a second run of the work.
+///   the correlation marker lives, and a capability that recorded nothing would
+///   leave a run no later reader could see the shape of.
+///
+/// It used to say that the marker "is the only thing that makes a repeat of the
+/// same invocation `Complete` rather than a second run of the work", and for this
+/// variant that was exactly wrong: the reference the marker is filed under
+/// accounts for no work item, so a repeat of the invocation *is* a second run of
+/// the work — by design, because the work is a fresh look at the world. ADR 023.
 ///
 /// So the change set gets an id and the work item gets none, which is exactly
 /// what these two variants say.
@@ -322,10 +336,33 @@ impl Authorised {
 ///   correlation marker is not a question anybody can answer, so there is nothing
 ///   for a run to be suspended *pending*.
 ///
-/// - `Execute` — [`RunOutcome::Retryable`]. The world is fully observable and
-///   records no change set, so the effect this run made did not survive;
-///   repeating the invocation executes again and may well succeed, which is
-///   precisely what `Retryable` promises and `Failed` denies.
+/// - `Execute` — [`RunOutcome::Retryable`], **where the reference has a
+///   completion state**. The world is fully observable and records no change set,
+///   so the effect this run made did not survive; repeating the invocation
+///   executes again and may well succeed, which is precisely what `Retryable`
+///   promises and `Failed` denies.
+///
+///   Where it has none — [`WorkStateView::has_completion_state`] — `Execute` is
+///   [`RunOutcome::Completed`] instead, and this is the one place the two
+///   derivations a run takes are allowed to mean different things. A reference
+///   that names no work item records nothing about being done, so its
+///   *post*-execution derivation cannot be read as "the effect did not survive":
+///   it is `Execute` for a marked change set and an unmarked one alike, because
+///   that is what having no completion state means. Concluding `Retryable` from
+///   it would report every successful sweep as an exit-11 failure to be tried
+///   again, and no observation could ever talk fiddle out of it.
+///
+///   What says such a run is done, then, is that the capability executed and
+///   returned evidence — and that is not the assumption [the section
+///   above](#why-this-is-a-function-of-the-re-derivation) rejects. That
+///   assumption is unsafe because a *second writer* can take a change set this
+///   run was accounting for, and the conclusion has to survive it; a reference
+///   that accounts for nothing has nothing to lose to one. What protects such an
+///   invocation from doing its work twice is not this mapping and never was: it
+///   is the capability's own dedup, design §4's commit-log and open-pull-request
+///   reads, which is why a second sweep lands nothing rather than a second pull
+///   request. ADR 023 argues it, and `Blocked` is untouched — an unreadable
+///   change set is still a world fiddle did not see, whatever the reference.
 ///
 /// Both reasons name the fact that the capability had already run, because
 /// `Failed` and `Retryable` each have other producers and the exit code alone
@@ -333,7 +370,7 @@ impl Authorised {
 /// world", and exit 11 otherwise names the change set, the attempt journal, or
 /// the report bundle. Neither adds a row to the exit-code table — the CLI's
 /// single `exit_code_for` maps these to 20 and 11 unchanged.
-fn concluded(next_action: &NextAction) -> RunOutcome {
+fn concluded(next_action: &NextAction, after: &WorkStateView) -> RunOutcome {
     match next_action {
         NextAction::Complete => RunOutcome::Completed,
         NextAction::Blocked { reason } => RunOutcome::Failed {
@@ -341,6 +378,12 @@ fn concluded(next_action: &NextAction) -> RunOutcome {
                 "the capability executed, and the work is not accounted for afterwards: {reason}"
             )),
         },
+        // The view is asked, rather than `Addressed` or the reference: it is the
+        // one `next_action` was derived from, and `fiddle_core::assess` decides
+        // the trackerless arm off the same predicate. Two spellings of "this
+        // reference records no completion" is how the derivation and the
+        // conclusion would come to disagree about which arm a run took.
+        NextAction::Execute { .. } if !after.has_completion_state() => RunOutcome::Completed,
         NextAction::Execute { capability_id } => RunOutcome::Retryable {
             reason: Published::of(format!(
                 "{} executed and reported success, and the work is still not started \
@@ -442,7 +485,7 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             RunReport {
                 // Derived from the re-derivation, never asserted to agree with
                 // it. See [`concluded`] for why the two can differ at all.
-                outcome: concluded(&next_action),
+                outcome: concluded(&next_action, &after),
                 next_action,
                 executions: vec![execution(
                     capability_id,

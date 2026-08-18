@@ -1092,10 +1092,14 @@ fn a_run_over_a_trackerless_reference_is_not_a_failed_run() {
         "no port may be asked to read a work id that does not exist: {payload}"
     );
 
-    // And the change set *is* read and written, under the reference's own slug —
-    // which is what makes a repeat of the same sweep `complete` rather than a
-    // second run of the work. A trackerless run that recorded nothing would be
-    // one no later invocation could recognise.
+    // And the change set *is* read and written, under the reference's own slug.
+    // A trackerless run that recorded nothing would be one no later reader could
+    // see the shape of — which is the whole of what the marker is for here. It is
+    // deliberately *not* what makes a repeat of this invocation `complete`: this
+    // reference names no work item and so has no completion state, and reading the
+    // marker as one is what let this very invocation account a sweep as done. See
+    // `a_marker_against_a_trackerless_reference_does_not_account_the_sweep_as_done`
+    // and ADR 023.
     assert_eq!(
         scenario.read_change_marker("cve"),
         Some(scenario.expected_marker("cve")),
@@ -1735,43 +1739,26 @@ impl Sweep {
         command.output().unwrap()
     }
 
-    /// Throw away the correlation marker the last run left in `<stub.root>`, so
-    /// the next one is a second *night* rather than a second look at the same
-    /// one.
+    /// The correlation marker the last run left in `<stub.root>`, if it left one.
     ///
-    /// # What this is and, more importantly, what it is not
+    /// Read rather than removed, and that is a change worth naming. This used to
+    /// be `forget_that_the_last_run_happened`, which deleted
+    /// `<stub.root>/changes/cve.json` between two runs of the same scenario
+    /// because `orchestration::run` read it before the capability was reached,
+    /// found a change set carrying this invocation's marker, derived
+    /// `NextAction::Complete` and executed nothing — so two invocations in one
+    /// scratch directory were one run and one no-op, whatever the forge held.
     ///
-    /// It plants no history, writes no commit and touches neither the remote nor
-    /// the forge. The only thing it removes is `<stub.root>/changes/cve.json`,
-    /// which is M0's `StubChangePort` artefact: `orchestration::run` reads it
-    /// before the capability is reached, finds a change set already carrying
-    /// *this* invocation's marker, derives `NextAction::Complete` and executes
-    /// nothing. Two invocations in one scratch directory are therefore one run
-    /// and one no-op, whatever the forge holds.
-    ///
-    /// That is a property of the M0 stub and not of the capability. The port
-    /// reads a file under `[stub] root`, a nightly job in CI gets a fresh
-    /// checkout and therefore an empty `changes/`, and the second night's real
-    /// input is the *remote* — the branch, the pull request and the commit log,
-    /// none of which this touches. Removing the file is what makes the scratch
-    /// directory behave the way two consecutive CI jobs do, which is the world
-    /// [`a_second_run_reads_the_first_runs_own_commit_body`] is about.
-    ///
-    /// It is asserted to have been there. An arrangement that quietly removed
-    /// nothing would leave that lane's second run a no-op whose empty bundle
-    /// could be mistaken for a disposition nobody looked at closely.
-    fn forget_that_the_last_run_happened(&self) {
-        let marker = self
-            .scenario
-            .stub_root()
-            .join(format!("changes/{SWEEP_REF}.json"));
-        std::fs::remove_file(&marker).unwrap_or_else(|e| {
-            panic!(
-                "the last run must have left a correlation marker at {} for this \
-                 to be undoing anything ({e})",
-                marker.display()
-            )
-        });
+    /// That is fixed rather than worked around. A reference that names no work
+    /// item has no completion state, so the marker is a record that a run
+    /// happened and never a reason not to run again — ADR 023 — and
+    /// [`a_second_run_reads_the_first_runs_own_commit_body`] now runs its second
+    /// night with nothing at all happening in between, which is what a nightly
+    /// job in CI really does. The marker is still *written*, and that lane asserts
+    /// it survived the second run, so a fix that quietly stopped writing one
+    /// would not pass unnoticed.
+    fn change_marker(&self) -> Option<String> {
+        self.scenario.read_change_marker(SWEEP_REF)
     }
 
     // -- reading what it did -------------------------------------------------
@@ -2470,6 +2457,107 @@ fn the_documented_invocation_with_no_capability_flag_reaches_the_sweep() {
     assert_eq!(
         bundle["progress"][0]["stage"], "mitigate",
         "the record must be written in the vocabulary of what ran: {bundle}"
+    );
+}
+
+/// **A correlation marker filed against the sweep's reference does not account
+/// the sweep as done.**
+///
+/// The other half of ADR 022's defect, and the half that decision does not
+/// close. [ADR 022](../../../docs/technical/decisions/022-the-scheme-selects-the-capability.md)
+/// stops `fiddle run cve` from *accidentally* reaching `stub_mark`; it prevents
+/// new markers of that provenance and repairs no marker already on disk. A host
+/// that ran the documented command before it has one, and
+/// `fiddle run cve --capability stub_mark` is still a legal invocation that
+/// writes another — so this world is reachable today and not only historically.
+///
+/// # What the marker did, and why the spelling `cve` is not the reason
+///
+/// `assess` read the change set for a marker equal to this invocation's
+/// correlation key, and `correlation_key` is derived from the project and the
+/// *reference* — no capability enters it. So the marker `stub_mark` wrote under
+/// `changes/cve.json` is byte-identical to the one the sweep would write, the
+/// assessment read `Satisfied`, `derive_next` returned `Complete` before the
+/// capability was consulted, and the run exited 0 reporting `completed` having
+/// scanned nothing.
+///
+/// Nothing in that mechanism is about `cve`. It is about a reference that names
+/// no work item: such a reference has no completion state of its own, so a
+/// marker on its change set records that some run wrote one and evidences
+/// nothing about whether an image was scanned. Any capability sharing a
+/// trackerless reference inherits it, which is why the fix is
+/// [`fiddle_core::assess`]'s trackerless arm and
+/// [ADR 023](../../../docs/technical/decisions/023-a-sweep-has-no-completion-state.md)
+/// is where the reasoning lives.
+///
+/// # Why the sweep is named here rather than defaulted
+///
+/// Because the subject is the *assessment* and not the selection.
+/// `the_documented_invocation_with_no_capability_flag_reaches_the_sweep` above
+/// owns the default; a lane that took it would fail for either reason and say
+/// which one only by accident. The marking run is the one that has to be
+/// explicit about `stub_mark`, and it is.
+///
+/// The world and the closing assertions are that lane's, deliberately: what
+/// differs between the two is one preceding invocation, so any difference in
+/// outcome is that invocation's.
+#[test]
+fn a_marker_against_a_trackerless_reference_does_not_account_the_sweep_as_done() {
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 2, a_bump_needing_no_edit());
+
+    // The premise, established through the binary rather than by writing the
+    // file: a capability that scanned nothing leaves a marker under this
+    // reference's own slug.
+    let marking = sweep.run_selecting(&["--capability", "stub_mark"], &["--mode", "unattended"]);
+    assert_eq!(
+        marking.status.code(),
+        Some(0),
+        "the marking run must succeed, or the premise is not established — \
+         stderr: {}",
+        String::from_utf8_lossy(&marking.stderr)
+    );
+    assert_eq!(
+        sweep.scenario.read_change_marker(SWEEP_REF),
+        Some(sweep.scenario.expected_marker(SWEEP_REF)),
+        "the reference must really be marked, or this lane asserts nothing: the \
+         marker is this invocation's own correlation key, written by a \
+         capability that scanned no image"
+    );
+
+    // And the sweep still scans.
+    let run = sweep.run();
+    let payload = sweep.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        payload["capability_executions"][0]["capability_id"], "cve_mitigate",
+        "a marker some other capability wrote must not account the sweep as \
+         done: the assessment read `satisfied` from it, `derive_next` returned \
+         `complete` before the capability was consulted, and the run reported \
+         success having executed nothing: {payload}"
+    );
+    assert_eq!(payload["outcome"], "completed", "{payload}");
+
+    // The scan really happened, read out of the world rather than off the
+    // payload: a run that named the capability and did nothing would satisfy
+    // the assertion above on its own.
+    let pulls = sweep.pull_requests();
+    assert_eq!(
+        pulls.len(),
+        1,
+        "the sweep must reach the publication an unmarked reference reaches: \
+         {pulls:?}"
+    );
+    let branch = the_one_new_branch(&sweep);
+    assert_eq!(pulls[0]["head"]["ref"], branch, "{}", pulls[0]);
+    let landed = pushed_file(&sweep, &branch, "go.mod");
+    assert!(
+        landed.contains(&format!("{MODULE} {FIXED_VERSION}")),
+        "the branch must carry the requirement at the fixed release: {landed}"
     );
 }
 
@@ -4701,6 +4789,25 @@ fn a_run_whose_shared_body_is_unchanged_dispatches_no_rewrite() {
 /// `attempt_tree`, so the range it scanned provably reached that commit; and the
 /// forge's mutation log is unchanged across the second run, so the pull request
 /// it reported is one it recognised rather than one it opened.
+///
+/// # What a second sweep concludes, which is what this lane is the record of
+///
+/// **A sweep is idempotent by rescanning, not by remembering.** The reference it
+/// runs under names no work item, so nothing anywhere holds a completion state for
+/// it and the second night has nothing to consult: it scans the image again, from
+/// scratch, exactly as the first night did. What keeps that from doing the work
+/// twice is design §4's dedup and nothing else — the commit-log read that finds
+/// the first night's own `Fixes:` trailer, and the open pull request it names —
+/// which is why the second night reaches row 7 `already_in_progress` and dispatches
+/// no mutation rather than opening a second pull request. ADR 023 is the decision;
+/// this lane is what makes it checkable from outside the process.
+///
+/// It is also why nothing happens between the two runs. It used to: the first
+/// night's correlation marker was deleted, because `assess` read that marker as
+/// the sweep's completion and the second invocation would otherwise have derived
+/// `Complete` and executed nothing. The marker is still written and is now
+/// asserted to be there both before and after — it records that a run happened,
+/// which is all a trackerless reference's change set ever said.
 #[test]
 fn a_second_run_reads_the_first_runs_own_commit_body() {
     // One attempt in the whole scenario: the first night forms one group and the
@@ -4775,12 +4882,20 @@ fn a_second_run_reads_the_first_runs_own_commit_body() {
     );
     let first_head = git_says(&sweep.remote, &["rev-parse", &branch]);
 
-    // The only thing that happens between the two runs, and it is not history:
-    // M0's change-set marker is discarded so that the second invocation is a
-    // second night rather than a second look at the first one. See
-    // [`Sweep::forget_that_the_last_run_happened`] — no commit, no ref, no seed,
-    // and nothing on the remote or in the forge is touched.
-    sweep.forget_that_the_last_run_happened();
+    // **Nothing happens between the two runs.** No commit, no ref, no seed, and
+    // nothing on the remote or in the forge is touched — and, since ADR 023, not
+    // the correlation marker either. The first night's marker is still sitting in
+    // `<stub.root>/changes/cve.json`, and it has to be, or this lane no longer
+    // says what it says: a sweep is idempotent by *rescanning*, so the second
+    // night must scan with the first night's marker in front of it. Until ADR 023
+    // this lane deleted that file, and the deletion was the only reason the second
+    // invocation was a run at all.
+    assert_eq!(
+        sweep.change_marker(),
+        Some(sweep.scenario.expected_marker(SWEEP_REF)),
+        "the first night's marker must still be there, or the second night is a \
+         second night for the wrong reason"
+    );
 
     // -- the second night ----------------------------------------------------
 
@@ -4845,6 +4960,18 @@ fn a_second_run_reads_the_first_runs_own_commit_body() {
         "exactly the first night's two mutations — the create and the label \
          that makes the object discoverable — and nothing the second night \
          dispatched, because a run whose work is already open lands nothing"
+    );
+
+    // And the marker is still there afterwards. The fix is that a trackerless
+    // reference's marker accounts for nothing, not that it stopped being written:
+    // a capability that recorded nothing would leave a run no later reader could
+    // see the shape of, and the assertion before the second night would then be
+    // passing over an absence.
+    assert_eq!(
+        sweep.change_marker(),
+        Some(sweep.scenario.expected_marker(SWEEP_REF)),
+        "the second night records itself too — the marker is a record that a run \
+         happened, and only the reading of it changed"
     );
 }
 

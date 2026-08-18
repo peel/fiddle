@@ -374,6 +374,36 @@ impl WorkStateView {
         self.tree = tree;
         self
     }
+
+    /// Whether anything in this world can say the invocation's work is **done**.
+    ///
+    /// True for a reference that names a work item, where the change set is that
+    /// state: a marker equal to the invocation's correlation key means this work
+    /// has been accounted for, and design §4.3's exactly-once rests on it.
+    ///
+    /// False for a reference that names none. Such an invocation *discovers* its
+    /// work, so there is nothing whose completion could have been recorded — and
+    /// in particular the marker under its change set is not that record. The
+    /// marker is derived from the project and the reference
+    /// ([`correlation_key`](crate::correlation_key)); no capability and no
+    /// attempt enter it, so every run over the reference computes the same value
+    /// and a marker on disk says only *some run wrote one*. It cannot say which
+    /// capability, and it cannot say whether the work that reference names — a
+    /// container image scanned — was ever done. [ADR
+    /// 023](../../../docs/technical/decisions/023-a-sweep-has-no-completion-state.md)
+    /// is where the consequence is argued: such an invocation is idempotent by
+    /// *rescanning* rather than by remembering.
+    ///
+    /// Read off [`WorkStateView::work_item`] rather than taken as an argument,
+    /// so [`assess`](crate::assess) and the runtime's own conclusion about a run
+    /// decide it from one place and cannot come to disagree. And read as
+    /// [`Observation::NotApplicable`] specifically: a work item that *failed to
+    /// read* is a world fiddle did not see, which is
+    /// [`CapabilityAssessment::Blocked`](crate::CapabilityAssessment::Blocked)
+    /// and never a reference without a tracker.
+    pub fn has_completion_state(&self) -> bool {
+        !matches!(self.work_item, Observation::NotApplicable { .. })
+    }
 }
 
 #[cfg(test)]
@@ -466,6 +496,54 @@ mod tests {
         assert_eq!(json["work_item"]["available"]["value"]["status"], "open");
         assert!(json["changes"]["available"].is_object());
         assert!(json["changes"]["available"]["value"]["marker"].is_null());
+    }
+
+    /// **The three shapes a work item comes in, and which of them has something
+    /// to be done.**
+    ///
+    /// The predicate two decisions share — `assess`'s trackerless arm and the
+    /// runtime's conclusion about a run that executed — so it is asserted over
+    /// every variant rather than over the one case each of those was written for.
+    /// The pairing that matters is the second and the third: a work item that
+    /// *failed to read* still has a completion state, because a reference naming a
+    /// tracker row does not stop naming one when the tracker is down. Collapsing
+    /// the two would make an unreadable tracker look like a reference that never
+    /// had one, which is the distinction `assess` keeps two arms apart for.
+    #[test]
+    fn only_a_reference_that_names_no_work_item_has_no_completion_state() {
+        let over = |work_item| {
+            WorkStateView::without_publication(
+                work_item,
+                Observation::Available {
+                    value: ChangeSetState { marker: None },
+                    source: SourceRef("stub:changes/x.json".to_string()),
+                    revision: None,
+                },
+            )
+            .has_completion_state()
+        };
+
+        assert!(
+            over(Observation::Available {
+                value: work_item(),
+                source: SourceRef("stub:work/fiddle-m0-demo.json".to_string()),
+                revision: None,
+            }),
+            "a reference that names a work item is accounted for by its change set"
+        );
+        assert!(
+            over(Observation::Unavailable {
+                source: SourceRef("stub:work/fiddle-m0-demo.json".to_string()),
+                reason: "unreadable".to_string(),
+            }),
+            "and it still names one when the tracker could not be read"
+        );
+        assert!(
+            !over(Observation::NotApplicable {
+                reason: "this invocation names no work item".to_string(),
+            }),
+            "a reference that names none has nothing whose completion could be recorded"
+        );
     }
 
     /// A capability that publishes nothing says the question does not apply,

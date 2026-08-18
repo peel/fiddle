@@ -699,6 +699,15 @@ where
     /// For a trackerless sweep `work_id` is the reference's slug — `cve` — which
     /// is [`crate::orchestration::Addressed`]'s answer and not this capability's
     /// invention.
+    ///
+    /// **What it is written for here is a record, not a gate.** A sweep's
+    /// reference names no work item and so has no completion state, so the marker
+    /// this writes will not make the next sweep `Complete` and is not meant to:
+    /// the next sweep scans again, and design §4's dedup is what keeps it from
+    /// opening a second pull request (ADR 023). It is still written, and
+    /// identically, because it is the local record that a run happened at all —
+    /// and because a capability that decided for itself which references deserve
+    /// a marker would be answering a question the assessment owns.
     fn record_change_set(&self, work_id: &str) -> Result<(), CapabilityError> {
         let state = ChangeSetState {
             marker: Some(correlation_key(

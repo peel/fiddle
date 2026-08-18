@@ -209,10 +209,17 @@ impl Selection {
     /// made the invocation every M4 document names — `fiddle run cve --mode
     /// unattended` — execute M0's deterministic stub and exit 0 reporting
     /// `completed`. Not merely a skipped sweep: `stub_mark` writes a correlation
-    /// marker under the reference's own slug, after which the sweep is *accounted
-    /// for*, so a host running it nightly would report success having never
-    /// scanned. ADR 022 records the change and what it costs a reader who knew
-    /// the old rule.
+    /// marker under the reference's own slug, after which the sweep *was accounted
+    /// for*, so a host running it nightly reported success having never scanned.
+    /// ADR 022 records the change and what it costs a reader who knew the old
+    /// rule.
+    ///
+    /// The second half of that defect is not this function's to fix and is fixed
+    /// elsewhere: a marker against a reference that names no work item now
+    /// accounts for nothing, because such a reference has no completion state
+    /// (ADR 023). This arm stops a caller reaching the wrong capability; that
+    /// rule is what makes a marker already on disk — or one `--capability
+    /// stub_mark` writes deliberately — harmless.
     ///
     /// A flag was the alternative and it was rejected: `cve` and `cve_mitigate`
     /// are the same fact twice, so `fiddle run cve --capability cve_mitigate`
