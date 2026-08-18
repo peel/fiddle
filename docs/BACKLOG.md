@@ -1831,3 +1831,20 @@ So the reading worth carrying: **pointing works for the rules a reader will look
 
 Origin: implementation (epic fiddle-eph7, Task 18 and Task 4 lanes, plus two lead-side instances)
 Tags: #debt #infrastructure
+
+### 2026-08-18 — The product manual's `fiddle.toml` example still cannot load, and `[orchestration.cve]` was only the table somebody looked at
+`fiddle-c64d` wired `[orchestration.cve] severities`, which the manual documented and the schema refused, and added the `image` key that table always required. The lane it added reads that **one table** out of `docs/fiddle-agentic-factory-prd.md` and drives the binary over it, so that table and the schema can no longer diverge unnoticed.
+
+The rest of the example is the same defect, unmeasured until now. Extracting the whole `fiddle.toml` block from the manual and running the compiled binary over it exits 2 at the *first* line of the *first* table after `[project]`:
+
+```
+ 10 │ repository = "snowplow/icecube"
+    ·      ╰── unknown field `repository`, expected one of `repo`, `base`, `token`, `cli`, `git`, …
+```
+
+`[github]` alone disagrees on `repository`/`repo` and `default_branch`/`base`. Behind it the example names `[jira]`, `[execution]`, `[policy]`, `[artifacts]`, `[telemetry]`, `[orchestration] enabled`, `[orchestration.stabilize]`, `[orchestration.set_based]`, `[orchestration.toil]`, `[capabilities.*]` and `[agent] default_runtime` — tables and keys the shipped schema has no reader for at all. **A deployment cannot copy the manual's example**, and that sentence is true of far more than the one key a holistic pass happened to find.
+
+Most of those tables belong to milestones that have not shipped, so this is not a claim that the schema is wrong. It is a claim about the document: an example presented as *what a repository writes* is refused at line 10, and nothing in the repository says which parts of it are aspirational. Two candidate fixes rather than a decision — mark the unshipped tables in the example as forward-looking, or extend the new extraction lane from one table to the whole block and let it fail until the two agree. The second is the stronger one and is a document decision rather than a test decision, which is why it is here and not in the bean.
+
+Origin: implementation (bean fiddle-c64d, epic fiddle-eph7 — measured with the compiled binary over the extracted block)
+Tags: #debt #documentation
