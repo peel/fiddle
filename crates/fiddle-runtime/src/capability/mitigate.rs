@@ -52,7 +52,7 @@ use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::AgentBudget;
 use crate::cve::attribute::{attribute, AttributionError, ModuleGraph, Target};
 use crate::cve::dedup::{already_fixed, commit_log_dedup};
-use crate::cve::fold::{fold, Fold, PriorRescan};
+use crate::cve::fold::{plan_group, GroupPlan, PriorRescan};
 use crate::cve::go::Go;
 use crate::cve::group::{group, select_target_version, Attributed, Group, GroupError};
 use crate::cve::project::{project, Projection};
@@ -381,9 +381,23 @@ where
         let mut attempted: Vec<Attempted> = Vec::new();
         let mut prior: Option<PriorRescan> = None;
         for grouped in group(&attributed) {
-            let target = match self.target_version(&graph, &grouped).await {
-                Ok(target) => target,
-                Err(error) => {
+            // What to do with this group, decided in one place from the
+            // selection's answer and the previous group's evidence together. Both
+            // of the two ways a mid-run clearance shows itself land on
+            // `AlreadyResolved`, which is why the selection's refusal is handed to
+            // the rule rather than pushed straight onto `blocked` here — see
+            // [`plan_group`], which also says why the selection runs first.
+            let selection = self.target_version(&graph, &grouped).await;
+            let target = match plan_group(&grouped, selection, prior.as_ref()) {
+                GroupPlan::Attempt(target) => target,
+                // Records an empty commit and runs nothing: there is no attempt,
+                // no evaluation and no rescan, so it contributes no `Attempted`
+                // row either — see [`record_fold`].
+                GroupPlan::AlreadyResolved => {
+                    record_fold(&git, &grouped).await?;
+                    continue;
+                }
+                GroupPlan::Blocked(error) => {
                     blocked.push(Blocked {
                         findings: findings_of(&grouped),
                         error,
@@ -391,15 +405,6 @@ where
                     continue;
                 }
             };
-
-            // The fold rule, consulted before the attempt and over the *previous*
-            // group's evidence. `AlreadyResolved` records an empty commit and
-            // runs nothing: there is no attempt, no evaluation and no rescan, so
-            // it contributes no `Attempted` row either — see [`record_fold`].
-            if fold(&grouped, prior.as_ref()) == Fold::AlreadyResolved {
-                record_fold(&git, &grouped).await?;
-                continue;
-            }
 
             // The bump itself, applied before the model sees anything — which is
             // what `FINDINGS_FRAME` tells it has happened.
@@ -492,11 +497,13 @@ where
     ///
     /// An attempted base-image bump would have been the only thing that ever
     /// wrote an OS advisory into a commit body, so refusing here orphans the OS
-    /// half of deduplication. A base-image group leaves this as [`Blocked`] and
-    /// `continue`s, so it never reaches [`record_fold`] — whose `--allow-empty`
-    /// commit *does* name the group's ids — and never reaches [`land`], which
-    /// commits only [`GroupStatus::Clean`]. Both commit producers are downstream
-    /// of this refusal, so no run can put an OS advisory into a commit body, and
+    /// half of deduplication. A base-image group leaves this as
+    /// [`GroupError::Unselectable`], which [`plan_group`] answers
+    /// [`GroupPlan::Blocked`] for, so it never reaches [`record_fold`] — whose
+    /// `--allow-empty` commit *does* name the group's ids — and never reaches
+    /// [`land`], which commits only [`GroupStatus::Clean`]. Both commit producers
+    /// are downstream of this refusal, so no run can put an OS advisory into a
+    /// commit body, and
     /// [`already_fixed`]'s `PackageType::Os` arm reads commit bodies and nothing
     /// else. That arm is a consumer whose producer is what this refusal stands
     /// in for; [`crate::cve::dedup`]'s header states the same fact from the
@@ -509,18 +516,28 @@ where
     /// Wiring the registry turns that lane red, which is the intended way for
     /// these notes to be found again.
     ///
-    /// **The order is held separately, and it had to be.** *Both producers are
-    /// downstream of this refusal* is a claim about the two blocks in [`sweep`]
-    /// being in this sequence, and swapping them was for a while invisible to the
-    /// entire workspace — every rescan in the suite still reported the OS
-    /// advisory, so [`fold`] answered `Proceed` for the OS group whichever way
-    /// round they were. Under a rescan that *clears* it — an ordinary floating
-    /// base tag, rebuilt between scan and rescan — the reordered code folds the
-    /// group instead, and `record_fold` writes `fix: <id> already resolved by an
-    /// earlier bump` onto the branch: the exact commit this paragraph says
-    /// cannot exist, in the log that is the sole authority for the OS half.
-    /// `a_rescan_that_clears_the_os_advisory_blocks_it_rather_than_folding_it`
-    /// is that world, and it is the lane that fails on the swap.
+    /// **The order used to be held separately, and it had to be.** *Both
+    /// producers are downstream of this refusal* was a claim about two blocks in
+    /// [`sweep`] being in one sequence, and swapping them was for a while
+    /// invisible to the entire workspace — every rescan in the suite still
+    /// reported the OS advisory, so the fold rule answered `Proceed` for the OS
+    /// group whichever way round they were. Under a rescan that *clears* it — an
+    /// ordinary floating base tag, rebuilt between scan and rescan — the reordered
+    /// code folded the group instead, and `record_fold` wrote `fix: <id> already
+    /// resolved by an earlier bump` onto the branch: the exact commit this note
+    /// says cannot exist, in the log that is the sole authority for the OS half.
+    /// `a_rescan_that_clears_the_os_advisory_blocks_it_rather_than_folding_it` is
+    /// that world, and it is the lane that failed on the swap.
+    ///
+    /// It is no longer two blocks. [`plan_group`] takes this refusal and the
+    /// previous group's rescan together and answers one of three plans, so the
+    /// sequence is a data dependency rather than an arrangement — and
+    /// `a_refusal_this_build_cannot_move_past_is_blocked_even_where_a_fold_would_have_folded`
+    /// holds the property at that tier, against a `prior` chosen so that a rule
+    /// which consulted the fold anyway would fold. Why the selection runs before
+    /// the fold rather than after, and which of the two owns a mid-run clearance,
+    /// is settled in [`crate::cve::fold`]'s header; there is one account of it and
+    /// this is not it.
     ///
     /// [`sweep`]: Self::sweep
     async fn target_version(&self, graph: &Go, grouped: &Group) -> Result<String, GroupError> {

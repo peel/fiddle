@@ -269,6 +269,16 @@ pub enum GroupError {
     /// group's bump clears a later group's finding. Without it the selection
     /// would answer with the latest patch inside a minor the tree has already
     /// left, and write a **downgrade** presented as a security fix.
+    ///
+    /// **It is not a verdict, and it is the one variant here that is not.** Every
+    /// other arm says a move is owed that this build may not make, which is a
+    /// sentence a person acts on; this one says the work is done. What that means
+    /// for the group is decided by [`crate::cve::fold::plan_group`], which meets
+    /// this answer and the rescan's in one place — see that module's header for
+    /// why there are two of them and why they share a disposition. Reporting this
+    /// as [`crate::cve::verdict::Judgement::UpstreamBlocked`] is what it did until
+    /// 2026-08-18, and it put a ticket on the Jira step's desk for an advisory the
+    /// same run had just fixed.
     #[error("already at {current}, which is not below the fix at {fixed}")]
     AlreadyAtTheFix {
         /// What the tree resolves the target to now.

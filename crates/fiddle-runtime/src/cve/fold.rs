@@ -1,5 +1,5 @@
-//! Whether a group still has work to do, given what an earlier group's rescan
-//! already showed.
+//! Whether a group still has work to do, and what to do with it when it does
+//! not.
 //!
 //! A run walks its groups in order, and each one ends with a rescan of the whole
 //! image. That rescan does not stop at the group that caused it: it reports on
@@ -12,6 +12,43 @@
 //!
 //! So there is a fold: a group whose every advisory an earlier rescan already
 //! showed gone is [`Fold::AlreadyResolved`], recorded and not attempted.
+//!
+//! # A mid-run clearance is seen two ways, and this module owns both
+//!
+//! A bump clearing a later group's finding shows up in one of two places, and
+//! **two different rules see it**:
+//!
+//! - **In the rescan.** The scan is of a container and what a container holds is
+//!   a binary, so a package `go mod tidy` stopped linking leaves the image while
+//!   its requirement is still sitting in `go.mod`. [`fold`] is the rule for that,
+//!   and it is written over what the rescan reported for exactly this reason.
+//! - **In the tree.** Minimal version selection raises a requirement for every
+//!   consumer, so bumping one module routinely moves another one past its own
+//!   fix. Nothing about the image has to change for that to be true, and the rule
+//!   that sees it is [`select_target_version`](crate::cve::group::select_target_version),
+//!   which reads the tree to find out what to move and answers
+//!   [`GroupError::AlreadyAtTheFix`] when there is nothing to move.
+//!
+//! **They are the same fact about the world and they get the same disposition**:
+//! recorded as resolved, attempted no further, and reported in no verdict. That
+//! is what [`plan_group`] is — one place both arrive at — and it is a function
+//! rather than a paragraph because the two had drifted. Until 2026-08-18 the
+//! tree-seen half was a `Judgement::UpstreamBlocked` row in `verdicts.json`,
+//! which is the classification an advisory *upstream has published no fix for*
+//! gets: M4b's Jira step parses that document, so the run raised a ticket
+//! against work it had just done, and the two opposite facts reached the operator
+//! as the same row.
+//!
+//! ## Why the tree half is not simply folded in first
+//!
+//! Because [`fold`] cannot see it. This rule rests on the *previous* group's
+//! rescan and refuses to rest on one that proved nothing — provisional, silent
+//! about half the image, or describing a tree that was reverted. A requirement
+//! the tree really moved is moved in all of those states, so a run that consulted
+//! [`fold`] before the selection would still reach `AlreadyAtTheFix` and would
+//! still have to say something honest about it. The two rules are not one rule in
+//! the wrong order; they are two windows onto one event, and the reconciliation is
+//! that they share an answer.
 //!
 //! # The direction this rule is dangerous in
 //!
@@ -73,7 +110,7 @@
 //! could not be left to that seam is the flag pair, which is why it is decided
 //! and asserted here: see [`fold_commit_argv`].
 
-use crate::cve::group::Group;
+use crate::cve::group::{Group, GroupError};
 use crate::cve::project::project;
 use crate::evaluate::{Evaluation, Outcome};
 use fiddle_core::AdvisoryId;
@@ -251,6 +288,92 @@ pub fn fold(group: &Group, prior: Option<&PriorRescan>) -> Fold {
         Fold::AlreadyResolved
     } else {
         Fold::Proceed
+    }
+}
+
+/// What a run does with one group, once the selection has answered and the
+/// previous group's rescan is in.
+///
+/// Three arms, because there are three things the caller can do, and the arm a
+/// group lands in is decided here rather than at the two sites that used to
+/// decide half of it each. See this module's header for what that cost.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GroupPlan {
+    /// Move the target to this version and attempt the group.
+    Attempt(String),
+
+    /// Record it as resolved and attempt nothing: an empty commit naming the ids,
+    /// no model turn, no rescan, and **no verdict row**. Both clearance paths end
+    /// here — the one an earlier rescan showed and the one the tree shows.
+    AlreadyResolved,
+
+    /// There is a move owed and this build may not make it. A verdict row,
+    /// carrying the refusal's own words.
+    Blocked(GroupError),
+}
+
+/// Which of the three a group gets.
+///
+/// # Why the selection has already run by the time this is called
+///
+/// `selection` arrives as a finished [`Result`], so the caller cannot reach this
+/// without having asked
+/// [`select_target_version`](crate::cve::group::select_target_version) first. That
+/// order is deliberate twice over.
+///
+/// It is what makes the tree-seen clearance visible at all: the answer *the tree
+/// is already at the fix* is a by-product of asking what to move to, and there is
+/// nowhere earlier it could come from.
+///
+/// And it is load-bearing for a reason that has nothing to do with clearance.
+/// `CveMitigate::target_version` refuses a `Target::DockerfileBaseImage` group
+/// before it compares any version, so such a group reaches this function as
+/// [`GroupError::Unselectable`] and leaves it as [`GroupPlan::Blocked`] — never as
+/// [`GroupPlan::AlreadyResolved`], whose commit body would name an OS advisory.
+/// [`crate::cve::dedup`]'s OS arm consults the commit log and nothing else, so
+/// such a body is read back as settled for good, where a library fold's is
+/// re-derived against the tree. That was previously a property of two blocks in
+/// `sweep` being in one order, which was silently swappable; here it is a
+/// property of one `match`, and
+/// `a_refusal_this_build_cannot_move_past_is_blocked_even_where_a_fold_would_have_folded`
+/// holds it at this tier while
+/// `a_rescan_that_clears_the_os_advisory_blocks_it_rather_than_folding_it` holds
+/// it from outside the process.
+pub fn plan_group(
+    group: &Group,
+    selection: Result<String, GroupError>,
+    prior: Option<&PriorRescan>,
+) -> GroupPlan {
+    let target = match selection {
+        Ok(target) => target,
+        // Matched with no wildcard, so a variant added to `GroupError` has to be
+        // ruled on here. A wildcard would send it to `Blocked`, which is the safe
+        // direction for an obstacle and the wrong one for a second way of
+        // discovering that there is nothing to do — and nothing would report the
+        // choice having been made by omission.
+        // The clearance the tree shows. Deliberately not conditioned on `prior`:
+        // minimal version selection moved the requirement whatever the previous
+        // group's rescan turned out to be worth, and requiring a foldable rescan
+        // here would put the row back for every run whose rescan was provisional.
+        // The refusal is *not* carried out of this arm, and that is the whole of
+        // the fix: a `GroupError` reaching the caller becomes a verdict row, and
+        // there is nothing here for a person to act on.
+        Err(GroupError::AlreadyAtTheFix { .. }) => return GroupPlan::AlreadyResolved,
+        Err(
+            error @ (GroupError::NoFixedVersion
+            | GroupError::Unreadable { .. }
+            | GroupError::NoRelease { .. }
+            | GroupError::MajorBump { .. }
+            | GroupError::Unselectable { .. }),
+        ) => return GroupPlan::Blocked(error),
+    };
+
+    // The clearance an earlier rescan shows. Consulted after the selection and
+    // over the previous group's evidence; `fold`'s own gates are what keep it off
+    // a rescan that proved nothing.
+    match fold(group, prior) {
+        Fold::AlreadyResolved => GroupPlan::AlreadyResolved,
+        Fold::Proceed => GroupPlan::Attempt(target),
     }
 }
 

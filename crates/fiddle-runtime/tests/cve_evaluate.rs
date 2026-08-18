@@ -101,7 +101,8 @@ mod support;
 
 use fiddle_core::Severity;
 use fiddle_runtime::cve::dedup::FixedInCommits;
-use fiddle_runtime::cve::fold::{fold, fold_commit_argv, Fold};
+use fiddle_runtime::cve::fold::{fold, fold_commit_argv, plan_group, Fold, GroupPlan};
+use fiddle_runtime::cve::group::GroupError;
 use fiddle_runtime::evaluate::{evaluate, Outcome, Reason, RescanVerdict, Success};
 use support::cve::*;
 
@@ -816,6 +817,127 @@ async fn an_array_the_rescan_never_reported_on_is_not_a_fold() {
         fold(&group_of(&["CVE-2026-5"]), Some(&prior)),
         Fold::Proceed,
         "an array the scanner never wrote supplies absences for free"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The two clearance paths, reconciled
+// ---------------------------------------------------------------------------
+//
+// A bump that clears a later group's finding is visible either in the rescan or
+// in the tree, and until 2026-08-18 the two answers disagreed: the rescan-seen
+// half folded and reported nothing, and the tree-seen half — the ordinary result
+// of a `go mod tidy` re-resolution — reached `verdicts.json` as
+// `Judgement::UpstreamBlocked`, the classification an advisory *upstream has
+// published no fix for* gets. M4b's Jira step parses that document, so the run
+// filed a ticket against work it had just done.
+//
+// `plan_group` is where both now arrive. The lanes below are its three arms plus
+// the one that says a refusal is still a refusal, which is the arm that keeps an
+// OS advisory out of a commit body.
+
+/// **A tree the run's own bump moved past the fix is recorded as resolved, not
+/// reported as needing direction.**
+///
+/// `prior` is `None` on purpose, and it is the difference between this rule and
+/// [`fold`]. Minimal version selection raised the requirement whatever the
+/// previous group's rescan turned out to be worth, so a clearance conditioned on
+/// a foldable rescan would put the verdict row back for every run whose rescan
+/// was provisional, silent about half the image, or reverted — which is most of
+/// the ways a real run ends up here.
+///
+/// The versions are equal rather than merely ordered, because that is the shape
+/// the defect was found in: the fix and the requirement land on the same release,
+/// and the sentence that reached the operator was *already at v0.28.0, which is
+/// not below the fix at v0.28.0*.
+#[test]
+fn a_group_the_tree_already_carries_the_fix_for_is_recorded_as_resolved() {
+    let plan = plan_group(
+        &group_of(&["CVE-2026-5"]),
+        Err(GroupError::AlreadyAtTheFix {
+            current: "v0.28.0".to_string(),
+            fixed: "v0.28.0".to_string(),
+        }),
+        None,
+    );
+
+    assert_eq!(
+        plan,
+        GroupPlan::AlreadyResolved,
+        "the run moved this requirement itself; a verdict row would contradict \
+         its own commit"
+    );
+}
+
+/// A refusal this build cannot move past is blocked **even where a fold would
+/// have folded**.
+///
+/// The premise is the whole lane: `prior` is the rescan that makes
+/// `a_group_cleared_by_an_earlier_committed_bump_…` fold, so a rule that reached
+/// [`fold`] for every group without a target would answer `AlreadyResolved` here
+/// and `record_fold` would write an empty commit naming this group's advisories.
+///
+/// That matters most for the group this refusal actually belongs to.
+/// `CveMitigate::target_version` answers `Unselectable` for a
+/// `Target::DockerfileBaseImage` — no registry is read, so no tag can be chosen —
+/// and `cve::dedup`'s OS arm consults the commit log and nothing else, so an OS
+/// advisory in a fold's body is read back as settled for good where a library
+/// fold's body is re-derived against the tree. The property used to rest on two
+/// blocks in `sweep` being in one order; it now rests on this match.
+#[tokio::test]
+async fn a_refusal_this_build_cannot_move_past_is_blocked_even_where_a_fold_would_have_folded() {
+    let prior = rescan_from_committed_clean_group(&[]).await;
+    let why = "selecting a base-image tag needs a registry this build does not read";
+
+    assert_eq!(
+        fold(&group_of(&["CVE-2026-5"]), Some(&prior)),
+        Fold::AlreadyResolved,
+        "the premise: this rescan is one the fold rule rests on, so a plan that \
+         consulted it would fold"
+    );
+    assert_eq!(
+        plan_group(
+            &group_of(&["CVE-2026-5"]),
+            Err(GroupError::Unselectable {
+                why: why.to_string()
+            }),
+            Some(&prior),
+        ),
+        GroupPlan::Blocked(GroupError::Unselectable {
+            why: why.to_string()
+        }),
+        "there is a move owed and this build may not make it, which is a verdict \
+         and never a commit"
+    );
+}
+
+/// The clearance an earlier rescan showed still folds, reached through the same
+/// rule.
+///
+/// A selected target and a rescan that already cleared this group: the answer is
+/// the fold's, not the bump's. Without this lane `plan_group` could drop
+/// [`fold`] entirely and the three lanes around it would all still pass.
+#[tokio::test]
+async fn a_target_whose_group_an_earlier_rescan_cleared_is_still_folded() {
+    let prior = rescan_from_committed_clean_group(&[]).await;
+
+    assert_eq!(
+        plan_group(
+            &group_of(&["CVE-2026-5"]),
+            Ok("v0.35.0".to_string()),
+            Some(&prior),
+        ),
+        GroupPlan::AlreadyResolved,
+    );
+}
+
+/// The positive control the three above need: a group with a target and nothing
+/// showing it already done is attempted, at the version the selection chose.
+#[test]
+fn a_selected_target_no_clearance_covers_is_attempted() {
+    assert_eq!(
+        plan_group(&group_of(&["CVE-2026-5"]), Ok("v0.35.0".to_string()), None),
+        GroupPlan::Attempt("v0.35.0".to_string()),
     );
 }
 

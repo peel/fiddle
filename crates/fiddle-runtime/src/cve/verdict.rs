@@ -379,6 +379,13 @@ pub struct Verdict {
 /// never judged, so a report row for it would be this build claiming an opinion
 /// it does not have — and the next run must be free to take it. See
 /// [`Deferred`].
+///
+/// Nor is a **mid-run clearance**, for the stronger reason that it is not
+/// unfixed: an advisory an earlier group's bump already dealt with is recorded as
+/// resolved and reaches no row at all. Both ways of seeing one are reconciled in
+/// [`crate::cve::fold::plan_group`]. A third variant here was the other way to
+/// discharge that, and it was refused: this document is what M4b's Jira step
+/// parses, and a row in it is a ticket however it is classified.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Judgement {
