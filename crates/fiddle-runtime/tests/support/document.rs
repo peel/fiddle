@@ -72,6 +72,16 @@ pub const DEFAULT_LIBRARY_CVES: [&str; 1] = ["CVE-2026-0001"];
 /// What the OS array holds when a variant does not say.
 pub const DEFAULT_OS_CVES: [&str; 1] = ["CVE-2026-0002"];
 
+/// A second advisory against the base layer, for the one document that needs
+/// two of them.
+///
+/// A constant of its own rather than a second entry in [`DEFAULT_OS_CVES`], and
+/// the doc comment above says why: that array is what a document holds *unless a
+/// variant says otherwise*, so a second id in it would add a finding to every
+/// document every other caller builds. Lanes that assert a verdict count or a
+/// budget's arithmetic would change meaning with nobody having touched them.
+pub const SECOND_OS_CVE: &str = "CVE-2026-0005";
+
 /// A vulnerable package, as a scanner reports one.
 #[derive(Debug, Clone)]
 struct Package {

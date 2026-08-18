@@ -1067,6 +1067,16 @@ const SCAN_CLEAN: &str = "clean-image";
 /// needs a document whose findings all can be.
 const SCAN_LIBRARY_ONLY: &str = "library-only";
 
+/// The scanner arm that reports the library advisory and **two** OS advisories.
+///
+/// The one document over which a disposition's three finding sets — already
+/// fixed, verdicts, deferred — are all non-empty and all hold different
+/// advisories. Every other arm leaves at least one of them empty over every
+/// tree, and an assertion that a deferred advisory is absent from an empty set
+/// is satisfied by the emptiness rather than by the deferral. See the arm's own
+/// comment in `wiz_stub.rs` for the arithmetic.
+const SCAN_TWO_OS: &str = "two-os-advisories";
+
 /// The scanner arm a *rescan* runs, and the reason it is a different arm.
 ///
 /// `evaluate` calls a group clean only when the rescan clears it, and a rescan
@@ -1083,6 +1093,14 @@ const RESCAN_CLEAN: &str = "library-clean";
 /// `max_findings = 2`.
 const LIBRARY_CVE: &str = "CVE-2026-0001";
 const OS_CVE: &str = "CVE-2026-0002";
+
+/// The second OS advisory, reported by [`SCAN_TWO_OS`] and by nothing else.
+///
+/// Spelled here as well as in `tests/support/document.rs` because this suite
+/// runs the stub as a child and cannot import from it; the arm is the only
+/// producer, so a drift between the two shows up as a lane that finds no such
+/// finding rather than as a lane that quietly asserts about the wrong one.
+const SECOND_OS_CVE: &str = "CVE-2026-0005";
 
 /// One disposable deployment a sweep runs in: a repository under remediation, a
 /// bare "GitHub" behind the scripted `gh`, a loopback endpoint answering for the
@@ -2380,6 +2398,127 @@ fn the_bound_the_document_sets_is_the_bound_the_sweep_applies() {
         reached["reason"], "pull_request",
         "deferring a finding does not change what the run came to: {reached}"
     );
+}
+
+/// **A deferred finding is filed as deferred, and is in neither of the two sets
+/// it could be mistaken for.**
+///
+/// # What the lane above cannot say
+///
+/// It shows a deferred advisory carrying its bound and producing no verdict, and
+/// that is two thirds of Design §2.5's distinction. The third is *already
+/// fixed*, and the world above cannot make the claim: its tree is the vulnerable
+/// fixture, nothing in it was settled before the run started, so `already_fixed`
+/// is `[]` and *the deferred advisory is not in it* is a sentence about an empty
+/// list. It would hold of an advisory nobody deferred, of an advisory nobody
+/// scanned, and of a run that never read the tree at all.
+///
+/// The three sets are not interchangeable and the remedies differ. **Already
+/// fixed** means the tree already carries the patch and there is nothing to do.
+/// **A verdict** means fiddle looked and will not move it, and the row says why.
+/// **Deferred** means fiddle did not look, and the next run will. A record that
+/// filed a deferral as either of the others would tell an operator the work was
+/// finished or that it had been refused, when in fact it is still queued — so
+/// the claim worth asserting is that the three are *populated and disjoint in
+/// one run*, not that two of them happen to be empty.
+///
+/// # The world, and why it is the smallest one that says it
+///
+/// The already-fixed tree, [`SCAN_TWO_OS`], and a bound of one:
+///
+/// - the library advisory is the one `cve-fixed`'s `go.mod` already carries the
+///   release for, so deduplication settles it before any group is formed —
+///   `already_fixed`, exactly as
+///   `an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_verdicts_only`
+///   reaches it;
+/// - that leaves two findings open, both against the base layer. The bound takes
+///   the first, and it is refused for the reason every OS finding is refused —
+///   no `go get` moves a base image — so it is a **verdict**;
+/// - and the second is past the bound, so it is **deferred**, never judged.
+///
+/// Three sets, three different advisories, one run. `SCAN_OK` cannot produce it:
+/// over this tree it leaves exactly one finding open, so a bound low enough to
+/// defer anything defers the only thing there was to judge and the verdict set
+/// empties — which is the vacuity this lane exists to avoid, arrived at from the
+/// other side.
+///
+/// # Why the scan artefact is read first
+///
+/// Because *absent from two sets* is also what an advisory the scanner never
+/// reported looks like. The document has to be shown to name all three
+/// advisories before their distribution across the three sets is evidence about
+/// a budget rather than about a fixture that lost a finding.
+#[test]
+fn a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set() {
+    let sweep = Sweep::scanning(FIXED, SCAN_TWO_OS, 1, a_bump_needing_no_edit());
+
+    let run = sweep.run();
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    // 0. The document really named all three, so the sets below are a
+    //    distribution of findings that existed rather than of findings nobody
+    //    reported.
+    let scanned = std::fs::read_to_string(sweep.scenario.report_dir().join("scan/scan.json"))
+        .expect("the scanner left no artefact, so nothing below is about a document");
+    for cve in [LIBRARY_CVE, OS_CVE, SECOND_OS_CVE] {
+        assert!(
+            scanned.contains(cve),
+            "the scan does not name {cve}, so its absence from a set below is \
+             the scanner's silence and not this run's decision: {scanned}"
+        );
+    }
+
+    // 1. Where each of the three ended up, as one value, so no set can be
+    //    checked while another is quietly empty.
+    let reached = sweep.disposition(&run);
+    assert_eq!(
+        reached,
+        serde_json::json!({
+            "reason": "verdicts_only",
+            "verdicts": 1,
+            "already_fixed": [LIBRARY_CVE],
+            "deferred": [{ "cve": SECOND_OS_CVE, "bound": 1 }],
+            "attempts": [],
+            "branch": serde_json::Value::Null,
+            "pull_request": serde_json::Value::Null,
+        }),
+        "three findings, three sets, and which advisory is in which"
+    );
+
+    // 2. And the verdict report itself, because the disposition carries the
+    //    verdict *count* and a count of one is satisfied by a row for the wrong
+    //    advisory. This is where the deferred finding is shown to be absent from
+    //    a set that has something in it.
+    let verdicts = sweep.verdicts();
+    assert!(
+        sweep.has_verdict(OS_CVE),
+        "the finding inside the bound was judged, so it has a row: {verdicts}"
+    );
+    assert!(
+        !sweep.has_verdict(SECOND_OS_CVE),
+        "the finding past the bound was never judged, and a row for it would be \
+         this build claiming an opinion it does not have — beside a report that \
+         does hold a row, so this is not an empty report passing: {verdicts}"
+    );
+    assert!(
+        !sweep.has_verdict(LIBRARY_CVE),
+        "and the advisory the tree had already dealt with is not unfixed \
+         either: {verdicts}"
+    );
+
+    // 3. Nothing was published, which is what `verdicts_only` means and what
+    //    makes the two nulls above readable rather than incidental.
+    assert!(
+        sweep.pull_requests().is_empty(),
+        "a run that attempted nothing opens nothing: {:?}",
+        sweep.pull_requests()
+    );
+    sweep.assert_every_receipt_is_logical(&run);
 }
 
 // ---------------------------------------------------------------------------

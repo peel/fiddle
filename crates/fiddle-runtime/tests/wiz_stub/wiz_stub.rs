@@ -17,7 +17,7 @@
 //!
 //! # The arms, and the one that matters
 //!
-//! Nine of the eleven are ordinary. `exit-nonzero-with-file` is the one this
+//! Ten of the twelve are ordinary. `exit-nonzero-with-file` is the one this
 //! fixture exists for: `wizcli` exits non-zero when an organisation policy flags
 //! any finding in the tenant, including findings that have nothing to do with
 //! this scan, and it writes a perfectly good report while doing it. An adapter
@@ -39,11 +39,14 @@
 //! whose Go dependency was patched and whose base layer was not. It is the one
 //! arm that only makes sense in the presence of another scan.
 //!
-//! `clean-image` and `library-only` are the two after it, and they exist for
-//! Design §3's table rather than for the adapter: seven rows are reached from
-//! seven *worlds*, and a fixture that could report only `ok` or nothing could
-//! put a run on four of them. Both are ordinary successful scans and neither is
-//! about a scanner failing.
+//! `clean-image`, `library-only` and `two-os-advisories` are the three after
+//! it, and they exist for Design §3's table rather than for the adapter: seven
+//! rows are reached from seven *worlds*, and a fixture that could report only
+//! `ok` or nothing could put a run on four of them. The third goes further than
+//! the row — it is the only document that makes a disposition's three finding
+//! sets non-empty at once, which is what it takes to assert that a deferred
+//! advisory is in one of them and not the other two. All three are ordinary
+//! successful scans and none is about a scanner failing.
 //!
 //! # Why it selects its arm from `argv`
 //!
@@ -84,7 +87,9 @@
 #[path = "../support/document.rs"]
 mod document;
 
-use document::{libraries, os_packages, report_with, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES};
+use document::{
+    libraries, os_packages, report_with, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, SECOND_OS_CVE,
+};
 use std::path::{Path, PathBuf};
 
 /// The version this scanner announces. Not a version any real `wizcli` has, so
@@ -184,6 +189,34 @@ fn main() {
                 report_with(libraries(&DEFAULT_LIBRARY_CVES), os_packages(&[]))
                     .raw()
                     .to_string(),
+            );
+        }
+        // The library advisory, and a base layer that is two advisories behind
+        // rather than one.
+        //
+        // The one document from which all three of a disposition's finding sets
+        // come back non-empty and holding different advisories. Over the
+        // already-fixed tree the library finding is settled by `go.mod`; with a
+        // bound of one the first OS finding is taken and refused, because no
+        // `go get` moves a base image; and the second is left for the next run.
+        //
+        // `ok` cannot produce that world, and the reason is arithmetic rather
+        // than taste: over that tree it has exactly one finding the tree does not
+        // settle, so any bound low enough to defer something defers the only
+        // thing there was to judge, and the verdict set empties. A lane asserting
+        // *the deferred advisory is not in the verdict set* would then be
+        // asserting it against nothing. Two OS findings is the smallest change to
+        // the document that leaves one of each.
+        "two-os-advisories" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(
+                    libraries(&DEFAULT_LIBRARY_CVES),
+                    os_packages(&[DEFAULT_OS_CVES[0], SECOND_OS_CVE]),
+                )
+                .raw()
+                .to_string(),
             );
         }
         // The reason this fixture exists. The document is written *first* and
