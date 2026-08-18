@@ -1752,3 +1752,17 @@ The general shape, worth carrying beyond this milestone: **a test that reads as 
 
 Origin: implementation (epic fiddle-eph7, Task 1 lane fiddle-typ7, found by its own inversion)
 Tags: #debt #risk #security
+
+### 2026-08-18 — The base-image arm is reporting-only in M4a, and that leaves the OS half of dedup with no producer
+Recorded as a decision with its consequence, because the consequence had no owner.
+
+**The decision.** M4a does not build a registry client, so it cannot select a base-image tag. Design §2.4 rule 4 is built as far as it goes without a network peer: an OS finding is attributed to `Target::DockerfileBaseImage` (`crates/fiddle-runtime/src/cve/attribute.rs`), every one of them keys onto that single group, and `select_target_version` already answers the floating-tag `needs-work` case when handed a tag list (`a_floating_tag_with_no_newer_pinned_tag_is_needs_work`). Missing is the tag list and the `Dockerfile` edit — an authenticated read of the image's published tags, a comparability rule for them, and a port, adapter, credential and policy decision to carry it. `CveMitigate::target_version` (`crates/fiddle-runtime/src/capability/mitigate.rs`) therefore refuses every base-image group with `GroupError::Unselectable { why: "selecting a base-image tag needs a registry this build does not read" }` and an OS finding is **reported, never attempted**. This is not M4b's either — M4b is the release artifact, the host workflow, the CI-feedback fresh attempt and the first real Wiz measurement — so the work is currently unowned, which is what this entry is for.
+
+**The consequence.** That refusal removes the only producer the OS half of deduplication could have had. A refused group is recorded blocked and skipped before either commit producer runs — not the fold's `--allow-empty` commit, whose message names the group's ids, and not `land`, which commits only `GroupStatus::Clean`. So **no M4a run can write an OS advisory into a commit body**, and `already_fixed`'s `PackageType::Os` arm (`crates/fiddle-runtime/src/cve/dedup.rs`) reads commit bodies and nothing else. It answers `true` only for history somebody else wrote; every OS case in the suite seeds one. Design §2.7's stated reason for listing every CVE id in a commit body is that same OS path, and is likewise dormant.
+
+**What this does not say.** `commit_log_dedup` and its shallow-history guard are not dead with it. Their set also feeds `Run::in_progress`'s `covers`, which filters every finding through the same scan and is what reaches the `AlreadyInProgress` disposition; library groups do commit `Fixes:` bodies and a reused branch's log is read back on the next run. It is the OS half of the answer that has no producer, not the reading of the log — and `covers` is what earns the commit body's completeness in the meantime.
+
+The refusal is held from outside the process by `a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch` (`crates/fiddle-acceptance/tests/cve_mitigation.rs`), which asserts the OS verdict's rationale carries `registry this build does not read`. Wiring a registry turns that lane red, which is the intended way back to the three notes at the sites: `target_version`'s doc comment, `cve/dedup.rs`'s module header and OS arm, and `commit_body`'s doc comment in `crates/fiddle-runtime/src/capability/cve.rs`.
+
+Origin: implementation (epic fiddle-eph7, remediation bean fiddle-rh0p)
+Tags: #debt #feature

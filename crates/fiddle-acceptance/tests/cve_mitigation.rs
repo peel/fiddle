@@ -2846,6 +2846,146 @@ fn a_group_an_earlier_bump_already_cleared_is_folded_into_an_empty_commit() {
     );
 }
 
+/// **A rescan that clears the OS advisory blocks it anyway, and no commit on
+/// the branch names it.**
+///
+/// The property `CveMitigate::target_version`'s note rests on, held from outside
+/// the process. That note's safety argument is that *no run can write an OS
+/// advisory into a commit body*, and it is a claim about **order**:
+/// `target_version` refuses a `DockerfileBaseImage` group before [`fold`] is
+/// consulted, so the group is blocked and reaches neither committer — not
+/// `land`, which commits only a clean group, and not `record_fold`, whose
+/// `--allow-empty` commit *does* name the group's ids.
+///
+/// # Nothing held that order, and the reason is a fixture
+///
+/// Swapping the two blocks in `sweep` was invisible to the whole workspace, this
+/// file included. [`RESCAN_CLEAN`] is why: its OS array is the **input scan's**,
+/// unchanged and deliberately so — the stub's own comment says that is what
+/// keeps a rescan's condition (b) discriminating rather than satisfied by an
+/// empty image. So every bump this suite performs leaves the OS advisory still
+/// reported, [`fold`] answers `Proceed` for the OS group whichever order the two
+/// blocks are in, and it falls through to the refusal either way. The lane above
+/// is the closest thing there was, and it folds a *library* group.
+///
+/// # The world, and why it is reachable rather than contrived
+///
+/// A rescan reporting the OS advisory **gone**. [`SCAN_CLEAN`] is that document
+/// — both arrays present and empty — and it is an existing arm rather than a new
+/// one, because *libraries empty plus OS empty* is precisely what it already
+/// writes.
+///
+/// No `go get` fixes an OS package, so this is not a bump succeeding. It is what
+/// a floating base tag does: the image is rebuilt between the scan and the
+/// rescan, the tag resolves to a newer layer, and the advisory leaves the image
+/// with nothing on the branch having moved. [`fold`]'s three gates are then all
+/// satisfied — the library group ended clean, was accepted, and was committed —
+/// so under the reordered code the OS group folds and `record_fold` writes
+/// `fix: CVE-2026-0002 already resolved by an earlier bump` onto a branch that
+/// resolves no such thing.
+///
+/// That commit is worse than a wrong sentence, and the asymmetry is the point.
+/// `cve::dedup`'s OS arm consults the commit log and **nothing else**, so the log
+/// is the sole authority for that half: a library fold's body is re-derived
+/// against the tree on the next run and cannot mislead it, while this one is
+/// read back as settled for good. It is the 2026-08-12 incident's shape — a
+/// mention taken for a fix — reached from inside a run rather than from a pull
+/// request's body. `cve::fold`'s header ranks these two errors explicitly, and
+/// this is the direction it calls not comparable.
+///
+/// # Why the premise is asserted rather than assumed
+///
+/// Folding needs `prior` to be `Some` and its gates to pass, and each of those
+/// is a way this lane could go green holding nothing. Had the rescan not
+/// cleared, the library group would end needs-work and revert, [`fold`] would
+/// refuse on its own gates rather than on the order, and both assertions below
+/// would read exactly the same. So the clean committed group and the cleared
+/// rescan are asserted first, as the premises they are — without them this lane
+/// is the vacuous one it exists to replace.
+///
+/// [`fold`]: the rule in `fiddle-runtime`'s `cve::fold`
+#[test]
+fn a_rescan_that_clears_the_os_advisory_blocks_it_rather_than_folding_it() {
+    let sweep =
+        Sweep::scanning_rescanning(VULNERABLE, SCAN_OK, SCAN_CLEAN, 2, a_bump_needing_no_edit());
+
+    let run = sweep.run();
+    let payload = sweep.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(payload["outcome"], "completed", "{payload}");
+
+    // Premise 1. The rescan really did report the OS advisory gone. Read off the
+    // artefact the scanner left, because the whole lane is about what `fold`
+    // would have been handed — a rescan that still named it would make the
+    // refusal below the fold rule's own answer rather than the order's.
+    let rescanned = std::fs::read_to_string(sweep.scenario.report_dir().join("rescan/scan.json"))
+        .expect("the rescan left no artefact, so nothing here is about what it reported");
+    assert!(
+        !rescanned.contains(OS_CVE),
+        "the rescan still names {OS_CVE}, so `fold` would refuse this group on \
+         its own account and this lane would hold nothing: {rescanned}"
+    );
+
+    // Premise 2. One attempt, and it ended clean — so `prior` is `Some` and
+    // carries an accepted, committed rescan, which is every gate `fold` asks
+    // for. `accepted` is *checks passed and rescan Cleared* together, so this is
+    // also the positive reading of premise 1.
+    let reached = sweep.disposition(&run);
+    assert_eq!(
+        reached["attempts"],
+        serde_json::json!([{
+            "cves": [LIBRARY_CVE],
+            "status": "clean",
+            "claimed_complete": true,
+            "forbidden": [],
+        }]),
+        "folding needs a clean, committed prior group, and without one the \
+         assertions below are about nothing: {reached}"
+    );
+
+    // The claim. The OS group was refused by `target_version`, in its own words,
+    // rather than folded away — so it is reported to a person instead of
+    // recorded as done.
+    let verdicts = sweep.verdicts();
+    assert!(
+        sweep.has_verdict(OS_CVE),
+        "a cleared rescan must not turn the advisory nothing could move into a \
+         resolution: {verdicts}"
+    );
+    assert!(
+        verdicts[0]["rationale"]
+            .as_str()
+            .is_some_and(|why| why.contains("registry this build does not read")),
+        "and the refusal is still the registry's, which is what says the group \
+         was blocked rather than folded: {verdicts}"
+    );
+
+    // And the consequence the notes in `capability::mitigate` and `cve::dedup`
+    // rest on: the branch carries no commit naming the OS advisory, so the next
+    // run's log scan — the only authority for the OS half of `already_fixed` —
+    // finds nothing to read back.
+    let branch = the_one_new_branch(&sweep);
+    let commits = pushed_commits(&sweep, &branch);
+    assert_eq!(
+        commits.len(),
+        1,
+        "the bump, and no fold beside it: {commits:?}"
+    );
+    for (body, _) in &commits {
+        assert!(
+            !body.contains(OS_CVE),
+            "no run may write an OS advisory into a commit body — `already_fixed` \
+             would read this back as settled, and nothing on this branch settles \
+             it: {body}"
+        );
+    }
+}
+
 /// **A needs-work group's rescan is not folded on, however clean it looked.**
 ///
 /// The companion to the lane above, and the direction the rule is dangerous in.

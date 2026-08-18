@@ -458,6 +458,66 @@ where
     /// [`GroupError::NoRelease`], which says *upstream has published nothing* —
     /// about a registry this build never read. [`GroupError::Unselectable`] is
     /// the honest sentence, and it says whose limitation it is.
+    ///
+    /// # The base-image arm is scoped out of M4a, not overlooked
+    ///
+    /// Decided rather than missed. Design §2.4 rule 4 is implemented as far as
+    /// it can be without a network peer: attribution resolves an OS finding to
+    /// [`Target::DockerfileBaseImage`], grouping keys every one of them onto that
+    /// single target, and [`select_target_version`] already answers the
+    /// floating-tag case the design calls `needs-work` when it is handed a tag
+    /// list — `a_floating_tag_with_no_newer_pinned_tag_is_needs_work` in
+    /// `crates/fiddle-runtime/tests/cve_attribution.rs` is that rule, tested.
+    /// **What is missing is only the tag list and the `Dockerfile` edit**, and
+    /// both need a registry client: an authenticated read of the image's
+    /// published tags, plus a rule for which of them is comparable. That is a
+    /// port, an adapter, a credential and a policy decision — a milestone's
+    /// worth, and one **no milestone currently owns**: M4b is the release
+    /// artifact, the host workflow, the CI-feedback fresh attempt and the first
+    /// real Wiz measurement. `docs/BACKLOG.md`'s `2026-08-18` entry is where
+    /// that is recorded, because this file cannot hold an unowned task.
+    ///
+    /// Lifting it means: a `Registry` port beside [`crate::scanner::Scanner`],
+    /// its tag list passed here where [`Go::versions`] is passed for a module,
+    /// and a `Dockerfile` tag edit where [`Self::bump`] runs `go get` — after
+    /// which the arm below becomes an `Ok` and the `unreachable` guard in
+    /// [`Self::bump`] becomes reachable.
+    ///
+    /// # What the refusal costs downstream, which is not nothing
+    ///
+    /// An attempted base-image bump would have been the only thing that ever
+    /// wrote an OS advisory into a commit body, so refusing here orphans the OS
+    /// half of deduplication. A base-image group leaves this as [`Blocked`] and
+    /// `continue`s, so it never reaches [`record_fold`] — whose `--allow-empty`
+    /// commit *does* name the group's ids — and never reaches [`land`], which
+    /// commits only [`GroupStatus::Clean`]. Both commit producers are downstream
+    /// of this refusal, so no run can put an OS advisory into a commit body, and
+    /// [`already_fixed`]'s `PackageType::Os` arm reads commit bodies and nothing
+    /// else. That arm is a consumer whose producer is what this refusal stands
+    /// in for; [`crate::cve::dedup`]'s header states the same fact from the
+    /// reading end, and a change here has to be made there too.
+    ///
+    /// The refusal is held from outside the process by
+    /// `a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch` in
+    /// `crates/fiddle-acceptance/tests/cve_mitigation.rs`, which asserts the OS
+    /// advisory's verdict rationale carries `registry this build does not read`.
+    /// Wiring the registry turns that lane red, which is the intended way for
+    /// these notes to be found again.
+    ///
+    /// **The order is held separately, and it had to be.** *Both producers are
+    /// downstream of this refusal* is a claim about the two blocks in [`sweep`]
+    /// being in this sequence, and swapping them was for a while invisible to the
+    /// entire workspace — every rescan in the suite still reported the OS
+    /// advisory, so [`fold`] answered `Proceed` for the OS group whichever way
+    /// round they were. Under a rescan that *clears* it — an ordinary floating
+    /// base tag, rebuilt between scan and rescan — the reordered code folds the
+    /// group instead, and `record_fold` writes `fix: <id> already resolved by an
+    /// earlier bump` onto the branch: the exact commit this paragraph says
+    /// cannot exist, in the log that is the sole authority for the OS half.
+    /// `a_rescan_that_clears_the_os_advisory_blocks_it_rather_than_folding_it`
+    /// is that world, and it is the lane that fails on the swap.
+    ///
+    /// [`sweep`]: Self::sweep
     async fn target_version(&self, graph: &Go, grouped: &Group) -> Result<String, GroupError> {
         let module = match grouped.target() {
             Target::Module(path) => path,

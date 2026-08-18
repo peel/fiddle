@@ -1289,6 +1289,23 @@ fn commit_subject(group: &Group) -> String {
 /// everything that is not alphanumeric or a hyphen, so the word `Fixes` joins its
 /// word set and can answer nothing wrong — see [`FixedInCommits::read`].
 ///
+/// # Which consumer the completeness is for, in M4a
+///
+/// The first paragraph above is Design §2.7's argument, and §2.7 makes it about
+/// *the OS already-fixed set*. In M4a that consumer cannot be reached from a
+/// run: a base-image group is refused before it can be committed, so this body
+/// only ever names library advisories — and a library advisory re-proposed
+/// against a tree that carries its fix is settled by
+/// [`already_fixed`](crate::cve::dedup::already_fixed)'s *tree* arm, upstream of
+/// `AlreadyAtTheFix`. `crate::cve::dedup`'s header carries the whole of the OS
+/// half's absence.
+///
+/// Listing every id still earns itself, through a reader §2.7 does not name:
+/// `Run::in_progress`'s `covers`, filtered id by id through the same log scan,
+/// which is what puts a run on the `AlreadyInProgress` disposition. A body
+/// naming one of a group's four leaves three out of `covers`, and the run then
+/// reports work to do that is sitting in an open pull request.
+///
 /// [`FixedInCommits::read`]: crate::cve::dedup::FixedInCommits::read
 fn commit_body(group: &Group) -> String {
     group

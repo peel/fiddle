@@ -28,6 +28,43 @@
 //! advisory does not drop that finding: the body outlives the change, and a
 //! revert leaves the sentence behind while taking the fix.
 //!
+//! # In M4a the OS arm has no producer, and a reader must not conclude otherwise
+//!
+//! **No run this build performs can write an OS advisory into a commit body.**
+//! Selecting a base-image tag needs a registry M4a does not read, so
+//! `CveMitigate::target_version` refuses every `Target::DockerfileBaseImage`
+//! group with `GroupError::Unselectable`, and a refused group is recorded as
+//! blocked before either commit producer is reached — the fold's `--allow-empty`
+//! commit, whose message names the group's ids, and
+//! [`crate::capability::cve::land`], which commits only `GroupStatus::Clean`.
+//! That refusal is a scoping decision with its own note at the site; the
+//! consequence is here, because this is where the assumption is *relied on*.
+//!
+//! So the `PackageType::Os` arm of [`already_fixed`] is reached on every run and
+//! can only ever answer `false` against a history this build wrote. It answers
+//! `true` only for a body **something other than this build** left in the range
+//! — a person's own base-image bump, pushed onto the shared branch between runs.
+//! That is a real case and the reason the arm is kept rather than made a
+//! refusal; it is also the whole of what the arm can do until the registry
+//! arrives. It is otherwise exercised only by seeded history, in
+//! `crates/fiddle-runtime/tests/cve_dedup.rs` and in
+//! `an_open_pull_request_covering_the_rest_reaches_already_in_progress`
+//! (`crates/fiddle-acceptance/tests/cve_mitigation.rs`), which plants the commit
+//! naming the OS advisory precisely because no run would.
+//!
+//! **[`commit_log_dedup`] itself is not orphaned by this, and the distinction
+//! matters.** Its set has a second consumer — `Run::in_progress`'s `covers`,
+//! which filters *every* finding through [`FixedInCommits::names`] and is what
+//! puts a run on the `AlreadyInProgress` disposition. Library groups do commit
+//! `Fixes:` bodies, and a reused branch's log is read back on the next run, so
+//! the scan below and its shallow-history guard are load-bearing on the ordinary
+//! path. What has no producer is the OS half of the answer, not the reading of
+//! the log.
+//!
+//! The decision and this consequence are recorded together in `docs/BACKLOG.md`
+//! under `2026-08-18`, which also records that the registry client belongs to no
+//! milestone yet.
+//!
 //! # A pull request is not an authority, and one incident says why
 //!
 //! A pull request's body is written when the pull request is opened and lists
@@ -54,6 +91,14 @@
 //! chases a report that is merely wasteful. The precondition is therefore
 //! asserted rather than relied on, and the diagnostic names the knob a caller
 //! actually turns: `fetch-depth`.
+//!
+//! In M4a that argument reads across from the OS finding it was written about to
+//! the `AlreadyInProgress` disposition, and it is worth saying which: with the
+//! OS arm having no producer, a truncated history costs nothing an OS finding
+//! would notice — it already reads as unfixed. What it costs is `covers`, which
+//! goes empty, and a run then reports work still to do that is sitting in an
+//! open pull request. Same degraded-but-safe shape, same reason to refuse rather
+//! than shrug; a different consumer to name when the OS half acquires one.
 //!
 //! [`group`]: crate::cve::group
 //! [`GroupError::AlreadyAtTheFix`]: crate::cve::group::GroupError::AlreadyAtTheFix
@@ -345,6 +390,13 @@ where
         // The commit log and nothing else — see the module header on why a tag
         // comparison is not available here, and why a library may not be settled
         // this way in return.
+        //
+        // **In M4a this arm has no producer.** No run writes an OS advisory into
+        // a commit body, because the base-image group is refused before either
+        // commit producer is reached — the module header says which, and
+        // `CveMitigate::target_version` says why the refusal is a scoping
+        // decision. A hand-written bump on the shared branch is the only history
+        // that makes this answer `true`; the suite's OS cases all seed one.
         PackageType::Os => Ok(fixed.names(finding.cve.as_str())),
     }
 }
