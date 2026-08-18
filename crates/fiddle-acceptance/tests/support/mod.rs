@@ -4128,7 +4128,7 @@ pub fn body_of(response: &str) -> Vec<serde_json::Value> {
 /// the endpoint already decided. `None` means the response carried no object — a
 /// refusal, or a `gh` that answered something this fixture cannot read — so a caller
 /// can say which endpoint disappointed it rather than unwrapping a `null`.
-fn object_of(response: &str) -> Option<serde_json::Value> {
+pub fn object_of(response: &str) -> Option<serde_json::Value> {
     let (_, body) = response.split_once("\r\n\r\n")?;
     match serde_json::from_str(body) {
         Ok(value @ serde_json::Value::Object(_)) => Some(value),

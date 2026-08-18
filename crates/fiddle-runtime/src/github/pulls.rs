@@ -59,6 +59,12 @@
 //! rewrite nothing without saying so. The digest is what makes "say one thing"
 //! and "say another" two effects. [`EffectKind::EnsurePullRequestBody`] states
 //! the same thing from `fiddle-core`'s side, and `cve_shared_pr.rs` is the suite.
+//!
+//! [`crate::capability::cve::publish_shared_work`] is what dispatches it, on
+//! every publication and not only on a reuse, and
+//! `fiddle-acceptance/tests/cve_mitigation.rs` is where a second run over an open
+//! labelled pull request is driven through the compiled binary — the tier at
+//! which "a body rewrite has a caller" is a claim rather than an assumption.
 
 use crate::effect::{AuthorizedEffect, EffectContext, IntegrationOperation, ObservedState};
 use crate::github::comments::has_a_next_page;

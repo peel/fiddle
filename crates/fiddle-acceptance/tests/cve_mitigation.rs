@@ -1899,3 +1899,369 @@ fn the_bound_the_document_sets_is_the_bound_the_sweep_applies() {
         "the advisory within the bound is still mitigated"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The second night: a pull request that is already open (bean `fiddle-1muu`)
+// ---------------------------------------------------------------------------
+//
+// Every lane above starts with an empty forge, so every one of them takes the
+// *fresh* arm: nothing is open, a dated branch is cut, a pull request is created
+// carrying this run's description, and `Checkout` records
+// `attempt_tree: base_revision` with a null `pr_head`. That is one half of the
+// shared-pull-request model and it was the only half anything ran.
+//
+// The other half is the one Design §7 calls the subtlest thing in the milestone.
+// On the second night the pull request is already there, so:
+//
+//   * `EnsurePullRequest`'s postcondition holds — it matches on head, base and
+//     `state=open`, and **deliberately not on the body** — so no create is
+//     dispatched and nothing about the description follows from it;
+//   * an `effect_id` is derived from `(project, invocation_ref, kind, target)`
+//     and never from the payload, so an effect keyed on the pull request alone
+//     would give last night's sentence and tonight's one identity, find the
+//     postcondition satisfied, and rewrite nothing without saying so.
+//
+// `EnsurePullRequestBody` answers both: its target carries a digest of the body,
+// which makes two sentences two effects, and its postcondition is a read of what
+// the pull request currently says, which makes an unchanged sentence idempotent.
+// The two lanes below are those two answers driven through the compiled binary —
+// `publish_shared_work` dispatching it is the thing that had no caller, and a
+// unit proof of the operation cannot show a caller exists.
+//
+// One seeded world reaches both, and that is why the seeding is shared. A run
+// that finds an open labelled pull request is also the only run that reaches
+// `Checkout::AtPullRequestHead`, so the same arrangement is what first drives
+// `attempt_tree: pr_head` at the run level.
+
+/// The branch an earlier night left behind, and the pull request open on it.
+///
+/// Under `security/` because that is the only namespace this capability may
+/// push to — a head outside it is refused before any commit, which is its own
+/// lane's business and not this one's — and dated, because that is what
+/// `BRANCH_STEM` produces and this branch is standing in for one an earlier run
+/// cut. The date is deliberately **not** today's: a reuse settles on the branch
+/// the forge names, and a fixture dated today would let a run that ignored the
+/// pull request and cut its own branch land on the same name.
+const SHARED_BRANCH: &str = "security/cve-remediation-2026-01-02";
+
+/// Its number, named rather than positional so the assertions below can say
+/// which object they are about. See `gh_stub::pull_requests` on why a named
+/// number is what makes an arranged world arrangeable.
+const SHARED_PR: u64 = 41;
+
+/// A file only the shared branch carries.
+///
+/// The second, independent witness that the attempt ran in the pull request's
+/// tree: `pr_head` and `base_revision` are two shas, and a lane comparing shas
+/// alone would still pass if the branch had been seeded at the base. A commit
+/// the base has never seen cannot be reached from `origin/main`, so the pushed
+/// branch carrying this file is a fact about *which tree the work was built on*
+/// rather than about a string.
+///
+/// Markdown, and not a `.go` file: the fixture is a Go module, and a source file
+/// the pair does not have would make the tree the sweep bumps differ from the
+/// one `the_two_fixtures_differ_only_in_the_dependency_under_remediation` is
+/// about.
+const PRIOR_RUN_MARKER: &str = "EARLIER-RUN.md";
+
+/// What the seeded pull request says before tonight's run touches it.
+///
+/// Recognisable prose rather than a nonsense string, because the failure this
+/// suite exists to catch is a body that *stays* describing an earlier run — and
+/// an assertion that the body is no longer this is only half of the claim. The
+/// other half is [`RUN_BODY`].
+const STALE_BODY: &str = "fiddle attempted 1 dependency group for this \
+     repository's container image and committed 0 of 1.\n\nEvery advisory this \
+     run did not fix is in the verdict report published beside this run's \
+     bundle, with the sentence that decided it.";
+
+/// What a sweep of the vulnerable fixture publishes: `cve::shared_body` over
+/// `mitigate::summary_of`'s two paragraphs, with no anomaly note, because one
+/// open labelled pull request is not an anomaly.
+///
+/// Spelled here and not imported, for [`SENTINEL_SECRET`]'s reason — this package
+/// depends on neither library crate. That makes it a *pinned* sentence rather
+/// than a derived one, which is what the idempotence lane needs: a body seeded
+/// from the runtime's own function would be idempotent by construction and would
+/// prove nothing about what a run writes.
+///
+/// `1 of 1` is the vulnerable pair's arithmetic and not a round number: the scan
+/// reports two advisories, the OS one has no bump target so it never becomes an
+/// attempt, and the library one is attempted and lands clean.
+const RUN_BODY: &str = "fiddle attempted 1 dependency group for this \
+     repository's container image and committed 1 of 1.\n\nEvery advisory this \
+     run did not fix is in the verdict report published beside this run's \
+     bundle, with the sentence that decided it.";
+
+impl Sweep {
+    /// Put an open, labelled pull request in front of this deployment, on a
+    /// branch of its own carrying a commit the base does not have, and answer the
+    /// sha the forge will report for its head.
+    ///
+    /// **Arranged through the fixture's own files and a real `git`, never by
+    /// driving the code under test.** The branch is a real ref in the bare
+    /// repository — the scripted `gh` reads a head sha out of it rather than
+    /// inventing one, so a world seeded any other way would report a tip the
+    /// remote does not hold, and the checkout that resolves `<sha>^{commit}`
+    /// would fail on a fixture defect rather than on the property under test.
+    ///
+    /// The commit is made in the clone and pushed, then the clone is put back on
+    /// the base: what a run is pointed at is a repository sitting on `main`, and
+    /// leaving it checked out on the shared branch would hand the run its answer.
+    /// The local `security/…` branch that remains behind is deliberate in the
+    /// other direction — `Approved::from` names `origin/<branch>` precisely so a
+    /// stale local branch of the same name cannot be picked up, and a world
+    /// without one could not tell the two apart.
+    fn seed_shared_pull_request(&self, body: &str) -> String {
+        git(&self.tree, &["checkout", "-q", "-b", SHARED_BRANCH]);
+        std::fs::write(
+            self.tree.join(PRIOR_RUN_MARKER),
+            "An earlier run's notes, which only this branch carries.\n",
+        )
+        .unwrap();
+        git(&self.tree, &["add", "-A"]);
+        git(
+            &self.tree,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "an earlier night's work on the shared branch",
+            ],
+        );
+        git(&self.tree, &["push", "-q", "origin", SHARED_BRANCH]);
+        let head = git_says(&self.tree, &["rev-parse", "HEAD"]);
+        git(&self.tree, &["checkout", "-q", SWEEP_BASE]);
+
+        // And the forge's record of it. The head is `owner:branch`, which is
+        // GitHub's own spelling and the one `EnsurePullRequest`'s postcondition
+        // is matched on; the owner is the repository's, because that is what
+        // `head_owner` is derived from.
+        let owner = SWEEP_REPO.split('/').next().unwrap();
+        std::fs::write(
+            self.stub.join("pulls_seed"),
+            serde_json::json!([{
+                "number": SHARED_PR,
+                "state": "open",
+                "head": format!("{owner}:{SHARED_BRANCH}"),
+                "base": SWEEP_BASE,
+                "title": "acme: dependency advisories",
+                "body": body,
+                "labels": ["security/cve"],
+            }])
+            .to_string(),
+        )
+        .unwrap();
+        head
+    }
+
+    /// One pull request, read back by number through the scripted `gh`.
+    ///
+    /// By number and not out of the listing, because the body is what these lanes
+    /// are about and the two routes answer it differently *on purpose*: the
+    /// listing describes the seed, and this route describes the seed with the
+    /// mutations that really landed replayed over it — see
+    /// `gh_stub::landed_transitions_applied`. A rewrite is observable only where
+    /// the world replays it, and `GET /repos/{o}/{r}/pulls/{n}` is also the exact
+    /// route `EnsurePullRequestBody`'s own postcondition read addresses.
+    fn pull_request(&self, number: u64) -> serde_json::Value {
+        let out = Command::new(gh_stub_binary())
+            .args(["--stub-dir", self.stub.to_str().unwrap()])
+            .args([
+                "api",
+                "--method",
+                "GET",
+                &format!("/repos/{SWEEP_REPO}/pulls/{number}"),
+            ])
+            .output()
+            .unwrap();
+        support::object_of(&String::from_utf8_lossy(&out.stdout))
+            .unwrap_or_else(|| panic!("the forge holds no pull request #{number}"))
+    }
+
+    /// Every forge mutation that actually landed, by request key, in arrival
+    /// order.
+    ///
+    /// The scripted `gh`'s world log and not its request directory, and the
+    /// difference is the whole point: `requested_paths` records every call
+    /// including the reads, and both of a body walk's postcondition reads address
+    /// the very path its `PATCH` does. A recorder that could not tell a `GET`
+    /// from a `PATCH` on one path could not say whether a rewrite happened, which
+    /// is the question both lanes below ask — one expecting yes and one expecting
+    /// no.
+    fn mutations(&self) -> Vec<String> {
+        std::fs::read_to_string(self.stub.join("world"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|landed| landed["key"].as_str().map(str::to_string))
+            .collect()
+    }
+}
+
+/// **A second run over an open labelled pull request rewrites its body, and runs
+/// in that pull request's tree.**
+///
+/// The defect this lane exists for is silent by construction: every count above
+/// is still one, the run still exits 0, and the only thing wrong is that the
+/// description a person reads still belongs to last night. So the assertions are
+/// about *content* — what the body became, and which tree the work was built on —
+/// and each one has a wrong answer available to be caught.
+///
+/// # The body
+///
+/// Asserted to equal [`RUN_BODY`] exactly, and not merely to differ from
+/// [`STALE_BODY`]. "It changed" is satisfied by a rewrite that put anything at
+/// all there — a truncation, an empty description, the summary of some other
+/// group — and the claim is that the pull request now says what *this run* did.
+/// The `PATCH` is asserted beside it, out of the world log, so the new sentence
+/// is known to have arrived by a mutation this run dispatched rather than by the
+/// fixture agreeing with the test.
+///
+/// # The tree
+///
+/// `Checkout::AtPullRequestHead` is reached only when a pull request is open, so
+/// until this lane the bundle's `attempt_tree` was `base_revision` and `pr_head`
+/// was null on every run in this repository. Three readings, because a sha
+/// comparison alone is weak: the bundle names the seeded head, it names the base
+/// as a *different* revision, and the branch the run pushed carries
+/// [`PRIOR_RUN_MARKER`] — a file reachable from the pull request's tip and from
+/// nowhere on `main`, so the work provably sits on top of the pull request rather
+/// than beside it.
+#[test]
+fn a_second_run_over_a_shared_pull_request_rewrites_its_body_and_works_in_its_tree() {
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 2, a_bump_needing_no_edit());
+    let seeded_head = sweep.seed_shared_pull_request(STALE_BODY);
+
+    let run = sweep.run();
+    let payload = sweep.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(payload["outcome"], "completed", "{payload}");
+
+    // Still one, and still the one that was already there: a run that failed to
+    // recognise it would have opened a second, and one that opened a second and
+    // rewrote *that* would satisfy every body assertion below about the wrong
+    // object.
+    let pulls = sweep.pull_requests();
+    assert_eq!(
+        pulls.len(),
+        1,
+        "the shared pull request is shared: {pulls:?}"
+    );
+    assert_eq!(pulls[0]["number"], SHARED_PR, "{:?}", pulls[0]);
+
+    // What it now says, and that a mutation is what made it say so.
+    let shared = sweep.pull_request(SHARED_PR);
+    assert_eq!(
+        shared["body"].as_str(),
+        Some(RUN_BODY),
+        "the shared pull request must describe tonight's run: {shared}"
+    );
+    assert_eq!(
+        sweep.mutations(),
+        vec![format!("PATCH_repos_acme_r_pulls_{SHARED_PR}")],
+        "exactly one forge mutation landed, and it is the body rewrite — no \
+         create, because the postcondition for a pull request on this head and \
+         base already held"
+    );
+
+    // Which tree the attempt ran in. The base is read off the remote, so the two
+    // revisions are the world's rather than the bundle's own two copies of one
+    // value.
+    let base_revision = git_says(&sweep.remote, &["rev-parse", SWEEP_BASE]);
+    let bundle = sweep.bundle(&run);
+    assert_eq!(
+        bundle["observations"]["tree"],
+        serde_json::json!({
+            "base_revision": base_revision,
+            "pr_head": seeded_head,
+            "attempt_tree": "pr_head",
+        }),
+        "{bundle}"
+    );
+    assert_ne!(
+        seeded_head, base_revision,
+        "the seeded head has to be a commit the base does not have, or \
+         `attempt_tree` could be either and the assertion above would not say \
+         which tree was used"
+    );
+
+    // And the witness that is not a sha: the run's commit sits on top of the
+    // pull request's, so the branch it pushed still carries the earlier run's
+    // file — and carries the mitigation as well.
+    assert!(
+        pushed_file(&sweep, SHARED_BRANCH, PRIOR_RUN_MARKER).contains("An earlier run's notes"),
+        "the work was built on the pull request's tip, so its history survives"
+    );
+    assert!(
+        pushed_file(&sweep, SHARED_BRANCH, "go.mod").contains(&format!("{MODULE} {FIXED_VERSION}")),
+        "and the branch carries the requirement at the fixed release"
+    );
+}
+
+/// **A run whose description is already correct rewrites nothing.**
+///
+/// The other half, and the reason `EnsurePullRequestBody`'s postcondition is a
+/// read of the world rather than a record of what was done before: nothing in
+/// `fiddle-core` remembers that an effect was performed, so an unchanged body has
+/// to be idempotent because the pull request already holds the sentence, which is
+/// a fact a fresh process establishes with one read.
+///
+/// The world differs from the lane above **in one string** — the body the pull
+/// request is seeded with — and in nothing else. That is what makes the two a
+/// pair: the same branch, the same commit, the same scan, the same fixture, and
+/// the observable is whether a `PATCH` landed.
+///
+/// # Why the positive assertions are here
+///
+/// "No mutation" is satisfied by a run that fell over before it reached the
+/// publish, so the lane asserts the run got there: the branch on the remote
+/// carries the mitigation, which only the push at the end of a successful sweep
+/// can produce. Without that, this would pass just as well against a binary that
+/// refused to start.
+#[test]
+fn a_run_whose_shared_body_is_unchanged_dispatches_no_rewrite() {
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 2, a_bump_needing_no_edit());
+    sweep.seed_shared_pull_request(RUN_BODY);
+
+    let run = sweep.run();
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    assert_eq!(
+        sweep.mutations(),
+        Vec::<String>::new(),
+        "a pull request that already says what this run did is a postcondition \
+         that already holds, and an effect the world satisfies is not dispatched"
+    );
+    assert_eq!(
+        sweep.pull_request(SHARED_PR)["body"].as_str(),
+        Some(RUN_BODY),
+        "and the description is left exactly as it was found"
+    );
+
+    // The run reached the publish, so the absence above is a decision and not a
+    // failure: the remote branch carries the bump, which nothing but the push at
+    // the end of a sweep puts there.
+    assert!(
+        pushed_file(&sweep, SHARED_BRANCH, "go.mod").contains(&format!("{MODULE} {FIXED_VERSION}")),
+        "the sweep still did its work"
+    );
+    assert_eq!(
+        sweep.pull_requests().len(),
+        1,
+        "and opened nothing beside the pull request it was given"
+    );
+}

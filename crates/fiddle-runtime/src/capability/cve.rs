@@ -73,7 +73,8 @@ use crate::cve::group::Group;
 use crate::effect::{Executor, IntegrationOperation};
 use crate::evaluate::{Evaluation, RescanVerdict};
 use crate::github::{
-    find_labelled_pull_request, EnsureBranchPublished, EnsurePullRequest, SharedPullRequest,
+    find_labelled_pull_request, EnsureBranchPublished, EnsurePullRequest, EnsurePullRequestBody,
+    SharedPullRequest,
 };
 use crate::workspace::{
     Content, FileEdit, Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath,
@@ -2031,9 +2032,9 @@ pub struct SharedWork {
     pub pull_request: u64,
 }
 
-/// Publish the branch and make sure the one shared pull request exists — both
-/// through the effect executor, and nothing else in this capability touches the
-/// forge at all.
+/// Publish the branch, make sure the one shared pull request exists, and make
+/// sure it says what this run did — all three through the effect executor, and
+/// nothing else in this capability touches the forge at all.
 ///
 /// # The routing is the point, and it is structural
 ///
@@ -2054,14 +2055,39 @@ pub struct SharedWork {
 /// that — journaling it would put a record of something unrecoverable beside the
 /// records a recovery is meant to act on.
 ///
-/// # Both arms propose the pull request, and the reuse arm mutates nothing
+/// # Both arms propose all three, and which of them mutate is the world's answer
 ///
-/// There is no `if reused { skip }` here, and the absence is the mechanism rather
-/// than an oversight. [`EnsurePullRequest`]'s own postcondition read finds the
-/// open, labelled pull request for this head and base, the executor's step 3 sees
-/// it already holds, and no create is dispatched. One code path, and *never a
-/// second pull request* is the executor's idempotence rather than a branch
-/// somebody has to keep correct.
+/// There is no `if reused { skip }` here and no `if reused { rewrite }` either,
+/// and both absences are the mechanism rather than an oversight. Each effect is
+/// proposed unconditionally and the executor's step 3 decides whether there is
+/// anything to do:
+///
+/// - [`EnsurePullRequest`]'s postcondition read finds the open, labelled pull
+///   request for this head and base, so on a reuse no create is dispatched. One
+///   code path, and *never a second pull request* is the executor's idempotence
+///   rather than a branch somebody has to keep correct.
+/// - [`EnsurePullRequestBody`]'s postcondition read asks the opposite question —
+///   *does it already say this* — so on a fresh cut, where the create carried
+///   this exact body, no rewrite is dispatched, and on a reuse of a pull request
+///   still describing last night's run, one is.
+///
+/// # Why the third effect is not redundant with the second
+///
+/// Because [`EnsurePullRequest`]'s postcondition **deliberately excludes the
+/// body**: it matches on head, base and `state=open`, so a reuse settles on the
+/// pull request whatever it says. Design §7 is about what follows from that. An
+/// [`EffectId`](fiddle_core::EffectId) is derived from the target and never from
+/// the payload, so an effect keyed on the pull request alone would give
+/// last night's sentence and tonight's one identity — and a rewrite proposed
+/// under it would find a postcondition it believed satisfied and change nothing,
+/// silently. [`EnsurePullRequestBody`]'s target carries a digest of the body,
+/// which is what makes "say one thing" and "say another" two effects; this is
+/// the caller that spends it.
+///
+/// The body is computed **once**, above, and handed to both — for
+/// [`shared_body`]'s reason. Two spellings of one sentence would be two
+/// identities, and a run would rewrite a pull request for having described it
+/// twice.
 ///
 /// # `capability` is a parameter, and step 1 is what makes that safe
 ///
@@ -2096,6 +2122,11 @@ pub async fn publish_shared_work(
         )
         .await?;
 
+    // The sentence this run wants the shared pull request to carry, spelled once
+    // and read twice — by the create below and by the rewrite after it. See this
+    // function's header, and [`shared_body`].
+    let body = shared_body(&config.summary, approved);
+
     // 2. The pull request, carrying the label that is the only thing which will
     //    find it again. Applied as part of the create rather than afterwards: a
     //    pull request without it is invisible to the next run's discovery read,
@@ -2106,7 +2137,7 @@ pub async fn publish_shared_work(
         approved.branch().to_string(),
         approved.base().to_string(),
         config.title.clone(),
-        shared_body(&config.summary, approved),
+        body.clone(),
         false,
     )
     .labelled(vec![CVE_LABEL.to_string()]);
@@ -2119,6 +2150,23 @@ pub async fn publish_shared_work(
                 payload: open.payload(),
             },
             open,
+        )
+        .await?;
+
+    // 3. What it says. Addressed at the number step 2 settled on — reused or
+    //    freshly created — because that is the object this run is describing, and
+    //    a rewrite addressed at anything else would be describing somebody's
+    //    other pull request.
+    let describe = EnsurePullRequestBody::new(config.repo.clone(), opened.value.number, body);
+    executor
+        .execute(
+            ProposedEffect {
+                capability,
+                kind: EffectKind::EnsurePullRequestBody,
+                target: describe.target(),
+                payload: describe.payload(),
+            },
+            describe,
         )
         .await?;
 
@@ -2140,11 +2188,13 @@ pub async fn publish_shared_work(
 /// [`Approved::note`]'s own rule: a warning printed every time is a warning nobody
 /// reads.
 ///
-/// Separated from [`publish_shared_work`] because it is pure, and because Task
-/// 18's [`EnsurePullRequestBody`](crate::github::EnsurePullRequestBody) rewrites
-/// this same body on a later run — a digest of it is that effect's identity, so
-/// two spellings of one body would be two effects and a pull request would be
-/// rewritten for having been described twice.
+/// Separated from [`publish_shared_work`] because it is pure, and because
+/// [`EnsurePullRequestBody`](crate::github::EnsurePullRequestBody) rewrites this
+/// same body on a later run — a digest of it is that effect's identity, so two
+/// spellings of one body would be two effects and a pull request would be
+/// rewritten for having been described twice. `publish_shared_work` calls this
+/// once and hands the one string to the create and to the rewrite, which is what
+/// keeps the two spellings from existing.
 pub fn shared_body(summary: &str, approved: &Approved) -> String {
     match approved.note() {
         Some(note) => format!("{summary}\n\n{note}"),
