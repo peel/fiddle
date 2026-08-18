@@ -287,3 +287,43 @@ fn the_scripted_scanner_is_a_binary_that_exists() {
     // adapter's own flags as an arm name and panic.
     assert_eq!(stub.args, vec!["ok".to_string()]);
 }
+
+#[test]
+fn the_offline_go_publishes_the_releases_a_sweep_asks_it_about() {
+    // `go list -m -versions` is the one question the offline toolchain answers
+    // from the *upstream* rather than from the tree, and it is what a whole
+    // sweep asks before it can choose a bump target: an empty answer is
+    // `GroupError::NoRelease`, which reads as "upstream has published nothing"
+    // and would make the black-box lane report the fixture pair as unfixable.
+    //
+    // Both versions, in ascending order, with the module path first — which is
+    // what `go` prints and what `cve::go::Go::versions` drops before splitting.
+    assert_eq!(
+        offline_go(
+            Path::new("/nowhere"),
+            &["list", "-m", "-versions", SWEEP_MODULE]
+        )
+        .text()
+        .trim(),
+        format!("{SWEEP_MODULE} {SWEEP_VULNERABLE} {SWEEP_FIXED}")
+    );
+
+    // A module the proxy has never published answers with its path and nothing
+    // after it, which is `go`'s own answer and the empty candidate list rather
+    // than a refusal. The two answers have to differ, or a lane about a module
+    // with releases and one about a module without would be the same lane.
+    let unknown = offline_go(
+        Path::new("/nowhere"),
+        &["list", "-m", "-versions", "example.com/never-released"],
+    );
+    assert_eq!(unknown.text().trim(), "example.com/never-released");
+    assert_eq!(
+        unknown.code, 0,
+        "having no releases is an answer, not a refusal"
+    );
+
+    // And the answer does not come from the tree: the path above is not a module
+    // root, and every other subcommand in this proxy would have panicked reading
+    // its `go.mod`.
+    assert!(!Path::new("/nowhere").exists());
+}

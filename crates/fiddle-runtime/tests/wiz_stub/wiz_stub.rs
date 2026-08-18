@@ -17,7 +17,7 @@
 //!
 //! # The arms, and the one that matters
 //!
-//! Six of the eight are ordinary. `exit-nonzero-with-file` is the one this
+//! Seven of the nine are ordinary. `exit-nonzero-with-file` is the one this
 //! fixture exists for: `wizcli` exits non-zero when an organisation policy flags
 //! any finding in the tenant, including findings that have nothing to do with
 //! this scan, and it writes a perfectly good report while doing it. An adapter
@@ -26,6 +26,18 @@
 //! "success is the artefact" a fact about a process rather than a claim about
 //! one, and it is why `exit-nonzero-no-file` sits beside it: the two differ only
 //! in the artefact, so an adapter that collapsed them would be caught.
+//!
+//! `library-clean` is the ninth, and it is the *rescan* half of the pair. Every
+//! other arm answers the question a run asks **before** it does anything; a
+//! sweep that bumped a module then asks the same scanner about the same image
+//! again, and `evaluate`'s rescan is `Cleared` only when the group's advisories
+//! are gone, nothing new has appeared, **both** package arrays are present, and
+//! the scanner version is the one the input was scanned at. A second `ok` would
+//! answer the second question with the first question's document and refuse
+//! every repair, so the fixture needs an arm whose library array is *present and
+//! empty* while the OS array is the input's unchanged — the shape of an image
+//! whose Go dependency was patched and whose base layer was not. It is the one
+//! arm that only makes sense in the presence of another scan.
 //!
 //! # Why it selects its arm from `argv`
 //!
@@ -110,6 +122,30 @@ fn main() {
         "ok" => {
             banner(&args);
             write(&report, document());
+        }
+        // The same image after its Go dependency moved: the library array is
+        // there and holds nothing, the OS array is the input scan's unchanged.
+        //
+        // **Present and empty, never absent.** `RescanVerdict::NotObserved`
+        // refuses an array the scanner never wrote, because both rescan
+        // conditions are satisfied by an absence and silence is not clearance.
+        // An arm that dropped the key would therefore fail every repair it was
+        // asked about — for the right reason, and not the one it is here to
+        // exercise.
+        //
+        // The OS advisory stays, and that is what makes condition (b)
+        // discriminating rather than decorative: it is in the input scan's
+        // baseline, so a rescan reporting it is a rescan reporting nothing
+        // *new*. An arm that reported an empty image would satisfy (b) whatever
+        // the baseline held.
+        "library-clean" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(libraries(&[]), os_packages(&DEFAULT_OS_CVES))
+                    .raw()
+                    .to_string(),
+            );
         }
         // The reason this fixture exists. The document is written *first* and
         // the non-zero exit comes after, in that order and for that reason: a

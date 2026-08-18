@@ -123,6 +123,15 @@ struct Release {
 /// picked the *lexically* highest match would choose `v1.9.9`, which carries no
 /// fix either — and the lane would pass for the wrong reason. Resolution here is
 /// component-wise and numeric, for the reason `cve::version` gives.
+///
+/// And two releases of [`SWEEP_MODULE`], which are a different fixture's world in
+/// the same table. They carry no requirements at all and are not reached by any
+/// rule-2 probe: what needs them is [`versions`], which a whole sweep asks before
+/// it chooses a bump target, and which cannot answer about a module the proxy has
+/// never published. They are here rather than in a second table for this file's
+/// own reason — one implementation of the upstream, shared by the `[[bin]]` and
+/// the in-process stand-in, so the black-box lane and the attribution lanes
+/// cannot come to disagree about what has been released.
 const UPSTREAM: &[Release] = &[
     Release {
         module: FIXTURE_PARENT,
@@ -144,7 +153,38 @@ const UPSTREAM: &[Release] = &[
         version: "v1.9.12",
         requires: &[(INDIRECT_MODULE, REACHED_WITHOUT_THE_FIX)],
     },
+    Release {
+        module: SWEEP_MODULE,
+        version: SWEEP_VULNERABLE,
+        requires: &[],
+    },
+    Release {
+        module: SWEEP_MODULE,
+        version: SWEEP_FIXED,
+        requires: &[],
+    },
 ];
+
+/// The module the black-box sweep's fixture pair disagrees about.
+///
+/// It is the requirement `tests/fixtures/cve-vulnerable/go.mod` and
+/// `tests/fixtures/cve-fixed/go.mod` differ in, and the package the shared
+/// scanner document names — `the_pair_is_pinned_to_the_module_and_versions_the_shared_scanner_document_names`
+/// in `fiddle-acceptance` is what fails if any of the three drifts. A second
+/// spelling here would let this proxy publish releases of a module nothing in
+/// that world requires.
+pub const SWEEP_MODULE: &str = "golang.org/x/crypto";
+
+/// What the vulnerable fixture pins, and what the advisory reports as current.
+pub const SWEEP_VULNERABLE: &str = "v0.31.0";
+
+/// What the advisory names as fixed, what the already-fixed fixture pins, and
+/// therefore the only release a bump can select.
+///
+/// Two releases and no third: [`versions`] answers the whole line, so a stray
+/// `v0.36.0` here would be selected instead and the tree would land at a version
+/// the fixture pair says nothing about.
+pub const SWEEP_FIXED: &str = "v0.35.0";
 
 // ---------------------------------------------------------------------------
 // What a `go` invocation leaves behind
@@ -192,6 +232,9 @@ impl Answer {
 /// the failure to the subject instead.
 pub fn run(root: &Path, args: &[&str]) -> Answer {
     match args {
+        // Before the `-json` arm below only because a `match` reads in order;
+        // the two argument vectors are disjoint, so neither shadows the other.
+        ["list", "-m", "-versions", module] => versions(module),
         ["list", "-m", "-json", module] => list(root, module),
         ["mod", "why", "-m", module] => why(root, module),
         ["get", target] => get(root, target),
@@ -203,6 +246,45 @@ pub fn run(root: &Path, args: &[&str]) -> Answer {
 // ---------------------------------------------------------------------------
 // The read-only pair, which 8.a's rules are matched over
 // ---------------------------------------------------------------------------
+
+/// `go list -m -versions <module>` — every release the upstream has published.
+///
+/// The module path, then its versions, space-separated on one line, which is
+/// what `go` prints and what `cve::go::Go::versions` splits. **Not derived from
+/// the tree**, unlike every other answer in this file: what a tree pins is one
+/// version and the question here is what a caller could move it to, so a proxy
+/// that answered from `go.mod` would tell a sweep its only option is where it
+/// already is.
+///
+/// A module [`UPSTREAM`] has never published prints its path and nothing after
+/// it — `go`'s own answer for a path with no releases, and the shape
+/// `Go::versions` reads as an empty candidate list rather than as a failure.
+/// Exit zero for the same reason: it is an answer, not a refusal.
+///
+/// Ascending, because a proxy that emitted its table's order would let a
+/// selection that took the *last* line pass while a selection that ranked them
+/// failed, and the two are only distinguishable against a list that is sorted.
+fn versions(module: &str) -> Answer {
+    let mut published: Vec<&str> = UPSTREAM
+        .iter()
+        .filter(|release| release.module == module)
+        .map(|release| release.version)
+        .collect();
+    published.sort_by(|a, b| match newer(a, b) {
+        true => std::cmp::Ordering::Greater,
+        false => std::cmp::Ordering::Less,
+    });
+    let mut line = module.to_string();
+    for version in published {
+        line.push(' ');
+        line.push_str(version);
+    }
+    Answer {
+        stdout: format!("{line}\n"),
+        stderr: String::new(),
+        code: 0,
+    }
+}
 
 /// `go list -m -json <module>` — the module's record in the build list.
 ///

@@ -1108,17 +1108,32 @@ fn build_capability<'a>(
             // with no failing check, the rescan alone would decide, and the
             // milestone's own rule — *the check decides, not the model* — would
             // be decided by nothing.
-            if workspace.checks.is_empty() {
+            //
+            // The same guard answers the *other* question this arm has to ask —
+            // which single command the `run_check` tool offers a model — and it
+            // is the **first** declared check rather than `[workspace] check`.
+            //
+            // **`[workspace] check` cannot be the source here, and reading it
+            // made this capability unbuildable.** `config::Workspace`'s own
+            // conversion refuses a document that names `check` *and*
+            // `[[workspace.checks]]` — there is no precedence between two answers
+            // to one question — while this arm requires the list. So every
+            // document that reaches this line has `check == None` by
+            // construction, and every document that would have satisfied the
+            // `ok_or_else` below fails to parse. `cve_mitigate` was reachable
+            // from no configuration at all; Task 20.b's first run through the
+            // binary is what found it.
+            //
+            // The first entry and not a new key, because §2.6 declares the list
+            // *in the order the checks run* and the first of the five is
+            // `go build` — which is exactly what a model runs to see whether its
+            // edit compiles. Derived rather than configured, so there is no
+            // second place for the two to disagree; a deployment that wants the
+            // model to run something else reorders the list it is judged by,
+            // which is a change it can see.
+            let Some(check) = workspace.checks.first() else {
                 return Err(missing("[[workspace.checks]]").into());
-            }
-            // The one command the `run_check` tool offers a model. Distinct from
-            // the list above, and named separately in the document for that
-            // reason: what a model may run to see whether its edit builds is not
-            // what decides whether the group is clean.
-            let check = workspace
-                .check
-                .as_ref()
-                .ok_or_else(|| missing("workspace.check"))?;
+            };
             let forge = forge.ok_or_else(|| missing("[github]"))?;
 
             // Only now, and only on this arm — the repairing arm's order, for
@@ -1660,6 +1675,83 @@ mod tests {
     /// the publishing arm's executor is bound to the run it will publish under.
     fn a_reference() -> InvocationRef {
         "beans:fiddle-m0-demo".parse().unwrap()
+    }
+
+    /// **The sweep never asks for a key its own schema forbids beside the list
+    /// it requires.**
+    ///
+    /// `cve_mitigate` needs two things of `[workspace]`: the checks a group is
+    /// judged by, and the one command the `run_check` tool offers a model. It
+    /// used to take the second from `[workspace] check` — and
+    /// `config::Workspace`'s conversion refuses a document naming `check` *and*
+    /// `[[workspace.checks]]`, because there is no precedence between two answers
+    /// to one question. So the arm demanded a key that could not be present, and
+    /// **this capability was reachable from no document that parses**: eighteen
+    /// tasks' modules wired to a caller nothing could call. It shipped because
+    /// every seam had a suite and the composition had only a compiler.
+    ///
+    /// Two halves, and the second is what makes the first mean something:
+    ///
+    /// 1. a document carrying the list and no singular `check` gets **past** the
+    ///    check question — it is refused for the next thing in the arm's order,
+    ///    the forge, and not for `workspace.check`;
+    /// 2. the document that *would* have satisfied the old requirement does not
+    ///    load at all, so there is no way to write one that satisfies both.
+    ///
+    /// Without (2), (1) is satisfied by an arm that reads `check` and happens to
+    /// be handed a document with one.
+    #[test]
+    fn the_sweep_takes_the_model_s_check_from_the_list_it_already_requires() {
+        let sweep = "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
+             [github]\nrepo=\"peel/fiddle\"\nbase=\"main\"\n\
+             token={env=\"FIDDLE_A_VARIABLE_NOTHING_EXPORTS\"}\n\
+             [scanner]\nclient_id={env=\"WIZ_ID\"}\nclient_secret={env=\"WIZ_SECRET\"}\n\
+             [orchestration.cve]\nimage=\"ghcr.io/acme/icecube:latest\"\n\
+             [agent]\nmodel=\"m\"\nbase_url=\"http://127.0.0.1:9/v1\"\n\
+             api_key={env=\"FIDDLE_A_VARIABLE_NOTHING_EXPORTS\"}\n\
+             [workspace]\nfixture=\"/nonexistent\"\n\
+             [[workspace.checks]]\nprogram=\"true\"\nargs=[]\nsuccess=\"exit-zero\"\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiddle.toml");
+        std::fs::write(&path, sweep).unwrap();
+        let loaded = config::load(&path).unwrap();
+
+        // `None` for the forge, so the arm's *next* refusal after the check
+        // question is the one that comes back. Reaching it at all is the
+        // assertion: `workspace.check` here would mean the arm still wants a key
+        // no loadable document can carry.
+        let Err(error) = build_capability(
+            Selection::Mitigate,
+            &loaded,
+            &path,
+            &CancellationToken::new(),
+            &a_reference(),
+            None,
+        ) else {
+            panic!("no forge was supplied, so nothing can be built")
+        };
+        match error {
+            CliError::Unconfigured(unconfigured) => assert_eq!(
+                unconfigured.missing, "[github]",
+                "the sweep must get past the check question without a \
+                 `[workspace] check`, and be refused for the next thing instead"
+            ),
+            other => panic!("expected the forge to be named, got {other:?}"),
+        }
+
+        // And the document that would have satisfied the old requirement is not a
+        // document at all.
+        let both = dir.path().join("both.toml");
+        std::fs::write(
+            &both,
+            format!("{sweep}[workspace]\ncheck={{ program = \"true\", args = [] }}\n"),
+        )
+        .unwrap();
+        assert!(
+            config::load(&both).is_err(),
+            "a document naming both check shapes must not load, or the arm above \
+             could have gone on reading the singular one"
+        );
     }
 
     /// **A publication over a document that describes no forge is refused by

@@ -250,7 +250,10 @@ mod go_proxy;
 // Allowed unused for the reason `mod.rs`'s `wiz_stub` re-export is: this module
 // is compiled once per suite, and only the attribution lane names these.
 #[allow(unused_imports)]
-pub use go_proxy::{CARRIED_BY_THE_VIABLE_LINE, REACHED_WITHOUT_THE_FIX};
+pub use go_proxy::{
+    run as offline_go, Answer as OfflineGo, CARRIED_BY_THE_VIABLE_LINE, REACHED_WITHOUT_THE_FIX,
+    SWEEP_FIXED, SWEEP_MODULE, SWEEP_VULNERABLE,
+};
 use go_proxy::{FIXTURE_PARENT, GO_VERSION, HOST_MODULE, INDIRECT_MODULE, INDIRECT_VERSION};
 
 // ---------------------------------------------------------------------------
@@ -1524,9 +1527,17 @@ fn scripted_credential() -> WizCredential {
 /// green. [`arm_was_exercised`] matches on these names exhaustively, so the two
 /// halves cannot drift apart in the other direction either.
 ///
-/// The first two are the arms a scan *succeeds* on. That
+/// The first three are the arms a scan *succeeds* on. That
 /// `exit-nonzero-with-file` is one of them is the whole of what this fixture is
 /// for; see [`arm_was_exercised`].
+///
+/// `library-clean` is the only one whose meaning depends on another scan: it is
+/// the *rescan* half, reporting the OS array unchanged and the library array
+/// present and empty, which is what a repaired image looks like to the scanner
+/// that was asked about it before. Nothing at this tier distinguishes it from
+/// `ok` — both answer a readable document — and that is correct: what separates
+/// them is what `evaluate`'s rescan conditions make of each, which is
+/// `cve_evaluate`'s question and the acceptance suite's, not this array's.
 ///
 /// `no-daemon` sits beside `no-such-image` because the two are neighbours: both
 /// end on the status line `exit-nonzero-no-file` ends on and neither writes an
@@ -1539,8 +1550,9 @@ fn scripted_credential() -> WizCredential {
 /// secret it was given. It is listed here rather than kept beside the one test
 /// that drives it so that this array stays *every* arm the stub has, which is
 /// what lets [`arm_was_exercised`] and [`arm_exits_with`] match exhaustively.
-pub const ARMS: [&str; 8] = [
+pub const ARMS: [&str; 9] = [
     "ok",
+    "library-clean",
     "exit-nonzero-with-file",
     "exit-nonzero-no-file",
     "empty-file",
@@ -1725,7 +1737,7 @@ impl ScriptedScanner {
 /// situation*.
 pub fn arm_was_exercised(arm: &str, outcome: &Result<ScanReport, ScanError>) -> bool {
     match arm {
-        "ok" | "exit-nonzero-with-file" => outcome.is_ok(),
+        "ok" | "library-clean" | "exit-nonzero-with-file" => outcome.is_ok(),
         // `leaks-its-credential` shares this outcome with the arm above it, and
         // must: what separates them is what the diagnostic *says*, not what the
         // scan came back as, so an arm list that told them apart here would be
@@ -1776,7 +1788,7 @@ pub fn arm_was_exercised(arm: &str, outcome: &Result<ScanReport, ScanError>) -> 
 /// reason, and an unknown one panics for the same one.
 pub fn arm_exits_with(arm: &str) -> i32 {
     match arm {
-        "ok" | "empty-file" | "unparseable-file" => 0,
+        "ok" | "library-clean" | "empty-file" | "unparseable-file" => 0,
         "exit-nonzero-with-file"
         | "exit-nonzero-no-file"
         | "no-such-image"
