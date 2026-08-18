@@ -71,8 +71,9 @@ use fiddle_runtime::workspace::WorkspacePath;
 use std::collections::HashSet;
 use std::mem::discriminant;
 use support::cve::{
-    absent_scanner, available, contract_for, exit, image, libraries, os_packages, report_with,
-    scan_of, scanner_with, stdout, tree_whose_rescan_reports, unfixed_libraries, GO_VET,
+    absent_scanner, available, contract_for, every_fixture_grade, exit, image, libraries,
+    os_packages, report_with, scan_of, scanner_with, stdout, tree_whose_rescan_reports,
+    unfixed_libraries, GO_VET,
 };
 
 // ---------------------------------------------------------------------------
@@ -108,7 +109,8 @@ const SECOND_CVE: &str = "CVE-2026-3003";
 /// a fixture that set them directly would let this suite disagree with the
 /// projection about what "fixable" means and never find out.
 fn projection_of(document: serde_json::Value) -> Projection {
-    project(&scan_of(document)).expect("a fixture document this build can project")
+    project(&scan_of(document), &every_fixture_grade())
+        .expect("a fixture document this build can project")
 }
 
 /// **Design §3 row 1.** The scanner ran, and reported nothing at all.

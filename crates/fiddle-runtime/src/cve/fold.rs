@@ -117,7 +117,7 @@
 use crate::cve::group::{Group, GroupError};
 use crate::cve::project::project;
 use crate::evaluate::{Evaluation, Outcome};
-use fiddle_core::AdvisoryId;
+use fiddle_core::{AdvisoryId, Severities};
 
 /// What to do with a group, given what came before it.
 ///
@@ -192,11 +192,14 @@ impl PriorRescan {
     /// judges a tree and the committer changes a branch, and inferring one from
     /// the other here would silently assume a disposition table this module does
     /// not own.
-    pub fn of(evaluation: &Evaluation, landed: Landed) -> Self {
+    /// `acted_on` is the deployment's grade set, for [`reported_by`]'s reason: it
+    /// reads the rescan's document the way the rescan conditions read it, and that
+    /// reading is the deployment's rather than this module's.
+    pub fn of(evaluation: &Evaluation, landed: Landed, acted_on: &Severities) -> Self {
         PriorRescan {
             ended_clean: evaluation.accepted(),
             landed,
-            reported: reported_by(evaluation),
+            reported: reported_by(evaluation, acted_on),
         }
     }
 }
@@ -208,14 +211,14 @@ impl PriorRescan {
 /// `crate::evaluate::judge` gives: it is the code that reads *both* package
 /// arrays, and a second walk here would be a second place for the
 /// `libraries`-only collapse to come back. It also *selects*, which is the right
-/// reading for this rule too — an advisory the rescan grades below what this
-/// build acts on is not one a group would have been opened for, so its presence
-/// is not a reason to attempt one.
+/// reading for this rule too — an advisory the rescan grades outside what this
+/// deployment acts on is not one a group would have been opened for, so its
+/// presence is not a reason to attempt one.
 ///
 /// The **last** scanned report, matching `evaluate`'s own choice of which
 /// document the rescan is: an earlier artefact check in the same contract
 /// scanned something else.
-fn reported_by(evaluation: &Evaluation) -> Vec<AdvisoryId> {
+fn reported_by(evaluation: &Evaluation, acted_on: &Severities) -> Vec<AdvisoryId> {
     let report = evaluation
         .checks()
         .iter()
@@ -231,7 +234,7 @@ fn reported_by(evaluation: &Evaluation) -> Vec<AdvisoryId> {
             Outcome::Finished(_) | Outcome::NoArtefact(_) | Outcome::NotRun(_) => None,
         });
 
-    match report.map(project) {
+    match report.map(|report| project(report, acted_on)) {
         Some(Ok(projection)) => projection
             .all()
             .map(|finding| finding.cve.clone())

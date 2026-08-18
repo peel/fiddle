@@ -41,7 +41,10 @@ pub use decision::{
 pub use effect::{
     content_digest, effect_id, payload_hash, EffectId, EffectKind, PayloadHash, ProposedEffect,
 };
-pub use finding::{selected, AdvisoryId, AdvisoryIdError, PackageType, ProjectedFinding, Severity};
+pub use finding::{
+    selected, AdvisoryId, AdvisoryIdError, PackageType, ProjectedFinding, Severities,
+    SeveritiesError, Severity,
+};
 pub use identity::{
     AttemptId, CapabilityId, InvocationRef, InvocationRefError, InvocationScheme, WorkRef,
 };

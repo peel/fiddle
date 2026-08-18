@@ -58,7 +58,7 @@
 //! taken here is a drop every later reader has to be trusted to repeat, and it
 //! presents to an operator as the scan having found nothing.
 
-use fiddle_core::{selected, AdvisoryId, PackageType, ProjectedFinding, Severity};
+use fiddle_core::{selected, AdvisoryId, PackageType, ProjectedFinding, Severities, Severity};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -180,7 +180,15 @@ pub enum ProjectionError {
 /// Both package arrays are read. Selection is [`selected`] and nothing else, so
 /// the rule lives in the pure crate where it is argued for rather than being
 /// restated here in terms this file could get wrong.
-pub fn project(report: &ScanReport) -> Result<Projection, ProjectionError> {
+///
+/// `acted_on` is the deployment's `[orchestration.cve] severities`, threaded from
+/// the document to the one line that consults it. It is a **parameter of this
+/// function** rather than a value read nearer the decision, and both ends of that
+/// are deliberate: `fiddle_core` is pure and cannot read a document, and a
+/// projection that defaulted the set would be a second place for *which grades
+/// this deployment acts on* to be answered — which is exactly how the key came to
+/// be documented by the product manual and read by nothing.
+pub fn project(report: &ScanReport, acted_on: &Severities) -> Result<Projection, ProjectionError> {
     // Both arms are kept. The same reader answers both, so that a key of the
     // wrong shape on either side is refused rather than read as no packages at
     // all — and so that neither arm can be the one somebody forgot to compute.
@@ -196,7 +204,7 @@ pub fn project(report: &ScanReport) -> Result<Projection, ProjectionError> {
         ("libraries", library_packages, PackageType::Library),
         ("osPackages", os_packages, PackageType::Os),
     ] {
-        select_into(array, from, package_type, &mut findings)?;
+        select_into(array, from, package_type, acted_on, &mut findings)?;
     }
 
     let fixable: Vec<usize> = findings
@@ -258,6 +266,7 @@ fn select_into(
     array: &'static str,
     from: &[Value],
     package_type: PackageType,
+    acted_on: &Severities,
     into: &mut Vec<ProjectedFinding>,
 ) -> Result<(), ProjectionError> {
     for (at, package) in from.iter().enumerate() {
@@ -293,7 +302,7 @@ fn select_into(
         };
 
         for (nth, vulnerability) in vulnerabilities.iter().enumerate() {
-            if let Some(finding) = record(vulnerability, name, current, package_type)
+            if let Some(finding) = record(vulnerability, name, current, package_type, acted_on)
                 .map_err(|reason| refuse(nth, reason))?
             {
                 into.push(finding);
@@ -315,6 +324,7 @@ fn record(
     package: &str,
     current: &str,
     package_type: PackageType,
+    acted_on: &Severities,
 ) -> Result<Option<ProjectedFinding>, String> {
     // Through `AdvisoryId`'s own `Deserialize`, so the canonical spelling and
     // the refusal of a blank id are the ones the pure crate defines. Reading the
@@ -347,7 +357,7 @@ fn record(
         Some(other) => return Err(format!("{cve:?} reports fixedVersion as {other}")),
     };
 
-    if !selected(severity, has_exploit, fixed_version.as_deref()) {
+    if !selected(acted_on, severity, has_exploit, fixed_version.as_deref()) {
         return Ok(None);
     }
 

@@ -211,7 +211,7 @@
 //! output — see `docs/technical/evidence-discipline.md` on fixture values that
 //! appear only where their value cannot matter.
 
-use fiddle_core::{AdvisoryId, AttemptId, PackageType, ProjectedFinding, Severity};
+use fiddle_core::{AdvisoryId, AttemptId, PackageType, ProjectedFinding, Severities, Severity};
 use fiddle_runtime::agent::AgentBudget;
 use fiddle_runtime::capability::{CapabilityError, Git, MigrationConfig};
 use fiddle_runtime::cve::attribute::{attribute, Manifest, ModuleGraph, ResolverError, Target};
@@ -2474,6 +2474,19 @@ pub fn group_of(cves: &[&str]) -> Group {
     groups.remove(0)
 }
 
+/// The grade set every fixture world in this file reads its documents through:
+/// what a document naming no grades means.
+///
+/// Named rather than spelled out at each call site, and the name says which of
+/// two things it is. Every fixture finding here is `HIGH` or `CRITICAL` — see
+/// `document.rs`'s `vulnerability` and [`finding_under`] — so the default admits
+/// all of them, and none of these lanes is about the grade set. A lane that *is*
+/// about it names its own set, and `cve_projection`'s
+/// `a_deployment_that_names_a_lower_grade_projects_it` is the one that does.
+pub fn every_fixture_grade() -> Severities {
+    Severities::default()
+}
+
 /// The module every [`group_of`] finding is attributed to.
 ///
 /// Its own value rather than one of the attribution family's, so that a fold
@@ -2508,7 +2521,7 @@ pub async fn rescan_from_committed_clean_group(still_reported: &[&str]) -> Prior
         evaluation.accepted(),
         "this world's premise is a group that ended clean"
     );
-    PriorRescan::of(&evaluation, Landed::Committed)
+    PriorRescan::of(&evaluation, Landed::Committed, &every_fixture_grade())
 }
 
 /// The same rescan, from a group that ended **needs-work** — so its bump was
@@ -2539,7 +2552,7 @@ pub async fn rescan_from_needs_work_group(still_reported: &[&str]) -> PriorResca
         !evaluation.accepted(),
         "a failed check is what makes this group needs-work"
     );
-    PriorRescan::of(&evaluation, Landed::Reverted)
+    PriorRescan::of(&evaluation, Landed::Reverted, &every_fixture_grade())
 }
 
 /// A rescan from a group that ended clean and whose bump was **not** committed.
@@ -2554,7 +2567,7 @@ pub async fn rescan_from_a_clean_group_that_was_not_committed(
 ) -> PriorRescan {
     let evaluation = cleanly_evaluated(still_reported).await;
     assert!(evaluation.accepted());
-    PriorRescan::of(&evaluation, Landed::Reverted)
+    PriorRescan::of(&evaluation, Landed::Reverted, &every_fixture_grade())
 }
 
 /// A rescan whose absences were observed through a **different scanner
@@ -2577,7 +2590,7 @@ pub async fn rescan_from_a_committed_group_at_another_scanner_version() -> Prior
         matches!(evaluation.rescan(), RescanVerdict::Provisional(_)),
         "this world's premise is an absence seen through a moved feed"
     );
-    PriorRescan::of(&evaluation, Landed::Committed)
+    PriorRescan::of(&evaluation, Landed::Committed, &every_fixture_grade())
 }
 
 /// A rescan whose document carried **no `osPackages` key at all**, from a group
@@ -2600,7 +2613,7 @@ pub async fn rescan_from_a_committed_group_that_reported_on_one_array() -> Prior
         matches!(evaluation.rescan(), RescanVerdict::NotObserved { .. }),
         "this world's premise is an array the scanner never reported on"
     );
-    PriorRescan::of(&evaluation, Landed::Committed)
+    PriorRescan::of(&evaluation, Landed::Committed, &every_fixture_grade())
 }
 
 /// An evaluation that is accepted, over a rescan still reporting `still_reported`.
@@ -2794,7 +2807,8 @@ pub async fn migration_world() -> MigrationWorld {
          or no exclusion asserted downstream of it means anything"
     );
 
-    let projection = project(&scanned(&report)).expect("a fixture document projects");
+    let projection =
+        project(&scanned(&report), &every_fixture_grade()).expect("a fixture document projects");
     let fixable: Vec<ProjectedFinding> = projection.fixable().cloned().collect();
     assert!(
         !fixable.is_empty(),

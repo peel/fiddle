@@ -130,7 +130,7 @@ pub use in_workspace::{InWorkspace, Rescan};
 use crate::cve::project::{project, Arm};
 use crate::scanner::{ScanError, ScanReport};
 use async_trait::async_trait;
-use fiddle_core::{AdvisoryId, Severity};
+use fiddle_core::{AdvisoryId, Severities, Severity};
 
 /// What it means for one check to have succeeded.
 ///
@@ -220,6 +220,19 @@ pub struct Contract {
     /// The checks, in the order they run.
     pub checks: Vec<Check>,
 
+    /// The grades this deployment acts on — `[orchestration.cve] severities`.
+    ///
+    /// Configuration, so it belongs on this side of the struct beside
+    /// [`Contract::checks`] and not on [`Repair`], which holds only facts about
+    /// the scan an attempt started from.
+    ///
+    /// It is here because **condition (b) asks the same question `selected` asks**
+    /// — see [`judge`] — and a rescan reading a wider set than the projection did
+    /// would refuse repairs over findings the run would never have opened one for,
+    /// while a narrower one would pass a repair that traded a `HIGH` advisory for
+    /// a `MEDIUM` a deployment said it acts on. One value, threaded once.
+    pub severities: Severities,
+
     /// What the rescan is compared against, or `None` where nothing set out to
     /// be fixed.
     ///
@@ -240,9 +253,14 @@ impl Contract {
     /// The spelling every caller that only wants to run commands should use, so
     /// that `repair: None` is a decision somebody wrote down rather than a field
     /// they did not notice.
+    /// The grades default to what a document naming none means, for the reason
+    /// `repair: None` is spelled out: a contract with nothing claimed about a
+    /// repair judges no rescan at all, so the set it would have consulted cannot
+    /// change an answer here.
     pub fn of(checks: Vec<Check>) -> Self {
         Self {
             checks,
+            severities: Severities::default(),
             repair: None,
         }
     }
@@ -915,7 +933,7 @@ pub async fn evaluate(contract: &Contract, tree: &impl Tree) -> Result<Evaluatio
     // Both halves are required, and the `None` on either side is
     // `NotCompared` rather than a pass. See `Contract::repair`.
     let rescan = match (&contract.repair, report) {
-        (Some(repair), Some(report)) => judge(repair, report),
+        (Some(repair), Some(report)) => judge(repair, report, &contract.severities),
         _ => RescanVerdict::NotCompared,
     };
 
@@ -934,7 +952,12 @@ pub async fn evaluate(contract: &Contract, tree: &impl Tree) -> Result<Evaluatio
 /// the package; both can make one disappear. So a surviving id and a new finding
 /// are facts either way and are refused without qualification, and it is the
 /// clean answer that has to earn the right to be called proof.
-fn judge(repair: &Repair, report: &ScanReport) -> RescanVerdict {
+///
+/// `acted_on` is the deployment's grade set, and it is the **same** value the
+/// input scan was projected through. Both conditions are asked about which
+/// findings matter, so a rescan judged against a different set than the scan that
+/// opened the repair would be answering a question about another deployment.
+fn judge(repair: &Repair, report: &ScanReport, acted_on: &Severities) -> RescanVerdict {
     // Through the projection rather than over `report.document` directly. It is
     // the code that reads *both* package arrays and the code the OS half of
     // condition (a) is really about — a second walk of the document here would
@@ -942,11 +965,11 @@ fn judge(repair: &Repair, report: &ScanReport) -> RescanVerdict {
     // one module whose job is to catch it.
     //
     // It selects as well as reads, which is the right reading for both
-    // conditions: an advisory the rescan grades below what
-    // `fiddle_core::selected` acts on is one this build would not have opened a
-    // repair for, so it is neither something the group failed to clear nor
-    // something that newly demands attention.
-    let projection = match project(report) {
+    // conditions: an advisory the rescan grades outside what this deployment
+    // acts on is one the run would not have opened a repair for, so it is
+    // neither something the group failed to clear nor something that newly
+    // demands attention.
+    let projection = match project(report, acted_on) {
         Ok(projection) => projection,
         Err(why) => return RescanVerdict::Unreadable(why.to_string()),
     };
@@ -969,9 +992,14 @@ fn judge(repair: &Repair, report: &ScanReport) -> RescanVerdict {
     // between a condition that catches a traded vulnerability and one that
     // refuses every repair of an image with more than one group's findings in
     // it.
+    // `contains` and not the whole of `selected`: what refuses a repair here is a
+    // finding at a grade this deployment acts on, and the exploit arm is
+    // deliberately not consulted — a `LOW` advisory that arrived with a public
+    // exploit is worth a run of its own and is not evidence that *this* repair
+    // traded one vulnerability for another.
     if let Some(appeared) = projection
         .all()
-        .find(|finding| acts_on(finding.severity) && !repair.input.contains(&finding.cve))
+        .find(|finding| acted_on.contains(finding.severity) && !repair.input.contains(&finding.cve))
     {
         return RescanVerdict::NewFinding(Reason::NewFindingAppeared {
             cve: appeared.cve.clone(),
@@ -1016,20 +1044,6 @@ fn judge(repair: &Repair, report: &ScanReport) -> RescanVerdict {
     }
 
     RescanVerdict::Cleared
-}
-
-/// Is a grade one condition (b) refuses a repair over?
-///
-/// `HIGH` or `CRITICAL`, which is the design's wording and the first arm of
-/// `fiddle_core::selected`. Exhaustive with no wildcard, for that function's
-/// reason: a grade added later has to be ruled on here rather than defaulting
-/// into "not new", which is the failure that presents as *the rescan found
-/// nothing*.
-fn acts_on(severity: Severity) -> bool {
-    match severity {
-        Severity::Critical | Severity::High => true,
-        Severity::Medium | Severity::Low | Severity::Informational => false,
-    }
 }
 
 /// Why a check never started, said by the runner rather than by the tree.

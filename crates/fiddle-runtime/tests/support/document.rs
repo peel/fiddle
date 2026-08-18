@@ -200,12 +200,36 @@ pub fn unfixed_libraries(cves: &[&str]) -> Libraries {
     Libraries(unfixed_packages(cves, &LIBRARY_PACKAGES))
 }
 
+/// Library packages whose advisories carry `grade` rather than [`FIXTURE_GRADE`].
+///
+/// The one builder here that varies the severity, and it exists for the one
+/// question that is about it: `[orchestration.cve] severities` names the grades a
+/// deployment acts on, so a document has to be able to report a finding *outside*
+/// the default set. Every other builder writes [`FIXTURE_GRADE`] deliberately —
+/// see [`vulnerability`] — because a lane about attribution or grouping that
+/// varied the grade could pass because of a field those stages never read.
+///
+/// The fix is written, exactly as [`libraries`] writes it. A finding at a lower
+/// grade *with no fix* would be declined by both selection arms whatever the
+/// document says about grades, so it could not tell a wired grade set from an
+/// ignored one.
+pub fn libraries_graded(cves: &[&str], grade: &str) -> Libraries {
+    Libraries(packages_graded(cves, &LIBRARY_PACKAGES, grade))
+}
+
 /// OS packages, one per advisory id.
 pub fn os_packages(cves: &[&str]) -> OsPackages {
     OsPackages(packages(cves, &OS_PACKAGES))
 }
 
 fn packages(cves: &[&str], table: &[(&str, &str, &str); 3]) -> Vec<Package> {
+    packages_graded(cves, table, FIXTURE_GRADE)
+}
+
+/// [`packages`] at a named grade, which is the only thing [`libraries_graded`]
+/// varies. One body rather than two, so a document that reports a `MEDIUM`
+/// finding differs from one that reports a `HIGH` finding in exactly that key.
+fn packages_graded(cves: &[&str], table: &[(&str, &str, &str); 3], grade: &str) -> Vec<Package> {
     cves.iter()
         .enumerate()
         .map(|(at, cve)| {
@@ -213,7 +237,7 @@ fn packages(cves: &[&str], table: &[(&str, &str, &str); 3]) -> Vec<Package> {
             Package {
                 name: name.to_string(),
                 version: current.to_string(),
-                vulnerabilities: vec![vulnerability(cve, Some(fixed), BENIGN_DESCRIPTION)],
+                vulnerabilities: vec![graded(cve, Some(fixed), BENIGN_DESCRIPTION, grade)],
             }
         })
         .collect()
@@ -236,11 +260,15 @@ fn unfixed_packages(cves: &[&str], table: &[(&str, &str, &str); 3]) -> Vec<Packa
         .collect()
 }
 
-/// One reported vulnerability.
+/// The grade every fixture finding carries unless a builder says otherwise.
 ///
-/// `HIGH` because that is the severity the selection rule admits on its own: a
-/// fixture at a lower severity would be selected only through `hasExploit`, and
-/// then every test about selection would be about the other arm.
+/// `HIGH` because it is in the set a deployment that configures none acts on: a
+/// fixture at a lower grade would be selected only through `hasExploit`, and then
+/// every test about selection would be about the other arm. The one builder that
+/// varies it is [`libraries_graded`], whose lanes are about the grade set itself.
+pub const FIXTURE_GRADE: &str = "HIGH";
+
+/// One reported vulnerability, at [`FIXTURE_GRADE`].
 ///
 /// # Why the record carries more than the projection admits
 ///
@@ -253,9 +281,14 @@ fn unfixed_packages(cves: &[&str], table: &[(&str, &str, &str); 3]) -> Vec<Packa
 /// nothing to strip. So the record stays the scanner's: nested under a package,
 /// carrying `hasExploit` and a free-form `description` no typed value admits.
 fn vulnerability(cve: &str, fixed: Option<&str>, description: &str) -> serde_json::Value {
+    graded(cve, fixed, description, FIXTURE_GRADE)
+}
+
+/// [`vulnerability`] at a named grade. See [`libraries_graded`].
+fn graded(cve: &str, fixed: Option<&str>, description: &str, severity: &str) -> serde_json::Value {
     let mut value = serde_json::json!({
         "name": cve,
-        "severity": "HIGH",
+        "severity": severity,
         "hasExploit": false,
         "description": description,
     });

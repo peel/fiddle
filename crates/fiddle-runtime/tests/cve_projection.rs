@@ -24,13 +24,13 @@
 
 mod support;
 
-use fiddle_core::{PackageType, ProjectedFinding};
+use fiddle_core::{PackageType, ProjectedFinding, Severities, Severity};
 use fiddle_runtime::cve::project::{project, Arm};
 use support::cve::{
-    document_of, libraries, os_packages, report_with, report_with_advisory_description,
-    report_with_duplicate_cve_one_fixed_one_not, report_with_libraries_absent,
-    report_with_os_absent, report_with_os_empty, scan_of, scanned, DEFAULT_LIBRARY_CVES,
-    SENTINEL_PROSE,
+    document_of, every_fixture_grade, libraries, libraries_graded, os_packages, report_with,
+    report_with_advisory_description, report_with_duplicate_cve_one_fixed_one_not,
+    report_with_libraries_absent, report_with_os_absent, report_with_os_empty, scan_of, scanned,
+    DEFAULT_LIBRARY_CVES, SENTINEL_PROSE,
 };
 
 // The three helpers that put a fixture's bytes where a scan would have left them
@@ -49,7 +49,8 @@ fn both_package_arrays_are_read() {
     // assertion here would not: with only the OS row, a projection that read
     // `osPackages` and dropped `libraries` would pass.
     let report = report_with(libraries(&["CVE-1"]), os_packages(&["CVE-2"]));
-    let p = project(&scanned(&report)).expect("a fixture document projects");
+    let p =
+        project(&scanned(&report), &every_fixture_grade()).expect("a fixture document projects");
 
     assert!(
         p.all().any(|f| f.cve.as_str() == "CVE-2"),
@@ -86,13 +87,13 @@ fn an_empty_os_array_differs_from_an_absent_one() {
     // empty means it did and found none. Only the second is evidence a base
     // image is clean.
     assert_eq!(
-        project(&scanned(&report_with_os_absent()))
+        project(&scanned(&report_with_os_absent()), &every_fixture_grade())
             .expect("a fixture document projects")
             .os_arm(),
         Arm::Absent
     );
     assert_eq!(
-        project(&scanned(&report_with_os_empty()))
+        project(&scanned(&report_with_os_empty()), &every_fixture_grade())
             .expect("a fixture document projects")
             .os_arm(),
         Arm::Empty
@@ -101,10 +102,10 @@ fn an_empty_os_array_differs_from_an_absent_one() {
     // satisfied by an `os_arm` that never answers `Present`, and such an
     // implementation would report every scanned base image as unexamined.
     assert_eq!(
-        project(&scanned(&report_with(
-            libraries(&["CVE-1"]),
-            os_packages(&["CVE-2"])
-        )))
+        project(
+            &scanned(&report_with(libraries(&["CVE-1"]), os_packages(&["CVE-2"]))),
+            &every_fixture_grade()
+        )
         .expect("a fixture document projects")
         .os_arm(),
         Arm::Present
@@ -127,24 +128,30 @@ fn an_empty_os_array_differs_from_an_absent_one() {
 #[test]
 fn an_absent_library_array_is_reported_as_absent() {
     assert_eq!(
-        project(&scanned(&report_with_libraries_absent()))
-            .expect("a fixture document projects")
-            .library_arm(),
+        project(
+            &scanned(&report_with_libraries_absent()),
+            &every_fixture_grade()
+        )
+        .expect("a fixture document projects")
+        .library_arm(),
         Arm::Absent
     );
     // The same control the OS rows have, and needed for the same reason: both
     // arms above are satisfied by a `library_arm` that never answers anything
     // else.
     assert_eq!(
-        project(&scanned(&report_with_os_absent()))
+        project(&scanned(&report_with_os_absent()), &every_fixture_grade())
             .expect("a fixture document projects")
             .library_arm(),
         Arm::Present
     );
     assert_eq!(
-        project(&scanned(&report_with(libraries(&[]), os_packages(&[]))))
-            .expect("a fixture document projects")
-            .library_arm(),
+        project(
+            &scanned(&report_with(libraries(&[]), os_packages(&[]))),
+            &every_fixture_grade()
+        )
+        .expect("a fixture document projects")
+        .library_arm(),
         Arm::Empty
     );
 }
@@ -160,7 +167,8 @@ const RENAMED: &str = "CVE-2026-778";
 fn a_cve_reported_both_with_and_without_a_fix_is_fixable_only() {
     // Filtering on fixedVersion puts it in BOTH lists. Subtraction is the fix.
     let document = document_of(&report_with_duplicate_cve_one_fixed_one_not(DUPLICATED));
-    let p = project(&scan_of(document.clone())).expect("a fixture document projects");
+    let p = project(&scan_of(document.clone()), &every_fixture_grade())
+        .expect("a fixture document projects");
 
     // The premise, asserted rather than assumed. If the fixture ever stopped
     // carrying the advisory twice, everything below would still pass and would
@@ -192,7 +200,8 @@ fn a_cve_reported_both_with_and_without_a_fix_is_fixable_only() {
         "the mutation must reach the record that carries the fix"
     );
 
-    let q = project(&scan_of(renamed)).expect("the mutated document projects");
+    let q =
+        project(&scan_of(renamed), &every_fixture_grade()).expect("the mutated document projects");
     assert!(
         q.upstream_blocked().any(|f| f.cve.as_str() == DUPLICATED),
         "with no fix anywhere for {DUPLICATED}, it is upstream-blocked — this is \
@@ -214,7 +223,8 @@ fn no_scanner_prose_crosses_the_boundary() {
         "the fixture has to put the prose in the document it is projected from"
     );
 
-    let p = project(&scanned(&report)).expect("a fixture document projects");
+    let p =
+        project(&scanned(&report), &every_fixture_grade()).expect("a fixture document projects");
     let projected: Vec<&ProjectedFinding> = p.all().collect();
     assert!(
         !projected.is_empty(),
@@ -254,7 +264,7 @@ fn a_grade_this_build_cannot_rank_refuses_the_report_rather_than_dropping_it() {
     // trusted to repeat, and it presents as the scanner having found nothing.
     let document = document_of(&report_with(libraries(&["CVE-1"]), os_packages(&[])));
     assert_eq!(
-        project(&scan_of(document.clone()))
+        project(&scan_of(document.clone()), &every_fixture_grade())
             .expect("a fixture document projects")
             .all()
             .count(),
@@ -273,10 +283,55 @@ fn a_grade_this_build_cannot_rank_refuses_the_report_rather_than_dropping_it() {
         "the mutation must reach the grade it is about"
     );
 
-    let refused = project(&scan_of(lower_cased))
+    let refused = project(&scan_of(lower_cased), &every_fixture_grade())
         .expect_err("a grade this build cannot rank is refused, not dropped");
     assert!(
         refused.to_string().contains("high"),
         "the refusal has to name the grade that was not admitted, got: {refused}"
+    );
+}
+
+/// **The projection acts on the grades the deployment named, not on a set this
+/// crate holds.**
+///
+/// `[orchestration.cve] severities` reaches selection through this function's
+/// second argument, and this is the lane that fails if it stops doing so. The
+/// document is the same in both halves — one `MEDIUM` library finding, with a
+/// published fix and no public exploit — so the *only* difference between the two
+/// answers is the set that was passed in.
+///
+/// `MEDIUM` with no exploit is the case that discriminates. The exploit arm is not
+/// configurable and would admit this finding whatever the grade set said, so a
+/// fixture carrying `hasExploit: true` would be projected either way and would
+/// prove nothing about the key.
+///
+/// Both directions are asserted. Without the first, an implementation that
+/// projected every finding regardless of grade would pass; without the second, one
+/// that projected none would.
+#[test]
+fn a_deployment_that_names_a_lower_grade_projects_its_findings() {
+    let report = report_with(libraries_graded(&["CVE-1"], "MEDIUM"), os_packages(&[]));
+
+    let by_default =
+        project(&scanned(&report), &every_fixture_grade()).expect("a fixture document projects");
+    assert_eq!(
+        by_default.all().count(),
+        0,
+        "a document naming no grades means HIGH and CRITICAL, so a MEDIUM \
+         finding with no public exploit is not one this deployment acts on"
+    );
+
+    let acting_on_medium =
+        Severities::of(&[Severity::Critical, Severity::High, Severity::Medium]).unwrap();
+    let configured =
+        project(&scanned(&report), &acting_on_medium).expect("a fixture document projects");
+    assert_eq!(
+        configured.all().count(),
+        1,
+        "the deployment named MEDIUM, so the MEDIUM finding is one it acts on"
+    );
+    assert!(
+        configured.fixable().any(|f| f.cve.as_str() == "CVE-1"),
+        "and it reaches the fixable set, which is what a run opens a group from"
     );
 }

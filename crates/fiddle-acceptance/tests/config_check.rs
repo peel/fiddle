@@ -989,7 +989,7 @@ max_findings = 3
 go = { program = "go", args = [] }
 "#;
 
-/// **The bound the PRD documents is a bound the document can set.**
+/// **Both preferences the PRD documents are preferences the document can set.**
 ///
 /// `[orchestration.cve] max_findings` was in the product document's
 /// configuration example and in no reader for the whole of M4a, so the number a
@@ -997,7 +997,13 @@ go = { program = "go", args = [] }
 /// number, which is exactly why nobody noticed. This is what makes the two
 /// distinguishable: the document says `3`, and `3` is what comes back.
 ///
-/// The image is asserted beside it and is not decoration: it is the one key in
+/// `severities` is the other key of that same two-key example, and it survived a
+/// pass longer: the table above omits it, so what is asserted here is the
+/// **default** — the set a document that says nothing about grades still means,
+/// and the set this build acted on for the whole of M4a. The lane that varies it
+/// is [`the_grades_a_sweep_acts_on_are_the_grades_the_document_named`].
+///
+/// The image is asserted beside them and is not decoration: it is the one key in
 /// this table with no default, because a guessed image would scan whichever tag
 /// this build shipped with.
 #[test]
@@ -1007,10 +1013,156 @@ fn the_sweep_table_loads_and_reports_the_bound_the_document_set() {
         cve,
         serde_json::json!({
             "image": "ghcr.io/acme/icecube:latest",
+            "severities": ["CRITICAL", "HIGH"],
             "max_findings": 3,
             "go": { "program": "go", "args": [] },
         }),
         "a bound nothing reports back is a bound an operator cannot confirm: {cve}"
+    );
+}
+
+/// **The `[orchestration.cve]` table in the product manual is a table this
+/// binary accepts — read out of the manual, not transcribed from it.**
+///
+/// The transcription is what failed. `severities = ["HIGH", "CRITICAL"]` sat in
+/// the PRD's configuration example while `OrchestrationCve` — `deny_unknown_fields`
+/// — admitted three other names, so a deployment that copied the manual exited 2
+/// with `unknown field \`severities\``. The table beside this one is *written the
+/// way an operator would write them*, which is exactly why it could not catch
+/// that: it is this suite's idea of the table, and the divergence was between the
+/// manual and the schema.
+///
+/// So this lane parses `docs/fiddle-agentic-factory-prd.md` and feeds the binary
+/// the manual's own bytes. Either document may now move and the other has to
+/// follow: a key added to the manual that the schema refuses reds here, and so
+/// does a key the schema stops admitting.
+///
+/// **The extraction is asserted before it is used.** A helper that silently found
+/// nothing would make this lane a `config check` over `AGENTIC` alone — green,
+/// and evidence for nothing — so the table is required to carry both keys the
+/// manual's example documents before a byte of it is handed over.
+#[test]
+fn the_sweep_table_the_product_manual_documents_is_one_the_schema_accepts() {
+    let documented = documented_sweep_table();
+    for key in ["severities", "max_findings", "image"] {
+        assert!(
+            documented.contains(key),
+            "the manual's `[orchestration.cve]` example must name {key}, or this \
+             lane is checking a document the manual does not contain: {documented}"
+        );
+    }
+    let out = check(&format!(
+        "{AGENTIC}[scanner]\n\
+         cli = {{ program = \"wizcli\", args = [\"scan\"] }}\n\
+         client_id = {{ env = \"WIZ_CLIENT_ID\" }}\n\
+         client_secret = {{ env = \"WIZ_CLIENT_SECRET\" }}\n\
+         timeout = \"20m\"\n\
+         \n{documented}"
+    ));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the manual's own sweep table was refused, so a deployment that copies \
+         the manual cannot start. stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The `[orchestration.cve]` table of the PRD's `fiddle.toml` example, verbatim.
+///
+/// Read from the product document rather than held as a constant here, because a
+/// constant is a transcription and a transcription is the thing that drifted. The
+/// table runs from its own header to the next TOML header or the end of the
+/// fenced block, which is what a TOML table is; the comment lines inside it come
+/// along, and they are part of what an operator would copy.
+fn documented_sweep_table() -> String {
+    let manual = std::fs::read_to_string("../../docs/fiddle-agentic-factory-prd.md")
+        .expect("the product manual is two levels up from this package");
+    let mut lines = manual
+        .lines()
+        .skip_while(|line| line.trim() != "[orchestration.cve]");
+    let header = lines
+        .next()
+        .expect("the manual documents an [orchestration.cve] table");
+    let body = lines.take_while(|line| {
+        let line = line.trim();
+        !line.starts_with('[') && !line.starts_with("```")
+    });
+    std::iter::once(header)
+        .chain(body)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **The grades a sweep acts on are the grades the document named.**
+///
+/// The property `max_findings` has, for the key beside it, and it is asked the
+/// only way that distinguishes a wired key from an ignored one: this document
+/// names a set the build does **not** default to. `MEDIUM` is in it and
+/// `["CRITICAL", "HIGH"]` is what an omitting document means, so an
+/// implementation that read the key and threw it away comes back with two grades
+/// where this asserts three.
+///
+/// Reported ranked rather than as written. The value is a *set* — two documents
+/// spelling the same grades in different orders describe one deployment — and
+/// worst-first is the one spelling both of them share, so an operator comparing
+/// two accepted documents is comparing their meaning rather than their typing.
+#[test]
+fn the_grades_a_sweep_acts_on_are_the_grades_the_document_named() {
+    let document = format!(
+        "{AGENTIC}{}",
+        SWEEP.replace(
+            "max_findings = 3",
+            "severities = [\"HIGH\", \"MEDIUM\", \"CRITICAL\"]\nmax_findings = 3",
+        )
+    );
+    let cve = checked(&document)["orchestration"]["cve"].clone();
+    assert_eq!(
+        cve["severities"],
+        serde_json::json!(["CRITICAL", "HIGH", "MEDIUM"]),
+        "a grade set nothing reports back is one an operator cannot confirm: {cve}"
+    );
+}
+
+/// **A sweep that names no grade at all is refused rather than quietly run.**
+///
+/// `severities = []` parses as a TOML array and would leave the severity arm
+/// selecting nothing, so the run would act only on findings carrying a public
+/// exploit *and* a published fix — a sweep almost nothing reaches, presenting to
+/// an operator as *the scanner found nothing*. That is the failure this whole
+/// table's `deny_unknown_fields` exists to prevent one spelling of, and an empty
+/// list is the other spelling.
+///
+/// The diagnostic has to name the key, and it must **not** be the diagnostic
+/// this document used to get. `severities = []` was refused before this key
+/// existed too — as an unknown field — so a lane asserting only *exit 2, and the
+/// word `severities` appears* is satisfied by a build that never wired the key at
+/// all. The second assertion is what makes this one about the empty list.
+#[test]
+fn a_sweep_that_names_no_grade_is_refused() {
+    let out = check(&format!(
+        "{AGENTIC}{}",
+        SWEEP.replace("max_findings = 3", "severities = []\nmax_findings = 3")
+    ));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("severities"),
+        "the refusal must name the key an operator would fix, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("unknown field"),
+        "an empty list must be refused as an empty list; refusing it as an \
+         unknown key means the key is not wired, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("at least one grade"),
+        "the refusal must say what to write instead, got: {stderr}"
     );
 }
 

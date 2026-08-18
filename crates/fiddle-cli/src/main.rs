@@ -1227,6 +1227,12 @@ fn build_capability<'a>(
                         .clone(),
                     workspace_root: workspace.root.clone(),
                     image: sweep.image.clone(),
+                    // The grades the document named, or the two a document naming
+                    // none has always meant. Cloned from the same table
+                    // `max_findings` is read from, so the two documented
+                    // preferences of `[orchestration.cve]` reach the capability
+                    // from one place.
+                    severities: sweep.severities.clone(),
                     scratch: rescans,
                     rescan_credential: tenant()?,
                     go: WorkspaceCommand {

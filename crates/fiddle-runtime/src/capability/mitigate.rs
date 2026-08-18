@@ -63,7 +63,7 @@ use crate::scanner::{ScanReport, Scanner, WizCredential};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError};
 use fiddle_core::{
     correlation_key, AdvisoryId, AttemptId, CapabilityId, ChangeSetState, EvidenceRef,
-    ProjectedFinding, RunDisposition, TreeObservation,
+    ProjectedFinding, RunDisposition, Severities, TreeObservation,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -125,6 +125,18 @@ pub struct MitigateConfig {
 
     /// What is scanned, in whatever spelling the scanner accepts.
     pub image: String,
+
+    /// The grades this deployment acts on by grade alone — `[orchestration.cve]
+    /// severities`, and the second half of that table's two documented
+    /// preferences beside [`MitigateConfig::findings`].
+    ///
+    /// Carried here rather than defaulted at the projection, for the reason every
+    /// other field in this struct is here: it is a deployment decision an
+    /// operator wrote down. It reaches two readers and has to be the same value
+    /// at both — the input scan's projection and the rescan's contract — because
+    /// a repair judged against a different set than the scan that opened it is
+    /// answering about another deployment.
+    pub severities: Severities,
 
     /// Where a rescan's report is written and stays. Owned by the caller for
     /// [`Rescan::scratch`]'s reason: the artefact has to outlive the scan long
@@ -274,7 +286,7 @@ where
     /// does around it — write the report *whatever* this answered — is visible
     /// in one screen.
     async fn sweep(&self, report: &ScanReport) -> Result<Run, CapabilityError> {
-        let projection = project(report)?;
+        let projection = project(report, &self.config.severities)?;
 
         // 1. Which branch. Before a tree is touched, so a refusal precedes any
         //    commit. See this module's header.
@@ -416,7 +428,11 @@ where
                 .await?;
             let status = GroupStatus::of(&evaluation, &attempt_outcome.forbidden);
             let landed = land(&git, &grouped, &status, &attempt_outcome.changed).await?;
-            prior = Some(PriorRescan::of(&evaluation, landed));
+            prior = Some(PriorRescan::of(
+                &evaluation,
+                landed,
+                &self.config.severities,
+            ));
 
             attempted.push(Attempted {
                 findings: findings_of(&grouped),
@@ -607,6 +623,7 @@ where
     ) -> Result<Evaluation, CapabilityError> {
         let contract = Contract {
             checks: self.config.checks.clone(),
+            severities: self.config.severities.clone(),
             repair: Some(Repair {
                 must_clear: grouped.cves().into_iter().cloned().collect(),
                 input: projection

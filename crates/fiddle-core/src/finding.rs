@@ -140,6 +140,119 @@ pub enum Severity {
     Informational,
 }
 
+impl Severity {
+    /// How bad this grade is, worst first, so a set of grades has one order.
+    ///
+    /// Exhaustive with no wildcard, for [`selected`]'s reason and one more: this
+    /// is the **only** place in the build that names every grade, so a grade
+    /// added later is ruled on here rather than sorting itself silently to the
+    /// end of a ranking somebody reads as *least bad*.
+    fn rank(self) -> u8 {
+        match self {
+            Severity::Critical => 0,
+            Severity::High => 1,
+            Severity::Medium => 2,
+            Severity::Low => 3,
+            Severity::Informational => 4,
+        }
+    }
+}
+
+/// The grades a deployment acts on by grade alone — `[orchestration.cve]
+/// severities`.
+///
+/// A **set** rather than a floor, because that is what the product document
+/// spells: `severities = ["HIGH", "CRITICAL"]` names grades and does not name a
+/// threshold. The two agree on that value and stop agreeing the moment a
+/// deployment wants `CRITICAL` and `MEDIUM` without `HIGH` — and a set can say
+/// that where a floor cannot, at no cost to the deployment that only ever wanted
+/// the top two.
+///
+/// Held in rank order with no repeats, and that is what makes equality mean what
+/// a reader expects: two documents naming the same grades in different orders
+/// describe one deployment, so a value that remembered which order they were
+/// typed in would make those two documents differ. It is also why the set is
+/// reported back **ranked** rather than as written — see
+/// `fiddle_cli::render`'s sweep payload.
+///
+/// **Non-empty by construction.** See [`SeveritiesError::NamesNoGrade`] for why
+/// an empty list is refused rather than obeyed.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(try_from = "Vec<Severity>")]
+pub struct Severities(Vec<Severity>);
+
+/// Why a set of grades was refused.
+///
+/// One variant, for [`AdvisoryIdError`]'s reason: a second unsuccessful arm
+/// should be a variant a caller has to handle, not a reason string smuggled into
+/// this one.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum SeveritiesError {
+    /// The list is empty, so the grade arm of [`selected`] would admit nothing.
+    ///
+    /// Refused rather than obeyed. A deployment that wrote `severities = []` has
+    /// not described a narrower sweep — it has described one whose first arm can
+    /// never fire, leaving only *a public exploit together with a published fix*,
+    /// and that presents to an operator as **the scanner found nothing**. It is
+    /// the same failure `deny_unknown_fields` refuses one spelling of on this
+    /// table, and an empty list is the other spelling.
+    #[error(
+        "severities must name at least one grade; a sweep that acts on no grade \
+         reports nothing and looks like a clean image"
+    )]
+    NamesNoGrade,
+}
+
+impl Severities {
+    /// The grades named, ranked and deduplicated, or [`SeveritiesError`].
+    pub fn of(grades: &[Severity]) -> Result<Self, SeveritiesError> {
+        let mut ranked = grades.to_vec();
+        ranked.sort_by_key(|grade| grade.rank());
+        ranked.dedup();
+        if ranked.is_empty() {
+            return Err(SeveritiesError::NamesNoGrade);
+        }
+        Ok(Severities(ranked))
+    }
+
+    /// Is `severity` one of the grades this deployment acts on by grade alone?
+    pub fn contains(&self, severity: Severity) -> bool {
+        self.0.contains(&severity)
+    }
+
+    /// The grades in this set, worst first.
+    pub fn grades(&self) -> impl Iterator<Item = Severity> + '_ {
+        self.0.iter().copied()
+    }
+}
+
+/// What a document that names no grades means: `HIGH` and `CRITICAL`.
+///
+/// The set this build acted on for the whole of M4a, when the rule was a match
+/// arm and no document could reach it. It is the default so that a deployment
+/// which omits the key means exactly what it meant before the key was read —
+/// the same standard `max_findings` was defaulted to the constant it replaced.
+impl Default for Severities {
+    fn default() -> Self {
+        Severities(vec![Severity::Critical, Severity::High])
+    }
+}
+
+/// Deserialized *through* [`Severities::of`], so a document cannot reach the
+/// inner list without the ranking and the non-empty rule.
+///
+/// [`AdvisoryId`]'s reason, at the shape a configuration document actually
+/// arrives in: almost every value of this type is read out of `fiddle.toml`
+/// rather than built by a call, so a type that checked in `of` and passed a raw
+/// list through `Deserialize` would leave the refusal where no document meets it.
+impl TryFrom<Vec<Severity>> for Severities {
+    type Error = SeveritiesError;
+
+    fn try_from(grades: Vec<Severity>) -> Result<Self, Self::Error> {
+        Severities::of(&grades)
+    }
+}
+
 /// Whether a finding is against a dependency the project declares or against
 /// the image it is built on.
 ///
@@ -187,8 +300,8 @@ pub struct ProjectedFinding {
 ///
 /// Two arms, and the second is what earns the function:
 ///
-/// 1. `HIGH` or `CRITICAL`, on severity alone.
-/// 2. Below that, a **public exploit together with a fixed version**.
+/// 1. One of `severities`, on grade alone.
+/// 2. Outside that set, a **public exploit together with a fixed version**.
 ///
 /// The conjunction in the second arm is the whole of it. A public exploit with
 /// no published fix is the case a severity threshold would let through here and
@@ -201,13 +314,32 @@ pub struct ProjectedFinding {
 /// `fixed_version` is `Option<&str>` rather than `Option<String>` so a caller
 /// holding either can pass it without cloning; a blank string is treated as no
 /// fix at all, since a scanner that writes `""` is naming no version.
-pub fn selected(severity: Severity, has_exploit: bool, fixed_version: Option<&str>) -> bool {
-    // Exhaustive with no wildcard: a severity added later must be ruled on here
-    // rather than defaulting to "not selected".
-    let high_enough = match severity {
-        Severity::Critical | Severity::High => true,
-        Severity::Medium | Severity::Low | Severity::Informational => false,
-    };
+///
+/// # The first arm is the deployment's and the second is this build's
+///
+/// `severities` is a **parameter** and not a match arm, because the grades worth
+/// acting on are a property of the deployment: the product document has always
+/// carried `[orchestration.cve] severities`, and for the whole of M4a this
+/// function answered that question with `HIGH | CRITICAL` hardcoded, so a
+/// deployment that wanted `MEDIUM` had nowhere to say it. It arrives as an
+/// argument rather than being read here because this crate is pure — a
+/// configuration reader in it would be the thing
+/// `fiddle_acceptance::crate_boundary` refuses.
+///
+/// The second arm is **not** configurable and that is deliberate. It is not a
+/// preference about which findings matter; it is this build's account of what it
+/// can do about one — the only change this capability proposes is an upgrade, so
+/// a public exploit is worth acting on exactly when there is a version to move
+/// to. A deployment turning that off would be turning off a rule rather than
+/// setting a bound, and the PRD's own configuration requirements put mitigation
+/// behavior in Rust while putting selection preferences in the document.
+pub fn selected(
+    severities: &Severities,
+    severity: Severity,
+    has_exploit: bool,
+    fixed_version: Option<&str>,
+) -> bool {
+    let high_enough = severities.contains(severity);
     let fixable = fixed_version.is_some_and(|version| !version.trim().is_empty());
     high_enough || (has_exploit && fixable)
 }
@@ -445,30 +577,110 @@ mod tests {
         }
     }
 
-    /// Both selection arms, over every grade.
+    /// Both selection arms, over every grade, for a deployment that named none.
     ///
-    /// The three lower grades are looped rather than asserted once because
-    /// [`selected`] rules on each of them in its own match arm, so a mistake
-    /// confined to `Low` is invisible to a test that only tries `Medium`.
+    /// The three lower grades are looped rather than asserted once because a
+    /// mistake confined to `Low` is invisible to a test that only tries `Medium`.
     #[test]
     fn severity_selection_admits_the_exploit_arm() {
-        assert!(selected(Severity::High, false, None));
-        assert!(selected(Severity::Critical, false, None));
+        let acted_on = Severities::default();
+        assert!(selected(&acted_on, Severity::High, false, None));
+        assert!(selected(&acted_on, Severity::Critical, false, None));
 
         for below in [Severity::Medium, Severity::Low, Severity::Informational] {
             assert!(
-                !selected(below, false, Some("1.2.3")),
+                !selected(&acted_on, below, false, Some("1.2.3")),
                 "{below:?} does not qualify on severity, and a fix alone is not a reason to act"
             );
             assert!(
-                selected(below, true, Some("1.2.3")),
+                selected(&acted_on, below, true, Some("1.2.3")),
                 "a public exploit AND a fixed version qualifies below HIGH"
             );
             assert!(
-                !selected(below, true, None),
+                !selected(&acted_on, below, true, None),
                 "an exploit with no fix does not qualify on this arm"
             );
         }
+    }
+
+    /// **The grade arm is the deployment's, and a document is what moves it.**
+    ///
+    /// The whole of what wiring `[orchestration.cve] severities` bought. `MEDIUM`
+    /// with no public exploit is the discriminating case: under the default it is
+    /// declined on both arms, and it is admitted on the *first* arm — not the
+    /// exploit one — as soon as a deployment names the grade. An implementation
+    /// that took the parameter and ignored it answers `false` twice here.
+    ///
+    /// The control is the other direction, and it matters as much: a set that
+    /// names `MEDIUM` and not `HIGH` declines a `HIGH` finding. Without it, a
+    /// `contains` that answered `true` for everything would pass the first half.
+    #[test]
+    fn a_deployment_that_names_a_lower_grade_acts_on_it() {
+        let default = Severities::default();
+        let with_medium =
+            Severities::of(&[Severity::Critical, Severity::High, Severity::Medium]).unwrap();
+        assert!(
+            !selected(&default, Severity::Medium, false, Some("1.2.3")),
+            "a document that names no grades means what this build always meant"
+        );
+        assert!(
+            selected(&with_medium, Severity::Medium, false, Some("1.2.3")),
+            "a deployment that named MEDIUM acts on a MEDIUM finding with no exploit"
+        );
+
+        let medium_only = Severities::of(&[Severity::Medium]).unwrap();
+        assert!(
+            !selected(&medium_only, Severity::High, false, None),
+            "control: a set is the grades it names, so a grade it omits is not \
+             admitted by being worse than one it holds"
+        );
+    }
+
+    /// A set is the grades it names, not the order they were typed in.
+    ///
+    /// Both halves are needed. Equality alone holds for an implementation that
+    /// collapsed every set onto one value, and `grades` is what pins *which*
+    /// order a set reports in — worst first, which is the order the payload of
+    /// `config check` shows an operator.
+    #[test]
+    fn a_set_of_grades_is_its_grades_and_not_their_spelling() {
+        let as_the_manual_writes_them =
+            Severities::of(&[Severity::High, Severity::Critical]).unwrap();
+        let the_other_way = Severities::of(&[Severity::Critical, Severity::High]).unwrap();
+        assert_eq!(as_the_manual_writes_them, the_other_way);
+        assert_eq!(as_the_manual_writes_them, Severities::default());
+        assert_eq!(
+            the_other_way.grades().collect::<Vec<_>>(),
+            vec![Severity::Critical, Severity::High]
+        );
+
+        let said_twice = Severities::of(&[Severity::High, Severity::High]).unwrap();
+        assert_eq!(
+            said_twice.grades().collect::<Vec<_>>(),
+            vec![Severity::High],
+            "a grade named twice is one grade"
+        );
+    }
+
+    /// A set naming no grade is refused, at both boundaries.
+    ///
+    /// Through [`Severities::of`] and through the document, because the second is
+    /// how every real value of this type arrives: a check that lived only in `of`
+    /// would leave `severities = []` accepted by every deployment that writes one.
+    #[test]
+    fn a_set_that_names_no_grade_is_refused() {
+        assert_eq!(Severities::of(&[]), Err(SeveritiesError::NamesNoGrade));
+        let from_a_document = serde_json::from_str::<Severities>("[]");
+        assert!(
+            from_a_document.is_err(),
+            "an empty list must not deserialize: {from_a_document:?}"
+        );
+        assert_eq!(
+            serde_json::from_str::<Severities>(r#"["MEDIUM","CRITICAL"]"#).unwrap(),
+            Severities::of(&[Severity::Critical, Severity::Medium]).unwrap(),
+            "control: a list that names grades reads as those grades, in the \
+             scanner's own spelling"
+        );
     }
 
     /// A fix that is the empty string is no fix.
@@ -483,14 +695,15 @@ mod tests {
     /// would satisfy every assertion in this test.
     #[test]
     fn a_blank_fixed_version_does_not_satisfy_the_exploit_arm() {
+        let acted_on = Severities::default();
         for no_fix in [Some(""), Some("   "), Some("\t"), None] {
             assert!(
-                !selected(Severity::Medium, true, no_fix),
+                !selected(&acted_on, Severity::Medium, true, no_fix),
                 "{no_fix:?} names no version to upgrade to"
             );
         }
         assert!(
-            selected(Severity::Medium, true, Some("1.2.3")),
+            selected(&acted_on, Severity::Medium, true, Some("1.2.3")),
             "control: the same call with a real fixed version does qualify"
         );
     }

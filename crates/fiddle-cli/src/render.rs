@@ -302,6 +302,19 @@ pub fn config_check_json(config: &Config) -> String {
         body["orchestration"] = serde_json::json!({
             "cve": {
                 "image": cve.image,
+                // Ranked worst-first rather than in the order the document typed
+                // them. `Severities` is a *set* — two documents naming the same
+                // grades in either order describe one deployment — so echoing the
+                // typing back would invite an operator to compare two accepted
+                // documents and find a difference that is not one.
+                //
+                // Through `Severity`'s own `Serialize` and not a match here, which
+                // is the one departure from `rule` and `isolation` below and has a
+                // reason of its own: that enum carries `rename_all` on both
+                // directions precisely so a grade read as `HIGH` is written as
+                // `HIGH`, and a second spelling here would be the drift those
+                // attributes exist to prevent.
+                "severities": cve.severities.grades().collect::<Vec<_>>(),
                 // Echoed because it is a bound an operator set and cannot
                 // otherwise confirm — and because for the whole of M4a it was a
                 // key the PRD documented and nothing read, which is exactly the

@@ -441,6 +441,12 @@ max_diff_lines = 500
 [orchestration.cve]
 # Selection and run-budget preferences for nightly CVE mitigation. Mitigation
 # behavior, immediate checks, and major-version approval rules live in Rust.
+# The image has no default and must be written down: the host workflow builds it
+# and Fiddle scans it, so a guessed value would scan whichever tag this build
+# happened to ship with. `severities` names grades and not a floor; findings below
+# it are still acted on where a public exploit and a published fix coincide, which
+# is a rule in Rust rather than a preference here.
+image = "ghcr.io/snowplow/icecube:latest"
 severities = ["HIGH", "CRITICAL"]
 max_findings = 5
 

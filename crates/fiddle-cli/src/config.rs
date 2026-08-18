@@ -21,7 +21,7 @@
 //! Loading lives here rather than in `fiddle-core` because it reads the
 //! filesystem, and `fiddle-core` is mechanically held pure.
 
-use fiddle_core::{DeploymentRule, EffectKind};
+use fiddle_core::{DeploymentRule, EffectKind, Severities};
 use fiddle_runtime::effect::DeploymentPolicy;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -129,6 +129,32 @@ pub struct OrchestrationCve {
     /// build happened to ship with and open pull requests about somebody else's
     /// container.
     pub image: String,
+
+    /// The grades a sweep acts on by grade alone.
+    ///
+    /// **The other key of the product document's two-key example, wired one pass
+    /// later than the bound below it.** `severities = ["HIGH", "CRITICAL"]` sat in
+    /// the PRD's configuration example for the whole of M4a while this table
+    /// admitted three other names, so a deployment that copied the manual exited
+    /// 2 with `unknown field \`severities\`` — and one that wanted `MEDIUM` had
+    /// nowhere to write it either, because the rule was a match arm in
+    /// `fiddle_core::selected`. It is now that function's first argument, threaded
+    /// from here through `MitigateConfig` to the projection and to the rescan's
+    /// contract.
+    ///
+    /// Defaulted to `HIGH` and `CRITICAL` — the set the match arm held — so a
+    /// document that omits the key means exactly what it meant before the key was
+    /// read. The same standard `max_findings` was defaulted to the constant it
+    /// replaced, and for the same reason: wiring a key must not change what an
+    /// existing document does.
+    ///
+    /// An **empty list is refused**, by `Severities` itself rather than by a check
+    /// here. See `fiddle_core::SeveritiesError::NamesNoGrade`: it would leave a
+    /// sweep acting only on findings with a public exploit and a published fix,
+    /// which presents to an operator as the scanner having found nothing. ADR 021
+    /// records what this key does and does not govern.
+    #[serde(default)]
+    pub severities: Severities,
 
     /// How many fixable findings one run may take, the remainder deferred to the
     /// next.
