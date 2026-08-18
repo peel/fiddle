@@ -86,8 +86,14 @@ fn inspect_accepts_a_self_discovering_scheme_with_no_value() {
 ///
 /// Admitting the bare form added a fifth *shape* and no fifth defect: `cve:` is
 /// still an empty value, and a scheme written without its value is still
-/// malformed. Every row below is therefore unchanged, which is the point of
-/// running it again rather than of editing it.
+/// malformed. Every row that was here before is therefore unchanged, which is the
+/// point of running it again rather than of editing it.
+///
+/// `cve:` is a row of its own all the same, and not because it fails differently
+/// — it fails identically, and the pairwise check below is what makes it earn its
+/// place. Two callers who wrote an empty value have *different* repairs available
+/// when one of their schemes stands alone, so `beans:` and `cve:` must not be
+/// answered with the same words.
 #[test]
 fn inspect_rejects_a_malformed_invocation_ref() {
     let mut diagnostics = Vec::new();
@@ -95,6 +101,7 @@ fn inspect_rejects_a_malformed_invocation_ref() {
         ("bogus", "<scheme>:<value>"),
         ("mystery:x", "unknown invocation scheme"),
         ("beans:", "must not be empty"),
+        ("cve:", "must not be empty"),
         ("beans:../../../pwned", "ASCII letters, digits"),
     ] {
         let out = support::fiddle_command()
@@ -189,5 +196,65 @@ fn a_traversing_reference_creates_nothing_anywhere() {
     assert!(
         !s.dir().join("pwned").exists(),
         "nothing may be created outside the roots the configuration names"
+    );
+}
+
+/// **The advice for an empty value is the advice for the scheme it was given
+/// for.**
+///
+/// For every scheme but one there is a single legal repair: name the work. `cve`
+/// stands alone, so a caller who wrote `cve:` has *two* — drop the separator for a
+/// sweep that discovers its own findings, or name one finding to remediate — and
+/// those are different work. A
+/// sweep scans the configured image and opens what it finds; `cve:CVE-2026-1234`
+/// remediates the finding it was handed. Advice that named only the second sent
+/// an operator who wanted the first to the wrong one, silently and with an exit
+/// code of 2 either way.
+///
+/// The two halves are asserted together, and the second is what makes the first
+/// worth having: the bare form has to be *offered* for `cve:`, and it has to be
+/// **absent** for `beans:`, where writing `beans` alone is refused by the grammar.
+/// A help string that offered both repairs to everybody would pass the first
+/// assertion and be a new defect.
+#[test]
+fn an_empty_value_is_told_every_repair_its_own_scheme_admits() {
+    let refuse = |arg: &str| {
+        let out = support::fiddle_command()
+            .args([
+                "inspect",
+                arg,
+                "--config",
+                "../../tests/fixtures/fiddle.toml",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "arg={arg}");
+        String::from_utf8(out.stderr).unwrap()
+    };
+
+    let sweep = refuse("cve:");
+    assert!(
+        sweep.contains("discovers its own work"),
+        "a scheme that stands alone must be told so, or the bare form is a repair \
+         the operator has no way to learn about: {sweep}"
+    );
+    assert!(
+        sweep.contains("`cve`"),
+        "the bare form is one of the two repairs and must be spelled: {sweep}"
+    );
+    assert!(
+        sweep.contains("cve:<identifier>"),
+        "and so is the valued form, which remediates one finding: {sweep}"
+    );
+
+    let tracked = refuse("beans:");
+    assert!(
+        !tracked.contains("discovers its own work"),
+        "`beans` names a work item and `beans` alone is refused, so offering the \
+         bare form here would be advice that does not parse: {tracked}"
+    );
+    assert!(
+        tracked.contains("beans:fiddle-m0-demo"),
+        "the one repair a tracked scheme has is to name the work: {tracked}"
     );
 }

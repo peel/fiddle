@@ -211,20 +211,106 @@ struct Unconfigured {
     path: String,
 }
 
+/// What a credential authenticates to, and where the document names it.
+///
+/// The two are one type because they are one question. A credential that failed
+/// to resolve leaves an operator with two things to find out — *what wanted this*
+/// and *where did I write it* — and answering the first without the second sends
+/// them to grep. Naming a purpose is also what stops [`CredentialAbsent`] from
+/// hardcoding a noun: it held `model` for every credential in the binary, so an
+/// unexported `[scanner]` tenant reported as a missing model credential and sent
+/// its reader to `[agent]`.
+///
+/// One variant per credential-carrying table rather than per call site, because
+/// the noun is a property of the thing reached and not of the arm that reached
+/// for it: both of `[scanner]`'s variables are the scanner's, and all three of
+/// `[agent]`'s resolution sites are the model's.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CredentialPurpose {
+    /// `[agent]`'s `api_key` — the gateway a bounded attempt reaches.
+    Model,
+    /// `[github]`'s `token` — the forge `gh` and `git push` authenticate to.
+    Forge,
+    /// `[scanner]`'s tenant pair — the service account a scan runs as.
+    Scanner,
+}
+
+impl CredentialPurpose {
+    /// Every purpose, so a test can hold a property over all of them and a
+    /// fourth credential-carrying table cannot arrive without one.
+    ///
+    /// `cfg(test)` because nothing in the binary enumerates purposes — each
+    /// resolution site names the one it means — and an array that exists for a
+    /// property is better spelled as such than kept alive by an allowance.
+    #[cfg(test)]
+    const ALL: [CredentialPurpose; 3] = [
+        CredentialPurpose::Model,
+        CredentialPurpose::Forge,
+        CredentialPurpose::Scanner,
+    ];
+
+    /// The table the document names this credential in, spelled the way the
+    /// document spells it — the same convention [`Unconfigured::missing`] keeps,
+    /// because the reader's next move is the same one: go and look at that line.
+    fn table(self) -> &'static str {
+        match self {
+            CredentialPurpose::Model => "[agent]",
+            CredentialPurpose::Forge => "[github]",
+            CredentialPurpose::Scanner => "[scanner]",
+        }
+    }
+}
+
+impl std::fmt::Display for CredentialPurpose {
+    /// The noun a diagnostic calls this credential by. The single source of the
+    /// word, so the message and the help cannot come to use two.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            CredentialPurpose::Model => "model",
+            CredentialPurpose::Forge => "forge",
+            CredentialPurpose::Scanner => "scanner",
+        })
+    }
+}
+
 /// The environment does not hold the credential the configuration names.
 ///
 /// The **only** failure in this binary that is about a credential, because
 /// [`resolve_credential`] is the only place one is read. It names the variable
 /// and never its value — there is none to name, which is the point: the lookup
 /// failed.
-#[derive(Debug, thiserror::Error, miette::Diagnostic)]
-#[error("the model credential {variable} is not set")]
-#[diagnostic(
-    code(fiddle::config::credential_absent),
-    help("export {variable}, or set it as a repository secret, before running a capability that needs a model")
-)]
+///
+/// It also names *what wanted it*. One error type reports every credential in
+/// the binary, and while there was one credential-carrying table the noun could
+/// be a literal in the message; with three, a literal is a borrowed noun for two
+/// of them. See [`CredentialPurpose`].
+///
+/// [`miette::Diagnostic`] is implemented rather than derived — the only hand-written
+/// one here besides [`InvalidInvocationRef`] — because the help is assembled from
+/// the purpose's *two* words, the noun and the table, and only the first of them is
+/// a field as it stands.
+#[derive(Debug, thiserror::Error)]
+#[error("the {purpose} credential {variable} is not set")]
 struct CredentialAbsent {
+    purpose: CredentialPurpose,
     variable: String,
+}
+
+impl miette::Diagnostic for CredentialAbsent {
+    fn code<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        Some(Box::new("fiddle::config::credential_absent"))
+    }
+
+    fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        Some(Box::new(format!(
+            "export {variable}, or set it as a repository secret, before running \
+             a capability that reaches the {purpose}; {table} is where the \
+             document names it",
+            variable = self.variable,
+            purpose = self.purpose,
+            table = self.purpose.table(),
+        )))
+    }
 }
 
 /// A model client could not be built from what the configuration named.
@@ -286,28 +372,52 @@ impl miette::Diagnostic for InvalidInvocationRef {
         Some(Box::new(match self.0 {
             InvocationRefError::Malformed(_) => "fiddle::invocation_ref::malformed",
             InvocationRefError::UnknownScheme(_) => "fiddle::invocation_ref::unknown_scheme",
-            InvocationRefError::EmptyValue => "fiddle::invocation_ref::empty_value",
+            InvocationRefError::EmptyValue { .. } => "fiddle::invocation_ref::empty_value",
             InvocationRefError::IllegalValueCharacter { .. } => {
                 "fiddle::invocation_ref::illegal_value_character"
             }
         }))
     }
 
+    /// The repair, in the words of the defect — and for one defect, of the
+    /// *scheme* it was made with.
+    ///
+    /// An empty value has one legal repair for a scheme that names a work item and
+    /// **two** for a scheme that discovers its own, and this help named only the
+    /// appending one for both. That was universally correct until a scheme could
+    /// stand alone; afterwards it was advice that quietly redirected a caller from
+    /// a sweep to a tracker read — the same exit code, different work. So the
+    /// `EmptyValue` arm reads the scheme the error carries and offers both.
+    ///
+    /// Every arm produces a `String` rather than three `&'static str`s and one
+    /// `format!`, because a `match` whose arms are two types is not a `match` —
+    /// and the alternative, boxing per arm, would put the sole interesting line of
+    /// this function behind four identical wrappers.
     fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
-        Some(Box::new(match self.0 {
+        let help = match self.0 {
             InvocationRefError::Malformed(_) => {
-                "name the source scheme first, separated by a colon: `fiddle inspect beans:fiddle-m0-demo`"
+                "name the source scheme first, separated by a colon: `fiddle inspect beans:fiddle-m0-demo`".to_string()
             }
             InvocationRefError::UnknownScheme(_) => {
-                "fiddle addresses work by its source; use a scheme it knows, such as `beans:fiddle-m0-demo`"
+                "fiddle addresses work by its source; use a scheme it knows, such as `beans:fiddle-m0-demo`".to_string()
             }
-            InvocationRefError::EmptyValue => {
-                "the scheme is recognised but names no work; append the identifier, as in `beans:fiddle-m0-demo`"
-            }
+            // The scheme is `None` for an empty value written after a scheme
+            // fiddle does not know, which is the case with no scheme-specific
+            // advice to give — and it falls in with the schemes that name work,
+            // because every scheme fiddle knows but one does.
+            InvocationRefError::EmptyValue { scheme } => match scheme {
+                Some(scheme) if scheme.stands_alone() => format!(
+                    "`{scheme}` discovers its own work, so it takes either form and they are \
+                     different runs: write `{scheme}` to sweep what the configuration names, \
+                     or `{scheme}:<identifier>` to act on the one item you are naming"
+                ),
+                _ => "the scheme is recognised but names no work; append the identifier, as in `beans:fiddle-m0-demo`".to_string(),
+            },
             InvocationRefError::IllegalValueCharacter { .. } => {
-                "a reference names work, never a location: fiddle derives the paths it writes from this value, so it is an identifier only — write it with ASCII letters, digits, `-`, `_` and `:`, as in `beans:fiddle-m0-demo`"
+                "a reference names work, never a location: fiddle derives the paths it writes from this value, so it is an identifier only — write it with ASCII letters, digits, `-`, `_` and `:`, as in `beans:fiddle-m0-demo`".to_string()
             }
-        }))
+        };
+        Some(Box::new(help))
     }
 }
 
@@ -401,19 +511,29 @@ fn build_identity() -> FiddleBuild {
 /// type, not passed to a capability, not journaled, and not published.
 /// Grepping for `std::env::var` in this binary is how that stays true.
 ///
-/// There are exactly **two** call sites, and both are the same shape: the
-/// repairing arm of [`build_capability`] resolves the model credential, and
-/// [`resolve_forge`] resolves the forge credential. Each is reached only after
-/// its own selection has been made and only after the tables that selection
-/// needs have been found, so no command resolves a credential it has no use for
-/// — which is what keeps `config check`, `inspect`, and `run` over the
-/// deterministic capability credential-free.
+/// Every call site is the same shape: the three arms of [`build_capability`] that
+/// need a model resolve `[agent]`'s credential, [`resolve_forge`] resolves
+/// `[github]`'s, and the mitigating arm resolves `[scanner]`'s tenant pair. Each
+/// is reached only after its own selection has been made and only after the tables
+/// that selection needs have been found, so no command resolves a credential it
+/// has no use for — which is what keeps `config check`, `inspect`, and `run` over
+/// the deterministic capability credential-free.
+///
+/// The **purpose** is an argument rather than something the diagnostic infers,
+/// because the variable's name cannot carry it: `WIZ_CLIENT_ID` is a scanner
+/// credential by virtue of the table that named it, and a function that guessed
+/// from spellings would be wrong the first time a deployment renamed one. See
+/// [`CredentialPurpose`].
 ///
 /// The absence of the variable is an error rather than an empty string, so a
 /// deployment that forgot to export it is told so instead of authenticating
 /// with nothing and being told by the far end.
-fn resolve_credential(variable: &str) -> Result<String, CredentialAbsent> {
+fn resolve_credential(
+    purpose: CredentialPurpose,
+    variable: &str,
+) -> Result<String, CredentialAbsent> {
     std::env::var(variable).map_err(|_| CredentialAbsent {
+        purpose,
         variable: variable.to_string(),
     })
 }
@@ -572,8 +692,8 @@ struct Publishing {
 /// One function rather than two, because everything else is identical and it is
 /// the *credential* half: one resolution site, two clients, `gh` pinned to the
 /// document's own configuration directory. A sibling resolver would be a second
-/// place a credential is read, and [`resolve_credential`] exists to be able to say
-/// there are exactly two in this binary.
+/// place the *forge* credential is read, and [`resolve_credential`] exists to be
+/// able to say there is one place per credential in this binary.
 ///
 /// The capability the diagnostics are attributed to is `selection`'s own id, so a
 /// deployment driving a proposal that is missing `[workspace]` is told which
@@ -654,9 +774,9 @@ async fn resolve_forge(
     // programs with different environments, and they authenticate to the same
     // forge as the same principal — so this arm resolves the variable once, and
     // the value goes straight into the two clients that carry it and nowhere
-    // else. See [`resolve_credential`] for the other of this binary's two
-    // resolution sites and why there are exactly two.
-    let credential = resolve_credential(&github.token.env)?;
+    // else. See [`resolve_credential`] for this binary's other resolution sites
+    // and for why the purpose is passed in rather than inferred.
+    let credential = resolve_credential(CredentialPurpose::Forge, &github.token.env)?;
     let timeout = github.timeout.as_duration();
     let gh = GhCli::new(
         PathBuf::from(&github.cli.program),
@@ -842,7 +962,7 @@ fn build_capability<'a>(
 
             // Only now, and only on this arm. Everything above could have
             // failed for a deployment that never intended to talk to a model.
-            let credential = resolve_credential(&agent.api_key.env)?;
+            let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
             let model = fiddle_runtime::completion_model(
                 &agent.base_url,
                 credential,
@@ -953,7 +1073,7 @@ fn build_capability<'a>(
 
             // Only now, and only on this arm — the repairing arm's order, for the
             // repairing arm's reason.
-            let credential = resolve_credential(&agent.api_key.env)?;
+            let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
             let model = fiddle_runtime::completion_model(
                 &agent.base_url,
                 credential,
@@ -1140,7 +1260,7 @@ fn build_capability<'a>(
             // the repairing arm's reason: a deployment missing a table is told
             // about the table rather than about two variables it would also have
             // had to export.
-            let credential = resolve_credential(&agent.api_key.env)?;
+            let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
             let model = fiddle_runtime::completion_model(
                 &agent.base_url,
                 credential,
@@ -1154,8 +1274,14 @@ fn build_capability<'a>(
             // straight to the adapters that carry it.
             let tenant = || -> Result<fiddle_runtime::WizCredential, CredentialAbsent> {
                 Ok(fiddle_runtime::WizCredential {
-                    client_id: resolve_credential(&scanner.client_id.env)?,
-                    client_secret: resolve_credential(&scanner.client_secret.env)?,
+                    client_id: resolve_credential(
+                        CredentialPurpose::Scanner,
+                        &scanner.client_id.env,
+                    )?,
+                    client_secret: resolve_credential(
+                        CredentialPurpose::Scanner,
+                        &scanner.client_secret.env,
+                    )?,
                 })
             };
 
@@ -1560,13 +1686,14 @@ mod tests {
         );
         assert_eq!(
             exit_code_for(&Termination::Rejected(CliError::InvocationRef(
-                InvalidInvocationRef(InvocationRefError::EmptyValue)
+                InvalidInvocationRef(InvocationRefError::EmptyValue { scheme: None })
             ))),
             EXIT_INVALID_INPUT
         );
         assert_eq!(
             exit_code_for(&Termination::Rejected(CliError::CredentialAbsent(
                 CredentialAbsent {
+                    purpose: CredentialPurpose::Model,
                     variable: "LITELLM_API_KEY".into()
                 }
             ))),
@@ -1636,13 +1763,60 @@ mod tests {
     /// one would be reaching into the others.
     #[test]
     fn an_absent_credential_is_reported_under_the_name_that_was_asked_for() {
-        let error = resolve_credential("FIDDLE_A_VARIABLE_NOTHING_EXPORTS").unwrap_err();
+        let error = resolve_credential(
+            CredentialPurpose::Model,
+            "FIDDLE_A_VARIABLE_NOTHING_EXPORTS",
+        )
+        .unwrap_err();
         assert_eq!(error.variable, "FIDDLE_A_VARIABLE_NOTHING_EXPORTS");
         let rendered = render::diagnostic(&error);
         assert!(
             rendered.contains("FIDDLE_A_VARIABLE_NOTHING_EXPORTS"),
             "an operator must learn which variable to export: {rendered}"
         );
+    }
+
+    /// **No credential is described by another one's noun.**
+    ///
+    /// The defect this closes: the message was `the model credential {variable}
+    /// is not set` for *every* credential in the binary, so an unexported
+    /// `[scanner]` tenant reported as a missing model credential and its help sent
+    /// the reader to a table that was present and correct. Reproduced against the
+    /// release binary as `the model credential WIZ_CLIENT_ID is not set`.
+    ///
+    /// Written over [`CredentialPurpose::ALL`] rather than over the three purposes
+    /// there are today, so a fourth credential-carrying table is covered the day
+    /// it is added. The exclusion is the half that matters and the half an
+    /// assertion on the variable alone passed straight through: each rendering must
+    /// name its own noun **and none of the others**, which is what makes borrowing
+    /// one a failure here rather than a report from a reader.
+    #[test]
+    fn each_credential_is_described_by_the_thing_that_needs_it() {
+        for purpose in CredentialPurpose::ALL {
+            let rendered = render::diagnostic(&CredentialAbsent {
+                purpose,
+                variable: "A_VARIABLE".to_string(),
+            });
+            assert!(
+                rendered.contains(&format!("the {purpose} credential A_VARIABLE is not set")),
+                "a {purpose} credential must be reported as one: {rendered}"
+            );
+            assert!(
+                rendered.contains(purpose.table()),
+                "and the help must name the table the document writes it in: {rendered}"
+            );
+            for other in CredentialPurpose::ALL
+                .into_iter()
+                .filter(|candidate| *candidate != purpose)
+            {
+                assert!(
+                    !rendered.contains(&other.to_string()),
+                    "a {purpose} credential described with `{other}` sends an \
+                     operator to {}: {rendered}",
+                    other.table()
+                );
+            }
+        }
     }
 
     /// The deterministic capability is built from the configuration alone, with

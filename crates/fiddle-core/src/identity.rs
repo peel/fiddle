@@ -217,9 +217,25 @@ pub enum InvocationRefError {
     )]
     UnknownScheme(String),
 
-    /// A known scheme followed by nothing, so the reference names no work.
+    /// A scheme followed by nothing, so the reference names no work.
+    ///
+    /// The scheme is carried because the *repairs* available to a caller depend on
+    /// it. For a scheme that names a work item there is one — write the
+    /// identifier — but a scheme that [stands
+    /// alone](InvocationScheme::stands_alone) has two, and they are different
+    /// work: `cve` sweeps the configured image, `cve:CVE-2026-1234` remediates one
+    /// finding. Advice that named only the second sent a caller who wanted the
+    /// first to the wrong one. Which of the two is meant is not something a
+    /// renderer can know from the defect alone, so the variant carries it.
+    ///
+    /// An `Option`, and that is [`InvocationRef::from_str`]'s parse order made
+    /// visible rather than a convenience: the value is checked *before* the scheme
+    /// is looked up, so that the more specific defect wins, and `mystery:` is
+    /// therefore an empty value written after a scheme fiddle does not know.
+    /// `None` is that case, and it is exactly the case with no scheme-specific
+    /// advice to give.
     #[error("invocation reference value must not be empty")]
-    EmptyValue,
+    EmptyValue { scheme: Option<InvocationScheme> },
 
     /// A non-empty value written with a character outside
     /// [`InvocationRef::VALUE_GRAMMAR`].
@@ -270,7 +286,14 @@ impl FromStr for InvocationRef {
             };
         };
         if value.is_empty() {
-            return Err(InvocationRefError::EmptyValue);
+            // The lookup is done for the *error* and not for the parse: what a
+            // caller can be advised to write depends on whether their scheme
+            // stands alone, and an unknown one is admitted as `None` rather than
+            // being reported as an unknown scheme — which would undo the
+            // ordering the paragraph above argues for.
+            return Err(InvocationRefError::EmptyValue {
+                scheme: InvocationScheme::of(scheme),
+            });
         }
         if let Some(character) = value.chars().find(|c| !InvocationRef::admits(*c)) {
             return Err(InvocationRefError::IllegalValueCharacter {
@@ -449,7 +472,16 @@ mod tests {
         );
         assert_eq!(
             "beans:".parse::<InvocationRef>(),
-            Err(InvocationRefError::EmptyValue)
+            Err(InvocationRefError::EmptyValue {
+                scheme: Some(InvocationScheme::Beans)
+            })
+        );
+        // The scheme is carried even when it is not one fiddle knows, because the
+        // value is checked before the lookup — and `None` is what tells a
+        // renderer it has no scheme-specific advice to offer.
+        assert_eq!(
+            "mystery:".parse::<InvocationRef>(),
+            Err(InvocationRefError::EmptyValue { scheme: None })
         );
         assert_eq!(
             "beans:../../../pwned".parse::<InvocationRef>(),
@@ -563,7 +595,12 @@ mod tests {
     fn a_colon_with_nothing_after_it_is_still_empty_value() {
         assert_eq!(
             "cve:".parse::<InvocationRef>(),
-            Err(InvocationRefError::EmptyValue)
+            Err(InvocationRefError::EmptyValue {
+                // The scheme a renderer needs in order to offer the *other*
+                // repair: dropping the separator, which for this scheme is a
+                // complete reference and for no other one is.
+                scheme: Some(InvocationScheme::Cve)
+            })
         );
     }
 

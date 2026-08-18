@@ -141,9 +141,10 @@ const DECISION_STATUS: &str = ACCEPTED_NOT_ENFORCED;
 /// `EnvRef` and is echoed the same way.
 ///
 /// This function is also not where a credential could be resolved — the only
-/// reader of `std::env::var` in this binary is `main::resolve_credential`,
-/// called from the repairing arm of `build_capability` and from
-/// `main::resolve_forge`, neither of which `config check` reaches.
+/// reader of `std::env::var` in this binary is `main::resolve_credential`, called
+/// from the arms of `build_capability` that need a model, from the mitigating arm
+/// for `[scanner]`'s tenant pair, and from `main::resolve_forge`, none of which
+/// `config check` reaches.
 ///
 /// **A table the document does not carry produces no key at all**, rather than
 /// a `null` one. A deployment that names no model has not left `[agent]` blank;
