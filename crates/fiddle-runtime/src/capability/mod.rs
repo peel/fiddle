@@ -68,7 +68,7 @@ use crate::human::validate::DecisionError;
 use crate::human::InteractionRef;
 use fiddle_core::{
     AttemptId, CapabilityId, DecisionRequestId, EvidenceRef, NextAction, Publication, Published,
-    TreeObservation,
+    RunDisposition, TreeObservation,
 };
 use std::path::PathBuf;
 
@@ -298,6 +298,39 @@ pub trait Capability: Send + Sync {
     /// are: a run that made a worktree and then failed in it is precisely when
     /// an operator needs to know which revision it was looking at.
     fn tree_observation(&self) -> Option<TreeObservation> {
+        None
+    }
+
+    /// What this capability's run came to, where it has a disposition table of
+    /// its own.
+    ///
+    /// # Why a fourth accessor rather than something on the evidence reference
+    ///
+    /// Because a capability's conclusion is not the same thing as a pointer to
+    /// an artefact, and squeezing it into one produced exactly the defect this
+    /// exists to close: `cve_mitigate` computed the row, wrote the verdict
+    /// report, and published `cve:<count>:<attempt>` — a locator that names
+    /// neither the outcome nor the reason. Five of Design §3's seven rows were
+    /// therefore indistinguishable from outside the process, and a distinction
+    /// only the process can make is not one an operator, a workflow or a
+    /// mutation test can act on.
+    ///
+    /// # Why `Option`, and why that keeps every earlier bundle unchanged
+    ///
+    /// `None` is the neutral answer for [`Capability::tree_observation`]'s
+    /// reason, one level further out: *which row of the table did this run
+    /// reach* is not a question a capability with no table can be asked at all,
+    /// so the bundle carries no `disposition` key rather than a defaulted one.
+    /// M0's `stub_mark`, M1's `fixture_repair`, M2's `propose_change` and
+    /// `publish_change` answer `None` and their bundles are byte-identical.
+    ///
+    /// Read *after* the execution, on both arms, for the reason the other three
+    /// are — and here the failing arm is the one that matters most:
+    /// [`Reason::ScanUnusable`](crate::evaluate::Reason::ScanUnusable) is a row
+    /// of the table reached by returning an error, so a bundle that only asked
+    /// on success would drop the one row Design §3 calls the milestone most
+    /// likely to get wrong.
+    fn disposition(&self) -> Option<RunDisposition> {
         None
     }
 }

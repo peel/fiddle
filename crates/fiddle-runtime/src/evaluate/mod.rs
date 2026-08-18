@@ -409,6 +409,45 @@ pub enum Reason {
     },
 }
 
+impl Reason {
+    /// The name this reason is published under.
+    ///
+    /// # Why a name and not the value
+    ///
+    /// Because the value cannot cross. The bundle's shape is fixed in
+    /// `fiddle-core` and this enum is the runtime's, so what a
+    /// [`RunDisposition`](fiddle_core::RunDisposition) carries is the row's name
+    /// — the same trade
+    /// [`TreeObservation::attempt_tree`](fiddle_core::TreeObservation) makes,
+    /// and for the same reason: a reader finds the row beside a key rather than
+    /// having to be told a mapping.
+    ///
+    /// # Why the match has no wildcard
+    ///
+    /// A row added to Design §3's table and not named here would be published
+    /// under a neighbour's word, which is the exact defect this method exists to
+    /// have closed — an outcome two different causes produce identically is not
+    /// an assertion about either of them. So the compiler asks.
+    ///
+    /// The two *evaluation* reasons are named too, though no disposition holds
+    /// one. An `Option` here would put a `None` in a published document, and a
+    /// bundle whose reason key was `null` says less than one naming a row that
+    /// could not have been reached.
+    pub fn row(&self) -> &'static str {
+        match self {
+            Reason::NewFindingAppeared { .. } => "new_finding_appeared",
+            Reason::Provisional { .. } => "provisional",
+            Reason::NothingToDo => "nothing_to_do",
+            Reason::VerdictsOnly => "verdicts_only",
+            Reason::AlreadyInProgress => "already_in_progress",
+            Reason::AlreadyFixed => "already_fixed",
+            Reason::PullRequest => "pull_request",
+            Reason::UnsafeWithoutDirection => "unsafe_without_direction",
+            Reason::ScanUnusable { .. } => "scan_unusable",
+        }
+    }
+}
+
 /// What the rescan's own document said, once both conditions had been put to it.
 ///
 /// Separate from [`CheckResult::passed`] on purpose. A check's verdict is a

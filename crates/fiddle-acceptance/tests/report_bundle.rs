@@ -50,6 +50,21 @@ fn run_publishes_a_bundle_carrying_package_version_and_source_revision() {
         !b["attempt_id"].as_str().unwrap().is_empty(),
         "the bundle must name the attempt that produced it"
     );
+    // A capability with no disposition table of its own answers no question
+    // about which row it reached, so neither document carries the key at all.
+    // Absent and not `null`, in both: a `null` would be a positive claim that
+    // this run came to nothing, and *the question does not apply* is a different
+    // answer from *the answer is nothing*. It is also what keeps this bundle and
+    // this payload byte-identical to the ones M0 published.
+    assert!(
+        b.get("disposition").is_none(),
+        "the M0 bundle must be unchanged by a key belonging to another \
+         capability: {b}"
+    );
+    assert!(
+        v.get("disposition").is_none(),
+        "and so must the payload: {v}"
+    );
 }
 
 /// The atomicity property, injected at the publication boundary this milestone

@@ -17,7 +17,7 @@
 //!
 //! # The arms, and the one that matters
 //!
-//! Seven of the nine are ordinary. `exit-nonzero-with-file` is the one this
+//! Nine of the eleven are ordinary. `exit-nonzero-with-file` is the one this
 //! fixture exists for: `wizcli` exits non-zero when an organisation policy flags
 //! any finding in the tenant, including findings that have nothing to do with
 //! this scan, and it writes a perfectly good report while doing it. An adapter
@@ -27,7 +27,7 @@
 //! one, and it is why `exit-nonzero-no-file` sits beside it: the two differ only
 //! in the artefact, so an adapter that collapsed them would be caught.
 //!
-//! `library-clean` is the ninth, and it is the *rescan* half of the pair. Every
+//! `library-clean` is the *rescan* half of the pair. Every
 //! other arm answers the question a run asks **before** it does anything; a
 //! sweep that bumped a module then asks the same scanner about the same image
 //! again, and `evaluate`'s rescan is `Cleared` only when the group's advisories
@@ -38,6 +38,12 @@
 //! empty* while the OS array is the input's unchanged — the shape of an image
 //! whose Go dependency was patched and whose base layer was not. It is the one
 //! arm that only makes sense in the presence of another scan.
+//!
+//! `clean-image` and `library-only` are the two after it, and they exist for
+//! Design §3's table rather than for the adapter: seven rows are reached from
+//! seven *worlds*, and a fixture that could report only `ok` or nothing could
+//! put a run on four of them. Both are ordinary successful scans and neither is
+//! about a scanner failing.
 //!
 //! # Why it selects its arm from `argv`
 //!
@@ -143,6 +149,39 @@ fn main() {
             write(
                 &report,
                 report_with(libraries(&[]), os_packages(&DEFAULT_OS_CVES))
+                    .raw()
+                    .to_string(),
+            );
+        }
+        // An image with nothing in it. Both arrays present and both empty,
+        // which is the one shape that distinguishes *the scanner looked at both
+        // halves and found nothing* from *the scanner wrote about one half* —
+        // and, with `exit-nonzero-no-file`, from *there was no document to read
+        // at all*. Design §3's first and last rows are the same absence read two
+        // ways, so the fixture has to be able to produce each of them.
+        "clean-image" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(libraries(&[]), os_packages(&[]))
+                    .raw()
+                    .to_string(),
+            );
+        }
+        // One library advisory and an OS array that is present and empty.
+        //
+        // The arm a run reaches `AlreadyFixed` through, and it needs an arm of
+        // its own for a reason about the *other* advisory rather than this one:
+        // `ok`'s OS finding is a base image's, no `go get` can move it, and it
+        // therefore produces a verdict on every tree — so a run over `ok` lands
+        // on `VerdictsOnly` however thoroughly the library half was already
+        // dealt with. A document naming only what the tree has already fixed is
+        // what *every finding was already dealt with* actually looks like.
+        "library-only" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(libraries(&DEFAULT_LIBRARY_CVES), os_packages(&[]))
                     .raw()
                     .to_string(),
             );

@@ -1048,6 +1048,25 @@ const SWEEP_IMAGE: &str = "ghcr.io/acme/icecube:latest";
 /// document, two dispositions, and the difference is the tree.
 const SCAN_OK: &str = "ok";
 
+/// The scanner arm that reports an image with nothing wrong with it: both
+/// package arrays present, both empty.
+///
+/// Distinct from every failure arm on purpose. Design §3's first and last rows
+/// are read from the same absence — *no findings* and *no document* — and a
+/// suite that could only produce the second could not show that a run tells them
+/// apart.
+const SCAN_CLEAN: &str = "clean-image";
+
+/// The scanner arm that reports the library advisory and nothing else.
+///
+/// The arm a run reaches Design §3 row 3 through, and it needs to exist because
+/// [`SCAN_OK`]'s OS finding is one no run can ever settle: it is a base image's,
+/// `[orchestration.cve]` has no registry to read tags from, so it produces a
+/// verdict against every tree and puts the run on row 2 however thoroughly the
+/// library half was already dealt with. *Every finding was already dealt with*
+/// needs a document whose findings all can be.
+const SCAN_LIBRARY_ONLY: &str = "library-only";
+
 /// The scanner arm a *rescan* runs, and the reason it is a different arm.
 ///
 /// `evaluate` calls a group clean only when the rescan clears it, and a rescan
@@ -1099,6 +1118,30 @@ impl Sweep {
     /// that defaulted the budget would make `max_findings` untestable — the value
     /// nobody sets is the value the runtime already assumed.
     fn scanning(fixture: &str, scan: &str, findings: usize, script: Vec<Reply>) -> Self {
+        Sweep::scanning_rescanning(fixture, scan, RESCAN_CLEAN, findings, script)
+    }
+
+    /// The same deployment with the **rescan**'s arm chosen too.
+    ///
+    /// A second entry point rather than a fifth argument on the one above,
+    /// because the rescan arm is a default every lane but one wants: `evaluate`
+    /// calls a group clean only when the rescan clears it, so a world that did
+    /// not answer [`RESCAN_CLEAN`] here could not produce a pull request at all,
+    /// and a lane that had to name it would be naming the reason its neighbours
+    /// work.
+    ///
+    /// The one lane that varies it is about the row where *a move was made,
+    /// judged and taken back* — which is reached by a rescan that proves
+    /// nothing, and is the only honest way to reach it from outside the process:
+    /// the checks and the tree are the product's, and the scanner's second
+    /// answer is the seam an operator really does control.
+    fn scanning_rescanning(
+        fixture: &str,
+        scan: &str,
+        rescan: &str,
+        findings: usize,
+        script: Vec<Reply>,
+    ) -> Self {
         let scenario = Scenario::new();
 
         // `remote.git` beside the scratch directory is the name the scripted `gh`
@@ -1120,7 +1163,7 @@ impl Sweep {
             remote,
             gateway: StubGateway::serving(script),
         };
-        let tables = sweep.tables(scan, findings);
+        let tables = sweep.tables(scan, rescan, findings);
         sweep.scenario.append_config(&tables);
         sweep
     }
@@ -1142,7 +1185,7 @@ impl Sweep {
     /// document naming both shapes, and the arm that used to read it is what made
     /// this capability unbuildable; the model's `run_check` is the first entry of
     /// the list below.
-    fn tables(&self, scan: &str, findings: usize) -> String {
+    fn tables(&self, scan: &str, rescan: &str, findings: usize) -> String {
         format!(
             "[github]\n\
              repo = \"{SWEEP_REPO}\"\n\
@@ -1186,7 +1229,7 @@ impl Sweep {
              \n\
              [[workspace.checks]]\n\
              program = {wiz}\n\
-             args = [\"{RESCAN_CLEAN}\"]\n\
+             args = [\"{rescan}\"]\n\
              success = \"artefact-written\"\n",
             gh = toml_string(gh_stub_binary()),
             wiz = toml_string(wiz_stub_binary()),
@@ -1277,6 +1320,72 @@ impl Sweep {
         let bytes = std::fs::read(&path)
             .unwrap_or_else(|e| panic!("no verdict report at {} ({e})", path.display()));
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// The row a run published, out of the bundle a reader would open.
+    ///
+    /// **The bundle and not stdout.** A payload is what the process that ran saw
+    /// and a bundle is what it left behind, and the whole question this key
+    /// exists for is what somebody reading the record a week later can conclude.
+    fn disposition(&self, run: &Output) -> serde_json::Value {
+        let bundle = self.bundle(run);
+        bundle
+            .get("disposition")
+            .cloned()
+            .unwrap_or_else(|| panic!("this run published no disposition at all: {bundle}"))
+    }
+
+    /// Every evidence reference in a published bundle, from the executions and
+    /// the progress entries alike.
+    ///
+    /// Both lists, because a receipt is copied into both and a check applied to
+    /// one of them would be a check on neither.
+    fn evidence(&self, run: &Output) -> Vec<String> {
+        let bundle = self.bundle(run);
+        ["capability_executions", "progress"]
+            .iter()
+            .filter_map(|key| bundle[key].as_array().cloned())
+            .flatten()
+            .filter_map(|entry| entry["evidence"].as_array().cloned())
+            .flatten()
+            .filter_map(|reference| reference.as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// Every evidence reference this run published is a **logical** one.
+    ///
+    /// # Why this is a claim worth making
+    ///
+    /// Because a receipt is the one thing in a bundle whose job is to be
+    /// followed, and a host absolute path — `/var/folders/…/reports/verdicts.json`
+    /// on the machine that happened to run — cannot be followed from anywhere
+    /// else while describing the layout of the machine that could. Every other
+    /// receipt this capability publishes is logical (`cve:acme/r/pull/7`), and
+    /// `<report.dir>` is already the prefix a bundle's own `published` path is
+    /// stripped against for exactly this reason.
+    ///
+    /// Two readings rather than one, because either alone has a way of passing
+    /// for the wrong reason: a locator rooted at `/` is a POSIX absolute path
+    /// whatever it names, and a locator holding this deployment's scratch
+    /// directory is this machine's layout whatever shape it has. A logical
+    /// reference is neither — it may well hold a `/`, as `acme/r/pull/7` does,
+    /// and that is not what is refused here.
+    fn assert_every_receipt_is_logical(&self, run: &Output) {
+        let root = self.scenario.dir().display().to_string();
+        for reference in self.evidence(run) {
+            let locator = reference
+                .split_once(':')
+                .map(|(_, locator)| locator)
+                .unwrap_or(&reference);
+            assert!(
+                !locator.starts_with('/'),
+                "a published receipt quotes a host absolute path, which names                  nothing on any other machine: {reference}"
+            );
+            assert!(
+                !reference.contains(&root),
+                "a published receipt quotes this deployment's own scratch                  directory ({root}): {reference}"
+            );
+        }
     }
 
     /// Whether the verdict report holds a row for `cve`.
@@ -1579,6 +1688,31 @@ fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
     // neighbour's.
     assert_eq!(bundle["progress"][0]["stage"], "mitigate", "{bundle}");
 
+    // Which row of Design §3 this is, and the evidence for it. The branch and
+    // the number are named on this row and on no other — a run that observed a
+    // shared branch and committed nothing to it has none to report — so this is
+    // the assertion that separates it from the in-progress row, which carries a
+    // number and no branch.
+    let reached = sweep.disposition(&run);
+    assert_eq!(reached["reason"], "pull_request", "{reached}");
+    assert_eq!(reached["branch"], branch, "{reached}");
+    assert_eq!(reached["pull_request"], pulls[0]["number"], "{reached}");
+    // And the attempt behind it, including the claim the product branches on
+    // nowhere. Design §2.5: `claimed_complete` is evidence beside the exit code
+    // that overruled it — and evidence nothing publishes is a field, not
+    // evidence. This is the first place a reader outside the process can see it.
+    assert_eq!(
+        reached["attempts"],
+        serde_json::json!([{
+            "cves": [LIBRARY_CVE],
+            "status": "clean",
+            "claimed_complete": true,
+            "forbidden": [],
+        }]),
+        "{reached}"
+    );
+    sweep.assert_every_receipt_is_logical(&run);
+
     // One verdict, for the advisory a `go get` cannot reach, with the sentence
     // that says whose limitation it is.
     let verdicts = sweep.verdicts();
@@ -1598,8 +1732,26 @@ fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
     );
 }
 
-/// **An already-fixed fixture yields no pull request and an evidenced
-/// no-change.**
+/// **An already-fixed fixture yields no pull request, and a no-change the
+/// bundle files as `verdicts_only`.**
+///
+/// # Why the name says `verdicts_only` and not `already_fixed`
+///
+/// Because that is the row this world reaches, and for most of this milestone
+/// nothing could say so. The lane was called
+/// `an_already_fixed_fixture_produces_an_evidenced_no_change` and read as though
+/// it were Design §3 row 3; it is not. The library advisory is settled by the
+/// tree and contributes nothing, and the OS advisory is one no run can settle —
+/// a base image's, with no registry to read tags from — so it produces a verdict
+/// and the run lands on **row 2**. The disposition table is first-match-wins and
+/// `VerdictsOnly` is tested before `AlreadyFixed`, which is correct: a run with
+/// something to report has something to report whatever else was settled.
+///
+/// Row 3 proper is `three_runs_that_used_to_publish_one_document_publish_three`,
+/// which reaches it over a document whose findings *can* all be settled. Naming
+/// each lane for the row it actually reaches is the point of the exercise: a
+/// lane named for one row and asserting another is a lane that would go green
+/// through the very collapse it looks like it guards.
 ///
 /// The other half, over the same document and the same scanner arm. Task 19
 /// settled that the difference cannot be a property of the scanner — the stub
@@ -1631,7 +1783,7 @@ fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
 ///    no branch or pull request receipt on the execution — a run that opened one
 ///    and then reported no change would fail all three.
 #[test]
-fn an_already_fixed_fixture_produces_an_evidenced_no_change() {
+fn an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_verdicts_only() {
     let sweep = Sweep::scanning(FIXED, SCAN_OK, 2, a_bump_needing_no_edit());
 
     let run = sweep.run();
@@ -1684,6 +1836,193 @@ fn an_already_fixed_fixture_produces_an_evidenced_no_change() {
         "a run that published nothing must quote no branch and no pull request: \
          {evidence}"
     );
+    sweep.assert_every_receipt_is_logical(&run);
+
+    // 4. And which row of Design §3 all of that adds up to, said in the record
+    //    rather than left for a reader to infer from three absences. The verdict
+    //    is what puts this run on row 2, and the already-fixed set is still
+    //    published beside it — so the bundle carries both halves of *the tree
+    //    settled one advisory and could not settle the other*, which is what
+    //    made this world worth a lane in the first place.
+    let disposition = sweep.disposition(&run);
+    assert_eq!(
+        disposition,
+        serde_json::json!({
+            "reason": "verdicts_only",
+            "verdicts": 1,
+            "already_fixed": [LIBRARY_CVE],
+            "deferred": [],
+            "attempts": [],
+            "branch": serde_json::Value::Null,
+            "pull_request": serde_json::Value::Null,
+        }),
+        "the row, and the evidence for it, whole"
+    );
+}
+
+/// **The three rows that used to publish one document now publish three.**
+///
+/// # The defect, stated before the assertions
+///
+/// Design §3's last paragraph is one sentence: *every `NoChange` carries the
+/// evidence for its own reason; one whose reason cannot be checked from the
+/// bundle is not evidenced.* Until the bundle carried a `disposition`, three of
+/// those rows failed it completely. A run that found nothing to do, a run whose
+/// findings the tree had already fixed, and a run whose work an open pull
+/// request already carried each published: exit 0, `"outcome": "completed"`,
+/// `verdicts.json == []`, one receipt naming the verdict report — and nothing
+/// else. Byte for byte the same artefacts, for three situations with three
+/// different remedies, one of which is *go and merge #41*.
+///
+/// A run-level lane and not a unit one, because the unit tier already had this
+/// covered and it was not enough: `cve_dispositions::seven_causes_reach_seven_
+/// distinguishable_results` proved the table injective *inside the process* for
+/// the whole of this milestone, and every one of these three runs was still
+/// unreadable from outside it. Injectivity in memory is not a distinction
+/// anybody downstream can act on.
+///
+/// # Why the three worlds differ where they do
+///
+/// The tree is the same fixture in all three, so the tree is not what decides.
+/// What differs is one thing per world:
+///
+/// - **Nothing to do** — a scan reporting an image with nothing in it.
+/// - **Already fixed** — a scan reporting only the advisory this tree already
+///   ships the fix for, so `go list -m` settles every finding there is.
+/// - **Already in progress** — the same document as the fixed-tree lane, plus an
+///   open labelled pull request whose *commit body* names the one advisory the
+///   tree cannot settle. Read from the commits and never from the pull request's
+///   body: a body lists what a scan found when it was opened, so a mention there
+///   is evidence a CVE was seen and not that it was fixed.
+///
+/// # The two assertions, and why neither alone would do
+///
+/// **They are still identical on the old surface.** All three exit 0, all three
+/// report `completed`, and all three write `[]` to the verdict report. Asserted
+/// first, because it is what makes the second assertion an improvement rather
+/// than a coincidence — without it, three documents differing could be three
+/// runs that happened to do different things.
+///
+/// **And they differ on the new one, pairwise, with the reason removed.** A set
+/// keyed on the whole published document would be satisfied by a record carrying
+/// nothing but its own name, and a name with no evidence beside it is what §3's
+/// sentence refuses. So each row is checked twice: the document as published,
+/// and the document with `reason` deleted — three of each.
+#[test]
+fn three_runs_that_used_to_publish_one_document_publish_three() {
+    let nothing_to_do = Sweep::scanning(FIXED, SCAN_CLEAN, 2, a_bump_needing_no_edit());
+    let already_fixed = Sweep::scanning(FIXED, SCAN_LIBRARY_ONLY, 2, a_bump_needing_no_edit());
+    let in_progress = Sweep::scanning(FIXED, SCAN_OK, 2, a_bump_needing_no_edit());
+    // The advisory the tree cannot settle, settled by the shared branch's own
+    // history instead. The library advisory is deliberately *not* named here:
+    // this run must reach the in-progress row through a real dedup of both
+    // halves — one from the tree, one from the log — and a commit naming both
+    // would leave the tree's half unexercised.
+    in_progress.seed_shared_pull_request_saying(
+        STALE_BODY,
+        &format!("bump the base image, fixes {OS_CVE}"),
+    );
+
+    let worlds = [
+        ("nothing to do", &nothing_to_do, "nothing_to_do"),
+        ("already fixed in the tree", &already_fixed, "already_fixed"),
+        (
+            "an open pull request covers it",
+            &in_progress,
+            "already_in_progress",
+        ),
+    ];
+
+    let mut published = std::collections::HashSet::new();
+    let mut without_reason = std::collections::HashSet::new();
+    // Kept from the one run each world gets. Re-running a deployment to read it
+    // a second time would be a second run — over a report directory the first
+    // one wrote and, for the third world, a forge the first one already saw —
+    // so what is asserted below would be a different attempt from the one the
+    // set above compared.
+    let mut reached: Vec<serde_json::Value> = Vec::new();
+    for (world, sweep, row) in worlds {
+        let run = sweep.run();
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "{world} is not a failed run — stderr: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(sweep.payload(&run)["outcome"], "completed", "{world}");
+        // The old surface, asserted to still be identical across the three. This
+        // is the premise the lane is about, not an incidental check.
+        assert_eq!(
+            sweep.verdicts(),
+            serde_json::json!([]),
+            "{world} must leave the same empty verdict report as its neighbours,              or the three are being told apart by something other than the row"
+        );
+        // And the receipts a run publishes stay logical while the record grows.
+        sweep.assert_every_receipt_is_logical(&run);
+
+        let mut document = sweep.disposition(&run);
+        // The payload a shell caller reads and the bundle a reader opens a week
+        // later must not be two documents. `run_json` projects one from the
+        // other, and this is what holds that: a caller who had to open the
+        // bundle to learn which of seven situations they are in would be worse
+        // off than one who read the record.
+        assert_eq!(
+            sweep.payload(&run)["disposition"],
+            document,
+            "{world}: stdout and the bundle disagree about the row"
+        );
+        reached.push(document.clone());
+        assert_eq!(
+            document["reason"], row,
+            "{world} should publish the row it reached: {document}"
+        );
+        assert!(
+            published.insert(document.to_string()),
+            "two worlds must not publish one document: {world} published one a              neighbour already had — {document}"
+        );
+
+        document.as_object_mut().unwrap().remove("reason");
+        assert!(
+            without_reason.insert(document.to_string()),
+            "{world}'s row must be checkable from its evidence and not from its              own name alone: {document}"
+        );
+    }
+    assert_eq!(published.len(), 3);
+    assert_eq!(without_reason.len(), 3);
+
+    // And what each row's evidence actually is, named rather than left to the
+    // set above. A set proves three documents differ; these say the difference
+    // is the fact the row is about.
+    let [clean, settled, awaiting] =
+        <[serde_json::Value; 3]>::try_from(reached).expect("one document per world");
+    assert_eq!(
+        clean,
+        serde_json::json!({
+            "reason": "nothing_to_do",
+            "verdicts": 0,
+            "already_fixed": [],
+            "deferred": [],
+            "attempts": [],
+            "branch": serde_json::Value::Null,
+            "pull_request": serde_json::Value::Null,
+        }),
+        "the row that is *nothing*: every list empty, and the reason is the          whole of it"
+    );
+
+    assert_eq!(
+        settled["already_fixed"],
+        serde_json::json!([LIBRARY_CVE]),
+        "row 3 names the advisory somebody else already dealt with, which is          exactly what row 1 cannot say: {settled}"
+    );
+
+    assert_eq!(
+        awaiting["pull_request"], SHARED_PR,
+        "row 7's remedy is to go and merge a numbered pull request, so the          number is the evidence: {awaiting}"
+    );
+    assert!(
+        awaiting["branch"].is_null(),
+        "and nothing landed on a branch this run made, so it names none:          {awaiting}"
+    );
 }
 
 /// **An unusable scanner exits 11 and opens nothing.**
@@ -1697,7 +2036,8 @@ fn an_already_fixed_fixture_produces_an_evidenced_no_change() {
 /// Because a run can exit non-zero for a dozen reasons, and because the claim is
 /// about what a *watcher* can conclude. So three things are asserted together,
 /// and each of them separately distinguishes this run from
-/// `an_already_fixed_fixture_produces_an_evidenced_no_change` — the genuine
+/// `an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_verdicts_only`
+/// — the genuine
 /// clean scan, which is Task 16's
 /// `a_scanner_that_found_nothing_and_one_that_never_ran_are_not_the_same_result`
 /// raised to the whole run:
@@ -1766,6 +2106,131 @@ fn an_unusable_scanner_exits_eleven_and_reaches_no_forge() {
         sweep.remote_branches(),
         vec![SWEEP_BASE.to_string()],
         "and leaves the remote exactly as it found it"
+    );
+
+    // And the row, published on the arm that reaches it. This one is reached by
+    // *returning an error*, so a bundle that only recorded the disposition of a
+    // successful execution would be missing exactly the row §3 calls the one
+    // this milestone is most likely to get wrong — and a reader would be back to
+    // telling it from a clean night by an exit code alone.
+    let reached = sweep.disposition(&run);
+    assert_eq!(
+        reached,
+        serde_json::json!({
+            "reason": "scan_unusable",
+            "verdicts": 0,
+            "already_fixed": [],
+            "deferred": [],
+            "attempts": [],
+            "branch": serde_json::Value::Null,
+            "pull_request": serde_json::Value::Null,
+        }),
+        "every list is empty because nothing was observed, which is what makes \
+         the reason the whole of the claim"
+    );
+    // The diagnostic is not in the record, and that is deliberate: it is already
+    // the outcome's own text in the same bundle, and a second copy would be a
+    // second place for one fact. So the record is checked against the outcome
+    // beside it rather than trusted to repeat it.
+    let bundle = sweep.bundle(&run);
+    assert!(
+        bundle["outcome"]["retryable"]["reason"]
+            .as_str()
+            .is_some_and(|why| why.contains("wizcli")),
+        "the row's diagnostic lives on the outcome, and has to actually be \
+         there: {bundle}"
+    );
+}
+
+/// **A run whose one move could not be shown safe reverts it, publishes no pull
+/// request, and says which of the two silent rows it is.**
+///
+/// # The row, and the pair it has to be told apart from
+///
+/// Design §3 row 5 against row 2: *a move was made, judged and taken back*
+/// against *there was no move to make*. Both exit 0, both open nothing, both
+/// write verdicts, and until the bundle carried a disposition the only thing
+/// separating them anywhere a reader could see was the **prose of a rationale
+/// string** — which is the wording of whichever upstream value decided it and is
+/// free to change without any of this changing. Only one of the two is something
+/// a person can give direction about, and a nightly job that could not tell them
+/// apart would file the same ticket for both.
+///
+/// # Why the rescan is the lever
+///
+/// Because it is the only one that is honestly outside the process. The tree and
+/// the checks are the product's; the *scanner's second answer* is a seam an
+/// operator really does control, and answering the rescan with the input scan's
+/// own document is what a moved feed or an unreported array looks like from
+/// here. `evaluate` then reaches [`RescanVerdict::NotCompared`]'s neighbour —
+/// the group's advisory is still in the report — so the group is
+/// `NeedsWork::Unproved`, which is precisely *a repair that may well be fine and
+/// cannot be shown to be*. Nothing here forces a failure by breaking something.
+///
+/// # What the record has to carry, beyond the row
+///
+/// The attempt. Row 5 differs from row 2 by *something was attempted*, so an
+/// empty `attempts` list beside `"unsafe_without_direction"` would be a name
+/// with no evidence under it — and `claimed_complete` is in that list because
+/// Design §2.5 says it is evidence beside the exit code that overruled it. This
+/// run is where the two are visibly in disagreement: the model said it had
+/// finished, and the rescan did not agree.
+#[test]
+fn an_unprovable_repair_is_reverted_and_filed_as_needing_direction() {
+    // The rescan is answered with the *input* scan's own document: the library
+    // advisory is still in it, so the repair proves nothing.
+    let sweep =
+        Sweep::scanning_rescanning(VULNERABLE, SCAN_OK, SCAN_OK, 2, a_bump_needing_no_edit());
+
+    let run = sweep.run();
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "a group left for a person is not a failed run — stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    // Nothing landed. Asserted against the world rather than the report: a
+    // reverted attempt that pushed anyway would satisfy every assertion about a
+    // document and none of these.
+    assert!(
+        sweep.pull_requests().is_empty(),
+        "an unproved repair opens nothing: {:?}",
+        sweep.pull_requests()
+    );
+    assert_eq!(
+        sweep.remote_branches(),
+        vec![SWEEP_BASE.to_string()],
+        "and leaves the remote exactly as it found it"
+    );
+
+    // The row, and the attempt that is the difference between it and row 2.
+    let reached = sweep.disposition(&run);
+    assert_eq!(reached["reason"], "unsafe_without_direction", "{reached}");
+    assert_eq!(
+        reached["attempts"],
+        serde_json::json!([{
+            "cves": [LIBRARY_CVE],
+            "status": "needs_work",
+            "claimed_complete": true,
+            "forbidden": [],
+        }]),
+        "the row's evidence is that something was attempted, and the model's own \
+         claim beside the judgement that overruled it: {reached}"
+    );
+    assert!(
+        reached["branch"].is_null() && reached["pull_request"].is_null(),
+        "nothing landed, so there is nothing to point at: {reached}"
+    );
+    sweep.assert_every_receipt_is_logical(&run);
+
+    // And the verdict the operator actually reads, which is the *other* half —
+    // both advisories are unfixed, for two different reasons, in the document
+    // the workflow's Jira step parses.
+    let verdicts = sweep.verdicts();
+    assert!(
+        sweep.has_verdict(LIBRARY_CVE) && sweep.has_verdict(OS_CVE),
+        "both advisories are still unfixed and both get a row: {verdicts}"
     );
 }
 
@@ -1898,6 +2363,23 @@ fn the_bound_the_document_sets_is_the_bound_the_sweep_applies() {
         pushed_file(&bounded, &branch, "go.mod").contains(&format!("{MODULE} {FIXED_VERSION}")),
         "the advisory within the bound is still mitigated"
     );
+
+    // **And the deferral is on the record, with the bound that caused it.** The
+    // two assertions above are absences — no verdict, nothing in its place — and
+    // an absence is what a finding nobody scanned looks like too. Design §2.5's
+    // whole distinction is that *this run stopped at one* is a different fact
+    // from *fiddle looked at it and declined*, and until the record carried the
+    // bound there was nowhere for the first of those to be said.
+    let reached = bounded.disposition(&run);
+    assert_eq!(
+        reached["deferred"],
+        serde_json::json!([{ "cve": OS_CVE, "bound": 1 }]),
+        "the advisory over the bound, and the number that put it over: {reached}"
+    );
+    assert_eq!(
+        reached["reason"], "pull_request",
+        "deferring a finding does not change what the run came to: {reached}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2013,6 +2495,20 @@ impl Sweep {
     /// stale local branch of the same name cannot be picked up, and a world
     /// without one could not tell the two apart.
     fn seed_shared_pull_request(&self, body: &str) -> String {
+        self.seed_shared_pull_request_saying(body, "an earlier night's work on the shared branch")
+    }
+
+    /// The same, with the shared branch's **commit message** chosen by the
+    /// caller.
+    ///
+    /// A second entry point rather than a second seeder, because the commit
+    /// message is the one part of that arrangement a lane has a reason to vary
+    /// and the rest of it is delicate: dedup reads which advisories a branch
+    /// already covers out of `origin/<base>..HEAD`'s commit *bodies* and never
+    /// out of the pull request's body — `crate::cve::dedup`'s 2026-08-12
+    /// incident settled that — so a lane about a pull request that already
+    /// covers this run's work has to say so in a commit and nowhere else.
+    fn seed_shared_pull_request_saying(&self, body: &str, commit: &str) -> String {
         git(&self.tree, &["checkout", "-q", "-b", SHARED_BRANCH]);
         std::fs::write(
             self.tree.join(PRIOR_RUN_MARKER),
@@ -2029,7 +2525,7 @@ impl Sweep {
                 "user.name=t",
                 "commit",
                 "-qm",
-                "an earlier night's work on the shared branch",
+                commit,
             ],
         );
         git(&self.tree, &["push", "-q", "origin", SHARED_BRANCH]);

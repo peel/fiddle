@@ -609,6 +609,119 @@ async fn seven_causes_reach_seven_distinguishable_results() {
     assert_eq!(seen.len(), 7);
 }
 
+/// **Seven causes, seven published records** — the same claim as above, made
+/// where somebody outside the process can check it.
+///
+/// # Why this is a second lane and not a stronger assertion in the first
+///
+/// Because they are different claims and only one of them is what Design §3
+/// asks for. The lane above proves the *table* is injective: seven worlds reach
+/// seven `(outcome, reason)` pairs inside `fiddle-runtime`. It says nothing
+/// about what leaves the process, and for most of this milestone nothing did —
+/// the capability computed the pair, wrote the verdict array and published an
+/// evidence reference carrying neither half, so `NothingToDo`, `AlreadyFixed`
+/// and `AlreadyInProgress` left byte-identical artefacts behind. A table proved
+/// injective in memory is not a distinction an operator, a workflow or a
+/// mutation test can act on: *one whose reason cannot be checked from the bundle
+/// is not evidenced.*
+///
+/// # Why the key is the serialized document and not a discriminant
+///
+/// The header's objection is to `format!("{:?}")`, and it holds — a `Debug`
+/// rendering is derived, unstable and nobody's contract. The serialization is
+/// the opposite of all three: it is *exactly* what a reader parses, so a
+/// document two rows produce identically is two rows a reader cannot tell apart,
+/// which is the claim word for word.
+///
+/// # The second set is where the substance is
+///
+/// The first set would pass on a record carrying nothing but `reason`, and a
+/// reason with no evidence beside it is what §3's sentence refuses. So the six
+/// `Completed` rows are compared again with the `reason` key **removed**, and
+/// they are still six: each one's evidence stands on its own.
+///
+/// `ScanUnusable` is excluded from that second set, and stated rather than
+/// quietly dropped — it holds no evidence at all, by construction: there is no
+/// projection, so nothing is deferred, nothing is already fixed and nothing was
+/// attempted. What separates it from row 1 is the half the exit code comes from,
+/// which is `a_scanner_that_found_nothing_and_one_that_never_ran_are_not_the_
+/// same_result` below and is asserted on the outcome here too.
+#[tokio::test]
+async fn seven_causes_reach_seven_distinguishable_published_records() {
+    let cases: Vec<(&str, Run, &str)> = vec![
+        ("both sets empty", both_sets_empty(), "nothing_to_do"),
+        (
+            "fixable empty, blocked non-empty",
+            verdicts_only(),
+            "verdicts_only",
+        ),
+        (
+            "an open pull request covers it",
+            open_pr_covers_it(),
+            "already_in_progress",
+        ),
+        (
+            "already fixed in the tree",
+            fixed_in_the_tree(),
+            "already_fixed",
+        ),
+        ("one group clean", one_group_clean().await, "pull_request"),
+        (
+            "every group needs work",
+            every_group_needs_work().await,
+            "unsafe_without_direction",
+        ),
+        (
+            "the scanner never ran",
+            scanner_unusable().await,
+            "scan_unusable",
+        ),
+    ];
+
+    let mut published = HashSet::new();
+    let mut without_reason = HashSet::new();
+    for (cause, world, row) in &cases {
+        let reached = disposition(world);
+        let document =
+            serde_json::to_value(reached.published()).expect("a published record serializes");
+        assert_eq!(
+            document["reason"], *row,
+            "{cause} should publish the row it reached: {document}"
+        );
+        assert!(
+            published.insert(document.to_string()),
+            "two causes must not publish one document: {cause} published one an              earlier cause already had — {document}"
+        );
+
+        // The scanner row's evidence is its outcome, which is not this record's
+        // to carry. See the doc above.
+        if matches!(reached.reason(), Reason::ScanUnusable { .. }) {
+            assert!(
+                matches!(reached.outcome(), RunOutcome::Retryable { .. }),
+                "and it is the row the exit code separates: {:?}",
+                reached.outcome()
+            );
+            continue;
+        }
+        let mut bare = document.clone();
+        bare.as_object_mut().unwrap().remove("reason");
+        assert!(
+            without_reason.insert(bare.to_string()),
+            "{cause}'s row must be checkable from its evidence and not from its              own name alone — with the reason removed it is a document another              row already published: {bare}"
+        );
+    }
+
+    assert_eq!(
+        published.len(),
+        cases.len(),
+        "{} causes published {} distinguishable documents",
+        cases.len(),
+        published.len()
+    );
+    assert_eq!(published.len(), 7);
+    assert_eq!(without_reason.len(), 6);
+}
+
 /// The scanner row is the one that is **not** `Completed`, and it names its own
 /// remedy.
 ///

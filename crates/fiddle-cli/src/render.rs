@@ -635,6 +635,16 @@ pub fn inspect_human(
 /// a restatement of it that could drift. `next_action` in particular is the
 /// action derived *after* the run finished, so it describes the state the run
 /// left behind.
+///
+/// `disposition` joins them on the same terms and with the same conditionality
+/// as `report`: present when the capability that ran has a disposition table of
+/// its own, absent otherwise. A payload that carried `observations` and not the
+/// row would make the two documents disagree about what is *knowable* rather
+/// than about a value — a caller at a shell would have to open the bundle to
+/// learn which of seven situations they are in, while a caller who read the
+/// bundle would not. Absent rather than `null` for
+/// [`ReportBundle::disposition`]'s reason, and so that every payload M0, M1, M2
+/// and M3 emit is byte-identical.
 pub fn run_json(bundle: &ReportBundle, published: Option<&Path>) -> String {
     let mut body = serde_json::json!({
         "invocation_ref": bundle.invocation_ref,
@@ -647,6 +657,10 @@ pub fn run_json(bundle: &ReportBundle, published: Option<&Path>) -> String {
     });
     if let Some(path) = published {
         body["report"] = serde_json::Value::String(path.display().to_string());
+    }
+    if let Some(disposition) = &bundle.disposition {
+        body["disposition"] = serde_json::to_value(disposition)
+            .expect("a disposition holds no value serde can refuse");
     }
     payload(RUN_SCHEMA, body)
 }

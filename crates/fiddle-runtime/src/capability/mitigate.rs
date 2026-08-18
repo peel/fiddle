@@ -63,7 +63,7 @@ use crate::scanner::{ScanReport, Scanner, WizCredential};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError};
 use fiddle_core::{
     correlation_key, AdvisoryId, AttemptId, CapabilityId, ChangeSetState, EvidenceRef,
-    ProjectedFinding, TreeObservation,
+    ProjectedFinding, RunDisposition, TreeObservation,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -181,6 +181,16 @@ struct Observed {
     receipts: Vec<EvidenceRef>,
     /// Which revision the worktree was made at, once [`check_out`] has answered.
     tree: Option<TreeObservation>,
+    /// Which row of Design §3's table the run reached, once [`disposition`] has
+    /// answered.
+    ///
+    /// Recorded here rather than returned from
+    /// [`Capability::execute`](crate::capability::Capability::execute) because
+    /// one of the seven rows *is* an error return —
+    /// [`Reason::ScanUnusable`](crate::evaluate::Reason::ScanUnusable) — and a
+    /// row published only on the successful arm would be missing exactly the
+    /// row Design §3 calls the milestone most likely to get wrong.
+    disposition: Option<RunDisposition>,
 }
 
 /// One sweep of a repository's container image: scan, bump, judge, land,
@@ -688,6 +698,9 @@ where
         };
 
         let concluded = disposition(&run);
+        // Recorded before the scan error is returned, so the row a failed scan
+        // reached is published on the arm that reaches it. See [`Observed`].
+        self.observed.lock().unwrap().disposition = Some(concluded.published());
         self.write_report(&concluded)?;
         if let Err(why) = scanned {
             return Err(CapabilityError::Scan(why));
@@ -708,10 +721,14 @@ where
     fn tree_observation(&self) -> Option<TreeObservation> {
         self.observed.lock().unwrap().tree.clone()
     }
+
+    fn disposition(&self) -> Option<RunDisposition> {
+        self.observed.lock().unwrap().disposition.clone()
+    }
 }
 
 impl<M, S> CveMitigate<'_, M, S> {
-    /// Write the verdict report, and record where it went.
+    /// Write the verdict report, and leave a receipt naming it.
     ///
     /// **On every path that reached a disposition, including the empty one.**
     /// [`Disposition::write_report`] states why: a consumer that had to tell *the
@@ -719,7 +736,7 @@ impl<M, S> CveMitigate<'_, M, S> {
     /// a failed run from a clean one by a missing file, and absence reads as
     /// success.
     fn write_report(&self, concluded: &Disposition) -> Result<(), CapabilityError> {
-        let path = concluded
+        concluded
             .write_report(&self.config.report_dir)
             .map_err(|source| CapabilityError::Write {
                 path: self
@@ -728,11 +745,24 @@ impl<M, S> CveMitigate<'_, M, S> {
                     .join(crate::cve::verdict::REPORT_FILE),
                 source,
             })?;
+        // **The file name, never the path it was written to.** The path
+        // `write_report` hands back is a host absolute one —
+        // `/var/folders/…/reports/verdicts.json` on the machine that ran — and a
+        // published receipt quoting it says nothing to a reader on any other
+        // machine while leaking the layout of the one that did. It is therefore
+        // dropped rather than bound. Every other receipt this capability publishes is
+        // logical (`cve:acme/r/pull/7`), and `<report.dir>` is the prefix a
+        // bundle's own `published` path is already stripped against, for this
+        // reason: a caller's payload stays the same whatever absolute prefix the
+        // configuration happens to name.
         self.observed
             .lock()
             .unwrap()
             .receipts
-            .push(EvidenceRef(format!("{CVE_ORIGIN}:{}", path.display())));
+            .push(EvidenceRef(format!(
+                "{CVE_ORIGIN}:{}",
+                crate::cve::verdict::REPORT_FILE
+            )));
         Ok(())
     }
 }

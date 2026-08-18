@@ -700,6 +700,13 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
         capability_executions: executions,
         progress,
         observations,
+        // Asked of the capability rather than derived from `outcome`, and asked
+        // on both arms. The outcome says `Completed` for five of Design §3's
+        // seven rows and `Retryable` for a sixth, so it identifies none of them;
+        // only the capability that ran the table knows which row it landed on.
+        // A capability with no table answers `None` and the key is absent — see
+        // [`Capability::disposition`].
+        disposition: ctx.capability.disposition(),
     };
 
     match publish(ctx.report_dir, &slug, &attempt_id, &bundle) {

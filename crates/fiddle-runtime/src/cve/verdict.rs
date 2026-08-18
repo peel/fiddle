@@ -492,6 +492,73 @@ impl Disposition {
         serde_json::to_value(&self.verdicts).expect("a verdict holds no value serde can refuse")
     }
 
+    /// This disposition as the bundle publishes it.
+    ///
+    /// # Why this exists at all
+    ///
+    /// Because everything above it was unreadable from outside a run. The
+    /// capability computed the pair, wrote [`Disposition::write_report`], and
+    /// returned an evidence reference carrying neither half — so `NothingToDo`,
+    /// `AlreadyFixed` and `AlreadyInProgress` published byte-identical
+    /// artefacts, and `VerdictsOnly` and `UnsafeWithoutDirection` differed only
+    /// in the prose of a rationale. Design §3 asks for the opposite in one
+    /// sentence: *every `NoChange` carries the evidence for its own reason; one
+    /// whose reason cannot be checked from the bundle is not evidenced.*
+    ///
+    /// # Why it is not `write_report`'s document
+    ///
+    /// [`REPORT_FILE`] is a contract with the host workflow's Jira and Slack
+    /// steps, which read a **bare array** of five-field rows. A header wrapped
+    /// around it would break them, so the header goes in the bundle instead —
+    /// which is the document Design §3's sentence names anyway.
+    ///
+    /// # What it drops, deliberately
+    ///
+    /// The verdicts themselves: they are the report this run already wrote, and
+    /// a second copy in the bundle would be a second place for one fact. What
+    /// crosses is their count, which is what tells a reader whether the report
+    /// beside this bundle has anything in it.
+    ///
+    /// The scanner's diagnostic on [`Reason::ScanUnusable`] likewise: it is
+    /// already the `Retryable` outcome's own text, in the same bundle.
+    pub fn published(&self) -> fiddle_core::RunDisposition {
+        fiddle_core::RunDisposition {
+            reason: self.reason.row().to_string(),
+            verdicts: self.verdicts.len(),
+            already_fixed: self.already_fixed.clone(),
+            deferred: self
+                .deferred
+                .iter()
+                .map(|deferred| fiddle_core::DeferredFinding {
+                    cve: deferred.cve.clone(),
+                    bound: deferred.bound,
+                })
+                .collect(),
+            attempts: self
+                .attempts
+                .iter()
+                .map(|attempt| fiddle_core::AttemptOutcome {
+                    cves: attempt.cves.clone(),
+                    // Matched with no wildcard, for `verdicts_of`'s reason: a
+                    // status added to `GroupStatus` has to be named here rather
+                    // than silently published under a neighbour's word.
+                    status: match attempt.status {
+                        GroupStatus::Clean => "clean",
+                        GroupStatus::NeedsWork { .. } => "needs_work",
+                    }
+                    .to_string(),
+                    claimed_complete: attempt.claimed_complete,
+                    // Rendered through `ForbiddenShape`'s own `Display`, which
+                    // is the wording a verdict already carries. See
+                    // [`fiddle_core::AttemptOutcome::forbidden`].
+                    forbidden: attempt.forbidden.iter().map(ToString::to_string).collect(),
+                })
+                .collect(),
+            branch: self.branch.clone(),
+            pull_request: self.pull_request,
+        }
+    }
+
     /// Write the verdict report into `dir`, **whether or not there is anything
     /// in it**.
     ///
