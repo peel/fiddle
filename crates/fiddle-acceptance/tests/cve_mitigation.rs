@@ -830,6 +830,89 @@ fn the_two_library_fixture_is_pinned_to_what_its_world_publishes() {
     }
 }
 
+/// **The tree whose first bump clears its second group is pinned to what its
+/// world publishes.**
+///
+/// Three halves have to agree for that world to exist at all, and none of them
+/// can see the other two: the scanner document's library table, the offline
+/// upstream's release list, and this fixture's manifest. The one that fails
+/// silently is the middle one — a `CLEARING_FIXED` release that stopped requiring
+/// `x/net` would leave the second group with an ordinary bump to make, the run
+/// would attempt it, and the lane below would fail with a count nobody could
+/// trace back to a table.
+///
+/// It is [`the_two_library_fixture_is_pinned_to_what_its_world_publishes`]
+/// applied to the second of the two clearance worlds, and it asserts the one thing
+/// that lane has no reason to: that a named release *requires* another module at a
+/// named version.
+#[test]
+fn a_bump_that_moves_a_later_groups_requirement_is_pinned_to_what_its_world_publishes() {
+    let table = std::fs::read_to_string(
+        repo_root().join("crates/fiddle-runtime/tests/support/document.rs"),
+    )
+    .expect("the shared scanner documents are where this suite says they are");
+    let entry = format!(
+        r#"("{CLEARING_MODULE}", "{CLEARING_VULNERABLE_VERSION}", "{CLEARING_FIXED_VERSION}")"#
+    );
+    assert!(
+        table.contains(&entry),
+        "the clearing advisory is reported against {CLEARING_MODULE}, and \
+         document.rs's library table no longer has the row {entry} that says so"
+    );
+    assert!(
+        table.contains(&format!(
+            r#"pub const CLEARING_LIBRARY_CVE: &str = "{CLEARING_LIBRARY_CVE}";"#
+        )),
+        "and under the id this suite spells, which it cannot import"
+    );
+
+    let proxy = std::fs::read_to_string(
+        repo_root().join("crates/fiddle-runtime/tests/support/go_proxy.rs"),
+    )
+    .expect("the offline module proxy is where this suite says it is");
+    for (name, version) in [
+        ("CLEARING_MODULE", CLEARING_MODULE),
+        ("CLEARING_VULNERABLE", CLEARING_VULNERABLE_VERSION),
+        ("CLEARING_FIXED", CLEARING_FIXED_VERSION),
+    ] {
+        assert!(
+            proxy.contains(&format!(r#"pub const {name}: &str = "{version}";"#)),
+            "go_proxy.rs's {name} has to be {version}, which is what the document \
+             names for {CLEARING_MODULE}"
+        );
+    }
+    // The requirement itself, which is the whole world: without it the bump moves
+    // one module and the second group has ordinary work to do.
+    assert!(
+        proxy.contains(
+            "        module: CLEARING_MODULE,\n        version: CLEARING_FIXED,\n        \
+             requires: &[(INDIRECT_MODULE, INDIRECT_FIXED)],"
+        ),
+        "the offline upstream has to publish {CLEARING_MODULE} \
+         {CLEARING_FIXED_VERSION} as *requiring* {SECOND_MODULE} at \
+         {SECOND_FIXED_VERSION} — that requirement is what raises the second \
+         group's tree past its own fix, and without it this world is two \
+         ordinary bumps"
+    );
+
+    let manifest = read_fixture_file(CLEARED_BY_A_BUMP, "go.mod");
+    for (module, version) in [
+        (CLEARING_MODULE, CLEARING_VULNERABLE_VERSION),
+        (SECOND_MODULE, SECOND_VULNERABLE_VERSION),
+    ] {
+        assert!(
+            manifest.contains(&format!("require {module} {version}")),
+            "the clearing fixture must require {module} at the version the \
+             document reports as current: {manifest}"
+        );
+    }
+    assert!(
+        !manifest.contains(MODULE),
+        "and nothing else: a third requirement is a third group, and this world's \
+         claim is about the second one — {manifest}"
+    );
+}
+
 /// Each fixture's `Dockerfile` builds the fixture it sits beside.
 ///
 /// The offline gate never runs `docker`: the scanner is scripted and takes an
@@ -1250,6 +1333,37 @@ const SECOND_FIXED_VERSION: &str = "v0.28.0";
 /// and anything else added to either half is a second thing a difference in
 /// outcome could be attributed to.
 const TWO_LIBRARIES: &str = "cve-two-libraries";
+
+/// The scanner arm reporting two library advisories where bumping the **first**
+/// module raises the second's requirement past its own fix, and the rescan that
+/// goes with it.
+///
+/// A pair, and the rescan is the half that makes the world discriminating: it
+/// still reports the second advisory, so `cve::fold` is refused the clearance and
+/// the only thing that can see one is the selection reading the tree. See the two
+/// arms' own comments in `wiz_stub.rs`.
+const SCAN_CLEARING_BUMP: &str = "bump-clears-a-later-group";
+const RESCAN_CLEARED_STILL_REPORTED: &str = "only-the-cleared-group-reported";
+
+/// The advisory against the module whose bump does the clearing, and that
+/// module's two versions.
+///
+/// The third row of `document.rs`'s library table. It sorts before
+/// [`SECOND_MODULE`] — `github.com` before `golang.org` — which is what makes it
+/// the *earlier* group, because a run walks its groups in target order.
+const CLEARING_LIBRARY_CVE: &str = "CVE-2026-0006";
+const CLEARING_MODULE: &str = "github.com/docker/docker";
+const CLEARING_VULNERABLE_VERSION: &str = "v24.0.7";
+const CLEARING_FIXED_VERSION: &str = "v24.0.9";
+
+/// The fixture tree that world runs in, requiring [`CLEARING_MODULE`] and
+/// [`SECOND_MODULE`] at the versions the document reports as current.
+///
+/// A fourth tree rather than a second scanner arm over [`TWO_LIBRARIES`], and its
+/// own `README.md` gives the argument: the offline upstream is one table read by
+/// every tree, so the requirement that makes this world move `x/net` would move it
+/// in the fold fixture too.
+const CLEARED_BY_A_BUMP: &str = "cve-cleared-by-a-bump";
 
 /// One disposable deployment a sweep runs in: a repository under remediation, a
 /// bare "GitHub" behind the scripted `gh`, a loopback endpoint answering for the
@@ -2917,6 +3031,187 @@ fn a_group_an_earlier_bump_already_cleared_is_folded_into_an_empty_commit() {
         sweep.has_verdict(OS_CVE),
         "the premise: this run does still report the advisory nothing could \
          move, so the absence above is about folding: {verdicts}"
+    );
+}
+
+/// **A group whose requirement this run's own bump moved past the fix is recorded
+/// as resolved, and reaches no verdict row.**
+///
+/// The other half of the pair above, and the one the defect was in. There the
+/// clearance was in the *image* and `cve::fold` saw it; here it is in the **tree**
+/// and only the selection can. `github.com/docker/docker` v24.0.9 requires
+/// `golang.org/x/net` at the version the second advisory names as fixing it, so
+/// the first group's `go get` plus `go mod tidy` raises the second group's
+/// requirement past its own fix — minimal version selection, which is the ordinary
+/// result of a re-resolution and not an exotic one.
+///
+/// # What this filed until 2026-08-18
+///
+/// `select_target_version` answered `GroupError::AlreadyAtTheFix`, the group was
+/// blocked, and `verdicts.json` got a row classified `upstream_blocked` whose
+/// rationale read *already at v0.28.0, which is not below the fix at v0.28.0* —
+/// the same classification an advisory **upstream has published no fix for** gets,
+/// for an advisory this run had just fixed. That document is what M4b's Jira and
+/// Slack steps parse, so the cost was a real ticket raised against work already
+/// done. `cve::fold::plan_group` is where the two clearances are now reconciled,
+/// and its header is the account of them.
+///
+/// # Why the rescan still reports the cleared advisory
+///
+/// Because otherwise this lane proves nothing about the tree. A rescan that
+/// cleared both advisories is folded by `cve::fold` on the ordinary path, and the
+/// lane would stay green over a build that had never read the tree at all. So
+/// [`RESCAN_CLEARED_STILL_REPORTED`] holds the second advisory, the fold rule
+/// answers `Proceed`, and the selection is the only thing left that can see the
+/// clearance. It is also the honest document: the scan is of an image, and a
+/// requirement raised in `go.mod` does not change what the scanner already found
+/// in a container.
+///
+/// # The premises, asserted rather than assumed
+///
+/// Each of the four readings below rules out a different way of being green while
+/// holding nothing, and the first two are premises rather than findings:
+///
+/// 1. **The tree moved.** The branch's `go.mod` carries the second module at the
+///    *fixed* version, which is what makes this the tree-seen clearance rather
+///    than a run that quietly did nothing. Without it every other assertion here
+///    is satisfied by a run whose second group was never formed.
+/// 2. **The rescan still named the cleared advisory.** Read off the document the
+///    scanner actually wrote, under `reports/rescan/`, because *the rescan did not
+///    clear it* is the whole reason the fold rule cannot be what answered.
+/// 3. **No verdict row, and nothing in the document saying `not below the fix`.**
+///    The second is the shape the defect had, spelled out, so this lane fails if
+///    the row comes back — including as a differently-classified row, which was the
+///    other way to discharge this and was refused: a row in that document is a
+///    ticket however it is classified. Read before the commit record below, so that
+///    a lane going red says *the row is back* rather than *a commit is missing*.
+/// 4. **Two commits, the second empty and naming the cleared advisory.** The same
+///    record a fold leaves, which is the point: this is the same fact about the
+///    world and it gets the same disposition.
+#[test]
+fn a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed() {
+    // Three, so nothing is deferred, and two replies for one attempt for
+    // `a_group_an_earlier_bump_already_cleared_…`'s reason: with an answer waiting,
+    // a run that attempted the second group succeeds and what fails is the count.
+    let sweep = Sweep::scanning_rescanning(
+        CLEARED_BY_A_BUMP,
+        SCAN_CLEARING_BUMP,
+        RESCAN_CLEARED_STILL_REPORTED,
+        3,
+        bumps_needing_no_edit(2),
+    );
+
+    let run = sweep.run();
+    let payload = sweep.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(payload["outcome"], "completed", "{payload}");
+
+    // Premise 1. The requirement the second group is about is on the branch at the
+    // version its advisory names as the fix, put there by the first group's bump.
+    let branch = the_one_new_branch(&sweep);
+    let landed = pushed_file(&sweep, &branch, "go.mod");
+    assert!(
+        landed.contains(&format!("{CLEARING_MODULE} {CLEARING_FIXED_VERSION}")),
+        "the first group's bump is on the branch: {landed}"
+    );
+    assert!(
+        landed.contains(&format!("{SECOND_MODULE} {SECOND_FIXED_VERSION}")),
+        "and it raised the second group's requirement past its own fix, which is \
+         the whole premise — a tree still at {SECOND_VULNERABLE_VERSION} would be \
+         the fold world, not this one: {landed}"
+    );
+
+    // Premise 2. The rescan did *not* clear it, so `fold` cannot be what answered.
+    let rescans: Vec<String> = sweep
+        .files_holding(SECOND_LIBRARY_CVE)
+        .into_iter()
+        .filter(|path| path.starts_with("reports/rescan/"))
+        .collect();
+    assert!(
+        !rescans.is_empty(),
+        "the rescan document has to still report {SECOND_LIBRARY_CVE}: with it \
+         cleared there, this lane would pass through the fold rule and say nothing \
+         about the tree"
+    );
+
+    // Reading 3. What the Jira step reads, and what it must not find. Before the
+    // commit record below, because it is the document the defect reached and a
+    // reader of a failure here should see the row rather than its consequence.
+    let verdicts = sweep.verdicts();
+    assert!(
+        !sweep.has_verdict(SECOND_LIBRARY_CVE),
+        "the advisory this run's own bump cleared is recorded as resolved, not \
+         filed as unfixed and needing direction: {verdicts}"
+    );
+    assert!(
+        !verdicts.to_string().contains("not below the fix"),
+        "and not under any other classification either — `AlreadyAtTheFix`'s \
+         sentence in this document is the defect, whichever `verdict` value it \
+         arrives beside: {verdicts}"
+    );
+    assert!(
+        sweep.has_verdict(OS_CVE),
+        "the premise: this run does still report the advisory nothing could move, \
+         so the absence above is about the clearance and not about an empty \
+         document: {verdicts}"
+    );
+
+    // Reading 4. The same record a fold leaves.
+    let commits = pushed_commits(&sweep, &branch);
+    assert_eq!(
+        commits.len(),
+        2,
+        "one commit for the bump and one for the clearance: {commits:?}"
+    );
+    let (bumped, bumped_paths) = &commits[0];
+    assert_eq!(
+        bumped_paths,
+        &["go.mod".to_string(), "go.sum".to_string()],
+        "the bump carries the manifest and the sums and nothing else: {bumped}"
+    );
+    assert!(
+        bumped.contains(CLEARING_LIBRARY_CVE),
+        "and says which advisory it is for: {bumped}"
+    );
+    let (cleared, cleared_paths) = &commits[1];
+    assert!(
+        cleared_paths.is_empty(),
+        "recording a clearance changes no file — that is the whole of what it is \
+         — and this commit carries {cleared_paths:?}"
+    );
+    assert!(
+        cleared.contains(SECOND_LIBRARY_CVE),
+        "a record whose body names no advisory is invisible to the next run's log \
+         scan: {cleared}"
+    );
+
+    // One attempt in the record, and one turn in the world.
+    let reached = sweep.disposition(&run);
+    assert_eq!(
+        reached["reason"], "pull_request",
+        "a cleared group is not work left over, so the run still lands on row 4: \
+         {reached}"
+    );
+    assert_eq!(
+        reached["attempts"],
+        serde_json::json!([{
+            "cves": [CLEARING_LIBRARY_CVE],
+            "status": "clean",
+            "claimed_complete": true,
+            "forbidden": [],
+        }]),
+        "a cleared group runs no attempt, so it contributes no row: {reached}"
+    );
+    assert_eq!(
+        sweep.gateway.served(),
+        1,
+        "and consults no model, though a second answer was waiting for it: a \
+         second group that had been attempted would have taken a second turn"
     );
 }
 

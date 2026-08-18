@@ -48,6 +48,19 @@
 //! advisory is in one of them and not the other two. All three are ordinary
 //! successful scans and none is about a scanner failing.
 //!
+//! `bump-clears-a-later-group` and `only-the-cleared-group-reported` are a
+//! *pair*, and they are the world where a bump clears a later group's finding **in
+//! the tree** rather than in the image. The first names an advisory against the
+//! module whose next release raises another module's requirement past its own fix,
+//! plus an advisory against that other module; the second is the rescan, and what
+//! makes it a different document from `library-clean` is what it still holds — the
+//! second advisory, unchanged. That is not a scanner being unhelpful: the rescan
+//! is of an *image*, and the tree is the thing minimal version selection moved. So
+//! the fold rule is refused its clearance and the selection is the only thing that
+//! can see one, which is exactly the run that used to file the advisory as unfixed.
+//! `a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed` is
+//! the lane, and `cve::fold`'s header is where the two paths are reconciled.
+//!
 //! `two-library-advisories` is the fourth of that set and the only one that is
 //! about the *shape* of a run rather than about a row. A run forms one group per
 //! bump target and attempts one group at a time, and every other document here
@@ -97,8 +110,8 @@
 mod document;
 
 use document::{
-    libraries, os_packages, report_with, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, SECOND_LIBRARY_CVE,
-    SECOND_OS_CVE,
+    libraries, libraries_in_rows, os_packages, report_with, CLEARED_ROW, CLEARING_LIBRARY_CVE,
+    CLEARING_ROW, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, SECOND_LIBRARY_CVE, SECOND_OS_CVE,
 };
 use std::path::{Path, PathBuf};
 
@@ -245,6 +258,58 @@ fn main() {
                 &report,
                 report_with(
                     libraries(&[DEFAULT_LIBRARY_CVES[0], SECOND_LIBRARY_CVE]),
+                    os_packages(&DEFAULT_OS_CVES),
+                )
+                .raw()
+                .to_string(),
+            );
+        }
+        // Two library advisories, in two modules, where bumping the **first**
+        // raises the second's requirement past its own fix. The rows are named
+        // rather than cycled, because a run walks its groups in target order and
+        // the module doing the moving has to come first; `document.rs`'s
+        // `CLEARING_ROW` says which rows and why.
+        //
+        // The OS finding stays for `library-clean`'s reason, and it earns its keep
+        // twice here: it is also the only advisory this world still reports as
+        // unfixed, so a lane asserting that the cleared one is *absent* from
+        // `verdicts.json` is asserting it against a document that is not empty.
+        "bump-clears-a-later-group" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(
+                    libraries_in_rows(&[
+                        (CLEARING_ROW, CLEARING_LIBRARY_CVE),
+                        (CLEARED_ROW, SECOND_LIBRARY_CVE),
+                    ]),
+                    os_packages(&DEFAULT_OS_CVES),
+                )
+                .raw()
+                .to_string(),
+            );
+        }
+        // The rescan half of that pair: the bumped module's advisory is gone and
+        // the *cleared* group's is still there.
+        //
+        // Which is what makes the world discriminating rather than decorative. A
+        // rescan that also cleared the second advisory would be folded by
+        // `cve::fold` on the ordinary path, and the lane would pass without the
+        // tree ever having been consulted. This one holds the second advisory, so
+        // the fold rule answers `Proceed` and the only thing that can see the
+        // clearance is the selection reading the tree.
+        //
+        // It is also the honest document. The scan is of an image and what an
+        // image holds is a binary; `go mod tidy` raised a requirement in `go.mod`,
+        // and until something rebuilds and relinks, the package the scanner found
+        // is the one that was there. Both arrays are present, for
+        // `library-clean`'s reason.
+        "only-the-cleared-group-reported" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(
+                    libraries_in_rows(&[(CLEARED_ROW, SECOND_LIBRARY_CVE)]),
                     os_packages(&DEFAULT_OS_CVES),
                 )
                 .raw()
