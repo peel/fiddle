@@ -2873,11 +2873,16 @@ fn an_unprovable_repair_is_reverted_and_filed_as_needing_direction() {
 /// exactly that reason, and this lane is the shape it was written for.
 ///
 /// It also has to be that way round here, and not because it is convenient.
-/// `target_version` runs before the fold and refuses a group whose *tree* is
-/// already at the fix — `GroupError::AlreadyAtTheFix`, whose own doc names this
-/// case — so a world in which the first bump moved the second module's
-/// requirement too would file a verdict and never reach the rule. The reachable
-/// fold is the one where the image moved and the manifest did not.
+/// `target_version` runs before the fold and answers
+/// `GroupError::AlreadyAtTheFix` for a group whose *tree* is already there, so a
+/// world in which the first bump moved the second module's requirement too never
+/// reaches this rule at all. **That is the other clearance, not a lesser one**:
+/// it is recorded as resolved on the same footing, by
+/// `cve::fold::plan_group`, and
+/// [`a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed`]
+/// is the lane for it. Until 2026-08-18 it filed a verdict instead, and that
+/// asymmetry is what the two lanes now hold apart. What is reachable *here* is the
+/// fold: the image moved and the manifest did not.
 ///
 /// # What the assertions have to be, given that an empty commit is easy to fake
 ///
