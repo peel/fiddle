@@ -1809,3 +1809,25 @@ The rule: **a teardown checks for a clean tree and for live build processes, and
 
 Origin: implementation (epic fiddle-eph7, lanes for Tasks 4, 11, 18, 19)
 Tags: #debt #risk #infrastructure
+
+### 2026-08-18 — Correcting the entry above on the vanished-tree signature: the detection was a disagreement, not a signature
+The entry "A worktree teardown that does not check for a live lane destroys measurements, and reads as a test failure" describes the `(never executed)` / `No such file or directory` output as what a vanished tree looks like. True, but it names the wrong thing as the detection mechanism, and the lane that hit it has the better account.
+
+What caught it was that **the tally and the exit code disagreed**: cargo reported `error: 35 targets failed` with `BASELINE_EXIT=101`, while `FAILED_BINARIES=0` across the 18 binaries that had already reported. A lane reporting only the status would have published a 35-target failure at a sha where nothing was broken; a lane reporting only the count would have published a clean run of a suite that never finished. Neither number is trustworthy alone, and it is their disagreement that is the signal.
+
+That is `docs/technical/evidence-discipline.md`'s own argument for printing the count beside the status — the same rule that caught the `shellcheck` format mismatch — so the recognisable failure here is a discrepancy the discipline already tells you to look for, not a novel string to grep.
+
+### 2026-08-18 — Pointing at evidence-discipline.md is not sufficient on its own, and two consecutive dispatches are the evidence
+M3's handoff established the rule that a dispatch should **point** at `docs/technical/evidence-discipline.md` rather than restate it, because M3 copy-pasted ~700 lines of method into every dispatch and the lead's own transcription errors propagated three times. That rule was right about the failure it fixed. This entry records its limit.
+
+Two consecutive M4a dispatches tripped on rules that document is the record of, in lanes that had been pointed at it:
+
+- One launched its baseline as `cargo test --workspace --all-features 2>&1 | tail -60`, with no `EXIT=` marker and no `--no-fail-fast` — a pipe-truncated log of a 42-binary run, which §1 names in its first three paragraphs. The lane noticed only on reading the file afterwards, discarded the run and re-ran instrumented.
+- Another recorded `tail`'s exit status in place of clippy's, the same defect one level along, and also caught it by re-reading rather than at the point of writing the command.
+
+The lead did the same thing twice in this milestone: counting tests from a `tail -60` of a log, and reporting a `FAIL` verdict computed from a scorecard file that was never written.
+
+So the reading worth carrying: **pointing works for the rules a reader will look up, and fails for the rules that govern the command they are about to type.** The measurement rules — print the exit code you mean, print the denominator, never pipe a status you intend to report — are needed *before* the log exists, and a pointer consulted afterwards only diagnoses. Candidate fixes rather than a decision: name those three inline in a dispatch's verify section as concrete commands, or give them a script with an exit-code contract, which is what `docs/technical/decisions/009-mechanical-gates-as-validators.md` argues for generally.
+
+Origin: implementation (epic fiddle-eph7, Task 18 and Task 4 lanes, plus two lead-side instances)
+Tags: #debt #infrastructure
