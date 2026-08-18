@@ -1058,14 +1058,21 @@ fn the_mitigating_capability_is_selectable_and_an_unknown_one_is_not() {
 /// nothing in the payload names a source under `stub:work/`. That last one is
 /// what says the port was *not asked*, rather than asked and found wanting.
 ///
-/// The capability is the default one, and that is the point rather than an
-/// economy: what is under test is the *assessment* of a reference that names no
-/// work item, which is upstream of every capability and identical for all five.
+/// The capability is **named**, and the deterministic one, because what is under
+/// test is the *assessment* of a reference that names no work item — upstream of
+/// every capability and identical for all five — over a world that has a scanner,
+/// a toolchain and a forge in it for none of them. This lane read the default
+/// until the default became scheme-derived: `fiddle run cve` now selects the
+/// sweep, which this M0-shaped document cannot describe, so a lane that took the
+/// default would be asserting the sweep's configuration requirements instead of
+/// the assessment. Naming `stub_mark` is what keeps the subject the one the lane
+/// is about; `the_documented_invocation_with_no_capability_flag_reaches_the_sweep`
+/// is where the default itself is asserted.
 #[test]
 fn a_run_over_a_trackerless_reference_is_not_a_failed_run() {
     let scenario = Scenario::new();
 
-    let payload = scenario.run_json("cve", 0);
+    let payload = scenario.run_json_with(&["--capability", "stub_mark"], "cve", 0);
 
     assert_eq!(
         payload["outcome"], "completed",
@@ -1679,6 +1686,31 @@ impl Sweep {
 
     /// The same invocation with `extra` flags appended.
     fn run_with(&self, extra: &[&str]) -> Output {
+        self.run_selecting(&["--capability", "cve_mitigate"], extra)
+    }
+
+    /// **The invocation the documents name**: `fiddle run cve --mode unattended`,
+    /// with no `--capability` at all.
+    ///
+    /// A second entry point rather than an argument on the one above, because
+    /// what it varies is not a knob of the world — it is *how the capability is
+    /// chosen*, and every lane in this file but one deliberately names it. The
+    /// flag is what made the rest of this suite pass while the entry point routed
+    /// nowhere: thirty-two lanes reached `cve_mitigate` through a value that
+    /// appears in no design section, no ADR and no bean, so none of them could
+    /// see that an operator typing the documented command ran M0's `stub_mark`.
+    ///
+    /// `--mode unattended` is passed explicitly even though it is clap's default,
+    /// because the string under test is the one a reader of the design copies out
+    /// of it, not a shortest equivalent of it.
+    fn run_unqualified(&self) -> Output {
+        self.run_selecting(&[], &["--mode", "unattended"])
+    }
+
+    /// One arrangement of the environment for both, so the credential scrubbing
+    /// and the three exports cannot differ between the invocation the documents
+    /// name and the invocation the rest of this suite drives.
+    fn run_selecting(&self, selection: &[&str], extra: &[&str]) -> Output {
         let mut command = std::process::Command::new(support::fiddle_binary());
         // The four credential-shaped names no lane may need, removed *before* the
         // three this document names are exported, so a run ends up with exactly
@@ -1691,14 +1723,9 @@ impl Sweep {
             command.env_remove(name);
         }
         command
-            .args([
-                "run",
-                SWEEP_REF,
-                "--capability",
-                "cve_mitigate",
-                "--config",
-                self.scenario.config_path().to_str().unwrap(),
-            ])
+            .args(["run", SWEEP_REF])
+            .args(selection)
+            .args(["--config", self.scenario.config_path().to_str().unwrap()])
             .args(extra)
             .arg("--json")
             .env(FORGE_TOKEN, "ghp_forge_token_for_the_sweep")
@@ -2352,6 +2379,131 @@ fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
             .is_some_and(|why| why.contains("registry this build does not read")),
         "the verdict says whose limitation it is rather than blaming upstream: \
          {verdicts}"
+    );
+}
+
+/// **The invocation the documents name reaches the sweep, with no `--capability`
+/// at all.**
+///
+/// Design §1, design §6 and ADR 019 all say `fiddle run cve --mode unattended`.
+/// Until this lane, that command executed M0's `stub_mark` and exited 0 reporting
+/// `completed`: `main.rs` resolved an absent `--capability` to `Selection::Mark`
+/// for every scheme, so the entry point every document points an operator at
+/// reached the sweep from nowhere. Worse than a skipped scan — the stub run wrote
+/// the correlation marker under this reference's own slug, after which the sweep
+/// was *accounted for*, so a host running it nightly would report success having
+/// never scanned.
+///
+/// # Why this lane cannot be written with the flag
+///
+/// Because thirty-two lanes in this file already are. Every one of them reaches
+/// the capability through `--capability cve_mitigate`, which proves the
+/// capability works and proves nothing about whether an operator can invoke it —
+/// the seam between a reference and the capability it selects belonged to no
+/// task, and that is exactly how twenty lanes passed over an unreachable entry
+/// point. [`Sweep::run_unqualified`] is the whole point of this lane: if the
+/// argument list it builds ever grows a `--capability`, this lane stops being
+/// about anything.
+///
+/// # Why the capability id is not the only assertion
+///
+/// A payload naming `cve_mitigate` is satisfied by a run that selected the right
+/// capability and then did nothing, so the id is asserted beside the sweep's own
+/// two outputs: one pull request, and a branch that really carries `go.mod` at
+/// [`FIXED_VERSION`]. Those are
+/// [`a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch`]'s
+/// assertions over the same world, deliberately: what differs between the two
+/// lanes is one argument list, so any difference in outcome is that argument
+/// list's.
+///
+/// The M0 stub is asserted *absent* too, and by name. It is the failure this
+/// lane exists to catch, and a reader who sees `stub_mark` in the message knows
+/// immediately which defect came back rather than that some id was unexpected.
+#[test]
+fn the_documented_invocation_with_no_capability_flag_reaches_the_sweep() {
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 2, a_bump_needing_no_edit());
+
+    let run = sweep.run_unqualified();
+    let payload = sweep.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let executed = &payload["capability_executions"][0]["capability_id"];
+    assert_ne!(
+        executed, "stub_mark",
+        "`fiddle run cve --mode unattended` ran M0's deterministic stub, which is \
+         the defect: the documented invocation reports `completed` having scanned \
+         nothing, and files the marker that accounts the sweep as done: {payload}"
+    );
+    assert_eq!(
+        executed, "cve_mitigate",
+        "an absent `--capability` over a `cve` reference must select the sweep: \
+         {payload}"
+    );
+    assert_eq!(payload["outcome"], "completed", "{payload}");
+
+    // And the sweep really ran: the forge holds the one shared pull request, and
+    // the branch it names carries the requirement at the fixed release.
+    let pulls = sweep.pull_requests();
+    assert_eq!(
+        pulls.len(),
+        1,
+        "the documented invocation must reach the same publication the flagged \
+         one does: {pulls:?}"
+    );
+    let branch = the_one_new_branch(&sweep);
+    assert_eq!(pulls[0]["head"]["ref"], branch, "{}", pulls[0]);
+    let landed = pushed_file(&sweep, &branch, "go.mod");
+    assert!(
+        landed.contains(&format!("{MODULE} {FIXED_VERSION}")),
+        "the branch must carry the requirement at the fixed release: {landed}"
+    );
+
+    // Filed under the sweep's own vocabulary, which is the other half of the
+    // repro: the defect reported `stub_mark/mark completed — wrote correlation
+    // marker …`, and a run that selected the sweep and published M0's stage
+    // would leave a record indistinguishable from it.
+    let bundle = sweep.bundle(&run);
+    assert_eq!(
+        bundle["progress"][0]["stage"], "mitigate",
+        "the record must be written in the vocabulary of what ran: {bundle}"
+    );
+}
+
+/// **A reference that is not `cve` still selects `stub_mark` with no flag.**
+///
+/// The converse of the lane above, and the guard on M0's invariant: the default
+/// became *scheme-dependent*, not *`cve_mitigate` everywhere*. It must pass
+/// before that change and after it, which is what makes it a guard rather than a
+/// restatement of the new behaviour — and it is why M0's own acceptance lane
+/// needs no edit.
+///
+/// A `beans` reference in the M0 world, because that is the pairing the
+/// invariant is about: the same absent flag, a different scheme, the deterministic
+/// capability. The marker is asserted beside the id for the reason its neighbours
+/// are: a payload naming `stub_mark` is satisfied by a run that named it and did
+/// nothing.
+#[test]
+fn a_reference_that_is_not_cve_still_selects_the_deterministic_capability() {
+    let scenario = Scenario::new();
+    scenario.write_work_item("fiddle-m0-demo", "open");
+
+    let payload = scenario.run_json("beans:fiddle-m0-demo", 0);
+
+    assert_eq!(
+        payload["capability_executions"][0]["capability_id"], "stub_mark",
+        "a scheme-derived default must move the default for `cve` alone: \
+         {payload}"
+    );
+    assert_eq!(payload["outcome"], "completed", "{payload}");
+    assert_eq!(
+        scenario.read_change_marker("fiddle-m0-demo").as_deref(),
+        Some(scenario.expected_marker("beans:fiddle-m0-demo").as_str()),
+        "and the deterministic capability writes the marker it always wrote: \
+         {payload}"
     );
 }
 

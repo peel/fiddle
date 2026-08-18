@@ -86,9 +86,9 @@ pub enum Command {
         // to need nothing: a capability that reaches a forge is exactly the one
         // whose selection could make a read-only command demand a credential,
         // and it does not, because selecting still stops at the derivation.
-        /// Report the plan for one capability id rather than for the default.
-        /// The same ids `run --capability` takes; an unknown id is a usage
-        /// error.
+        /// Report the plan for one capability id rather than for the one the
+        /// reference's scheme implies. The same ids and the same default as
+        /// `run --capability`; an unknown id is a usage error.
         #[arg(long, value_name = "CAPABILITY_ID")]
         capability: Option<String>,
 
@@ -129,8 +129,16 @@ pub enum Command {
         )]
         mode: Mode,
 
-        /// Restrict execution to one capability id. Absent selects the default,
-        /// `stub_mark`. An unknown id is a usage error, never a silent no-op.
+        // The help names the *rule* rather than one capability, because the
+        // default now depends on the reference: an absent flag resolves through
+        // the scheme, so `fiddle run cve` sweeps and every other scheme marks.
+        // Help that named `stub_mark` as *the* default described the binding this
+        // milestone had rather than the one it has — and `--help` is the only
+        // place an operator learns either.
+        /// Restrict execution to one capability id. Absent selects what the
+        /// reference's scheme implies: `cve` sweeps its configured image, every
+        /// other scheme marks. An unknown id is a usage error, never a silent
+        /// no-op.
         #[arg(long, value_name = "CAPABILITY_ID")]
         capability: Option<String>,
 

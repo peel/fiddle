@@ -5,7 +5,8 @@ mod render;
 use clap::Parser;
 use config::ConfigError;
 use fiddle_core::{
-    CapabilityId, FiddleBuild, InvocationRef, InvocationRefError, RunOutcome, WorkStateView,
+    CapabilityId, FiddleBuild, InvocationRef, InvocationRefError, InvocationScheme, RunOutcome,
+    WorkStateView,
 };
 use fiddle_runtime::effect::{EffectContext, Executor};
 use fiddle_runtime::human::interpret::InterpretationBounds;
@@ -183,6 +184,56 @@ impl Selection {
                     .collect::<Vec<_>>()
                     .join(", "),
             })
+        }
+    }
+
+    /// **The capability an invocation selects, flag or no flag.**
+    ///
+    /// One expression, called by `run` and by `inspect`, and that is the point
+    /// rather than an economy: a second spelling of the default is exactly how
+    /// the two commands would drift apart again — a read-only command whose whole
+    /// purpose is to say what a run would do, saying the wrong thing.
+    fn resolve(
+        requested: Option<&str>,
+        reference: &InvocationRef,
+    ) -> Result<Self, UnknownCapability> {
+        match requested {
+            Some(requested) => Selection::parse(requested),
+            None => Ok(Selection::default_for(reference.scheme())),
+        }
+    }
+
+    /// **The default is derived from the scheme.**
+    ///
+    /// It used to be the constant [`Selection::Mark`] for every scheme, and that
+    /// made the invocation every M4 document names — `fiddle run cve --mode
+    /// unattended` — execute M0's deterministic stub and exit 0 reporting
+    /// `completed`. Not merely a skipped sweep: `stub_mark` writes a correlation
+    /// marker under the reference's own slug, after which the sweep is *accounted
+    /// for*, so a host running it nightly would report success having never
+    /// scanned. ADR 022 records the change and what it costs a reader who knew
+    /// the old rule.
+    ///
+    /// A flag was the alternative and it was rejected: `cve` and `cve_mitigate`
+    /// are the same fact twice, so `fiddle run cve --capability cve_mitigate`
+    /// restates its own subject, and requiring it would undo the bare
+    /// `fiddle run cve` that ADR 019 settled.
+    ///
+    /// Matched arm by arm rather than through a wildcard, because a scheme added
+    /// later has a capability question to answer and this is where it is asked. A
+    /// `_ =>` would answer it silently with `stub_mark`, which is the defect this
+    /// function exists to close, one scheme along.
+    fn default_for(scheme: InvocationScheme) -> Self {
+        match scheme {
+            // `cve` discovers its own work, and the only thing it could be asked
+            // to do with what it finds is remediate it.
+            InvocationScheme::Cve => Selection::Mitigate,
+            // Every scheme that names a work item keeps M0's default, which is
+            // what leaves M0's acceptance lane byte-identical and unmodified.
+            InvocationScheme::Beans
+            | InvocationScheme::Jira
+            | InvocationScheme::Scheduled
+            | InvocationScheme::Scanner => Selection::Mark,
         }
     }
 }
@@ -465,6 +516,18 @@ fn exit_code_for(termination: &Termination) -> u8 {
 /// M0 has one implementation of each; the rest of the binary depends on the
 /// traits, so the only thing that changes when a real adapter arrives is this
 /// one function.
+///
+/// **Every scheme gets these two, `cve` included, and the sweep needs nothing
+/// else from this seam.** Worth saying at the site, because a reader who has just
+/// learnt that the default capability is derived from the scheme
+/// ([`Selection::default_for`]) will reasonably wonder whether the *ports* are
+/// too. They are not, and the reason is what each port is for: the work-item port
+/// is never asked about a trackerless reference at all — [`Addressed::of`]
+/// decides that, not this function — and the change port is how *any* capability's
+/// change set is read before the run and recorded after it, which a sweep needs
+/// exactly as much as `stub_mark` does. What a sweep needs beyond them — a
+/// scanner, a toolchain, a forge — is named in its own configuration tables and
+/// resolved in `build_capability`, not here.
 fn ports(config: &config::Config) -> (StubWorkItemPort, StubChangePort) {
     (
         StubWorkItemPort::new(&config.stub.root),
@@ -1481,14 +1544,12 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             // rather than about a document they never mentioned.
             let reference: InvocationRef =
                 invocation_ref.parse().map_err(InvalidInvocationRef::from)?;
-            // Resolved through the very same two lines `run` uses, and that is
-            // the point rather than an economy: a second spelling of "absent
-            // means `stub_mark`" is exactly how the two commands would drift
-            // apart again.
-            let selection = match capability {
-                Some(requested) => Selection::parse(requested)?,
-                None => Selection::Mark,
-            };
+            // Resolved through the very same expression `run` uses, and that is
+            // the point rather than an economy: a second spelling of the default
+            // is exactly how the two commands would drift apart again. It is one
+            // function now that the default reads the scheme — see
+            // [`Selection::default_for`].
+            let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
             let observed = observe(&config, &reference);
             // The CLI owns the configuration, so the CLI computes the marker
@@ -1536,13 +1597,12 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             // be executed, so a rejected invocation provably did nothing.
             let reference: InvocationRef =
                 invocation_ref.parse().map_err(InvalidInvocationRef::from)?;
-            // Absent means `stub_mark`, unchanged. The default did not move when
-            // a second capability was registered, which is what keeps M0's
-            // acceptance lane byte-identical without being modified.
-            let selection = match capability {
-                Some(requested) => Selection::parse(requested)?,
-                None => Selection::Mark,
-            };
+            // Absent means whatever the reference's scheme means by it: `cve`
+            // selects the sweep, every other scheme keeps M0's `stub_mark`. The
+            // resolution is `inspect`'s own, for its reason — see
+            // [`Selection::resolve`] — and the reference is parsed first because
+            // the default now depends on it.
+            let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
 
             let (work_items, changes) = ports(&config);
