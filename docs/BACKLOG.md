@@ -1883,3 +1883,27 @@ Two fixes, and the first is cheap: have the hook measure the assembled prompt an
 
 Origin: orchestration (epic fiddle-eph7, holistic iteration 4 — the second reviewer was lost and the iteration proceeded single-provider)
 Tags: #bug #tooling #orchestration
+
+### 2026-08-19 — A bean asked a lane to edit a file that does not exist in a lane worktree
+
+`docs/specs/agentic-factory-m4-design.md` is gitignored. A `git worktree add` copies tracked content only, so the design document — the thing every bean is derived from — is **absent from every lane worktree**. Two consequences hit inside one milestone.
+
+An evaluator dispatch died outright: `hooks/dispatch-provider.sh ... --design-doc-file docs/specs/agentic-factory-m4-design.md` run from a lane produced `cat: ... No such file or directory` and the provider was handed nothing. That one is loud and was fixed by passing the epic worktree's absolute path.
+
+The quiet one is worse. Bean `fiddle-jq1g` carried two criteria requiring design-document edits — state the reference-to-capability binding, and resolve a split-table contradiction. The lane could not have satisfied them under any effort, and nothing in its environment said so; it simply left them undone, and the lead made those edits in the epic worktree at evaluation time. A criterion that cannot be met from the worktree it is dispatched into is not a criterion, it is a trap, and the lane that hits it looks negligent.
+
+Two fixes, and they are independent. First, `define-beans` should not write a criterion naming a path that is gitignored — that check is one `git check-ignore` per referenced path. Second, decide whether the design document should be gitignored at all: it is the reference for two milestones and it is read by every reviewer, which is an odd thing to keep out of the tree. If it stays out, lane briefs must say so explicitly, the way this milestone's later briefs began doing.
+
+Origin: orchestration (epic fiddle-eph7, bean fiddle-jq1g — the lead completed the criteria the lane could not see)
+Tags: #bug #orchestration #beans
+
+### 2026-08-19 — The evaluator envelope has now failed four times, in three different shapes
+
+Across this epic, external evaluator dispatches have returned: an object truncated one brace short (twice), an object with `criteria` nested under `.domains`, and an object with the domain key `general` at top level instead of under `domains`. Each was well-formed prose reasoning wrapped in a shape the grading scripts could not read.
+
+The two truncations were re-dispatched, because content was missing and repairing them would have meant guessing at scores. The two mis-nestings were repaired mechanically and the repair disclosed in the evaluation log — a single unambiguous move of a known key is lossless, and there is exactly one valid placement for a domain name. That distinction is worth keeping: *missing content must be re-dispatched, mis-shaped complete content may be normalized and said so.*
+
+Four failures in one epic is a tooling signal rather than four provider mistakes. `merge-scorecards.sh` should normalize a top-level domain key and a mis-nested `criteria` array, and say in its stderr that it did — then no caller hand-fixes anything, and the normalization is recorded in one place instead of in four evaluation logs. Spelling the envelope more loudly in each dispatch has been tried repeatedly this milestone and has not converged.
+
+Origin: orchestration (epic fiddle-eph7 — beans c64d, uwk0, jq1g and holistic iteration 4)
+Tags: #bug #tooling #evaluation
