@@ -1872,3 +1872,14 @@ What would have caught it: taking probes *after* the build that the pack claims 
 
 Origin: orchestration (epic fiddle-eph7, holistic iteration 4 — reported by the reviewer as an antipattern against the pack rather than the tree)
 Tags: #process #evidence-discipline
+
+### 2026-08-19 — `dispatch-provider.sh` hands a provider whatever it is given, and a too-large prompt costs a whole review
+
+A holistic dispatch to `codex` failed at `turn/start` with `Input exceeds the maximum length of 1048576 characters. actual_chars: 2178394`. The cause was the caller: `--diff-file` was the whole 39k-line epic diff, and the assembled prompt was 2.1MB against a 1MB limit. The hook does `DIFF="$(cat "$2")"` and passes it straight through, so the first thing that knows the prompt is too big is the provider, after the dispatch is already committed.
+
+The cost is not the failure, it is the *shape* of the failure. The wrapper's completion notification lagged, so from the orchestrator's side this looked like a provider hanging for forty-five minutes; the first written account of it said codex "returned nothing after 45 minutes", which was true in effect and wrong in cause. A holistic iteration then reached a verdict on one reviewer instead of two, and the second opinion was lost to an input error rather than to a provider being unavailable — a distinction that matters, because one is worth retrying and the other is not.
+
+Two fixes, and the first is cheap: have the hook measure the assembled prompt and refuse before dispatching, naming the byte count and which input dominates. Then a caller learns at once, instead of learning from a provider error whose text does not mention `--diff-file`. Second, for whole-epic reviews, stop passing whole-epic diffs: send the diffstat and let the provider read the tree, or scope the diff to the paths under review. A 39k-line diff was never going to be read line by line anyway.
+
+Origin: orchestration (epic fiddle-eph7, holistic iteration 4 — the second reviewer was lost and the iteration proceeded single-provider)
+Tags: #bug #tooling #orchestration
