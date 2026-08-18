@@ -119,6 +119,30 @@ evidence.
 Everything else — the fixture-integrity lanes, the probes for behaviour the
 criterion does not name — is the evaluator's to judge from the evidence pack.
 
+**Snapshot before you mutate, because the tree is not yours.** The implementer's
+work is uncommitted when you probe it, so the file you are about to edit already
+holds changes that exist nowhere else. `git checkout -- <file>` to undo a probe
+reverts to HEAD and takes those with it — the probe and the work land in the same
+bin, and the loss is silent. Take a real snapshot first and restore from that:
+
+```bash
+SNAP=$(git stash create)          # a commit object; touches no stash stack
+# ...mutate, run, then:
+git checkout "$SNAP" -- <file>    # the tree as it was, probe removed
+```
+
+Do this even for a one-line mutation you are sure you can undo by hand. The
+mutation is easy to reverse; the forty lines of somebody else's prose sitting in
+the same file are not, and you will not notice they are gone — the suite still
+passes without them.
+
+**A probe that fails to reproduce is a finding, not a formality.** If the
+reported red set does not appear, do not assume you mis-applied the mutation:
+re-read the fixture and work out what the world actually does. Twice this has
+turned out to be a real gap — a claimed invariant with nothing holding it —
+and in both cases the implementer had reasoned about the mutation rather than
+running it.
+
 ## 1f. Dispatch Per-Domain Evaluator
 
 One evaluator per resolved domain, processed in `runtime_order` if specified, otherwise the `domains` order. Select its provider:

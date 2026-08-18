@@ -75,6 +75,15 @@ the assertions in it, so make each start answer as many questions as it can.
 happen, and the difference is invisible in a report — which is why the evidence
 is the failing assertion's own text and not your account of it.
 
+**Never state a predicted outcome as a result.** Working out which lanes a
+mutation *would* redden is useful, and it is not evidence: the reasoning can be
+sound and the answer still wrong, because what a lane asserts and what its
+fixture actually produces come apart in ways only a run reveals. Say "I expect X
+and did not run it" — those words cost nothing and are the difference between a
+lead who re-runs the one probe that matters and a lead who trusts a claim
+nothing holds. A wrong prediction that reads as a result is worse than no probe
+at all, because it closes the question.
+
 A probe also has to fail *for the right reason*. A lane that fails because the
 world starved, or timed out, or could not build, is evidence about the fixture
 and not about the code, and it will read as a passing probe to anyone skimming.
