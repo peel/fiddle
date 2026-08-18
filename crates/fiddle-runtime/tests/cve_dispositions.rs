@@ -42,6 +42,15 @@
 //! suite run under each; the results are in the lane's report. They are recorded
 //! here rather than only in a report because the point of a mutation is that
 //! somebody can repeat it.
+//!
+//! **And the same seven mutations now run through the compiled binary.** This
+//! tier proves the table injective *inside the process*, which is not a
+//! distinction anybody downstream can act on: for most of M4a five of the seven
+//! rows published byte-identical artefacts, so every mutation below was
+//! invisible from outside a run. The run-tier half is the table in
+//! `fiddle-acceptance/tests/cve_mitigation.rs`, under "The four scenarios",
+//! which names the lane each row fails through and records that no two rows
+//! share one.
 
 // The support module is compiled per test binary and this suite reaches a small
 // part of it; see `tests/support/mod.rs`.

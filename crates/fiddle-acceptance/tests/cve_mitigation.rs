@@ -1833,6 +1833,68 @@ fn pushed_commits(sweep: &Sweep, branch: &str) -> Vec<(String, Vec<String>)> {
 // ---------------------------------------------------------------------------
 // The four scenarios (Task 20.b)
 // ---------------------------------------------------------------------------
+//
+// # Seven rows, and the mutation each one fails under
+//
+// Design §8: *every disposition must fail under a mutation its neighbours
+// survive*. `cve_dispositions`' header records that proof at the unit tier, and
+// for most of M4a that was the only tier that had it — five of the seven rows
+// produced identical observable output from outside a run, so no mutation to
+// `disposition` could be told apart out here at all. `fiddle-1cqg` published the
+// row on the bundle, which is what makes the run-tier proof constructible; this
+// is that proof.
+//
+// Each mutation was applied alone to `cve::verdict::disposition`, the whole of
+// this file was run under it, and the lanes named are the complete set that went
+// red. Every other lane in the file stayed green, and no two rows share a lane.
+//
+//   row 6  ScanUnusable            reason -> Reason::NothingToDo
+//     an_unusable_scanner_exits_eleven_and_reaches_no_forge
+//   row 4  PullRequest             the `any(Clean)` test -> `false`
+//     a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch
+//     a_group_an_earlier_bump_already_cleared_is_folded_into_an_empty_commit
+//     the_bound_the_document_sets_is_the_bound_the_sweep_applies
+//     a_second_run_over_a_shared_pull_request_rewrites_its_body_and_works_in_its_tree
+//     a_run_whose_shared_body_is_unchanged_dispatches_no_rewrite
+//   row 5  UnsafeWithoutDirection  the `!attempted.is_empty()` test -> `false`
+//     an_unprovable_repair_is_reverted_and_filed_as_needing_direction
+//     a_needs_work_groups_rescan_is_not_folded_on
+//   row 2  VerdictsOnly            the `!verdicts.is_empty()` test -> `false`
+//     an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_verdicts_only
+//     a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set
+//   row 7  AlreadyInProgress       the `!covers.is_empty()` test -> `false`
+//     an_open_pull_request_covering_the_rest_reaches_already_in_progress
+//   row 3  AlreadyFixed            the `!already_fixed.is_empty()` test -> `false`
+//     a_tree_that_settles_every_finding_reaches_already_fixed
+//   row 1  NothingToDo             the fall-through -> Reason::AlreadyFixed
+//     a_scan_of_an_empty_image_reaches_nothing_to_do
+//
+// The last three of row 4's lanes are on that list because of this exercise. All
+// three drive a run that lands work and all three asserted only what the *forge*
+// held afterwards, which `disposition` does not decide — so row 4 could be
+// switched off and they went green over a run that reported
+// `unsafe_without_direction` while pushing a branch. Each now names the row it
+// reached, which is what Design §8 asks a lane for.
+//
+// # Why every mutation switches a row *off* rather than rewiring it
+//
+// Because `disposition` is a fall-through table and the direction matters. A
+// mutation that makes row N fire *more widely* moves the rows below it as well —
+// turn row 4's `any(Clean)` into `any(!Clean)` and the needs-work worlds start
+// arriving on row 4, so row 5's lanes go red for a reason that has nothing to do
+// with row 5, and the run would have proved nothing about either. Switching a row
+// off leaves every world that never reached it untouched and moves only the
+// worlds that did, one row down.
+//
+// What that costs is worth stating rather than hiding, because it is a fact
+// about the table and not a defect in a lane: these mutations show each row is
+// load-bearing for its own lanes, and they show the **shadowing** the table is
+// built on. Under row 2's mutation both `verdicts_only` lanes land on
+// `already_fixed`; under row 3's, the settled-tree world lands on
+// `nothing_to_do`. That is the table saying out loud that row 3 is only ever
+// reached when row 2's test is false, and row 1 only when row 3's is — which is
+// why [`a_tree_that_settles_every_finding_reaches_already_fixed`] needs a
+// document with nothing left over in it to reach row 3 at all.
 
 /// **A vulnerable fixture yields exactly one pull request and one branch, and
 /// the branch really carries the fix.**
@@ -1980,7 +2042,7 @@ fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
 /// `VerdictsOnly` is tested before `AlreadyFixed`, which is correct: a run with
 /// something to report has something to report whatever else was settled.
 ///
-/// Row 3 proper is `three_runs_that_used_to_publish_one_document_publish_three`,
+/// Row 3 proper is [`a_tree_that_settles_every_finding_reaches_already_fixed`],
 /// which reaches it over a document whose findings *can* all be settled. Naming
 /// each lane for the row it actually reaches is the point of the exercise: a
 /// lane named for one row and asserting another is a lane that would go green
@@ -2093,168 +2155,296 @@ fn an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_verdicts_only
     );
 }
 
-/// **The three rows that used to publish one document now publish three.**
+/// The document a run over an image with nothing in it publishes.
 ///
-/// # The defect, stated before the assertions
+/// # Why the three silent rows keep their expectations here rather than inline
+///
+/// Because they are used twice and the second use is the point. Each is asserted
+/// **whole** against one real run in the lane below it, which is what binds it to
+/// the product; and the three are then compared against each other, with their
+/// own names removed, by
+/// [`the_three_rows_that_used_to_publish_one_document_publish_three`] — which
+/// needs all three in one place and must not pay for three more sweeps to get
+/// them. A literal written twice would be two literals, and the comparison would
+/// stop being about the documents the runs actually produced.
+fn nothing_to_do_publishes() -> serde_json::Value {
+    serde_json::json!({
+        "reason": "nothing_to_do",
+        "verdicts": 0,
+        "already_fixed": [],
+        "deferred": [],
+        "attempts": [],
+        "branch": serde_json::Value::Null,
+        "pull_request": serde_json::Value::Null,
+    })
+}
+
+/// The document a run whose findings the tree has already settled publishes.
+///
+/// See [`nothing_to_do_publishes`] for why these live here.
+fn already_fixed_publishes() -> serde_json::Value {
+    serde_json::json!({
+        "reason": "already_fixed",
+        "verdicts": 0,
+        "already_fixed": [LIBRARY_CVE],
+        "deferred": [],
+        "attempts": [],
+        "branch": serde_json::Value::Null,
+        "pull_request": serde_json::Value::Null,
+    })
+}
+
+/// The document a run whose work an open pull request already carries publishes.
+///
+/// See [`nothing_to_do_publishes`] for why these live here.
+fn already_in_progress_publishes() -> serde_json::Value {
+    serde_json::json!({
+        "reason": "already_in_progress",
+        "verdicts": 0,
+        "already_fixed": [LIBRARY_CVE, OS_CVE],
+        "deferred": [],
+        "attempts": [],
+        "branch": serde_json::Value::Null,
+        "pull_request": SHARED_PR,
+    })
+}
+
+/// The three assertions every one of the three silent rows owes, which are the
+/// ones that used to make them indistinguishable.
+///
+/// Exit 0, `completed`, and an empty verdict report. Made by each of the three
+/// lanes below rather than by a loop over the three worlds, because a lane that
+/// asserts its own premise is a lane that fails on its own when the premise goes.
+/// The three calls being identical *is* the claim that the old surface does not
+/// tell these runs apart — there is nothing left for a loop to add.
+fn the_old_surface_says_nothing(sweep: &Sweep, run: &Output, world: &str) {
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{world} is not a failed run — stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(sweep.payload(run)["outcome"], "completed", "{world}");
+    assert_eq!(
+        sweep.verdicts(),
+        serde_json::json!([]),
+        "{world} must leave the same empty verdict report as its neighbours, or \
+         the three are being told apart by something other than the row"
+    );
+    // And the receipts a run publishes stay logical while the record grows.
+    sweep.assert_every_receipt_is_logical(run);
+}
+
+/// The row a run's stdout and its bundle agree on, or a failure naming both.
+///
+/// The payload a shell caller reads and the bundle a reader opens a week later
+/// must not be two documents. `run_json` projects one from the other, and this is
+/// what holds that: a caller who had to open the bundle to learn which of seven
+/// situations they are in would be worse off than one who read the record.
+fn the_row_both_surfaces_agree_on(sweep: &Sweep, run: &Output, world: &str) -> serde_json::Value {
+    let document = sweep.disposition(run);
+    assert_eq!(
+        sweep.payload(run)["disposition"],
+        document,
+        "{world}: stdout and the bundle disagree about the row"
+    );
+    document
+}
+
+/// **A scan reporting an image with nothing in it reaches `NothingToDo`.**
+///
+/// # The defect these three lanes are about
 ///
 /// Design §3's last paragraph is one sentence: *every `NoChange` carries the
 /// evidence for its own reason; one whose reason cannot be checked from the
 /// bundle is not evidenced.* Until the bundle carried a `disposition`, three of
 /// those rows failed it completely. A run that found nothing to do, a run whose
-/// findings the tree had already fixed, and a run whose work an open pull
-/// request already carried each published: exit 0, `"outcome": "completed"`,
+/// findings the tree had already fixed, and a run whose work an open pull request
+/// already carries each published: exit 0, `"outcome": "completed"`,
 /// `verdicts.json == []`, one receipt naming the verdict report — and nothing
 /// else. Byte for byte the same artefacts, for three situations with three
 /// different remedies, one of which is *go and merge #41*.
 ///
-/// A run-level lane and not a unit one, because the unit tier already had this
+/// Run-level lanes and not unit ones, because the unit tier already had this
 /// covered and it was not enough: `cve_dispositions::seven_causes_reach_seven_
 /// distinguishable_results` proved the table injective *inside the process* for
 /// the whole of this milestone, and every one of these three runs was still
 /// unreadable from outside it. Injectivity in memory is not a distinction
 /// anybody downstream can act on.
 ///
-/// # Why the three worlds differ where they do
+/// # And one lane per row, which is the second thing being proved
 ///
-/// The tree is the same fixture in all three, so the tree is not what decides.
-/// What differs is one thing per world:
+/// The three worlds shared a single lane until this one was split out of it, and
+/// a shared lane cannot show what Design §8 asks for. *Every disposition must
+/// fail under a mutation its neighbours survive* is a claim about
+/// discrimination: corrupt one arm of `disposition` and exactly the lanes for
+/// that arm's row must go red. With three rows in one lane, deleting row 3's test
+/// and deleting row 1's fall-through fail the same single test, and the suite
+/// cannot say the two rows are two things. Split, they can:
+/// [`the_three_rows_that_used_to_publish_one_document_publish_three`] still makes
+/// the cross-world claim, over the very expectations these lanes bind to runs, and
+/// costs no run of its own.
 ///
-/// - **Nothing to do** — a scan reporting an image with nothing in it.
-/// - **Already fixed** — a scan reporting only the advisory this tree already
-///   ships the fix for, so `go list -m` settles every finding there is.
-/// - **Already in progress** — the same document as the fixed-tree lane, plus an
-///   open labelled pull request whose *commit body* names the one advisory the
-///   tree cannot settle. Read from the commits and never from the pull request's
-///   body: a body lists what a scan found when it was opened, so a mention there
-///   is evidence a CVE was seen and not that it was fixed.
+/// # This world
 ///
-/// # The two assertions, and why neither alone would do
-///
-/// **They are still identical on the old surface.** All three exit 0, all three
-/// report `completed`, and all three write `[]` to the verdict report. Asserted
-/// first, because it is what makes the second assertion an improvement rather
-/// than a coincidence — without it, three documents differing could be three
-/// runs that happened to do different things.
-///
-/// **And they differ on the new one, pairwise, with the reason removed.** A set
-/// keyed on the whole published document would be satisfied by a record carrying
-/// nothing but its own name, and a name with no evidence beside it is what §3's
-/// sentence refuses. So each row is checked twice: the document as published,
-/// and the document with `reason` deleted — three of each.
+/// The tree is [`FIXED`] in all three, so the tree is not what decides. Here the
+/// difference is the document: a scan reporting an image with nothing in it. Every
+/// list is empty and the reason is the whole of the claim — which is precisely
+/// what the two rows below *can* say and this one cannot.
 #[test]
-fn three_runs_that_used_to_publish_one_document_publish_three() {
-    let nothing_to_do = Sweep::scanning(FIXED, SCAN_CLEAN, 2, a_bump_needing_no_edit());
-    let already_fixed = Sweep::scanning(FIXED, SCAN_LIBRARY_ONLY, 2, a_bump_needing_no_edit());
-    let in_progress = Sweep::scanning(FIXED, SCAN_OK, 2, a_bump_needing_no_edit());
-    // The advisory the tree cannot settle, settled by the shared branch's own
-    // history instead. The library advisory is deliberately *not* named here:
-    // this run must reach the in-progress row through a real dedup of both
-    // halves — one from the tree, one from the log — and a commit naming both
-    // would leave the tree's half unexercised.
-    in_progress.seed_shared_pull_request_saying(
+fn a_scan_of_an_empty_image_reaches_nothing_to_do() {
+    let sweep = Sweep::scanning(FIXED, SCAN_CLEAN, 2, a_bump_needing_no_edit());
+
+    let run = sweep.run();
+    the_old_surface_says_nothing(&sweep, &run, "nothing to do");
+
+    assert_eq!(
+        the_row_both_surfaces_agree_on(&sweep, &run, "nothing to do"),
+        nothing_to_do_publishes(),
+        "the row that is *nothing*: every list empty, and the reason is the \
+         whole of it"
+    );
+}
+
+/// **A tree that settles every finding there is reaches `AlreadyFixed`.**
+///
+/// Design §3 row 3, and the row the milestone's own acceptance suite could not
+/// reach for most of M4a. See [`a_scan_of_an_empty_image_reaches_nothing_to_do`]
+/// for the defect all three of these lanes are about.
+///
+/// # Why the document is [`SCAN_LIBRARY_ONLY`] and not [`SCAN_OK`]
+///
+/// Because `AlreadyFixed` is **row 3 and `VerdictsOnly` is row 2**, so a run with
+/// anything left to report never reaches it. Under [`SCAN_OK`] the OS advisory is
+/// one no run can settle — a base image's, with no registry to read tags from —
+/// so it produces a verdict and the run lands on row 2 instead. That is exactly
+/// what `an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_verdicts_only`
+/// asserts, and why that lane is named for row 2.
+///
+/// So this world's document names *only* the library advisory, the one `go list
+/// -m` can settle against the tree. Then there is nothing left over, and row 3 is
+/// reachable. The advisory in `already_fixed` is what row 1 cannot say and is the
+/// evidence for the reason: somebody else already dealt with this.
+#[test]
+fn a_tree_that_settles_every_finding_reaches_already_fixed() {
+    let sweep = Sweep::scanning(FIXED, SCAN_LIBRARY_ONLY, 2, a_bump_needing_no_edit());
+
+    let run = sweep.run();
+    the_old_surface_says_nothing(&sweep, &run, "already fixed in the tree");
+
+    assert_eq!(
+        the_row_both_surfaces_agree_on(&sweep, &run, "already fixed in the tree"),
+        already_fixed_publishes(),
+        "row 3 names the advisory somebody else already dealt with, which is \
+         exactly what row 1 cannot say"
+    );
+}
+
+/// **An open pull request that already covers the rest reaches
+/// `AlreadyInProgress`, and the number travels.**
+///
+/// The row whose remedy is not *nothing*: it is *go and merge #41*. See
+/// [`a_scan_of_an_empty_image_reaches_nothing_to_do`] for the defect all three of
+/// these lanes are about — this is the row that made it worth fixing, because a
+/// run reporting "nothing changed" when the work is sitting in an open pull
+/// request is a run that loses the pull request.
+///
+/// # How this world differs from the one above
+///
+/// The same tree and the full [`SCAN_OK`] document, plus an open labelled pull
+/// request whose **commit body** names the one advisory the tree cannot settle.
+/// Read from the commits and never from the pull request's body: a body lists
+/// what a scan found when it was opened, so a mention there is evidence a CVE was
+/// seen and not that it was fixed.
+///
+/// The library advisory is deliberately *not* named in that commit. This run must
+/// reach the in-progress row through a real dedup of both halves — one from the
+/// tree, one from the log — and a commit naming both would leave the tree's half
+/// unexercised. Both halves are then visible in the published `already_fixed`,
+/// which is why it is asserted whole rather than as a length.
+///
+/// # The two fields that are the row
+///
+/// `pull_request` carries the number, because the number *is* the remedy;
+/// `branch` stays null, because nothing landed on a branch this run made and
+/// naming one would tell a reader work landed there.
+#[test]
+fn an_open_pull_request_covering_the_rest_reaches_already_in_progress() {
+    let sweep = Sweep::scanning(FIXED, SCAN_OK, 2, a_bump_needing_no_edit());
+    sweep.seed_shared_pull_request_saying(
         STALE_BODY,
         &format!("bump the base image, fixes {OS_CVE}"),
     );
 
-    let worlds = [
-        ("nothing to do", &nothing_to_do, "nothing_to_do"),
-        ("already fixed in the tree", &already_fixed, "already_fixed"),
-        (
-            "an open pull request covers it",
-            &in_progress,
-            "already_in_progress",
-        ),
+    let run = sweep.run();
+    the_old_surface_says_nothing(&sweep, &run, "an open pull request covers it");
+
+    assert_eq!(
+        the_row_both_surfaces_agree_on(&sweep, &run, "an open pull request covers it"),
+        already_in_progress_publishes(),
+        "row 7's remedy is to go and merge a numbered pull request, so the \
+         number is the evidence — and nothing landed on a branch this run made, \
+         so it names none"
+    );
+}
+
+/// **The three rows that used to publish one document publish three, and still
+/// three with their own names removed.**
+///
+/// # What this lane adds to the three above, and why it starts no process
+///
+/// Each of the three lanes above asserts one run's whole document against one of
+/// [`nothing_to_do_publishes`], [`already_fixed_publishes`] and
+/// [`already_in_progress_publishes`]. That is what binds those expectations to
+/// the product: if a run stops publishing what its lane names, that lane goes
+/// red. What no one of them can say is anything about its *neighbours* — three
+/// lanes passing separately is consistent with three worlds publishing one
+/// document, if the three expectations happened to be the same document.
+///
+/// So this is the cross-world half, made over the same three values the runs are
+/// checked against rather than over three more sweeps. Composed with the lanes
+/// above it is the original claim, and strictly stronger than the loop it
+/// replaced: whole-document equality against a named expectation, rather than
+/// three documents landing in a set of size three.
+///
+/// **And with `reason` removed, which is the assertion that matters.** A set keyed
+/// on the whole published document would be satisfied by a record carrying nothing
+/// but its own name, and a name with no evidence beside it is what Design §3's
+/// sentence refuses. Each row must be checkable from its evidence: the empty
+/// image's lists are all empty, the settled tree names the advisory it settled,
+/// and the in-progress run carries a pull request number none of the others has.
+#[test]
+fn the_three_rows_that_used_to_publish_one_document_publish_three() {
+    let rows = [
+        nothing_to_do_publishes(),
+        already_fixed_publishes(),
+        already_in_progress_publishes(),
     ];
 
-    let mut published = std::collections::HashSet::new();
-    let mut without_reason = std::collections::HashSet::new();
-    // Kept from the one run each world gets. Re-running a deployment to read it
-    // a second time would be a second run — over a report directory the first
-    // one wrote and, for the third world, a forge the first one already saw —
-    // so what is asserted below would be a different attempt from the one the
-    // set above compared.
-    let mut reached: Vec<serde_json::Value> = Vec::new();
-    for (world, sweep, row) in worlds {
-        let run = sweep.run();
-        assert_eq!(
-            run.status.code(),
-            Some(0),
-            "{world} is not a failed run — stderr: {}",
-            String::from_utf8_lossy(&run.stderr)
-        );
-        assert_eq!(sweep.payload(&run)["outcome"], "completed", "{world}");
-        // The old surface, asserted to still be identical across the three. This
-        // is the premise the lane is about, not an incidental check.
-        assert_eq!(
-            sweep.verdicts(),
-            serde_json::json!([]),
-            "{world} must leave the same empty verdict report as its neighbours,              or the three are being told apart by something other than the row"
-        );
-        // And the receipts a run publishes stay logical while the record grows.
-        sweep.assert_every_receipt_is_logical(&run);
-
-        let mut document = sweep.disposition(&run);
-        // The payload a shell caller reads and the bundle a reader opens a week
-        // later must not be two documents. `run_json` projects one from the
-        // other, and this is what holds that: a caller who had to open the
-        // bundle to learn which of seven situations they are in would be worse
-        // off than one who read the record.
-        assert_eq!(
-            sweep.payload(&run)["disposition"],
-            document,
-            "{world}: stdout and the bundle disagree about the row"
-        );
-        reached.push(document.clone());
-        assert_eq!(
-            document["reason"], row,
-            "{world} should publish the row it reached: {document}"
-        );
-        assert!(
-            published.insert(document.to_string()),
-            "two worlds must not publish one document: {world} published one a              neighbour already had — {document}"
-        );
-
-        document.as_object_mut().unwrap().remove("reason");
-        assert!(
-            without_reason.insert(document.to_string()),
-            "{world}'s row must be checkable from its evidence and not from its              own name alone: {document}"
-        );
-    }
-    assert_eq!(published.len(), 3);
-    assert_eq!(without_reason.len(), 3);
-
-    // And what each row's evidence actually is, named rather than left to the
-    // set above. A set proves three documents differ; these say the difference
-    // is the fact the row is about.
-    let [clean, settled, awaiting] =
-        <[serde_json::Value; 3]>::try_from(reached).expect("one document per world");
+    let named: std::collections::HashSet<String> =
+        rows.iter().map(serde_json::Value::to_string).collect();
     assert_eq!(
-        clean,
-        serde_json::json!({
-            "reason": "nothing_to_do",
-            "verdicts": 0,
-            "already_fixed": [],
-            "deferred": [],
-            "attempts": [],
-            "branch": serde_json::Value::Null,
-            "pull_request": serde_json::Value::Null,
-        }),
-        "the row that is *nothing*: every list empty, and the reason is the          whole of it"
+        named.len(),
+        3,
+        "two of the three silent rows publish one document: {rows:?}"
     );
 
+    let anonymous: std::collections::HashSet<String> = rows
+        .iter()
+        .map(|row| {
+            let mut row = row.clone();
+            row.as_object_mut()
+                .expect("a disposition is an object")
+                .remove("reason")
+                .expect("every row publishes its reason");
+            row.to_string()
+        })
+        .collect();
     assert_eq!(
-        settled["already_fixed"],
-        serde_json::json!([LIBRARY_CVE]),
-        "row 3 names the advisory somebody else already dealt with, which is          exactly what row 1 cannot say: {settled}"
-    );
-
-    assert_eq!(
-        awaiting["pull_request"], SHARED_PR,
-        "row 7's remedy is to go and merge a numbered pull request, so the          number is the evidence: {awaiting}"
-    );
-    assert!(
-        awaiting["branch"].is_null(),
-        "and nothing landed on a branch this run made, so it names none:          {awaiting}"
+        anonymous.len(),
+        3,
+        "a row must be checkable from its evidence and not from its own name \
+         alone, and two of these carry the same evidence: {rows:?}"
     );
 }
 
@@ -2613,6 +2803,16 @@ fn a_group_an_earlier_bump_already_cleared_is_folded_into_an_empty_commit() {
 
     // One attempt in the record, and one turn in the world.
     let reached = sweep.disposition(&run);
+    // Which row folding lands on, said rather than left to the pull request
+    // above. A fold that had instead been judged unsafe would revert, publish no
+    // pull request and reach `unsafe_without_direction` — and every assertion
+    // below about the *attempt* record would still read the same, because a
+    // reverted group is in that list too.
+    assert_eq!(
+        reached["reason"], "pull_request",
+        "a folded group is still a clean group, so the run lands on row 4: \
+         {reached}"
+    );
     assert_eq!(
         reached["attempts"],
         serde_json::json!([{
@@ -3298,6 +3498,22 @@ fn a_second_run_over_a_shared_pull_request_rewrites_its_body_and_works_in_its_tr
     );
     assert_eq!(pulls[0]["number"], SHARED_PR, "{:?}", pulls[0]);
 
+    // And which row that is. The *interesting* neighbour here is row 7: a run
+    // that saw the same open pull request and decided its commits already
+    // covered everything would also leave one pull request numbered 41 behind,
+    // and would reach `already_in_progress` having pushed nothing. This run
+    // landed work, so it is row 4 — and the branch it names is the shared one it
+    // was given rather than a dated one it cut for itself.
+    let reached = sweep.disposition(&run);
+    assert_eq!(
+        reached["reason"], "pull_request",
+        "this run landed a clean group onto the shared branch, so it is row 4 \
+         and not the row for work somebody else's pull request already carries: \
+         {reached}"
+    );
+    assert_eq!(reached["pull_request"], SHARED_PR, "{reached}");
+    assert_eq!(reached["branch"], SHARED_BRANCH, "{reached}");
+
     // What it now says, and that a mutation is what made it say so.
     let shared = sweep.pull_request(SHARED_PR);
     assert_eq!(
@@ -3398,6 +3614,17 @@ fn a_run_whose_shared_body_is_unchanged_dispatches_no_rewrite() {
     assert!(
         pushed_file(&sweep, SHARED_BRANCH, "go.mod").contains(&format!("{MODULE} {FIXED_VERSION}")),
         "the sweep still did its work"
+    );
+    // And it reached it on row 4, which is the other way of saying the same
+    // thing from the record rather than from the remote — a run that reached
+    // `already_in_progress` would have dispatched no rewrite either, and would
+    // have satisfied the assertion this lane is named for without doing any work
+    // at all.
+    let reached = sweep.disposition(&run);
+    assert_eq!(
+        reached["reason"], "pull_request",
+        "no rewrite because the description was already right, and not because \
+         the run decided there was nothing to land: {reached}"
     );
     assert_eq!(
         sweep.pull_requests().len(),
