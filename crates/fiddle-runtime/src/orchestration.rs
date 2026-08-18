@@ -89,8 +89,8 @@ pub fn observe(
         // value interpolated into a path, and reported `Blocked` because the
         // file it invented was not there.
         //
-        // `NotApplicable` is what [`fiddle_core::assess`] has a trackerless arm
-        // for, and until something built one that arm was unreachable.
+        // `NotApplicable` is what [`fiddle_core::assess`] has a trackerless reading
+        // for, and until something built one that reading was unreachable.
         Addressed::NoWorkItem { .. } => fiddle_core::Observation::NotApplicable {
             reason: "this invocation names no work item, so no tracker was consulted".to_string(),
         },
@@ -364,6 +364,18 @@ impl Authorised {
 ///   request. ADR 023 argues it, and `Blocked` is untouched — an unreadable
 ///   change set is still a world fiddle did not see, whatever the reference.
 ///
+///   This mapping and `fiddle_core::assess` therefore read *the same predicate*,
+///   and that is intended rather than incidental: they are one question — does
+///   this reference record anything about being done — asked once about what a
+///   marker means and once about what a run concluded. Splitting them, so that
+///   the outcome mapping kept its own spelling of "trackerless", is the shape in
+///   which a sweep could read `not_started` and still exit 11: two derivations of
+///   one run disagreeing about which world it was in. The cost of sharing it is
+///   that anyone who inverts the predicate to test the assessment also inverts
+///   what a run *concludes*; that surprise is called out where the predicate is
+///   defined, under "Two readers, on purpose", because this is the reader that
+///   makes it surprising.
+///
 /// Both reasons name the fact that the capability had already run, because
 /// `Failed` and `Retryable` each have other producers and the exit code alone
 /// cannot tell them apart: exit 20 otherwise means "fiddle could not observe the
@@ -379,10 +391,12 @@ fn concluded(next_action: &NextAction, after: &WorkStateView) -> RunOutcome {
             )),
         },
         // The view is asked, rather than `Addressed` or the reference: it is the
-        // one `next_action` was derived from, and `fiddle_core::assess` decides
-        // the trackerless arm off the same predicate. Two spellings of "this
-        // reference records no completion" is how the derivation and the
-        // conclusion would come to disagree about which arm a run took.
+        // one `next_action` was derived from, and `fiddle_core::assess` calls this
+        // very predicate to decide what the marker meant. Literally the same call,
+        // not merely the same rule — two spellings of "this reference records no
+        // completion" is how the derivation and the conclusion would come to
+        // disagree about which world a run was in, and this one had two until a
+        // lane tried to invert it and found only half of the meaning moved.
         NextAction::Execute { .. } if !after.has_completion_state() => RunOutcome::Completed,
         NextAction::Execute { capability_id } => RunOutcome::Retryable {
             reason: Published::of(format!(

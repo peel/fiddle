@@ -1052,7 +1052,7 @@ fn the_mitigating_capability_is_selectable_and_an_unknown_one_is_not() {
 /// was asserted nowhere. This is the run-level half.
 ///
 /// Two assertions and they are deliberately not one. The exit code alone would
-/// pass for the wrong reason — a run can exit 0 without the trackerless arm
+/// pass for the wrong reason — a run can exit 0 without the trackerless reading
 /// having been anywhere near it — so the observation is checked too: the work
 /// item is `not_applicable`, it carries no `available` and no `unavailable`, and
 /// nothing in the payload names a source under `stub:work/`. That last one is
@@ -2485,8 +2485,9 @@ fn the_documented_invocation_with_no_capability_flag_reaches_the_sweep() {
 /// no work item: such a reference has no completion state of its own, so a
 /// marker on its change set records that some run wrote one and evidences
 /// nothing about whether an image was scanned. Any capability sharing a
-/// trackerless reference inherits it, which is why the fix is
-/// [`fiddle_core::assess`]'s trackerless arm and
+/// trackerless reference inherits it, which is why the fix is the trackerless
+/// reading in [`fiddle_core::assess`] — a branch on
+/// [`fiddle_core::WorkStateView::has_completion_state`], not on a spelling — and
 /// [ADR 023](../../../docs/technical/decisions/023-a-sweep-has-no-completion-state.md)
 /// is where the reasoning lives.
 ///
@@ -2495,50 +2496,88 @@ fn the_documented_invocation_with_no_capability_flag_reaches_the_sweep() {
 /// Because the subject is the *assessment* and not the selection.
 /// `the_documented_invocation_with_no_capability_flag_reaches_the_sweep` above
 /// owns the default; a lane that took it would fail for either reason and say
-/// which one only by accident. The marking run is the one that has to be
-/// explicit about `stub_mark`, and it is.
+/// which one only by accident.
 ///
-/// The world and the closing assertions are that lane's, deliberately: what
-/// differs between the two is one preceding invocation, so any difference in
-/// outcome is that invocation's.
+/// # Why the premise is written into the world rather than run
+///
+/// This lane used to establish its premise through the binary — `fiddle run cve
+/// --capability stub_mark`, then a guard requiring that run to exit 0 — on the
+/// reasoning that a world reached by a real invocation is a world that can
+/// really happen. The guard was sound and the world was real, and the lane was
+/// still the wrong instrument, for a reason worth writing down because it is not
+/// obvious:
+///
+/// **a premise that runs the code under test cannot fail the claim.** The rule
+/// this lane exists to hold is
+/// [`fiddle_core::WorkStateView::has_completion_state`], and the marking run
+/// derives from it too — `orchestration::concluded` asks it what a run whose
+/// post-execution action is still `Execute` concluded. Inverted, that turned the
+/// setup run into an exit-11 `Retryable`, so the guard fired and the lane went
+/// red saying "the premise is not established" about a run that is not its
+/// subject. It never reached its claim. A lane that cannot fail for the reason it
+/// exists is worth less than its name promises, whatever colour it shows.
+///
+/// So the marker is written into `<stub.root>/changes/cve.json` directly. Now the
+/// only invocation in this lane is the one under test, and inverting the rule reds
+/// the claim: `capability_executions` is empty, `next_action` is `complete`, and
+/// the assessment read the marker as completion.
+///
+/// The particular flip that caught the lane out is gone — `assess` now calls that
+/// predicate rather than spelling the condition out a second time, so inverting it
+/// moves the marker's meaning as well and a `stub_mark` run over `cve` would exit
+/// 0 again. The premise still does not go through the runtime, and that is the
+/// durable half of the lesson: a premise established by running fiddle is hostage
+/// to every rule on that run's path, and the rule under test is always one of
+/// them.
+///
+/// Nothing is lost by not running M0's capability here, because what this lane
+/// needs from it is the *value*, and the value is `blake3(project + NUL +
+/// reference)` — [`Scenario::expected_marker`] computes it from design §4.3's own
+/// definition rather than by asking fiddle. That the value is what a real
+/// `stub_mark` run leaves behind is
+/// `a_run_over_a_trackerless_reference_is_not_a_failed_run`'s assertion, made
+/// through the binary over the same reference; this lane depends on that one for
+/// reachability and on nothing else for its claim.
+///
+/// The world and the closing assertions are
+/// `the_documented_invocation_with_no_capability_flag_reaches_the_sweep`'s,
+/// deliberately: what differs between the two lanes is one fact about the change
+/// set, so any difference in outcome is that fact's.
 #[test]
 fn a_marker_against_a_trackerless_reference_does_not_account_the_sweep_as_done() {
     let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 2, a_bump_needing_no_edit());
 
-    // The premise, established through the binary rather than by writing the
-    // file: a capability that scanned nothing leaves a marker under this
-    // reference's own slug.
-    let marking = sweep.run_selecting(&["--capability", "stub_mark"], &["--mode", "unattended"]);
-    assert_eq!(
-        marking.status.code(),
-        Some(0),
-        "the marking run must succeed, or the premise is not established — \
-         stderr: {}",
-        String::from_utf8_lossy(&marking.stderr)
-    );
+    // The premise: the reference's change set carries a marker equal to this
+    // invocation's own correlation key, filed by something that scanned no image.
+    let foreign_marker = sweep.scenario.expected_marker(SWEEP_REF);
+    sweep
+        .scenario
+        .write_change_marker(SWEEP_REF, &foreign_marker);
     assert_eq!(
         sweep.scenario.read_change_marker(SWEEP_REF),
-        Some(sweep.scenario.expected_marker(SWEEP_REF)),
-        "the reference must really be marked, or this lane asserts nothing: the \
-         marker is this invocation's own correlation key, written by a \
-         capability that scanned no image"
+        Some(foreign_marker),
+        "the reference must really be marked, and readable the way the change \
+         port reads it, or this lane asserts nothing"
     );
 
-    // And the sweep still scans.
+    // And the sweep still scans. Asserted before the exit code, so that a rule
+    // which accounts this sweep as done fails *this* assertion and says so: the
+    // outcome of such a run is `completed` and its exit code is 0, exactly as a
+    // run that did the work — which is what made the defect so quiet.
     let run = sweep.run();
     let payload = sweep.payload(&run);
-    assert_eq!(
-        run.status.code(),
-        Some(0),
-        "stderr: {}\npayload: {payload}",
-        String::from_utf8_lossy(&run.stderr)
-    );
     assert_eq!(
         payload["capability_executions"][0]["capability_id"], "cve_mitigate",
         "a marker some other capability wrote must not account the sweep as \
          done: the assessment read `satisfied` from it, `derive_next` returned \
          `complete` before the capability was consulted, and the run reported \
          success having executed nothing: {payload}"
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
     );
     assert_eq!(payload["outcome"], "completed", "{payload}");
 

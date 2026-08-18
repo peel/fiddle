@@ -157,9 +157,9 @@ pub fn correlation_key(project: &str, invocation_ref: &str) -> String {
 /// Total over the observation space, and ordered so the fail-closed cases win:
 /// an unobservable source is decided before anything is read out of the other
 /// half of the view, since a half-observed world cannot support a conclusion
-/// about the whole one. That ordering is also what keeps the trackerless arm
-/// below honest — it is reached only once every *failed* read has been taken,
-/// so it can never turn a failure into a proceed.
+/// about the whole one. That ordering is also what keeps the trackerless reading
+/// below honest — it is reached only once every *failed* read has been taken, so
+/// it can never turn a failure into a proceed.
 pub fn assess(work: &WorkStateView, expected_marker: &str) -> CapabilityAssessment {
     match (&work.work_item, &work.changes) {
         // Either source failing is enough: fiddle did not see the world, so it
@@ -170,41 +170,37 @@ pub fn assess(work: &WorkStateView, expected_marker: &str) -> CapabilityAssessme
             evidence: vec![EvidenceRef(source.0.clone())],
         },
 
-        (
-            Observation::Available {
-                source: work_source,
-                ..
-            },
-            Observation::Available {
-                value,
-                source: change_source,
-                ..
-            },
-        ) => decide_on_marker(
-            value,
-            expected_marker,
-            vec![
-                EvidenceRef(work_source.0.clone()),
-                EvidenceRef(change_source.0.clone()),
-            ],
-        ),
-
-        // A run that addresses no tracker item has no work item to read, and
-        // that absence is a decision rather than a failure — every case where a
-        // source *failed* was taken by the arm above. What is left is a world
-        // fiddle saw in full, and **there is nothing in it that could say the
-        // work is done**, so the verdict is that it is not.
+        // A readable change set, and — because the arm above already took every
+        // case where a source *failed* — a world fiddle saw in full. What is left
+        // to decide is whether the marker under that change set may be read as
+        // completion at all, and that question is
+        // [`WorkStateView::has_completion_state`].
         //
-        // The marker is deliberately not read here, and that is the whole of this
-        // arm. `expected_marker` is `correlation_key(project, invocation_ref)`:
-        // no capability and no attempt enter it, so every run over this reference
-        // computes the same value and a marker on disk says only *some run wrote
-        // one*. For a reference that names a work item that is enough, because
-        // the work item is the thing being accounted for and one accounting of it
-        // is all there is. For a reference that names none there is no such
-        // thing: the run discovers its work, and a marker cannot say which
-        // capability wrote it or whether the work the reference names — a
-        // container image scanned — was ever done.
+        // It is *asked*, rather than spelled out a second time as a pattern on the
+        // work item, and that is the whole reason this is one arm with a branch
+        // inside it instead of two arms. `orchestration::concluded` asks the same
+        // question about the same run to decide what that run's outcome is, and two
+        // spellings of "this reference records no completion" is how the verdict
+        // and the outcome would come to disagree about which world a run was in.
+        // One predicate, two readers, and a change to it moves both — which is
+        // also what makes the rule falsifiable: invert the predicate and the
+        // meaning of a marker inverts, which is the defect below, rather than only
+        // the exit code of some unrelated run.
+        //
+        // For a reference that names a work item the answer is yes, and design
+        // §4.3's three-way marker rule decides.
+        //
+        // For a reference that names none the answer is no, and **the marker is
+        // deliberately not read**. `expected_marker` is `correlation_key(project,
+        // invocation_ref)`: no capability and no attempt enter it, so every run
+        // over this reference computes the same value and a marker on disk says
+        // only *some run wrote one*. For a reference that names a work item that
+        // is enough, because the work item is the thing being accounted for and
+        // one accounting of it is all there is. For a reference that names none
+        // there is no such thing: the run discovers its work, and a marker cannot
+        // say which capability wrote it or whether the work the reference names —
+        // a container image scanned — was ever done. The verdict is `NotStarted`
+        // whatever the change set carries.
         //
         // Reading it anyway is what made `fiddle run cve --capability stub_mark`
         // account a sweep as complete. M0's stub marks the change set and scans
@@ -221,24 +217,38 @@ pub fn assess(work: &WorkStateView, expected_marker: &str) -> CapabilityAssessme
         // the reference naming no work item, so a later capability sharing a
         // trackerless reference inherits the rule rather than the hole.
         //
-        // The change set still has to be *readable*, which the arm above already
-        // requires, and it is still the one source there is to cite:
-        // `NotApplicable` names none, and citing one anyway would claim a read
-        // that never happened.
-        //
-        // Deliberately its own arm and not folded into either neighbour. Sharing
-        // one with the `Unavailable` arm would fail every trackerless run;
-        // widening that arm to admit `Unavailable` would let a tracker fiddle
-        // could not read pass for a tracker it was never asked about.
+        // Strictly *after* the fail-closed arm, and never merged with it in either
+        // direction: merged in, every trackerless run fails; widened the other way
+        // to admit `Unavailable`, a tracker fiddle could not read passes for a
+        // tracker it was never asked about.
         (
-            Observation::NotApplicable { .. },
+            _,
             Observation::Available {
+                value,
                 source: change_source,
                 ..
             },
-        ) => CapabilityAssessment::NotStarted {
-            evidence: vec![EvidenceRef(change_source.0.clone())],
-        },
+        ) => {
+            // A verdict may cite only sources that were read, which is why the
+            // evidence is built here rather than passed as a pair. A work item
+            // that does not apply consulted none — [`Observation::source`] is
+            // `None` for it — so the trackerless verdict cites the change set
+            // alone, and naming a `stub:work/` path beside it would claim a read
+            // that never happened.
+            let mut evidence: Vec<EvidenceRef> = work
+                .work_item
+                .source()
+                .map(|source| EvidenceRef(source.0.clone()))
+                .into_iter()
+                .collect();
+            evidence.push(EvidenceRef(change_source.0.clone()));
+
+            if work.has_completion_state() {
+                decide_on_marker(value, expected_marker, evidence)
+            } else {
+                CapabilityAssessment::NotStarted { evidence }
+            }
+        }
 
         // What is left has no change set to read, so nothing here says whether
         // the work was done: an invocation this orchestration cannot act on. It
@@ -253,13 +263,14 @@ pub fn assess(work: &WorkStateView, expected_marker: &str) -> CapabilityAssessme
 /// The verdict a *readable* change set supports, given the sources it was read
 /// from.
 ///
-/// Reached by one arm of [`assess`]: a run whose reference names a work item, and
-/// which therefore has a completion state for a marker to be. It was reached by
-/// two, on the reasoning that "whether the work is done is a fact about the
-/// change set, and a tracker item never was the thing that settled it" — which is
-/// true of the marker rule and false of what a marker over a trackerless
-/// reference means. The trackerless arm now says so itself and this function is
-/// no longer general over both.
+/// Reached down one branch of [`assess`]: a run whose reference has a completion
+/// state for a marker to be, per
+/// [`WorkStateView::has_completion_state`](crate::WorkStateView::has_completion_state).
+/// It was reached unconditionally, on the reasoning that "whether the work is
+/// done is a fact about the change set, and a tracker item never was the thing
+/// that settled it" — which is true of the marker rule and false of what a marker
+/// over a trackerless reference means. That predicate now stands in front of it
+/// and this function is no longer general over both.
 ///
 /// Still a function rather than inlined into its one caller, and the evidence is
 /// still an argument: the three-way marker rule is design §4.3's and reads as one
@@ -298,8 +309,8 @@ fn decide_on_marker(
 /// [`NextAction::Execute`] is reachable only from
 /// [`CapabilityAssessment::NotStarted`], which is the mechanism that stops a
 /// second run from executing again — where there is a completion state for a
-/// second run to read. Where there is none, [`assess`]'s trackerless arm answers
-/// `NotStarted` every time and a second run *does* execute again, deliberately;
+/// second run to read. Where there is none, [`assess`]'s trackerless reading
+/// answers `NotStarted` every time and a second run *does* execute again, deliberately;
 /// what keeps that safe is the capability's own dedup rather than this mapping,
 /// and ADR 023 is where the two are told apart.
 ///
@@ -558,10 +569,10 @@ mod tests {
         );
     }
 
-    /// The fail-closed ordering survives the trackerless arm. A run with no work
-    /// item and an *unreadable* change set is still `Blocked` — the new arm
-    /// requires an observable change set and does not mean "a trackerless run
-    /// always proceeds".
+    /// The fail-closed ordering survives the trackerless reading. A run with no
+    /// work item and an *unreadable* change set is still `Blocked` — the reading is
+    /// reached only for a change set fiddle could observe, and does not mean "a
+    /// trackerless run always proceeds".
     #[test]
     fn a_trackerless_run_with_an_unreadable_change_set_still_blocks() {
         assert!(

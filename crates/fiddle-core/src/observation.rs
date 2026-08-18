@@ -401,6 +401,39 @@ impl WorkStateView {
     /// read* is a world fiddle did not see, which is
     /// [`CapabilityAssessment::Blocked`](crate::CapabilityAssessment::Blocked)
     /// and never a reference without a tracker.
+    ///
+    /// # Two readers, on purpose
+    ///
+    /// This predicate has exactly two callers and they are meant to move
+    /// together:
+    ///
+    /// - [`assess`](crate::assess) asks it to decide whether the marker under the
+    ///   change set may be read as completion at all.
+    /// - `fiddle_runtime::orchestration::concluded` asks it to decide what a run
+    ///   whose *post*-execution action is still `Execute` concluded — `Completed`
+    ///   for a reference with no completion state, `Retryable` for one that has
+    ///   some, because only the second kind can be said to have lost its effect.
+    ///
+    /// So the two are one question asked twice about one run, not a rule and an
+    /// unrelated exit-code mapping that happen to share a name. That is what the
+    /// second reader is for: derive `Execute` twice from a world that records
+    /// nothing about being done and you must not read the repeat as failure.
+    ///
+    /// The consequence is worth stating plainly, because it surprised someone
+    /// once: mutating this function moves both decisions in one edit — what a
+    /// marker means, and what a run that already executed concluded. That is the
+    /// point, and it is also a trap for a test. A test whose *premise* is "the
+    /// reference has been marked" must not establish that premise by running
+    /// fiddle: such a run derives through the very rule under test, so its outcome
+    /// is not independent of the mutation. While this predicate had two spellings —
+    /// this one and an `Observation::NotApplicable` pattern inside `assess` —
+    /// inverting it moved only the second decision, turned the setup run into an
+    /// exit-11 `RunOutcome::Retryable`, and the lane that meant to catch the marker
+    /// rule died on its own premise guard without ever reaching its claim. Write
+    /// the marker into the world directly and let the run under test be the only
+    /// run;
+    /// `a_marker_against_a_trackerless_reference_does_not_account_the_sweep_as_done`
+    /// in `fiddle-acceptance` does, and says why there too.
     pub fn has_completion_state(&self) -> bool {
         !matches!(self.work_item, Observation::NotApplicable { .. })
     }
@@ -501,7 +534,7 @@ mod tests {
     /// **The three shapes a work item comes in, and which of them has something
     /// to be done.**
     ///
-    /// The predicate two decisions share — `assess`'s trackerless arm and the
+    /// The predicate two decisions share — `assess`'s trackerless reading and the
     /// runtime's conclusion about a run that executed — so it is asserted over
     /// every variant rather than over the one case each of those was written for.
     /// The pairing that matters is the second and the third: a work item that

@@ -45,7 +45,7 @@
 //! other module computed. It is also the first capability whose invocation names
 //! no work item — `cve` stands alone — which is why
 //! [`Addressed`](crate::orchestration::Addressed) exists and why
-//! [`fiddle_core::assess`]'s trackerless arm finally has something reaching it.
+//! [`fiddle_core::assess`]'s trackerless reading finally has something reaching it.
 
 pub mod cve;
 pub mod mitigate;

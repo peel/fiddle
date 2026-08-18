@@ -82,9 +82,13 @@ all.**
   *failed to read* still has one — a reference naming a tracker row does not stop
   naming one when the tracker is down — and keeping those apart is the distinction
   `assess` already holds two match arms for.
-- `assess`'s trackerless arm answers `CapabilityAssessment::NotStarted` whatever
-  the change set carries. It does not read the marker, so no marker of any
-  provenance can complete such an invocation.
+- `assess` branches on that predicate — it *calls* it rather than spelling the
+  same condition out a second time as a pattern — and answers
+  `CapabilityAssessment::NotStarted` whatever the change set carries. It does not
+  read the marker, so no marker of any provenance can complete such an invocation.
+  Sharing the one predicate with the outcome mapping below is deliberate: it is how
+  the verdict and the outcome cannot come to disagree about which world a run was
+  in, and it is what makes the rule falsifiable in one edit.
 - The three-way marker rule of design §4.3 — absent is `NotStarted`, matching is
   `Satisfied`, differing is `Blocked` — is untouched for every reference that
   names a work item.
@@ -127,8 +131,8 @@ reference to make progress against.
 
 **Anyone who knew that "a marker means the work is accounted for" now holds a
 belief that is false for one shape of reference.** The rule is stated in three
-places a reader actually arrives at: `assess`'s module header, the trackerless arm
-itself, and `has_completion_state`. It is the second decision in two milestones
+places a reader actually arrives at: `assess`'s module header, the trackerless
+branch itself, and `has_completion_state`. It is the second decision in two milestones
 whose real cost is a longer rule — 022's was the same — and for the same reason:
 the shorter rule was silently wrong about a documented invocation.
 
@@ -145,6 +149,23 @@ asserted before and after instead.
 **A capability sharing a trackerless reference inherits the rule rather than the
 hole.** The predicate is on the view, so a scheme added later that discovers its
 own work gets this behaviour without knowing it exists — and the pair of
-decisions, `assess`'s arm and `concluded`'s, read the same predicate from the same
-place, so they cannot come to disagree about which kind of reference a run is
+decisions, `assess`'s branch and `concluded`'s, read the same predicate from the
+same place, so they cannot come to disagree about which kind of reference a run is
 under.
+
+**One predicate with two readers means an inversion moves both, and that is a trap
+for a test.** Flipping `has_completion_state` changes what a marker means and what
+a run that already executed concluded, in one edit. That is the point — the two
+derivations of a single run are supposed to move together, and the alternative is
+the shape where a sweep reads `not_started` and still exits 11 — but the cost was
+paid once and is worth recording. A test whose *premise* is "the reference has been
+marked" must not establish that premise by running fiddle: such a run derives
+through the very rule under test, so its outcome is not independent of the
+mutation. While the condition had two spellings — the predicate, and an
+`Observation::NotApplicable` pattern inside `assess` — inverting it moved only
+`concluded`, turned the setup run into an exit-11 `Retryable`, and
+`a_marker_against_a_trackerless_reference_does_not_account_the_sweep_as_done` went
+red on its premise guard without ever reaching its claim. It now writes the marker
+into the fixture directly; reachability of that world through the binary is
+`a_run_over_a_trackerless_reference_is_not_a_failed_run`'s job, where no assessment
+rule is under mutation.
