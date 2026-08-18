@@ -115,9 +115,11 @@ pub enum Command {
         // parsed off the command line. `PossibleValuesParser` rather than the
         // bare `FromStr` so `--help` lists the choices and a bad value is
         // rejected by clap with the usual usage exit code.
-        /// Whether a human is available to decide. M0 has no decision point, so
-        /// both modes execute identically; the mode is recorded in what the run
-        /// publishes.
+        /// Whether a human is available to decide. Nothing branches on the
+        /// value: the one decision point this build has is `propose_change`'s,
+        /// and it asks its question whether or not a human was declared to be
+        /// waiting. So both modes execute identically, and the mode is recorded
+        /// in what the run publishes rather than acted on.
         #[arg(
             long,
             value_name = "MODE",

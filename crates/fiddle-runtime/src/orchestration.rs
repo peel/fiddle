@@ -316,9 +316,11 @@ impl Authorised {
 ///   `Blocked` from its entry observation and concludes `Failed` again, and will
 ///   keep doing so until somebody settles whose change set it is — which is
 ///   exactly [`RunOutcome::Failed`]'s "will not succeed by being repeated as
-///   invoked". `Suspended` is wrong for a different reason: nothing is waiting
-///   on a decision fiddle could offer a human here, and M0 has no decision point
-///   at all.
+///   invoked". `Suspended` is wrong for a different reason: nothing is waiting on
+///   a decision fiddle could offer a human here. This build does have a decision
+///   point — `propose_change`'s — and it is not on this path: a foreign
+///   correlation marker is not a question anybody can answer, so there is nothing
+///   for a run to be suspended *pending*.
 ///
 /// - `Execute` — [`RunOutcome::Retryable`]. The world is fully observable and
 ///   records no change set, so the effect this run made did not survive;

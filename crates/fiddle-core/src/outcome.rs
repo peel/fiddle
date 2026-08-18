@@ -65,10 +65,14 @@ pub enum RunOutcome {
 
 /// How a run was invoked: with a human available to decide, or without one.
 ///
-/// M0 has no decision point, so both modes execute identically. The flag is
-/// still part of the surface, and the mode is still recorded in what a run
-/// publishes, so M3's suspension work changes behaviour behind a contract that
-/// callers already depend on rather than adding one.
+/// **Nothing branches on the value, and that is no longer because there is
+/// nothing to decide.** This build has a decision point — `propose_change` posts
+/// a decision request and suspends — and it is entered whether or not a human was
+/// declared to be waiting, because what asks the question is the capability and
+/// not the mode. So both modes execute identically. The flag is still part of the
+/// surface, and the mode is still recorded in what a run publishes, so the
+/// milestone that gives an attended run a transport of its own changes behaviour
+/// behind a contract callers already depend on rather than adding one.
 ///
 /// This lives in the core rather than beside the Clap definition because the
 /// report bundle records it, and the bundle is a core type — a `Mode` owned by
