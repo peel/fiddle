@@ -59,7 +59,9 @@ pub enum Command {
         // clap's generic value error. Doc comments on this field become
         // `--help` text, so the rationale stays a plain comment.
         /// The work to inspect, as `<scheme>:<value>` — for example
-        /// `beans:fiddle-m0-demo`.
+        /// `beans:fiddle-m0-demo`. A scheme that finds its own work stands
+        /// alone and takes no value: `cve` scans the configured image and
+        /// inspects what it finds, while `cve:CVE-2026-1234` names one finding.
         #[arg(value_name = "INVOCATION_REF")]
         invocation_ref: String,
 
@@ -102,7 +104,9 @@ pub enum Command {
     /// accounted for completes without executing.
     Run {
         /// The work to run, as `<scheme>:<value>` — for example
-        /// `beans:fiddle-m0-demo`.
+        /// `beans:fiddle-m0-demo`. A scheme that finds its own work stands
+        /// alone and takes no value: `cve` scans the configured image and
+        /// runs what it finds, while `cve:CVE-2026-1234` names one finding.
         #[arg(value_name = "INVOCATION_REF")]
         invocation_ref: String,
 

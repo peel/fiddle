@@ -4695,3 +4695,38 @@ fn a_second_run_reads_the_first_runs_own_commit_body() {
          dispatched, because a run whose work is already open lands nothing"
     );
 }
+
+/// `--help` is the only place an operator learns what to type, and the bare form
+/// is the whole of this milestone's invocation: `fiddle run cve` discovers its own
+/// findings, which no `<scheme>:<value>` example can suggest is legal. ADR 019
+/// admits the form and `InvocationScheme::stands_alone` implements it, so help
+/// text that names only the valued shape describes a grammar the binary stopped
+/// having. Asserted for `run` and `inspect` together because a form accepted by
+/// one and undocumented by the other is the same defect twice.
+#[test]
+fn help_names_the_bare_form_the_grammar_accepts() {
+    for command in ["run", "inspect"] {
+        let out = support::fiddle_command()
+            .args([command, "--help"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{command} --help failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let help = String::from_utf8_lossy(&out.stdout);
+        // A bare occurrence specifically: help that named only
+        // `cve:CVE-2026-1234` would contain "cve" while still describing the
+        // grammar that refuses `fiddle run cve`.
+        assert!(
+            help.contains("`cve`"),
+            "{command} --help never mentions the bare `cve` form:\n{help}"
+        );
+        assert!(
+            help.contains("stands\n") || help.contains("stands alone"),
+            "{command} --help mentions `cve` without saying it takes no value:\n{help}"
+        );
+    }
+}
