@@ -1766,3 +1766,46 @@ The refusal is held from outside the process by `a_vulnerable_fixture_yields_exa
 
 Origin: implementation (epic fiddle-eph7, remediation bean fiddle-rh0p)
 Tags: #debt #feature
+
+### 2026-08-18 — Verifying that the scanned image was built from the remediated tree needs a config field no milestone owns
+The decision behind this is recorded, and accepted, in `docs/technical/decisions/020-the-host-builds-the-image-fiddle-scans.md`: **the host workflow builds the image fiddle scans, and fiddle does not build it.** That is right for the offline gate — a real `docker build` pulls base layers, and a stubbed one yields a digest meaning nothing. This entry is only for the half the decision leaves owed.
+
+**What was built.** Fiddle now publishes the pair. `TreeObservation` (`crates/fiddle-core/src/observation.rs`) carries a fourth key, `scanned_image_digest`, assembled in `CveMitigate::sweep` (`crates/fiddle-runtime/src/capability/mitigate.rs`) — the one place in the build where the scan's resolved digest and the checkout's revision are both in hand, because the scan happens in `execute` before a worktree exists and `Checkout` never sees a scanner. Until this, `ScanReport::image_digest` was parsed by the `wizcli` adapter and read by nothing, so Design §2.2's *the digest is what makes a later re-scan comparable* was true of a struct field that died with the process. A bundle now says *these verdicts are about digest X and I remediated revision Y*, which a person or the workflow that did the build can check.
+
+**What is owed.** Making that a *checked precondition* rather than an auditable pair: the builder declares the revision it built the image at, and fiddle refuses a run where the declaration disagrees with `checkout.revision()`. It is two halves that have to land together. The **host half** — a workflow step building at the checked-out revision and passing it in — is M4b's, whose scope is the release artefact, the workflow in `snowplow-incubator/snowplow-identities` and the first real Wiz measurement. The **fiddle half** — a `[orchestration.cve]` field carrying the declared revision, plus the comparison and its refusal — is in no milestone's scope, because M4b is the host side. That is what this entry is for. Landing the fiddle half alone would add a field nothing populates, which is either off by default and asserts nothing or refuses every existing run; landing the host half alone gives fiddle a value it does not read.
+
+**What this does not say.** That the pair is worthless without the check. It is what makes the gap auditable at all, and it is the value the stronger check would compare against, so the two are a sequence rather than alternatives. What must not be assumed from it is provenance: fiddle did not build the image and cannot know it came from that revision. The doc comments on `TreeObservation::scanned_image_digest`, on `observed_tree`, and on `ScanReport::image_digest` all say so at the site, and `a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch` plus `an_unusable_scanner_exits_eleven_and_reaches_no_forge` (`crates/fiddle-acceptance/tests/cve_mitigation.rs`) hold the pair and its all-or-nothing publication from outside the process.
+
+Origin: implementation (epic fiddle-eph7, remediation bean fiddle-k38l)
+Tags: #debt #feature
+
+### 2026-08-18 — A false citation was caught, recorded, and then repeated into a dispatch by the lead who recorded it
+The M4a design spec and a Task 18 dispatch both claimed that "`docs/technical/SYSTEM.md` records that nothing in `fiddle-runtime` edits a comment and that the absence is load-bearing." It does not. `grep -niE 'comment|RequestEdited' docs/technical/SYSTEM.md` returns exactly one hit — line 173, about a purity grep that matches *source* comments.
+
+The constraint is real. It lives on the variant itself, `crates/fiddle-runtime/src/human/validate.rs`, whose doc comment reads "fiddle's own question has been edited, which fiddle has no path that does", and it is stated correctly in M3's milestone handoff on epic `fiddle-eoqx` — which is where the lead read it before mis-attributing it to SYSTEM.md.
+
+**The part worth recording is not the slip but the repeat.** An earlier round of the same bean already caught this and recorded the correction on the epic body and in `cve_shared_pr.rs`. The lead then wrote a fresh dispatch for that same bean without reading the correction, and reproduced the false citation verbatim. This is the propagation M3's handoff names — "the lead's own transcription errors propagated three times" — occurring again on the bean that had already caught it.
+
+The practice that follows: **a dispatch for a bean with prior iterations must be written from the bean body, not from the plan or from memory.** The corrections live on the bean, and a dispatch composed without reading them will reintroduce exactly what the previous iteration paid to find.
+
+Origin: implementation (epic fiddle-eph7, Task 18 lane, second occurrence)
+Tags: #debt #risk
+Status: 2026-08-18 — corrected in the design spec with the real location and a note that it had already been caught once.
+
+### 2026-08-18 — A worktree teardown that does not check for a live lane destroys measurements, and reads as a test failure
+The lead removed four lane worktrees and their branches while agents were still working in them, having concluded the beans were already converged. The conclusion was right; the sequencing was not — no lane was asked to stand down first.
+
+Three lanes lost in-flight measurements: a `cargo test --workspace` at 894 passed, another at 18 binaries reported, and an inversion probe mid-restore. Nothing was lost permanently, only because all three lanes had correctly declined to implement anything and so had nothing uncommitted. **A lane with uncommitted work would have lost it silently**, which is the failure `docs/technical/evidence-discipline.md` §3 already records and which the M4a seed evidence records for M3 (116 uncommitted deletions, 65,802 lines).
+
+The diagnostic signature is worth knowing because it is misleading. From inside a suite, a vanished tree presents as:
+
+    error: test failed, to rerun pass `-p fiddle-runtime --test scanner`
+    Caused by: could not execute process `.../deps/scanner-…` (never executed)
+    Caused by: No such file or directory (os error 2)
+
+`(never executed)` plus `No such file or directory` on the binary's own path is a tree disappearing under the runner, not a failing test — and a lane that reported the non-zero exit as a failure would be reporting a defect that does not exist. One lane also observed `error: couldn't read crates/fiddle-runtime/src/lib.rs` with `FAILED_BINARIES=0` across the binaries that had already reported, which is the same event seen from the compiler's side.
+
+The rule: **a teardown checks for a clean tree and for live build processes, and asks the lane to stand down first.** Deleting the branch as well as the checkout is what made it read as deliberate to the lanes rather than as corruption.
+
+Origin: implementation (epic fiddle-eph7, lanes for Tasks 4, 11, 18, 19)
+Tags: #debt #risk #infrastructure
