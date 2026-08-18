@@ -50,7 +50,9 @@
 //! `crates/fiddle-runtime/tests/cve_dedup.rs` and in
 //! `an_open_pull_request_covering_the_rest_reaches_already_in_progress`
 //! (`crates/fiddle-acceptance/tests/cve_mitigation.rs`), which plants the commit
-//! naming the OS advisory precisely because no run would.
+//! naming the OS advisory precisely because no run would. **Both sites say so at
+//! themselves**, so that a reader meeting a hand-written body can tell this
+//! scoped absence from a round trip nobody got round to driving.
 //!
 //! **[`commit_log_dedup`] itself is not orphaned by this, and the distinction
 //! matters.** Its set has a second consumer — `Run::in_progress`'s `covers`,
@@ -60,6 +62,17 @@
 //! the scan below and its shallow-history guard are load-bearing on the ordinary
 //! path. What has no producer is the OS half of the answer, not the reading of
 //! the log.
+//!
+//! That round trip is driven end to end rather than asserted here.
+//! `cve_mitigation::a_second_run_reads_the_first_runs_own_commit_body` starts the
+//! binary twice against one remote and seeds no history between the two runs, so
+//! the body its second run reads is one
+//! [`crate::capability::cve::land`] wrote on the first. It is the lane that holds
+//! the range: it fails if `origin/<base>..HEAD` stops reaching the earlier run's
+//! commit, and it fails if this reader and that producer come to disagree about
+//! what a body looks like — landing on the `AlreadyFixed` row instead of
+//! `AlreadyInProgress`, because the tree arm settles the same advisory on its own
+//! and that is the row below.
 //!
 //! The decision and this consequence are recorded together in `docs/BACKLOG.md`
 //! under `2026-08-18`, which also records that the registry client belongs to no

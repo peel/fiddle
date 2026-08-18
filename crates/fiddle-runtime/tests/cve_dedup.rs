@@ -43,6 +43,33 @@
 //! chases a wasteful-but-correct report. So the precondition is asserted, and
 //! the diagnostic names the knob: `fetch-depth`.
 //!
+//! # Every commit body here is written by hand, and that is what a unit is
+//!
+//! `log_of` and `full_clone` plant the bodies these lanes read. The subject is
+//! the **reader** — `FixedInCommits::read`'s word boundaries, and
+//! `commit_log_dedup`'s range and its two truncation refusals — and a reader is
+//! measured against inputs chosen to discriminate, including ones no producer
+//! would ever emit: `an_advisory_is_not_matched_by_a_longer_id_that_contains_it`
+//! needs `CVE-2026-10` in a body precisely because `cve::land` never writes it
+//! next to `CVE-2026-1`. So the seeding here is neither brevity nor a scoped
+//! absence; it is the point.
+//!
+//! Which leaves the two questions a hand-written body cannot answer, and both
+//! are answered elsewhere rather than left open. That `cve::land`'s own body is
+//! one this reader can parse is `cve_protocol`'s
+//! `a_clean_group_commits_only_the_files_it_edited_and_names_every_cve` and
+//! `the_production_seam_lands_a_group_in_a_real_worktree`, which read the commit
+//! the product really made and ask this reader about it. That a *later run* reads
+//! it back — over the range, from a pull request discovered by its label, and out
+//! through the `AlreadyInProgress` disposition — is
+//! `cve_mitigation::a_second_run_reads_the_first_runs_own_commit_body`, which
+//! starts the binary twice and seeds nothing between the two runs.
+//!
+//! The **OS** half of [`already_fixed`] is the one case where no such lane is
+//! owed, because there is nothing to write one against: no M4a run puts an OS
+//! advisory in a commit body at all. `fiddle_runtime::cve::dedup`'s module header
+//! carries that argument, and it is a scoped absence rather than a gap.
+//!
 //! [`GroupError::AlreadyAtTheFix`]: fiddle_runtime::cve::group::GroupError::AlreadyAtTheFix
 
 mod support;

@@ -2029,9 +2029,11 @@ fn pushed_commits(sweep: &Sweep, branch: &str) -> Vec<(String, Vec<String>)> {
 //   row 4  PullRequest             the `any(Clean)` test -> `false`
 //     a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch
 //     a_group_an_earlier_bump_already_cleared_is_folded_into_an_empty_commit
+//     a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed
 //     the_bound_the_document_sets_is_the_bound_the_sweep_applies
 //     a_second_run_over_a_shared_pull_request_rewrites_its_body_and_works_in_its_tree
 //     a_run_whose_shared_body_is_unchanged_dispatches_no_rewrite
+//     a_second_run_reads_the_first_runs_own_commit_body
 //   row 5  UnsafeWithoutDirection  the `!attempted.is_empty()` test -> `false`
 //     an_unprovable_repair_is_reverted_and_filed_as_needing_direction
 //     a_needs_work_groups_rescan_is_not_folded_on
@@ -2040,17 +2042,37 @@ fn pushed_commits(sweep: &Sweep, branch: &str) -> Vec<(String, Vec<String>)> {
 //     a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set
 //   row 7  AlreadyInProgress       the `!covers.is_empty()` test -> `false`
 //     an_open_pull_request_covering_the_rest_reaches_already_in_progress
+//     a_second_run_reads_the_first_runs_own_commit_body
 //   row 3  AlreadyFixed            the `!already_fixed.is_empty()` test -> `false`
 //     a_tree_that_settles_every_finding_reaches_already_fixed
 //   row 1  NothingToDo             the fall-through -> Reason::AlreadyFixed
 //     a_scan_of_an_empty_image_reaches_nothing_to_do
 //
-// The last three of row 4's lanes are on that list because of this exercise. All
-// three drive a run that lands work and all three asserted only what the *forge*
-// held afterwards, which `disposition` does not decide — so row 4 could be
-// switched off and they went green over a run that reported
-// `unsafe_without_direction` while pushing a branch. Each now names the row it
-// reached, which is what Design §8 asks a lane for.
+// Three of row 4's lanes are on that list because of this exercise —
+// `a_second_run_over_a_shared_pull_request_…`, `a_run_whose_shared_body_…` and
+// `the_bound_the_document_sets_…`. All three drive a run that lands work and all
+// three asserted only what the *forge* held afterwards, which `disposition` does
+// not decide — so row 4 could be switched off and they went green over a run
+// that reported `unsafe_without_direction` while pushing a branch. Each now
+// names the row it reached, which is what Design §8 asks a lane for.
+//
+// # Two amendments, both measured rather than reasoned about
+//
+// **Row 4's list was short by one.** `a_group_a_bump_moved_past_its_fix_in_the_
+// tree_is_not_reported_as_unfixed` goes red under row 4's mutation and was not
+// named, so the list said five where the measurement says seven. Re-applying the
+// mutation is what found it; nothing about that lane changed. A census of *which
+// lanes go red* is only worth having if it is re-measured when the file grows,
+// which is the note this paragraph exists to leave behind.
+//
+// **And `no two rows share a lane` is no longer true.**
+// [`a_second_run_reads_the_first_runs_own_commit_body`] is on row 4's list and on
+// row 7's, because it starts the binary twice and the two runs reach different
+// rows: the first night lands work, which is row 4, and the second finds that
+// work already open, which is row 7. That is the claim it exists to make, so the
+// overlap is the lane working rather than a lane being vague — and it is stated
+// here because the sentence it contradicts was load-bearing for reading this
+// table. Every *other* lane still names one row.
 //
 // # Why every mutation switches a row *off* rather than rewiring it
 //
@@ -2570,6 +2592,16 @@ fn a_tree_that_settles_every_finding_reaches_already_fixed() {
 /// Read from the commits and never from the pull request's body: a body lists
 /// what a scan found when it was opened, so a mention there is evidence a CVE was
 /// seen and not that it was fixed.
+///
+/// **The commit is written by this test because no run could write it**, and that
+/// is worth separating from a shortcut. The advisory it names is an OS one; a
+/// base-image group is refused for want of a registry and is blocked before
+/// either commit producer is reached, so `cve::dedup`'s `PackageType::Os` arm has
+/// no producer in M4a at all. A lane about it has to seed. What that leaves
+/// untested is nothing this build does — see
+/// [`a_second_run_reads_the_first_runs_own_commit_body`] for the *library* half,
+/// where the producer exists and a second run really does read the first run's
+/// own body.
 ///
 /// The library advisory is deliberately *not* named in that commit. This run must
 /// reach the in-progress row through a real dedup of both halves — one from the
@@ -3892,6 +3924,24 @@ impl Sweep {
     /// other direction — `Approved::from` names `origin/<branch>` precisely so a
     /// stale local branch of the same name cannot be picked up, and a world
     /// without one could not tell the two apart.
+    ///
+    /// # Why it is seeded, and it is **brevity**
+    ///
+    /// A run really can leave this behind: the fresh arm cuts a dated branch,
+    /// commits, pushes and opens a labelled pull request, which is exactly the
+    /// arrangement this function fakes.
+    /// [`a_second_run_reads_the_first_runs_own_commit_body`] is the lane that
+    /// pays for it, and it costs a second whole sweep.
+    ///
+    /// Its two callers are about the pull request's **body** and about which tree
+    /// the work was built in, and neither reads the commit log at all — the
+    /// message here names no advisory, so `covers` is empty in both and their
+    /// rows do not depend on it. Seeding is the cheaper way to put an open pull
+    /// request in front of a run when what the run does with it is the subject.
+    /// It is *not* the cheaper way when the question is what the log says, which
+    /// is the distinction [`seed_shared_pull_request_saying`] draws next.
+    ///
+    /// [`seed_shared_pull_request_saying`]: Sweep::seed_shared_pull_request_saying
     fn seed_shared_pull_request(&self, body: &str) -> String {
         self.seed_shared_pull_request_saying(body, "an earlier night's work on the shared branch")
     }
@@ -3906,6 +3956,24 @@ impl Sweep {
     /// out of the pull request's body — `crate::cve::dedup`'s 2026-08-12
     /// incident settled that — so a lane about a pull request that already
     /// covers this run's work has to say so in a commit and nowhere else.
+    ///
+    /// # Why *its* seeding is not brevity: nothing this build runs writes that
+    /// body
+    ///
+    /// Its one caller,
+    /// [`an_open_pull_request_covering_the_rest_reaches_already_in_progress`],
+    /// plants a body naming [`OS_CVE`], and **no M4a run can produce one.**
+    /// Selecting a base-image tag needs a registry this build does not read, so
+    /// `CveMitigate::target_version` refuses every base-image group and a refused
+    /// group is blocked before either commit producer is reached —
+    /// `cve::dedup`'s module header carries the whole argument. A lane about the
+    /// OS half of the already-fixed set therefore *has* to write the body itself,
+    /// and that is a scoped absence rather than an untested round trip.
+    ///
+    /// The library half is the opposite case and is now driven end to end. See
+    /// [`a_second_run_reads_the_first_runs_own_commit_body`], which starts the
+    /// binary twice and seeds nothing between the runs, so what its second run
+    /// reads is a body its first run wrote.
     fn seed_shared_pull_request_saying(&self, body: &str, commit: &str) -> String {
         git(&self.tree, &["checkout", "-q", "-b", SHARED_BRANCH]);
         std::fs::write(
@@ -4196,17 +4264,40 @@ fn a_run_whose_shared_body_is_unchanged_dispatches_no_rewrite() {
 // The two lanes just above seed one through `seed_shared_pull_request`, and
 // `an_open_pull_request_covering_the_rest_reaches_already_in_progress` seeds one
 // through `seed_shared_pull_request_saying` — and each now says at its own site
-// why it seeds. That left the producer of a `Fixes:` body and its reader proved
-// separately and never against each other: `cve::land`'s `commit_body` writes
-// one, `cve::dedup::FixedInCommits::read` parses one, and no lane made the
-// second of those read the first.
+// why it seeds.
 //
-// The failure that hid there is silent in the direction nobody chases. A body
-// whose format `read` cannot parse, or a range that does not reach the earlier
-// run's commit, leaves `Run::in_progress`'s `covers` empty — so the next run
-// lands on row 3 instead of row 7 and reports work as merely *already fixed in
-// the tree* when it is in fact sitting in an open pull request somebody has to
-// go and merge. Exit 0, an empty verdict report, and a plausible-looking record.
+// # What was already proved, and what was not
+//
+// The **format** agreement was not the gap, and saying so is the honest version
+// of this lane's claim. `cve_protocol`'s
+// `a_clean_group_commits_only_the_files_it_edited_and_names_every_cve` and
+// `the_production_seam_lands_a_group_in_a_real_worktree` both read the commit
+// `cve::land` really made and ask `FixedInCommits::read` about it, so
+// `commit_body`'s trailers and that reader's word-splitting were already held
+// against each other. Both go red if either end moves. Measured, not assumed:
+// making `read` consult only a body's first line takes those two down.
+//
+// What no lane covered is everything *around* the two ends — the range, the
+// process boundary, and the consumer. Those two are one process with the commit
+// in hand and they call `read` on `git log -1`; neither goes anywhere near
+// `commit_log_dedup`'s `origin/<base>..HEAD`, a pull request discovered by its
+// label, a worktree made at that pull request's head, or `Run::in_progress`'s
+// `covers`. So *a body a run wrote is readable* was proved and *the next run
+// reads it* was not, and the second is what a nightly sweep spends its life in.
+//
+// The failure that hid there is silent in the direction nobody chases. A range
+// that does not reach the earlier run's commit — or a format disagreement, since
+// this lane catches that too — leaves `covers` empty, so the next run lands on
+// row 3 instead of row 7 and reports work as merely *already fixed in the tree*
+// when it is in fact sitting in an open pull request somebody has to go and
+// merge. Exit 0, an empty verdict report, and a plausible-looking record.
+//
+// Both mutations were applied alone against the whole of this file. Narrowing
+// the range to the base's own log takes down this lane and the seeded row-7 lane
+// — the seeded one because it reads the same range. Making `read` consult only
+// the first line takes down **this lane alone** out of the thirty here, because
+// every other body in this file is one the test wrote and the seeded row-7 one
+// is a single line. That asymmetry is the whole point of the lane.
 //
 // The lane below is the only one in this file that starts the binary twice.
 
