@@ -98,6 +98,27 @@ Start in `runtime_order`: for `[backend, frontend]`, start backend, wait for rea
 
 Runtimes stay up through evidence capture and stop after all evaluators finish. Evaluators interpret the captured evidence pack; they never interact with the running app.
 
+### Re-run the load-bearing probe, and only that one
+
+A DONE report's probe evidence is the implementer's account of its own work, so
+some of it has to be reproduced rather than read. Reproducing *all* of it costs
+as much as the implementation did; reproducing none of it means the loop's
+central discipline rests on self-report.
+
+Re-run **the probe the bean's criterion rests on** — the one whose failure is
+the reason to believe the change does anything. Where a bean has two directions
+that must hold independently (a rule fires / the same rule declines), that is
+two load-bearing probes, and running both is also what shows a single mutation
+does not fail them both.
+
+Check the failure text matches what the report claimed it said. A probe that
+fails by starving a fixture, timing out, or failing to build reads exactly like
+a probe that fails by assertion in a summary, and only the assertion is
+evidence.
+
+Everything else — the fixture-integrity lanes, the probes for behaviour the
+criterion does not name — is the evaluator's to judge from the evidence pack.
+
 ## 1f. Dispatch Per-Domain Evaluator
 
 One evaluator per resolved domain, processed in `runtime_order` if specified, otherwise the `domains` order. Select its provider:

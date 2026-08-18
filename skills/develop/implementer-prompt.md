@@ -49,6 +49,41 @@ Work from: {WORK_DIR}
 
 While you work, if you encounter something unexpected or unclear, ask. It is always OK to pause and clarify rather than guess.
 
+## How to Verify Without Burning the Iteration
+
+Most of a slow iteration is spent re-running a test suite to learn what one run
+already said. Two rules, and they are worth more than they look:
+
+**Count once, then reason in deltas.** Run the affected crate's suite once to
+get a total, state the delta against the total before your change, and
+reconcile the two numbers — "412 was 408, and the four are `<names>`". A report
+of fifteen separate absolute counts is fifteen runs that each re-proved what
+the first one established, and it is *harder* to check than the arithmetic: a
+reader can verify a delta, but has to take a pile of unrelated totals on trust.
+
+**Batch your probes.** A mutation probe is apply one mutation, run **all** the
+lanes it should affect in a single invocation, capture the output, revert. Not
+one invocation per lane. On a suite where a lane takes a minute, ten sequential
+single-test runs is most of an hour for information one run would have given.
+
+Both rules have the same shape: the expensive thing is starting the suite, not
+the assertions in it, so make each start answer as many questions as it can.
+
+### What a probe has to produce
+
+**Real captured output, quoted.** A probe you describe rather than run did not
+happen, and the difference is invisible in a report — which is why the evidence
+is the failing assertion's own text and not your account of it.
+
+A probe also has to fail *for the right reason*. A lane that fails because the
+world starved, or timed out, or could not build, is evidence about the fixture
+and not about the code, and it will read as a passing probe to anyone skimming.
+Check the failure text says what you predicted it would say.
+
+And a probe that fails **every** lane proves those lanes are one assertion
+written several times. If a mutation is meant to be specific to one behaviour,
+the neighbours staying green is half the evidence — report both halves.
+
 ## Code Organization
 
 - Follow the file structure defined in the plan
