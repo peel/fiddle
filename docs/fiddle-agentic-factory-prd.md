@@ -279,7 +279,7 @@ The repository uses the existing `peel/rust.nix` design as a copied template rat
 
 Project configuration moves from `orchestrate.json` to `fiddle.toml`. TOML is a Rust ecosystem convention for project configuration through Cargo, but this is a product choice rather than a requirement imposed by Rust.[S15](#s15)
 
-The schema is organized by concrete component ownership, not by an abstract provider hierarchy. For example, GitHub owns repository, pull-request, and check settings under one authenticated integration; it is not selected once as a repository kind and again as a CI kind. Jira and Beans may coexist, and the `InvocationRef` selects the applicable adapter. The final field names may change during implementation, but this reference configuration fixes the intended boundaries:
+The schema is organized by concrete component ownership, not by an abstract provider hierarchy. For example, GitHub owns repository, pull-request, and check settings under one authenticated integration; it is not selected once as a repository kind and again as a CI kind. Jira and Beans may coexist, and the `InvocationRef` selects the applicable adapter. **The block below is a composite across the whole of V1 and it is not a document a deployment can load**; the note after it says how far from loadable it is and how to read it, and [the configuration this build loads](#the-configuration-this-build-loads) follows. The final field names may change during implementation, but this reference configuration fixes the intended boundaries:
 
 ```toml
 # fiddle.toml configures Fiddle's behavior in this repository. It does not
@@ -294,8 +294,8 @@ name = "icecube"
 # One integration owns source observations, branch publication, pull requests,
 # and check observations. Credentials are resolved from the named environment
 # source and are never exposed to capabilities or agents.
-repository = "snowplow/icecube"
-default_branch = "main"
+repo = "snowplow/icecube"
+base = "main"
 token = { env = "GITHUB_TOKEN" }
 
 [github.pull_requests]
@@ -346,7 +346,7 @@ timeout = "7d"
 # an explicitly supported local capability selects Claude Code in M6.
 default_runtime = "rig"
 max_turns = 40
-timeout = "45m"
+deadline = "45m"
 
 [agent.rig]
 # Primary CI implementation. The API key is resolved only by the host runtime
@@ -459,6 +459,77 @@ max_turns = 15
 [capabilities.set_variant]
 # This longer operation overrides only the default it genuinely needs to change.
 timeout = "60m"
+```
+
+#### The reference configuration is a composite
+
+The block above is the whole of V1 written down at once, and most of its tables name milestones that have not shipped, so it is a boundary map rather than a document. Fed to the compiled binary it exits 2, and because strict deserialization reports one unknown or missing field at a time, each refusal hides the next: clearing them one at a time — deleting the key a message points at, or the table whose header it names — takes 20 passes before what is left of it loads. 18 of its 23 tables have to be deleted along the way, and the two tables the schema requires, `[stub]` and `[report]`, are not in the block at all. `crates/fiddle-acceptance/tests/config_check.rs` measures those two numbers against the compiled binary rather than quoting them, so this paragraph cannot drift from what the binary does.
+
+Read the block by one rule: a key is spelled the way this build spells it wherever the build already has that setting, and it keeps the manual's own spelling wherever it names behavior still to come. `[github]` therefore says `repo` and `base` rather than `repository` and `default_branch`, and `[agent]` says `deadline` rather than `timeout` — those three were the same settings under different words, which is a transcription defect and not a boundary. `[workspace] network`, `[orchestration] enabled`, and every table for an unshipped milestone stay as written, because they state intent rather than mis-name something that exists. Where a shipped table settled a boundary differently from this map, `crates/fiddle-cli/src/config.rs` is the schema of record: the deployment's effect ceiling is `[github.policy]`, keyed by effect kind rather than by the booleans `[policy]` shows, and `required_checks` is a key of `[github]` rather than of `[github.actions]`.
+
+#### The configuration this build loads
+
+Complete, and every key admitted by the strict schema — `fiddle config check --config fiddle.toml` exits 0 on it. It shows all eight tables the schema knows, which is the whole of what a deployment can say today, and an acceptance lane feeds the compiled binary these exact bytes so that this block cannot become as aspirational as the one above it.
+
+```toml
+# Complete and loadable. Every key here is admitted by the strict schema in
+# `crates/fiddle-cli/src/config.rs`, and no field of that schema accepts a secret
+# value, so this document is safe to track in version control.
+
+[project]
+# Repository-independent identity used in reports and telemetry.
+name = "icecube"
+
+[stub]
+# Where the fixture-backed ports read and write their state. Required today
+# because the ports a run reaches are still fixtures, and the table most likely
+# to leave once they are not.
+root = "tests/fixtures/stub-state"
+
+[report]
+# Where a run publishes its evidence bundles.
+dir = ".fiddle/reports"
+
+[agent]
+# Model, endpoint, and credential variable have no defaults and must be written
+# down: each names a deployment decision that cannot be guessed without being
+# wrong somewhere. The two bounds below have defaults and are written out so the
+# axes are visible.
+model = "claude-sonnet-5"
+base_url = "https://litellm.firn.snplow.net/v1"
+api_key = { env = "LITELLM_API_KEY" }
+max_turns = 12
+deadline = "45m"
+
+[workspace]
+# How Fiddle uses the checkout it receives. One isolation mechanism and one
+# cleanup rule are supported today; the keys exist so the axes are visible.
+root = ".fiddle/workspaces"
+isolation = "git-worktree"
+command_timeout = "15m"
+cleanup = "always"
+
+[github]
+# One integration owns branch publication, pull requests, and check observation.
+# Absent in a deployment that never publishes.
+repo = "snowplow/icecube"
+base = "main"
+token = { env = "FIDDLE_GITHUB_TOKEN" }
+
+[scanner]
+# The container scanner and the tenant it runs as. Absent in a deployment that
+# never scans.
+client_id = { env = "WIZ_CLIENT_ID" }
+client_secret = { env = "WIZ_CLIENT_SECRET" }
+timeout = "20m"
+
+[orchestration.cve]
+# The image has no default and must be written down: the host workflow builds it
+# and Fiddle scans it, so a guessed value would scan whichever tag this build
+# happened to ship with.
+image = "ghcr.io/snowplow/icecube:latest"
+severities = ["HIGH", "CRITICAL"]
+max_findings = 5
 ```
 
 Configuration requirements:

@@ -1068,30 +1068,25 @@ fn the_sweep_table_the_product_manual_documents_is_one_the_schema_accepts() {
     );
 }
 
-/// The `[orchestration.cve]` table of the PRD's `fiddle.toml` example, verbatim.
+/// The `[orchestration.cve]` table of the manual's reference configuration,
+/// verbatim.
 ///
 /// Read from the product document rather than held as a constant here, because a
 /// constant is a transcription and a transcription is the thing that drifted. The
 /// table runs from its own header to the next TOML header or the end of the
-/// fenced block, which is what a TOML table is; the comment lines inside it come
-/// along, and they are part of what an operator would copy.
+/// block, which is what a TOML table is; the comment lines inside it come along,
+/// and they are part of what an operator would copy.
+///
+/// **Which block it comes out of is now said rather than assumed.** When this was
+/// written the manual carried one TOML fence, so scanning the whole file for the
+/// header could only find that one. The manual now carries two — the reference
+/// configuration, which is a boundary map across the whole of V1 and deliberately
+/// does not load, and the shorter document beside it, which does — and both
+/// declare an `[orchestration.cve]` table. A file-wide scan would take whichever
+/// came first, which is a lane whose subject depends on document order, so this
+/// asks [`reference_configuration`] for the block it means.
 fn documented_sweep_table() -> String {
-    let manual = std::fs::read_to_string("../../docs/fiddle-agentic-factory-prd.md")
-        .expect("the product manual is two levels up from this package");
-    let mut lines = manual
-        .lines()
-        .skip_while(|line| line.trim() != "[orchestration.cve]");
-    let header = lines
-        .next()
-        .expect("the manual documents an [orchestration.cve] table");
-    let body = lines.take_while(|line| {
-        let line = line.trim();
-        !line.starts_with('[') && !line.starts_with("```")
-    });
-    std::iter::once(header)
-        .chain(body)
-        .collect::<Vec<_>>()
-        .join("\n")
+    documented_table(&reference_configuration(), "[orchestration.cve]")
 }
 
 /// **The grades a sweep acts on are the grades the document named.**
@@ -1249,4 +1244,476 @@ fn check_with_env(text: &str, extra: &[&str], env: &[(&str, &str)]) -> std::proc
         command.env(name, value);
     }
     command.output().unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// What the manual's configuration example *is* (fiddle-hrjg)
+// ---------------------------------------------------------------------------
+
+/// The product manual, read from the repository root.
+///
+/// `cargo test` runs a test binary with the package directory as its working
+/// directory, so the manual is two levels up — the same relative path
+/// [`fixture`] takes.
+fn manual() -> String {
+    std::fs::read_to_string("../../docs/fiddle-agentic-factory-prd.md")
+        .expect("the product manual is two levels up from this package")
+}
+
+/// The sentence introducing the manual's *reference configuration*: the boundary
+/// map across the whole of V1, most of whose tables name milestones that have not
+/// shipped.
+const REFERENCE_INTRO: &str = "fixes the intended boundaries";
+
+/// The heading introducing the document the manual offers as copyable.
+///
+/// The `####` is part of the marker deliberately. The sentence a reader meets
+/// before the boundary map links to this section by name, and a marker that
+/// matched that link text would select the first fence after it — the boundary
+/// map, the one block this lane must never be handed.
+const COPYABLE_INTRO: &str = "#### The configuration this build loads";
+
+/// The claim the manual makes about the reference configuration, in the manual's
+/// own words. Pinned because it is the disposition: a reader who cannot tell a
+/// boundary map from a document finds out from an exit code instead.
+const COMPOSITE_CLAIM: &str = "it is not a document a deployment can load";
+
+/// The manual's reference configuration, verbatim.
+fn reference_configuration() -> String {
+    fenced_toml_after(REFERENCE_INTRO)
+}
+
+/// The document the manual offers as copyable, verbatim.
+fn copyable_configuration() -> String {
+    fenced_toml_after(COPYABLE_INTRO)
+}
+
+/// The body of the fenced TOML block that the line containing `marker`
+/// introduces.
+///
+/// **Which block a lane reads is said rather than assumed.** The manual carries
+/// two TOML fences that mean opposite things — one deliberately does not load,
+/// one must — and both declare an `[orchestration.cve]` table. Selecting by a
+/// marker in the surrounding prose rather than by ordinal means that moving
+/// either block cannot silently point a lane at the other: the panics below fire
+/// instead of a plausible wrong answer coming back.
+fn fenced_toml_after(marker: &str) -> String {
+    let manual = manual();
+    let lines: Vec<&str> = manual.lines().collect();
+    let intro = lines
+        .iter()
+        .position(|line| line.contains(marker))
+        .unwrap_or_else(|| {
+            panic!(
+                "the manual no longer carries the line that introduces this block, \
+                 so this lane cannot say which fence it would be reading: {marker}"
+            )
+        });
+    let open = intro
+        + lines[intro..]
+            .iter()
+            .position(|line| line.trim() == "```toml")
+            .unwrap_or_else(|| panic!("a ```toml fence must follow: {marker}"));
+    let close = open
+        + 1
+        + lines[open + 1..]
+            .iter()
+            .position(|line| line.trim().starts_with("```"))
+            .unwrap_or_else(|| panic!("the fence opened after {marker} is never closed"));
+    lines[open + 1..close].join("\n")
+}
+
+/// The table `line` declares, if it declares one.
+fn table_header(line: &str) -> Option<&str> {
+    let line = line.trim();
+    line.strip_prefix('[')
+        .filter(|rest| !rest.starts_with('['))
+        .and_then(|rest| rest.strip_suffix(']'))
+}
+
+/// Every table `document` declares, in order.
+fn table_headers(document: &str) -> Vec<&str> {
+    document.lines().filter_map(table_header).collect()
+}
+
+/// One TOML table of `document`, verbatim: `header` through the line before the
+/// next header, or the end.
+///
+/// The comment lines inside it come along, because they are part of what an
+/// operator would copy.
+fn documented_table(document: &str, header: &str) -> String {
+    let wanted = header
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .expect("a header is written with its brackets");
+    let mut lines = document
+        .lines()
+        .skip_while(|line| table_header(line) != Some(wanted));
+    let first = lines
+        .next()
+        .unwrap_or_else(|| panic!("the document must declare a {header} table"));
+    let body = lines.take_while(|line| table_header(line).is_none());
+    std::iter::once(first)
+        .chain(body)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `document` without the table `header` names, and without its sub-tables.
+fn without_table(lines: &[String], header: &str) -> Vec<String> {
+    let mut kept = Vec::new();
+    let mut dropping = false;
+    for line in lines {
+        if let Some(declared) = table_header(line) {
+            dropping = declared == header || declared.starts_with(&format!("{header}."));
+        }
+        if !dropping {
+            kept.push(line.clone());
+        }
+    }
+    kept
+}
+
+/// The table line `at` (1-based) sits inside, if any.
+fn enclosing_table(lines: &[String], at: usize) -> Option<&str> {
+    lines[..at].iter().rev().find_map(|line| table_header(line))
+}
+
+/// The name serde quoted after `phrase`, as in ``unknown field `repository` ``.
+fn refused_name(stderr: &str, phrase: &str) -> Option<String> {
+    regex::Regex::new(&format!("{phrase} `([^`]+)`"))
+        .unwrap()
+        .captures(stderr)
+        .map(|found| found[1].to_string())
+}
+
+/// The 1-based line the diagnostic points at.
+fn refused_line(stderr: &str) -> usize {
+    regex::Regex::new(r"fiddle\.toml:(\d+):")
+        .unwrap()
+        .captures(stderr)
+        .unwrap_or_else(|| panic!("every refusal names the line it is about: {stderr}"))[1]
+        .parse()
+        .unwrap()
+}
+
+/// What clearing a document's refusals one at a time cost.
+struct Clearing {
+    /// One entry per refusal, in the order serde reached them.
+    trail: Vec<String>,
+    /// Tables the document declared.
+    declared: usize,
+    /// How many of those were still standing when it finally loaded.
+    survived: usize,
+}
+
+/// Clear `document`'s refusals one at a time, deleting exactly what the binary's
+/// own message points at, until it loads.
+///
+/// **Mechanical rather than a hand-written list of edits, and that is the whole
+/// point.** Strict deserialization reports one unknown or missing field at a
+/// time, so every refusal hides the next and the only honest way to count them
+/// is to clear each and ask again. A hand-written list would also count, but the
+/// number it produced would be a property of the author's choices — dropping a
+/// whole section where the message named one key gives a smaller number for the
+/// same document. The rule here has no choices in it: an unknown field whose line
+/// is a table header costs that table and its sub-tables, any other unknown field
+/// costs its own line, and a required table the manual never shows is supplied
+/// from the document the manual itself offers as copyable, so nothing in this
+/// measurement is invented here.
+fn clear_one_refusal_at_a_time(document: &str) -> Clearing {
+    let copyable = copyable_configuration();
+    let declared: Vec<String> = table_headers(document)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let mut lines: Vec<String> = document.lines().map(str::to_owned).collect();
+    let mut trail: Vec<String> = Vec::new();
+    loop {
+        let out = check(&format!("{}\n", lines.join("\n")));
+        if out.status.code() == Some(0) {
+            break;
+        }
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "a document is refused with exit 2 or accepted with 0, and this was \
+             neither. stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        let at = refused_line(&stderr);
+        assert!(
+            at <= lines.len(),
+            "a refusal points at line {at} of a {}-line document, so this helper \
+             is reading a line number it did not write: {stderr}",
+            lines.len()
+        );
+        if let Some(name) = refused_name(&stderr, "unknown field") {
+            match table_header(&lines[at - 1]) {
+                Some(header) => {
+                    let header = header.to_owned();
+                    trail.push(format!(
+                        "unknown field `{name}` at line {at}: delete [{header}] and its sub-tables"
+                    ));
+                    lines = without_table(&lines, &header);
+                }
+                None => {
+                    trail.push(format!(
+                        "unknown field `{name}` at line {at}: delete that key"
+                    ));
+                    lines.remove(at - 1);
+                }
+            }
+        } else if let Some(name) = refused_name(&stderr, "missing field") {
+            let absent = !lines
+                .iter()
+                .any(|line| table_header(line) == Some(name.as_str()));
+            if absent && table_headers(&copyable).contains(&name.as_str()) {
+                trail.push(format!(
+                    "missing field `{name}`: supply the [{name}] table from the \
+                     document the manual offers as copyable"
+                ));
+                lines.push(String::new());
+                lines.extend(
+                    documented_table(&copyable, &format!("[{name}]"))
+                        .lines()
+                        .map(str::to_owned),
+                );
+            } else {
+                let enclosing = enclosing_table(&lines, at)
+                    .unwrap_or_else(|| {
+                        panic!("`missing field {name}` belongs to a table: {stderr}")
+                    })
+                    .to_owned();
+                trail.push(format!(
+                    "missing field `{name}` inside [{enclosing}]: delete [{enclosing}]"
+                ));
+                lines = without_table(&lines, &enclosing);
+            }
+        } else {
+            panic!("this measurement can only clear an unknown or a missing field: {stderr}");
+        }
+        assert!(
+            trail.len() < 64,
+            "64 refusals is not a document with defects in it, it is a runaway \
+             loop in this helper. Trail:\n{}",
+            trail.join("\n")
+        );
+    }
+    let loaded = lines.join("\n");
+    let standing = table_headers(&loaded);
+    let survived = declared
+        .iter()
+        .filter(|header| standing.contains(&header.as_str()))
+        .count();
+    Clearing {
+        trail,
+        declared: declared.len(),
+        survived,
+    }
+}
+
+/// **The manual's reference configuration is a composite, and the manual says so
+/// where a reader meets it.**
+///
+/// `fiddle-c64d` made the `[orchestration.cve]` table of that block load and
+/// pinned it to the schema. The block as a whole still does not, and it never
+/// will: it is the whole of V1 written down at once, so most of its tables name
+/// milestones that have not shipped. That leaves two honest dispositions and one
+/// dishonest one. Making it load would mean deleting most of the product's own
+/// statement of intent, so the manual takes the other: it says plainly that the
+/// block is a boundary map rather than a document, and it shows a document
+/// beside it. Saying nothing was the third option, and it is the one this lane
+/// exists to prevent — after `c64d`, exactly one table of that block is known to
+/// be real, and a reader had no way to learn which.
+///
+/// So this asserts the claim *and* asserts that the claim is true: the block is
+/// fed to the binary and must be refused. A manual that called a loadable
+/// document a composite would be as wrong as the silence, in the other
+/// direction.
+#[test]
+fn the_manual_says_its_reference_configuration_is_not_a_document_that_loads() {
+    let reference = reference_configuration();
+    // The extraction is asserted before it is used. `[jira]` is the
+    // discriminator rather than decoration: it is in the boundary map and in no
+    // loadable document, so a lane that found the copyable block by mistake
+    // fails here rather than passing over the wrong bytes.
+    for header in ["project", "github", "jira", "orchestration.cve"] {
+        assert!(
+            table_headers(&reference).contains(&header),
+            "this is not the manual's reference configuration — that block \
+             declares [{header}]: {reference}"
+        );
+    }
+    let out = check(&format!("{reference}\n"));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "the reference configuration now loads, which is a better world than the \
+         one this lane was written for: retire the composite note it pins and let \
+         the block be the copyable one. stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let manual = manual();
+    for claim in [COMPOSITE_CLAIM, COPYABLE_INTRO] {
+        assert!(
+            manual.contains(claim),
+            "an example that cannot load is a defect or a deliberate composite, \
+             and a reader cannot tell which without being told. The manual must \
+             say: {claim}"
+        );
+    }
+}
+
+/// **How far the reference configuration is from loadable is measured, and the
+/// manual records the measurement.**
+///
+/// The number is the point. `severities` masked `missing field image` for a whole
+/// milestone in this same block, so "it fails at line 13" is never the end of the
+/// story — it is the first of however many, and nobody knew how many. This clears
+/// them one at a time and makes the manual state the count, so a reader learns
+/// the size of the gap rather than the depth of the first hole, and so neither
+/// document can move without the other following.
+#[test]
+fn the_refusals_the_reference_configuration_reaches_are_the_number_the_manual_records() {
+    let reference = reference_configuration();
+    assert!(
+        table_headers(&reference).contains(&"jira"),
+        "this is not the manual's reference configuration: {reference}"
+    );
+    let clearing = clear_one_refusal_at_a_time(&reference);
+    let trail = clearing.trail.join("\n");
+    let passes = format!("takes {} passes", clearing.trail.len());
+    let deleted = format!(
+        "{} of its {} tables have to be deleted",
+        clearing.declared - clearing.survived,
+        clearing.declared
+    );
+    let manual = manual();
+    for claim in [&passes, &deleted] {
+        assert!(
+            manual.contains(claim.as_str()),
+            "the manual must record what this document costs a reader who tries \
+             to load it, and say `{claim}`. Measured here, one line per refusal:\n\
+             {trail}"
+        );
+    }
+}
+
+/// **The document the manual offers as copyable is one this build loads.**
+///
+/// The other half of the disposition, and the half that makes it a disposition
+/// rather than a disclaimer: a manual whose only example does not load leaves an
+/// operator with nothing to start from, so saying "this one is a composite" is
+/// only honest beside something that is not.
+///
+/// The whole block is fed to the binary, not a table of it — that is the
+/// difference between this and `c64d`'s per-table lane, and it is what "copyable"
+/// has to mean. The extraction is asserted first, and asserted against every
+/// table the schema admits: a copyable document that quietly stopped covering
+/// `[scanner]` would still load, and would still be a worse starting point than
+/// the one this claim was made about.
+#[test]
+fn the_document_the_manual_offers_as_copyable_is_one_this_build_loads() {
+    let copyable = copyable_configuration();
+    let declared = table_headers(&copyable);
+    for header in [
+        "project",
+        "stub",
+        "report",
+        "agent",
+        "workspace",
+        "github",
+        "scanner",
+        "orchestration.cve",
+    ] {
+        assert!(
+            declared.contains(&header),
+            "the copyable document must show [{header}] — it is the whole of what \
+             a deployment can say today, and a table it omits is one an operator \
+             has to discover elsewhere: {copyable}"
+        );
+    }
+    assert!(
+        !declared.contains(&"jira"),
+        "this is the boundary map, not the copyable document: {copyable}"
+    );
+    let out = check_with(&format!("{copyable}\n"), &["--json"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the document the manual offers as copyable was refused, so the manual \
+         now has no example a deployment can copy at all. stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(payload["status"], "valid", "{payload}");
+    // Echoed back rather than merely accepted, and each expected value is read
+    // out of the block rather than transcribed beside it.
+    assert_eq!(
+        payload["project"]["name"],
+        documented_scalar(&copyable, "name"),
+        "{payload}"
+    );
+    assert_eq!(
+        payload["github"]["repo"],
+        documented_scalar(&copyable, "repo"),
+        "{payload}"
+    );
+    assert_eq!(
+        payload["orchestration"]["cve"]["image"],
+        documented_scalar(&copyable, "image"),
+        "{payload}"
+    );
+}
+
+/// The string `key` is assigned in `document`, unquoted.
+fn documented_scalar(document: &str, key: &str) -> String {
+    let assignment = format!("{key} = ");
+    document
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(&assignment))
+        .unwrap_or_else(|| panic!("the document must assign {key}: {document}"))
+        .trim()
+        .trim_matches('"')
+        .to_owned()
+}
+
+/// **The forge table the manual documents names the keys the schema admits.**
+///
+/// `c64d`'s lane one table over. The `[github]` table of the reference
+/// configuration spelled its repository `repository` and its base branch
+/// `default_branch`, where the schema shipped `repo` and `base` — the same two
+/// settings under different words, which is a transcription defect and not a
+/// boundary the build resolved differently. It presented at line 13 of the block
+/// as `unknown field \`repository\``, which is the same failure `severities` was.
+///
+/// Those two are corrected in the manual, and this holds them there. The table is
+/// read out of the manual and fed to the binary, so the correction cannot be
+/// undone in either document alone: renaming the key back reds here, and so does
+/// the schema dropping the name it now admits. Only the table's own keys are
+/// taken — `[github.pull_requests]` and `[github.actions]` are tables this build
+/// does not have, and they stay in the boundary map for the milestone that brings
+/// them.
+#[test]
+fn the_forge_table_the_product_manual_documents_names_the_keys_the_schema_admits() {
+    let documented = documented_table(&reference_configuration(), "[github]");
+    for key in ["repo", "base", "token"] {
+        assert!(
+            documented
+                .lines()
+                .any(|line| line.starts_with(&format!("{key} = "))),
+            "the manual's `[github]` example must name {key}, or this lane is \
+             checking a document the manual does not contain: {documented}"
+        );
+    }
+    let out = check(&format!("{AGENTIC}{documented}\n"));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the manual's own forge table was refused, so an operator who copies it \
+         cannot publish. stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
