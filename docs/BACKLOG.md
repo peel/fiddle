@@ -1848,3 +1848,27 @@ Most of those tables belong to milestones that have not shipped, so this is not 
 
 Origin: implementation (bean fiddle-c64d, epic fiddle-eph7 — measured with the compiled binary over the extracted block)
 Tags: #debt #documentation
+
+### 2026-08-18 — `check-thresholds.sh` returns PASS for a scorecard whose dimensions carry no threshold
+
+The script compares `select(.value.score < .value.threshold)`. When a scorecard's dimension objects carry `score` but no `threshold`, jq evaluates `5 < null` as false, every dimension lands in `passing_dimensions`, and the script exits 0 with `"verdict": "FAIL"` never reachable. A holistic scorecard scoring 5, 6, 6, 6, 9 against thresholds of 7, 7, 8, 6, 9 was reported as **PASS** on exactly this path, and `check-convergence.sh` then returned `PASS_PENDING` — one dispatch away from declaring a milestone's holistic review converged over a scorecard that failed three of five dimensions.
+
+The immediate cause was upstream and human: the envelope handed to the reviewer omitted the `threshold` field, so the reviewer produced a well-formed scorecard the gate could not grade. That is worth fixing separately. But a gate that cannot tell "nothing failed" from "nothing was compared" is the defect that made a spelling mistake into a false pass, and the same shape would swallow a renamed field or a merge that dropped the key.
+
+The fix is to refuse rather than to default: a dimension with no `threshold`, or a `--criteria` file whose entries carry no `pass`, should exit non-zero naming the missing field. Defaulting to the holistic thresholds would be worse than erroring — it would quietly grade one scorecard by a different rule than the one its author was given.
+
+The `--criteria` argument has the same shape of hazard from the other direction: it expects the scorecard's *graded* criteria array, and an ungraded array of criteria descriptions (the file used to brief the reviewer, which is the natural thing to reach for and has the same `id` keys) yields zero failing criteria rather than an error.
+
+Origin: orchestration (epic fiddle-eph7, holistic iteration 4 — the verdict was re-derived by hand and the three failing dimensions recovered)
+Tags: #bug #tooling #evaluation
+
+### 2026-08-18 — A probe taken from a stale binary, in the pack built to prevent exactly that
+
+The holistic evidence pack for iteration 4 captioned probe 5 "help now names the bare form (lead fix)" and headed the pack "run at HEAD 8fce238". The transcript came from `target/release/fiddle` as it stood *before* the gate rebuilt it, so it showed the help text without the fix it was offered as evidence of. The reviewer caught it by running the binary itself and noticing the extra sentence.
+
+The fix was real and its test passes; only the evidence was wrong. That is the whole hazard: a probe that agrees with what the author expects is not checked, and this pack exists precisely to stop unchecked expectation reaching a verdict. Commit `5dd2c9c` recorded the same failure as "a predicted probe is not a probe"; it recurred in the artefact written to prevent it, one iteration later.
+
+What would have caught it: taking probes *after* the build that the pack claims they came from, and stamping each probe with the binary's own mtime or `--version` rather than with the HEAD the author believes is built.
+
+Origin: orchestration (epic fiddle-eph7, holistic iteration 4 — reported by the reviewer as an antipattern against the pack rather than the tree)
+Tags: #process #evidence-discipline
