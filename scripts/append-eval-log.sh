@@ -53,18 +53,82 @@ else
   HEADING="### Iteration $ITERATION ($TIMESTAMP)"
 fi
 
-# Build the entry from scorecard JSON
+# Build the entry from scorecard JSON.
+#
+# This log gates nothing — convergence is decided by check-thresholds.sh, which
+# refuses a scorecard it cannot compare (exit 2). Nothing here refuses: the
+# SPEC_DEFECT route in skills/develop-loop/scorecard-merge.md must log a
+# scorecard it has *already* declared defective before it routes the bean, so a
+# refusal here would remove the record that route exists to leave.
+#
+# It does have to be honest, though. The FAIL annotation used to be written by
+# the same `score < threshold` comparison check-thresholds.sh was fixed for, and
+# it has the same two blind spots: jq makes `1 < null` false, so a dimension
+# with no threshold rendered as a bare `1/10`, and type order makes `"1" < 7`
+# false, so did a stringly-typed score. Either way the entry read as a clean
+# sheet — which is exactly how the original defect presented, one artifact
+# along, in the only loop state that survives a restart. A dimension the
+# comparison cannot make is now marked UNGRADED and told why, instead of
+# borrowing the appearance of a pass.
+#
+# The mis-shapes were worse than misleading: a top-level domain key, a
+# `criteria` array mis-nested under `.domains`, or a dimension that is a bare
+# number each aborted this jq with a raw error and exit 5, writing no entry at
+# all. Each of those shapes occurred in this epic. They are recorded too.
 ENTRY=$(jq -r --arg heading "$HEADING" --arg disp "$DISPATCHES" --arg guide "$GUIDANCE" '
+  def ungraded($why): " (UNGRADED, \($why))";
+  def dim_note($d):
+    if ($d | type) != "object" then
+      ungraded("dimension is \($d | type), not an object")
+    elif ($d.score | type) != "number" then
+      ungraded(if $d.score == null then "no score recorded"
+               else "score is \($d.score | type), not a number" end)
+    elif ($d.threshold | type) != "number" then
+      ungraded(if $d.threshold == null then "no threshold recorded"
+               else "threshold is \($d.threshold | type), not a number" end)
+    elif $d.score < $d.threshold then " (FAIL, threshold \($d.threshold))"
+    else "" end;
+
   "\($heading)\ndispatches: \($disp)" +
-  (.domains | to_entries | map(
-    "\n**\(.key):**" +
-    (.value.dimensions | to_entries | map(
-      "\n- \(.key): \(.value.score)/10" +
-      (if .value.score < .value.threshold then " (FAIL, threshold \(.value.threshold))" else "" end)
-    ) | join(""))
-  ) | join("")) +
+  (if (.domains | type) != "object" then
+     "\n**scorecard:**\n- domains" +
+     ungraded(if .domains == null then "no `domains` recorded"
+              else "`domains` is \(.domains | type), not an object" end)
+   else
+     (.domains | to_entries | map(
+       "\n**\(.key):**" +
+       ((.value | if type == "object" then .dimensions else null end) as $dims |
+        if ($dims | type) != "object" then
+          "\n- dimensions" +
+          ungraded(if $dims == null then "no `dimensions` recorded"
+                   else "`dimensions` is \($dims | type), not an object" end)
+        else
+          ($dims | to_entries | map(
+            .value as $d |
+            "\n- \(.key): \(if ($d | type) == "object" then $d.score else $d end)/10" +
+            dim_note($d)
+          ) | join(""))
+        end)
+     ) | join(""))
+   end) +
   (if $guide != "" then "\n**Guidance:** \"\($guide)\"" else "" end)
-' "$SCORECARD")
+' "$SCORECARD") || ENTRY=""
+
+# jq's own status, taken before anything pipes it. An unreadable card must not
+# vanish: merge-scorecards.sh exits 5 with zero bytes on stdout when its jq dies
+# (its own `2>/dev/null` swallows the reason), so the SPEC_DEFECT route can
+# arrive here holding an empty file. That used to append an empty string —
+# exit 0, no entry written, and a restart reading this log would conclude the
+# iteration never happened. Record the gap instead; jq's error has already gone
+# to stderr above.
+if [[ -z "$ENTRY" ]]; then
+  echo "Warning: could not read scorecard $SCORECARD — logging the iteration without dimensions" >&2
+  ENTRY=$(printf '%s\ndispatches: %s\n**scorecard:** (UNGRADED, could not be read: %s)' \
+    "$HEADING" "$DISPATCHES" "$SCORECARD")
+  if [[ -n "$GUIDANCE" ]]; then
+    ENTRY=$(printf '%s\n**Guidance:** "%s"' "$ENTRY" "$GUIDANCE")
+  fi
+fi
 
 # Append disagreements if provided and non-empty
 if [[ -n "$DISAGREEMENTS" && -f "$DISAGREEMENTS" ]]; then

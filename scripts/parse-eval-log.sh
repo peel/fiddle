@@ -37,12 +37,23 @@ ITERATION_COUNT=$(echo "$BODY" | grep -c '### Iteration ' || true)
 LAST_GUIDANCE=$(echo "$BODY" | sed -n 's/^\*\*Guidance:\*\* "\(.*\)"/\1/p' | tail -1)
 LAST_GUIDANCE="${LAST_GUIDANCE:-}"
 
-# Extract last verdict by checking if last iteration had FAIL markers
+# Extract last verdict from the last iteration's markers.
+#
+# UNGRADED is checked before FAIL and outranks it. append-eval-log.sh writes it
+# for a dimension it could not compare at all — no threshold, a non-numeric
+# score, a mis-shaped scorecard — and that is a stronger statement than a
+# failure: it says the entry is not a verdict, so a restart must re-evaluate
+# rather than read a position out of it. Without this branch such an entry
+# carries no FAIL marker anywhere and falls through to PASS, which is the false
+# pass check-thresholds.sh was fixed for, resurfacing in the one record that
+# outlives the session. Both are non-PASS, so the resuming action is unchanged.
 LAST_VERDICT="UNKNOWN"
 if [[ "$ITERATION_COUNT" -gt 0 ]]; then
   # Get the last iteration section (from last "### Iteration" to end)
   LAST_SECTION=$(echo "$BODY" | awk '/### Iteration '"$ITERATION_COUNT"'/{found=1} found{print}')
-  if echo "$LAST_SECTION" | grep -q "FAIL"; then
+  if echo "$LAST_SECTION" | grep -q "(UNGRADED,"; then
+    LAST_VERDICT="UNGRADED"
+  elif echo "$LAST_SECTION" | grep -q "FAIL"; then
     LAST_VERDICT="FAIL"
   else
     LAST_VERDICT="PASS"
