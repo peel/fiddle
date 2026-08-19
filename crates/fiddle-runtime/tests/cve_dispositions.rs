@@ -57,7 +57,7 @@
 mod support;
 
 use fiddle_core::{AdvisoryId, ProjectedFinding, RunOutcome, Severity};
-use fiddle_runtime::agent::RepairReport;
+use fiddle_runtime::agent::{FindingDisposition, RepairReport};
 use fiddle_runtime::capability::{ForbiddenShape, GroupStatus, MigrationAttempt, NeedsWork};
 use fiddle_runtime::cve::group::{select_target_version, GroupError};
 use fiddle_runtime::cve::project::{project, Projection};
@@ -493,6 +493,17 @@ fn attempted_group(
                 changed_files: vec!["go.mod".to_string()],
                 summary: format!("bumped the module {cve} is against"),
                 claimed_complete,
+                // One disposition for the one finding this group was shown, so
+                // the fixture is the shape a real report has to be in to be
+                // accepted at all — see `agent::unaccounted`. Attempted rather
+                // than declined because every group here made an edit; what a
+                // *declined* one does to a verdict is Task 3b's lane and not
+                // something this suite can answer.
+                findings: vec![FindingDisposition {
+                    cve: cve.to_string(),
+                    attempted: true,
+                    note: "bumped it".to_string(),
+                }],
             },
             changed: vec![WorkspacePath::parse("go.mod").expect("a workspace-relative path")],
             forbidden,

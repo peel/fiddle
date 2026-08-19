@@ -36,6 +36,7 @@ use rig_agent::agent::OutputMode;
 use rig_agent::completion::{PromptError, StructuredOutputError, TypedPrompt};
 use rig_agent::tool::ToolContext;
 use rig_agent::AgentBuilder;
+use std::collections::BTreeSet;
 use std::future::IntoFuture;
 use std::time::Duration;
 
@@ -265,6 +266,127 @@ pub struct RepairReport {
     pub changed_files: Vec<String>,
     pub summary: String,
     pub claimed_complete: bool,
+
+    /// One entry for each finding you were shown, identified by its advisory id.
+    /// A finding you could not fix belongs here too, with `attempted` false and
+    /// the reason in `note`; saying so is a complete answer and is not held
+    /// against you. Empty if you were shown no findings.
+    //
+    // The doc comment above is deliberately short and addressed to the model,
+    // because schemars renders it into the schema's `description` and every byte
+    // of that is sent to the provider. The argument for the field belongs here,
+    // where it is not.
+    //
+    // **Declining is a statement about the protocol and about nothing else.** A
+    // declined finding is still there when the scan runs again, and what the run
+    // does about it then is the verdict's business — see `unaccounted`, which
+    // checks this field's shape and reaches no verdict. Nothing on this type
+    // turns a declined finding into a cleared one.
+    //
+    // **`#[serde(default)]`, deliberately.** A report with no dispositions is the
+    // *correct* report for an attempt that was shown no findings, and two of the
+    // three capabilities holding this type are in that position: M1 repairs a
+    // broken fixture and M3 writes a change against one, and neither has an
+    // advisory to dispose of. Without the default every one of their attempts
+    // would be a protocol failure over a field that has no meaning for them, and
+    // every scripted model in their suites sends the three-field shape —
+    // `agent::tests::a_report_with_no_dispositions_parses_and_has_none` is what
+    // holds that.
+    //
+    // The default does not weaken the finding-shaped capability's contract, it
+    // relocates it. An empty `findings` against a non-empty shown set is exactly
+    // what `unaccounted` refuses, and it refuses it *by name* — which serde could
+    // not do, because serde does not know what was shown.
+    #[serde(default)]
+    pub findings: Vec<FindingDisposition>,
+}
+
+/// What one attempt says it did about one finding it was shown.
+//
+// Model-facing doc comments again, for `RepairReport::findings`' reason: every
+// one of them is rendered into the schema and sent. The reasoning is in `//`
+// comments.
+//
+// Three fields, and the middle one is the whole point of the type. `attempted`
+// separates *I tried this and here is what I did* from *I did not try this and
+// here is why* — two outcomes a summary string conflates, and two a reader has to
+// be able to tell apart, because only one of them is a model that gave up on a
+// job it could have done.
+//
+// `note` is prose in both cases and is the attempt's own account. Nothing reads
+// it to decide anything; it is published beside whatever the rescan concluded.
+//
+// `cve` is a plain `String` and not a parsed `AdvisoryId`, which is the one field
+// choice here worth arguing. The value is one a model wrote, and the report has
+// to be able to *carry* an id that turns out to be wrong — that is precisely the
+// case `unaccounted` exists to name. A field that refused to deserialize would
+// turn a nameable protocol failure into an unnameable one: the run would learn
+// that the report did not parse, and not which advisory it invented.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+pub struct FindingDisposition {
+    /// The advisory this entry is about, spelled as it was shown to you.
+    pub cve: String,
+    /// True if you tried to fix it, false if you decided not to try.
+    pub attempted: bool,
+    /// What you changed for it, or why you did not try.
+    pub note: String,
+}
+
+/// Every finding shown is accounted for, and nothing else is.
+///
+/// A set comparison over advisory ids in both directions, and it reads no meaning
+/// into any of them — the counterpart of the declared-files rule over paths, and
+/// agnostic for the same reason. A missing disposition is a **silent gap**: the
+/// attempt was shown a finding and said nothing at all about it, which is the one
+/// answer that cannot be published beside a verdict. A disposition naming a
+/// finding that was never shown is the same defect from the other side, and it is
+/// worth refusing rather than ignoring, because it is what a report assembled
+/// from something other than the prompt looks like.
+///
+/// # What this is not
+///
+/// **It is not a verdict, and it does not read `attempted`.** A report in which
+/// every finding was declined passes this function, because such a report is
+/// well-formed: it accounts for everything it was shown. Whether the findings
+/// were *cleared* is the rescan's answer and is reached nowhere near here — see
+/// [`RepairReport::findings`]. Conflating the two would make an honest "I could
+/// not fix this" indistinguishable from a model that ignored its instructions,
+/// which is precisely the distinction this milestone is written to keep.
+///
+/// [`AgentError::Protocol`] is the variant because that is what this is: the
+/// attempt did not produce the shape it was asked for, which a clearer prompt or
+/// a different model might fix. See that type's note on foreign text for why an
+/// id the *report* chose may be quoted back.
+///
+/// **No production path calls this yet.** The step that runs one attempt over
+/// every selected finding is where the shown set exists to compare against, and
+/// it arrives later in this milestone; a caller invented here would have had to
+/// guess what the shown set was. What is settled now is the shape and the rule,
+/// so that the caller has something to call.
+pub fn unaccounted(shown: &[&str], reported: &[FindingDisposition]) -> Option<AgentError> {
+    let shown: BTreeSet<&str> = shown.iter().copied().collect();
+    let disposed: BTreeSet<&str> = reported
+        .iter()
+        .map(|disposition| disposition.cve.as_str())
+        .collect();
+
+    let missing: Vec<&str> = shown.difference(&disposed).copied().collect();
+    let stray: Vec<&str> = disposed.difference(&shown).copied().collect();
+    if missing.is_empty() && stray.is_empty() {
+        return None;
+    }
+
+    // Both directions in one reason, because a report can be wrong in both at
+    // once and an operator reading only the first half would go and fix a
+    // different bug than the one they have.
+    let mut reason = String::from("the report does not account for what it was shown");
+    if !missing.is_empty() {
+        reason.push_str(&format!("; shown and not reported: {}", missing.join(", ")));
+    }
+    if !stray.is_empty() {
+        reason.push_str(&format!("; reported and never shown: {}", stray.join(", ")));
+    }
+    Some(AgentError::Protocol { reason })
 }
 
 /// Why an attempt did not produce a report.
@@ -287,7 +409,7 @@ pub struct RepairReport {
 /// name, not a path. Those are unbounded, they are already in the receipts under
 /// their own outcome class, and repeating them buys nothing.
 ///
-/// There are **two** deliberate admissions of text this process did not write,
+/// There are **three** deliberate admissions of text this process did not write,
 /// and they are admitted on different grounds:
 ///
 /// - The **serde diagnostic** on a schema failure, which may quote the offending
@@ -298,6 +420,15 @@ pub struct RepairReport {
 ///   and only when rig can prove there is no response body inside it. See
 ///   [`classify`] and [`provider_fault`] for how that is decided and why the
 ///   body itself is never admitted on any path.
+/// - An **advisory id the report named**, on the [`Protocol`](AgentError::Protocol)
+///   failure [`unaccounted`] raises. Admitted on the serde diagnostic's ground —
+///   it is *model*-authored, and the model is a party we are already reading the
+///   output of — and for one reason of its own: it is the entire content of the
+///   failure. "The report named an advisory that was never shown" is unactionable
+///   without saying which, and unlike a tool name it is in no receipt, because
+///   receipts record tool calls and this is a field of the final answer. It is
+///   unbounded, as the two above are, and bounded by the same thing they are:
+///   the paragraph below.
 ///
 /// This doc block used to say the serde diagnostic was "the one exception". It
 /// was not, and the second one was the wider of the two: until `provider_fault`
@@ -947,5 +1078,96 @@ mod tests {
             ),
             other => panic!("a provider failure must classify as Provider, got {other:?}"),
         }
+    }
+    // -----------------------------------------------------------------------
+    // The report accounts for every finding it was shown
+    // -----------------------------------------------------------------------
+
+    /// One disposition, with the `note` left non-empty in both cases.
+    ///
+    /// A declined disposition with a blank note would be the degenerate value —
+    /// and [`unaccounted`] would accept it, correctly, because a blank reason is
+    /// a bad answer and not a broken protocol. It is spelled out here so no lane
+    /// below can be read as depending on the note.
+    fn disposition(cve: &str, attempted: bool) -> FindingDisposition {
+        FindingDisposition {
+            cve: cve.to_string(),
+            attempted,
+            note: match attempted {
+                true => "pinned it".to_string(),
+                false => "no fix I can apply from here".to_string(),
+            },
+        }
+    }
+
+    /// **A finding shown and not reported, and a finding reported and never
+    /// shown, are both refused — and the refusal names the finding.**
+    ///
+    /// Named, because that is the difference between a refusal an operator can
+    /// act on and one that only says a set comparison failed. Both directions are
+    /// in one lane because they are one rule: the two sets are equal, and a
+    /// function checking only the direction somebody remembered would pass a
+    /// report that padded itself with ids nobody asked about.
+    #[test]
+    fn a_report_must_account_for_every_finding_it_was_shown() {
+        let shown = ["CVE-2026-1111", "CVE-2026-2222"];
+
+        let reported = vec![disposition("CVE-2026-1111", true)];
+        let error = unaccounted(&shown, &reported).expect("CVE-2026-2222 has no disposition");
+        assert!(error.to_string().contains("CVE-2026-2222"), "{error}");
+
+        let stray = vec![
+            disposition("CVE-2026-1111", true),
+            disposition("CVE-2026-9999", false),
+        ];
+        let error = unaccounted(&shown, &stray).expect("CVE-2026-9999 was never shown");
+        assert!(error.to_string().contains("CVE-2026-9999"), "{error}");
+    }
+
+    /// **Declining every finding is a well-formed report.**
+    ///
+    /// The other half of the rule, and the half the design turns on. An attempt
+    /// that declined everything it was shown has held up its end of the protocol:
+    /// it accounted for every finding and said why. It has cleared nothing, and
+    /// this function is not what says so — the rescan is. A [`Protocol`] failure
+    /// here would tell a run that the *model* misbehaved, and would put an honest
+    /// answer in the same bucket as a model that ignored its instructions.
+    ///
+    /// [`Protocol`]: AgentError::Protocol
+    #[test]
+    fn a_report_that_declines_everything_is_still_a_report() {
+        let shown = ["CVE-2026-1111", "CVE-2026-2222"];
+        let declined = vec![
+            disposition("CVE-2026-1111", false),
+            disposition("CVE-2026-2222", false),
+        ];
+
+        assert!(
+            unaccounted(&shown, &declined).is_none(),
+            "declining is a disposition, not a broken contract: {:?}",
+            unaccounted(&shown, &declined)
+        );
+    }
+
+    /// **An older report, with no dispositions at all, still parses.**
+    ///
+    /// The lane that says [`RepairReport::findings`]'s `#[serde(default)]` is
+    /// load-bearing rather than decorative. M1's and M3's scripted models answer
+    /// in the three-field shape — they are shown no findings, so they have none
+    /// to dispose of — and a required field would have made every one of their
+    /// attempts a protocol failure. Asserted over the *deserializer*, because
+    /// that is where the requirement would have bitten.
+    #[test]
+    fn a_report_with_no_dispositions_parses_and_has_none() {
+        let report: RepairReport = serde_json::from_str(
+            r#"{"changed_files":["src/lib.rs"],"summary":"fixed","claimed_complete":true}"#,
+        )
+        .expect("the three-field shape is what M1 and M3 have always sent");
+
+        assert!(
+            report.findings.is_empty(),
+            "no dispositions means no dispositions, not a fabricated one: {:?}",
+            report.findings
+        );
     }
 }

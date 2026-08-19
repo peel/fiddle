@@ -421,8 +421,19 @@ async fn the_prompt_carries_the_projection_and_the_scope_rules_and_nothing_else(
          absence of an empty prompt"
     );
     // And the scope rules reach it, which is the other half of what it may be
-    // told: the word the whole exception turns on.
-    assert!(sent.json.contains("uniform"), "the scope rules reach it");
+    // told: one phrase per rule there is, since M4c left two.
+    //
+    // Neither needle is a field name. `changed_files` would have been the obvious
+    // one for the declared-files rule and is useless as evidence — it is also a
+    // property name on the report schema in this same request, so it would be
+    // present in a run whose prompt carried no rules at all. These two phrases
+    // are spelled in `SCOPE_RULES` and nowhere else that reaches a provider.
+    for rule in ["refuses the whole attempt", "report it as not attempted"] {
+        assert!(
+            sent.json.contains(rule),
+            "the scope rules reach it, including `{rule}`"
+        );
+    }
 
     assert!(!sent.carries(SENTINEL_PROSE), "no advisory prose");
 
