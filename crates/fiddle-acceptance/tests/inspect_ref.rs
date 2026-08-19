@@ -496,6 +496,25 @@ fn valued_cve_mentions(text: &str) -> Vec<String> {
 /// valued form, because naming what it refuses is its job. Without that half the
 /// property would be satisfiable by saying nothing anywhere, which is how an
 /// operator ends up with an invocation that fails for no stated reason.
+///
+/// **What this lane cannot see, and what covers it instead: nothing mechanical.**
+/// It reads the compiled binary, which is the right subject for an operator-facing
+/// promise and structurally blind to source prose. A fifth surface proved that:
+/// the doc comment on `a_bare_slug_cannot_collide_with_a_valued_slug` in
+/// `fiddle-core`'s `identity.rs` still stated as present fact that the valued form
+/// remediates one finding, and this lane passed over it. Two guards were weighed
+/// and both rejected on evidence. A **doctest** cannot reach it: rustdoc builds
+/// without `cfg(test)`, so a deliberately failing doctest placed in that test
+/// module was collected zero times — `cargo test --doc -p fiddle-core` exited 0 —
+/// while the identical probe on `InvocationRef::slug` failed as expected, so the
+/// blindness is rustdoc's and no harness setting moves it. A **grep** cannot
+/// either: when the fifth surface was found, "remediates one finding" stood at five
+/// sites and four were correct — framed as history, or ADR 019 stating the claim
+/// false — and recording this made more of them. Separating them means reading the
+/// framing, and a pattern narrow enough to try is pinned to today's wording: it
+/// would pass the next paraphrase and red on the next legitimate history note. Source doc comments are therefore a review matter
+/// here, and saying so is worth more than a guard that only ever catches the
+/// sentence already found. `docs/BACKLOG.md` records it with both experiments.
 #[test]
 fn no_operator_facing_surface_promises_the_valued_form() {
     let text = |args: &[&str], expected: Option<i32>, stderr: bool| -> String {

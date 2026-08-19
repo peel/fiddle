@@ -722,9 +722,14 @@ mod tests {
 
     /// Two references that name different work must name different artefacts.
     ///
-    /// `cve` sweeps a project and `cve:CVE-2026-1234` remediates one finding,
-    /// so a slug that collapsed the two would publish one attempt's bundle over
-    /// the other's. Dropping the separator from the *valued* branch is the
+    /// `cve` and `cve:CVE-2026-1234` are different references, and that is all
+    /// this needs: one addresses whatever the configuration puts in scope, the
+    /// other addresses one finding named inside it, so a slug that collapsed the
+    /// two would publish one attempt's bundle over the other's. The distinction
+    /// is the grammar's and holds whatever any one build implements — nothing in
+    /// this one acts on the valued form, which the CLI refuses under ADR 019's
+    /// M4a amendment, and the milestone that implements narrowing inherits this
+    /// slug as it stands. Dropping the separator from the *valued* branch is the
     /// mutation this catches, and nothing else here would.
     #[test]
     fn a_bare_slug_cannot_collide_with_a_valued_slug() {

@@ -155,3 +155,16 @@ it reads `--help` and each diagnostic off the compiled binary:
 `no_operator_facing_surface_promises_the_valued_form` in
 `crates/fiddle-acceptance/tests/inspect_ref.rs`, beside
 `the_valued_form_of_a_self_discovering_scheme_is_refused`.
+
+**There was a fifth, and it is outside that lane's reach.** Four was a reviewer's
+count, not a search. A doc comment in `crates/fiddle-core/src/identity.rs` also stated
+the valued form as present fact, and a lane reading the compiled binary cannot see
+source prose — correctly, since that is what an operator-facing promise is made of.
+Neither of the two mechanical guards available holds it either: rustdoc strips
+`#[cfg(test)]` before collecting doctests, so a doctest cannot reach a test-module
+comment at all, and the sentence stood at five sites when it was found, four of them
+legitimately framed as history or as this amendment, so a pattern that excludes them
+is pinned to today's wording. Source doc comments contradicting the binary are therefore held by
+**review** in this project and by nothing else; the boundary is recorded on the lane's
+own doc comment, where a reader meets it, and `docs/BACKLOG.md` carries the two
+experiments.
