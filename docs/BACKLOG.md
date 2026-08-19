@@ -2052,3 +2052,18 @@ A cheaper mechanical partial: the acceptance lane that reads the capability cens
 
 Origin: delivery (epic fiddle-eph7 — drift analysis, verified by the lead against §2.6, the schema, and a tree-wide search for a statement of the divergence)
 Tags: #process #documentation #design
+
+### 2026-08-19 — SYSTEM.md is eight times its stated size constraint, and delivery made it worse
+
+`skills/deliver-docs/SKILL.md` states SYSTEM.md's constraint as **1-2 pages max**. It is **7,981 words — about 16 pages** — and M4a's delivery added roughly 700 of them: a Components entry for the CVE capability, ADR 022's scheme-selection invariant, and two Known issues. Those additions were the right content and the gaps they filled were real; the point of this entry is that the constraint was checked *after* writing and found already violated by a factor of eight, and the honest response is not to note it and move on again.
+
+**Why it grew.** Every milestone M0 through M4a has added to it, and almost every entry is load-bearing: the invariants record decisions whose absence caused defects, the Known issues record gaps a reader needs, and the entries explain *why* rather than *what*, which is the reason they are useful and the reason they are long. Pruning by summarising would delete exactly the reasoning that stops the same defect twice — this milestone's `wr6v` and `ye7n` both turned on a written-down reason surviving.
+
+**Two additional constraints on any fix, both discovered rather than assumed.** Two acceptance lanes now *read this file*: `capability_selection.rs` requires its capability census to name every id the binary advertises and to state their number, and `config_check.rs` requires its `fiddle.toml` paragraph to name every table the schema admits. Both were verified passing after delivery's edits. So SYSTEM.md is no longer only prose — parts of it are asserted, and a split or a prune must keep those assertions pointing at the right file.
+
+**The choice is between two honest positions and one dishonest one.** Either the document is too long and should be split — Components, Invariants and Known issues are each plausibly their own file, with the guards re-pointed — or the constraint is wrong for a system five milestones in and should be raised to what the document actually needs. What should not continue is a stated limit of one to two pages that every milestone silently exceeds, because a constraint nobody enforces is worse than no constraint: it makes the next author think the size was considered when it was not.
+
+Recommend deciding this at M4b's delivery rather than mid-milestone, when a split can be planned against the guards instead of racing them.
+
+Origin: delivery (epic fiddle-eph7 — measured at 7,981 words after the update, against the skill's stated 1-2 page constraint)
+Tags: #debt #documentation #process
