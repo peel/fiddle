@@ -55,11 +55,11 @@ use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
 use std::time::Duration;
 use support::cve::{
-    ask_git, contract, contract_scanned_by, exit, green_tree, landing_worktree, landing_world,
-    migration_world, stdout, tree_rescanned_by, tree_where, LandingWorld, MigrationWorld,
-    DEFAULT_LIBRARY_CVES, GO_BUILD, HOST_ROOT, LANDING_CREATED, LANDING_UNRELATED,
-    MIGRATION_SOURCE as SOURCE, MIGRATION_TEST_BEFORE, MIGRATION_TEST_SOURCE as TEST_SOURCE,
-    SENTINEL_PROSE,
+    advisories_of, ask_git, contract, contract_scanned_by, exit, green_tree, landing_worktree,
+    landing_world, migration_world, shown_findings, stdout, tree_rescanned_by, tree_where,
+    LandingWorld, MigrationWorld, DEFAULT_LIBRARY_CVES, GO_BUILD, HOST_ROOT, LANDING_CREATED,
+    LANDING_UNRELATED, MIGRATION_SOURCE as SOURCE, MIGRATION_TEST_BEFORE,
+    MIGRATION_TEST_SOURCE as TEST_SOURCE, SENTINEL_PROSE,
 };
 
 // ---------------------------------------------------------------------------
@@ -504,7 +504,7 @@ async fn run_migration(
     world: &MigrationWorld,
 ) -> Result<MigrationAttempt, fiddle_runtime::capability::CapabilityError> {
     GroupMigration::new(model, world.config())
-        .migrate(&world.workspace(), &world.group)
+        .migrate(&world.workspace(), &shown_findings(&world.group))
         .await
 }
 
@@ -863,7 +863,7 @@ async fn the_attempt_really_edits_the_tree_through_the_tools() {
     let world = migration_world().await;
     let migration = GroupMigration::new(MockCompletionModel::new(migrates()), world.config());
     let attempt = migration
-        .migrate(&world.workspace(), &world.group)
+        .migrate(&world.workspace(), &shown_findings(&world.group))
         .await
         .expect("a scripted migration completes");
 
@@ -1766,7 +1766,7 @@ async fn what_the_run_changed_before_briefing_is_excused_and_nothing_beside_it_i
         ),
     ];
     let attempt = GroupMigration::new(MockCompletionModel::new(script), world.config())
-        .migrate(&workspace, &world.group)
+        .migrate(&workspace, &shown_findings(&world.group))
         .await
         .expect("a scripted migration completes");
 
@@ -1838,7 +1838,7 @@ async fn run_group_clean(cves: &[&str]) -> (LandingWorld, Landed) {
     let world = landing_world(cves);
     let landed = land(
         &world.tree,
-        &world.group,
+        &advisories_of(&world.group),
         &GroupStatus::Clean,
         &world.changed,
     )
@@ -1850,9 +1850,14 @@ async fn run_group_clean(cves: &[&str]) -> (LandingWorld, Landed) {
 /// The same for a group that is going back to a person.
 async fn run_group_needs_work(cves: &[&str]) -> (LandingWorld, Landed) {
     let world = landing_world(cves);
-    let landed = land(&world.tree, &world.group, &refused(), &world.changed)
-        .await
-        .expect("a needs-work group reverts");
+    let landed = land(
+        &world.tree,
+        &advisories_of(&world.group),
+        &refused(),
+        &world.changed,
+    )
+    .await
+    .expect("a needs-work group reverts");
     (world, landed)
 }
 
@@ -2106,9 +2111,14 @@ async fn a_forbidden_shape_over_green_checks_reverts_rather_than_committing() {
     );
 
     let world = landing_world(&LANDED);
-    let landed = land(&world.tree, &world.group, &status, &world.changed)
-        .await
-        .expect("a refused group reverts");
+    let landed = land(
+        &world.tree,
+        &advisories_of(&world.group),
+        &status,
+        &world.changed,
+    )
+    .await
+    .expect("a refused group reverts");
 
     assert_eq!(
         landed,
@@ -2149,9 +2159,14 @@ async fn a_file_the_attempt_created_does_not_survive_the_revert() {
         "the premise: the created file is really in the tree"
     );
 
-    let landed = land(&world.tree, &world.group, &refused(), &world.changed)
-        .await
-        .expect("a needs-work group reverts");
+    let landed = land(
+        &world.tree,
+        &advisories_of(&world.group),
+        &refused(),
+        &world.changed,
+    )
+    .await
+    .expect("a needs-work group reverts");
 
     assert_eq!(landed, Landed::Reverted);
     assert!(
@@ -2180,9 +2195,14 @@ async fn a_file_the_attempt_created_does_not_survive_the_revert() {
 async fn a_clean_group_that_changed_nothing_commits_nothing_and_says_so() {
     let world = landing_world(&LANDED);
 
-    let refusal = land(&world.tree, &world.group, &GroupStatus::Clean, &[])
-        .await
-        .expect_err("a clean group with an empty change set is refused");
+    let refusal = land(
+        &world.tree,
+        &advisories_of(&world.group),
+        &GroupStatus::Clean,
+        &[],
+    )
+    .await
+    .expect_err("a clean group with an empty change set is refused");
 
     assert!(
         matches!(refusal, CapabilityError::NothingProposed),
@@ -2307,7 +2327,7 @@ async fn the_production_seam_lands_a_group_in_a_real_worktree() {
 
     let landed = land(
         &InWorktree::new(&attempt.workspace, Duration::from_secs(60)),
-        &world.group,
+        &advisories_of(&world.group),
         &GroupStatus::Clean,
         &attempt.changed,
     )

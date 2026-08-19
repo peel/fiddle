@@ -126,7 +126,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use support::cve::{
-    ask_git, landing_world, remote_world, try_ask_git, LandingWorld, RemoteWorld,
+    advisories_of, ask_git, landing_world, remote_world, try_ask_git, LandingWorld, RemoteWorld,
     ONLY_ON_THE_REMOTE_BASE, ON_THE_SHARED_BRANCH,
 };
 use support::{unreachable_git, Deployment, INVOCATION_REF, PROJECT};
@@ -1641,7 +1641,7 @@ async fn publish(forge: &Forge, world: &RemoteWorld) -> Published {
     let before = journal.records().len();
     land(
         &InWorktree::new(&workspace, PATIENT),
-        &world.group,
+        &advisories_of(&world.group),
         &GroupStatus::Clean,
         &changed,
     )
@@ -2073,7 +2073,7 @@ async fn discover_then_land(forge: &Forge, world: &LandingWorld) -> Result<Appro
 
     land(
         &world.tree,
-        &world.group,
+        &advisories_of(&world.group),
         &fiddle_runtime::capability::GroupStatus::Clean,
         &world.changed,
     )

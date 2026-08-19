@@ -2474,6 +2474,33 @@ pub fn group_of(cves: &[&str]) -> Group {
     groups.remove(0)
 }
 
+/// Every advisory a world's group is about, as [`land`] and
+/// [`GroupMigration::migrate`] now take them.
+///
+/// M4c took the `Group` out of both signatures: a run shows one attempt every
+/// finding its bound left, so what the landing and the prompt need is the
+/// findings and their ids rather than the bump target four mechanical rules
+/// elected. These two are the adapter for the worlds in this file, which still
+/// build a group because the fold lanes are still about one — see
+/// [`group_of`]. When `cve::group` goes, both of these go with it and the worlds
+/// hold their findings directly.
+///
+/// [`land`]: fiddle_runtime::capability::land
+/// [`GroupMigration::migrate`]: fiddle_runtime::capability::GroupMigration::migrate
+pub fn advisories_of(group: &Group) -> Vec<AdvisoryId> {
+    group.cves().into_iter().cloned().collect()
+}
+
+/// Every finding in `group`, as an attempt is now shown them. See
+/// [`advisories_of`].
+pub fn shown_findings(group: &Group) -> Vec<ProjectedFinding> {
+    group
+        .findings()
+        .iter()
+        .map(|attributed| attributed.finding().clone())
+        .collect()
+}
+
 /// The grade set every fixture world in this file reads its documents through:
 /// what a document naming no grades means.
 ///

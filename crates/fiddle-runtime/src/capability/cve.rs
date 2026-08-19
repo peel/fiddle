@@ -79,8 +79,12 @@ use super::CapabilityError;
 use crate::agent::{
     attempt_briefed, unaccounted, AgentBudget, Brief, RepairReport, ToolHost, ToolReceipts,
 };
-use crate::cve::attribute::Target;
 use crate::cve::dedup::{Local, Spawn};
+// `Group` and the fold's own commit writer, for [`record_fold`] — which **no
+// production path reaches any more**: a fold is the decision not to attempt one
+// group of several, and there is one attempt now. It is left standing rather than
+// removed here so that deleting `cve::fold` finds it by failing to compile, which
+// is how the milestone's deletion step is meant to find its callers.
 use crate::cve::fold::{fold_commit_argv, Landed};
 use crate::cve::group::Group;
 use crate::effect::{Executor, IntegrationOperation};
@@ -94,7 +98,7 @@ use crate::workspace::{
 };
 use crate::{GhCli, GhError};
 use async_trait::async_trait;
-use fiddle_core::{CapabilityId, EffectKind, ProjectedFinding, ProposedEffect};
+use fiddle_core::{AdvisoryId, CapabilityId, EffectKind, ProjectedFinding, ProposedEffect};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -1030,19 +1034,21 @@ impl<M> GroupMigration<M>
 where
     M: rig_core::completion::CompletionModel + 'static,
 {
-    /// Run one bounded attempt at `group`'s migration, in a worktree of its own.
+    /// Run one bounded attempt at clearing `findings`, in the run's worktree.
     ///
-    /// # What is read off the group, and what is left behind
+    /// # It is every finding the run selected, and there is nothing between them
     ///
-    /// A [`Group`] is attribution's and grouping's answer: it carries a
-    /// [`Target`](crate::cve::attribute::Target) per finding, which is the module
-    /// or the `Dockerfile` line four mechanical rules elected, and which the
-    /// bump — applied before this runs — was written against. **None of that
-    /// reaches the model.** The single expression below takes `.finding()` off
-    /// each [`Attributed`](crate::cve::group::Attributed) and drops the rest, and
-    /// that narrowing is the criterion this module is written to: the target is
-    /// how the tree got into the state the model is looking at, not something the
-    /// model has any part in deciding.
+    /// `findings` used to be a `Group` — attribution's and grouping's answer,
+    /// carrying the module or `Dockerfile` line four mechanical Go rules elected
+    /// per finding, against which a bump had already been applied. The whole of
+    /// that is gone: a run shows **one** attempt everything its bound left, and
+    /// the tree the model is looking at is the checkout rather than a tree the run
+    /// has already moved. What the model is asked for is therefore the judgement
+    /// itself — which file, which version, and whether it is worth attempting at
+    /// all — and [`migration_task`] is the whole of what it is told.
+    ///
+    /// The narrowing that used to be the criterion here is now a fact about the
+    /// argument: there is no target to keep out of the prompt.
     ///
     /// # The worktree is the run's, and this does not create or destroy one
     ///
@@ -1057,9 +1063,9 @@ where
     ///   worktree*, through [`InWorktree`], and a worktree dropped before this
     ///   function returns is gone by the time its caller holds the attempt. So
     ///   `land` could not be called from a production path at all.
-    /// - **One branch, several groups.** A run puts every clean group's commit on
-    ///   one branch and pushes once. A worktree per group would leave each commit
-    ///   on a different detached `HEAD`.
+    /// - **One branch, one attempt, one push.** A run commits what its attempt
+    ///   left on one branch and pushes once. A worktree made and dropped here
+    ///   would leave that commit on a detached `HEAD` the push never sees.
     ///
     /// So the caller creates the workspace, at [`Checkout::revision`], and keeps
     /// it for the whole run. What 14.a refused — *handing the workspace back*, so
@@ -1073,27 +1079,23 @@ where
     pub async fn migrate(
         &self,
         workspace: &Arc<Workspace>,
-        group: &Group,
+        findings: &[ProjectedFinding],
     ) -> Result<MigrationAttempt, CapabilityError> {
-        let findings: Vec<&ProjectedFinding> = group
-            .findings()
-            .iter()
-            .map(|attributed| attributed.finding())
-            .collect();
+        let findings: Vec<&ProjectedFinding> = findings.iter().collect();
         let task = migration_task(&findings);
 
-        // **What the run itself had already changed, read before the model is
-        // briefed.** The bump — `go get` then `go mod tidy` — runs in this
-        // worktree *before* this function, so `HEAD` is behind the tree by an
-        // edit the attempt had no part in and cannot have declared. Holding it to
-        // those paths would refuse every ordinary sweep, in which the honest
-        // report is that nothing further was needed.
+        // **Whatever the run had already changed, read before the model is
+        // briefed and excused from its declaration.** A sweep no longer bumps
+        // anything here — choosing a version is the attempt's own work now — so
+        // this set is empty on every production path and the declaration rule is
+        // over the whole diff.
         //
-        // Read here rather than derived from the group's `Target`, so that this
-        // stays a question about the tree and learns nothing about what a bump is
-        // or which files one touches. When the bump becomes the attempt's own
-        // work this set is empty and the rule is over the whole diff, with no
-        // line here to remove.
+        // The read stays because the *rule* is "what the attempt did not do is
+        // not the attempt's to declare", and that is a question about the tree
+        // rather than about a caller's promise not to touch it. It learns nothing
+        // about what a bump is or which files one moves: a run that dirties this
+        // worktree before briefing is excused exactly that much and nothing
+        // beside it, whether or not anything in this build does.
         let bumped: Vec<String> = workspace
             .changed_files()?
             .into_iter()
@@ -1122,8 +1124,12 @@ where
         // not in `attempt_briefed`, because this is where the shown set exists:
         // it is `findings` — the same slice `migration_task` rendered above, so
         // what the check compares against cannot drift from what the model was
-        // asked. M1's and M3's attempts go through `attempt_briefed` too, are
-        // shown no findings, and have nothing to account for.
+        // asked. That slice is now **every finding the run selected** rather than
+        // one group's, which is the same widening the prompt got; the list is
+        // taken from the argument either way, so there was no second place for it
+        // to be assembled from and no chance for the two to disagree. M1's and
+        // M3's attempts go through `attempt_briefed` too, are shown no findings,
+        // and have nothing to account for.
         //
         // A [`Protocol`](crate::agent::AgentError::Protocol) failure, arriving by
         // the same route a report that did not match the schema arrives by: `?`
@@ -1165,10 +1171,10 @@ where
         // than against a second answer to the same question.
         //
         // The declaration held against the tree is the **run's** — the attempt's
-        // own list plus the paths the bump had already moved. Both directions
-        // still bite: a file neither the attempt nor the bump touched is
-        // unannounced, and a bumped file the tree no longer shows a change in is
-        // unmet, which is a bump the attempt undid.
+        // own list plus whatever the run had already changed before briefing,
+        // which on every path in this build is nothing. Both directions still
+        // bite: a file the attempt did not name is unannounced, and a file it
+        // named and the tree shows no change in is unmet.
         let declared_by_the_run: Vec<String> =
             report.changed_files.iter().cloned().chain(bumped).collect();
         let breach = undeclared(&declared_by_the_run, &edits);
@@ -1348,7 +1354,7 @@ impl Git for InRepository {
     }
 }
 
-/// Stage exactly the files this group edited and commit them, or put them back;
+/// Stage exactly the files the attempt edited and commit them, or put them back;
 /// either way, say which happened.
 ///
 /// # The commit gate is [`GroupStatus`], and it is not [`Evaluation::accepted`]
@@ -1366,10 +1372,10 @@ impl Git for InRepository {
 /// unread — so *the checks are not the commit gate* is a property of what this
 /// function can see, which nobody can edit away without changing the signature.
 ///
-/// The consequence of getting it wrong is not local: [`crate::cve::fold`]'s
-/// `ended_clean` still reads `accepted()`, so a group that both landed and folded
-/// on a green-checked forbidden shape would record a *later* group's advisories
-/// as fixed by an edit that should never have been on the branch.
+/// The consequence of getting it wrong is not local: the commit body is what the
+/// next run's log scan reads back as *this is dealt with*, so a green-checked
+/// forbidden shape that landed would record every advisory in it as fixed by an
+/// edit that should never have been on the branch.
 ///
 /// # `changed` is what git saw, not what anybody asked for
 ///
@@ -1381,7 +1387,7 @@ impl Git for InRepository {
 /// other route reached it without any scope rule having been applied to it.
 pub async fn land<G>(
     git: &G,
-    group: &Group,
+    advisories: &[AdvisoryId],
     status: &GroupStatus,
     changed: &[WorkspacePath],
 ) -> Result<Landed, CapabilityError>
@@ -1390,7 +1396,7 @@ where
 {
     match lands_as(status) {
         Landed::Committed => {
-            stage_and_commit(git, group, changed).await?;
+            stage_and_commit(git, advisories, changed).await?;
             Ok(Landed::Committed)
         }
         Landed::Reverted => {
@@ -1405,12 +1411,12 @@ where
 /// A function of [`GroupStatus`] alone, and the only place the decision is taken:
 /// [`land`] matches on what this answered rather than on the status again, so the
 /// git that follows cannot come to a different conclusion from the value that is
-/// handed back to [`crate::cve::fold`].
+/// handed back to the caller.
 ///
 /// [`GroupStatus::Clean`] is the commit gate and everything else reverts. There is
-/// no third arm and no arm that inspects [`NeedsWork`]'s reason: a group refused
-/// for a failing check and a group refused for an added `t.Skip` are the same
-/// thing to a branch.
+/// no third arm and no arm that inspects [`NeedsWork`]'s reason: an attempt refused
+/// for a failing check and one refused for an added `t.Skip` are the same thing to
+/// a branch.
 fn lands_as(status: &GroupStatus) -> Landed {
     match status {
         GroupStatus::Clean => Landed::Committed,
@@ -1421,19 +1427,19 @@ fn lands_as(status: &GroupStatus) -> Landed {
 /// Stage `changed` by name and make one commit of it.
 async fn stage_and_commit<G>(
     git: &G,
-    group: &Group,
+    advisories: &[AdvisoryId],
     changed: &[WorkspacePath],
 ) -> Result<(), CapabilityError>
 where
     G: Git + ?Sized,
 {
-    // A clean group that changed nothing has nothing to commit, and neither
+    // A clean attempt that changed nothing has nothing to commit, and neither
     // nearby answer is honest: `--allow-empty` would put a body naming every one
-    // of this group's advisories on the branch with no fix under it, which the
-    // next run's log scan reads as *these are done*, and answering
-    // [`Landed::Committed`] with no commit would tell the fold rule the branch
-    // carries a tree it does not. So it is a refusal, and the same one
-    // [`super::ProposeChange`] gives for the same tree.
+    // of these advisories on the branch with no fix under it, which the next run's
+    // log scan reads as *these are done*, and answering [`Landed::Committed`] with
+    // no commit would tell the caller the branch carries a tree it does not. So it
+    // is a refusal, and the same one [`super::ProposeChange`] gives for the same
+    // tree.
     if changed.is_empty() {
         return Err(CapabilityError::NothingProposed);
     }
@@ -1459,8 +1465,8 @@ where
     // Two `-m` arguments rather than one string with a blank line in it: git's
     // own way of separating a subject from a body, so the separation is not a
     // `\n\n` this file has to get right.
-    let subject = commit_subject(group);
-    let body = commit_body(group);
+    let subject = commit_subject(advisories);
+    let body = commit_body(advisories);
     let mut commit: Vec<&str> = COMMITTER
         .iter()
         .flat_map(|setting| ["-c", setting])
@@ -1530,61 +1536,60 @@ where
     Ok(())
 }
 
-/// The one line a clean group's commit opens with.
+/// The one line a landed attempt's commit opens with.
 ///
 /// **It names no advisory**, and that is not brevity. The subject is part of the
 /// body `git log --format=%B` prints, so an id here is an id
-/// [`crate::cve::dedup::FixedInCommits`] reads — which is fine for a group that
-/// really was fixed and would be a false claim for anything else. Keeping the ids
-/// to one place means there is one place to be careful about.
-fn commit_subject(group: &Group) -> String {
-    let count = group.cves().len();
-    let advisories = match count {
-        1 => "1 advisory".to_string(),
-        many => format!("{many} advisories"),
-    };
-    match group.target() {
-        Target::Module(path) => format!("fix: bump {path} for {advisories}"),
-        Target::DockerfileBaseImage => format!("fix: bump the base image for {advisories}"),
+/// [`crate::cve::dedup::FixedInCommits`] reads — which is fine for an advisory
+/// that really was fixed and would be a false claim for anything else. Keeping
+/// the ids to one place means there is one place to be careful about.
+///
+/// **And it names no file, no module and no version.** It used to say
+/// `fix: bump <module> for 2 advisories`, which was a sentence only a Go tree
+/// could produce: the module was the bump target four mechanical rules elected,
+/// and there is no such value any more. What is left is what this build actually
+/// knows about its own commit — how many advisories the attempt was asked to
+/// clear. Which files moved is in the diff, and what the attempt did to them is
+/// in its own summary; a subject that guessed at either would be this file
+/// deciding something the agent decided.
+fn commit_subject(advisories: &[AdvisoryId]) -> String {
+    match advisories.len() {
+        1 => "fix: mitigate 1 advisory".to_string(),
+        many => format!("fix: mitigate {many} advisories"),
     }
 }
 
-/// Every advisory this group's edit fixes, one per line.
+/// Every advisory the attempt was asked to clear, one per line.
 ///
 /// **Every one of them, not the first.** [`crate::cve::dedup`]'s log scan is what
 /// recovers the already-fixed set on the next run, and it matches each id
 /// independently precisely because one body may name several — so a body naming
-/// one of a group's four leaves three to be re-proposed against a tree that
-/// already carries their fix, and `group::GroupError::AlreadyAtTheFix` is then the
-/// only thing standing between that and a downgrade under a security fix's commit
-/// message.
+/// one of four leaves three to be re-proposed against a tree that already carries
+/// their fix.
 ///
 /// A `Fixes:` trailer per id rather than a bare list, because that is what the
 /// line is for and because a person reads this log too. The scan splits on
 /// everything that is not alphanumeric or a hyphen, so the word `Fixes` joins its
 /// word set and can answer nothing wrong — see [`FixedInCommits::read`].
 ///
-/// # Which consumer the completeness is for, in M4a
+/// # What the ids mean here, now that the landing is all-or-nothing
 ///
-/// The first paragraph above is Design §2.7's argument, and §2.7 makes it about
-/// *the OS already-fixed set*. In M4a that consumer cannot be reached from a
-/// run: a base-image group is refused before it can be committed, so this body
-/// only ever names library advisories — and a library advisory re-proposed
-/// against a tree that carries its fix is settled by
-/// [`already_fixed`](crate::cve::dedup::already_fixed)'s *tree* arm, upstream of
-/// `AlreadyAtTheFix`. `crate::cve::dedup`'s header carries the whole of the OS
-/// half's absence.
+/// Every advisory in this body was cleared, and that is a stronger claim than it
+/// used to be rather than a looser one. A commit is only made when the rescan
+/// reported **none** of them — one still reported takes the whole attempt back —
+/// so a body listing four is four advisories a scanner has been asked about and
+/// no longer names. Under grouping the equivalent claim was per group, and a run
+/// could leave one group's commit on the branch while another's went back.
 ///
-/// Listing every id still earns itself, through a reader §2.7 does not name:
-/// `Run::in_progress`'s `covers`, filtered id by id through the same log scan,
-/// which is what puts a run on the `AlreadyInProgress` disposition. A body
-/// naming one of a group's four leaves three out of `covers`, and the run then
-/// reports work to do that is sitting in an open pull request.
+/// The reader the completeness is for is `Run::in_progress`'s `covers`, filtered
+/// id by id through the same log scan, which is what puts a later run on the
+/// `AlreadyInProgress` disposition. A body naming one of four leaves three out of
+/// `covers`, and that run then reports work to do that is sitting in an open pull
+/// request.
 ///
 /// [`FixedInCommits::read`]: crate::cve::dedup::FixedInCommits::read
-fn commit_body(group: &Group) -> String {
-    group
-        .cves()
+fn commit_body(advisories: &[AdvisoryId]) -> String {
+    advisories
         .iter()
         .map(|cve| format!("Fixes: {}", cve.as_str()))
         .collect::<Vec<_>>()
@@ -2497,7 +2502,7 @@ pub fn shared_body(summary: &str, approved: &Approved) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fiddle_core::{AdvisoryId, PackageType, Severity};
+    use fiddle_core::{PackageType, Severity};
 
     /// **The branch's date is a real calendar date**, over the three cases the
     /// arithmetic can get wrong.

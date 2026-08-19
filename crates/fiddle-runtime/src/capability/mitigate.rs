@@ -4,11 +4,9 @@
 //! Everything this file does was written somewhere else and had no caller.
 //! [`crate::scanner`] runs the scan, [`crate::cve::project`] reads it,
 //! [`crate::cve::dedup`] drops what is already dealt with, [`Budget`] bounds what
-//! is left, [`crate::cve::attribute`] says where each edit goes,
-//! [`crate::cve::group`] gathers them into bumps and picks the version each moves
-//! to, [`super::cve::GroupMigration`] runs the one step a model is consulted for,
-//! [`crate::evaluate`] judges what it left, [`super::cve::GroupStatus`] rules on
-//! it, [`super::cve::land`] puts it on the branch or takes it back,
+//! is left, [`super::cve::GroupMigration`] runs the one step a model is consulted
+//! for, [`crate::evaluate`] judges what it left, [`super::cve::GroupStatus`] rules
+//! on it, [`super::cve::land`] puts it on the branch or takes it back,
 //! [`super::cve::publish_shared_work`] pushes and opens the one pull request, and
 //! [`crate::cve::verdict::disposition`] says what the run came to. Each of those
 //! is tested against its own seam; **none of them was reachable from a `fiddle
@@ -23,17 +21,34 @@
 //!    before a commit — a run that checked a branch out, committed a bump onto it
 //!    and only then found it could not push has written to a branch somebody else
 //!    owns.
-//! 2. **Dedup runs before attribution.** [`crate::cve::dedup::already_fixed`]'s
-//!    own header asks for it: attribution runs `go mod why` and, for rule 2,
-//!    writes and reverts a tree, all to place a finding this stage is about to
-//!    throw away.
-//! 3. **One worktree, several groups, one push.** Each clean group's commit has
-//!    to be a commit *the next group starts from*, or the push at the end carries
-//!    one of them. That is why [`super::cve::GroupMigration::migrate`] no longer
-//!    makes its own worktree, and it is what earns
-//!    [`super::cve::land`]'s revert: on a reused checkout, putting a needs-work
-//!    group's edit back is the only thing that stops it riding out on the next
-//!    group's commit.
+//! 2. **Dedup runs before the bound.** A finding this repository already carries
+//!    the fix for must not spend the budget, which is what
+//!    [`Budget::apply`]'s own header says the order is for.
+//! 3. **One worktree, one attempt, one push.** Every finding the bound left is
+//!    shown to **one** bounded attempt, in one worktree, and what it leaves is
+//!    committed once or put back once. That is why
+//!    [`super::cve::GroupMigration::migrate`] does not make its own worktree, and
+//!    it is what earns [`super::cve::land`]'s revert: the worktree outlives the
+//!    attempt, so putting a needs-work edit back is what stops it riding out on
+//!    the push.
+//!
+//! # There is no grouping here, and that is the design rather than a simplification
+//!
+//! Until M4c this file grouped its findings by the bump target four mechanical
+//! rules elected and ran one attempt per group. Both halves are gone, and the
+//! reason is one fact: **a group cannot be formed without knowing which file
+//! fixes a finding**, and that judgement is the agent's now — Rust cannot make it
+//! for a `requirements.txt` or a `pom.xml`, and the version arithmetic that
+//! picked what each group moved to was Go's minimal version selection wearing a
+//! general name. So nothing below batches findings by any ecosystem meaning, no
+//! bump is applied before the model is briefed, and the whole of what this file
+//! decides about *which* edit clears an advisory is nothing.
+//!
+//! What that costs is stated where it is paid: `docs/specs/`'s M4c design §6 is
+//! the list, and the one that lands here is that a run's landing is now
+//! **all-or-nothing** over its findings rather than per group. A cleared advisory
+//! is discarded when an unrelated one is not cleared, which was raised as a cost
+//! and accepted in favour of the simpler core.
 //!
 //! # What this capability does not decide
 //!
@@ -44,19 +59,15 @@
 //! of it.
 
 use super::cve::{
-    check_out, land, plan_shared_pull_request, publish_shared_work, record_fold, Approved,
-    Checkout, Git, GroupMigration, GroupStatus, InRepository, InWorktree, MigrationConfig,
-    SharedPublication,
+    check_out, land, plan_shared_pull_request, publish_shared_work, Approved, Checkout, Git,
+    GroupMigration, GroupStatus, InRepository, InWorktree, MigrationConfig, SharedPublication,
 };
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::AgentBudget;
-use crate::cve::attribute::{attribute, AttributionError, ModuleGraph, Target};
 use crate::cve::dedup::{already_fixed, commit_log_dedup};
-use crate::cve::fold::{plan_group, GroupPlan, PriorRescan};
 use crate::cve::go::Go;
-use crate::cve::group::{group, select_target_version, Attributed, Group, GroupError};
 use crate::cve::project::{project, Projection};
-use crate::cve::verdict::{disposition, Attempted, Blocked, Budget, Disposition, InProgress, Run};
+use crate::cve::verdict::{disposition, Attempted, Budget, Disposition, InProgress, Run};
 use crate::effect::{EffectContext, Executor};
 use crate::evaluate::{evaluate, Check, Contract, Evaluation, InWorkspace, Repair, Rescan};
 use crate::scanner::{ScanReport, Scanner, WizCredential};
@@ -362,90 +373,47 @@ where
         //    before it — see [`Budget::apply`] for why the order is the design.
         let (taken, deferred) = self.config.findings.apply(open);
 
-        // 6. Where each edit goes. A finding the four rules place nowhere is a
-        //    verdict rather than the end of the run: one unplaceable advisory
-        //    must not stop the others being fixed.
-        let mut attributed: Vec<Attributed> = Vec::new();
-        let mut blocked: Vec<Blocked> = Vec::new();
-        for finding in taken {
-            match attribute(&finding, &graph).await {
-                Ok(attribution) => {
-                    attributed.push(Attributed::new(finding, attribution.target().clone()))
-                }
-                // The resolver failing is not the same fact and is not a verdict:
-                // `go` could not be asked at all, so nothing was established about
-                // this finding or about any of the ones after it.
-                Err(AttributionError::Resolver(error)) => {
-                    return Err(CapabilityError::Dedup(
-                        crate::cve::dedup::DedupError::Resolver(error),
-                    ))
-                }
-                Err(error @ AttributionError::NoTarget { .. }) => blocked.push(Blocked {
-                    findings: vec![finding],
-                    error: GroupError::Unselectable {
-                        why: error.to_string(),
-                    },
-                }),
-            }
-        }
-
-        // 7. One group per bump target, and one attempt per group.
+        // 6. **One bounded attempt, every finding the bound left, one worktree.**
+        //    No grouping and no bump: which file clears which advisory, and what
+        //    version it moves to, is the attempt's own judgement — see this
+        //    module's header. What Rust holds it to afterwards is mechanical and
+        //    it is all downstream of this line: the declaration against the diff,
+        //    the deployment's checks, and the rescan.
+        //
+        //    Guarded on emptiness rather than run over nothing, because an attempt
+        //    shown no advisory is a prompt with no findings in it — a model asked
+        //    to fix nothing, a turn spent, and a report that would then have
+        //    nothing to account for. A run with nothing taken has one honest
+        //    outcome and [`disposition`] already names it from the sets below.
         let mut attempted: Vec<Attempted> = Vec::new();
-        let mut prior: Option<PriorRescan> = None;
-        for grouped in group(&attributed) {
-            // What to do with this group, decided in one place from the
-            // selection's answer and the previous group's evidence together. Both
-            // of the two ways a mid-run clearance shows itself land on
-            // `AlreadyResolved`, which is why the selection's refusal is handed to
-            // the rule rather than pushed straight onto `blocked` here — see
-            // [`plan_group`], which also says why the selection runs first.
-            let selection = self.target_version(&graph, &grouped).await;
-            let target = match plan_group(&grouped, selection, prior.as_ref()) {
-                GroupPlan::Attempt(target) => target,
-                // Records an empty commit and runs nothing: there is no attempt,
-                // no evaluation and no rescan, so it contributes no `Attempted`
-                // row either — see [`record_fold`].
-                GroupPlan::AlreadyResolved => {
-                    record_fold(&git, &grouped).await?;
-                    continue;
-                }
-                GroupPlan::Blocked(error) => {
-                    blocked.push(Blocked {
-                        findings: findings_of(&grouped),
-                        error,
-                    });
-                    continue;
-                }
-            };
-
-            // The bump itself, applied before the model sees anything — which is
-            // what `FINDINGS_FRAME` tells it has happened.
-            self.bump(&graph, &grouped, &target).await?;
-
-            let attempt_outcome = self.migration.migrate(&workspace, &grouped).await?;
-            let evaluation = self
-                .judge(&workspace, &grouped, &projection, report)
-                .await?;
+        if !taken.is_empty() {
+            let attempt_outcome = self.migration.migrate(&workspace, &taken).await?;
+            let evaluation = self.judge(&workspace, &taken, &projection, report).await?;
             let status = GroupStatus::of(
                 &evaluation,
                 &attempt_outcome.forbidden,
                 attempt_outcome.undeclared.as_ref(),
             );
-            let landed = land(&git, &grouped, &status, &attempt_outcome.changed).await?;
-            prior = Some(PriorRescan::of(
-                &evaluation,
-                landed,
-                &self.config.severities,
-            ));
+            // One landing, all of it or none of it. `land` commits exactly what
+            // git saw the attempt change, or puts exactly that back — and with one
+            // attempt in the run there is no second edit for a reverted one to
+            // ride out on, which is what the revert used to be guarding against.
+            land(
+                &git,
+                &advisories_of(&taken),
+                &status,
+                &attempt_outcome.changed,
+            )
+            .await?;
 
             attempted.push(Attempted {
-                findings: findings_of(&grouped),
+                findings: taken,
                 status,
                 attempt: attempt_outcome,
             });
         }
 
-        // 8. One push and one pull request, and only where something landed.
+        // 7. One push and one pull request, and only where something landed.
         let landed = match attempted
             .iter()
             .any(|group| group.status == GroupStatus::Clean)
@@ -454,7 +422,7 @@ where
             true => Some(self.publish(&git, &approved, &attempted).await?),
         };
 
-        // 9. The record. Every field is something that already happened; nothing
+        // 8. The record. Every field is something that already happened; nothing
         //    below reads a conclusion out of them — see [`Run`].
         let in_progress = approved.reused().map(|number| InProgress {
             number,
@@ -473,155 +441,41 @@ where
         let mut run = Run::scanned(projection);
         run.already_fixed = settled;
         run.in_progress = in_progress;
-        run.blocked = blocked;
+        // **Nothing sets `blocked`, and no run reaches it any more.** It was the
+        // set of findings four mechanical rules could place nowhere, or could
+        // pick no version for — both of them Go's judgements, both gone, and
+        // there is nothing left in this build that refuses a finding *before*
+        // showing it to an attempt. A finding this run cannot fix is now either
+        // one the scanner published no fix for, which the projection reports
+        // without ever offering it here, or one the attempt was shown and could
+        // not clear, which is an `Attempted` row. The field stays because
+        // `Run` is the record's shape and a reader of `verdicts.json` sees the
+        // same document either way.
         run.attempted = attempted;
         run.deferred = deferred;
         run.landed = landed;
         Ok(run)
     }
 
-    /// The version this group moves to, or the refusal a verdict reports.
-    ///
-    /// The release list is [`Go::versions`] for a module and **empty for a base
-    /// image**, and the emptiness is answered here rather than passed on: an
-    /// empty candidate list would make [`select_target_version`] report
-    /// [`GroupError::NoRelease`], which says *upstream has published nothing* —
-    /// about a registry this build never read. [`GroupError::Unselectable`] is
-    /// the honest sentence, and it says whose limitation it is.
-    ///
-    /// # The base-image arm is scoped out of M4a, not overlooked
-    ///
-    /// Decided rather than missed. Design §2.4 rule 4 is implemented as far as
-    /// it can be without a network peer: attribution resolves an OS finding to
-    /// [`Target::DockerfileBaseImage`], grouping keys every one of them onto that
-    /// single target, and [`select_target_version`] already answers the
-    /// floating-tag case the design calls `needs-work` when it is handed a tag
-    /// list — `a_floating_tag_with_no_newer_pinned_tag_is_needs_work` in
-    /// `crates/fiddle-runtime/tests/cve_attribution.rs` is that rule, tested.
-    /// **What is missing is only the tag list and the `Dockerfile` edit**, and
-    /// both need a registry client: an authenticated read of the image's
-    /// published tags, plus a rule for which of them is comparable. That is a
-    /// port, an adapter, a credential and a policy decision — a milestone's
-    /// worth, and one **no milestone currently owns**: M4b is the release
-    /// artifact, the host workflow, the CI-feedback fresh attempt and the first
-    /// real Wiz measurement. `docs/BACKLOG.md`'s `2026-08-18` entry is where
-    /// that is recorded, because this file cannot hold an unowned task.
-    ///
-    /// Lifting it means: a `Registry` port beside [`crate::scanner::Scanner`],
-    /// its tag list passed here where [`Go::versions`] is passed for a module,
-    /// and a `Dockerfile` tag edit where [`Self::bump`] runs `go get` — after
-    /// which the arm below becomes an `Ok` and the `unreachable` guard in
-    /// [`Self::bump`] becomes reachable.
-    ///
-    /// # What the refusal costs downstream, which is not nothing
-    ///
-    /// An attempted base-image bump would have been the only thing that ever
-    /// wrote an OS advisory into a commit body, so refusing here orphans the OS
-    /// half of deduplication. A base-image group leaves this as
-    /// [`GroupError::Unselectable`], which [`plan_group`] answers
-    /// [`GroupPlan::Blocked`] for, so it never reaches [`record_fold`] — whose
-    /// `--allow-empty` commit *does* name the group's ids — and never reaches
-    /// [`land`], which commits only [`GroupStatus::Clean`]. Both commit producers
-    /// are downstream of this refusal, so no run can put an OS advisory into a
-    /// commit body, and
-    /// [`already_fixed`]'s `PackageType::Os` arm reads commit bodies and nothing
-    /// else. That arm is a consumer whose producer is what this refusal stands
-    /// in for; [`crate::cve::dedup`]'s header states the same fact from the
-    /// reading end, and a change here has to be made there too.
-    ///
-    /// The refusal is held from outside the process by
-    /// `a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch` in
-    /// `crates/fiddle-acceptance/tests/cve_mitigation.rs`, which asserts the OS
-    /// advisory's verdict rationale carries `registry this build does not read`.
-    /// Wiring the registry turns that lane red, which is the intended way for
-    /// these notes to be found again.
-    ///
-    /// **The order used to be held separately, and it had to be.** *Both
-    /// producers are downstream of this refusal* was a claim about two blocks in
-    /// [`sweep`] being in one sequence, and swapping them was for a while
-    /// invisible to the entire workspace — every rescan in the suite still
-    /// reported the OS advisory, so the fold rule answered `Proceed` for the OS
-    /// group whichever way round they were. Under a rescan that *clears* it — an
-    /// ordinary floating base tag, rebuilt between scan and rescan — the reordered
-    /// code folded the group instead, and `record_fold` wrote `fix: <id> already
-    /// resolved by an earlier bump` onto the branch: the exact commit this note
-    /// says cannot exist, in the log that is the sole authority for the OS half.
-    /// `a_rescan_that_clears_the_os_advisory_blocks_it_rather_than_folding_it` is
-    /// that world, and it is the lane that failed on the swap.
-    ///
-    /// It is no longer two blocks. [`plan_group`] takes this refusal and the
-    /// previous group's rescan together and answers one of three plans, so the
-    /// sequence is a data dependency rather than an arrangement — and
-    /// `a_refusal_this_build_cannot_move_past_is_blocked_even_where_a_fold_would_have_folded`
-    /// holds the property at that tier, against a `prior` chosen so that a rule
-    /// which consulted the fold anyway would fold. Why the selection runs before
-    /// the fold rather than after, and which of the two owns a mid-run clearance,
-    /// is settled in [`crate::cve::fold`]'s header; there is one account of it and
-    /// this is not it.
-    ///
-    /// [`sweep`]: Self::sweep
-    async fn target_version(&self, graph: &Go, grouped: &Group) -> Result<String, GroupError> {
-        let module = match grouped.target() {
-            Target::Module(path) => path,
-            Target::DockerfileBaseImage => {
-                return Err(GroupError::Unselectable {
-                    why: "selecting a base-image tag needs a registry this build does not read"
-                        .to_string(),
-                })
-            }
-        };
-        let available = graph
-            .versions(module)
-            .await
-            .map_err(|error| GroupError::Unselectable {
-                why: error.to_string(),
-            })?;
-        // What the tree resolves the target to now, read from the same command
-        // attribution reads it from, so the bound "the tree is not moved
-        // backwards" is applied against the tree rather than against the report.
-        let current = current_version(graph, module).await?;
-        select_target_version(&grouped.fixed_versions(), &available, &current)
-    }
-
-    /// Move the requirement and re-resolve the build list.
-    ///
-    /// Two commands and not one: `go get` moves the module the group is keyed on,
-    /// and `go mod tidy` is what reaches the modules that move with it. Both go
-    /// through [`crate::cve::attribute::ModuleGraph`], which is the port rule 2's
-    /// viability probe already writes and reverts a tree through — so there is no
-    /// second way this build edits a `go.mod`.
-    async fn bump(&self, graph: &Go, grouped: &Group, target: &str) -> Result<(), CapabilityError> {
-        let Target::Module(module) = grouped.target() else {
-            // Unreachable: `target_version` refuses the base-image arm above and
-            // this is only called after it answered. Written as a refusal rather
-            // than a panic, because an unreachable case in a nightly job should
-            // be a diagnostic and not a crash.
-            return Err(CapabilityError::Workspace(WorkspaceError::Git {
-                command: "go get".to_string(),
-                stderr: "this group has no module to bump".to_string(),
-            }));
-        };
-        graph.get(module, target).await.map_err(|error| {
-            CapabilityError::Dedup(crate::cve::dedup::DedupError::Resolver(error))
-        })?;
-        graph.tidy().await.map_err(|error| {
-            CapabilityError::Dedup(crate::cve::dedup::DedupError::Resolver(error))
-        })?;
-        Ok(())
-    }
-
     /// The five checks and the rescan, over the tree the attempt left behind.
     ///
-    /// The [`Repair`] premise is this group's and the input scan's together, which
-    /// is what [`Contract::repair`] is for: `must_clear` is *this group's*
-    /// advisories, because the other groups' findings are still in the image, and
-    /// `input` is the whole scan, because condition (b) asks whether a finding is
-    /// new and a baseline of one group would read every untouched finding as one
-    /// that just appeared.
+    /// The [`Repair`] premise is the attempt's and the input scan's together,
+    /// which is what [`Contract::repair`] is for: `must_clear` is every advisory
+    /// the attempt was **shown**, because those are the ones it was asked to
+    /// clear, and `input` is the whole scan, because condition (b) asks whether a
+    /// finding is *new* and a baseline of the shown set alone would read every
+    /// deferred finding as one that just appeared.
+    ///
+    /// `must_clear` holding the whole shown set is what makes the landing
+    /// all-or-nothing: one advisory the rescan still reports is one the contract
+    /// asked for, so the evaluation is not accepted and [`land`] reverts —
+    /// including the edits that did clear their own findings. That is M4c design
+    /// §3, and it is a property of *this* argument rather than of a rule
+    /// somewhere downstream.
     async fn judge(
         &self,
         workspace: &Workspace,
-        grouped: &Group,
+        shown: &[ProjectedFinding],
         projection: &Projection,
         report: &ScanReport,
     ) -> Result<Evaluation, CapabilityError> {
@@ -629,7 +483,7 @@ where
             checks: self.config.checks.clone(),
             severities: self.config.severities.clone(),
             repair: Some(Repair {
-                must_clear: grouped.cves().into_iter().cloned().collect(),
+                must_clear: advisories_of(shown),
                 input: projection
                     .all()
                     .map(|finding| finding.cve.clone())
@@ -938,62 +792,54 @@ fn observed_tree(checkout: &Checkout, report: &ScanReport) -> TreeObservation {
     }
 }
 
-/// Every finding in `grouped`, as the disposition records them.
-fn findings_of(grouped: &Group) -> Vec<ProjectedFinding> {
-    grouped
-        .findings()
-        .iter()
-        .map(|attributed| attributed.finding().clone())
-        .collect()
-}
-
-/// What the tree resolves `module` to now.
+/// Every advisory in `findings`, in the order the projection produced them and
+/// without repetition.
 ///
-/// Read through [`crate::cve::attribute::ModuleGraph::list`] — the same command
-/// attribution and dedup both read it from — rather than from the finding's own
-/// `current`, which is *the scanner's* reading of an image that may be older than
-/// the tree. A bound that says "the tree is not moved backwards" has to be applied
-/// against the tree.
-async fn current_version(graph: &Go, module: &str) -> Result<String, GroupError> {
-    let listed = graph
-        .list(module)
-        .await
-        .map_err(|error| GroupError::Unselectable {
-            why: error.to_string(),
-        })?;
-    serde_json::from_str::<serde_json::Value>(&listed)
-        .ok()
-        .and_then(|record| {
-            record
-                .get("Version")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        })
-        .ok_or_else(|| GroupError::Unselectable {
-            why: format!("`go list -m -json {module}` named no version"),
-        })
+/// The one list the commit body, the repair contract and the record are all built
+/// from, so a body naming an advisory the contract did not ask about is not a
+/// thing this file can produce. Deduplicated because a projection may name one
+/// advisory against two packages and a body that said `Fixes:` twice would be one
+/// claim written twice.
+fn advisories_of(findings: &[ProjectedFinding]) -> Vec<AdvisoryId> {
+    let mut advisories: Vec<AdvisoryId> = Vec::new();
+    for finding in findings {
+        if !advisories.contains(&finding.cve) {
+            advisories.push(finding.cve.clone());
+        }
+    }
+    advisories
 }
 
 /// What the shared pull request's body says this run did.
 ///
-/// One line per attempted group and nothing else. The per-advisory rows are the
-/// verdict report's, which is a document with a consumer of its own; a body that
-/// duplicated them would be a second rendering to keep in step.
+/// One sentence about the one attempt and nothing else. The per-advisory rows are
+/// the verdict report's, which is a document with a consumer of its own; a body
+/// that duplicated them would be a second rendering to keep in step.
+///
+/// It counts **advisories** where it used to count groups, because a run has one
+/// attempt now and *1 of 1* would be a sentence that never varied. What varies —
+/// and what a person opening the pull request wants — is how many advisories were
+/// in it and whether the tree it left is on the branch.
 fn summary_of(attempted: &[Attempted]) -> String {
-    let clean = attempted
+    let advisories: usize = attempted.iter().map(|it| it.findings.len()).sum();
+    let committed = match attempted
         .iter()
-        .filter(|group| group.status == GroupStatus::Clean)
-        .count();
+        .any(|attempt| attempt.status == GroupStatus::Clean)
+    {
+        true => "committed what it changed",
+        // All-or-nothing: one advisory the rescan still reported takes the whole
+        // attempt back, including the edits that did clear their own findings. See
+        // [`CveMitigate::judge`].
+        false => "committed nothing",
+    };
     format!(
-        "fiddle attempted {} dependency {} for this repository's container image \
-         and committed {clean} of {}.\n\nEvery advisory this run did not fix is in \
-         the verdict report published beside this run's bundle, with the sentence \
-         that decided it.",
-        attempted.len(),
-        match attempted.len() {
-            1 => "group",
-            _ => "groups",
+        "fiddle attempted {advisories} {} for this repository's container image in \
+         one bounded attempt and {committed}.\n\nEvery advisory this run did not \
+         fix is in the verdict report published beside this run's bundle, with the \
+         sentence that decided it.",
+        match advisories {
+            1 => "advisory",
+            _ => "advisories",
         },
-        attempted.len(),
     )
 }

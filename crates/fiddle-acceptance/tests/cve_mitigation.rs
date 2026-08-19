@@ -1365,17 +1365,6 @@ const SECOND_FIXED_VERSION: &str = "v0.28.0";
 /// outcome could be attributed to.
 const TWO_LIBRARIES: &str = "cve-two-libraries";
 
-/// The scanner arm reporting two library advisories where bumping the **first**
-/// module raises the second's requirement past its own fix, and the rescan that
-/// goes with it.
-///
-/// A pair, and the rescan is the half that makes the world discriminating: it
-/// still reports the second advisory, so `cve::fold` is refused the clearance and
-/// the only thing that can see one is the selection reading the tree. See the two
-/// arms' own comments in `wiz_stub.rs`.
-const SCAN_CLEARING_BUMP: &str = "bump-clears-a-later-group";
-const RESCAN_CLEARED_STILL_REPORTED: &str = "only-the-cleared-group-reported";
-
 /// The advisory against the module whose bump does the clearing, and that
 /// module's two versions.
 ///
@@ -2030,73 +2019,98 @@ fn seed_repository(root: &Path, remote: &Path, name: &str) -> PathBuf {
     tree
 }
 
-/// The model's whole turn for one group: a final report, claiming nothing was
-/// edited.
+/// A script **no attempt in a world should ever consume**, and a report that is
+/// refused if one does.
 ///
-/// **One turn and no tool call, and that is the shape of this capability rather
-/// than an economy.** A sweep applies the bump itself — `go get` then
-/// `go mod tidy`, before the model is briefed — so what a model is asked for is a
-/// judgement about a tree that has already moved, and the ordinary answer is that
-/// there is nothing further to do. The commit that follows still carries
-/// `go.mod` and `go.sum`, because `land` stages `Workspace::changed_files` — what
-/// **git** saw — and never the list the model reported. A script that claimed the
-/// files would therefore prove nothing about which of the two the landing reads.
-fn a_bump_needing_no_edit() -> Vec<Reply> {
-    a_bump_disposing_of(&[LIBRARY_CVE])
-}
-
-/// [`a_bump_needing_no_edit`] for a world whose attempt is shown something other
-/// than [`LIBRARY_CVE`].
+/// Every lane that takes this is a world where the run reaches no attempt at all
+/// — an empty image, a tree that settles everything, an unusable scanner, a
+/// document naming nothing this deployment acts on, a pull request already
+/// covering the rest. The gateway is scripted, so such a lane needs *a* reply to
+/// hand over and needs it never to be asked for.
 ///
-/// **The advisories are an argument because the report has to name exactly the
-/// ones the prompt showed.** `unaccounted` refuses a report in three directions —
-/// an advisory shown and not disposed of, one disposed of and never shown, and one
-/// disposed of twice — so a script cannot name a fixed list and cannot name a
-/// superset either. Which advisories a world's attempt is shown is therefore part
-/// of the world, and spelling it at the call site is what keeps a lane's script
-/// and its scanner arm from drifting apart silently.
-///
-/// Every disposition is `attempted: true`: this is the ordinary bump, and a
-/// declined one is [`an_attempt`]'s third argument.
-fn a_bump_disposing_of(shown: &[&str]) -> Vec<Reply> {
-    let dispositions: Vec<serde_json::Value> = shown
-        .iter()
-        .map(|cve| {
-            serde_json::json!({
-                "cve": cve,
-                "attempted": true,
-                "note": "the requirement already resolves to the fixed release",
-            })
-        })
-        .collect();
+/// **It disposes of [`LIBRARY_CVE`] and nothing else, and that is deliberate.**
+/// `unaccounted` refuses a report naming an advisory the prompt did not show, so
+/// a world that unexpectedly reaches an attempt over anything but the library
+/// advisory alone ends `retryable` and names the mismatch — which is a lane
+/// failing loudly on the premise it was written under. A reply with an empty
+/// disposition list would have been accepted by any world showing nothing, and
+/// there is no such world here.
+fn a_script_no_attempt_consumes() -> Vec<Reply> {
     vec![accepted(completion(
         serde_json::json!({
             "role": "assistant",
             "content": serde_json::json!({
                 "changed_files": [],
-                "summary": "the requirement was moved to the fixed release; no source change was needed",
+                "summary": "the requirement already resolves to the fixed release",
                 "claimed_complete": true,
-                "findings": dispositions,
+                "findings": [{
+                    "cve": LIBRARY_CVE,
+                    "attempted": true,
+                    "note": "the requirement already resolves to the fixed release",
+                }],
             }).to_string(),
         }),
         "stop",
     ))]
 }
 
-/// [`a_bump_disposing_of`], once per attempt a world will make, in the order the
-/// run makes them.
+/// The ordinary repair, in the worlds whose one selected advisory is
+/// [`LIBRARY_CVE`]: the attempt moves the requirement and the sums itself, and
+/// declares both files.
 ///
-/// The gateway answers each request with the next entry of its script and then
-/// stops accepting, so a script short by one leaves the second attempt with no
-/// answer at all — which presents as an attempt that failed rather than as a
-/// fixture that ran out. Spelled as one advisory list per attempt rather than as a
-/// count, because each attempt is shown its own group's advisories and a report
-/// naming another group's is refused as one that was never shown.
-fn bumps_needing_no_edit(shown: &[&[&str]]) -> Vec<Reply> {
-    shown
-        .iter()
-        .flat_map(|group| a_bump_disposing_of(group))
-        .collect()
+/// **The attempt does the editing because nothing else does any more.** Until M4c
+/// a sweep ran `go get` and `go mod tidy` before the model was briefed, so the
+/// honest script was a report claiming no change and the commit still carried
+/// `go.mod` — which is why the helper this replaces was called
+/// `a_bump_needing_no_edit`. There is no bump now: which release clears an
+/// advisory, and which file carries it, is the attempt's own judgement, so a
+/// script that changes no file leaves the landing with nothing to commit and the
+/// run ends `retryable` with *the attempt changed no file, so there is nothing to
+/// propose*.
+fn a_repair_moving_the_requirement() -> Vec<Reply> {
+    an_attempt(
+        &[
+            ("go.mod", vulnerable_manifest()),
+            ("go.sum", vulnerable_sums()),
+        ],
+        &[LIBRARY_CVE],
+        &[],
+    )
+}
+
+/// The attempt over a world whose selected advisories are all the base image's:
+/// it declines every one of them and changes nothing.
+///
+/// **Declining a base-image advisory is the agent's judgement now, and it used to
+/// be Rust's.** M4a resolved every OS finding to the `Dockerfile` and then refused
+/// it with `Unselectable { why: "selecting a base-image tag needs a registry this
+/// build does not read" }` — a sentence about a limitation of the *build*, written
+/// into a verdict before any model was consulted. M4c deletes the refusal along
+/// with the rest of the ecosystem arithmetic: an OS finding is shown to the
+/// attempt like any other, and *there is no fix I can apply without a registry* is
+/// the attempt's own note. That is design §6's one gain, and this helper is where
+/// the suite spends it.
+///
+/// It changes no file, so the landing has nothing to commit — and it does not need
+/// one: a declined advisory is still there at the rescan, so the attempt is
+/// needs-work and what the landing does is put back rather than commit.
+fn an_attempt_declining(shown: &[&str]) -> Vec<Reply> {
+    an_attempt(&[], &[], shown)
+}
+
+/// The vulnerable fixture's manifest with its requirement moved to the release
+/// that carries the fix.
+///
+/// Derived from the fixture by replacing the version rather than spelled out, for
+/// [`two_libraries_manifest`]'s reason: a fixture whose pin moves does not leave
+/// every lane in this file writing a manifest nobody has.
+fn vulnerable_manifest() -> String {
+    read_fixture_file(VULNERABLE, "go.mod").replace(VULNERABLE_VERSION, FIXED_VERSION)
+}
+
+/// Its sums, moved with it. See [`vulnerable_manifest`].
+fn vulnerable_sums() -> String {
+    read_fixture_file(VULNERABLE, "go.sum").replace(VULNERABLE_VERSION, FIXED_VERSION)
 }
 
 /// One attempt's whole turn: every edit it makes, and then the report that
@@ -2253,57 +2267,67 @@ fn pushed_commits(sweep: &Sweep, branch: &str) -> Vec<(String, Vec<String>)> {
 //
 // Each mutation was applied alone to `cve::verdict::disposition`, the whole of
 // this file was run under it, and the lanes named are the complete set that went
-// red. Every other lane in the file stayed green, and no two rows share a lane.
+// red. Every other lane in the file stayed green.
+//
+// **Re-measured under M4c's rewire**, all seven, because that commit deleted two
+// lanes and changed the world of nine more — and a census nobody re-runs is worth
+// less than no census, which is the note the previous re-measurement left here.
 //
 //   row 6  ScanUnusable            reason -> Reason::NothingToDo
 //     an_unusable_scanner_exits_eleven_and_reaches_no_forge
 //   row 4  PullRequest             the `any(Clean)` test -> `false`
 //     a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch
-//     a_group_an_earlier_bump_already_cleared_is_folded_into_an_empty_commit
-//     a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed
 //     the_bound_the_document_sets_is_the_bound_the_sweep_applies
+//     the_grades_the_document_named_are_the_grades_the_run_acted_on
 //     a_second_run_over_a_shared_pull_request_rewrites_its_body_and_works_in_its_tree
 //     a_run_whose_shared_body_is_unchanged_dispatches_no_rewrite
 //     a_second_run_reads_the_first_runs_own_commit_body
 //   row 5  UnsafeWithoutDirection  the `!attempted.is_empty()` test -> `false`
 //     an_unprovable_repair_is_reverted_and_filed_as_needing_direction
-//     a_needs_work_groups_rescan_is_not_folded_on
-//   row 2  VerdictsOnly            the `!verdicts.is_empty()` test -> `false`
-//     an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_verdicts_only
+//     a_check_that_says_no_reverts_the_attempt_and_publishes_nothing
+//     an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_needing_direction
 //     a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set
+//   row 2  VerdictsOnly            the `!verdicts.is_empty()` test -> `false`
+//     — no lane. See below.
 //   row 7  AlreadyInProgress       the `!covers.is_empty()` test -> `false`
 //     an_open_pull_request_covering_the_rest_reaches_already_in_progress
+//     the_plain_rendering_names_the_row_a_run_reached_and_its_pull_request
 //     a_second_run_reads_the_first_runs_own_commit_body
 //   row 3  AlreadyFixed            the `!already_fixed.is_empty()` test -> `false`
 //     a_tree_that_settles_every_finding_reaches_already_fixed
 //   row 1  NothingToDo             the fall-through -> Reason::AlreadyFixed
 //     a_scan_of_an_empty_image_reaches_nothing_to_do
+//     the_grades_the_document_named_are_the_grades_the_run_acted_on
 //
-// Three of row 4's lanes are on that list because of this exercise —
-// `a_second_run_over_a_shared_pull_request_…`, `a_run_whose_shared_body_…` and
-// `the_bound_the_document_sets_…`. All three drive a run that lands work and all
-// three asserted only what the *forge* held afterwards, which `disposition` does
-// not decide — so row 4 could be switched off and they went green over a run
-// that reported `unsafe_without_direction` while pushing a branch. Each now
-// names the row it reached, which is what Design §8 asks a lane for.
+// # Row 2 is unreachable, and that is a fact about the design rather than a gap
 //
-// # Two amendments, both measured rather than reasoned about
+// `VerdictsOnly` is *nothing was attempted and there is still something to
+// report*, and M4c deleted the only producer of such a run. Until it, four
+// mechanical Go rules could refuse a finding before any model saw it — an OS
+// advisory got `Unselectable { why: "selecting a base-image tag needs a registry
+// this build does not read" }` and became a verdict with no attempt behind it.
+// Nothing refuses a finding before an attempt now: every verdict is an advisory an
+// attempt was shown and did not clear, so every run with verdicts has attempts and
+// row 5 shadows row 2 in every world this file can build.
 //
-// **Row 4's list was short by one.** `a_group_a_bump_moved_past_its_fix_in_the_
-// tree_is_not_reported_as_unfixed` goes red under row 4's mutation and was not
-// named, so the list said five where the measurement says seven. Re-applying the
-// mutation is what found it; nothing about that lane changed. A census of *which
-// lanes go red* is only worth having if it is re-measured when the file grows,
-// which is the note this paragraph exists to leave behind.
+// The row is left in the table. It is not dead in the sense of unreachable code —
+// `cve_dispositions` still reaches it at the unit tier over a `Run` assembled by
+// hand — but no *run* reaches it, so the mutation above is one this file cannot
+// detect. Recorded rather than papered over with a hand-built world: a lane that
+// constructed a verdict with no attempt would be asserting about a run the product
+// cannot produce.
 //
-// **And `no two rows share a lane` is no longer true.**
-// [`a_second_run_reads_the_first_runs_own_commit_body`] is on row 4's list and on
-// row 7's, because it starts the binary twice and the two runs reach different
-// rows: the first night lands work, which is row 4, and the second finds that
-// work already open, which is row 7. That is the claim it exists to make, so the
-// overlap is the lane working rather than a lane being vague — and it is stated
-// here because the sentence it contradicts was load-bearing for reading this
-// table. Every *other* lane still names one row.
+// # Two lanes came off this list, and one came back reduced
+//
+// `a_group_an_earlier_bump_already_cleared_is_folded_into_an_empty_commit` and
+// `a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed` were
+// row 4's, and both were about grouping and folding — a run forms no groups now,
+// so there is no earlier group whose rescan a later one could fold on. They are
+// deleted rather than adapted. `a_needs_work_groups_rescan_is_not_folded_on` was
+// row 5's and carried a second claim that is not about grouping at all — *a check
+// that says no reverts the work* — which is why
+// `a_check_that_says_no_reverts_the_attempt_and_publishes_nothing` stands in its
+// place over the same world.
 //
 // # Why every mutation switches a row *off* rather than rewiring it
 //
@@ -2346,14 +2370,31 @@ fn pushed_commits(sweep: &Sweep, branch: &str) -> Vec<(String, Vec<String>)> {
 /// the attempt ran at.
 ///
 /// The verdict report is asserted too, and its content is the discriminating
-/// part: exactly one row, for the OS advisory, with the sentence
-/// `GroupError::Unselectable` produces. A run that had silently failed to fix
-/// the library advisory would have *two* rows, and a run that had fixed neither
-/// would still have opened no pull request — so the report and the branch are
-/// two independent readings of the same claim.
+/// part: **no rows at all**, beside a `deferred` list holding the advisory the
+/// bound left. A run that had silently failed to fix the library advisory would
+/// have a row for it, and a run that had fixed neither would still have opened no
+/// pull request — so the report and the branch are two independent readings of the
+/// same claim.
+///
+/// # Why the bound is one, which it was not
+///
+/// M4a ran this world at two and asserted a verdict row for the OS advisory
+/// carrying `registry this build does not read` — a refusal Rust made before any
+/// model was consulted. M4c deletes it: an OS finding is shown to the attempt like
+/// any other, the attempt declines it, and a declined advisory is still there at
+/// the rescan, so under design §3 the whole attempt is needs-work and the commit
+/// is reverted. At a bound of two there is therefore **no pull request to assert
+/// about**, and this lane is about the one there is. One takes the library
+/// advisory and defers the base image's, which is the smallest world in which a
+/// run publishes at all.
+///
+/// That world — both advisories shown, one declined, everything taken back — is
+/// the verdict's claim rather than the publication's, and
+/// [`the_bound_the_document_sets_is_the_bound_the_sweep_applies`] is where the
+/// bound of two is still driven.
 #[test]
 fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
-    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 2, a_bump_needing_no_edit());
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
 
     let run = sweep.run();
     let payload = sweep.payload(&run);
@@ -2475,22 +2516,27 @@ fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
     );
     sweep.assert_every_receipt_is_logical(&run);
 
-    // One verdict, for the advisory a `go get` cannot reach, with the sentence
-    // that says whose limitation it is.
+    // No verdicts, and the base-image advisory on the deferred list instead.
+    //
+    // The emptiness is the positive claim and not an absence: the one advisory
+    // this run took was fixed, so it leaves no row, and the one it did not take
+    // was never judged, so a row for it would be this build claiming an opinion
+    // it does not have. A run that had pushed a branch without really moving the
+    // requirement would have a row for the library advisory here — which is what
+    // makes this a second reading of the assertion above rather than a restatement
+    // of the count.
     let verdicts = sweep.verdicts();
     assert_eq!(
         verdicts.as_array().map(Vec::len),
-        Some(1),
-        "the library advisory was fixed and contributes no verdict; the OS one \
-         could not be: {verdicts}"
+        Some(0),
+        "the advisory this run took was fixed, and the one it did not take was \
+         never judged: {verdicts}"
     );
-    assert_eq!(verdicts[0]["cve"], OS_CVE, "{verdicts}");
-    assert!(
-        verdicts[0]["rationale"]
-            .as_str()
-            .is_some_and(|why| why.contains("registry this build does not read")),
-        "the verdict says whose limitation it is rather than blaming upstream: \
-         {verdicts}"
+    assert_eq!(
+        reached["deferred"],
+        serde_json::json!([{ "cve": OS_CVE, "bound": 1 }]),
+        "and the advisory over the bound is on the record with the number that \
+         put it there, rather than silently missing: {reached}"
     );
 }
 
@@ -2533,7 +2579,7 @@ fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
 /// immediately which defect came back rather than that some id was unexpected.
 #[test]
 fn the_documented_invocation_with_no_capability_flag_reaches_the_sweep() {
-    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 2, a_bump_needing_no_edit());
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
 
     let run = sweep.run_unqualified();
     let payload = sweep.payload(&run);
@@ -2670,7 +2716,7 @@ fn the_documented_invocation_with_no_capability_flag_reaches_the_sweep() {
 /// set, so any difference in outcome is that fact's.
 #[test]
 fn a_marker_against_a_trackerless_reference_does_not_account_the_sweep_as_done() {
-    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 2, a_bump_needing_no_edit());
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
 
     // The premise: the reference's change set carries a marker equal to this
     // invocation's own correlation key, filed by something that scanned no image.
@@ -2760,19 +2806,31 @@ fn a_reference_that_is_not_cve_still_selects_the_deterministic_capability() {
 }
 
 /// **An already-fixed fixture yields no pull request, and a no-change the
-/// bundle files as `verdicts_only`.**
+/// bundle files as `unsafe_without_direction`.**
 ///
-/// # Why the name says `verdicts_only` and not `already_fixed`
+/// # Why the name says the row rather than `already_fixed`, and why the row moved
 ///
-/// Because that is the row this world reaches, and for most of this milestone
-/// nothing could say so. The lane was called
+/// Because the row is what this world reaches, and for most of M4a nothing could
+/// say so. The lane was called
 /// `an_already_fixed_fixture_produces_an_evidenced_no_change` and read as though
-/// it were Design §3 row 3; it is not. The library advisory is settled by the
-/// tree and contributes nothing, and the OS advisory is one no run can settle —
-/// a base image's, with no registry to read tags from — so it produces a verdict
-/// and the run lands on **row 2**. The disposition table is first-match-wins and
-/// `VerdictsOnly` is tested before `AlreadyFixed`, which is correct: a run with
-/// something to report has something to report whatever else was settled.
+/// it were Design §3 row 3; it is not. The library advisory is settled by the tree
+/// and contributes nothing, and the OS advisory is one this run cannot settle — a
+/// base image's, with no registry to read tags from — so it leaves a verdict and
+/// the run lands below row 3.
+///
+/// **Which row that is changed with M4c, and the change is the design rather than
+/// a drift.** M4a refused the OS advisory in Rust, before any model was consulted,
+/// so the run reached `verdicts_only`: a verdict with no attempt behind it. There
+/// is no such refusal now. The advisory is shown to the attempt, the attempt
+/// declines it, and *something was attempted* is exactly what row 5 tests — so
+/// this world reaches `unsafe_without_direction`, and the lane is renamed for the
+/// row it now reaches rather than left carrying the old one's name.
+///
+/// A consequence worth stating because nothing else in this file can: with the
+/// pre-attempt refusal gone, **`verdicts_only` is no longer reachable at all**. A
+/// verdict is now always a finding an attempt was shown, so a run with verdicts
+/// has attempts, and row 5 shadows row 2 in every world. The row stays in
+/// `disposition`'s table; nothing here reaches it.
 ///
 /// Row 3 proper is [`a_tree_that_settles_every_finding_reaches_already_fixed`],
 /// which reaches it over a document whose findings *can* all be settled. Naming
@@ -2810,8 +2868,8 @@ fn a_reference_that_is_not_cve_still_selects_the_deterministic_capability() {
 ///    no branch or pull request receipt on the execution — a run that opened one
 ///    and then reported no change would fail all three.
 #[test]
-fn an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_verdicts_only() {
-    let sweep = Sweep::scanning(FIXED, SCAN_OK, 2, a_bump_needing_no_edit());
+fn an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_needing_direction() {
+    let sweep = Sweep::scanning(FIXED, SCAN_OK, 2, an_attempt_declining(&[OS_CVE]));
 
     let run = sweep.run();
     let payload = sweep.payload(&run);
@@ -2875,11 +2933,16 @@ fn an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_verdicts_only
     assert_eq!(
         disposition,
         serde_json::json!({
-            "reason": "verdicts_only",
+            "reason": "unsafe_without_direction",
             "verdicts": 1,
             "already_fixed": [LIBRARY_CVE],
             "deferred": [],
-            "attempts": [],
+            "attempts": [{
+                "cves": [OS_CVE],
+                "status": "needs_work",
+                "claimed_complete": false,
+                "forbidden": [],
+            }],
             "branch": serde_json::Value::Null,
             "pull_request": serde_json::Value::Null,
         }),
@@ -3025,7 +3088,7 @@ fn the_row_both_surfaces_agree_on(sweep: &Sweep, run: &Output, world: &str) -> s
 /// what the two rows below *can* say and this one cannot.
 #[test]
 fn a_scan_of_an_empty_image_reaches_nothing_to_do() {
-    let sweep = Sweep::scanning(FIXED, SCAN_CLEAN, 2, a_bump_needing_no_edit());
+    let sweep = Sweep::scanning(FIXED, SCAN_CLEAN, 2, a_script_no_attempt_consumes());
 
     let run = sweep.run();
     the_old_surface_says_nothing(&sweep, &run, "nothing to do");
@@ -3050,7 +3113,7 @@ fn a_scan_of_an_empty_image_reaches_nothing_to_do() {
 /// anything left to report never reaches it. Under [`SCAN_OK`] the OS advisory is
 /// one no run can settle — a base image's, with no registry to read tags from —
 /// so it produces a verdict and the run lands on row 2 instead. That is exactly
-/// what `an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_verdicts_only`
+/// what `an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_needing_direction`
 /// asserts, and why that lane is named for row 2.
 ///
 /// So this world's document names *only* the library advisory, the one `go list
@@ -3059,7 +3122,7 @@ fn a_scan_of_an_empty_image_reaches_nothing_to_do() {
 /// evidence for the reason: somebody else already dealt with this.
 #[test]
 fn a_tree_that_settles_every_finding_reaches_already_fixed() {
-    let sweep = Sweep::scanning(FIXED, SCAN_LIBRARY_ONLY, 2, a_bump_needing_no_edit());
+    let sweep = Sweep::scanning(FIXED, SCAN_LIBRARY_ONLY, 2, a_script_no_attempt_consumes());
 
     let run = sweep.run();
     the_old_surface_says_nothing(&sweep, &run, "already fixed in the tree");
@@ -3112,7 +3175,7 @@ fn a_tree_that_settles_every_finding_reaches_already_fixed() {
 /// naming one would tell a reader work landed there.
 #[test]
 fn an_open_pull_request_covering_the_rest_reaches_already_in_progress() {
-    let sweep = Sweep::scanning(FIXED, SCAN_OK, 2, a_bump_needing_no_edit());
+    let sweep = Sweep::scanning(FIXED, SCAN_OK, 2, a_script_no_attempt_consumes());
     sweep.seed_shared_pull_request_saying(
         STALE_BODY,
         &format!("bump the base image, fixes {OS_CVE}"),
@@ -3158,7 +3221,7 @@ fn an_open_pull_request_covering_the_rest_reaches_already_in_progress() {
 /// rendering that named a plausible row from the wrong arm reds here.
 #[test]
 fn the_plain_rendering_names_the_row_a_run_reached_and_its_pull_request() {
-    let sweep = Sweep::scanning(FIXED, SCAN_OK, 2, a_bump_needing_no_edit());
+    let sweep = Sweep::scanning(FIXED, SCAN_OK, 2, a_script_no_attempt_consumes());
     sweep.seed_shared_pull_request_saying(
         STALE_BODY,
         &format!("bump the base image, fixes {OS_CVE}"),
@@ -3284,7 +3347,7 @@ fn the_three_rows_that_used_to_publish_one_document_publish_three() {
 /// Because a run can exit non-zero for a dozen reasons, and because the claim is
 /// about what a *watcher* can conclude. So three things are asserted together,
 /// and each of them separately distinguishes this run from
-/// `an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_verdicts_only`
+/// `an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_needing_direction`
 /// — the genuine
 /// clean scan, which is Task 16's
 /// `a_scanner_that_found_nothing_and_one_that_never_ran_are_not_the_same_result`
@@ -3311,7 +3374,7 @@ fn an_unusable_scanner_exits_eleven_and_reaches_no_forge() {
         VULNERABLE,
         "exit-nonzero-no-file",
         2,
-        a_bump_needing_no_edit(),
+        a_script_no_attempt_consumes(),
     );
 
     let run = sweep.run();
@@ -3440,8 +3503,25 @@ fn an_unusable_scanner_exits_eleven_and_reaches_no_forge() {
 fn an_unprovable_repair_is_reverted_and_filed_as_needing_direction() {
     // The rescan is answered with the *input* scan's own document: the library
     // advisory is still in it, so the repair proves nothing.
-    let sweep =
-        Sweep::scanning_rescanning(VULNERABLE, SCAN_OK, SCAN_OK, 2, a_bump_needing_no_edit());
+    let sweep = Sweep::scanning_rescanning(
+        VULNERABLE,
+        SCAN_OK,
+        SCAN_OK,
+        2,
+        // Both advisories, in one attempt: the bound leaves nothing deferred,
+        // so the attempt moves the requirement it can and declines the base
+        // image it cannot. What makes this world *unprovable* is the rescan —
+        // the input scan's own document, which clears nothing — so both
+        // advisories are still there afterwards and both get a row.
+        an_attempt(
+            &[
+                ("go.mod", vulnerable_manifest()),
+                ("go.sum", vulnerable_sums()),
+            ],
+            &[LIBRARY_CVE],
+            &[OS_CVE],
+        ),
+    );
 
     let run = sweep.run();
     assert_eq!(
@@ -3471,13 +3551,14 @@ fn an_unprovable_repair_is_reverted_and_filed_as_needing_direction() {
     assert_eq!(
         reached["attempts"],
         serde_json::json!([{
-            "cves": [LIBRARY_CVE],
+            "cves": [LIBRARY_CVE, OS_CVE],
             "status": "needs_work",
-            "claimed_complete": true,
+            "claimed_complete": false,
             "forbidden": [],
         }]),
         "the row's evidence is that something was attempted, and the model's own \
-         claim beside the judgement that overruled it: {reached}"
+         claim beside the judgement that overruled it — one row for the one \
+         attempt, naming every advisory it was shown: {reached}"
     );
     assert!(
         reached["branch"].is_null() && reached["pull_request"].is_null(),
@@ -3493,6 +3574,86 @@ fn an_unprovable_repair_is_reverted_and_filed_as_needing_direction() {
         sweep.has_verdict(LIBRARY_CVE) && sweep.has_verdict(OS_CVE),
         "both advisories are still unfixed and both get a row: {verdicts}"
     );
+}
+
+/// **A check that says no makes the attempt needs-work, the commit is taken back,
+/// and nothing is published.**
+///
+/// The other half of `Evaluation::accepted`, which is *every check passed **and**
+/// the rescan cleared*. [`an_unprovable_repair_is_reverted_and_filed_as_needing_direction`]
+/// varies the rescan; this varies the check, and the two are reached from opposite
+/// ends of the same world — the scanner's second answer against a command's exit
+/// status. Here the rescan is [`RESCAN_CLEAN`] and really does clear the advisory,
+/// so the **only** thing refusing this repair is the scripted check, which is what
+/// makes the lane about the check rather than about a judgement in general.
+///
+/// # What this lane is, and what it replaces
+///
+/// It is what survives of `a_needs_work_groups_rescan_is_not_folded_on`, which
+/// held this claim and a second one M4c deletes: that a needs-work *group*'s
+/// rescan is not folded on by the group after it. There are no groups now, so
+/// there is no group after — but *a check that says no reverts the work* was never
+/// a claim about grouping, and deleting the lane whole would have taken it with
+/// the part that had to go. The world is the same one; the fold half of the
+/// assertions is gone and the bound is one, so the base-image advisory is deferred
+/// and the attempt is judged on the library advisory alone.
+#[test]
+fn a_check_that_says_no_reverts_the_attempt_and_publishes_nothing() {
+    let sweep = Sweep::scanning_with_a_failing_check(
+        VULNERABLE,
+        SCAN_OK,
+        1,
+        a_repair_moving_the_requirement(),
+    );
+
+    let run = sweep.run();
+    let payload = sweep.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "an attempt left for a person is not a failed run — stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    // Nothing landed, read off the world rather than off a report.
+    assert!(
+        sweep.pull_requests().is_empty(),
+        "a repair a check refused opens nothing: {:?}",
+        sweep.pull_requests()
+    );
+    assert_eq!(
+        sweep.remote_branches(),
+        vec![SWEEP_BASE.to_string()],
+        "and leaves the remote exactly as it found it"
+    );
+
+    // The row, and the attempt under it.
+    let reached = sweep.disposition(&run);
+    assert_eq!(reached["reason"], "unsafe_without_direction", "{reached}");
+    assert_eq!(
+        reached["attempts"],
+        serde_json::json!([{
+            "cves": [LIBRARY_CVE],
+            "status": "needs_work",
+            "claimed_complete": true,
+            "forbidden": [],
+        }]),
+        "one attempt, refused — and `claimed_complete` is the model's own claim \
+         beside the check that overruled it: {reached}"
+    );
+    assert!(
+        reached["branch"].is_null() && reached["pull_request"].is_null(),
+        "nothing landed, so there is nothing to point at: {reached}"
+    );
+
+    // And the advisory is reported unfixed, which is the half an operator reads.
+    let verdicts = sweep.verdicts();
+    assert!(
+        sweep.has_verdict(LIBRARY_CVE),
+        "the advisory the attempt was shown is still unfixed and gets a row: \
+         {verdicts}"
+    );
+    sweep.assert_every_receipt_is_logical(&run);
 }
 
 /// **Every finding this run selected is one attempt, one commit and one pull
@@ -3549,8 +3710,15 @@ fn two_findings_in_different_files_are_one_attempt_and_one_commit() {
         SCAN_TWO_LIBRARIES,
         2,
         [
-            an_attempt(&[], &[LIBRARY_CVE], &[]),
-            an_attempt(&[], &[SECOND_LIBRARY_CVE], &[]),
+            an_attempt(
+                &[
+                    ("go.mod", two_libraries_manifest()),
+                    ("go.sum", two_libraries_sums()),
+                ],
+                &[LIBRARY_CVE, SECOND_LIBRARY_CVE],
+                &[],
+            ),
+            an_attempt(&[], &[], &[LIBRARY_CVE, SECOND_LIBRARY_CVE]),
         ]
         .into_iter()
         .flatten()
@@ -3627,642 +3795,6 @@ fn two_findings_in_different_files_are_one_attempt_and_one_commit() {
     );
 }
 
-/// **A group an earlier bump already cleared is recorded as an empty commit and
-/// never attempted.**
-///
-/// The first thing in this repository to reach `Fold::AlreadyResolved` through
-/// the binary. Task 13 settled the rule and Task 15 settled the commit it
-/// writes, both at the unit tier, and both were dead code from the run's point
-/// of view: `mitigate` threads a `PriorRescan` through its group loop, but every
-/// world before this one formed exactly **one** attemptable group — the library
-/// finding, with the OS one blocked for want of a registry — so `prior` was
-/// `None` at every call and the rule answered `Proceed` by definition.
-///
-/// # The world, and why the second group is not simply fixed as well
-///
-/// Two library advisories in two modules, so the run forms two groups. The
-/// first is attempted and ends clean; the rescan it produces is
-/// [`RESCAN_CLEAN`], whose library array is **present and empty**, so it reports
-/// the second group's advisory gone as well as the first's.
-///
-/// The scripted scanner is simply told to report that, and the story it is
-/// standing in for is the ordinary relationship between a `go.mod` and an image:
-/// the scan is of a container, and what a container holds is a *binary*.
-/// `go mod tidy` after a bump re-resolves the build list, and a package that is
-/// no longer reached is no longer linked — so an advisory against it can leave
-/// the image while the requirement is still sitting in `go.mod`. `fold` is
-/// written over **what the rescan reported** and not over what the tree says for
-/// exactly that reason, and this lane is the shape it was written for.
-///
-/// It also has to be that way round here, and not because it is convenient.
-/// `target_version` runs before the fold and answers
-/// `GroupError::AlreadyAtTheFix` for a group whose *tree* is already there, so a
-/// world in which the first bump moved the second module's requirement too never
-/// reaches this rule at all. **That is the other clearance, not a lesser one**:
-/// it is recorded as resolved on the same footing, by
-/// `cve::fold::plan_group`, and
-/// [`a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed`]
-/// is the lane for it. Until 2026-08-18 it filed a verdict instead, and that
-/// asymmetry is what the two lanes now hold apart. What is reachable *here* is the
-/// fold: the image moved and the manifest did not.
-///
-/// # What the assertions have to be, given that an empty commit is easy to fake
-///
-/// A lane that only found a commit on the branch would pass against a run that
-/// folded nothing and against one that folded everything. So four readings, and
-/// each rules out a different way of being wrong:
-///
-/// 1. **Two commits, and the second changed no file at all.** Read with
-///    `diff-tree` out of the bare repository, which is the only place emptiness
-///    is a fact rather than a claim.
-/// 2. **Its body names the advisory.** `fold_commit_argv` puts the ids there
-///    because `cve::dedup`'s log scan walks commit bodies, and a fold naming
-///    none would leave nothing for it to find. Worth being exact about which
-///    half of that reaches *this* lane: `already_fixed` consults the log only
-///    for OS findings, and settles a **library** one from the tree instead — so
-///    the body of this particular fold is a record for a person and for the
-///    OS-group folds the base-image arm will reach, rather than something the
-///    next run over this world reads back. The reader is asserted where it
-///    lives, in `fiddle-runtime`'s
-///    `a_fold_is_an_empty_commit_naming_every_id_and_amending_nothing`, which
-///    parses this body through `FixedInCommits::read`; a black-box lane cannot
-///    link that crate, so what it can hold is the bytes that reader is given.
-/// 3. **The second module is still at the version the fixture pinned.** The
-///    fold's claim is that there was nothing to do, and a run that had quietly
-///    bumped it as well would satisfy (1) and (2) and be a different thing
-///    entirely.
-/// 4. **One attempt, and one model turn.** A folded group runs no attempt, so it
-///    contributes no `attempts` row and consults no model. The turn count is the
-///    world's own answer rather than the record's: the scripted gateway holds
-///    one reply and counts what it served.
-#[test]
-fn a_group_an_earlier_bump_already_cleared_is_folded_into_an_empty_commit() {
-    // Three, so nothing is deferred: the two library findings and the OS one are
-    // all fixable, and a bound below their number would defer the very group
-    // this lane is about.
-    let sweep = Sweep::scanning(
-        TWO_LIBRARIES,
-        SCAN_TWO_LIBRARIES,
-        3,
-        // **Two replies for one attempt, and the spare is deliberate.** A script
-        // of one would make a run that folded nothing fail by *starving* — the
-        // second attempt would find nobody answering and the run would end
-        // retryable — and the lane would then be evidence that the fixture ran
-        // out rather than that the group was folded. With an answer waiting, a
-        // second attempt succeeds, and what fails is the count below.
-        //
-        // The spare disposes of [`SECOND_LIBRARY_CVE`] because that is what the
-        // second group's attempt would be shown: a spare naming the first group's
-        // advisory would be refused as a report of something never shown, and the
-        // lane would fail on the protocol rather than on the count.
-        bumps_needing_no_edit(&[&[LIBRARY_CVE], &[SECOND_LIBRARY_CVE]]),
-    );
-
-    let run = sweep.run();
-    let payload = sweep.payload(&run);
-    assert_eq!(
-        run.status.code(),
-        Some(0),
-        "stderr: {}\npayload: {payload}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    assert_eq!(payload["outcome"], "completed", "{payload}");
-
-    let branch = the_one_new_branch(&sweep);
-    let commits = pushed_commits(&sweep, &branch);
-    assert_eq!(
-        commits.len(),
-        2,
-        "one commit for the bump and one for the fold: {commits:?}"
-    );
-
-    // The bump. Named first so the fold below is read against a commit that
-    // really did change the tree — "changed nothing" is only a fact about the
-    // fold if its neighbour changed something.
-    let (bumped, bumped_paths) = &commits[0];
-    assert_eq!(
-        bumped_paths,
-        &["go.mod".to_string(), "go.sum".to_string()],
-        "the bump carries the manifest and the sums and nothing else: {bumped}"
-    );
-    assert!(
-        bumped.contains(LIBRARY_CVE),
-        "and says which advisory it is for: {bumped}"
-    );
-
-    // The fold: no file, and the advisory named.
-    let (folded, folded_paths) = &commits[1];
-    assert!(
-        folded_paths.is_empty(),
-        "a fold changes no file — that is the whole of what it is — and this \
-         commit carries {folded_paths:?}"
-    );
-    assert!(
-        folded.contains(SECOND_LIBRARY_CVE),
-        "a fold whose body names no advisory is invisible to the next run's log \
-         scan: {folded}"
-    );
-    assert!(
-        !folded.contains(LIBRARY_CVE),
-        "and it names the group it folded rather than the one that cleared it: \
-         {folded}"
-    );
-
-    // The second module was not touched. The fold's claim is that there was
-    // nothing to do, so the requirement has to still be where the fixture put it.
-    let landed = pushed_file(&sweep, &branch, "go.mod");
-    assert!(
-        landed.contains(&format!("{MODULE} {FIXED_VERSION}")),
-        "the first group's bump is on the branch: {landed}"
-    );
-    assert!(
-        landed.contains(&format!("{SECOND_MODULE} {SECOND_VULNERABLE_VERSION}")),
-        "and the folded group's module is exactly as the fixture pinned it — a \
-         run that bumped it as well would have folded nothing: {landed}"
-    );
-
-    // One attempt in the record, and one turn in the world.
-    let reached = sweep.disposition(&run);
-    // Which row folding lands on, said rather than left to the pull request
-    // above. A fold that had instead been judged unsafe would revert, publish no
-    // pull request and reach `unsafe_without_direction` — and every assertion
-    // below about the *attempt* record would still read the same, because a
-    // reverted group is in that list too.
-    assert_eq!(
-        reached["reason"], "pull_request",
-        "a folded group is still a clean group, so the run lands on row 4: \
-         {reached}"
-    );
-    assert_eq!(
-        reached["attempts"],
-        serde_json::json!([{
-            "cves": [LIBRARY_CVE],
-            "status": "clean",
-            "claimed_complete": true,
-            "forbidden": [],
-        }]),
-        "a folded group runs no attempt, so it contributes no row: {reached}"
-    );
-    assert_eq!(
-        sweep.gateway.served(),
-        1,
-        "and consults no model, though a second answer was waiting for it: a \
-         second group that had been attempted would have taken a second turn"
-    );
-
-    // And it is not reported as unfixed. A folded advisory is one this run says
-    // is done, so a verdict row for it would be the record contradicting the
-    // commit.
-    let verdicts = sweep.verdicts();
-    assert!(
-        !sweep.has_verdict(SECOND_LIBRARY_CVE),
-        "the folded advisory is recorded as resolved, not as needing direction: \
-         {verdicts}"
-    );
-    assert!(
-        sweep.has_verdict(OS_CVE),
-        "the premise: this run does still report the advisory nothing could \
-         move, so the absence above is about folding: {verdicts}"
-    );
-}
-
-/// **A group whose requirement this run's own bump moved past the fix is recorded
-/// as resolved, and reaches no verdict row.**
-///
-/// The other half of the pair above, and the one the defect was in. There the
-/// clearance was in the *image* and `cve::fold` saw it; here it is in the **tree**
-/// and only the selection can. `github.com/docker/docker` v24.0.9 requires
-/// `golang.org/x/net` at the version the second advisory names as fixing it, so
-/// the first group's `go get` plus `go mod tidy` raises the second group's
-/// requirement past its own fix — minimal version selection, which is the ordinary
-/// result of a re-resolution and not an exotic one.
-///
-/// # What this filed until 2026-08-18
-///
-/// `select_target_version` answered `GroupError::AlreadyAtTheFix`, the group was
-/// blocked, and `verdicts.json` got a row classified `upstream_blocked` whose
-/// rationale read *already at v0.28.0, which is not below the fix at v0.28.0* —
-/// the same classification an advisory **upstream has published no fix for** gets,
-/// for an advisory this run had just fixed. That document is what M4b's Jira and
-/// Slack steps parse, so the cost was a real ticket raised against work already
-/// done. `cve::fold::plan_group` is where the two clearances are now reconciled,
-/// and its header is the account of them.
-///
-/// # Why the rescan still reports the cleared advisory
-///
-/// Because otherwise this lane proves nothing about the tree. Both clearances now
-/// answer the same thing, so over a rescan that cleared both advisories every
-/// assertion below reads identically whichever of the two saw it — and the lane
-/// would stay green over a build that never consulted the tree at all. So
-/// [`RESCAN_CLEARED_STILL_REPORTED`] holds the second advisory, the fold rule
-/// answers `Proceed`, and the selection is the only thing left that can see the
-/// clearance. It is also the honest document: the scan is of an image, and a
-/// requirement raised in `go.mod` does not change what the scanner already found
-/// in a container.
-///
-/// # The premises, asserted rather than assumed
-///
-/// Each of the four readings below rules out a different way of being green while
-/// holding nothing, and the first two are premises rather than findings:
-///
-/// 1. **The tree moved.** The branch's `go.mod` carries the second module at the
-///    *fixed* version, which is what makes this the tree-seen clearance rather
-///    than a run that quietly did nothing. Without it every other assertion here
-///    is satisfied by a run whose second group was never formed.
-/// 2. **The rescan still named the cleared advisory.** Read off the document the
-///    scanner actually wrote, under `reports/rescan/`, because *the rescan did not
-///    clear it* is the whole reason the fold rule cannot be what answered.
-/// 3. **No verdict row, and nothing in the document saying `not below the fix`.**
-///    The second is the shape the defect had, spelled out, so this lane fails if
-///    the row comes back — including as a differently-classified row, which was the
-///    other way to discharge this and was refused: a row in that document is a
-///    ticket however it is classified. Read before the commit record below, so that
-///    a lane going red says *the row is back* rather than *a commit is missing*.
-/// 4. **Two commits, the second empty and naming the cleared advisory.** The same
-///    record a fold leaves, which is the point: this is the same fact about the
-///    world and it gets the same disposition.
-#[test]
-fn a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed() {
-    // Three, so nothing is deferred, and two replies for one attempt for
-    // `a_group_an_earlier_bump_already_cleared_…`'s reason: with an answer waiting,
-    // a run that attempted the second group succeeds and what fails is the count.
-    let sweep = Sweep::scanning_rescanning(
-        CLEARED_BY_A_BUMP,
-        SCAN_CLEARING_BUMP,
-        RESCAN_CLEARED_STILL_REPORTED,
-        3,
-        // `github.com/docker/docker` sorts before `golang.org/x/net`, so the
-        // clearing module's group is attempted first and the spare is the one the
-        // second group would be shown.
-        bumps_needing_no_edit(&[&[CLEARING_LIBRARY_CVE], &[SECOND_LIBRARY_CVE]]),
-    );
-
-    let run = sweep.run();
-    let payload = sweep.payload(&run);
-    assert_eq!(
-        run.status.code(),
-        Some(0),
-        "stderr: {}\npayload: {payload}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    assert_eq!(payload["outcome"], "completed", "{payload}");
-
-    // Premise 1. The requirement the second group is about is on the branch at the
-    // version its advisory names as the fix, put there by the first group's bump.
-    let branch = the_one_new_branch(&sweep);
-    let landed = pushed_file(&sweep, &branch, "go.mod");
-    assert!(
-        landed.contains(&format!("{CLEARING_MODULE} {CLEARING_FIXED_VERSION}")),
-        "the first group's bump is on the branch: {landed}"
-    );
-    assert!(
-        landed.contains(&format!("{SECOND_MODULE} {SECOND_FIXED_VERSION}")),
-        "and it raised the second group's requirement past its own fix, which is \
-         the whole premise — a tree still at {SECOND_VULNERABLE_VERSION} would be \
-         the fold world, not this one: {landed}"
-    );
-
-    // Premise 2. The rescan did *not* clear it, so `fold` cannot be what answered.
-    let rescans: Vec<String> = sweep
-        .files_holding(SECOND_LIBRARY_CVE)
-        .into_iter()
-        .filter(|path| path.starts_with("reports/rescan/"))
-        .collect();
-    assert!(
-        !rescans.is_empty(),
-        "the rescan document has to still report {SECOND_LIBRARY_CVE}: with it \
-         cleared there, this lane would pass through the fold rule and say nothing \
-         about the tree"
-    );
-
-    // Reading 3. What the Jira step reads, and what it must not find. Before the
-    // commit record below, because it is the document the defect reached and a
-    // reader of a failure here should see the row rather than its consequence.
-    let verdicts = sweep.verdicts();
-    assert!(
-        !sweep.has_verdict(SECOND_LIBRARY_CVE),
-        "the advisory this run's own bump cleared is recorded as resolved, not \
-         filed as unfixed and needing direction: {verdicts}"
-    );
-    assert!(
-        !verdicts.to_string().contains("not below the fix"),
-        "and not under any other classification either — `AlreadyAtTheFix`'s \
-         sentence in this document is the defect, whichever `verdict` value it \
-         arrives beside: {verdicts}"
-    );
-    assert!(
-        sweep.has_verdict(OS_CVE),
-        "the premise: this run does still report the advisory nothing could move, \
-         so the absence above is about the clearance and not about an empty \
-         document: {verdicts}"
-    );
-
-    // Reading 4. The same record a fold leaves.
-    let commits = pushed_commits(&sweep, &branch);
-    assert_eq!(
-        commits.len(),
-        2,
-        "one commit for the bump and one for the clearance: {commits:?}"
-    );
-    let (bumped, bumped_paths) = &commits[0];
-    assert_eq!(
-        bumped_paths,
-        &["go.mod".to_string(), "go.sum".to_string()],
-        "the bump carries the manifest and the sums and nothing else: {bumped}"
-    );
-    assert!(
-        bumped.contains(CLEARING_LIBRARY_CVE),
-        "and says which advisory it is for: {bumped}"
-    );
-    let (cleared, cleared_paths) = &commits[1];
-    assert!(
-        cleared_paths.is_empty(),
-        "recording a clearance changes no file — that is the whole of what it is \
-         — and this commit carries {cleared_paths:?}"
-    );
-    assert!(
-        cleared.contains(SECOND_LIBRARY_CVE),
-        "a record whose body names no advisory is invisible to the next run's log \
-         scan: {cleared}"
-    );
-
-    // One attempt in the record, and one turn in the world.
-    let reached = sweep.disposition(&run);
-    assert_eq!(
-        reached["reason"], "pull_request",
-        "a cleared group is not work left over, so the run still lands on row 4: \
-         {reached}"
-    );
-    assert_eq!(
-        reached["attempts"],
-        serde_json::json!([{
-            "cves": [CLEARING_LIBRARY_CVE],
-            "status": "clean",
-            "claimed_complete": true,
-            "forbidden": [],
-        }]),
-        "a cleared group runs no attempt, so it contributes no row: {reached}"
-    );
-    assert_eq!(
-        sweep.gateway.served(),
-        1,
-        "and consults no model, though a second answer was waiting for it: a \
-         second group that had been attempted would have taken a second turn"
-    );
-}
-
-/// **A rescan that clears the OS advisory blocks it anyway, and no commit on
-/// the branch names it.**
-///
-/// The property `CveMitigate::target_version`'s note rests on, held from outside
-/// the process. That note's safety argument is that *no run can write an OS
-/// advisory into a commit body*, and it is a claim about **order**:
-/// `target_version` refuses a `DockerfileBaseImage` group before [`fold`] is
-/// consulted, so the group is blocked and reaches neither committer — not
-/// `land`, which commits only a clean group, and not `record_fold`, whose
-/// `--allow-empty` commit *does* name the group's ids.
-///
-/// # Nothing held that order, and the reason is a fixture
-///
-/// Swapping the two blocks in `sweep` was invisible to the whole workspace, this
-/// file included. [`RESCAN_CLEAN`] is why: its OS array is the **input scan's**,
-/// unchanged and deliberately so — the stub's own comment says that is what
-/// keeps a rescan's condition (b) discriminating rather than satisfied by an
-/// empty image. So every bump this suite performs leaves the OS advisory still
-/// reported, [`fold`] answers `Proceed` for the OS group whichever order the two
-/// blocks are in, and it falls through to the refusal either way. The lane above
-/// is the closest thing there was, and it folds a *library* group.
-///
-/// # The world, and why it is reachable rather than contrived
-///
-/// A rescan reporting the OS advisory **gone**. [`SCAN_CLEAN`] is that document
-/// — both arrays present and empty — and it is an existing arm rather than a new
-/// one, because *libraries empty plus OS empty* is precisely what it already
-/// writes.
-///
-/// No `go get` fixes an OS package, so this is not a bump succeeding. It is what
-/// a floating base tag does: the image is rebuilt between the scan and the
-/// rescan, the tag resolves to a newer layer, and the advisory leaves the image
-/// with nothing on the branch having moved. [`fold`]'s three gates are then all
-/// satisfied — the library group ended clean, was accepted, and was committed —
-/// so under the reordered code the OS group folds and `record_fold` writes
-/// `fix: CVE-2026-0002 already resolved by an earlier bump` onto a branch that
-/// resolves no such thing.
-///
-/// That commit is worse than a wrong sentence, and the asymmetry is the point.
-/// `cve::dedup`'s OS arm consults the commit log and **nothing else**, so the log
-/// is the sole authority for that half: a library fold's body is re-derived
-/// against the tree on the next run and cannot mislead it, while this one is
-/// read back as settled for good. It is the 2026-08-12 incident's shape — a
-/// mention taken for a fix — reached from inside a run rather than from a pull
-/// request's body. `cve::fold`'s header ranks these two errors explicitly, and
-/// this is the direction it calls not comparable.
-///
-/// # Why the premise is asserted rather than assumed
-///
-/// Folding needs `prior` to be `Some` and its gates to pass, and each of those
-/// is a way this lane could go green holding nothing. Had the rescan not
-/// cleared, the library group would end needs-work and revert, [`fold`] would
-/// refuse on its own gates rather than on the order, and both assertions below
-/// would read exactly the same. So the clean committed group and the cleared
-/// rescan are asserted first, as the premises they are — without them this lane
-/// is the vacuous one it exists to replace.
-///
-/// [`fold`]: the rule in `fiddle-runtime`'s `cve::fold`
-#[test]
-fn a_rescan_that_clears_the_os_advisory_blocks_it_rather_than_folding_it() {
-    let sweep =
-        Sweep::scanning_rescanning(VULNERABLE, SCAN_OK, SCAN_CLEAN, 2, a_bump_needing_no_edit());
-
-    let run = sweep.run();
-    let payload = sweep.payload(&run);
-    assert_eq!(
-        run.status.code(),
-        Some(0),
-        "stderr: {}\npayload: {payload}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    assert_eq!(payload["outcome"], "completed", "{payload}");
-
-    // Premise 1. The rescan really did report the OS advisory gone. Read off the
-    // artefact the scanner left, because the whole lane is about what `fold`
-    // would have been handed — a rescan that still named it would make the
-    // refusal below the fold rule's own answer rather than the order's.
-    let rescanned = std::fs::read_to_string(sweep.scenario.report_dir().join("rescan/scan.json"))
-        .expect("the rescan left no artefact, so nothing here is about what it reported");
-    assert!(
-        !rescanned.contains(OS_CVE),
-        "the rescan still names {OS_CVE}, so `fold` would refuse this group on \
-         its own account and this lane would hold nothing: {rescanned}"
-    );
-
-    // Premise 2. One attempt, and it ended clean — so `prior` is `Some` and
-    // carries an accepted, committed rescan, which is every gate `fold` asks
-    // for. `accepted` is *checks passed and rescan Cleared* together, so this is
-    // also the positive reading of premise 1.
-    let reached = sweep.disposition(&run);
-    assert_eq!(
-        reached["attempts"],
-        serde_json::json!([{
-            "cves": [LIBRARY_CVE],
-            "status": "clean",
-            "claimed_complete": true,
-            "forbidden": [],
-        }]),
-        "folding needs a clean, committed prior group, and without one the \
-         assertions below are about nothing: {reached}"
-    );
-
-    // The claim. The OS group was refused by `target_version`, in its own words,
-    // rather than folded away — so it is reported to a person instead of
-    // recorded as done.
-    let verdicts = sweep.verdicts();
-    assert!(
-        sweep.has_verdict(OS_CVE),
-        "a cleared rescan must not turn the advisory nothing could move into a \
-         resolution: {verdicts}"
-    );
-    assert!(
-        verdicts[0]["rationale"]
-            .as_str()
-            .is_some_and(|why| why.contains("registry this build does not read")),
-        "and the refusal is still the registry's, which is what says the group \
-         was blocked rather than folded: {verdicts}"
-    );
-
-    // And the consequence the notes in `capability::mitigate` and `cve::dedup`
-    // rest on: the branch carries no commit naming the OS advisory, so the next
-    // run's log scan — the only authority for the OS half of `already_fixed` —
-    // finds nothing to read back.
-    let branch = the_one_new_branch(&sweep);
-    let commits = pushed_commits(&sweep, &branch);
-    assert_eq!(
-        commits.len(),
-        1,
-        "the bump, and no fold beside it: {commits:?}"
-    );
-    for (body, _) in &commits {
-        assert!(
-            !body.contains(OS_CVE),
-            "no run may write an OS advisory into a commit body — `already_fixed` \
-             would read this back as settled, and nothing on this branch settles \
-             it: {body}"
-        );
-    }
-}
-
-/// **A needs-work group's rescan is not folded on, however clean it looked.**
-///
-/// The companion to the lane above, and the direction the rule is dangerous in.
-/// Folding is a claim that something is fixed; getting it wrong the *refusing*
-/// way costs a redundant attempt, and getting it wrong the *folding* way records
-/// advisories as fixed on a branch somebody will merge. So the interesting case
-/// is a rescan that says everything is clear and must be ignored anyway.
-///
-/// # Why the check is what fails, and not the rescan
-///
-/// `an_unprovable_repair_is_reverted_and_filed_as_needing_direction` reaches
-/// needs-work by answering the rescan with the input scan's own document. That
-/// mechanism cannot be reused here, and the reason is the whole point of this
-/// lane: a rescan that still reports the group's advisory also still reports the
-/// *second* group's, so `fold` would refuse for two reasons at once — the group
-/// did not end clean, **and** the ids are still there — and the lane could not
-/// say which one did it. An assertion satisfied by either of two conditions is
-/// evidence about neither.
-///
-/// So the rescan here is [`RESCAN_CLEAN`], byte for byte the one the lane above
-/// folds on, and what fails is the ordinary check. `Evaluation::accepted` is
-/// *every check passed **and** the rescan cleared*; this world falsifies the
-/// first half and leaves the second exactly as it was. The group ends
-/// `NeedsWork`, its bump is reverted, and the rescan it produced — which reports
-/// the second group's advisory gone — is the one the rule has to decline.
-///
-/// A tree that is fixed and does not build is not a contrivance, either: it is
-/// the ordinary result of a dependency bump that moved an API.
-///
-/// # What says it was not folded
-///
-/// The second group was **attempted**, which is the observable a fold removes: a
-/// folded group runs no attempt, contributes no `attempts` row and takes no
-/// model turn. Both rows are here, both `needs_work`, and both advisories get a
-/// verdict — which is also the shape a person acts on, since neither repair
-/// could be shown safe.
-#[test]
-fn a_needs_work_groups_rescan_is_not_folded_on() {
-    let sweep = Sweep::scanning_with_a_failing_check(
-        TWO_LIBRARIES,
-        SCAN_TWO_LIBRARIES,
-        3,
-        // Two, because both groups are attempted. That is the claim, and the
-        // script is the first place it is made — one advisory list per group, in
-        // the order the run walks them.
-        bumps_needing_no_edit(&[&[LIBRARY_CVE], &[SECOND_LIBRARY_CVE]]),
-    );
-
-    let run = sweep.run();
-    let payload = sweep.payload(&run);
-    assert_eq!(
-        run.status.code(),
-        Some(0),
-        "a group left for a person is not a failed run — stderr: {}\npayload: {payload}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-
-    // Nothing landed, so there is no branch a fold could have been recorded on.
-    // Against the world rather than the report, for the reason its neighbour
-    // gives.
-    assert!(
-        sweep.pull_requests().is_empty(),
-        "two unproved repairs open nothing: {:?}",
-        sweep.pull_requests()
-    );
-    assert_eq!(
-        sweep.remote_branches(),
-        vec![SWEEP_BASE.to_string()],
-        "and leave the remote exactly as they found it"
-    );
-
-    // Both groups ran. The second one's presence here is the assertion: a fold
-    // is precisely the decision not to attempt, and it leaves no row.
-    let reached = sweep.disposition(&run);
-    assert_eq!(reached["reason"], "unsafe_without_direction", "{reached}");
-    assert_eq!(
-        reached["attempts"],
-        serde_json::json!([
-            {
-                "cves": [LIBRARY_CVE],
-                "status": "needs_work",
-                "claimed_complete": true,
-                "forbidden": [],
-            },
-            {
-                "cves": [SECOND_LIBRARY_CVE],
-                "status": "needs_work",
-                "claimed_complete": true,
-                "forbidden": [],
-            },
-        ]),
-        "the second group was attempted rather than folded onto the first \
-         group's rescan: {reached}"
-    );
-    assert_eq!(
-        sweep.gateway.served(),
-        2,
-        "and the world agrees: two attempts, two model turns"
-    );
-
-    // And every advisory is reported unfixed, which is what a run that folded
-    // nothing owes the person reading it.
-    let verdicts = sweep.verdicts();
-    assert!(
-        sweep.has_verdict(LIBRARY_CVE)
-            && sweep.has_verdict(SECOND_LIBRARY_CVE)
-            && sweep.has_verdict(OS_CVE),
-        "nothing was fixed and nothing was folded, so all three get a row: \
-         {verdicts}"
-    );
-}
-
 /// **A sentinel credential appears on no surface a run produces.**
 ///
 /// The negative that would be vacuous if the value were not really there, so it
@@ -4284,7 +3816,7 @@ fn a_needs_work_groups_rescan_is_not_folded_on() {
 /// report, a verdict file and a bundle.
 #[test]
 fn no_credential_reaches_stdout_a_diagnostic_or_a_published_bundle() {
-    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 2, a_bump_needing_no_edit());
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
 
     let run = sweep.run();
     assert_eq!(
@@ -4361,7 +3893,7 @@ fn no_credential_reaches_stdout_a_diagnostic_or_a_published_bundle() {
 /// than how many.
 #[test]
 fn the_bound_the_document_sets_is_the_bound_the_sweep_applies() {
-    let bounded = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_bump_needing_no_edit());
+    let bounded = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
 
     let run = bounded.run();
     assert_eq!(
@@ -4455,7 +3987,7 @@ fn the_grades_the_document_named_are_the_grades_the_run_acted_on() {
         SCAN_MEDIUM_LIBRARY,
         SCAN_CLEAN,
         2,
-        a_bump_needing_no_edit(),
+        a_script_no_attempt_consumes(),
     );
     let run = by_default.run();
     assert_eq!(
@@ -4484,7 +4016,7 @@ fn the_grades_the_document_named_are_the_grades_the_run_acted_on() {
         SCAN_CLEAN,
         GRADES_INCLUDING_MEDIUM,
         2,
-        a_bump_needing_no_edit(),
+        a_repair_moving_the_requirement(),
     );
     let run = widened.run();
     let payload = widened.payload(&run);
@@ -4547,12 +4079,22 @@ fn the_grades_the_document_named_are_the_grades_the_run_acted_on() {
 /// - the library advisory is the one `cve-fixed`'s `go.mod` already carries the
 ///   release for, so deduplication settles it before any group is formed —
 ///   `already_fixed`, exactly as
-///   `an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_verdicts_only`
+///   `an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_needing_direction`
 ///   reaches it;
 /// - that leaves two findings open, both against the base layer. The bound takes
-///   the first, and it is refused for the reason every OS finding is refused —
-///   no `go get` moves a base image — so it is a **verdict**;
+///   the first, and it is shown to the attempt, which declines it — nothing in
+///   this build refuses a finding before an attempt sees it any more — and a
+///   declined advisory is still there at the rescan, so it is a **verdict**;
 /// - and the second is past the bound, so it is **deferred**, never judged.
+///
+/// The row the run lands on is therefore `unsafe_without_direction` rather than
+/// `verdicts_only`: something *was* attempted. Before M4c the base-image advisory
+/// was refused by four mechanical Go rules before any model was consulted, so a
+/// verdict could exist with no attempt behind it; with the refusal deleted, every
+/// verdict is a finding an attempt was shown. Which row this run reaches is not
+/// what the lane is about — the three sets are — but it is asserted in the same
+/// object literal, so a change to either is a change to a value a reader can see
+/// whole.
 ///
 /// Three sets, three different advisories, one run. `SCAN_OK` cannot produce it:
 /// over this tree it leaves exactly one finding open, so a bound low enough to
@@ -4568,7 +4110,7 @@ fn the_grades_the_document_named_are_the_grades_the_run_acted_on() {
 /// a budget rather than about a fixture that lost a finding.
 #[test]
 fn a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set() {
-    let sweep = Sweep::scanning(FIXED, SCAN_TWO_OS, 1, a_bump_needing_no_edit());
+    let sweep = Sweep::scanning(FIXED, SCAN_TWO_OS, 1, an_attempt_declining(&[OS_CVE]));
 
     let run = sweep.run();
     assert_eq!(
@@ -4597,11 +4139,16 @@ fn a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set() 
     assert_eq!(
         reached,
         serde_json::json!({
-            "reason": "verdicts_only",
+            "reason": "unsafe_without_direction",
             "verdicts": 1,
             "already_fixed": [LIBRARY_CVE],
             "deferred": [{ "cve": SECOND_OS_CVE, "bound": 1 }],
-            "attempts": [],
+            "attempts": [{
+                "cves": [OS_CVE],
+                "status": "needs_work",
+                "claimed_complete": false,
+                "forbidden": [],
+            }],
             "branch": serde_json::Value::Null,
             "pull_request": serde_json::Value::Null,
         }),
@@ -4709,10 +4256,10 @@ const PRIOR_RUN_MARKER: &str = "EARLIER-RUN.md";
 /// suite exists to catch is a body that *stays* describing an earlier run — and
 /// an assertion that the body is no longer this is only half of the claim. The
 /// other half is [`RUN_BODY`].
-const STALE_BODY: &str = "fiddle attempted 1 dependency group for this \
-     repository's container image and committed 0 of 1.\n\nEvery advisory this \
-     run did not fix is in the verdict report published beside this run's \
-     bundle, with the sentence that decided it.";
+const STALE_BODY: &str = "fiddle attempted 1 advisory for this repository's \
+     container image in one bounded attempt and committed nothing.\n\nEvery \
+     advisory this run did not fix is in the verdict report published beside this \
+     run's bundle, with the sentence that decided it.";
 
 /// What a sweep of the vulnerable fixture publishes: `cve::shared_body` over
 /// `mitigate::summary_of`'s two paragraphs, with no anomaly note, because one
@@ -4724,13 +4271,16 @@ const STALE_BODY: &str = "fiddle attempted 1 dependency group for this \
 /// from the runtime's own function would be idempotent by construction and would
 /// prove nothing about what a run writes.
 ///
-/// `1 of 1` is the vulnerable pair's arithmetic and not a round number: the scan
-/// reports two advisories, the OS one has no bump target so it never becomes an
-/// attempt, and the library one is attempted and lands clean.
-const RUN_BODY: &str = "fiddle attempted 1 dependency group for this \
-     repository's container image and committed 1 of 1.\n\nEvery advisory this \
-     run did not fix is in the verdict report published beside this run's \
-     bundle, with the sentence that decided it.";
+/// `1 advisory` is this world's arithmetic and not a round number: the scan
+/// reports two advisories and the bound of one takes the library one, so the
+/// attempt is shown exactly one — and *committed what it changed* rather than a
+/// count, because a run has one attempt now and *1 of 1* would be a sentence that
+/// never varied. What varies is whether the tree it left is on the branch, which
+/// is the difference between this constant and [`STALE_BODY`].
+const RUN_BODY: &str = "fiddle attempted 1 advisory for this repository's \
+     container image in one bounded attempt and committed what it changed.\n\nEvery \
+     advisory this run did not fix is in the verdict report published beside this \
+     run's bundle, with the sentence that decided it.";
 
 impl Sweep {
     /// Put an open, labelled pull request in front of this deployment, on a
@@ -4922,7 +4472,7 @@ impl Sweep {
 /// than beside it.
 #[test]
 fn a_second_run_over_a_shared_pull_request_rewrites_its_body_and_works_in_its_tree() {
-    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 2, a_bump_needing_no_edit());
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
     let seeded_head = sweep.seed_shared_pull_request(STALE_BODY);
 
     let run = sweep.run();
@@ -5035,7 +4585,7 @@ fn a_second_run_over_a_shared_pull_request_rewrites_its_body_and_works_in_its_tr
 /// refused to start.
 #[test]
 fn a_run_whose_shared_body_is_unchanged_dispatches_no_rewrite() {
-    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 2, a_bump_needing_no_edit());
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
     sweep.seed_shared_pull_request(RUN_BODY);
 
     let run = sweep.run();
@@ -5216,7 +4766,7 @@ fn a_second_run_reads_the_first_runs_own_commit_body() {
         SCAN_LIBRARY_ONLY,
         SCAN_CLEAN,
         2,
-        bumps_needing_no_edit(&[&[LIBRARY_CVE]]),
+        a_repair_moving_the_requirement(),
     );
 
     // -- the first night -----------------------------------------------------
