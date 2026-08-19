@@ -2067,3 +2067,20 @@ Recommend deciding this at M4b's delivery rather than mid-milestone, when a spli
 
 Origin: delivery (epic fiddle-eph7 — measured at 7,981 words after the update, against the skill's stated 1-2 page constraint)
 Tags: #debt #documentation #process
+
+### 2026-08-19 — A bean was landed and pushed red because the lead chose which suites to run
+
+`fiddle-pv1o` (M4c Task 2) was merged onto `plan/agentic-factory-m4` and pushed to PR #14 with `cve_mitigation` at **22 passed of 36**. Fourteen acceptance lanes failed, all with `the report does not account for what it was shown` — the new `unaccounted()` protocol check doing exactly its job against acceptance fixtures written before the `findings` field existed.
+
+**The mechanism was a choice, not an accident.** Before landing, the lead ran `cve_protocol`, `cve_dispositions` and `binary_repair`: the three suites it reasoned the diff touched. It did not run `cve_mitigation`, the black-box suite that drives the capability end to end, and it did not run `scripts/gate.sh` at all. **Reasoning about blast radius is precisely the job a gate exists to replace**, and the reasoning was good — the change was to a report struct and one call site — which is what makes it worth recording. A plausible blast-radius argument is more dangerous than a careless one, because it feels like diligence.
+
+It was caught by the **next lane measuring its own base before starting work**, which also caught that the denominator the lead had handed it was taken before the previous bean landed and never re-measured. Neither the bean's own evaluation nor the lead found it: two evaluator iterations scored 9/9/8 against an evidence pack that did not contain the failing suite. **An evaluator cannot ask for a suite it was not shown**, so an incomplete pack yields a confident score about the wrong thing — which is a sharper version of the same lesson as the earlier entry on `check-thresholds.sh` grading a scorecard it could not read.
+
+Three things follow, and the first is the only one that is free:
+
+1. **Land nothing without a full gate.** Not the suites that look relevant. The gate, 53 binaries, exit code read before any pipe. This rule already existed in every lane brief in this milestone; the lead did not apply it to itself.
+2. **A lane's first act should be measuring its own base**, and its report should carry inherited-red separately from self-caused-red. That is what made this findable within minutes rather than at the next holistic review, and it should be in the brief template rather than depending on a lane thinking of it.
+3. **An evidence pack should name the suites it does not contain.** A pack that lists three green suites reads as complete; one that says "cve_mitigation not run" would have drawn the question from the evaluator instead of from a later lane.
+
+Origin: orchestration (epic fiddle-v4ka, M4c — found by `fiddle-5swi` measuring its base; verified by the lead at 22/36 on the pushed head)
+Tags: #process #evaluation #orchestration
