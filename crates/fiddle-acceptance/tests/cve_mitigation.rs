@@ -1711,10 +1711,30 @@ impl Sweep {
         self.run_selecting(&[], &["--mode", "unattended"])
     }
 
-    /// One arrangement of the environment for both, so the credential scrubbing
-    /// and the three exports cannot differ between the invocation the documents
-    /// name and the invocation the rest of this suite drives.
+    /// The same invocation **without `--json`**, which is the surface an operator
+    /// gets by default.
+    ///
+    /// A third entry point rather than a flag on the one below, because `--json`
+    /// is appended *there* — every lane in this file reads a payload, which is how
+    /// `run_human` came to be missing a row the payload carries.
+    fn run_plain(&self) -> Output {
+        self.command_selecting(&["--capability", "cve_mitigate"], &[])
+            .output()
+            .unwrap()
+    }
+
+    /// One arrangement of the environment for all three, so the credential
+    /// scrubbing and the three exports cannot differ between the invocation the
+    /// documents name and the invocation the rest of this suite drives.
     fn run_selecting(&self, selection: &[&str], extra: &[&str]) -> Output {
+        self.command_selecting(selection, extra)
+            .arg("--json")
+            .output()
+            .unwrap()
+    }
+
+    /// Everything the three share, up to but not including the output surface.
+    fn command_selecting(&self, selection: &[&str], extra: &[&str]) -> std::process::Command {
         let mut command = std::process::Command::new(support::fiddle_binary());
         // The four credential-shaped names no lane may need, removed *before* the
         // three this document names are exported, so a run ends up with exactly
@@ -1731,12 +1751,11 @@ impl Sweep {
             .args(selection)
             .args(["--config", self.scenario.config_path().to_str().unwrap()])
             .args(extra)
-            .arg("--json")
             .env(FORGE_TOKEN, "ghp_forge_token_for_the_sweep")
             .env(MODEL_KEY, "sk-model-key-for-the-sweep")
             .env(WIZ_ID, "wiz-client-id-for-the-sweep")
             .env(WIZ_SECRET, SENTINEL_SECRET);
-        command.output().unwrap()
+        command
     }
 
     /// The correlation marker the last run left in `<stub.root>`, if it left one.
@@ -3002,6 +3021,89 @@ fn an_open_pull_request_covering_the_rest_reaches_already_in_progress() {
         "row 7's remedy is to go and merge a numbered pull request, so the \
          number is the evidence — and nothing landed on a branch this run made, \
          so it names none"
+    );
+}
+
+/// **The operator who did not ask for JSON is told the row too, and the number
+/// with it.**
+///
+/// `run_json`'s header argues the row into the payload in so many words: a
+/// document carrying `observations` and not the disposition "would make the two
+/// documents disagree about what is knowable ... a caller at a shell would have to
+/// open the bundle to learn which of seven situations they are in". `run_human`
+/// then had no such line, so the caller at a shell — the one that sentence is
+/// *about* — was the only caller it was not true for.
+///
+/// # Why this world and not a cheaper one
+///
+/// Row 7 is the row where the omission costs something an operator can act on.
+/// The other two silent rows resolve to *nothing to do*, and a reader who missed
+/// the line would reach the same next move anyway; here the next move is **go and
+/// merge #41**, and a rendering without the row loses the number entirely. It is
+/// also the row with a non-empty `already_fixed`, so the counts in the line are
+/// checkable rather than four zeroes that any arm would produce.
+///
+/// # What is compared against what
+///
+/// Not a literal. The row is read out of the **bundle this same plain run
+/// published**, reached the way an operator would reach it — the `report` line of
+/// that same stdout — so the claim is that the two surfaces of one run agree,
+/// which is the claim `the_row_both_surfaces_agree_on` makes for `--json`. A
+/// rendering that named a plausible row from the wrong arm reds here.
+#[test]
+fn the_plain_rendering_names_the_row_a_run_reached_and_its_pull_request() {
+    let sweep = Sweep::scanning(FIXED, SCAN_OK, 2, a_bump_needing_no_edit());
+    sweep.seed_shared_pull_request_saying(
+        STALE_BODY,
+        &format!("bump the base image, fixes {OS_CVE}"),
+    );
+
+    let run = sweep.run_plain();
+    let stdout = String::from_utf8_lossy(&run.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+    assert_eq!(run.status.code(), Some(0), "stderr: {stderr}");
+    // The premise: this is the plain surface and not a payload that happens to
+    // contain the words. A lane that drifted onto `--json` would prove nothing.
+    assert!(
+        stdout.starts_with("run "),
+        "this must be the plain rendering, not a payload: {stdout}"
+    );
+
+    assert!(
+        stdout.contains(
+            "disposition = already_in_progress \
+             (0 unfixed, 2 already fixed, 0 deferred, 0 attempted), \
+             pull request #41"
+        ),
+        "an operator at a terminal must be told which of the seven rows this run \
+         reached and that the remedy is to go and merge #{SHARED_PR}: {stdout}"
+    );
+
+    // And the row it named is the row the record keeps. The bundle is reached
+    // through the plain rendering's own `report` line, so a stdout that named a
+    // bundle it did not publish would fail here rather than pass quietly.
+    let relative = stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("report      = "))
+        .unwrap_or_else(|| panic!("the plain rendering must name its bundle: {stdout}"));
+    let bytes = std::fs::read(sweep.scenario.report_dir().join(relative)).unwrap();
+    let bundle: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        bundle["disposition"],
+        already_in_progress_publishes(),
+        "stdout and the bundle must not be two documents"
+    );
+
+    // The row travels; the credential does not. This run exports the sentinel
+    // like every other, and a disposition line is new prose on the surface most
+    // likely to be pasted into a bug report.
+    assert!(
+        !stdout.contains(SENTINEL_SECRET),
+        "a credential reached stdout: {stdout}"
+    );
+    assert!(
+        !stderr.contains(SENTINEL_SECRET),
+        "a credential reached a diagnostic: {stderr}"
     );
 }
 

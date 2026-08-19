@@ -1724,9 +1724,16 @@ fn the_forge_table_the_product_manual_documents_names_the_keys_the_schema_admits
 
 /// A document that carries every table this schema admits.
 ///
-/// Assembled from the three constants above rather than written out a fourth
-/// time, and the forge half is sliced out of [`FORGE`] so the keys with no
-/// default are spelled in exactly one place.
+/// Assembled from the constants above rather than written out again, and the
+/// forge half is sliced out of [`FORGE`] so the keys with no default are spelled
+/// in exactly one place.
+///
+/// [`CHECK_LIST`] is carried so `workspace.checks` is a list with rows in it.
+/// That matters to
+/// [`the_plain_rendering_covers_every_table_and_key_the_payload_echoes`] and not
+/// to the payload lane: an empty list is a table the document wrote no row for,
+/// and the plain rendering deliberately writes nothing for one, so a document
+/// without rows would make that lane red over correct behaviour.
 ///
 /// **It is still kept in step with the schema by hand**, and that is the one
 /// piece of hand-maintenance left in this block: a ninth table would have to be
@@ -1737,7 +1744,7 @@ fn the_forge_table_the_product_manual_documents_names_the_keys_the_schema_admits
 /// [`admitted_tables`] reads out of the binary.
 fn every_table() -> String {
     let forge = FORGE.split_once("[github]").expect("FORGE names a forge").1;
-    format!("{AGENTIC}\n[github]{forge}{SWEEP}")
+    format!("{AGENTIC}{CHECK_LIST}\n[github]{forge}{SWEEP}")
 }
 
 /// The top-level tables this build's schema admits, read out of the binary's own
@@ -1911,6 +1918,211 @@ fn config_check_echoes_every_table_the_schema_admits() {
              `admitted_tables` read the refusal short — in which case every lane \
              over that set has been checking a smaller schema than there is. \
              Enumerated: {tables:?}"
+        );
+    }
+}
+
+/// The plain `config check` rendering over `text`, requiring exit 0.
+///
+/// The mirror of [`checked`], and the surface that whole block of lanes above
+/// was missing: an operator who does not pass `--json` reads *this*, and until
+/// this helper existed every parity claim in this file was made about the
+/// payload only.
+fn plain(text: &str) -> String {
+    let out = check(text);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// **The plain rendering names the image a sweep will scan, the grades it will
+/// act on, the bound it will stop at, and the toolchain it will build with.**
+///
+/// `render::config_check_human` states its contract as "the same facts the
+/// payload carries, in the order the document writes them, so a reader at a
+/// terminal and a reader parsing `--json` confirm the same document", and for
+/// the whole of M4a it ended after `[github]`. So the four keys that decide what
+/// a sweep *does* were confirmable only by a caller who knew to ask for JSON.
+///
+/// `severities` and `max_findings` are the sharpest case in the milestone: their
+/// original defect was that they were in the product manual and in no reader at
+/// all. They are read now, and a fix that left them off the default surface
+/// would have moved the defect rather than closed it.
+///
+/// The grades are asserted **worst-first and not in document order** —
+/// `severities` here is the default, which `config_check_json` ranks — because a
+/// set rendered in typing order invites an operator to compare two accepted
+/// documents and find a difference that is not one.
+#[test]
+fn the_plain_rendering_names_the_image_grades_and_bound_a_sweep_will_act_on() {
+    let stdout = plain(&format!("{AGENTIC}{SWEEP}"));
+    for line in [
+        "orchestration.cve.image = ghcr.io/acme/icecube:latest",
+        "orchestration.cve.severities = CRITICAL HIGH",
+        "orchestration.cve.max_findings = 3",
+        "orchestration.cve.go = \"go\"",
+    ] {
+        assert!(
+            stdout.contains(line),
+            "an operator at a terminal cannot confirm `{line}`: {stdout}"
+        );
+    }
+    // The scanner half of the same document, and the `timeout` beside it: a
+    // wall-clock bound an operator set and cannot otherwise read back.
+    for line in ["scanner.cli = \"wizcli\" \"scan\"", "scanner.timeout = 20m"] {
+        assert!(
+            stdout.contains(line),
+            "an operator at a terminal cannot confirm `{line}`: {stdout}"
+        );
+    }
+}
+
+/// **The plain rendering names both scanner credentials by variable and prints
+/// neither value.**
+///
+/// The terminal half of the payload lane
+/// `the_scanner_table_names_its_credentials_and_prints_neither`, and the two
+/// halves are making one claim from two directions: the
+/// variable *name* is what an operator needs — it is the thing they go and set —
+/// while `client_secret`'s value is the one string the whole of
+/// `fiddle_runtime::scanner`'s redaction exists for.
+///
+/// Both variables are **exported with a sentinel** before the check runs, which
+/// is what makes the absence mean something: a rendering that omits a value
+/// nobody set is not evidence about anything. This is the shape that would have
+/// caught a fix for this bean that reached for the value instead of the name.
+#[test]
+fn the_plain_rendering_names_the_scanner_credentials_and_never_their_values() {
+    let sentinels = [
+        ("WIZ_CLIENT_ID", "wiz-client-id-sentinel-9f21"),
+        ("WIZ_CLIENT_SECRET", "wiz-client-secret-sentinel-9f21"),
+    ];
+    let out = check_with_env(&format!("{AGENTIC}{SWEEP}"), &[], &sentinels);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+
+    for (variable, _) in sentinels {
+        assert!(
+            stdout.contains(variable),
+            "the plain rendering must name `{variable}`, which is the thing an \
+             operator goes and sets: {stdout}"
+        );
+    }
+    assert!(
+        stdout.contains("scanner.client_id.env = WIZ_CLIENT_ID"),
+        "named under the key the document writes it as, as `agent.api_key.env` \
+         and `github.token.env` already are: {stdout}"
+    );
+    assert!(
+        stdout.contains("scanner.client_secret.env = WIZ_CLIENT_SECRET"),
+        "{stdout}"
+    );
+    for (_, value) in sentinels {
+        assert!(
+            !stdout.contains(value),
+            "a credential value reached stdout: {stdout}"
+        );
+        assert!(
+            !stderr.contains(value),
+            "a credential value reached a diagnostic: {stderr}"
+        );
+    }
+}
+
+/// **Every table the payload echoes, and every key it echoes under one, the
+/// plain rendering names too.**
+///
+/// # The class, not the instance
+///
+/// `[scanner]` and `[orchestration.cve]` were added to `config_check_json` and
+/// to nothing else, and the omission survived a milestone because every parity
+/// lane in this file read the payload. Asserting the two tables by hand — which
+/// the two lanes above do — fixes this instance and leaves the next one open:
+/// a tenth table can repeat it exactly.
+///
+/// So the set compared here is not written down in this file. The tables come
+/// from [`admitted_tables`] — serde's own enumeration of `config::Config`'s
+/// fields, read out of the binary's `deny_unknown_fields` refusal — and the keys
+/// come from the payload the binary just produced. A table or key added to the
+/// schema and rendered on one surface only reds **here**, by name, on the next
+/// build, and nothing in this file has to be edited for that to happen.
+///
+/// # What "names it" means, and why one level
+///
+/// A plain line is `<table>.<key> = <value>`, so the claim is that the rendering
+/// carries a line whose key path begins `<table>.<key>`. One level under the
+/// table and not the whole tree, because plain deliberately *folds* an object
+/// into one line of prose where a person needs the consequence rather than the
+/// four fields: `agent.max_capability_attempts` and `github.required_checks` are
+/// both objects in the payload and both single lines here, and a recursive
+/// comparison would call that correct rendering a failure.
+///
+/// **The other direction is asserted too**, for the reason
+/// [`config_check_echoes_every_table_the_schema_admits`] gives: a rendering that
+/// names something the payload does not is the same drift seen from the other
+/// side, and a one-directional lane would go green over it.
+#[test]
+fn the_plain_rendering_covers_every_table_and_key_the_payload_echoes() {
+    let document = every_table();
+    let payload = checked(&document);
+    let stdout = plain(&document);
+
+    // Every `<table>.<key>` the plain rendering writes, keyed the way an
+    // operator reads it. The indexed spelling `workspace.checks[0]` is folded
+    // back to `workspace.checks`, because the index is a fact about the list and
+    // not a key of the table.
+    let rendered: Vec<String> = stdout
+        .lines()
+        .filter_map(|line| line.split_once(" = "))
+        .map(|(key, _)| key.trim())
+        .filter_map(|key| {
+            let mut parts = key.splitn(3, '.');
+            let table = parts.next()?;
+            let field = parts.next()?;
+            let field = field.split_once('[').map_or(field, |(name, _)| name);
+            Some(format!("{table}.{field}"))
+        })
+        .collect();
+
+    for table in admitted_tables() {
+        let echoed = payload[&table]
+            .as_object()
+            .unwrap_or_else(|| {
+                panic!(
+                    "`[{table}]` is a table this schema admits and the payload for a \
+                     document meant to name every table did not echo it as an object — \
+                     see `config_check_echoes_every_table_the_schema_admits`: {payload}"
+                )
+            })
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in echoed {
+            assert!(
+                rendered
+                    .iter()
+                    .any(|line| line == &format!("{table}.{key}")),
+                "`config check --json` echoes `{table}.{key}` and the plain \
+                 rendering an operator gets by default does not name it, so the \
+                 two surfaces do not confirm the same document. Either \
+                 `render::config_check_human` has no arm for it, or it spells the \
+                 key differently from the document. Rendered: {rendered:?}"
+            );
+        }
+    }
+
+    for key in &rendered {
+        let (table, field) = key.split_once('.').expect("a rendered key is dotted");
+        assert!(
+            payload[table].get(field).is_some(),
+            "the plain rendering names `{key}` and `config check --json` echoes no \
+             such key, so a reader at a terminal is being told something a reader \
+             parsing the payload cannot confirm: {payload}"
         );
     }
 }

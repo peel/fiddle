@@ -467,6 +467,7 @@ pub fn config_check_human(config: &Config) -> String {
              (observed, not enforced: no outcome depends on them — see decision {})\
              \n  github.config_dir = {}\
              \n  github.timeout = {}\
+             \n  github.read_retry = {} attempts (initial {}, max {})\
              \n  github.policy.ensure_branch_published = {}\
              \n  github.policy.ensure_pull_request = {}\
              \n  github.policy.ensure_check_requested = {}\
@@ -500,6 +501,15 @@ pub fn config_check_human(config: &Config) -> String {
             REQUIRED_CHECKS_DECISION,
             github.config_dir.display(),
             github.timeout,
+            // Beside `timeout` because it is the same kind of thing, and in the
+            // payload's own order: a wall-clock bound an operator set or
+            // inherited, and one they cannot otherwise confirm without reading
+            // this binary's defaults. Folded into one line rather than three,
+            // because the three numbers are one policy and a person reads them
+            // together.
+            github.read_retry.attempts,
+            github.read_retry.initial,
+            github.read_retry.max,
             rule(github.policy.ensure_branch_published),
             rule(github.policy.ensure_pull_request),
             rule(github.policy.ensure_check_requested),
@@ -530,7 +540,84 @@ pub fn config_check_human(config: &Config) -> String {
             })),
         ));
     }
+    // **The image a sweep will scan and the credentials it will authenticate
+    // with.** Both tables are rendered here for the reason the header states as
+    // this function's contract: the reader without `--json` is the one confirming
+    // a document before a sweep acts on it, and for the whole of M4a these two
+    // tables reached the payload and no other surface — so the image, the grade
+    // set, the bound and the two variable names were confirmable only by a caller
+    // who knew to ask for JSON.
+    if let Some(scanner) = &config.scanner {
+        out.push_str(&format!(
+            "\n  scanner.cli = {}\
+             \n  scanner.client_id.env = {}\
+             \n  scanner.client_secret.env = {}\
+             \n  scanner.timeout = {}",
+            program_line(&scanner.cli),
+            // The names of the variables, never their values — the third and
+            // fourth `EnvRef`s in the schema, rendered exactly as the first two
+            // are. The rule is sharpest here: `client_secret` is the one value
+            // this build redacts on the way out of a child process, so printing
+            // it from the single command an operator runs to confirm a document
+            // would undo that redaction at the surface most likely to be pasted
+            // into a bug report. `config::EnvRef` holds no value to print, and
+            // `config check` reaches no reader of `std::env::var`.
+            scanner.client_id.env,
+            scanner.client_secret.env,
+            scanner.timeout,
+        ));
+    }
+    if let Some(cve) = config
+        .orchestration
+        .as_ref()
+        .and_then(|orchestration| orchestration.cve.as_ref())
+    {
+        out.push_str(&format!(
+            "\n  orchestration.cve.image = {}\
+             \n  orchestration.cve.severities = {}\
+             \n  orchestration.cve.max_findings = {}\
+             \n  orchestration.cve.go = {}",
+            cve.image,
+            // Ranked worst-first rather than in the order the document typed
+            // them, for the reason the payload gives: `Severities` is a *set*, so
+            // two documents naming the same grades in either order describe one
+            // deployment, and echoing the typing back would invite an operator to
+            // compare two accepted documents and find a difference that is not
+            // one. Space-separated and unquoted — a grade is a closed-set name
+            // and cannot contain a space, which is what `program_line` quotes
+            // against.
+            cve.severities
+                .grades()
+                .map(grade)
+                .collect::<Vec<_>>()
+                .join(" "),
+            // The bound whose defect was that the manual documented it and no
+            // reader read it. It is read now, and leaving it off the surface an
+            // operator gets by default would have moved that defect rather than
+            // closed it.
+            cve.max_findings,
+            program_line(&cve.go),
+        ));
+    }
     out
+}
+
+/// The spelling a document writes a grade as.
+///
+/// Through [`fiddle_core::Severity`]'s own `Serialize` rather than a match here,
+/// which is the one departure from [`rule`] and [`isolation`] and has the same
+/// reason `config_check_json` gives for doing it this way: that enum carries
+/// `rename_all` on both directions precisely so a grade read as `HIGH` is written
+/// as `HIGH`, and a second spelling in this file would be exactly the drift those
+/// attributes exist to prevent. The two renderers that *do* match are the ones
+/// whose types deliberately have no `Serialize` to defer to.
+fn grade(severity: fiddle_core::Severity) -> String {
+    serde_json::to_value(severity)
+        .ok()
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .expect("a grade serializes as the string its `rename_all` spells")
 }
 
 /// A configured program and its arguments, each token quoted separately.
@@ -682,8 +769,17 @@ pub fn run_json(bundle: &ReportBundle, published: Option<&Path>) -> String {
 /// The human-readable `run` summary.
 ///
 /// A reader at a terminal gets the same facts the payload carries: what was
-/// run, under which mode, how it ended, what it did, what is left, and where
-/// the published bundle can be found.
+/// run, under which mode, how it ended, what it did, what is left, where the
+/// published bundle can be found, and — on the paths that reached one — which
+/// row of Design §3's table the run landed on.
+///
+/// The row is here on [`run_json`]'s own argument, which applies to this surface
+/// more sharply than to that one: a document carrying `observations` and not the
+/// row makes the two disagree about what is *knowable*, and the caller who would
+/// have to open the bundle to learn which of seven situations they are in is
+/// precisely the caller at a shell who did not ask for JSON. Row 7's remedy is to
+/// go and merge a numbered pull request, so a rendering that dropped the row
+/// dropped the number with it.
 pub fn run_human(bundle: &ReportBundle, published: Option<&Path>) -> String {
     let mut out = format!(
         "run {}\n  mode        = {}\n  outcome     = {}\n  next action = {}",
@@ -704,7 +800,58 @@ pub fn run_human(bundle: &ReportBundle, published: Option<&Path>) -> String {
     if let Some(path) = published {
         out.push_str(&format!("\n  report      = {}", path.display()));
     }
+    // Present on exactly the paths the payload carries it on, and absent on the
+    // rest: a capability with no disposition table of its own has not reached a
+    // row, and a line saying so would invent a seventh situation for every M0,
+    // M1, M2 and M3 run.
+    if let Some(disposition) = &bundle.disposition {
+        out.push_str(&format!(
+            "\n  disposition = {}",
+            disposition_line(disposition)
+        ));
+    }
     out
+}
+
+/// One published disposition as a single line of prose.
+///
+/// Leads with the row, because the row is the answer to the question the key
+/// exists for. The four counts after it are what separate *neighbouring* rows —
+/// *the scan found nothing* and *everything it found was already dealt with*
+/// differ by `already_fixed` alone — so a line carrying the reason and nothing
+/// else would name a row a reader could not check against the bundle beside it.
+///
+/// Counts rather than the lists themselves, which is the one place this line says
+/// less than the payload does and is deliberate: the advisory ids are in the
+/// published bundle and in `verdicts.json`, and a terminal line that grew with
+/// the size of a scan would push the reason off the screen at exactly the moment
+/// there was most to read.
+///
+/// The branch and the pull request are named **only when there is one**, which is
+/// the opposite of [`optional`]'s rule and for a reason that does not contradict
+/// it: there, an absent key is one a repair will refuse on by name, so an operator
+/// needs to be told. Here an absent value means this run landed nothing on a
+/// branch and belongs to no pull request, and a "not configured" beside it would
+/// read as a document somebody forgot to finish.
+fn disposition_line(disposition: &fiddle_core::RunDisposition) -> String {
+    let mut line = format!(
+        "{} ({} unfixed, {} already fixed, {} deferred, {} attempted)",
+        disposition.reason,
+        disposition.verdicts,
+        disposition.already_fixed.len(),
+        disposition.deferred.len(),
+        disposition.attempts.len(),
+    );
+    if let Some(branch) = &disposition.branch {
+        line.push_str(&format!(", branch {branch}"));
+    }
+    // `#41` and not `41`, because the number *is* the remedy on row 7 and an
+    // operator's next move is to go and find it in a forge that spells it this
+    // way.
+    if let Some(pull_request) = disposition.pull_request {
+        line.push_str(&format!(", pull request #{pull_request}"));
+    }
+    line
 }
 
 /// The diagnostic for an attempt that could not record itself.
