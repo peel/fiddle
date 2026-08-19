@@ -2033,3 +2033,22 @@ Status: 2026-08-19 — **the class is closed as far as an acceptance lane reache
 
 Origin: bean `fiddle-wr6v` continued (the evaluator constructed a third violation; the lead ruled the dimension unreachable as scoped and dispatched the bound rather than a fourth guard)
 Tags: #decision #testing #documentation
+
+### 2026-08-19 — Three design sections specified a rule the build does not execute, and none of them said so
+
+Delivery's drift analysis found §2.6 naming five concrete checks in order — `go build`, `go fmt` with exit 0 *and no output*, `go vet`, `docker build`, the `wizcli` rescan — while `[[workspace.checks]]` is a `Vec<CheckRef>` that constrains neither count, order, nor which programs appear. Nothing in the tree said the concrete contract had become a deployment's choice. It is annotated now.
+
+That is the **third** instance of one shape in a single milestone, and the shape is worth naming rather than fixing three times:
+
+- **§7's release-workflow bullet** was assigned to M4a by the split table and to M4b by the same table's other row. Found by holistic iteration 4.
+- **§2.4 rule 4** specified a Dockerfile base-image tag rule needing a registry seam that §7 never designs, §9 never lists and §10 never excluded. Found by holistic iteration 6 and raised as the epic's `spec_defect`.
+- **§2.6** specified five concrete checks the schema does not enforce. Found by delivery drift analysis.
+
+Each was a section stating a rule in the imperative while the mechanism beneath it was general, and in each case the gap was visible only by cross-referencing a *different* section — the split table, §7's seam list, or the schema. None was a coding defect: the implementations were right every time and the documents were what changed.
+
+The lesson is about how this design document is written, not about these three paragraphs. A section that specifies a decision rule should say, in the same breath, **which seam executes it** — and when no seam does, that is the sentence that must be present. The three annotations now in the tree are the pattern to copy; what would be better is not needing them, which means the design phase asking of every rule "what runs this?" before the plan is written. Worth weighing for M4b, whose design is the same document.
+
+A cheaper mechanical partial: the acceptance lane that reads the capability census out of the binary's own diagnostic shows the shape of a guard that holds prose to a mechanism. Nothing equivalent exists for "this section names a rule and no seam executes it", and it is not obvious one can — deciding whether a paragraph implies an unbuilt seam is reading meaning, which this epic has twice concluded is a review matter (see the `fiddle-ye7n` and `fiddle-wr6v` entries).
+
+Origin: delivery (epic fiddle-eph7 — drift analysis, verified by the lead against §2.6, the schema, and a tree-wide search for a statement of the divergence)
+Tags: #process #documentation #design
