@@ -1927,3 +1927,17 @@ What `fiddle-fgam` did change is the consequence of not normalising. Neither sha
 
 Origin: implementation (bean fiddle-fgam, epic fiddle-eph7 — measured by running both recorded mis-shapes through validate-scorecard.sh and merge-scorecards.sh)
 Tags: #bug #tooling #evaluation
+
+### 2026-08-19 — The eval log annotates a failing dimension by the same comparison that could not see one
+
+Related to *`check-thresholds.sh` returns PASS for a scorecard whose dimensions carry no threshold* above, in a script that does not gate anything. `scripts/append-eval-log.sh` line 63 writes `if .value.score < .value.threshold then " (FAIL, threshold …)"`, the same comparison and the same blind spot: run against the threshold-less scorecard from that finding, the entry it builds reads
+
+    **general:**
+    - correctness: 1/10
+    - domain_spec_fidelity: 1/10
+    …
+
+with no FAIL annotation anywhere. `fiddle-fgam` deliberately left this alone. The log decides nothing — convergence is decided by `check-thresholds.sh`, which now refuses such a scorecard outright — and a refusal here would break the one route that is *required* to log before routing: the SPEC_DEFECT path in `skills/develop-loop/scorecard-merge.md` logs a scorecard it has already declared defective. What it should probably do instead is annotate the missing threshold rather than omit the verdict — `(no threshold recorded)` beside the score — so the durable record cannot read as a clean sheet. That is a one-line change wanting a test, and a decision about whether the eval log should ever contain a dimension whose threshold is unknown.
+
+Origin: implementation (bean fiddle-fgam, epic fiddle-eph7 — found by grepping for the same comparison elsewhere, measured by running the log's jq filter on the threshold-less scorecard)
+Tags: #debt #tooling #evaluation
