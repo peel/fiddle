@@ -1,24 +1,3 @@
-//! Pure domain core for fiddle.
-//!
-//! This crate carries the shared types and the decision functions that map an
-//! observed world onto an assessment. It is deliberately pure: no process,
-//! filesystem, network, environment, or clock access, and no async runtime.
-//! `identity` holds the references a run is addressed by, `observation` holds
-//! what a run saw of the world, `assessment` holds what that world means and
-//! what to do about it, `effect` holds the identity by which a later process
-//! recognises an external effect an earlier one performed, `policy` holds
-//! whether such an effect is permitted at all and who has to be asked first,
-//! `decision` holds the identity of the question put to that person, the
-//! marker by which a later process finds it again, the reference by which that
-//! person is recognised, and the four values their answer can amount to,
-//! `outcome` holds how
-//! the run ended, `published` holds the
-//! bound every piece of free text a run publishes is subject to, and `report`
-//! holds the document a run publishes to say all of that to a later reader.
-//! `finding` holds the projection boundary in the other direction: the six
-//! fields a scanner's report is allowed to become, and the one canonical
-//! spelling an advisory id has once it is inside.
-
 pub mod assessment;
 pub mod decision;
 pub mod effect;
