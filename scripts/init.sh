@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# Scaffold a project for use with fiddle.
-# Usage: init.sh [target-dir]
 set -euo pipefail
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 TARGET="${1:-.}"
 PREFIX="$(basename "$(cd "$TARGET" && pwd)" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
 
-# --- Docs ---
 if [[ -d "$TARGET/docs" ]] && [[ -n "$(ls -A "$TARGET/docs" 2>/dev/null)" ]]; then
   echo "DOCS_EXISTS"
 else
@@ -16,7 +13,6 @@ else
   echo "DOCS_CREATED"
 fi
 
-# --- orchestrate.json ---
 if [[ -f "$TARGET/orchestrate.json" ]]; then
   echo "ORCHESTRATE_EXISTS"
 else
@@ -24,7 +20,6 @@ else
   echo "ORCHESTRATE_CREATED"
 fi
 
-# --- Beans ---
 if [[ -f "$TARGET/.beans.yml" ]]; then
   echo "BEANS_EXISTS"
 else

@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# test-resolve-domains.sh — Tests for resolve-domains.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PASS=0; FAIL=0
@@ -27,7 +26,6 @@ assert_json() {
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
-# ── Fixture: orchestrate.json with frontend and backend domains ──────────────
 cat > "$TMPDIR/orchestrate.json" << 'EOF'
 {
   "evaluators": {
@@ -86,7 +84,6 @@ EXIT_CODE=0
 OUTPUT=$("$SCRIPT_DIR/resolve-domains.sh" --domains "frontend,backend" --config "$TMPDIR/orchestrate.json" 2>/dev/null) || EXIT_CODE=$?
 assert_exit "multi domain → exit 0" 0 "$EXIT_CODE"
 assert_json "array has 2 entries" ". | length" "2" "$OUTPUT"
-# unique sorts alphabetically: backend before frontend
 assert_json "first domain is backend (sorted)" ".[0].domain" "backend" "$OUTPUT"
 assert_json "first template" ".[0].template" "evaluator-backend" "$OUTPUT"
 assert_json "first resolved_via" ".[0].resolved_via" "config" "$OUTPUT"
@@ -167,7 +164,6 @@ assert_json "providers from config" ".[0].providers[0]" "claude" "$OUTPUT"
 
 echo ""
 echo "=== Test 12: Fallback copies general config fields ==="
-# Ensure fallback for unknown domain still gets general's providers
 EXIT_CODE=0
 OUTPUT=$("$SCRIPT_DIR/resolve-domains.sh" --domains "unknown" --config "$TMPDIR/orchestrate.json" 2>/dev/null) || EXIT_CODE=$?
 assert_exit "fallback domain → exit 0" 0 "$EXIT_CODE"

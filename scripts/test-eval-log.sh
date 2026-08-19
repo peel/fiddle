@@ -12,7 +12,6 @@ assert_eq() {
   fi
 }
 
-# Create a test bean
 BEAN_ID=$(beans create "Test eval log" -t task -s in-progress --json 2>/dev/null | jq -r '.bean.id // .id')
 trap "beans update $BEAN_ID -s scrapped 2>/dev/null || true" EXIT
 
@@ -67,7 +66,6 @@ cat > /tmp/test-scorecard4.json << 'EOF'
 EOF
 "$SCRIPT_DIR/append-eval-log.sh" --bean-id "$BEAN_ID" --iteration 4 --scorecard /tmp/test-scorecard4.json --dispatches 1 --guidance ""
 BODY=$(beans show "$BEAN_ID" --json 2>/dev/null | jq -r '.body')
-# Iteration 4 should NOT have a Disagreements section — count occurrences
 DISAGREE_COUNT=$(echo "$BODY" | grep -c "Disagreements:" || true)
 assert_eq "only one disagreements section (from iter 3)" "1" "$DISAGREE_COUNT"
 
@@ -193,18 +191,8 @@ assert_eq "fixture trend iterations mean is 2" "2" "$(echo "$FIXT_TREND" | jq -r
 assert_eq "fixture trend correctness from iter 2 not spot-check" "6" "$(echo "$FIXT_TREND" | jq -r '.epics[0].dimensions.correctness')"
 rm -rf "$FIXT"
 
-# --- The durable record must not read as a clean sheet -----------------------
-#
-# `append-eval-log.sh` used to write its FAIL annotation with the same
-# `score < threshold` comparison `check-thresholds.sh` was fixed for, and jq
-# makes `1 < null` false and `"1" < 7` false too, so a dimension it could not
-# compare rendered as a bare `1/10`. The log decides nothing, so these assert a
-# rendering rather than a gate — nothing below refuses, because the SPEC_DEFECT
-# route must be able to log before it routes. They matter because the log is the
-# only loop state that survives a restart, and a record that cannot tell "clean"
-# from "never compared" is the original defect one artifact along.
 
-ug_bean() {  # a throwaway bean store, so these assertions own their whole body
+ug_bean() {
   UGT=$(mktemp -d)
   beans init --beans-path "$UGT" >/dev/null 2>&1
   UG=$(beans create "Ungradeable log" --beans-path "$UGT" -t task -s in-progress --json 2>/dev/null | jq -r '.bean.id // .id')
@@ -259,10 +247,6 @@ assert_eq "a failing entry still parses as FAIL" "FAIL" "$(ug_verdict)"
 rm -rf "$UGT"
 
 echo "Test 20: the SPEC_DEFECT route can still log a mis-shaped scorecard"
-# `scorecard-merge.md` requires this path to log *before* routing, and the two
-# envelope shapes this epic actually produced used to abort the logger with a raw
-# jq error and exit 5 — no entry written at all, which is a worse record than a
-# bare score. They must produce an entry that says what could not be read.
 ug_bean
 cat > /tmp/test-ug-topkey.json << 'EOF'
 {"general":{"dimensions":{"correctness":{"score":1,"threshold":7}}},"criteria":[]}
@@ -304,12 +288,6 @@ rm -rf "$UGT"
 rm -f /tmp/test-ug-nothreshold.json /tmp/test-ug-types.json /tmp/test-ug-wf1.json /tmp/test-ug-wf2.json /tmp/test-ug-topkey.json /tmp/test-ug-nested.json /tmp/test-ug-flatdim.json
 
 echo "Test 22: a scorecard that cannot be read still leaves an entry, not silence"
-# merge-scorecards.sh exits 5 with ZERO bytes on stdout when its jq dies (its
-# `2>/dev/null` swallows the reason), so the SPEC_DEFECT route can reach 1l
-# holding an empty file. That used to append an empty string: exit 0, no entry,
-# and a restart reading the log would see the iteration had never happened. It
-# does not refuse — the route must log — it records that the card was unreadable
-# and says so on stderr.
 ug_bean
 : > /tmp/test-ug-empty.json
 printf '{"domains":{"general":' > /tmp/test-ug-truncated.json

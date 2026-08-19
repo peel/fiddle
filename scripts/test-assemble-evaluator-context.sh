@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# test-assemble-evaluator-context.sh — assemble-evaluator-context.sh contract
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PASS=0; FAIL=0
@@ -46,8 +45,6 @@ assert_order() {
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
-# Build a fake project root: protocol with the placeholder, one domain template,
-# calibration and antipattern files each carrying a ## Retired section.
 mkdir -p "$TMPDIR/skills/evaluate" "$TMPDIR/docs"
 cat > "$TMPDIR/skills/evaluate/SKILL.md" << 'EOF'
 PROTOCOL_MARKER

@@ -1,17 +1,4 @@
 #!/usr/bin/env bash
-# trend-eval-history.sh — Aggregate eval-log history across epics and trend
-# longitudinal decay signals (dispatches-to-convergence, iteration counts,
-# per-dimension score averages, provider-disagreement frequency).
-#
-# Eval-log data lives in each task bean's body under a "## Evaluation Log"
-# section written by append-eval-log.sh. Tasks are attributed to their
-# ancestor epic by walking the parent chain (task -> feature -> epic).
-#
-# Output: a single JSON document with per-epic aggregates ordered oldest to
-# newest, a trends section comparing consecutive epics, and an overall alarm
-# flag raised when a metric declines across the two most recent epics.
-#
-# Exit 0 always on well-formed runs (including <2 epics with data).
 set -euo pipefail
 
 BEANS_PATH=""
@@ -33,8 +20,6 @@ command -v jq >/dev/null 2>&1 || { echo "jq not found" >&2; exit 2; }
 
 ALL=$(beans list ${BEANS_ARGS[@]+"${BEANS_ARGS[@]}"} --json --full 2>/dev/null || echo '[]')
 
-# Resolve each bean's ancestor epic by walking the parent chain in jq (bash 3.2
-# has no associative arrays). Produces a "<id>\t<epic-id>" TSV looked up below.
 EPICMAP=$(echo "$ALL" | jq -r '
   (reduce .[] as $b ({}; . + {($b.id): {type: $b.type, parent: ($b.parent // "")}})) as $m
   | def resolve($id):
@@ -51,8 +36,6 @@ resolve_epic() {
   printf '%s\n' "$EPICMAP" | awk -F'\t' -v id="$1" '$1 == id {print $2; exit}'
 }
 
-# Parse a single bean body (stdin) into a per-task eval JSON object, or emit
-# nothing when the bean has no eval log with at least one iteration.
 parse_eval_body() {
   local body iters disp disagree lastsec dims
   body="$(cat)"

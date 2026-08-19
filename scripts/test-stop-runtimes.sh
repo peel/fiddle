@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# test-stop-runtimes.sh — Tests for stop-runtimes.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PASS=0; FAIL=0
@@ -58,7 +57,6 @@ echo ""
 echo "=== Test 5: Single process — start sleep, stop, verify dead ==="
 sleep 9999 &
 SLEEP_PID=$!
-# Verify it's running
 assert_true "sleep process started" "$(is_running "$SLEEP_PID")"
 
 cat > "$TEST_TMPDIR/single.json" << EOF
@@ -69,7 +67,6 @@ EXIT_CODE=0
 "$SCRIPT_DIR/stop-runtimes.sh" --state "$TEST_TMPDIR/single.json" 2>/dev/null || EXIT_CODE=$?
 assert_exit "single process → exit 0" 0 "$EXIT_CODE"
 
-# Give it a moment to die
 sleep 0.5
 assert_true "process is dead after stop" "$([ "$(is_running "$SLEEP_PID")" = "false" ] && echo "true" || echo "false")"
 
@@ -97,7 +94,6 @@ assert_true "process 2 is dead" "$([ "$(is_running "$PID2")" = "false" ] && echo
 
 echo ""
 echo "=== Test 7: Already dead process — verify graceful handling (exit 0) ==="
-# Use a PID that does not exist (pick a very high number unlikely to be in use)
 DEAD_PID=2147483647
 cat > "$TEST_TMPDIR/dead.json" << EOF
 [{"domain":"ghost","pid":$DEAD_PID,"port":0,"command":"sleep 9999"}]
@@ -142,7 +138,6 @@ assert_exit "negative PID → exit 2" 2 "$EXIT_CODE"
 
 echo ""
 echo "=== Test 12: SIGKILL fallback — SIGTERM-ignoring process killed within ~12s ==="
-# Spawn a process that traps (ignores) SIGTERM
 bash -c 'trap "" TERM; sleep 9999' &
 STUBBORN_PID=$!
 sleep 0.3
@@ -160,11 +155,9 @@ ELAPSED=$(( END_TIME - START_TIME ))
 
 assert_exit "SIGKILL fallback → exit 0" 0 "$EXIT_CODE"
 
-# Give a brief moment for kill -9 to take full effect
 sleep 0.5
 assert_true "stubborn process is dead after SIGKILL" "$([ "$(is_running "$STUBBORN_PID")" = "false" ] && echo "true" || echo "false")"
 
-# Verify it took roughly 10 seconds (between 8 and 15 to account for timing variance)
 if [[ $ELAPSED -ge 8 && $ELAPSED -le 15 ]]; then
   PASS=$((PASS+1)); echo "  PASS: SIGKILL fallback took ~${ELAPSED}s (expected 8-15s)"
 else

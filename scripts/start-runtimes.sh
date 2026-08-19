@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# start-runtimes.sh — Start runtime processes for evaluation with ready-check polling.
-# Exit 0 = started and ready, 1 = app failed to start, 2 = invalid input, 3 = harness failure.
 set -euo pipefail
 
 DOMAINS_FILE=""
@@ -17,7 +15,6 @@ done
 [[ -n "$DOMAINS_FILE" ]] || { echo '{"error":"missing --domains"}' >&2; exit 2; }
 [[ -f "$DOMAINS_FILE" ]] || { echo '{"error":"domains file not found: '"$DOMAINS_FILE"'"}' >&2; exit 2; }
 
-# Check dependencies
 command -v jq >/dev/null 2>&1 || { echo '{"error":"jq not found"}' >&2; exit 3; }
 command -v python3 >/dev/null 2>&1 || { echo '{"error":"python3 not found"}' >&2; exit 3; }
 command -v curl >/dev/null 2>&1 || { echo '{"error":"curl not found"}' >&2; exit 3; }
@@ -27,14 +24,11 @@ now_ms() {
   python3 -c 'import time; print(int(time.time() * 1000))'
 }
 
-# Validate JSON
 if ! jq empty "$DOMAINS_FILE" 2>/dev/null; then
   echo '{"error":"invalid JSON in domains file"}' >&2
   exit 2
 fi
 
-# Build ordered list of domain names
-# If runtime_order is present, use it; otherwise use key order from .domains
 RUNTIME_ORDER=$(jq -r '
   if .runtime_order then
     .runtime_order[]
@@ -117,13 +111,11 @@ poll_command() {
 }
 
 while IFS= read -r DOMAIN; do
-  # Check if this domain has a runtime configured
   HAS_RUNTIME=$(jq -r --arg d "$DOMAIN" '.domains[$d].runtime // empty | length > 0' "$DOMAINS_FILE" 2>/dev/null || echo "false")
   if [[ "$HAS_RUNTIME" != "true" ]]; then
     continue
   fi
 
-  # Get runtime command for this slot
   RUNTIME_CMD=$(jq -r --arg d "$DOMAIN" --argjson idx "$SLOT_INDEX" \
     '.domains[$d].runtime[$idx] // .domains[$d].runtime[0]' "$DOMAINS_FILE")
 
@@ -132,18 +124,14 @@ while IFS= read -r DOMAIN; do
     exit 2
   fi
 
-  # Get ready_check config
   CHECK_TYPE=$(jq -r --arg d "$DOMAIN" '.domains[$d].ready_check.type // "tcp"' "$DOMAINS_FILE")
   TIMEOUT_MS=$(jq -r --arg d "$DOMAIN" '.domains[$d].ready_check.timeout_ms // 15000' "$DOMAINS_FILE")
   RETRY_MS=$(jq -r --arg d "$DOMAIN" '.domains[$d].ready_check.retry_interval_ms // 1000' "$DOMAINS_FILE")
 
-  # Start the runtime in background
-  # Use a temp file to capture the PID reliably
   TMPLOG=$(mktemp)
   bash -c "$RUNTIME_CMD" >"$TMPLOG" 2>&1 &
   RUNTIME_PID=$!
 
-  # Brief wait to detect immediate crashes
   sleep 0.3
   if ! kill -0 "$RUNTIME_PID" 2>/dev/null; then
     rm -f "$TMPLOG"
@@ -152,10 +140,8 @@ while IFS= read -r DOMAIN; do
     exit 1
   fi
 
-  # Extract port from ready_check or command for output
   RUNTIME_PORT=0
 
-  # Poll readiness
   READY=false
   case "$CHECK_TYPE" in
     tcp)
@@ -168,7 +154,6 @@ while IFS= read -r DOMAIN; do
     http)
       CHECK_URL=$(jq -r --arg d "$DOMAIN" '.domains[$d].ready_check.url // "http://localhost:8080"' "$DOMAINS_FILE")
       EXPECT_STATUS=$(jq -r --arg d "$DOMAIN" '.domains[$d].ready_check.expect_status // 200' "$DOMAINS_FILE")
-      # Extract port from URL for output
       RUNTIME_PORT=$(echo "$CHECK_URL" | python3 -c "
 import sys, re
 url = sys.stdin.read().strip()
@@ -196,13 +181,11 @@ print(m.group(1) if m else '8080')
   rm -f "$TMPLOG"
 
   if [[ "$READY" != "true" ]]; then
-    # Check if process died (app failure) vs timeout (could be either)
     if ! kill -0 "$RUNTIME_PID" 2>/dev/null; then
       cleanup_on_failure
       echo '{"error":"runtime for domain '"$DOMAIN"' crashed during startup"}' >&2
       exit 1
     else
-      # Process still running but never became ready — treat as app failure
       kill "$RUNTIME_PID" 2>/dev/null || true
       cleanup_on_failure
       echo '{"error":"runtime for domain '"$DOMAIN"' timed out waiting for ready_check"}' >&2
@@ -210,7 +193,6 @@ print(m.group(1) if m else '8080')
     fi
   fi
 
-  # Append to results
   RESULTS=$(echo "$RESULTS" | jq --arg domain "$DOMAIN" \
     --argjson pid "$RUNTIME_PID" \
     --argjson port "$RUNTIME_PORT" \

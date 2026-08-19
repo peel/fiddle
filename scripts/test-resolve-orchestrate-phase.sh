@@ -48,10 +48,6 @@ COMPLETED_SEED_ONLY=$(write_json completed-seed-only '[{"id":"seed-m0","type":"t
 DUPLICATE_GENERATION=$(write_json duplicate-generation '[{"id":"seed-m0","type":"task","status":"completed","tags":["planning"]},{"id":"task-1a","type":"task","status":"todo","tags":["generated-by:seed-m0","plan-task:1"]},{"id":"task-1b","type":"task","status":"todo","tags":["generated-by:seed-m0","plan-task:1"]}]')
 CONFLICTING_PARENT=$(write_json conflicting-parent '[{"id":"seed-m0","type":"task","status":"completed","parent":"factory-m0","tags":["planning"]},{"id":"task-1","type":"task","status":"todo","parent":"another-epic","tags":["generated-by:seed-m0","plan-task:1"]}]')
 LEGACY_WORK=$(write_json legacy-work '[{"id":"task-legacy","type":"task","status":"todo","tags":[]}]')
-# Holistic review creates remediation beans mid-epic (develop-holistic 2d). They
-# are not materialized from the planning seed, so they carry no generation
-# identity and must not be required to claim one — back-dating `generated-by`
-# onto them would make the resolver pass by asserting a provenance that is false.
 REMEDIATION_WORK=$(write_json remediation-work '[{"id":"seed-m0","type":"task","status":"completed","tags":["planning"]},{"id":"task-1","type":"task","status":"completed","tags":["generated-by:seed-m0","plan-task:1"]},{"id":"fix-1","type":"task","status":"completed","tags":["remediation"]}]')
 REMEDIATION_ACTIVE=$(write_json remediation-active '[{"id":"seed-m0","type":"task","status":"completed","tags":["planning"]},{"id":"task-1","type":"task","status":"completed","tags":["generated-by:seed-m0","plan-task:1"]},{"id":"fix-1","type":"task","status":"todo","tags":["remediation"]}]')
 UNTAGGED_WORK=$(write_json untagged-work '[{"id":"seed-m0","type":"task","status":"completed","tags":["planning"]},{"id":"task-1","type":"task","status":"completed","tags":["generated-by:seed-m0","plan-task:1"]},{"id":"stray","type":"task","status":"completed","tags":[]}]')

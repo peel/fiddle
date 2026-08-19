@@ -141,9 +141,6 @@ EXIT_CODE=0
 "$SCRIPT_DIR/validate-bean-body.sh" --body "$TMPDIR/does-not-exist.md" 2>/dev/null || EXIT_CODE=$?
 assert_exit "missing body file → exit 2" 2 "$EXIT_CODE"
 
-# A finished bean has every step ticked. The gate checks that a body carries a
-# checklist at all — a thin body has none — so ticked steps satisfy it. See
-# Test 5 for the property this must not weaken.
 echo "Test 8: finished body, every step ticked → exit 0"
 cat > "$TMPDIR/finished.md" << 'EOF'
 ---
@@ -191,9 +188,6 @@ EXIT_CODE=0
 "$SCRIPT_DIR/validate-bean-body.sh" --body "$TMPDIR/upper.md" 2>/dev/null || EXIT_CODE=$?
 assert_exit "uppercase [X] → exit 0" 0 "$EXIT_CODE"
 
-# The gate's reason for existing: a body with no checklist of any kind is thin
-# and must not reach an implementer. Test 5 covers prose-only; this covers a
-# body that is otherwise complete, so only the missing checklist can fail it.
 echo "Test 11: otherwise-complete body with no checklist of any kind → exit 2"
 grep -v '^- \[' "$TMPDIR/finished.md" > "$TMPDIR/stepless.md"
 grep -qE '^[[:space:]]*-[[:space:]]+\[[ xX]\]' "$TMPDIR/stepless.md" && { echo "  FIXTURE BROKEN: stepless.md still has a checklist"; exit 1; }

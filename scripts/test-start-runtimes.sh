@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# test-start-runtimes.sh — Tests for start-runtimes.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PASS=0; FAIL=0
@@ -38,7 +37,6 @@ assert_json_num() {
 TEST_TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TEST_TMPDIR"' EXIT
 
-# Find a free port for testing
 find_free_port() {
   python3 -c "
 import socket
@@ -51,10 +49,7 @@ print(port)
 }
 
 echo "=== Test 0: Missing dependencies (jq hidden) → exit 3 ==="
-# Create a minimal valid domains file; the script checks deps after the file-exists check
 echo '{"domains":{}}' > "$TEST_TMPDIR/deps-test.json"
-# A PATH of system dirs no longer hides jq (macOS ships /usr/bin/jq); use a
-# stub dir holding only bash so the shebang resolves but jq is absent.
 mkdir -p "$TEST_TMPDIR/nojq-bin"
 ln -s "$(command -v bash)" "$TEST_TMPDIR/nojq-bin/bash"
 EXIT_CODE=0
@@ -92,7 +87,6 @@ assert_json "no runtime → empty array" ". | length" "0" "$OUTPUT"
 echo ""
 echo "=== Test 4: TCP ready check — start HTTP server, verify detection ==="
 PORT=$(find_free_port)
-# Write domains config with tcp ready_check
 cat > "$TEST_TMPDIR/tcp-domain.json" << EOF
 {
   "domains": {
@@ -117,7 +111,6 @@ assert_json "domain name in output" ".[0].domain" "backend" "$OUTPUT"
 assert_json_num "pid is positive integer" ".[0].pid" "$OUTPUT"
 assert_json_num "port in output" ".[0].port" "$OUTPUT"
 assert_json "command in output" ".[0].command | type" "string" "$OUTPUT"
-# Cleanup: kill started process
 PID=$(echo "$OUTPUT" | jq -r '.[0].pid')
 kill "$PID" 2>/dev/null || true
 
@@ -233,10 +226,8 @@ OUTPUT=$("$SCRIPT_DIR/start-runtimes.sh" --domains "$TEST_TMPDIR/ordered-domain.
 assert_exit "ordered multi-domain → exit 0" 0 "$EXIT_CODE"
 assert_json "output is array" ". | type" "array" "$OUTPUT"
 assert_json "array has 2 entries" ". | length" "2" "$OUTPUT"
-# runtime_order: backend first, then frontend
 assert_json "first entry is backend" ".[0].domain" "backend" "$OUTPUT"
 assert_json "second entry is frontend" ".[1].domain" "frontend" "$OUTPUT"
-# Cleanup
 for PID in $(echo "$OUTPUT" | jq -r '.[].pid'); do
   kill "$PID" 2>/dev/null || true
 done
@@ -269,9 +260,6 @@ kill "$PID" 2>/dev/null || true
 
 echo ""
 echo "=== Test 10: Default fallback ready check (tcp port 8080) — no ready_check field ==="
-# The script defaults to tcp:8080 when no ready_check is specified.
-# Start the runtime command on port 8080 so the default check succeeds.
-# Skip if 8080 is already occupied to avoid false failures in CI.
 if python3 -c "import socket; s=socket.socket(); r=s.connect_ex(('localhost',8080)); s.close(); exit(0 if r!=0 else 1)" 2>/dev/null; then
   cat > "$TEST_TMPDIR/no-readycheck.json" << 'EOF'
 {

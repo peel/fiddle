@@ -1,32 +1,4 @@
 #!/usr/bin/env bash
-# check-github-effects-lane.sh — the credentialed lane's shape, asserted.
-#
-# `.github/workflows/github-effects.yml` is the one workflow in this repository
-# that holds a credential, and two of its properties were held by prose in its
-# own header plus whoever remembered to grep:
-#
-#   1. NEVER SKIPS. No `if:` and no `continue-on-error:` anywhere in the file, so
-#      an absent secret makes the job red rather than green-by-not-running. A
-#      silently skipped lane is indistinguishable from a passing one, and the
-#      difference is invisible in the runs listing.
-#   2. FAILS EARLY AND BY NAME. The credential guard is the first step, and the
-#      workspace preflight precedes the toolchain install and the release build,
-#      so a dispatch that cannot succeed costs seconds and says why.
-#
-# A comment cannot fail. This can. It is deliberately a shape check over the
-# YAML text and not a semantic one over a parsed document, because the defect it
-# guards against is someone *adding a line* — and a line is what it looks for.
-#
-# Comment lines are blanked before matching (line numbers preserved), so the
-# header's own discussion of `if:` and `continue-on-error:` does not trip it and
-# does not have to be written around.
-#
-# Usage: check-github-effects-lane.sh [path-to-workflow]
-# Exit:  0 ok, 1 a property does not hold, 2 the file is unreadable.
-#
-# scripts/test-check-github-effects-lane.sh proves every check below
-# discriminates, by injecting the corresponding defect and requiring a non-zero
-# exit — an absence is only evidence when something would notice its return.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -40,8 +12,6 @@ fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/check-effects-lane-XXXXXX") || exit 2
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
-# Blank full-line comments, keeping the line count identical so reported numbers
-# match the real file.
 sed 's/^[[:space:]]*#.*$//' "$FILE" > "$WORK/stripped"
 STRIPPED="$WORK/stripped"
 
@@ -53,7 +23,6 @@ fail() {
 
 line_of() { grep -nF -- "$1" "$STRIPPED" | head -1 | cut -d: -f1; }
 
-# The run: block of a named step, dedented, so it can be grepped or executed.
 extract_run_block() {
   awk -v marker="      - name: $1" '
     index($0, marker) == 1 { instep = 1; next }
@@ -69,8 +38,6 @@ extract_run_block() {
 GUARD_NAME="Require FIDDLE_EFFECTS_TOKEN"
 PREFLIGHT_NAME="Require a Cargo workspace on the dispatched ref"
 
-# ---------------------------------------------------------------- property 1
-# No key that could turn a missing credential into a green run.
 for key in if continue-on-error; do
   hits=$(grep -nE "^[[:space:]]*(-[[:space:]]+)?${key}[[:space:]]*:" "$STRIPPED" || true)
   if [[ -n "$hits" ]]; then
@@ -79,9 +46,6 @@ for key in if continue-on-error; do
   fi
 done
 
-# ---------------------------------------------------------------- property 2
-# The two guards exist, the credential guard is the first step, and the
-# workspace preflight precedes everything expensive.
 guard_line=$(line_of "- name: $GUARD_NAME")
 preflight_line=$(line_of "- name: $PREFLIGHT_NAME")
 toolchain_line=$(line_of "uses: dtolnay/rust-toolchain")
@@ -105,9 +69,6 @@ if [[ -n "$preflight_line" && -n "$build_line" ]] && (( preflight_line > build_l
   fail "the workspace preflight (line $preflight_line) runs after 'cargo build --release' (line $build_line), which is the error it exists to pre-empt"
 fi
 
-# ---------------------------------------------------------------- property 3
-# Each guard's own shell must be capable of failing, and the preflight must name
-# what to pass instead rather than only what is wrong.
 guard_block=$(extract_run_block "$GUARD_NAME")
 preflight_block=$(extract_run_block "$PREFLIGHT_NAME")
 

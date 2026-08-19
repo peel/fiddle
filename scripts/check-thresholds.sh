@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# check-thresholds.sh — Compare scorecard against threshold config.
-# Exit 0 = all pass, 1 = at least one fail, 2 = invalid or ungradeable input.
-#
-# An input the comparisons below cannot read is refused, never defaulted: exit 2
-# with an {"error", "problems"} object on stdout and one line per problem on
-# stderr, each naming the missing field and the dimension or criterion id it
-# belongs to. Grading a scorecard by a threshold set its author was never given
-# would be worse than erroring.
 set -euo pipefail
 
 SCORECARD=""
@@ -26,14 +18,6 @@ done
 jq empty "$SCORECARD" 2>/dev/null || { echo '{"error":"scorecard is not valid JSON"}'; exit 2; }
 jq empty "$CRITERIA" 2>/dev/null || { echo '{"error":"criteria is not valid JSON"}'; exit 2; }
 
-# Require every field the comparisons below read, before comparing anything.
-# jq makes `1 < null` false *and* `1 >= null` true, so a dimension with no
-# threshold used to read as passing twice — absent from failing_dimensions and
-# listed in passing_dimensions with a null threshold. Type order does the same
-# for a stringly-typed score: `"1" < 7` is false and `"1" >= 7` is true. On the
-# criteria side `select(.pass == false)` cannot tell an ungraded array from a
-# clean one, and matches neither "false" nor null. Each of those reports a pass
-# the script never established, so ungradeable input must refuse instead.
 UNGRADEABLE=$(jq -n --slurpfile card "$SCORECARD" --slurpfile crit "$CRITERIA" '
   def numeric($field; $where; $value):
     if $value == null then "\($where): missing `\($field)`"
@@ -99,7 +83,6 @@ if [[ "$(echo "$UNGRADEABLE" | jq 'length')" -gt 0 ]]; then
   exit 2
 fi
 
-# Check dimensions against thresholds
 FAILING_DIMS=$(jq -c '
   [.domains | to_entries[] | .key as $domain |
    .value.dimensions | to_entries[] |
@@ -107,7 +90,6 @@ FAILING_DIMS=$(jq -c '
    {domain: $domain, dimension: .key, score: .value.score, threshold: .value.threshold}]
 ' "$SCORECARD")
 
-# Check criteria
 FAILING_CRITERIA=$(jq -c '[.[] | select(.pass == false) | .id]' "$CRITERIA")
 
 FAIL_DIM_COUNT=$(echo "$FAILING_DIMS" | jq 'length')
@@ -120,7 +102,6 @@ PASSING_DIMS=$(jq -c '
    {domain: $domain, dimension: .key, score: .value.score, threshold: .value.threshold}]
 ' "$SCORECARD")
 
-# Build flat map of "domain.dimension": score for convergence detection
 DIMENSIONS_MAP=$(jq -c '
   [.domains | to_entries[] | .key as $domain |
    .value.dimensions | to_entries[] |

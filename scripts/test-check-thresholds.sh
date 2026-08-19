@@ -128,10 +128,6 @@ assert_json "dimensions present on crit fail" '.dimensions["general.correctness"
 
 ERRFILE="$TMPDIR/err.txt"
 
-# A missing field must refuse rather than default. jq makes `1 < null` false and
-# `1 >= null` true, so a dimension with no threshold used to read as passing
-# twice; `select(.pass == false)` likewise cannot tell an ungraded criteria
-# array from a clean one. Both once produced verdict PASS with exit 0.
 
 echo "Test 4: A dimension with no threshold is refused, not passed"
 cat > "$TMPDIR/scorecard.json" << 'EOF'
@@ -276,7 +272,6 @@ assert_exit "no score -> exit 2" 2 "$EXIT_CODE"
 assert_contains "stderr names the missing field" 'missing `score`' "$ERRTEXT"
 
 echo "Test 11: A domain key at top level instead of under domains is refused"
-# One of the two envelope mis-shapes external evaluators returned this epic.
 cat > "$TMPDIR/scorecard.json" << 'EOF'
 {
   "provider": "codex",
@@ -305,8 +300,6 @@ assert_exit "truncated scorecard -> exit 2" 2 "$EXIT_CODE"
 assert_json "stdout reports the parse failure" ".error" "scorecard is not valid JSON" "$OUTPUT"
 
 echo "Test 13: An evidence-only scorecard still passes with an empty dimensions map"
-# check-convergence.sh reads `.dimensions == {}` as evidence-only, so a domain
-# with no scored dimensions must stay gradeable rather than be refused.
 cat > "$TMPDIR/scorecard.json" << 'EOF'
 {
   "domains": {
@@ -328,10 +321,6 @@ assert_exit "evidence-only -> exit 0" 0 "$EXIT_CODE"
 assert_json "verdict is PASS" ".verdict" "PASS" "$OUTPUT"
 assert_json "dimensions map is empty" '.dimensions | length' "0" "$OUTPUT"
 
-# Tests 14 and 15 replay two evaluations this epic actually produced (epic
-# fiddle-eph7, iteration 2 of beans fiddle-ek1e and fiddle-o1ly) against the
-# verdicts recorded at the time. They pin the JSON shape check-convergence.sh
-# reads, byte for byte.
 
 echo "Test 14: A real criterion failure reproduces its recorded verdict (fiddle-ek1e it2)"
 cat > "$TMPDIR/scorecard.json" << 'EOF'

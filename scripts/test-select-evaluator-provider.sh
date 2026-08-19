@@ -26,9 +26,6 @@ assert_json() {
 TEST_TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TEST_TMPDIR"' EXIT
 
-# A PATH of system dirs cannot hide binaries reliably (macOS ships /usr/bin/jq,
-# and providers may live anywhere). Use a stub dir holding only what the
-# selection script itself needs: bash for the shebang and jq for JSON output.
 STUB_BIN="$TEST_TMPDIR/stub-bin"
 mkdir -p "$STUB_BIN"
 ln -s "$(command -v bash)" "$STUB_BIN/bash"
@@ -117,12 +114,6 @@ echo "$ERR" | jq -e . >/dev/null 2>&1 || JSON_OK=$?
 assert_exit "quoted unknown argument stderr is JSON" 0 "$JSON_OK"
 
 echo "Test 12: selection succeeds without a writable temp directory"
-# Bash implements here-strings/heredocs via temp files (bashes >= 5.1 use
-# pipes for small documents, older ones always hit TMPDIR), and bash falls
-# back to /tmp when TMPDIR is unwritable. A read-only TMPDIR alone therefore
-# cannot catch temp-backed constructs; where sandbox-exec exists, deny all
-# file writes (except /dev/null) to simulate a fully read-only environment,
-# and run under the system bash whose here-strings are always temp-backed.
 RO_TMPDIR="$TEST_TMPDIR/ro"
 mkdir -p "$RO_TMPDIR"
 chmod 500 "$RO_TMPDIR"

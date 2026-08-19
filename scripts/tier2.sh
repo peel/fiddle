@@ -1,49 +1,9 @@
 #!/usr/bin/env bash
-#
-# Tier 2: realistic fixtures against a real model.
-#
-# On demand and at milestone completion — never automatic, never a gate. Its
-# output is judgment material, not an assertion: this script exits 0 whenever it
-# managed to *run* the fixtures, whatever the model made of them. A run in which
-# every fixture came back unrepaired is a finding, and findings are read, not
-# thrown at a build.
-#
-# That is the whole difference between this and the two lanes either side of it:
-#
-#   deterministic suite   always, free, offline    MockCompletionModel   GATES
-#   tier 1 (smoke.rs)     opt-in, #[ignore]d       real, cheap           no
-#   tier 2 (this)         opt-in, on demand        real                  no
-#
-# Neither real-model tier ever runs unless somebody asks for it by name. Tier 1
-# is one #[ignore]d test, reachable only through `--ignored`; this script is
-# reachable only by being invoked. Nothing in .github/workflows invokes either,
-# and nothing should: they need a credential and they cost money, so a workflow
-# that ran one would make both a condition of merging. ADR 012 records the
-# decision and what it gives up.
-#
-# Usage
-#   ( set -a; . .env; set +a; ./scripts/tier2.sh )
-#   FIDDLE_TIER2_MODEL=claude-opus-5 ./scripts/tier2.sh
-#   FIDDLE_TIER2_OUT=/tmp/run-7 ./scripts/tier2.sh
-#
-# It writes one JSON artifact per fixture plus a `summary.json` over all of
-# them, so a later reading is done against a record rather than against a
-# terminal scrollback.
-#
-# NEVER print the credential. It is read from the environment by the binary
-# itself, through the variable `fiddle.toml` names; this script never expands
-# LITELLM_API_KEY into a command line, a log line, or a generated document.
 
 set -euo pipefail
 
 : "${LITELLM_API_KEY:?tier 2 requires a credential}"
 
-# Defaulted to a model measured to drive the whole loop rather than to the
-# largest one available. Through this gateway both Claude-family models finalise
-# after a single tool call, while kimi, deepseek and glm-5 all list, read, write,
-# check and earn the marker — see the table at `DEFAULT_MODEL` in
-# crates/fiddle-cli/tests/smoke.rs. Comparing models is what FIDDLE_TIER2_MODEL
-# is for, and it is a good use of Tier 2.
 MODEL="${FIDDLE_TIER2_MODEL:-bedrock/moonshotai.kimi-k2.5}"
 BASE_URL="${FIDDLE_TIER2_BASE_URL:-https://litellm.firn.snplow.net/v1}"
 CREDENTIAL_VAR="LITELLM_API_KEY"
@@ -55,34 +15,11 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 
 mkdir -p "$OUT_DIR"
 
-# ---------------------------------------------------------------------------
-# The binary under test
-#
-# Built here rather than assumed present, for the reason the acceptance
-# harness's `fiddle_binary` spells out at length: a path under target/ holds
-# whatever the last build left, which may predate the change being judged, and a
-# Tier 2 report about last week's binary is a report about nothing. `--release`
-# because Tier 2 is meant to resemble a deployment.
-# ---------------------------------------------------------------------------
 echo "building the fiddle binary…"
 cargo build --release --bin fiddle --manifest-path "$REPO_ROOT/Cargo.toml" >&2
 FIDDLE="$REPO_ROOT/target/release/fiddle"
 [ -x "$FIDDLE" ] || { echo "no fiddle binary at $FIDDLE" >&2; exit 1; }
 
-# ---------------------------------------------------------------------------
-# The fixtures
-#
-# Each is a real cargo package whose own test suite fails, and each fails for a
-# different *kind* of reason — which is the point of Tier 2 over Tier 1. Tier 1
-# uses one trivial fixture so that a failure means the plumbing broke; these are
-# meant to be hard enough that what comes back is worth reading.
-#
-#   off_by_one    one wrong operator, the defect named by a failing assertion
-#   wrong_branch  a condition inverted, where reading the test is not enough
-#                 and the model has to reason about which branch is which
-#   missing_case  an unhandled input, where the repair is an addition rather
-#                 than an edit
-# ---------------------------------------------------------------------------
 FIXTURES=(off_by_one wrong_branch missing_case)
 
 write_fixture() {
@@ -183,9 +120,6 @@ RS
   git -C "$repo" -c user.email=t@t -c user.name=t commit -qm "the broken fixture" >/dev/null
 }
 
-# ---------------------------------------------------------------------------
-# One fixture, one run
-# ---------------------------------------------------------------------------
 run_fixture() {
   local name="$1"
   local root="$WORK_DIR/$name"
@@ -196,9 +130,6 @@ run_fixture() {
     > "$root/stub-state/work/tier2-$name.json"
   write_fixture "$name" "$root/fixture"
 
-  # The document names the *variable*, never the value — the same discipline the
-  # schema enforces, kept here so a generated document is as safe as a written
-  # one.
   cat > "$root/fiddle.toml" <<TOML
 [project]
 name = "icecube"
@@ -237,9 +168,6 @@ TOML
   set -e
   ended=$(date +%s)
 
-  # The marker on disk, read the way the stub change port reads it. Present
-  # exactly when the check passed, so it is the one unambiguous answer to "did
-  # the repair land".
   local marker="null"
   if [ -f "$root/stub-state/changes/tier2-$name.json" ]; then
     marker=$(python3 -c "

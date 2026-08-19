@@ -23,8 +23,6 @@ assert_json() {
   fi
 }
 
-# Create an isolated temporary git repo so untracked files in the worktree
-# don't affect DIRTY detection.
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 

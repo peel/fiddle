@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# append-eval-log.sh — Append/init evaluation log on a bean body.
-# Exit 0 = success, 1 = bean not found, 2 = invalid input.
 set -euo pipefail
 
 BEAN_ID="" INIT=false SPOT_CHECK=false BASE_SHA="" ITERATION="" SCORECARD="" DISPATCHES="" GUIDANCE="" DISAGREEMENTS="" CORRECTIONS="" ANTIPATTERNS=""
@@ -36,7 +34,6 @@ EOF
   exit 0
 fi
 
-# Append iteration (or a spot-check entry)
 if $SPOT_CHECK; then
   DISPATCHES="${DISPATCHES:-0}"
 else
@@ -53,28 +50,6 @@ else
   HEADING="### Iteration $ITERATION ($TIMESTAMP)"
 fi
 
-# Build the entry from scorecard JSON.
-#
-# This log gates nothing — convergence is decided by check-thresholds.sh, which
-# refuses a scorecard it cannot compare (exit 2). Nothing here refuses: the
-# SPEC_DEFECT route in skills/develop-loop/scorecard-merge.md must log a
-# scorecard it has *already* declared defective before it routes the bean, so a
-# refusal here would remove the record that route exists to leave.
-#
-# It does have to be honest, though. The FAIL annotation used to be written by
-# the same `score < threshold` comparison check-thresholds.sh was fixed for, and
-# it has the same two blind spots: jq makes `1 < null` false, so a dimension
-# with no threshold rendered as a bare `1/10`, and type order makes `"1" < 7`
-# false, so did a stringly-typed score. Either way the entry read as a clean
-# sheet — which is exactly how the original defect presented, one artifact
-# along, in the only loop state that survives a restart. A dimension the
-# comparison cannot make is now marked UNGRADED and told why, instead of
-# borrowing the appearance of a pass.
-#
-# The mis-shapes were worse than misleading: a top-level domain key, a
-# `criteria` array mis-nested under `.domains`, or a dimension that is a bare
-# number each aborted this jq with a raw error and exit 5, writing no entry at
-# all. Each of those shapes occurred in this epic. They are recorded too.
 ENTRY=$(jq -r --arg heading "$HEADING" --arg disp "$DISPATCHES" --arg guide "$GUIDANCE" '
   def ungraded($why): " (UNGRADED, \($why))";
   def dim_note($d):
@@ -114,13 +89,6 @@ ENTRY=$(jq -r --arg heading "$HEADING" --arg disp "$DISPATCHES" --arg guide "$GU
   (if $guide != "" then "\n**Guidance:** \"\($guide)\"" else "" end)
 ' "$SCORECARD") || ENTRY=""
 
-# jq's own status, taken before anything pipes it. An unreadable card must not
-# vanish: merge-scorecards.sh exits 5 with zero bytes on stdout when its jq dies
-# (its own `2>/dev/null` swallows the reason), so the SPEC_DEFECT route can
-# arrive here holding an empty file. That used to append an empty string —
-# exit 0, no entry written, and a restart reading this log would conclude the
-# iteration never happened. Record the gap instead; jq's error has already gone
-# to stderr above.
 if [[ -z "$ENTRY" ]]; then
   echo "Warning: could not read scorecard $SCORECARD — logging the iteration without dimensions" >&2
   ENTRY=$(printf '%s\ndispatches: %s\n**scorecard:** (UNGRADED, could not be read: %s)' \
@@ -130,7 +98,6 @@ if [[ -z "$ENTRY" ]]; then
   fi
 fi
 
-# Append disagreements if provided and non-empty
 if [[ -n "$DISAGREEMENTS" && -f "$DISAGREEMENTS" ]]; then
   DISAGREE_SECTION=$(jq -r '
     if length == 0 then "" else
@@ -145,7 +112,6 @@ if [[ -n "$DISAGREEMENTS" && -f "$DISAGREEMENTS" ]]; then
   fi
 fi
 
-# Append corrections if provided and non-empty
 if [[ -n "$CORRECTIONS" && -f "$CORRECTIONS" ]]; then
   CORRECT_SECTION=$(jq -r '
     if length == 0 then "" else
@@ -160,7 +126,6 @@ if [[ -n "$CORRECTIONS" && -f "$CORRECTIONS" ]]; then
   fi
 fi
 
-# Append antipatterns if provided and non-empty
 if [[ -n "$ANTIPATTERNS" && -f "$ANTIPATTERNS" ]]; then
   ANTIPATTERN_SECTION=$(jq -r '
     if length == 0 then "" else
@@ -177,7 +142,6 @@ if [[ -n "$ANTIPATTERNS" && -f "$ANTIPATTERNS" ]]; then
   fi
 fi
 
-# Update total_dispatches
 CURRENT_BODY=$(beans show "$BEAN_ID" --json 2>/dev/null | jq -r '.body') || { echo "Bean $BEAN_ID not found" >&2; exit 1; }
 OLD_TOTAL=$(echo "$CURRENT_BODY" | sed -n 's/^total_dispatches: \([0-9][0-9]*\)/\1/p' | tail -1)
 OLD_TOTAL="${OLD_TOTAL:-0}"

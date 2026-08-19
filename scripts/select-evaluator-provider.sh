@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# select-evaluator-provider.sh — Pick the evaluator provider for a domain.
-# The providers list is an ordered preference; the first available provider
-# that differs from the implementer's provider wins. Fallbacks: the
-# implementer's provider (fresh context), then claude.
-# Exit 0 = selected, 2 = invalid input.
 set -euo pipefail
 
 usage() {
