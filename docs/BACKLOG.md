@@ -1861,6 +1861,7 @@ The `--criteria` argument has the same shape of hazard from the other direction:
 
 Origin: orchestration (epic fiddle-eph7, holistic iteration 4 — the verdict was re-derived by hand and the three failing dimensions recovered)
 Tags: #bug #tooling #evaluation
+Status: Resolved 2026-08-19 by `fiddle-fgam` — `check-thresholds.sh` refuses ungradeable input with exit 2 before comparing anything, naming each missing field with the dimension or criterion it belongs to (``domain general dimension correctness: missing `threshold` ``, ``criterion c1: missing `pass` ``). The refusal also covers the same blind spot arrived at by type order rather than by a null: `"1" >= 7` is true, and `"false" == false` is false, so a stringly-typed score or `pass` read as passing too. `scripts/test-check-thresholds.sh` holds those cases, and replays the two verdicts of iteration 2 (`fiddle-ek1e` on a criterion, `fiddle-o1ly` on a dimension) byte for byte to pin the shape `check-convergence.sh` reads. The `--criteria` half of this finding had a second cause the entry did not name: `skills/develop-holistic/SKILL.md` instructed the caller to pass `criteria-holistic.json`, which *is* the ungraded briefing file; it now extracts the graded array from the merged scorecard.
 
 ### 2026-08-18 — A probe taken from a stale binary, in the pack built to prevent exactly that
 
@@ -1906,4 +1907,23 @@ The two truncations were re-dispatched, because content was missing and repairin
 Four failures in one epic is a tooling signal rather than four provider mistakes. `merge-scorecards.sh` should normalize a top-level domain key and a mis-nested `criteria` array, and say in its stderr that it did — then no caller hand-fixes anything, and the normalization is recorded in one place instead of in four evaluation logs. Spelling the envelope more loudly in each dispatch has been tried repeatedly this milestone and has not converged.
 
 Origin: orchestration (epic fiddle-eph7 — beans c64d, uwk0, jq1g and holistic iteration 4)
+Tags: #bug #tooling #evaluation
+Status: 2026-08-19 — action redirected rather than resolved. See *Envelope normalisation does not belong in `merge-scorecards.sh`, and one shape never reaches it* below: the merge is the wrong host, because one of the two shapes dies at `validate-scorecard.sh` before it and the merge's stderr is already consumed as `disagreements-holistic.json`. The distinction this entry draws — re-dispatch missing content, normalise mis-shaped complete content and say so — stands.
+
+### 2026-08-19 — Envelope normalisation does not belong in `merge-scorecards.sh`, and one shape never reaches it
+
+Acts on *The evaluator envelope has now failed four times, in three different shapes* above, which proposed that `merge-scorecards.sh` normalise a top-level domain key and a mis-nested `criteria` array and say on stderr that it did. Measured against the tree while fixing `check-thresholds.sh` (bean `fiddle-fgam`), that placement cannot cover both shapes, and its stderr is not free.
+
+The documented order is dispatch, then `validate-scorecard.sh` on the raw per-provider scorecard (`skills/develop-loop/dispatch-and-evidence.md`, "Gate each scorecard before the merge"), then `merge-scorecards.sh` — which is on every path, since step 1g normalises even a single provider through it. Running the two shapes through that order:
+
+- **`criteria` nested under `.domains`** — `validate-scorecard.sh` exits **5** with `jq: error (at <unknown>): Cannot index array with string ("dimensions")`, rather than the exit-2 JSON error array it documents, because `.domains | to_entries` hands the criteria array to `.value.dimensions`. The scorecard is rejected before the merge, so a normaliser inside the merge would never see this shape at all.
+- **a top-level domain key** — `validate-scorecard.sh` exits **0** and accepts it: with no `.domains`, it has zero dimensions to check. `merge-scorecards.sh` then exits **5 with nothing on stdout and nothing on stderr**, because the `2>/dev/null` on its merge `jq` swallows `null (null) has no keys`. A caller sees an empty file and no reason.
+
+The merge's stderr is also already a typed channel: `develop-holistic` runs `... | scripts/merge-scorecards.sh > scorecard-holistic.json 2> disagreements-holistic.json`, so a "normalised X" line printed there lands inside a file that is parsed as a JSON array of disagreements.
+
+So the normalisation belongs between dispatch and validation, on the raw scorecard — a `normalize-scorecard.sh` whose stdout is the repaired card and whose stderr is free to name what it moved — and it carries two prerequisites in the same area: `validate-scorecard.sh` must *report* a mis-nested `criteria` instead of crashing on it, and `merge-scorecards.sh` must stop hiding its jq errors. Three scripts and a suite of their own is why `fiddle-fgam` did not fold it in.
+
+What `fiddle-fgam` did change is the consequence of not normalising. Neither shape can now be graded: both stop at `check-thresholds.sh` with exit 2 naming the missing field, a top-level domain key reporting ``scorecard: missing `domains` ``. The cost of an un-normalised envelope is orchestrator toil, not a false pass — which is what makes this a bean to schedule rather than a rider on a critical gate fix.
+
+Origin: implementation (bean fiddle-fgam, epic fiddle-eph7 — measured by running both recorded mis-shapes through validate-scorecard.sh and merge-scorecards.sh)
 Tags: #bug #tooling #evaluation
