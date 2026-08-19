@@ -19,24 +19,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use tokio_util::sync::CancellationToken;
 
-/// Usage error or invalid input — row `2` of the exit-code table. Clap already
-/// exits with this code for usage errors, so the constant exists to keep every
-/// half of the row visibly the same number.
 const EXIT_INVALID_INPUT: u8 = 2;
 
-/// What a process that was interrupted twice leaves behind.
-///
-/// Not a row of design §4.5's table, and deliberately so: every row there is a
-/// conclusion fiddle *reached* about the work, and a process killed on the spot
-/// reached none. 128 + `SIGINT` is what a shell reports for a process that took
-/// the signal's default disposition, which is exactly what the second interrupt
-/// is asking for — see [`cancel_on_interrupt`].
 const EXIT_INTERRUPTED: i32 = 130;
 
-/// The binary drives an async runtime because [`fiddle_runtime::attempt`] is a
-/// future: a capability may wait on a model turn or a subprocess. Nothing about
-/// what this process *prints* or *exits with* changes — the whole command is one
-/// `block_on`, and every command remains a single sequential path through it.
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = cli::Cli::parse();
@@ -50,24 +36,11 @@ async fn main() -> ExitCode {
     ExitCode::from(exit_code_for(&termination))
 }
 
-/// How an invocation ended: as a typed run outcome, or as a rejection before
-/// any plan was executed.
-///
-/// The two halves are joined into one type so the exit-code table has one input
-/// and therefore one mapping function. Without it, "the mapping lives in
-/// exactly one place" would be a claim about discipline rather than about the
-/// code.
 enum Termination {
-    /// The command reached a conclusion about the work.
     Ran(RunOutcome),
-    /// The command was refused before it could. Read-only commands that
-    /// succeed report [`RunOutcome::Completed`]; this arm is only reached when
-    /// fiddle declined the invocation itself.
     Rejected(CliError),
 }
 
-/// Everything a command can fail with, unified so the exit-code mapping has a
-/// single input type.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 enum CliError {
     #[error(transparent)]
@@ -103,12 +76,6 @@ enum CliError {
     UnimplementedForm(#[from] UnimplementedForm),
 }
 
-/// A `--capability` value naming nothing this build can execute.
-///
-/// Rejected rather than ignored: a run asked to do something fiddle has never
-/// heard of and that exited 0 having done nothing would be indistinguishable
-/// from a run that did the work. The diagnostic names the value *and* what this
-/// build does know, because the usual cause is a typo or a stale script.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[error("unknown capability `{requested}`")]
 #[diagnostic(
@@ -120,36 +87,16 @@ struct UnknownCapability {
     known: String,
 }
 
-/// The capability this invocation will run.
-///
-/// An enum rather than a bare [`CapabilityId`], because the id is only half the
-/// question: the other half is what it takes to *build* the thing, and the two
-/// arms need entirely different material. Making that a type is what turns
-/// `--capability` from a value the CLI validates into a value the CLI acts on —
-/// the defect this closes was precisely that the flag was checked against
-/// [`CAPABILITIES`] and then thrown away, leaving `stub_mark` to run whatever
-/// had been asked for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Selection {
-    /// The deterministic capability: no model, no worktree, no credential.
     Mark,
-    /// One bounded agent attempt inside an ephemeral worktree, judged by the
-    /// configured check.
     Repair,
-    /// One change published to a forge: a branch, a pull request and a requested
-    /// check, each proposed through the effect executor.
     Publish,
-    /// One change produced by a bounded attempt, published as a draft, and put
-    /// to a person — the hybrid capability, whose run suspends rather than
-    /// completing.
     Propose,
-    /// One sweep of a container image's advisories: scan, bump, judge, land,
-    /// and one shared pull request for the repository.
     Mitigate,
 }
 
 impl Selection {
-    /// The id this selection is derived, executed, and reported under.
     fn id(self) -> CapabilityId {
         match self {
             Selection::Mark => fiddle_core::STUB_MARK,
@@ -160,14 +107,6 @@ impl Selection {
         }
     }
 
-    /// The selection `requested` names, or a rejection listing what exists.
-    ///
-    /// Matched against the ids themselves rather than against
-    /// [`CAPABILITIES`]'s ordering, so registering a capability this binary
-    /// cannot build lands in the error arm rather than silently selecting a
-    /// neighbour. `every_registered_capability_can_be_selected` is what makes
-    /// that a loud failure at build time rather than a quiet one at a
-    /// customer's shell.
     fn parse(requested: &str) -> Result<Self, UnknownCapability> {
         if requested == fiddle_core::STUB_MARK.0 {
             Ok(Selection::Mark)
@@ -191,12 +130,6 @@ impl Selection {
         }
     }
 
-    /// **The capability an invocation selects, flag or no flag.**
-    ///
-    /// One expression, called by `run` and by `inspect`, and that is the point
-    /// rather than an economy: a second spelling of the default is exactly how
-    /// the two commands would drift apart again — a read-only command whose whole
-    /// purpose is to say what a run would do, saying the wrong thing.
     fn resolve(
         requested: Option<&str>,
         reference: &InvocationRef,
@@ -207,40 +140,9 @@ impl Selection {
         }
     }
 
-    /// **The default is derived from the scheme.**
-    ///
-    /// It used to be the constant [`Selection::Mark`] for every scheme, and that
-    /// made the invocation every M4 document names — `fiddle run cve --mode
-    /// unattended` — execute M0's deterministic stub and exit 0 reporting
-    /// `completed`. Not merely a skipped sweep: `stub_mark` writes a correlation
-    /// marker under the reference's own slug, after which the sweep *was accounted
-    /// for*, so a host running it nightly reported success having never scanned.
-    /// ADR 022 records the change and what it costs a reader who knew the old
-    /// rule.
-    ///
-    /// The second half of that defect is not this function's to fix and is fixed
-    /// elsewhere: a marker against a reference that names no work item now
-    /// accounts for nothing, because such a reference has no completion state
-    /// (ADR 023). This arm stops a caller reaching the wrong capability; that
-    /// rule is what makes a marker already on disk — or one `--capability
-    /// stub_mark` writes deliberately — harmless.
-    ///
-    /// A flag was the alternative and it was rejected: `cve` and `cve_mitigate`
-    /// are the same fact twice, so `fiddle run cve --capability cve_mitigate`
-    /// restates its own subject, and requiring it would undo the bare
-    /// `fiddle run cve` that ADR 019 settled.
-    ///
-    /// Matched arm by arm rather than through a wildcard, because a scheme added
-    /// later has a capability question to answer and this is where it is asked. A
-    /// `_ =>` would answer it silently with `stub_mark`, which is the defect this
-    /// function exists to close, one scheme along.
     fn default_for(scheme: InvocationScheme) -> Self {
         match scheme {
-            // `cve` discovers its own work, and the only thing it could be asked
-            // to do with what it finds is remediate it.
             InvocationScheme::Cve => Selection::Mitigate,
-            // Every scheme that names a work item keeps M0's default, which is
-            // what leaves M0's acceptance lane byte-identical and unmodified.
             InvocationScheme::Beans
             | InvocationScheme::Jira
             | InvocationScheme::Scheduled
@@ -249,14 +151,6 @@ impl Selection {
     }
 }
 
-/// A capability was asked for that the configuration does not describe.
-///
-/// The table is named, not merely reported missing, because the fix is to write
-/// it: an operator reading this has a document in front of them and needs to
-/// know what to add to it. It is a configuration error and exits on the same
-/// row as any other, because that is what it is — the document is valid TOML
-/// and satisfies the schema; it just does not describe the deployment the
-/// invocation asked for.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[error("`{capability}` needs {missing}, and {path} does not have it")]
 #[diagnostic(
@@ -265,45 +159,18 @@ impl Selection {
 )]
 struct Unconfigured {
     capability: CapabilityId,
-    /// What is absent, spelled the way it is written in the document — a table
-    /// as `[agent]`, a key as `workspace.fixture`.
     missing: &'static str,
-    /// The document as the caller named it, already rendered: a diagnostic is
-    /// text, and a `PathBuf` in one has to be displayed somewhere anyway.
     path: String,
 }
 
-/// What a credential authenticates to, and where the document names it.
-///
-/// The two are one type because they are one question. A credential that failed
-/// to resolve leaves an operator with two things to find out — *what wanted this*
-/// and *where did I write it* — and answering the first without the second sends
-/// them to grep. Naming a purpose is also what stops [`CredentialAbsent`] from
-/// hardcoding a noun: it held `model` for every credential in the binary, so an
-/// unexported `[scanner]` tenant reported as a missing model credential and sent
-/// its reader to `[agent]`.
-///
-/// One variant per credential-carrying table rather than per call site, because
-/// the noun is a property of the thing reached and not of the arm that reached
-/// for it: both of `[scanner]`'s variables are the scanner's, and all three of
-/// `[agent]`'s resolution sites are the model's.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CredentialPurpose {
-    /// `[agent]`'s `api_key` — the gateway a bounded attempt reaches.
     Model,
-    /// `[github]`'s `token` — the forge `gh` and `git push` authenticate to.
     Forge,
-    /// `[scanner]`'s tenant pair — the service account a scan runs as.
     Scanner,
 }
 
 impl CredentialPurpose {
-    /// Every purpose, so a test can hold a property over all of them and a
-    /// fourth credential-carrying table cannot arrive without one.
-    ///
-    /// `cfg(test)` because nothing in the binary enumerates purposes — each
-    /// resolution site names the one it means — and an array that exists for a
-    /// property is better spelled as such than kept alive by an allowance.
     #[cfg(test)]
     const ALL: [CredentialPurpose; 3] = [
         CredentialPurpose::Model,
@@ -311,9 +178,6 @@ impl CredentialPurpose {
         CredentialPurpose::Scanner,
     ];
 
-    /// The table the document names this credential in, spelled the way the
-    /// document spells it — the same convention [`Unconfigured::missing`] keeps,
-    /// because the reader's next move is the same one: go and look at that line.
     fn table(self) -> &'static str {
         match self {
             CredentialPurpose::Model => "[agent]",
@@ -324,8 +188,6 @@ impl CredentialPurpose {
 }
 
 impl std::fmt::Display for CredentialPurpose {
-    /// The noun a diagnostic calls this credential by. The single source of the
-    /// word, so the message and the help cannot come to use two.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             CredentialPurpose::Model => "model",
@@ -335,22 +197,6 @@ impl std::fmt::Display for CredentialPurpose {
     }
 }
 
-/// The environment does not hold the credential the configuration names.
-///
-/// The **only** failure in this binary that is about a credential, because
-/// [`resolve_credential`] is the only place one is read. It names the variable
-/// and never its value — there is none to name, which is the point: the lookup
-/// failed.
-///
-/// It also names *what wanted it*. One error type reports every credential in
-/// the binary, and while there was one credential-carrying table the noun could
-/// be a literal in the message; with three, a literal is a borrowed noun for two
-/// of them. See [`CredentialPurpose`].
-///
-/// [`miette::Diagnostic`] is implemented rather than derived — the only hand-written
-/// one here besides [`InvalidInvocationRef`] — because the help is assembled from
-/// the purpose's *two* words, the noun and the table, and only the first of them is
-/// a field as it stands.
 #[derive(Debug, thiserror::Error)]
 #[error("the {purpose} credential {variable} is not set")]
 struct CredentialAbsent {
@@ -375,14 +221,6 @@ impl miette::Diagnostic for CredentialAbsent {
     }
 }
 
-/// A model client could not be built from what the configuration named.
-///
-/// Wraps the runtime's [`GatewayError`] rather than restating it, and carries
-/// no source chain onward: the underlying failure is about an endpoint or a
-/// credential that cannot become an HTTP header, and the only one of those two
-/// that is safe to render is the endpoint. `GatewayError` already keeps to
-/// names — the base URL and the variable — so what reaches an operator here is
-/// exactly what they can act on.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[error(transparent)]
 #[diagnostic(
@@ -391,17 +229,6 @@ impl miette::Diagnostic for CredentialAbsent {
 )]
 struct GatewayUnavailable(GatewayError);
 
-/// A path the document names could not be used for what it names it for.
-///
-/// A configuration failure rather than a run failure, and on the same exit row
-/// as the rest: the document is valid TOML and satisfies the schema, and what it
-/// describes is a deployment this machine does not have. The `key` is spelled
-/// the way the document spells it, because the reader's next move is to go and
-/// edit that line.
-///
-/// The reason is quoted from the underlying failure, which for a `git` that
-/// could not read a `HEAD` is that `git`'s own stderr — already redacted of the
-/// credential by the client that ran it.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[error("{key} names {path}, which could not be used: {reason}")]
 #[diagnostic(
@@ -414,17 +241,6 @@ struct PathUnusable {
     reason: String,
 }
 
-/// Presentation for a rejected invocation reference.
-///
-/// The grammar and the defect taxonomy belong to `fiddle-core`, which stays free
-/// of `miette`; what belongs to the CLI is how a defect is *shown*. This wrapper
-/// supplies that and nothing else — a stable diagnostic code per defect and the
-/// help text that tells the caller how to fix that specific defect, so `bogus`,
-/// `mystery:x`, and `beans:` are never reported with the same words.
-///
-/// `Diagnostic` is implemented by hand rather than derived so the three defects
-/// map to their codes and help text in one visible table instead of a mirrored
-/// copy of the core enum.
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 struct InvalidInvocationRef(#[from] InvocationRefError);
@@ -441,56 +257,8 @@ impl miette::Diagnostic for InvalidInvocationRef {
         }))
     }
 
-    /// The repair, in the words of the defect — and for one defect, of the
-    /// *scheme* it was made with.
-    ///
-    /// An empty value has one legal repair for a scheme that names a work item —
-    /// append the identifier — and a *different* one for a scheme that discovers
-    /// its own: drop the separator and sweep. This help named the appending one
-    /// for both. That was universally correct until a scheme could stand alone;
-    /// afterwards it was advice that quietly redirected a caller from a sweep to a
-    /// tracker read — the same exit code, different work. So the `EmptyValue` arm
-    /// reads the scheme the error carries and gives each the repair that is true
-    /// of it.
-    ///
-    /// It offered the valued form as a *second* repair for a scheme that stands
-    /// alone, and that is gone: `cve:<identifier>` parses and is then refused by
-    /// [`reference_from`], so offering it sent a caller from one refusal to
-    /// another. What replaces it is the reason, because a caller who wrote `cve:`
-    /// was on their way to writing the form that is refused.
-    ///
-    /// The same arm reaches a caller whose scheme is not a scheme at all, because
-    /// the grammar checks the value first. Those callers get the third message,
-    /// which describes their scheme rather than a repair to the identifier they
-    /// did not write wrong — and describes it in the two halves the schemes
-    /// divide into, since a caller with no known scheme cannot be told one shape
-    /// that is true of all of them.
-    ///
-    /// The `Malformed` arm reaches a caller who wrote no separator at all, which
-    /// is where a mistyped `cve` lands, and it used to answer with the valued
-    /// shape and nothing else. It now answers with [`schemes_by_shape`], the same
-    /// sentence the `None` arm gives — two arms, one caller's question, one place
-    /// that answers it.
-    ///
-    /// Every arm produces a `String` rather than three `&'static str`s and three
-    /// `format!`s, because a `match` whose arms are two types is not a `match` —
-    /// and the alternative, boxing per arm, would put the interesting lines of
-    /// this function behind six identical wrappers.
     fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
         let help = match self.0 {
-            // This arm is where a caller who mistyped `cve` arrives, and it used
-            // to read "name the source scheme first, separated by a colon:
-            // `fiddle inspect beans:fiddle-m0-demo`" — one shape, offered as the
-            // only one, with a valued example under it. Every word of that was
-            // advice against `fiddle run cve`: it told an operator whose typo was
-            // one letter from the milestone's own invocation that a colon was
-            // mandatory, and showed them nothing else to try. The `None` arm below
-            // had already learned that a caller with no known scheme cannot be
-            // told one shape; this arm reaches the same caller by the other door —
-            // `cvfoo` has no separator, so it is malformed rather than an empty
-            // value — and is owed the same answer. It gets the same sentence, from
-            // the same function, so the two doors cannot come to describe
-            // different grammars.
             InvocationRefError::Malformed(_) => format!(
                 "write the scheme the work comes from, in the shape that scheme takes. \
                  {shapes}",
@@ -506,25 +274,6 @@ impl miette::Diagnostic for InvalidInvocationRef {
                      item is not implemented in this build"
                 ),
                 Some(_) => "the scheme is recognised but names no work; append the identifier, as in `beans:fiddle-m0-demo`".to_string(),
-                // `None` is an empty value written after a scheme fiddle does
-                // not know, and it used to fall in with the schemes that name
-                // work — correct for every arm that could reach it when every
-                // reachable scheme was recognised. It told `notascheme:` that
-                // its scheme was recognised, which is false, and then sent the
-                // caller to append an identifier, which cannot help: the
-                // identifier is the half of their reference that is not wrong.
-                //
-                // Both defects are named, in the order the parse chose: the
-                // message above still complains about the empty value, and the
-                // advice is about the scheme, because that is the defect the
-                // caller can act on. Reporting the unknown scheme *instead*
-                // would need the ordering in `InvocationRef::from_str`
-                // reversed, and the empty value would then go unmentioned.
-                //
-                // Which shapes there are, and which schemes take each, is
-                // `schemes_by_shape`'s to say: this arm reaches a caller with no
-                // known scheme, and so does `Malformed`, so neither may hold its
-                // own copy of the answer.
                 None => format!(
                     "no value follows the scheme, and the scheme is not one fiddle knows. \
                      {shapes}",
@@ -539,31 +288,6 @@ impl miette::Diagnostic for InvalidInvocationRef {
     }
 }
 
-/// **Every shape a reference can take, with the schemes each holds for.**
-///
-/// One sentence, in one place, because two diagnostics have to say it and a
-/// caller cannot be told one shape. `beans:fiddle-m0-demo` is the shape four
-/// schemes take, and offering it to the fifth's caller sends an operator who
-/// wanted a sweep to a tracker read — the difference ADR 019 exists to keep
-/// visible, and one an exit code of 2 either way does not reveal. So the set
-/// arrives in the two halves [`InvocationScheme::stands_alone`] divides it into,
-/// each carrying only the shape that is true of it.
-///
-/// Derived from the halves rather than written as prose, and the halves are
-/// complements over [`InvocationScheme::ALL`], so a sixth scheme is placed the
-/// day it is added instead of leaving a sentence that names five of six. Prose
-/// here is the failure this is downstream of twice over: `InvocationScheme::
-/// listed` exists because the set was once spelled in an `#[error]` attribute and
-/// went stale, and `InvocationRefError::Malformed`'s message asserted one shape
-/// and outlived the grammar that made it true.
-///
-/// The halves are joined into one string rather than returned as a pair, because
-/// what both callers want is the tail of a sentence whose head is their own
-/// defect. Two callers assembling two sentences from two halves is how the
-/// wording drifts between the door a caller came in by — and the acceptance lane
-/// `every_scheme_that_needs_no_value_is_named_on_each_surface_and_in_each_colonless_refusal`
-/// splits the rendered advice on a phrase from this sentence, so both doors are
-/// held to one partition by being held to one sentence.
 fn schemes_by_shape() -> String {
     format!(
         "Schemes that name the work they act on take a value, as in \
@@ -574,29 +298,6 @@ fn schemes_by_shape() -> String {
     )
 }
 
-/// **A reference whose shape this build implements no capability for.**
-///
-/// `cve:CVE-2026-1234` parses: [`InvocationScheme::stands_alone`] means a scheme
-/// *may* omit its value, not that it must, and ADR 019 keeps the valued form in
-/// the grammar because a milestone implementing narrowing builds on it. What does
-/// not exist is anything that acts on the narrowed reference. `MitigateConfig`
-/// declares no advisory field and the sweep scans `[orchestration.cve] image`
-/// alone, so both of the two things a run could do here are wrong: block on a
-/// work-item read that has no source, or — handed a stub work file — sweep the
-/// whole image while deriving `effect_id` from the narrowed reference, which is a
-/// second branch and a second pull request for work already covered.
-///
-/// So the invocation is refused, and refused *before* the configuration is
-/// loaded, so a caller is told about the argument they typed rather than about a
-/// table the run should never have got as far as needing. The alternative — an
-/// "accepted but not implemented" disclosure, as `max_capability_attempts` has —
-/// was rejected: a config bound that is merely unenforced is not the same risk as
-/// an invocation that would silently act on the wrong scope.
-///
-/// Keyed on `stands_alone` rather than on `Cve`, because the property is what
-/// makes the value meaningless to the capability: any scheme that discovers its
-/// own work has the same gap the day it is added, and M7's Stabilize is named in
-/// ADR 019 as inheriting this shape.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[error("`{reference}` is not implemented in this build")]
 #[diagnostic(
@@ -606,25 +307,10 @@ fn schemes_by_shape() -> String {
     )
 )]
 struct UnimplementedForm {
-    /// The reference as the caller wrote it, canonicalised — named because the
-    /// caller's next move is to edit exactly this argument.
     reference: String,
-    /// The scheme alone, which is the whole of the repair.
     scheme: &'static str,
 }
 
-/// **The positional reference, parsed and then checked for a form this build can
-/// act on.**
-///
-/// One function called by both `inspect` and `run`, and that is the point rather
-/// than an economy — the same one [`Selection::resolve`] is one function for.
-/// `inspect` exists to say what a run would do, so a build where `run` refuses a
-/// reference and `inspect` reports a plan for it would have `inspect` describing
-/// work the binary cannot do. **That is why `inspect` refuses it too**, and the
-/// refusal costs `inspect` nothing it is documented to keep: it is reached before
-/// the configuration is read, so nothing is opened, no fixture is touched and no
-/// credential is resolved. A diagnostic is the one thing a read-only command may
-/// always produce.
 fn reference_from(argument: &str) -> Result<InvocationRef, CliError> {
     let reference: InvocationRef = argument.parse().map_err(InvalidInvocationRef::from)?;
     if reference.scheme().stands_alone() && !reference.value().is_empty() {
@@ -637,19 +323,6 @@ fn reference_from(argument: &str) -> Result<InvocationRef, CliError> {
     Ok(reference)
 }
 
-/// The single realisation of the exit-code table (design §4.5).
-///
-/// The whole table is one `match`, so every row is visible at once and a new
-/// outcome variant cannot be added without the compiler demanding its code.
-/// Nothing else in the binary decides an exit code.
-///
-/// | code | meaning                                                    |
-/// |------|------------------------------------------------------------|
-/// | 0    | completed, or `config check` valid, or `inspect` succeeded  |
-/// | 2    | usage error or invalid configuration                        |
-/// | 10   | suspended                                                   |
-/// | 11   | retryable                                                   |
-/// | 20   | failed                                                       |
 fn exit_code_for(termination: &Termination) -> u8 {
     match termination {
         Termination::Ran(RunOutcome::Completed) => 0,
@@ -660,44 +333,15 @@ fn exit_code_for(termination: &Termination) -> u8 {
             CliError::Config(ConfigError::NotFound(_) | ConfigError::Invalid(_))
             | CliError::InvocationRef(_)
             | CliError::UnknownCapability(_)
-            // Every one of the rejections below is the same row and the same
-            // kind of thing: the invocation described a deployment its
-            // configuration, its environment or this build does not provide, and
-            // nothing was attempted. A caller scripting fiddle needs one number
-            // for "fix your setup and try again", not one per way of being unable
-            // to start.
             | CliError::Unconfigured(_)
             | CliError::CredentialAbsent(_)
             | CliError::Gateway(_)
-            // A path the document names that this machine cannot supply is a
-            // setup to fix, not work that was attempted and failed.
             | CliError::PathUnusable(_)
-            // A reference in a shape this build has no capability for is the same
-            // row for the same reason: it is invalid input, and nothing was
-            // attempted. Not 20 — a failure is a conclusion fiddle reached about
-            // the work, and this invocation never started.
             | CliError::UnimplementedForm(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
 
-/// The two fixture-backed ports this configuration names.
-///
-/// M0 has one implementation of each; the rest of the binary depends on the
-/// traits, so the only thing that changes when a real adapter arrives is this
-/// one function.
-///
-/// **Every scheme gets these two, `cve` included, and the sweep needs nothing
-/// else from this seam.** Worth saying at the site, because a reader who has just
-/// learnt that the default capability is derived from the scheme
-/// ([`Selection::default_for`]) will reasonably wonder whether the *ports* are
-/// too. They are not, and the reason is what each port is for: the work-item port
-/// is never asked about a trackerless reference at all — [`Addressed::of`]
-/// decides that, not this function — and the change port is how *any* capability's
-/// change set is read before the run and recorded after it, which a sweep needs
-/// exactly as much as `stub_mark` does. What a sweep needs beyond them — a
-/// scanner, a toolchain, a forge — is named in its own configuration tables and
-/// resolved in `build_capability`, not here.
 fn ports(config: &config::Config) -> (StubWorkItemPort, StubChangePort) {
     (
         StubWorkItemPort::new(&config.stub.root),
@@ -705,62 +349,15 @@ fn ports(config: &config::Config) -> (StubWorkItemPort, StubChangePort) {
     )
 }
 
-/// Observe both sides of the world for one invocation.
-///
-/// Nothing here can fail: a port that cannot read its source returns an
-/// `Unavailable` observation rather than an error, so an unobservable world is
-/// *reported* to the caller instead of aborting the command. That is why
-/// `inspect` still exits 0 over a missing fixture root — it succeeded at
-/// looking, and what it saw was that it could not see.
-///
-/// **What the ports are asked about is [`Addressed::of`]'s to decide**, and this
-/// line used to decide it itself, wrongly: it passed `reference.value()`, which
-/// for the one scheme that stands alone is the empty string. `fiddle inspect cve`
-/// therefore reported `Blocked` with source `stub:work/.json` — an empty value
-/// interpolated into a path, a file that was never going to be there, and a
-/// diagnostic naming a work item nobody had asked about.
 fn observe(config: &config::Config, reference: &InvocationRef) -> WorkStateView {
     let (work_items, changes) = ports(config);
     fiddle_runtime::observe(&work_items, &changes, Addressed::of(reference))
 }
 
-/// The build identity every bundle this binary publishes carries.
-///
-/// Both halves are compile-time constants: `CARGO_PKG_VERSION` from the
-/// manifest and `FIDDLE_SOURCE_REVISION` from `build.rs`. Passing them through
-/// [`FiddleBuild::new`] rather than into the struct fields directly is what
-/// makes "never fabricated" structural — a revision that is neither a 40-hex
-/// sha nor `unknown` is normalised to `unknown` there rather than trusted here.
 fn build_identity() -> FiddleBuild {
     FiddleBuild::new(env!("CARGO_PKG_VERSION"), env!("FIDDLE_SOURCE_REVISION"))
 }
 
-/// **The one place a credential is read.**
-///
-/// It takes the *name* of a variable, because that is all the configuration can
-/// hold — `config::EnvRef` has no `String` variant, so a document carrying a
-/// resolved secret does not parse. The value goes from here straight into a
-/// credential-carrying client and nowhere else: it is not stored on a config
-/// type, not passed to a capability, not journaled, and not published.
-/// Grepping for `std::env::var` in this binary is how that stays true.
-///
-/// Every call site is the same shape: the three arms of [`build_capability`] that
-/// need a model resolve `[agent]`'s credential, [`resolve_forge`] resolves
-/// `[github]`'s, and the mitigating arm resolves `[scanner]`'s tenant pair. Each
-/// is reached only after its own selection has been made and only after the tables
-/// that selection needs have been found, so no command resolves a credential it
-/// has no use for — which is what keeps `config check`, `inspect`, and `run` over
-/// the deterministic capability credential-free.
-///
-/// The **purpose** is an argument rather than something the diagnostic infers,
-/// because the variable's name cannot carry it: `WIZ_CLIENT_ID` is a scanner
-/// credential by virtue of the table that named it, and a function that guessed
-/// from spellings would be wrong the first time a deployment renamed one. See
-/// [`CredentialPurpose`].
-///
-/// The absence of the variable is an error rather than an empty string, so a
-/// deployment that forgot to export it is told so instead of authenticating
-/// with nothing and being told by the far end.
 fn resolve_credential(
     purpose: CredentialPurpose,
     variable: &str,
@@ -771,46 +368,9 @@ fn resolve_credential(
     })
 }
 
-/// Cancel `token` when the operator interrupts this process.
-///
-/// # Why this exists at all
-///
-/// `Workspace::run` puts every workspace command in a process group of its own,
-/// so that a timed-out `cargo test` is reaped along with the test binaries it
-/// spawned. The cost of that, written down at the place it is paid, is that the
-/// check no longer shares this process's group — so a terminal `^C` does not
-/// reach it, and a runner that simply died on the signal would leave a build
-/// running over a worktree that is about to be deleted underneath it.
-/// Cancellation is the only channel left, and this is what connects the two.
-///
-/// # Why the second interrupt is different
-///
-/// Installing a handler replaces `SIGINT`'s default disposition for the whole
-/// process, so an operator who presses `^C` and sees nothing happen has lost
-/// the ability to stop fiddle at all. The first interrupt asks for an orderly
-/// stop — the token cancels, the attempt's `select!` arms lose, the check's
-/// process group is signalled, and the worktree comes down through its `Drop`
-/// guard. The second says the first did not work, and takes the disposition it
-/// replaced: immediate exit, on [`EXIT_INTERRUPTED`].
-///
-/// Exiting from a spawned task while the main one is publishing is safe for the
-/// same reason a power cut is: `fiddle_runtime::evidence::publish` builds the
-/// attempt directory under a temporary name and moves it into place with one
-/// `rename`, so what a second interrupt can leave behind is an unnoticed
-/// temporary directory, never a bundle a reader could mistake for a whole one.
-///
-/// # Why it is installed here rather than in `main`
-///
-/// It is installed only on the path that has something to cancel. The
-/// deterministic capability writes one file and never yields, so a handler
-/// during *its* run could only ever delay a `^C` that would otherwise have
-/// worked — and M0's lane, which runs nothing else, keeps the signal behaviour
-/// it has always had.
 fn cancel_on_interrupt(token: &CancellationToken) {
     let token = token.clone();
     tokio::spawn(async move {
-        // A platform that cannot deliver the signal leaves the token
-        // uncancelled, which is the same position as having no handler at all.
         if tokio::signal::ctrl_c().await.is_err() {
             return;
         }
@@ -822,115 +382,17 @@ fn cancel_on_interrupt(token: &CancellationToken) {
     });
 }
 
-/// Everything a publication needs that has to **outlive** the capability.
-///
-/// This type exists because of one deliberate constraint in
-/// [`fiddle_runtime::PublishChange`]: it borrows its [`Executor`], which borrows
-/// the [`EffectContext`] holding the credential. An owned context would be a
-/// held credential, which is the arrangement the whole effect boundary exists to
-/// prevent — so the context is owned *here*, on `dispatch`'s stack, and lent to
-/// the capability for the length of the run.
-///
-/// The two scalars beside it are read at the same moment and for the same
-/// reason: both are resolved before the capability exists, so every refusal a
-/// misconfigured document earns happens before anything is built.
-/// The two capabilities that reach a forge are the two callers, and what they
-/// need of it differs in one place: the worktree. See [`resolve_forge`].
 struct Forge {
-    /// The clients, the worktree, and the run's cancellation.
     ctx: EffectContext,
-    /// Where the executor's step order goes: the journal of the attempt this run
-    /// turns out to be.
-    ///
-    /// It lives here for exactly the reason the context does — it has to outlive
-    /// the capability that borrows it — and it is *empty* when it is built,
-    /// because the attempt it belongs to has not been minted yet.
-    /// [`fiddle_runtime::attempt`] fills it in with the journal it creates; see
-    /// [`AttemptTrace`] for why the binding cannot go the other way round.
-    ///
-    /// **Two orders, one sink, one value.** `propose_change` also needs a
-    /// [`DecisionTrace`](fiddle_runtime::human::validate::DecisionTrace) for the
-    /// validation order to announce itself to, and this is that too: `AttemptTrace`
-    /// implements both traits, so the authorization order and the validation order
-    /// of one attempt end up in one file in the order they happened. A second value
-    /// would be a second sink that could be attached to a different attempt.
     trace: AttemptTrace,
-    /// What only a publication resolves. `None` on the proposing arm, and that is
-    /// a statement about the walk rather than about the document — see
-    /// [`Publishing`].
     publishing: Option<Publishing>,
 }
 
-/// The two values `publish_change` resolves before its capability exists, and
-/// `propose_change` cannot.
-///
-/// Behind an `Option` rather than fabricated for the proposing arm, because both
-/// would have to be invented there and an invented value on this path is not
-/// harmless:
-///
-/// - `head_sha` would be a commit. The whole reason it is read out here is that
-///   [`fiddle_runtime::EnsureBranchPublished`] takes the intended sha rather than
-///   resolving `HEAD` itself, so a capability cannot publish a commit its own
-///   proposal never named. A proposal publishes the commit its *attempt* makes,
-///   which does not exist when this runs — so there is nothing to read, and a
-///   placeholder would be exactly the fabricated identity the field prevents.
-/// - `workflow` would name a CI workflow. `propose_change` requests no check at
-///   all — its `Publication` says so, `NotApplicable` — so a document driving only
-///   a proposal has no reason to carry `github.workflow`, and demanding one would
-///   be a configuration diagnostic telling an operator to add a key nothing reads.
 struct Publishing {
-    /// The commit `github.work` was sitting on when the run began, read once.
-    ///
-    /// Read here rather than by the capability, because
-    /// [`fiddle_runtime::github::EnsureBranchPublished`] takes the intended sha
-    /// rather than resolving `HEAD` itself: a capability that resolved it would
-    /// be free to publish a commit its own proposal never named, with the
-    /// payload hash still matching because the payload would never have
-    /// mentioned it.
     head_sha: String,
-    /// The workflow a check is requested from, already refused by name if the
-    /// document did not carry one.
     workflow: String,
 }
 
-/// Build the forge this run reaches through, from `config` alone.
-///
-/// The order is the same one the repairing arm uses and it is the same
-/// argument: the tables and keys first, then the credential, then the clients.
-/// A deployment missing `github.work` is told about `github.work` rather than
-/// about a variable it would also have had to export.
-///
-/// Reached only when `--capability publish_change` or `--capability
-/// propose_change` was asked for. That is what keeps `run` over the two
-/// capabilities that reach nothing — and `inspect` over any of the four — from
-/// resolving a forge credential it has no use for.
-///
-/// # One function and two callers, differing in one value: the worktree
-///
-/// [`EffectContext::work`] is the tree whose `HEAD`
-/// [`fiddle_runtime::EnsureBranchPublished`] publishes, and the two capabilities
-/// answer *which tree* differently:
-///
-/// - `publish_change` publishes a tree an operator maintains. The document names
-///   it, `github.work`, and its `HEAD` is read here and now — before anything is
-///   proposed, so a directory that is not a repository is refused rather than
-///   discovered after a push.
-/// - `propose_change` publishes the tree its own attempt will *create*. The path
-///   is [`fiddle_runtime::attempt_worktree`]'s to derive from the run's two
-///   canonical inputs, it does not exist at this moment, and `ProposeChange`
-///   refuses outright if the context points anywhere else — so the derivation is
-///   called here rather than reimplemented, and no `HEAD` is read off a path that
-///   is about to be created.
-///
-/// One function rather than two, because everything else is identical and it is
-/// the *credential* half: one resolution site, two clients, `gh` pinned to the
-/// document's own configuration directory. A sibling resolver would be a second
-/// place the *forge* credential is read, and [`resolve_credential`] exists to be
-/// able to say there is one place per credential in this binary.
-///
-/// The capability the diagnostics are attributed to is `selection`'s own id, so a
-/// deployment driving a proposal that is missing `[workspace]` is told which
-/// capability wanted it.
 async fn resolve_forge(
     config: &config::Config,
     config_path: &Path,
@@ -950,15 +412,6 @@ async fn resolve_forge(
     };
 
     let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
-    // The tree, and the workflow only a publication needs. **Both decided before
-    // the credential**, and that order is a property with a test:
-    // `a_forge_names_each_key_it_cannot_invent_before_the_credential`. An operator
-    // whose document is missing a key has a line to write, and telling them about a
-    // variable they would *also* have to export answers the second question first.
-    //
-    // Matched rather than defaulted, so registering a fifth capability that reaches
-    // a forge is a compile error here — at the one place that has to say which tree
-    // it publishes — instead of a run that silently publishes from somebody else's.
     let (work, workflow): (PathBuf, Option<String>) = match selection {
         Selection::Publish => (
             github
@@ -973,11 +426,6 @@ async fn resolve_forge(
                     .ok_or_else(|| missing("github.workflow"))?,
             ),
         ),
-        // The two arms whose attempt *creates* the tree it publishes from, and
-        // they answer identically: the path is `attempt_worktree`'s to derive,
-        // it does not exist yet, and neither capability requests a workflow —
-        // `propose_change` asks a person instead, and `cve_mitigate` is judged by
-        // the checks `[workspace] checks` declares, inside the worktree.
         Selection::Propose | Selection::Mitigate => {
             let workspace = config
                 .workspace
@@ -989,26 +437,12 @@ async fn resolve_forge(
                     &config.project.name,
                     &reference.as_str(),
                 ),
-                // No workflow, because no check is requested — see [`Publishing`].
                 None,
             )
         }
-        // Neither reaches a forge, and `dispatch` does not ask for one. Answered
-        // rather than left unreachable, because a total match is cheaper than an
-        // argument about which paths exist — the reasoning `build_capability`'s
-        // `forge.ok_or_else` already uses.
         Selection::Mark | Selection::Repair => return Err(missing("[github]").into()),
     };
 
-    // Only now, and only on the arms that reach a forge. Everything above could
-    // have failed for a deployment that never intended to reach one at all.
-    //
-    // **One resolution, two clients.** `gh` and `git push` are different
-    // programs with different environments, and they authenticate to the same
-    // forge as the same principal — so this arm resolves the variable once, and
-    // the value goes straight into the two clients that carry it and nowhere
-    // else. See [`resolve_credential`] for this binary's other resolution sites
-    // and for why the purpose is passed in rather than inferred.
     let credential = resolve_credential(CredentialPurpose::Forge, &github.token.env)?;
     let timeout = github.timeout.as_duration();
     let gh = GhCli::new(
@@ -1021,29 +455,9 @@ async fn resolve_forge(
     );
     let git = GitCli::new(github.git.clone(), credential, &github.token.env, timeout);
 
-    // `gh` is pinned to this directory so it cannot reach the operator's keyring
-    // or their logged-in account, which is what makes "the credential is the one
-    // the document named" provable rather than asserted. It has to exist for
-    // that to be what happens: `gh` pointed at a directory it cannot read is a
-    // different experiment.
     std::fs::create_dir_all(&github.config_dir)
         .map_err(|e| unusable("github.config_dir", &github.config_dir, e.to_string()))?;
 
-    // Before the context, because the context takes the `git` by value — and
-    // before anything is proposed, so a worktree that is not one is refused
-    // rather than discovered after a push.
-    //
-    // **Not read on the proposing arm**, and this is the one asymmetry in this
-    // function. `work` there is a path the attempt is about to create, so there is
-    // no `HEAD` to read and nothing to refuse: a `git` pointed at it would fail for
-    // the correct reason and the diagnostic would name `github.work`, a key that
-    // deployment need not even have written. `Publishing` is where both halves of
-    // what only a publication resolves are said, and why an invented one would not
-    // be harmless.
-    // A workflow was resolved above on exactly the selection that publishes, so
-    // matching on it here is matching on that selection — and the `HEAD` read
-    // belongs here rather than up there, because the client that makes it did not
-    // exist yet.
     let publishing = match workflow {
         Some(workflow) => Some(Publishing {
             head_sha: git
@@ -1062,22 +476,6 @@ async fn resolve_forge(
     })
 }
 
-/// The capability `selection` names, built from `config`.
-///
-/// Boxed as a trait object because the three arms are different types and the
-/// orchestration takes a `&dyn Capability` — which is the seam that made this
-/// function possible to write at all.
-///
-/// Everything a repairing capability needs is resolved here, in this order:
-/// the tables, then the credential, then the client. That order is what makes
-/// "the credential is resolved lazily" true in a stronger sense than "only for
-/// this arm": a deployment missing its `[agent]` table is told about the table
-/// rather than about a variable it would also have had to set.
-///
-/// A publication's equivalent resolution happens one step earlier, in
-/// [`resolve_forge`], for the reason [`Forge`] documents: what it produces has
-/// to outlive what is built here. The lifetime on the return type is that
-/// borrow, made visible.
 fn build_capability<'a>(
     selection: Selection,
     config: &'a config::Config,
@@ -1099,35 +497,14 @@ fn build_capability<'a>(
         ))),
         Selection::Publish => {
             let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
-            // The caller resolves the forge, and only on this selection. `None`
-            // here means it did not, which no path in this binary produces —
-            // and it is answered by the same refusal the absent table earns
-            // rather than by a panic, because a total function is cheaper than
-            // an argument about which paths exist.
             let forge = forge.ok_or_else(|| missing("[github]"))?;
-            // Resolved by `resolve_forge` on this selection and only this one, and
-            // answered by the same refusal for the same reason as the line above:
-            // no path in this binary produces a publishing run without them.
             let publishing = forge
                 .publishing
                 .as_ref()
                 .ok_or_else(|| missing("github.work"))?;
 
-            // A `^C` reaches `gh` and `git push` only through the token, so the
-            // handler goes in beside the capability that will spawn them.
             cancel_on_interrupt(cancel);
 
-            // The executor carries the run's identity, and the capability reads
-            // that pair back off it rather than holding a copy — see
-            // `capability::publish`'s module documentation for what a second
-            // copy would cost. `&github.policy` is the deployment's word, and
-            // this borrow is the whole path from the document to step 4.
-            //
-            // `&forge.trace` is the other borrow, and it is what makes the
-            // executor's step order a durable record rather than a test
-            // observation: `attempt` points it at this attempt's journal, so an
-            // attempt interrupted between an effect and its bundle leaves behind
-            // which step of which effect it had reached.
             let executor = Executor::new(
                 fiddle_core::PUBLISH_CHANGE,
                 config.project.name.clone(),
@@ -1135,12 +512,6 @@ fn build_capability<'a>(
                 &github.policy,
                 &forge.ctx,
                 &forge.trace,
-                // The document's own bound on how long a postcondition read may
-                // wait for GitHub to agree with itself. Built from the table
-                // here rather than defaulted inside the executor, so that a
-                // deployment changing the numbers changes what the run does —
-                // and so there is exactly one place the document could fail to
-                // reach the walk from.
                 github.read_retry.as_read_retry(),
             );
 
@@ -1148,19 +519,9 @@ fn build_capability<'a>(
                 executor,
                 PublishConfig {
                     repo: github.repo.to_string(),
-                    // The head lives under the repository's own owner: this
-                    // milestone publishes a branch to the repository it was
-                    // pointed at, and a head from a fork is not something it can
-                    // produce. Derived rather than configured, which is why
-                    // `repo` is refused at parse time unless it has an owner.
                     head_owner: github.repo.owner.clone(),
                     base: github.base.clone(),
                     head_sha: publishing.head_sha.clone(),
-                    // Payload, not identity: read by people, hashed for
-                    // detectability, matched on by nothing. Derived from the
-                    // run's own two names and from no clock or counter, because
-                    // a payload that varied between processes would make the
-                    // payload hash vary with it.
                     title: format!("{}: {}", config.project.name, reference.as_str()),
                     body: format!(
                         "Opened by fiddle for {} in project {}.\n\n\
@@ -1193,8 +554,6 @@ fn build_capability<'a>(
                 .as_ref()
                 .ok_or_else(|| missing("workspace.check"))?;
 
-            // Only now, and only on this arm. Everything above could have
-            // failed for a deployment that never intended to talk to a model.
             let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
             let model = fiddle_runtime::completion_model(
                 &agent.base_url,
@@ -1204,14 +563,8 @@ fn build_capability<'a>(
             )
             .map_err(GatewayUnavailable)?;
 
-            // A `^C` reaches the check only through the token, so the handler
-            // goes in beside the capability that holds one.
             cancel_on_interrupt(cancel);
 
-            // Two axes the schema admits exactly one value of each on. Matched
-            // rather than ignored, so that adding a variant is a compile error
-            // here — at the one place that would have to honour it — instead of
-            // a document that loads and quietly means something else.
             let config::Isolation::GitWorktree = workspace.isolation;
             let config::Cleanup::Always = workspace.cleanup;
 
@@ -1222,30 +575,11 @@ fn build_capability<'a>(
                     workspace_root: workspace.root.clone(),
                     stub_root: config.stub.root.clone(),
                     project: config.project.name.clone(),
-                    // **No attempt id is minted here**, and the seam no longer
-                    // has a place to put one. It used to: this binary minted an
-                    // id for `RepairConfig` while `fiddle_runtime::attempt`
-                    // minted the bundle's separately, so `repair:<n>:<attempt>`
-                    // named an attempt that appeared in no bundle and on no
-                    // disk. Both ids were real and unique, and they did not name
-                    // each other.
-                    //
-                    // The id now travels to the capability on its
-                    // `ExecutionGrant` — the value that already means "this
-                    // attempt authorises this execution" — so it is still minted
-                    // exactly once, in `attempt`, where no caller can hand in a
-                    // duplicate and collide two bundles on one path. Everything
-                    // left in this struct is a deployment decision an operator
-                    // configured; the attempt belongs to the run.
                     check: WorkspaceCommand {
                         program: check.program.clone(),
                         args: check.args.clone(),
                         timeout: workspace.command_timeout.as_duration(),
                     },
-                    // Handed over as configured rather than pre-tightened
-                    // against the command timeout: `fiddle_runtime::agent::attempt`
-                    // takes the `min` of the two itself, so doing it here as
-                    // well would be a second implementation of one rule.
                     budget: AgentBudget {
                         max_turns: agent.max_turns,
                         max_tokens: agent.max_tokens,
@@ -1258,29 +592,8 @@ fn build_capability<'a>(
             )))
         }
 
-        // **The hybrid one, and the arm that used to build nothing.**
-        //
-        // It refused with `Unbuildable` until this task, on an argument that was
-        // true at the time and named its own two missing pieces: an `EffectContext`
-        // whose worktree is the tree the attempt will *create*, and a
-        // `DecisionTrace` for the validation order to announce itself to. Both now
-        // exist — `resolve_forge` derives the first through
-        // `fiddle_runtime::attempt_worktree` rather than reading a `HEAD` off a path
-        // that is about to be created, and `AttemptTrace` implements the second
-        // beside the `EffectTrace` it already implemented, so the two orders of one
-        // attempt land in one journal.
-        //
-        // This is the arm that gates a suspension end to end, so the whole document
-        // it needs is demanded here: `[github]` and `[github.decision]` for the
-        // forge and for who may decide, `[agent]` for the one bounded attempt and
-        // the one bounded interpretation, and `[workspace]` for the tree both of
-        // those happen in. Four tables, each refused by its own name.
         Selection::Propose => {
             let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
-            // No permissive default and no empty list: `[github.decision]` is
-            // refused empty at the parse boundary, because a deployment that can
-            // publish a question and can never accept an answer suspends every run
-            // for ever. What is checked here is only that the table is there at all.
             let decision = github
                 .decision
                 .as_ref()
@@ -1298,14 +611,8 @@ fn build_capability<'a>(
                 .check
                 .as_ref()
                 .ok_or_else(|| missing("workspace.check"))?;
-            // Resolved by the caller, on this selection, with the worktree this
-            // capability is about to create as its `work`. `None` is answered by
-            // the same refusal an absent table earns, for the publishing arm's
-            // reason: no path in this binary produces it.
             let forge = forge.ok_or_else(|| missing("[github]"))?;
 
-            // Only now, and only on this arm — the repairing arm's order, for the
-            // repairing arm's reason.
             let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
             let model = fiddle_runtime::completion_model(
                 &agent.base_url,
@@ -1315,21 +622,11 @@ fn build_capability<'a>(
             )
             .map_err(GatewayUnavailable)?;
 
-            // A `^C` has to reach three children here rather than the repairing
-            // arm's one: the attempt's tools, the check, and the `gh` and `git` an
-            // effect spawns. They all stop through the one token.
             cancel_on_interrupt(cancel);
 
-            // The repairing arm's two axes, matched for the repairing arm's reason:
-            // adding a variant is a compile error here instead of a document that
-            // loads and quietly means something else.
             let config::Isolation::GitWorktree = workspace.isolation;
             let config::Cleanup::Always = workspace.cleanup;
 
-            // Bound to `propose_change`, so the executor's step 1 refuses a
-            // proposal made in any other capability's name. `&forge.trace` is the
-            // authorization order's sink; the same value is the validation order's,
-            // two arguments below.
             let executor = Executor::new(
                 fiddle_core::PROPOSE_CHANGE,
                 config.project.name.clone(),
@@ -1342,45 +639,13 @@ fn build_capability<'a>(
 
             Ok(Box::new(ProposeChange::new(
                 executor,
-                // The same context the executor holds, and the capability checks
-                // that it publishes from the tree it is about to work in — so a
-                // context built for another run is refused before anything happens
-                // rather than after something has.
                 &forge.ctx,
                 &forge.trace,
                 model,
                 ProposeConfig {
                     repo: github.repo.to_string(),
-                    // The publishing arm's derivation and its reason, unchanged: a
-                    // head from a fork is not something this milestone can produce,
-                    // and `repo` is refused at parse time unless it has an owner.
                     head_owner: github.repo.owner.clone(),
                     base: github.base.clone(),
-                    // Payload, not identity — read by people, hashed for
-                    // detectability, matched on by nothing. Derived from the run's
-                    // own two names and from no clock or counter, the publishing
-                    // arm's rule and for the publishing arm's reason: a payload
-                    // that varied between processes would make the payload hash
-                    // vary with it.
-                    //
-                    // **It is not what protects the continuation, and an inversion
-                    // is what said so.** This comment used to claim a timestamped
-                    // title would make every continuation refuse at step 8. It
-                    // would not: putting `SystemTime::now()` in here broke no test
-                    // in the workspace, because the effect a person approves is
-                    // `EnsurePullRequestReady`, whose payload is `{head, pr, repo}`
-                    // and carries no title — and a continuation never proposes the
-                    // pull request again, so this title never enters a comparison
-                    // across processes at all. The payload identity a continuation
-                    // does turn on is that one, and it is protected at the runtime
-                    // tier, in `ready_effect` and `decision_protocol`.
-                    //
-                    // Determinism here is still right, for the reason above and
-                    // because a run interrupted before its create should not open a
-                    // differently-titled pull request on its next attempt. What it
-                    // is not is load-bearing for the decision walk, and the earlier
-                    // wording would have sent a reader looking for a property this
-                    // line does not hold.
                     title: format!("{}: {}", config.project.name, reference.as_str()),
                     body: format!(
                         "Opened by fiddle for {} in project {}, as a draft.\n\n\
@@ -1394,24 +659,13 @@ fn build_capability<'a>(
                     ),
                     project: config.project.name.clone(),
                     fixture: fixture.clone(),
-                    // The root only. The path inside it is `attempt_worktree`'s to
-                    // derive, and `resolve_forge` has already derived it once for
-                    // the context — two call sites of one function, which is the
-                    // arrangement that keeps the tree the attempt works in and the
-                    // tree the push publishes from being two paths.
                     workspace_root: workspace.root.clone(),
-                    // The publishing and repairing arms' value, from the same
-                    // document key: a continuation that concluded records its
-                    // change set where the next invocation's assessment reads one,
-                    // and there is exactly one such place per deployment.
                     stub_root: config.stub.root.clone(),
                     check: WorkspaceCommand {
                         program: check.program.clone(),
                         args: check.args.clone(),
                         timeout: workspace.command_timeout.as_duration(),
                     },
-                    // The repairing arm's budget, handed over as configured rather
-                    // than pre-tightened, for the repairing arm's reason.
                     budget: AgentBudget {
                         max_turns: agent.max_turns,
                         max_tokens: agent.max_tokens,
@@ -1419,9 +673,6 @@ fn build_capability<'a>(
                         max_changed_files: agent.max_changed_files,
                         tool_timeout: agent.tool_timeout.as_duration(),
                     },
-                    // Ids and not logins, straight from the table that nominates
-                    // them. Cloned rather than borrowed because `ProposeConfig`
-                    // outlives this arm's view of the document.
                     deciders: decision.authorized.clone(),
                     interpretation: interpretation_bounds(agent),
                     cancel: cancel.clone(),
@@ -1429,16 +680,6 @@ fn build_capability<'a>(
             )))
         }
 
-        // **The arm every M4 module was waiting for.** Eighteen tasks built the
-        // scan, the projection, the dedup, the budget, the attribution, the
-        // grouping, the migration, the evaluation, the landing, the shared
-        // publication and the disposition, and none of them had a caller on a
-        // production path. This is the caller.
-        //
-        // Five tables, each refused by its own name and in the order an operator
-        // can act on: what to scan and what to bump it with, the tree to do it
-        // in, the model that does the one step arithmetic cannot, the forge it
-        // is published to, and only then the two credentials.
         Selection::Mitigate => {
             let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
             let scanner = config
@@ -1455,44 +696,11 @@ fn build_capability<'a>(
                 .workspace
                 .as_ref()
                 .ok_or_else(|| missing("[workspace]"))?;
-            // The five checks of design §2.6, and a document declaring none is
-            // refused here rather than passing an empty contract to `evaluate`.
-            // An empty check list is not a permissive one: every group would end
-            // with no failing check, the rescan alone would decide, and the
-            // milestone's own rule — *the check decides, not the model* — would
-            // be decided by nothing.
-            //
-            // The same guard answers the *other* question this arm has to ask —
-            // which single command the `run_check` tool offers a model — and it
-            // is the **first** declared check rather than `[workspace] check`.
-            //
-            // **`[workspace] check` cannot be the source here, and reading it
-            // made this capability unbuildable.** `config::Workspace`'s own
-            // conversion refuses a document that names `check` *and*
-            // `[[workspace.checks]]` — there is no precedence between two answers
-            // to one question — while this arm requires the list. So every
-            // document that reaches this line has `check == None` by
-            // construction, and every document that would have satisfied the
-            // `ok_or_else` below fails to parse. `cve_mitigate` was reachable
-            // from no configuration at all; Task 20.b's first run through the
-            // binary is what found it.
-            //
-            // The first entry and not a new key, because §2.6 declares the list
-            // *in the order the checks run* and the first of the five is
-            // `go build` — which is exactly what a model runs to see whether its
-            // edit compiles. Derived rather than configured, so there is no
-            // second place for the two to disagree; a deployment that wants the
-            // model to run something else reorders the list it is judged by,
-            // which is a change it can see.
             let Some(check) = workspace.checks.first() else {
                 return Err(missing("[[workspace.checks]]").into());
             };
             let forge = forge.ok_or_else(|| missing("[github]"))?;
 
-            // Only now, and only on this arm — the repairing arm's order, for
-            // the repairing arm's reason: a deployment missing a table is told
-            // about the table rather than about two variables it would also have
-            // had to export.
             let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
             let model = fiddle_runtime::completion_model(
                 &agent.base_url,
@@ -1501,10 +709,6 @@ fn build_capability<'a>(
                 &agent.model,
             )
             .map_err(GatewayUnavailable)?;
-            // The tenant pair, resolved through the same one function every other
-            // credential in this binary goes through, and never stored on a
-            // configuration type: `WizCredential` is built here and handed
-            // straight to the adapters that carry it.
             let tenant = || -> Result<fiddle_runtime::WizCredential, CredentialAbsent> {
                 Ok(fiddle_runtime::WizCredential {
                     client_id: resolve_credential(
@@ -1518,22 +722,11 @@ fn build_capability<'a>(
                 })
             };
 
-            // A `^C` has to reach five kinds of child here: the scan, the `go`
-            // that resolves and bumps the module graph, the attempt's tools, the
-            // five checks, and the `gh` and `git` an effect spawns. They all stop
-            // through the one token.
             cancel_on_interrupt(cancel);
 
-            // The repairing arm's two axes, matched for the repairing arm's
-            // reason: adding a variant is a compile error here instead of a
-            // document that loads and quietly means something else.
             let config::Isolation::GitWorktree = workspace.isolation;
             let config::Cleanup::Always = workspace.cleanup;
 
-            // Two scratch directories and not one. Both scanners write their
-            // report under a fixed filename, so a shared directory would have the
-            // first rescan overwrite the input scan's artefact — the one document
-            // every verdict in the run is measured against.
             let scans = config.report.dir.join("scan");
             let rescans = config.report.dir.join("rescan");
 
@@ -1549,9 +742,6 @@ fn build_capability<'a>(
 
             Ok(Box::new(fiddle_runtime::CveMitigate::new(
                 executor,
-                // The same context the executor holds, borrowed for the one
-                // forge read that is not an effect: discovering the shared pull
-                // request. See `capability::mitigate`.
                 &forge.ctx,
                 fiddle_runtime::Wizcli::new(
                     PathBuf::from(&scanner.cli.program),
@@ -1564,21 +754,11 @@ fn build_capability<'a>(
                 model,
                 fiddle_runtime::MitigateConfig {
                     repo: github.repo.to_string(),
-                    // The publishing arm's derivation and its reason: a head from
-                    // a fork is not something this milestone can produce, and
-                    // `repo` is refused at parse time unless it has an owner.
                     head_owner: github.repo.owner.clone(),
                     base: github.base.clone(),
-                    // Payload, and it names no advisory: the shared pull request
-                    // outlives any one run's findings, which is the same reason a
-                    // clean group's commit subject names none.
                     title: format!("{}: dependency advisories", config.project.name),
                     project: config.project.name.clone(),
                     stub_root: config.stub.root.clone(),
-                    // The tree the sweep branches its worktree from, and the one
-                    // `github.work` would otherwise have named. It is
-                    // `workspace.fixture` because that is the key meaning *the
-                    // repository under repair*, and a sweep repairs one.
                     tree: workspace
                         .fixture
                         .as_ref()
@@ -1586,11 +766,6 @@ fn build_capability<'a>(
                         .clone(),
                     workspace_root: workspace.root.clone(),
                     image: sweep.image.clone(),
-                    // The grades the document named, or the two a document naming
-                    // none has always meant. Cloned from the same table
-                    // `max_findings` is read from, so the two documented
-                    // preferences of `[orchestration.cve]` reach the capability
-                    // from one place.
                     severities: sweep.severities.clone(),
                     scratch: rescans,
                     rescan_credential: tenant()?,
@@ -1623,8 +798,6 @@ fn build_capability<'a>(
                         args: check.args.clone(),
                         timeout: workspace.command_timeout.as_duration(),
                     },
-                    // The repairing arm's budget, handed over as configured
-                    // rather than pre-tightened, for the repairing arm's reason.
                     budget: AgentBudget {
                         max_turns: agent.max_turns,
                         max_tokens: agent.max_tokens,
@@ -1635,11 +808,6 @@ fn build_capability<'a>(
                     command_timeout: workspace.command_timeout.as_duration(),
                     findings: fiddle_runtime::cve::verdict::Budget::of(sweep.max_findings),
                     report_dir: config.report.dir.clone(),
-                    // **The one clock read on this path**, taken here rather than
-                    // inside the decision that uses it: `plan` is pure so that
-                    // every rule it encodes can be asserted without a clock, and
-                    // a branch name is a fact a caller has to be able to
-                    // reproduce.
                     today: fiddle_runtime::capability::cve::today_utc(),
                     cancel: cancel.clone(),
                 },
@@ -1648,40 +816,9 @@ fn build_capability<'a>(
     }
 }
 
-/// What the one interpretation call runs inside, built from `[agent]`.
-///
-/// Beside the attempt's budget rather than folded into it, because the two bound
-/// different things and [`ProposeConfig`] keeps them apart for that reason: a
-/// tool-using attempt over a checkout, and a single completion handed one comment
-/// that answers with one small object. There is no turn count here and its absence
-/// is deliberate upstream — a second turn would be a second chance at an approval.
-///
-/// Two of the three come from the document. The third does not, and that is worth
-/// saying plainly rather than leaving a reader to wonder which keys they can turn.
-///
-/// # `max_reply_bytes` is a constant, and no test in this repository can tell
-///
-/// It bounds how much of a person's reply is put in the prompt. There is no
-/// document key for it, nobody has asked for one, and a value that could disagree
-/// with anything would be worse than one that cannot — so it is named here.
-///
-/// **It is also a value whose value cannot matter to any test that exists**, and
-/// the honest thing is to record that at the site instead of adding a check that
-/// cannot fail. Every reply any suite writes is a short sentence, so every bound
-/// above a few dozen bytes behaves identically and an inversion over this number
-/// comes back null. The behaviour it *does* control — that a truncated reply is
-/// refused rather than interpreted from its first half — is discriminating, and it
-/// is asserted where it can be: `interpretation.rs`'s `bounds_with` drives the
-/// truncation directly at the unit tier. What this line decides is only which
-/// deployments meet that bound in production.
 fn interpretation_bounds(agent: &config::Agent) -> InterpretationBounds {
     InterpretationBounds {
-        // Generous against the replies a person writes on a pull request and far
-        // below anything that would crowd out the question itself.
         max_reply_bytes: 4_096,
-        // The same ceilings the attempt runs under, because they are the same
-        // deployment's answer to "how much may one completion cost" and a second
-        // pair of keys would be two answers to one question.
         max_tokens: agent.max_tokens,
         deadline: agent.deadline.as_duration(),
     }
@@ -1705,43 +842,13 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             capability,
             json,
         } => {
-            // Parsed through `fiddle-core` rather than re-implemented here: the
-            // CLI's only job is to turn the rejection into a diagnostic and an
-            // exit code.
-            //
-            // The reference is validated *before* the configuration is loaded,
-            // so a caller who mistyped the argument is told about the argument
-            // rather than about a document they never mentioned. `run`'s own
-            // parse is this same function, which is what makes the two commands
-            // refuse the same references — see [`reference_from`], and
-            // [`UnimplementedForm`] for the one refusal that is about a form
-            // rather than about the grammar.
             let reference = reference_from(invocation_ref)?;
-            // Resolved through the very same expression `run` uses, and that is
-            // the point rather than an economy: a second spelling of the default
-            // is exactly how the two commands would drift apart again. It is one
-            // function now that the default reads the scheme — see
-            // [`Selection::default_for`].
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
             let observed = observe(&config, &reference);
-            // The CLI owns the configuration, so the CLI computes the marker
-            // this invocation expects and hands it to the core. `assess` and
-            // `derive_next` never reach for it themselves — that is what keeps
-            // them pure functions of their arguments.
             let expected_marker =
                 fiddle_core::correlation_key(&config.project.name, &reference.as_str());
             let assessment = fiddle_core::assess(&observed, &expected_marker);
-            // The capability under consideration, named by the caller. Naming it
-            // here rather than in the core is the point of `derive_next`'s
-            // argument — the caller that knows which capability is under
-            // consideration is the one that says so — and `inspect` is a caller
-            // that now knows, instead of a caller that passed a constant.
-            //
-            // **Selected, and not built.** `run` follows its identical
-            // `Selection` into `build_capability`; this line takes the id and
-            // stops, which is what keeps `inspect` read-only, offline and
-            // credential-free for every value of the flag.
             let next_action = fiddle_core::derive_next(&observed, &expected_marker, selection.id());
             if *json {
                 println!(
@@ -1763,44 +870,16 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             capability,
             json,
         } => {
-            // Same order as `inspect`, and for the same reason: a caller who
-            // mistyped an argument is told about the argument rather than about
-            // a document they never mentioned. `--capability` is resolved here
-            // too, before anything is observed and long before anything could
-            // be executed, so a rejected invocation provably did nothing.
             let reference = reference_from(invocation_ref)?;
-            // Absent means whatever the reference's scheme means by it: `cve`
-            // selects the sweep, every other scheme keeps M0's `stub_mark`. The
-            // resolution is `inspect`'s own, for its reason — see
-            // [`Selection::resolve`] — and the reference is parsed first because
-            // the default now depends on it.
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
 
             let (work_items, changes) = ports(&config);
-            // The token exists on both arms so the capability builder does not
-            // have to hand one back conditionally; only a capability that can
-            // be interrupted installs a handler for it.
             let cancel = CancellationToken::new();
-            // Owned here, on this stack frame, for the length of the run. That
-            // placement is the design and not a convenience: an owned
-            // `EffectContext` is a held credential, so it is held by the caller
-            // and *lent* to the capability — see `Forge`. Built only for the
-            // selection that has a forge to reach, so `stub_mark` and
-            // `fixture_repair` resolve no GitHub credential.
             let forge = match selection {
-                // Both capabilities that reach a forge resolve one, through the same
-                // function and the same single credential read. They differ in the
-                // worktree the context publishes from, and `resolve_forge` is where
-                // that difference is decided — `propose_change`'s is derived rather
-                // than named by the document, because the tree its attempt publishes
-                // is the tree its attempt creates.
                 Selection::Publish | Selection::Propose | Selection::Mitigate => {
                     Some(resolve_forge(&config, &cli.config, &cancel, selection, &reference).await?)
                 }
-                // Neither of these reaches a forge, so neither resolves a forge
-                // credential. That is what keeps M0's and M1's lanes runnable on a
-                // machine holding no secrets.
                 Selection::Mark | Selection::Repair => None,
             };
             let selected = build_capability(
@@ -1811,11 +890,6 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 &reference,
                 forge.as_ref(),
             )?;
-            // One call, because executing and recording are one transaction: the
-            // runtime owns the whole attempt, including which outcome a failure
-            // to record amounts to. Nothing here re-decides that — a second
-            // opinion formed out here is how the outcome on stdout and the state
-            // on disk came to disagree in the first place.
             let record = fiddle_runtime::attempt(&AttemptContext {
                 project: &config.project.name,
                 reference: &reference,
@@ -1825,8 +899,6 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 work_items: &work_items,
                 changes: &changes,
                 capability: selected.as_ref(),
-                // Only a publication has an executor, and therefore a step order
-                // to record; `stub_mark` and `fixture_repair` reach no forge.
                 trace: forge.as_ref().map(|forge| &forge.trace),
             })
             .await;
@@ -1845,9 +917,6 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                     render::run_human(&record.bundle, record.published.as_deref())
                 );
             }
-            // The payload is printed on every path, including the failing ones:
-            // a caller learns *what* fiddle concluded from stdout and *that* it
-            // failed from the exit code, rather than having to choose.
             Ok(record.bundle.outcome)
         }
     }
@@ -1861,21 +930,6 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Every row of design §4.5's table, in one place.
-    ///
-    /// The rest of the exit-code coverage is black-box, in `fiddle-acceptance`,
-    /// and it can only reach the rows this build can be driven into. Row 10 was
-    /// not one of them until M3: nothing outside this test could pin it, so it
-    /// was pinned here against a hand-built outcome, on the argument that a code
-    /// written down and never checked is exactly how a code drifts before the
-    /// milestone that starts producing it.
-    ///
-    /// **That argument has been retired by the milestone it was waiting for.**
-    /// `run_outcome.rs`'s `a_run_awaiting_a_decision_exits_ten_and_says_what_it
-    /// _waits_for` drives the row through the compiled binary, so this test is
-    /// no longer row 10's only evidence and is back to being what the other
-    /// three rows have always used it for: the whole table asserted in one
-    /// place, where a reader can see that no two outcomes share a number.
     #[test]
     fn every_outcome_maps_to_the_row_the_table_documents() {
         let rows: [(RunOutcome, u8); 4] = [
@@ -1962,16 +1016,6 @@ mod tests {
         );
     }
 
-    /// **Every id this build advertises can actually be selected.**
-    ///
-    /// [`CAPABILITIES`] is what the `--capability` diagnostic lists, so it is a
-    /// promise to a caller about what they may ask for. [`Selection::parse`]
-    /// matches ids one at a time, which means a capability registered in the
-    /// runtime and not wired here would be advertised, requested, and then
-    /// rejected as unknown. This is the assertion that turns that into a build
-    /// failure — and it is the same class of mistake as the one this task
-    /// exists to fix, where the flag was checked against this very list and
-    /// then discarded.
     #[test]
     fn every_registered_capability_can_be_selected() {
         for registered in CAPABILITIES {
@@ -1989,7 +1033,6 @@ mod tests {
         }
     }
 
-    /// The flag rejects what this build cannot run, and says what it can.
     #[test]
     fn an_unknown_capability_is_refused_with_the_known_list() {
         let error = Selection::parse("nope").unwrap_err();
@@ -1997,12 +1040,6 @@ mod tests {
         assert!(error.known.contains("fixture_repair"), "{}", error.known);
     }
 
-    /// The credential is read from the variable the document names, and its
-    /// absence is reported as that variable rather than as a generic failure.
-    ///
-    /// Deliberately not asserting on a *present* variable: this process's
-    /// environment is shared by every test in the binary, and a test that set
-    /// one would be reaching into the others.
     #[test]
     fn an_absent_credential_is_reported_under_the_name_that_was_asked_for() {
         let error = resolve_credential(
@@ -2018,20 +1055,6 @@ mod tests {
         );
     }
 
-    /// **No credential is described by another one's noun.**
-    ///
-    /// The defect this closes: the message was `the model credential {variable}
-    /// is not set` for *every* credential in the binary, so an unexported
-    /// `[scanner]` tenant reported as a missing model credential and its help sent
-    /// the reader to a table that was present and correct. Reproduced against the
-    /// release binary as `the model credential WIZ_CLIENT_ID is not set`.
-    ///
-    /// Written over [`CredentialPurpose::ALL`] rather than over the three purposes
-    /// there are today, so a fourth credential-carrying table is covered the day
-    /// it is added. The exclusion is the half that matters and the half an
-    /// assertion on the variable alone passed straight through: each rendering must
-    /// name its own noun **and none of the others**, which is what makes borrowing
-    /// one a failure here rather than a report from a reader.
     #[test]
     fn each_credential_is_described_by_the_thing_that_needs_it() {
         for purpose in CredentialPurpose::ALL {
@@ -2061,15 +1084,10 @@ mod tests {
         }
     }
 
-    /// The deterministic capability is built from the configuration alone, with
-    /// no environment consulted, which is the property M0's credential-free
-    /// acceptance lane rests on.
     #[test]
     fn the_deterministic_capability_is_built_without_a_credential() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fiddle.toml");
-        // A document that names a credential nothing exports: if selecting
-        // `stub_mark` resolved one, this would fail.
         std::fs::write(
             &path,
             "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
@@ -2092,36 +1110,10 @@ mod tests {
         assert_eq!(built.id(), fiddle_core::STUB_MARK);
     }
 
-    /// A reference every builder test can be handed. The capability under test
-    /// in each of them does not read it; `build_capability` takes one because
-    /// the publishing arm's executor is bound to the run it will publish under.
     fn a_reference() -> InvocationRef {
         "beans:fiddle-m0-demo".parse().unwrap()
     }
 
-    /// **The sweep never asks for a key its own schema forbids beside the list
-    /// it requires.**
-    ///
-    /// `cve_mitigate` needs two things of `[workspace]`: the checks a group is
-    /// judged by, and the one command the `run_check` tool offers a model. It
-    /// used to take the second from `[workspace] check` — and
-    /// `config::Workspace`'s conversion refuses a document naming `check` *and*
-    /// `[[workspace.checks]]`, because there is no precedence between two answers
-    /// to one question. So the arm demanded a key that could not be present, and
-    /// **this capability was reachable from no document that parses**: eighteen
-    /// tasks' modules wired to a caller nothing could call. It shipped because
-    /// every seam had a suite and the composition had only a compiler.
-    ///
-    /// Two halves, and the second is what makes the first mean something:
-    ///
-    /// 1. a document carrying the list and no singular `check` gets **past** the
-    ///    check question — it is refused for the next thing in the arm's order,
-    ///    the forge, and not for `workspace.check`;
-    /// 2. the document that *would* have satisfied the old requirement does not
-    ///    load at all, so there is no way to write one that satisfies both.
-    ///
-    /// Without (2), (1) is satisfied by an arm that reads `check` and happens to
-    /// be handed a document with one.
     #[test]
     fn the_sweep_takes_the_model_s_check_from_the_list_it_already_requires() {
         let sweep = "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
@@ -2138,10 +1130,6 @@ mod tests {
         std::fs::write(&path, sweep).unwrap();
         let loaded = config::load(&path).unwrap();
 
-        // `None` for the forge, so the arm's *next* refusal after the check
-        // question is the one that comes back. Reaching it at all is the
-        // assertion: `workspace.check` here would mean the arm still wants a key
-        // no loadable document can carry.
         let Err(error) = build_capability(
             Selection::Mitigate,
             &loaded,
@@ -2161,8 +1149,6 @@ mod tests {
             other => panic!("expected the forge to be named, got {other:?}"),
         }
 
-        // And the document that would have satisfied the old requirement is not a
-        // document at all.
         let both = dir.path().join("both.toml");
         std::fs::write(
             &both,
@@ -2176,13 +1162,6 @@ mod tests {
         );
     }
 
-    /// **A publication over a document that describes no forge is refused by
-    /// table, and nothing is built.**
-    ///
-    /// The counterpart of the repair assertion below, and the regression this
-    /// bean closes from the other side: the refusal must survive as the answer
-    /// for a document that genuinely has no `[github]`, now that a document
-    /// which *has* one is executed rather than refused.
     #[test]
     fn a_publication_over_a_document_with_no_forge_names_the_missing_table() {
         let dir = tempfile::tempdir().unwrap();
@@ -2213,23 +1192,6 @@ mod tests {
         }
     }
 
-    /// **Each key a forge cannot invent is refused by its own name, before the
-    /// credential is reached — and the two capabilities that reach a forge cannot
-    /// invent the same keys.**
-    ///
-    /// The order is the property: an operator whose document has no
-    /// `github.work` has a key to write, and telling them about a variable they
-    /// would *also* need would be answering the second question first. The
-    /// document here names a variable nothing exports, so a resolution that
-    /// happened too early would surface as the wrong refusal.
-    ///
-    /// The rows are what say the two selections are answered differently rather
-    /// than by one list of every key either might want. A proposal asked for
-    /// `github.work` or `github.workflow` would be a diagnostic telling an operator
-    /// to add keys nothing on that walk reads — it publishes from a tree it derives,
-    /// and it requests no check — and a publication asked for `[workspace]` would be
-    /// the same mistake pointing the other way. Both directions are here, because a
-    /// resolver that demanded the union would pass a test of either alone.
     #[tokio::test]
     async fn a_forge_names_each_key_it_cannot_invent_before_the_credential() {
         let forge = "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
@@ -2243,9 +1205,6 @@ mod tests {
                 "work=\"/nonexistent\"\n",
                 "github.workflow",
             ),
-            // A proposal over the very same incomplete `[github]` table is refused
-            // for `[workspace]` and not for `github.work`: the two capabilities want
-            // different things of one document.
             (Selection::Propose, "", "[workspace]"),
         ] {
             let dir = tempfile::tempdir().unwrap();
@@ -2253,10 +1212,6 @@ mod tests {
             std::fs::write(&path, format!("{forge}{extra}")).unwrap();
             let loaded = config::load(&path).unwrap();
 
-            // `expect_err` is deliberately not used here: it would require
-            // `Forge` to be `Debug`, and a `Debug` on a value that transitively
-            // holds two credential-carrying clients is exactly the derive M1
-            // shipped a leak through.
             let Err(error) = resolve_forge(
                 &loaded,
                 &path,
@@ -2271,8 +1226,6 @@ mod tests {
             match error {
                 CliError::Unconfigured(unconfigured) => {
                     assert_eq!(unconfigured.missing, expected);
-                    // Attributed to the capability that wanted the key, so an
-                    // operator reading it knows which invocation to fix.
                     assert_eq!(unconfigured.capability, selection.id());
                 }
                 other => panic!("expected {expected} to be named, got {other:?}"),
@@ -2280,16 +1233,6 @@ mod tests {
         }
     }
 
-    /// A proposal's forge is not refused for the two keys only a publication reads,
-    /// and its `work` is the tree its own attempt will create.
-    ///
-    /// The negative half of the test above, and it needs its own document because
-    /// the assertion is that a *complete enough* proposing document gets past the
-    /// keys rather than that an incomplete one is refused for something else. What
-    /// it reaches instead is the credential, which is the next thing in the order —
-    /// so this also says `resolve_forge` never read a `HEAD` off the derived path:
-    /// that path does not exist, and a `git` pointed at it would have failed first
-    /// with `PathUnusable` naming `github.work`, a key this document does not have.
     #[tokio::test]
     async fn a_proposal_reads_no_head_off_the_tree_its_attempt_has_yet_to_create() {
         let dir = tempfile::tempdir().unwrap();
@@ -2324,24 +1267,12 @@ mod tests {
         }
     }
 
-    /// The path a proposal's context publishes from is the path its capability
-    /// creates, because both come from one function.
-    ///
-    /// Asserted against `attempt_worktree` rather than against a spelling written
-    /// out here, and that is the whole point rather than laziness: a second
-    /// derivation is exactly what `ProposeChange::execute`'s `PublishesElsewhere`
-    /// refusal exists to catch, and a test that recomputed the leaf itself would
-    /// agree with a `resolve_forge` that had drifted. What is checked is that the
-    /// two call sites are the same call — the workspace root is honoured, and the
-    /// run's own two names are what the leaf is derived from.
     #[test]
     fn a_proposals_worktree_is_derived_from_the_runs_own_two_names() {
         let root = Path::new("/w");
         let derived = fiddle_runtime::attempt_worktree(root, "icecube", "beans:m3-demo");
 
         assert_eq!(derived.parent(), Some(root), "under the configured root");
-        // Two runs that differ in either name get two trees, which is what stops a
-        // second invocation publishing out of the first one's checkout.
         assert_ne!(
             derived,
             fiddle_runtime::attempt_worktree(root, "icecube", "beans:m3-demo-again")
@@ -2350,17 +1281,12 @@ mod tests {
             derived,
             fiddle_runtime::attempt_worktree(root, "another-project", "beans:m3-demo")
         );
-        // And the same two names give the same tree in a *different* process, which
-        // is the half a continuation depends on.
         assert_eq!(
             derived,
             fiddle_runtime::attempt_worktree(root, "icecube", "beans:m3-demo")
         );
     }
 
-    /// And once the document is complete, the credential is what is missing —
-    /// which is the assertion that keeps the one above from being satisfiable by
-    /// a function that refuses everything.
     #[tokio::test]
     async fn a_complete_forge_without_its_credential_names_the_variable() {
         let dir = tempfile::tempdir().unwrap();
@@ -2395,12 +1321,6 @@ mod tests {
         }
     }
 
-    /// A repairing capability over a document that describes no deployment is
-    /// refused by table, before the credential is ever reached.
-    ///
-    /// The order matters: an operator whose document has no `[agent]` table has
-    /// a table to write, and telling them about a variable they would *also*
-    /// need would be answering the second question first.
     #[test]
     fn a_repair_over_an_m0_document_names_the_missing_table_not_the_credential() {
         let dir = tempfile::tempdir().unwrap();
@@ -2431,19 +1351,6 @@ mod tests {
         }
     }
 
-    /// **A race must not leave a code the table does not have.**
-    ///
-    /// The disagreement is real rather than described: the capability writes its
-    /// marker, another writer takes the change set over before the attempt looks
-    /// again, and the attempt's own conclusion — not one composed here — is what
-    /// gets mapped. That is what makes this a check on the whole chain, from the
-    /// runtime's re-derivation to the number the process leaves behind.
-    ///
-    /// Before this was derived rather than asserted, this same world exited 0
-    /// with a bundle reading `"outcome":"completed"` beside
-    /// `"next_action":{"blocked":…}` in release, and aborted with 101 — a row of
-    /// no table — in debug. Both halves are pinned shut here: one code, from the
-    /// table, in either profile.
     #[tokio::test]
     async fn a_race_after_executing_still_exits_on_the_table() {
         let root = tempfile::tempdir().unwrap();
@@ -2473,7 +1380,6 @@ mod tests {
             work_items: &work_items,
             changes: &changes,
             capability: &marking as &dyn Capability,
-            // A deterministic capability reaches no forge and has no executor.
             trace: None,
         })
         .await;
@@ -2496,13 +1402,6 @@ mod tests {
         );
     }
 
-    /// Another agent rewriting the change set between an attempt's two
-    /// observations.
-    ///
-    /// Counted rather than raced, so the window is hit on every run: the foreign
-    /// write lands immediately before the second look, which is the moment a
-    /// concurrent writer would have to land it. The observation itself still
-    /// comes from the real stub port reading the real file.
     struct OvertakenAfterTheFirstLook {
         inner: StubChangePort,
         change_set: PathBuf,
