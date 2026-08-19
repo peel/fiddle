@@ -12,11 +12,20 @@
 //! That is not tidiness. A model that can be told the version comparison can
 //! also get it wrong, and a wrong version comparison presents as a security
 //! fix's commit message over a *downgrade*. Design §2's phase table settles each
-//! row the same way and leaves exactly one for a model: *a uniform mechanical
-//! migration forced by the bump* — reading code and editing every call site,
-//! including the tests. Reading code is the thing no amount of arithmetic
+//! row the same way and leaves exactly one for a model: *what would actually
+//! clear this advisory in this repository* — reading the code, deciding what has
+//! to change, and changing it. Reading code is the thing no amount of arithmetic
 //! replaces; everything around it is arithmetic, so everything around it stays
 //! out.
+//!
+//! M4c is where that row got its honest width. It used to be narrower on paper —
+//! *carry out the migration the bump forced* — and the narrowing was not a
+//! guarantee but an assumption: that the bump was right, that its consequences
+//! were mechanical, and that a repository's ecosystem was one fiddle happened to
+//! know the vocabulary of. What replaced it is not a wider grant of *reach*, which
+//! is still four tools over one worktree, but an honest statement of the
+//! judgement, plus one disposition per advisory so that the judgement is
+//! answerable for.
 //!
 //! # What goes to the model
 //!
@@ -30,9 +39,11 @@
 //!    because it declares `deny_unknown_fields` over six names. This module is
 //!    the next link in that chain: the projection is what reaches the model, and
 //!    nothing joins it on the way.
-//! 2. **The scope rules** — [`SCOPE_RULES`], the *scope* half of the skill's
-//!    phase B1 and no other half of it. What a bump may touch, and what makes a
-//!    group `needs-work`.
+//! 2. **The scope rules** — [`SCOPE_RULES`], which after M4c are two: an attempt
+//!    is held to the files it declared, and declining an advisory it cannot clear
+//!    is an answer rather than a failure. Neither names a file, a language, or a
+//!    shape of edit, because neither is a thing fiddle knows about a repository a
+//!    scanner handed it.
 //!
 //! And three things do not, each excluded for its own reason. **No advisory
 //! prose**, because the projection cannot carry any. **No mechanical rule**, for
@@ -92,14 +103,22 @@ use tokio_util::sync::CancellationToken;
 ///
 /// It names the tools rather than describing the host, for the reason the tool
 /// schemas do: everything here is sent to the provider, so a preamble mentioning
-/// the workspace root would leak it just as surely as a tool argument would. M1's
-/// own preamble is the model for this one and is deliberately not *reused* — it
-/// says "one small Rust project", and telling a model working in a Go tree that
-/// it is in a Rust one is a lie with no upside.
+/// the workspace root would leak it just as surely as a tool argument would.
+///
+/// **And it names no language, which is the difference from M1's.** M1's own
+/// preamble is the model for this one and is deliberately not *reused*: M1 says
+/// "one small Rust project" and is right to, because M1 repairs a fixture it
+/// wrote itself and knows what it is. This one opens over a repository a scanner
+/// found advisories in, and nothing upstream of here has asked what it is written
+/// in — so "one project" is the whole of what can be said honestly. The
+/// alternative was a classifier mapping manifest names to languages, and the
+/// reason there is none is that the attempt reading the tree is a better one than
+/// any list somebody maintains: it is looking at the repository, and the list
+/// would be looking at file extensions.
 const MIGRATION_PREAMBLE: &str = "\
-You are making one mechanical change to one Go project. You can read its files, \
-list them, replace a file's contents, and run the project's check. You cannot do \
-anything else, and there is nothing outside the project you can reach.\n\
+You are making one change to one project. You can read its files, list them, \
+replace a file's contents, and run the project's check. You cannot do anything \
+else, and there is nothing outside the project you can reach.\n\
 \n\
 Work in small steps: read before you write, and run the check after you write. \
 Change as few files as you can. When you are done — or when you are certain you \
@@ -113,42 +132,89 @@ you actually changed, whether or not it worked.";
 /// of its values — `package`, `current`, `fixedVersion` — are strings a scanner
 /// document supplied, so the ordering discipline is worth keeping even though the
 /// six-field boundary already stopped the free text.
+///
+/// **The clause that had to go.** It used to close "there is nothing for you to
+/// decide about them", which was true while Rust elected the version and the
+/// target: the bump was settled arithmetic and the attempt was carrying out its
+/// consequences. It is false now. The attempt decides what each advisory needs,
+/// including that one of them needs nothing and that another cannot be cleared at
+/// all, and a frame telling it otherwise would be asking for the report M4c's
+/// dispositions exist to collect and then forbidding it.
 const FINDINGS_FRAME: &str = "\
 A dependency bump has already been applied to this project to clear the \
-advisories below. It may have broken the build. These are the advisories, and \
-they are here so you know what the bump was for — there is nothing for you to \
-decide about them.";
+advisories below. It may have broken the build, and it may not have been enough. \
+Here they are as the scanner reported them — what it found, the version that was \
+in the project, and the version it says the fix is in. Those are its words, not \
+ours.";
 
-/// The scope half of the skill's rules, and the only half of it.
+/// The two rules an attempt is held to, and the only two.
 ///
-/// Design §2.5 states these in the same words, and they are the *instructions to
-/// a judgment step* that section separates from the mechanical rules: what a bump
-/// may touch, and what puts a group back to a person. The counts and comparisons
-/// that decide everything else are not here and are not anywhere else in this
-/// prompt.
+/// Neither names a file, a language, or a shape of edit — because after M4c there
+/// is nothing about any of those that fiddle knows. What may be edited is
+/// *whatever the attempt says it edited*, and whether the edit worked is the
+/// rescan's answer and not this text's.
 ///
-/// Whether an edit actually stayed uniform is not settled by having said so. This
-/// text is what the model is asked for; Task 14.b's classification of the diff is
-/// what decides, and the five checks are what overrule both.
+/// # The first rule is one that runs
+///
+/// The declared-files rule is a set comparison between the attempt's own file
+/// list and what git saw change, and it reads no suffix and no manifest name. So
+/// this paragraph states a rule that is really checked, in the same terms the
+/// check is written in.
+///
+/// What used to be here — three kinds of edit, uniformity, `_test.go`, `t.Skip`,
+/// a `replace` directive — was the vocabulary of a Go-shaped classifier over the
+/// diff, and it goes for two reasons at once. It is an ecosystem's vocabulary,
+/// which is this milestone's subject. And it was **advice the checker could not
+/// keep**: "uniform" is not a property a set difference can evaluate, so stating
+/// it left the model reading a rule nothing would hold it to, which is worse than
+/// no rule because it reads as one. The classifier itself outlives this task by a
+/// task — until it is deleted it still flunks shapes this text no longer names,
+/// which is the deliberate direction to be wrong in: a diff that trips it becomes
+/// a person's problem rather than a silent pass.
+///
+/// # The second rule is what makes declining sayable
+///
+/// fiddle cannot know whether a fix exists in an ecosystem it does not
+/// understand, so *I could not clear this, and here is why* has to be an
+/// available answer. Withhold it and a model with nothing honest to say invents
+/// something, which is the one outcome nothing downstream can detect.
+///
+/// It is a **protocol** success and not a **verdict** success, and the two must
+/// not be conflated: a declined finding is a report fiddle accepts, and the
+/// advisory is still in the tree at the rescan, so the group is needs-work on the
+/// rescan's evidence rather than on the report's honesty.
 const SCOPE_RULES: &str = "\
-Three kinds of edit are in scope, and no others: the dependency bump itself, a \
-base-image tag bump, and one exception — a uniform mechanical migration the bump \
-forced. Uniform means the same rename or the same signature change applied \
-identically at every call site, including every file whose name ends _test.go.\n\
+Name every file you change, spelling each path the way the project spells \
+it, and change every file you name. A file changed without being named, or \
+named without being changed, refuses the whole attempt — so work in as few \
+files as you can and keep the list exact. The bump above is already in the \
+tree and is not yours to declare: if it needs no follow-up, change nothing \
+and name no files.\n\
 \n\
-Everything else stops this group and must be left for a person. A source edit \
-that is not uniform, any new control flow, any changed or removed test \
-assertion, any added t.Skip, and any replace directive in go.mod are all out of \
-scope. If the migration cannot be made uniform, change nothing further and say \
-so in your report.";
+You are not asked to fix everything. If you cannot see what would clear an \
+advisory, or clearing it would take a change you are not confident in, \
+change nothing for it and report it as not attempted, saying what stopped \
+you. That is an answer this run can use. A change made on a guess is not, \
+and neither is a report that claims more than you did.";
 
 /// The instruction that closes the prompt.
 ///
 /// Last, so the final words are fiddle's — the same placement
 /// [`crate::agent`]'s `INSTRUCTION_CLOSING` argues for.
+///
+/// **It asks for a decision, where it used to ask for an errand.** "Carry out the
+/// migration the bump forced" presumed the whole of what M4c moves: that a bump
+/// had been chosen well, that its consequences were mechanical, and that reading
+/// the tree was only how you found the call sites. What is asked now is the
+/// judgement itself — read the project, work out what would clear each advisory,
+/// do that — and the report is asked for in the same breath, because
+/// `agent::unaccounted` refuses a report that leaves an advisory out and a
+/// contract enforced in Rust and unstated in the prompt is a trap.
 const TASK: &str = "\
-Make the project build again by carrying out the migration the bump forced, \
-staying inside the scope above, then report what you did.";
+Read the project and work out what would clear each advisory above: whether the \
+bump already did, and what else has to change if it did not. Make those changes, \
+run the check, and then report — the files you changed, and one entry for every \
+advisory you were shown.";
 
 /// One projected finding, as the model sees it.
 ///
@@ -418,8 +484,14 @@ fn is_go(path: &str) -> bool {
     path.ends_with(".go")
 }
 
-/// Whether `path` is a Go test file, by the only definition Go has — the one
-/// the toolchain itself uses and the one [`SCOPE_RULES`] quotes to the model.
+/// Whether `path` is a Go test file, by the only definition Go has — the one the
+/// toolchain itself uses.
+///
+/// [`SCOPE_RULES`] used to quote this suffix to the model and no longer does: the
+/// prompt states no ecosystem's vocabulary after M4c. So this classifier and the
+/// prompt have stopped agreeing, deliberately and for one task — the classifier is
+/// deleted next, and until it is, a diff it flunks becomes a person's problem
+/// rather than a silent pass.
 fn is_go_test(path: &str) -> bool {
     path.ends_with("_test.go")
 }
@@ -2527,14 +2599,77 @@ mod tests {
     /// to the model, which is the stronger claim and the one the criterion is
     /// about. This is here because it is the *unit* of that claim: it fails on a
     /// composition defect without a worktree, a tool loop or a mock.
+    ///
+    /// One phrase per rule, since M4c left two, and neither phrase is a field name
+    /// of the report — `changed_files` would be present in a composition that
+    /// carried no rules at all, because the schema names it anyway.
     #[test]
     fn the_composition_carries_the_scope_rules_and_no_mechanical_rule() {
         let task = migration_task(&[&finding()]);
-        assert!(task.contains("uniform"), "{task}");
+        for rule in ["refuses the whole attempt", "report it as not attempted"] {
+            assert!(task.contains(rule), "`{rule}` is a scope rule: {task}");
+        }
         for mechanical in ["go list -m", "go mod why", "at_least", "dedup", "fold"] {
             assert!(
                 !task.contains(mechanical),
                 "`{mechanical}` is decided in Rust and must not be in the prompt: {task}"
+            );
+        }
+    }
+
+    /// **fiddle's words name no ecosystem, asserted where nothing else can.**
+    ///
+    /// The protocol suite makes this claim over the bytes a real attempt sent, and
+    /// has to subtract the rendered finding line to make it: that world's project
+    /// is a Go one, so the scanner's own `golang.org/x/text` is in the briefing
+    /// legitimately and every `go` needle would fire on evidence.
+    ///
+    /// Here the finding is from an ecosystem this repository has never been able to
+    /// resolve a target in — three strings and two enum variants, which is all a
+    /// [`ProjectedFinding`] is — so no subtraction is needed and no needle has an
+    /// innocent explanation. Every Go word below, if it appeared, would be fiddle's
+    /// own, and the composition is asserted whole.
+    ///
+    /// The other half is that the scanner's three strings still arrive. `2.2.2` is
+    /// the fix *it published*, which is evidence rather than a version fiddle
+    /// elected: withholding it would leave the attempt guessing at what it had been
+    /// shown, and no arithmetic in this crate produced it.
+    #[test]
+    fn the_prompt_names_no_ecosystem_and_no_chosen_version() {
+        let elsewhere = ProjectedFinding {
+            cve: serde_json::from_value::<AdvisoryId>(serde_json::json!("CVE-2026-1234"))
+                .expect("a canonical advisory id"),
+            package: "urllib3".to_string(),
+            current: "2.0.0".to_string(),
+            fixed_version: Some("2.2.2".to_string()),
+            severity: Severity::High,
+            package_type: PackageType::Library,
+        };
+        let prompt = format!("{MIGRATION_PREAMBLE}\n\n{}", migration_task(&[&elsewhere]));
+
+        for word in [
+            "Go",
+            "go.mod",
+            "go.sum",
+            "golang",
+            "module",
+            "_test.go",
+            "t.Skip",
+            "Rust",
+            "Cargo.toml",
+            "requirements.txt",
+            "package.json",
+        ] {
+            assert!(
+                !prompt.contains(word),
+                "the prompt must not name an ecosystem; found {word:?} in:\n{prompt}"
+            );
+        }
+        for shown in ["urllib3", "2.0.0", "2.2.2"] {
+            assert!(
+                prompt.contains(shown),
+                "the scanner's own words about the finding are still shown; \
+                 {shown:?} missing from:\n{prompt}"
             );
         }
     }

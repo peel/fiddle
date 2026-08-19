@@ -208,11 +208,13 @@ fn task_for(direction: Direction<'_>) -> String {
 /// outside the project, which is the property this whole module exists to hold.
 ///
 /// The words are the caller's because they are domain. M1 repairs a broken Rust
-/// fixture and M3 writes a change against one; M4 carries out the migration a
-/// dependency bump forced, under scope rules a skill states in Go's vocabulary
-/// — see [`crate::capability::cve`]. None of that vocabulary belongs in the
-/// module that owns the bounded rig, and the two that share M1's words share
-/// them by naming [`attempt`] rather than by copying a constant.
+/// fixture and M3 writes a change against one — both of them projects M1 wrote,
+/// so both may say so. M4 opens over a repository a scanner found advisories in
+/// and says nothing about what it is: after M4c its brief names no language and no
+/// manifest, because the capability composing it does not know either — see
+/// [`crate::capability::cve`]. Neither kind of claim belongs in the module that
+/// owns the bounded rig, and the two that share M1's words share them by naming
+/// [`attempt`] rather than by copying a constant.
 #[derive(Clone, Copy, Debug)]
 pub struct Brief<'a> {
     /// The situation, and the tools there are. Sent to the provider as the

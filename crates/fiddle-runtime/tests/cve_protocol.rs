@@ -329,6 +329,100 @@ fn sent(model: &MockCompletionModel) -> Sent {
     }
 }
 
+/// The opening briefing, split into the words fiddle wrote and the words a
+/// scanner supplied.
+///
+/// # Why a second reader beside [`sent`]
+///
+/// [`Sent`] is the whole request stream, which is what an assertion about a
+/// *host fact* wants: a path could arrive through a tool result on turn four.
+/// The claim *fiddle names no ecosystem* cannot be asserted there, and not
+/// because of turn four — because the tool results carry the project's own
+/// bytes, and this world's project is a Go one. `main.go` is in the stream
+/// legitimately, as a path the model asked to read. So the surface for that
+/// claim is the **briefing**: the system text and the instruction of the first
+/// request, before any tool has answered, which is exactly what
+/// `MIGRATION_PREAMBLE` and `migration_task` composed.
+///
+/// # And why the finding lines come out
+///
+/// One line of the briefing is not fiddle's. The rendered projection quotes a
+/// package name, and in this world that name is `golang.org/x/crypto` — the
+/// scanner's word for the thing the bump moved, which fiddle must pass through
+/// unedited or the attempt is guessing at what it was shown. An assertion that
+/// the briefing spells no ecosystem would fail on the scanner's evidence and
+/// pass on nothing, so [`Briefing::evidence`] is lifted out and asserted
+/// *present* while [`Briefing::fiddles_words`] is asserted clean.
+///
+/// The split is by line and the lines are the ones `render` writes: a leading
+/// `- ` and an advisory id this group was shown. Nothing else in the briefing
+/// has that shape, and if `render` ever stops having it,
+/// [`the_prompt_names_no_ecosystem_and_no_chosen_version`] fails on its own
+/// premise — the evidence list comes back empty — rather than quietly asserting
+/// over a briefing it has stopped subtracting anything from.
+struct Briefing {
+    /// The briefing entire, fiddle's words and the scanner's together.
+    whole: String,
+
+    /// The briefing with the rendered finding lines removed: every word in it
+    /// is one fiddle chose.
+    fiddles_words: String,
+
+    /// The rendered finding lines, which are what was removed.
+    evidence: Vec<String>,
+}
+
+/// Read the briefing of `model`'s first request, splitting on `cves`.
+fn briefing(model: &MockCompletionModel, cves: &[String]) -> Briefing {
+    let requests = model.requests();
+    let first = requests
+        .first()
+        .expect("the model was called, so there is an opening request to read");
+    let rendered = serde_json::to_value(first).expect("a CompletionRequest serializes");
+    let history = rendered["chat_history"]
+        .as_array()
+        .expect("the opening request carries a chat history");
+
+    // Both content shapes rig renders, because the system text and the
+    // instruction do not arrive in the same one: a system message serializes its
+    // content as a string, a user message as an array of typed parts.
+    let mut whole = String::new();
+    for message in history {
+        match &message["content"] {
+            serde_json::Value::String(text) => whole.push_str(text),
+            serde_json::Value::Array(parts) => {
+                for part in parts {
+                    let text = part["text"]
+                        .as_str()
+                        .expect("every part of the briefing is text");
+                    whole.push_str(text);
+                }
+            }
+            other => panic!("the briefing is text, and this is {other}"),
+        }
+        whole.push('\n');
+    }
+
+    let is_evidence =
+        |line: &str| line.starts_with("- ") && cves.iter().any(|cve| line.contains(cve.as_str()));
+    let evidence: Vec<String> = whole
+        .lines()
+        .filter(|line| is_evidence(line))
+        .map(str::to_string)
+        .collect();
+    let fiddles_words: String = whole
+        .lines()
+        .filter(|line| !is_evidence(line))
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    Briefing {
+        whole,
+        fiddles_words,
+        evidence,
+    }
+}
+
 /// One bounded migration of `world`'s group, driven by `model`.
 ///
 /// The attempt's own outcome is returned for the lanes that want it and ignored
@@ -456,6 +550,113 @@ async fn the_prompt_carries_the_projection_and_the_scope_rules_and_nothing_else(
         !sent.carries(HOST_ROOT),
         "no host fact, as M1 already requires"
     );
+}
+
+/// **The prompt names no ecosystem, and no version fiddle chose.**
+///
+/// M4c's claim, asserted where it is decidable. The production crates are to
+/// have no understanding of Go — so the words they compose cannot name one, and
+/// cannot name a manifest, a test-file convention or a language's skip verb
+/// either. What decides how a dependency is upgraded is the attempt, reading a
+/// repository fiddle cannot classify.
+///
+/// **The needles are a class, not a list of today's mistakes.** `Rust` is in it
+/// beside `Go` on purpose: a prompt that had been made ecosystem-agnostic by
+/// swapping one language for another would pass a lane that only looked for
+/// `Go`, and M1's preamble — which really does say "one small Rust project",
+/// legitimately, over a fixture M1 wrote itself — is the string this one was
+/// almost copied from.
+///
+/// # What is asserted present, and why it is not a contradiction
+///
+/// The package, the version in the tree and the fixed version are all in the
+/// briefing, and one of them spells `golang.org/x/crypto`. That is the
+/// **scanner's** word for what it found, and passing it through unedited is not
+/// fiddle deciding anything — withholding it would leave the attempt guessing at
+/// which advisory it was shown. So [`Briefing`] lifts those lines out: they are
+/// asserted present in the whole, and every needle below is asserted against
+/// what remains.
+///
+/// # The version, which is the subtler half
+///
+/// `v0.35.0` is the version this group moves to *and* the version the scanner
+/// published as its fix — in a one-finding group those are the same string, so
+/// no assertion can tell "fiddle chose it" from "the scanner said it" by looking
+/// for the number. What *can* be told apart is who says it: the number appears
+/// on the evidence line, attributed to the scanner, and nowhere in fiddle's own
+/// words. A prompt that instructed the attempt to upgrade to a version would
+/// have to spell it in an instruction, and an instruction is fiddle's words.
+#[tokio::test]
+async fn the_prompt_names_no_ecosystem_and_no_chosen_version() {
+    let world = migration_world().await;
+    let model = MockCompletionModel::new(migrates());
+    let _ = run_migration(model.clone(), &world).await;
+
+    let cves: Vec<String> = world
+        .group
+        .cves()
+        .iter()
+        .map(|cve| cve.as_str().to_string())
+        .collect();
+    let briefing = briefing(&model, &cves);
+
+    // Both halves of the briefing really arrived, so that neither the absences
+    // nor the presences below are claims about half a prompt. The system half is
+    // named by the sentence that tells the model what the tools are; the
+    // instruction half by the evidence line, which only the instruction carries.
+    assert!(
+        briefing.whole.contains("read its files"),
+        "the system text has to be in the briefing this lane reads: {}",
+        briefing.whole
+    );
+    assert!(
+        !briefing.evidence.is_empty(),
+        "no line of the briefing looked like a rendered finding, so nothing was \
+         subtracted and this lane would be asserting over the scanner's words as \
+         well as fiddle's: {}",
+        briefing.whole
+    );
+
+    for word in [
+        "Go",
+        "go.mod",
+        "go.sum",
+        "golang",
+        "module",
+        "_test.go",
+        "t.Skip",
+        "Rust",
+        "Cargo.toml",
+        "requirements.txt",
+        "package.json",
+    ] {
+        assert!(
+            !briefing.fiddles_words.contains(word),
+            "fiddle's own words name an ecosystem; found {word:?} in:\n{}",
+            briefing.fiddles_words
+        );
+    }
+
+    let finding = world.group.findings()[0].finding();
+    let fixed = finding
+        .fixed_version
+        .as_deref()
+        .expect("a fixable finding names a fix");
+    for shown in [finding.package.as_str(), finding.current.as_str(), fixed] {
+        assert!(
+            briefing.whole.contains(shown),
+            "the scanner's own evidence is still shown; {shown:?} is missing \
+             from:\n{}",
+            briefing.whole
+        );
+        assert!(
+            !briefing.fiddles_words.contains(shown),
+            "{shown:?} is the scanner's word and appears only where the scanner \
+             is quoted; fiddle repeating it in its own words is fiddle deciding \
+             it:\n{}",
+            briefing.fiddles_words
+        );
+    }
 }
 
 /// **The projection is what reaches it, and not the record the projection was
