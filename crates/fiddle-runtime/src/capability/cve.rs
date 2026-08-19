@@ -945,6 +945,24 @@ pub struct MigrationConfig {
     pub check: WorkspaceCommand,
 
     /// What one bounded attempt runs inside.
+    ///
+    /// # It is the **run's** grant now, and that is a cost the rewire imposes
+    ///
+    /// [`AgentBudget`] is a plain-value `Clone`, and [`GroupMigration::migrate`]
+    /// hands one to `attempt_briefed` per call. Under grouping there was a call
+    /// per group, so every group got a fresh grant of all five bounds; a run makes
+    /// exactly one call now, so `max_turns`, `max_tokens`, `deadline`,
+    /// `max_changed_files` and `tool_timeout` are shared by the work for every
+    /// finding the run's bound left.
+    ///
+    /// A two-finding run and a twenty-finding run therefore run inside the same
+    /// grant. That is a defensible reading of *one bounded attempt* — an operator
+    /// who widens `[orchestration.cve] max_findings` without widening `[agent]` is
+    /// asking for more work inside the same envelope, and the envelope failing is
+    /// an honest answer — but it is not what these values meant before, so it is
+    /// written here rather than left to be discovered from a run that ran out of
+    /// turns. `max_changed_files` is the one to watch: it is a count over the whole
+    /// diff, and two findings in two files is already two of it.
     pub budget: AgentBudget,
 
     /// Stops the attempt, the tools and the check together.

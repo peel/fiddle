@@ -132,7 +132,7 @@ pub struct Run {
     ///
     /// **No production path sets this any more**, because the four mechanical Go
     /// rules that filled it are what M4c deleted; `capability::mitigate`'s step 8
-    /// carries the argument for keeping the field. So of [`verdicts_of`]'s three
+    /// carries the argument for keeping the field. So of `verdicts_of`'s three
     /// producers a run reaches two, and the other one is where row 2 comes from.
     pub blocked: Vec<Blocked>,
 
