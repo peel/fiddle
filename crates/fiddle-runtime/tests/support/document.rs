@@ -100,33 +100,6 @@ pub const SECOND_OS_CVE: &str = "CVE-2026-0005";
 /// it.
 pub const SECOND_LIBRARY_CVE: &str = "CVE-2026-0003";
 
-/// A **third** library advisory, in the third package of [`LIBRARY_PACKAGES`].
-///
-/// The world that needs it is the one where a bump clears a *later* group's
-/// finding in the tree: the module whose bump raises the other one's requirement
-/// has to have an advisory of its own, or no group is formed for it and nothing
-/// gets bumped. A constant of its own for [`SECOND_LIBRARY_CVE`]'s reason.
-pub const CLEARING_LIBRARY_CVE: &str = "CVE-2026-0006";
-
-/// The row of [`LIBRARY_PACKAGES`] whose module's bump raises the row named by
-/// [`CLEARED_ROW`] past its own fix.
-///
-/// A row rather than a position, and that is the whole reason
-/// [`libraries_in_rows`] exists: [`libraries`] hands rows out by position, so two
-/// advisories are always rows 0 and 1 — `x/crypto` and `x/net` — and this world
-/// needs rows 2 and 1. `go_proxy.rs`'s `CLEARING_MODULE` says why the raising
-/// requirement is hung on this row rather than on row 0.
-///
-/// Which of the two runs *first* is not decided here and does not need to be: a run
-/// groups by target through a `BTreeMap`, so the order is the module paths' and not
-/// the document's. `github.com/…` sorts before `golang.org/…`, which is what makes
-/// this row the earlier group — a fact worth knowing, because a world whose moving
-/// module sorted second would move nothing before the group that needed it moved.
-pub const CLEARING_ROW: usize = 2;
-
-/// The row a [`CLEARING_ROW`] bump raises past its own fix.
-pub const CLEARED_ROW: usize = 1;
-
 /// A vulnerable package, as a scanner reports one.
 #[derive(Debug, Clone)]
 struct Package {
@@ -152,35 +125,6 @@ pub struct OsPackages(Vec<Package>);
 /// Library packages, one per advisory id.
 pub fn libraries(cves: &[&str]) -> Libraries {
     Libraries(packages(cves, &LIBRARY_PACKAGES))
-}
-
-/// Library packages whose row in [`LIBRARY_PACKAGES`] is named rather than taken
-/// from the advisory's position in the list.
-///
-/// Every other document here wants the cycling [`libraries`] does, and exactly one
-/// does not: see [`CLEARING_ROW`]. Written as a list of pairs rather than as two
-/// arguments, so the *rescan* half of that world — the same document with the
-/// cleared advisory still in it and the clearing one gone — is the same builder
-/// with one pair instead of two, rather than a second function that could drift
-/// from this one about which row is which.
-pub fn libraries_in_rows(rows: &[(usize, &str)]) -> Libraries {
-    Libraries(
-        rows.iter()
-            .map(|(row, cve)| {
-                let (name, current, fixed) = *LIBRARY_PACKAGES.get(*row).unwrap_or_else(|| {
-                    panic!(
-                        "row {row} is not one of the {} library packages",
-                        LIBRARY_PACKAGES.len()
-                    )
-                });
-                Package {
-                    name: name.to_string(),
-                    version: current.to_string(),
-                    vulnerabilities: vec![vulnerability(cve, Some(fixed), BENIGN_DESCRIPTION)],
-                }
-            })
-            .collect(),
-    )
 }
 
 /// Library packages whose advisories name **no published fix**.

@@ -203,22 +203,6 @@ const UPSTREAM: &[Release] = &[
         version: INDIRECT_FIXED,
         requires: &[],
     },
-    // And the two releases of [`CLEARING_MODULE`], which are the one place in
-    // this table where a release *requires* something that matters to a sweep.
-    // Bumping the tree to the second of them raises [`INDIRECT_MODULE`] to
-    // [`INDIRECT_FIXED`] through `tidy`, which is minimal version selection doing
-    // what it does — and it is what makes a later group's finding already fixed
-    // in the tree with nothing about the image having changed.
-    Release {
-        module: CLEARING_MODULE,
-        version: CLEARING_VULNERABLE,
-        requires: &[],
-    },
-    Release {
-        module: CLEARING_MODULE,
-        version: CLEARING_FIXED,
-        requires: &[(INDIRECT_MODULE, INDIRECT_FIXED)],
-    },
 ];
 
 /// The module the black-box sweep's fixture pair disagrees about.
@@ -241,35 +225,6 @@ pub const SWEEP_VULNERABLE: &str = "v0.31.0";
 /// `v0.36.0` here would be selected instead and the tree would land at a version
 /// the fixture pair says nothing about.
 pub const SWEEP_FIXED: &str = "v0.35.0";
-
-/// The module whose bump *moves another module's requirement*, and the two
-/// versions of it its world knows.
-///
-/// The third row of `document.rs`'s library table, and a third module rather than
-/// a second role for [`SWEEP_MODULE`] for one reason: what makes this world is
-/// that [`CLEARING_FIXED`] **requires** [`INDIRECT_MODULE`] at
-/// [`INDIRECT_FIXED`], and [`UPSTREAM`] is read by every tree. Hanging that
-/// requirement on `x/crypto@v0.35.0` would move `x/net` in the two-group fold
-/// fixture too — where the whole point is that the second requirement stays where
-/// it was pinned — and the lane that proves the *rescan* clearance would quietly
-/// become a second copy of the lane that proves the *tree* one.
-///
-/// Nothing else requires it, so publishing it changes no existing world:
-/// [`tidy`] resolves over a tree's own requirement lines and adds none.
-pub const CLEARING_MODULE: &str = "github.com/docker/docker";
-
-/// What the clearing fixture pins it at, and what its advisory reports as
-/// current.
-pub const CLEARING_VULNERABLE: &str = "v24.0.7";
-
-/// What that advisory names as fixed, and the release that carries the raised
-/// requirement.
-///
-/// Inside the same minor as [`CLEARING_VULNERABLE`], so the move is one
-/// `select_target_version` is allowed to make: a fix in a higher minor is refused
-/// on its own initiative, and the group would be blocked before it moved
-/// anything.
-pub const CLEARING_FIXED: &str = "v24.0.9";
 
 // ---------------------------------------------------------------------------
 // What a `go` invocation leaves behind

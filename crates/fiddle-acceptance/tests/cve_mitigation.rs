@@ -753,22 +753,36 @@ fn the_pair_is_pinned_to_the_module_and_versions_the_shared_scanner_document_nam
     );
 }
 
-/// The two-group fixture and the world its sweep runs in are one fact, kept
+/// The two-library fixture and the world its sweep runs in are one fact, kept
 /// honest the way the pair above is.
 ///
 /// `cve-two-libraries` is never compiled — the sweep's `go` is scripted — so
 /// nothing about it fails loudly on its own. What it depends on is a chain of
-/// three agreements, and each link, broken, would present as a lane that folds
-/// nothing rather than as a fixture defect:
+/// three agreements, and a broken link presents as a fixture defect nowhere:
 ///
 /// 1. `document.rs`'s library table has to hold the second module at these two
 ///    versions, or the scanner reports a finding about a module the tree does
-///    not have and the selection comes back empty;
-/// 2. `go_proxy.rs`'s upstream has to have *published* the fix, or the second
-///    group is refused a target for want of a release list and is blocked
-///    before it ever reaches the fold rule;
+///    not have;
+/// 2. `go_proxy.rs`'s upstream has to have *published* the fix, or the offline
+///    upstream and the document disagree about what exists;
 /// 3. the fixture has to require both modules, at the versions the document
-///    reports as current, or there is no second group at all.
+///    reports as current, or [`two_findings_in_different_files_are_one_attempt_and_one_commit`]
+///    has only one finding to be about.
+///
+/// # Link 2 no longer reaches a lane, and that is measured rather than assumed
+///
+/// It used to read *a module with no release list leaves the second group blocked
+/// for want of a target, and the fold lane would then be asserting about a group
+/// that never ran*. Both halves of that are gone: a run forms no groups and
+/// selects no target version, so nothing asks this proxy what has been released.
+/// Deleting the `INDIRECT_FIXED` release from `go_proxy.rs`'s table and running
+/// the lane that uses this fixture leaves it **green**, which is what says so.
+///
+/// The assertion is kept and its claim narrowed to what it still does: it holds
+/// the offline upstream and the scanner document to one set of versions. That is
+/// worth having — the two are read by different processes and could drift — but it
+/// is a consistency check on the fixture layer and not a guard on a behaviour, and
+/// a reader deciding whether to trust it is entitled to the difference.
 ///
 /// Both support files are read as **text**, for
 /// [`the_pair_is_pinned_to_the_module_and_versions_the_shared_scanner_document_names`]'s
@@ -810,10 +824,9 @@ fn the_two_library_fixture_is_pinned_to_what_its_world_publishes() {
             proxy.contains(&format!(
                 "module: INDIRECT_MODULE,\n        version: {name},"
             )),
-            "and the offline upstream has to have *published* it: a module with \
-             no release list leaves the second group blocked for want of a \
-             target, and the fold lane would then be asserting about a group \
-             that never ran"
+            "and the offline upstream has to have *published* it, or the two \
+             halves of this world disagree about which releases exist — see \
+             this lane's own doc for what that does and does not still guard"
         );
     }
 
@@ -824,93 +837,10 @@ fn the_two_library_fixture_is_pinned_to_what_its_world_publishes() {
     ] {
         assert!(
             manifest.contains(&format!("require {module} {version}")),
-            "the two-group fixture must require {module} at the version the \
+            "the two-library fixture must require {module} at the version the \
              document reports as current: {manifest}"
         );
     }
-}
-
-/// **The tree whose first bump clears its second group is pinned to what its
-/// world publishes.**
-///
-/// Three halves have to agree for that world to exist at all, and none of them
-/// can see the other two: the scanner document's library table, the offline
-/// upstream's release list, and this fixture's manifest. The one that fails
-/// silently is the middle one — a `CLEARING_FIXED` release that stopped requiring
-/// `x/net` would leave the second group with an ordinary bump to make, the run
-/// would attempt it, and the lane below would fail with a count nobody could
-/// trace back to a table.
-///
-/// It is [`the_two_library_fixture_is_pinned_to_what_its_world_publishes`]
-/// applied to the second of the two clearance worlds, and it asserts the one thing
-/// that lane has no reason to: that a named release *requires* another module at a
-/// named version.
-#[test]
-fn a_bump_that_moves_a_later_groups_requirement_is_pinned_to_what_its_world_publishes() {
-    let table = std::fs::read_to_string(
-        repo_root().join("crates/fiddle-runtime/tests/support/document.rs"),
-    )
-    .expect("the shared scanner documents are where this suite says they are");
-    let entry = format!(
-        r#"("{CLEARING_MODULE}", "{CLEARING_VULNERABLE_VERSION}", "{CLEARING_FIXED_VERSION}")"#
-    );
-    assert!(
-        table.contains(&entry),
-        "the clearing advisory is reported against {CLEARING_MODULE}, and \
-         document.rs's library table no longer has the row {entry} that says so"
-    );
-    assert!(
-        table.contains(&format!(
-            r#"pub const CLEARING_LIBRARY_CVE: &str = "{CLEARING_LIBRARY_CVE}";"#
-        )),
-        "and under the id this suite spells, which it cannot import"
-    );
-
-    let proxy = std::fs::read_to_string(
-        repo_root().join("crates/fiddle-runtime/tests/support/go_proxy.rs"),
-    )
-    .expect("the offline module proxy is where this suite says it is");
-    for (name, version) in [
-        ("CLEARING_MODULE", CLEARING_MODULE),
-        ("CLEARING_VULNERABLE", CLEARING_VULNERABLE_VERSION),
-        ("CLEARING_FIXED", CLEARING_FIXED_VERSION),
-    ] {
-        assert!(
-            proxy.contains(&format!(r#"pub const {name}: &str = "{version}";"#)),
-            "go_proxy.rs's {name} has to be {version}, which is what the document \
-             names for {CLEARING_MODULE}"
-        );
-    }
-    // The requirement itself, which is the whole world: without it the bump moves
-    // one module and the second group has ordinary work to do.
-    assert!(
-        proxy.contains(
-            "        module: CLEARING_MODULE,\n        version: CLEARING_FIXED,\n        \
-             requires: &[(INDIRECT_MODULE, INDIRECT_FIXED)],"
-        ),
-        "the offline upstream has to publish {CLEARING_MODULE} \
-         {CLEARING_FIXED_VERSION} as *requiring* {SECOND_MODULE} at \
-         {SECOND_FIXED_VERSION} — that requirement is what raises the second \
-         group's tree past its own fix, and without it this world is two \
-         ordinary bumps"
-    );
-
-    let manifest = read_fixture_file(CLEARED_BY_A_BUMP, "go.mod");
-    for (module, version) in [
-        (CLEARING_MODULE, CLEARING_VULNERABLE_VERSION),
-        (SECOND_MODULE, SECOND_VULNERABLE_VERSION),
-    ] {
-        assert!(
-            manifest.contains(&format!("require {module} {version}")),
-            "the clearing fixture must require {module} at the version the \
-             document reports as current: {manifest}"
-        );
-    }
-    assert!(
-        !manifest.contains(MODULE),
-        "and nothing else: a third requirement is a third group, and this world's \
-         claim is about the second one — {manifest}"
-    );
 }
 
 /// Each fixture's `Dockerfile` builds the fixture it sits beside.
@@ -1382,26 +1312,6 @@ const SECOND_FIXED_VERSION: &str = "v0.28.0";
 /// and anything else added to either half is a second thing a difference in
 /// outcome could be attributed to.
 const TWO_LIBRARIES: &str = "cve-two-libraries";
-
-/// The advisory against the module whose bump does the clearing, and that
-/// module's two versions.
-///
-/// The third row of `document.rs`'s library table. It sorts before
-/// [`SECOND_MODULE`] — `github.com` before `golang.org` — which is what makes it
-/// the *earlier* group, because a run walks its groups in target order.
-const CLEARING_LIBRARY_CVE: &str = "CVE-2026-0006";
-const CLEARING_MODULE: &str = "github.com/docker/docker";
-const CLEARING_VULNERABLE_VERSION: &str = "v24.0.7";
-const CLEARING_FIXED_VERSION: &str = "v24.0.9";
-
-/// The fixture tree that world runs in, requiring [`CLEARING_MODULE`] and
-/// [`SECOND_MODULE`] at the versions the document reports as current.
-///
-/// A fourth tree rather than a second scanner arm over [`TWO_LIBRARIES`], and its
-/// own `README.md` gives the argument: the offline upstream is one table read by
-/// every tree, so the requirement that makes this world move `x/net` would move it
-/// in the fold fixture too.
-const CLEARED_BY_A_BUMP: &str = "cve-cleared-by-a-bump";
 
 /// One disposable deployment a sweep runs in: a repository under remediation, a
 /// bare "GitHub" behind the scripted `gh`, a loopback endpoint answering for the
@@ -2397,6 +2307,17 @@ fn pushed_commits(sweep: &Sweep, branch: &str) -> Vec<(String, Vec<String>)> {
 // that says no reverts the work* — which is why
 // `a_check_that_says_no_reverts_the_attempt_and_publishes_nothing` stands in its
 // place over the same world.
+//
+// **Their world outlived them by one commit.** Deleting a lane does not delete
+// what it ran in, and nothing goes red for a fixture nobody selects: the
+// `cve-cleared-by-a-bump` tree, the four constants here that pinned it, the two
+// `wiz_stub` arms that reported its documents and the release pair
+// `go_proxy.rs` published for it all still built, and one self-check lane above
+// still asserted their premises against each other. That lane was the only thing
+// reading any of it, and its own doc said what it was for — keeping honest a
+// world *the lane below* ran in. The whole set is retired together, because a
+// half-retired world is worse than either end of it: the arms would name a tree
+// that no longer exists.
 //
 // # Why every mutation switches a row *off* rather than rewiring it
 //

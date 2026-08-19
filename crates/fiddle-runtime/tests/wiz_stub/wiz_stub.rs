@@ -17,7 +17,7 @@
 //!
 //! # The arms, and the one that matters
 //!
-//! Thirteen of the fifteen are ordinary. `exit-nonzero-with-file` is the one this
+//! Fifteen arms, thirteen of them ordinary. `exit-nonzero-with-file` is the one this
 //! fixture exists for: `wizcli` exits non-zero when an organisation policy flags
 //! any finding in the tenant, including findings that have nothing to do with
 //! this scan, and it writes a perfectly good report while doing it. An adapter
@@ -39,37 +39,36 @@
 //! whose Go dependency was patched and whose base layer was not. It is the one
 //! arm that only makes sense in the presence of another scan.
 //!
-//! `clean-image`, `library-only` and `two-os-advisories` are the three after
-//! it, and they exist for Design §3's table rather than for the adapter: seven
-//! rows are reached from seven *worlds*, and a fixture that could report only
-//! `ok` or nothing could put a run on four of them. The third goes further than
-//! the row — it is the only document that makes a disposition's three finding
-//! sets non-empty at once, which is what it takes to assert that a deferred
-//! advisory is in one of them and not the other two. All three are ordinary
-//! successful scans and none is about a scanner failing.
+//! `clean-image`, `library-only`, `no-published-fix` and `two-os-advisories` are
+//! the four after it, and they exist for Design §3's table rather than for the
+//! adapter: seven rows are reached from seven *worlds*, and a fixture that could
+//! report only `ok` or nothing could put a run on four of them. Each of the four
+//! is the only document here that reaches its row — `no-published-fix` is row 2
+//! and the arm's own comment gives the arithmetic — and `two-os-advisories` goes
+//! further than a row: it is the only document that makes a disposition's three
+//! finding sets non-empty at once, which is what it takes to assert that a
+//! deferred advisory is in one of them and not the other two. All four are
+//! ordinary successful scans and none is about a scanner failing.
 //!
-//! `two-library-advisories` is the fourth of that set and the only one that is
-//! about the *shape* of a run rather than about a row. A run forms one group per
-//! bump target and attempts one group at a time, and every other document here
-//! yields exactly one attemptable group — the library finding — because its OS
-//! half is a base image no tag can be selected for. So `cve::fold`, which asks
-//! what an *earlier* group's rescan already showed, has nothing to be consulted
-//! over on any of them. Two library findings in two different modules is the
-//! smallest document from which a second group comes.
+//! `two-library-advisories` is the fifth of that set and the only one that is
+//! about the *shape* of a run rather than about a row. A run makes one attempt at
+//! every finding its bound left, and every other document here leaves it at most
+//! one — so *one attempt lands its whole diff, however many files it spans* has
+//! nothing to be asserted over on any of them. Two library findings in two
+//! different modules is the smallest document from which two files come.
 //!
-//! `bump-clears-a-later-group` and `only-the-cleared-group-reported` are the fifth
-//! and sixth, and they are a *pair*: the world where a bump clears a later group's
-//! finding **in the tree** rather than in the image. The first names an advisory
-//! against the module whose next release raises another module's requirement past
-//! its own fix, plus an advisory against that other module. The second is the
-//! rescan, and what makes it a different document from `library-clean` is what it
-//! still holds — the second advisory, unchanged. That is not a scanner being
-//! unhelpful: the rescan is of an *image*, and the tree is what minimal version
-//! selection moved. So the fold rule is refused its clearance and the selection is
-//! the only thing that can see one, which is exactly the run that used to file the
-//! advisory as unfixed.
-//! `a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed` is
-//! the lane, and `cve::fold`'s header is where the two paths are reconciled.
+//! # Two arms came off this list
+//!
+//! `bump-clears-a-later-group` and `only-the-cleared-group-reported` were a pair,
+//! and the world they built was *a bump clears a later group's finding in the
+//! tree rather than in the image*. A run forms no groups and makes no bump: which
+//! release clears an advisory is the attempt's own judgement now, and there is no
+//! earlier group whose rescan a later one could fold on. Their lane
+//! (`a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed`)
+//! and the fixture tree it ran in (`cve-cleared-by-a-bump`) went with M4c's
+//! rewire, and the arms outlived them by one commit — reported as `ok` by
+//! `cargo test`, because an arm nothing selects is not an arm anything fails on.
+//! That is the whole hazard of a fixture layer: it cannot go red on its own.
 //!
 //! # Why it selects its arm from `argv`
 //!
@@ -111,9 +110,8 @@
 mod document;
 
 use document::{
-    libraries, libraries_graded, libraries_in_rows, os_packages, report_with, unfixed_libraries,
-    CLEARED_ROW, CLEARING_LIBRARY_CVE, CLEARING_ROW, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES,
-    SECOND_LIBRARY_CVE, SECOND_OS_CVE,
+    libraries, libraries_graded, os_packages, report_with, unfixed_libraries, DEFAULT_LIBRARY_CVES,
+    DEFAULT_OS_CVES, SECOND_LIBRARY_CVE, SECOND_OS_CVE,
 };
 use std::path::{Path, PathBuf};
 
@@ -326,58 +324,6 @@ fn main() {
                 &report,
                 report_with(
                     libraries(&[DEFAULT_LIBRARY_CVES[0], SECOND_LIBRARY_CVE]),
-                    os_packages(&DEFAULT_OS_CVES),
-                )
-                .raw()
-                .to_string(),
-            );
-        }
-        // Two library advisories, in two modules, where bumping the **first**
-        // raises the second's requirement past its own fix. The rows are named
-        // rather than cycled, because a run walks its groups in target order and
-        // the module doing the moving has to come first; `document.rs`'s
-        // `CLEARING_ROW` says which rows and why.
-        //
-        // The OS finding stays for `library-clean`'s reason, and it earns its keep
-        // twice here: it is also the only advisory this world still reports as
-        // unfixed, so a lane asserting that the cleared one is *absent* from
-        // `verdicts.json` is asserting it against a document that is not empty.
-        "bump-clears-a-later-group" => {
-            banner(&args);
-            write(
-                &report,
-                report_with(
-                    libraries_in_rows(&[
-                        (CLEARING_ROW, CLEARING_LIBRARY_CVE),
-                        (CLEARED_ROW, SECOND_LIBRARY_CVE),
-                    ]),
-                    os_packages(&DEFAULT_OS_CVES),
-                )
-                .raw()
-                .to_string(),
-            );
-        }
-        // The rescan half of that pair: the bumped module's advisory is gone and
-        // the *cleared* group's is still there.
-        //
-        // Which is what makes the world discriminating rather than decorative. A
-        // rescan that also cleared the second advisory would be folded by
-        // `cve::fold` on the ordinary path, and the lane would pass without the
-        // tree ever having been consulted. This one holds the second advisory, so
-        // the fold rule answers `Proceed` and the only thing that can see the
-        // clearance is the selection reading the tree.
-        //
-        // It is also the honest document. The scan is of an image and what an
-        // image holds is a binary; `go mod tidy` raised a requirement in `go.mod`,
-        // and until something rebuilds and relinks, the package the scanner found
-        // is the one that was there. Both arrays are present, for
-        // `library-clean`'s reason.
-        "only-the-cleared-group-reported" => {
-            banner(&args);
-            write(
-                &report,
-                report_with(
-                    libraries_in_rows(&[(CLEARED_ROW, SECOND_LIBRARY_CVE)]),
                     os_packages(&DEFAULT_OS_CVES),
                 )
                 .raw()
