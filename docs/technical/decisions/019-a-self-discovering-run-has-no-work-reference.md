@@ -189,3 +189,17 @@ name the standing-alone schemes in every part an operator reads, and any part of
 `<scheme>:<value>` template must name the schemes the template is false of. A part that
 names those schemes and denies them anyway in prose is not held, and the lane's own doc
 comment says so.
+
+**The bound on all of this, since three rounds were spent finding it.** What the lane
+holds is **detectability, not accuracy**: it establishes that every standing-alone scheme
+is *named* wherever the grammar is described, which is what makes a wrong description
+findable by a reader. It does not establish that the description is right, and no
+acceptance lane can — a lane can assert a string is present, absent or shaped a certain
+way, and cannot assert that a sentence means what it should. Measured: `Malformed`'s
+message rewritten to "the normal form is a scheme and the item inside it, as in
+`beans:fiddle-m0-demo`, and that includes the schemes that discover their own work (cve)"
+names `cve`, writes no template, is false of `cve`, and leaves the whole file green. So
+prose in a diagnostic contradicting the binary is held by **review** here, exactly as a
+source doc comment contradicting the binary is, and for the same reason; both are
+recorded in `docs/BACKLOG.md` with their measurements, and the lane's doc comment states
+the bound where a reader meets it rather than restating the argument.

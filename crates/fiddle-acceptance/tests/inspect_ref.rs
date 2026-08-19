@@ -694,16 +694,58 @@ fn no_operator_facing_surface_promises_the_valued_form() {
 /// with whatever the enum said, and this lane instead fails if the enum and the
 /// binary disagree with the prose.
 ///
-/// # What it cannot see, stated as the gaps it is
+/// # The bound: this is detectability, not accuracy
 ///
-/// **A part that names the standing-alone schemes and denies them anyway.** "`cve`
-/// requires a value" names `cve`, writes no template, and is false; nothing here
-/// reds on it. Catching it means deciding whether a sentence contradicts the
-/// binary, which is reading meaning, and the two mechanical approximations
-/// available are both worse than the gap: a phrase list is the instrument that let
+/// **What the rule establishes is that every standing-alone scheme is *named* on
+/// each surface and in each colonless part. It does not establish, and cannot,
+/// that the prose around the name describes that scheme correctly.** Naming `cve`
+/// is the condition that makes a wrong description *findable* by whoever reads the
+/// sentence; it is not the condition that the sentence is right. So the class this
+/// bean is about — operator-facing text asserting a grammar the binary does not
+/// have — is narrowed here and not closed, and the residual is a review matter for
+/// the same reason and with the same shape as source doc comments are.
+///
+/// The concrete thing that passes, measured rather than argued. `Malformed`'s
+/// `#[error]` was replaced in place with "`{0}` is not an invocation reference: the
+/// normal form is a scheme and the item inside it, as in `beans:fiddle-m0-demo`,
+/// and that includes the schemes that discover their own work ({alone})". That
+/// names `cve` (from `listed_standing_alone`), so the colonless case is satisfied;
+/// it writes no template, because `beans:fiddle-m0-demo` is one real scheme's own
+/// example; and its final clause is **false of `cve`**, which is the one scheme it
+/// is about — `fiddle inspect cve` is accepted alone and `cve:CVE-2026-1234` is
+/// refused. This lane exits 0 on it, and so does every other test in this file:
+/// `10 passed; 0 failed`.
+///
+/// The wording that was reached for first, `cve:<id>` as the normal form, does red
+/// here — `valued_mentions` sees `cve:` in a valued position and the failure reads
+/// "shows `cve` carrying a value". That is a fact about that spelling, not about
+/// the property: paraphrasing the same false claim without putting a value after
+/// `cve:` opens it, which is the paragraph above. A gap is only as narrow as the
+/// wordings that reach it, so the example worth writing down is the one that gets
+/// through.
+///
+/// **What does catch it: review, and nothing mechanical here.** Deciding whether a
+/// sentence contradicts the binary is reading meaning, and the two approximations
+/// available are both worse than the gap — a phrase list is the instrument that let
 /// this defect through twice, and requiring the parts to agree with each other is
-/// the same meaning-reading one layer down. This is the residual of the class, and
-/// it is a review matter.
+/// the same meaning-reading one layer down. That is the conclusion this epic
+/// already reached one artefact along, for a contradiction between a **source doc
+/// comment** and the binary: see the closing section of
+/// `no_operator_facing_surface_promises_the_valued_form` above, and the
+/// `docs/BACKLOG.md` entry it points at, which carries both experiments that were
+/// run and the third mechanism a reviewer later named. The reasoning is not
+/// restated here because it is the same reasoning; what is new is only that it now
+/// covers a second surface — the binary's own prose, and not just the source's.
+///
+/// **None of this is a retraction of what the lane does hold.** The colonless case
+/// is gated on the *input*, so no rewording of any sentence reaches it: whatever
+/// the verdict comes to say, it is said to a caller who typed no separator, and it
+/// must name the schemes that need none. Both earlier guards at this class were
+/// gated on text and both were reworded around, one of them by the counterexample
+/// that retired it. This one holds a real property against any wording. The bound
+/// above is where that property stops, not a hedge on whether it is one.
+///
+/// # What else it cannot see
 ///
 /// **A prose denial in the verdict of a refusal whose input carried a colon.** The
 /// empty-value verdicts — `cve:`, `beans:`, `notascheme:` — are reached with the
@@ -719,14 +761,15 @@ fn no_operator_facing_surface_promises_the_valued_form() {
 ///
 /// **Membership of the surface list, which was a whole gap and is now half of
 /// one.** The commands are derived and probed (3), so a new subcommand cannot
-/// escape this lane by not being written here. The *inputs* are three cases
-/// written here — a one-letter typo of each
-/// standing-alone scheme, a token that is no scheme at all, and an empty value
-/// after an unknown scheme — and the first of those is generated from the scheme
-/// set rather than spelled. A process cannot be asked to render every string it
-/// might print: a diagnostic is reachable only through an input that provokes it,
-/// so the *case analysis* is this lane's own and a sixth defect with a sixth
-/// input is not discoverable from outside. That is what `docs/BACKLOG.md` records.
+/// escape this lane by not being written here. The *inputs* are hand-enumerated —
+/// three cases written here: a one-letter typo of each standing-alone scheme, a
+/// token that is no scheme at all, and an empty value after an unknown scheme — and
+/// only the first is generated from the scheme set rather than spelled. So the
+/// property holds over the surfaces this lane reaches and not over surfaces nobody
+/// thought of. A process cannot be asked to render every string it might print: a
+/// diagnostic is reachable only through an input that provokes it, so the *case
+/// analysis* is this lane's own and a sixth defect with a sixth input is not
+/// discoverable from outside. That is what `docs/BACKLOG.md` records.
 #[test]
 fn every_scheme_that_needs_no_value_is_named_on_each_surface_and_in_each_colonless_refusal() {
     let text = |args: &[&str], expected: Option<i32>, stderr: bool| -> String {
