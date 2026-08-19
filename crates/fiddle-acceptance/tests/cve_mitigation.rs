@@ -2291,6 +2291,12 @@ fn pushed_commits(sweep: &Sweep, branch: &str) -> Vec<(String, Vec<String>)> {
 // lanes and changed the world of nine more — and a census nobody re-runs is worth
 // less than no census, which is the note the previous re-measurement left here.
 //
+// **Rows 2 and 5 re-measured again** when row 2's lane was added, over the whole
+// file: row 2's mutation reds that lane and nothing else, and row 5's reds the
+// four below and not it. The other five were not re-run, and that is an argument
+// rather than an omission — see the note under the table, which is where the
+// argument has to live because it is about the order of the rows.
+//
 //   row 6  ScanUnusable            reason -> Reason::NothingToDo
 //     an_unusable_scanner_exits_eleven_and_reaches_no_forge
 //   row 4  PullRequest             the `any(Clean)` test -> `false`
@@ -2361,6 +2367,24 @@ fn pushed_commits(sweep: &Sweep, branch: &str) -> Vec<(String, Vec<String>)> {
 // Row 2 is reached through `upstream_blocked` and through nothing else, so of
 // `verdicts_of`'s three producers exactly one can put a run here — see that
 // function's own doc, which carries the same distinction.
+//
+// # Why adding that lane re-measured two rows and not seven
+//
+// Because the table is first-match-wins and the new world's position in it is
+// known. That world reaches row 2, so every row *below* it — 7, 3 and the
+// fall-through — is never consulted on this run, and switching one of them off
+// cannot change what it publishes. Every row *above* it is a test that is already
+// false here: `any(Clean)` and `!attempted.is_empty()` both read `run.attempted`,
+// which is empty, and row 6 reads the `Err` arm of a scan that succeeded.
+// Switching a test that is already false to `false` changes nothing.
+//
+// So five of the seven mutations provably leave this lane green and were not
+// re-run. The two that could move it were: row 2's, because it is the one the
+// lane exists for, and row 5's, because row 5 is directly above row 2 and is the
+// row that would swallow this world if the attempt list ever stopped being empty.
+// The argument above is what makes the omission checkable rather than a promise —
+// a future change that gave this world something to attempt breaks the *premise*
+// and shows up in row 5's list, not in a re-reading of this paragraph.
 //
 // # Two lanes came off this list, and one came back reduced
 //
