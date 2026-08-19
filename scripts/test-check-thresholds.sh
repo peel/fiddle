@@ -211,6 +211,16 @@ ERRTEXT=$(cat "$ERRFILE")
 assert_exit "no criterion id -> exit 2" 2 "$EXIT_CODE"
 assert_contains "stderr says which entry lacks an id" 'criterion #0: missing `id`' "$ERRTEXT"
 
+cat > "$TMPDIR/criteria.json" << 'EOF'
+[{"id": 7, "pass": false, "evidence": "e"}]
+EOF
+
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/scorecard.json" --criteria "$TMPDIR/criteria.json" > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
+ERRTEXT=$(cat "$ERRFILE")
+assert_exit "non-string criterion id -> exit 2" 2 "$EXIT_CODE"
+assert_contains "stderr says the id is the wrong type" 'criterion #0: `id` must be a string, got number' "$ERRTEXT"
+
 echo "Test 8: A criteria file that is not an array is refused"
 cat > "$TMPDIR/criteria.json" << 'EOF'
 {"id": "test-crit", "pass": true}

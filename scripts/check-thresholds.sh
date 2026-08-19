@@ -79,7 +79,10 @@ UNGRADEABLE=$(jq -n --slurpfile card "$SCORECARD" --slurpfile crit "$CRITERIA" '
          if ($entry | type) != "object" then
            "\($where): must be an object, got \($entry | type)"
          else
-           (if ($entry.id | type) != "string" then "\($where): missing `id`" else empty end),
+           (if $entry.id == null then "\($where): missing `id`"
+            elif ($entry.id | type) != "string" then
+              "\($where): `id` must be a string, got \($entry.id | type)"
+            else empty end),
            (if $entry.pass == null then "\($where): missing `pass`"
             elif ($entry.pass | type) != "boolean" then
               "\($where): `pass` must be a boolean, got \($entry.pass | type)"
