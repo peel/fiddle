@@ -105,9 +105,50 @@ impl InvocationScheme {
     /// empty value written after a scheme fiddle does not know. A second copy in
     /// the renderer would be the prose the paragraph above argues against, one
     /// crate further from the enum.
+    ///
+    /// This is the whole set and says nothing about *shape*. A diagnostic that
+    /// goes on to advise how a scheme is written wants one of the two halves
+    /// below instead, because no single shape is true of the whole set.
     pub fn listed() -> String {
+        InvocationScheme::listed_where(|_| true)
+    }
+
+    /// The schemes that name the work they act on, so a value must follow them.
+    ///
+    /// The complement of [`InvocationScheme::listed_standing_alone`], and the
+    /// pair exists because advice about *how a scheme is written* cannot be true
+    /// of [`InvocationScheme::listed`] as a whole: `beans:fiddle-m0-demo` is the
+    /// shape four schemes take, and offering it to the fifth's caller sends an
+    /// operator who wanted a sweep to a tracker read instead — the difference
+    /// ADR 019 exists to keep visible, and one an exit code of 2 either way does
+    /// not reveal. Splitting on [`InvocationScheme::stands_alone`] is what lets
+    /// a diagnostic give each half only the advice that holds for it.
+    pub fn listed_naming_work() -> String {
+        InvocationScheme::listed_where(|scheme| !scheme.stands_alone())
+    }
+
+    /// The schemes that discover their own work, so they need no value.
+    ///
+    /// The complement of [`InvocationScheme::listed_naming_work`]: between them
+    /// they name every scheme in [`InvocationScheme::ALL`] exactly once, which
+    /// is what keeps a sentence built from both halves from advertising four of
+    /// five schemes — the failure [`InvocationScheme::listed`] was derived to
+    /// prevent, reintroduced by the split if the split were partial.
+    pub fn listed_standing_alone() -> String {
+        InvocationScheme::listed_where(InvocationScheme::stands_alone)
+    }
+
+    /// The schemes `admits` accepts, in [`InvocationScheme::ALL`]'s order and in
+    /// the spelling a diagnostic lists them by.
+    ///
+    /// One formatter for every list, so two halves of one sentence cannot come
+    /// to punctuate their schemes differently.
+    fn listed_where(admits: impl Fn(Self) -> bool) -> String {
         InvocationScheme::ALL
+            .into_iter()
+            .filter(|scheme| admits(*scheme))
             .map(InvocationScheme::as_str)
+            .collect::<Vec<_>>()
             .join(", ")
     }
 }
@@ -245,6 +286,15 @@ pub enum InvocationRefError {
     /// the half of the reference that is already fine. The ordering stands —
     /// reporting the unknown scheme *as the defect* would drop the empty-value
     /// complaint and trade one misleading message for another.
+    ///
+    /// What `None` cannot do is describe *one* shape for the set it names. A
+    /// caller here has no known scheme, so a renderer knows nothing about which
+    /// shape they meant, and advice that assumed the common one told a mistyped
+    /// `cve` to write `cve:<something>` — the reading `Some(cve)` above is at
+    /// pains to distinguish from a sweep. So the set is offered in the two halves
+    /// [`InvocationScheme::listed_naming_work`] and
+    /// [`InvocationScheme::listed_standing_alone`] divide it into, each with the
+    /// shape that is true of it.
     #[error("invocation reference value must not be empty")]
     EmptyValue { scheme: Option<InvocationScheme> },
 
@@ -699,6 +749,38 @@ mod tests {
                 "`{scheme}` is a scheme a caller may write and must be offered, got {rendered}"
             );
         }
+    }
+
+    /// **The two halves of the advice partition the schemes.**
+    ///
+    /// A diagnostic that tells a caller how to *write* a scheme cannot use
+    /// [`InvocationScheme::listed`], because no one shape is true of every
+    /// scheme; it uses the two halves, and is only as honest as the split. Each
+    /// scheme must appear in exactly one — a scheme in both would be described
+    /// two contradictory ways, one in neither would go unadvertised, and that
+    /// last is the four-of-five failure `listed` is derived to prevent, returning
+    /// through the split. Both halves must also be inhabited, or a sentence built
+    /// from them reads as a list with nothing in it.
+    #[test]
+    fn every_scheme_is_advised_by_exactly_one_half_of_the_set() {
+        let naming = InvocationScheme::listed_naming_work();
+        let alone = InvocationScheme::listed_standing_alone();
+        for scheme in InvocationScheme::ALL {
+            assert_eq!(
+                (
+                    naming.contains(scheme.as_str()),
+                    alone.contains(scheme.as_str())
+                ),
+                (!scheme.stands_alone(), scheme.stands_alone()),
+                "`{scheme}` belongs to whichever half `stands_alone` puts it in and to \
+                 no other, got naming={naming:?} alone={alone:?}"
+            );
+        }
+        assert!(
+            !naming.is_empty() && !alone.is_empty(),
+            "each half is read as a list in a sentence, so neither may be empty: \
+             naming={naming:?} alone={alone:?}"
+        );
     }
 
     #[test]

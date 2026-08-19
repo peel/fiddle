@@ -275,6 +275,26 @@ fn an_empty_value_is_told_every_repair_its_own_scheme_admits() {
 /// dependency on it: the list is a promise the design makes to an operator, and
 /// a lane that derived it from the enum would agree with any list the enum
 /// happened to hold.
+///
+/// # Why naming the set is not enough
+///
+/// Listing the schemes and then saying what to write after one of them is two
+/// claims, and the second is not true of the whole set: `cve` discovers its own
+/// work and needs no value (ADR 019). A version of this help that named all five
+/// and then said to append "the work it names" satisfied every assertion about
+/// *recognition* above while telling a caller who had mistyped `cve` to write
+/// `cve:<identifier>` — a read of one named finding, which the `cve:` help two
+/// tests up is careful to call different work from a sweep. Advice that is wrong
+/// about the milestone's own scheme is no smaller a defect than advice that is
+/// wrong about recognition.
+///
+/// So each scheme is asserted against the shape the design gives *it*: the four
+/// that name work must appear where a value is required, `cve` must appear where
+/// none is, and neither may appear in the other's half. That is also how every
+/// scheme still gets checked for being offered at all — one in neither half is a
+/// scheme the operator was not told about. The split is spelled here for the same
+/// reason the list is: it is `stands_alone`'s promise to an operator, and a lane
+/// that read `stands_alone` would ratify whatever the enum happened to say.
 #[test]
 fn an_empty_value_after_an_unknown_scheme_is_not_told_its_scheme_is_recognised() {
     let out = support::fiddle_command()
@@ -304,11 +324,51 @@ fn an_empty_value_after_an_unknown_scheme_is_not_told_its_scheme_is_recognised()
         "the defect the caller can act on is the scheme, and it has to be \
          named: {stderr}"
     );
-    for scheme in ["beans", "jira", "scheduled", "scanner", "cve"] {
-        assert!(
-            stderr.contains(scheme),
-            "a caller told their scheme is unknown needs the ones that are not, \
-             and `{scheme}` is missing from: {stderr}"
+    // The help is wrapped to the terminal by the renderer, so a sentence that
+    // reads as one line to an operator arrives here with newlines and padding
+    // inside it. Flattened, the words are the words that were written.
+    let advice = stderr.split_whitespace().collect::<Vec<_>>().join(" ");
+    let Some((takes_a_value, needs_none)) = advice.split_once("discover their own work need none:")
+    else {
+        panic!(
+            "the advice has to separate the schemes that require a value from the ones \
+             that do not, or it is offering one shape to a set that has two: {advice}"
         );
+    };
+    // Every scheme with the shape the design gives it, in one table: a scheme
+    // that appeared in neither half would be a scheme the caller is not offered,
+    // which is the same defect as naming four of five.
+    for (scheme, stands_alone) in [
+        ("beans", false),
+        ("jira", false),
+        ("scheduled", false),
+        ("scanner", false),
+        ("cve", true),
+    ] {
+        if stands_alone {
+            assert!(
+                needs_none.contains(scheme),
+                "`{scheme}` discovers its own work, so a caller who meant it has to be \
+                 told the bare form: {advice}"
+            );
+            assert!(
+                !takes_a_value.contains(scheme),
+                "`{scheme}` stands alone, so advising this caller to write \
+                 `{scheme}:<identifier>` sends someone who wanted a sweep to a read of \
+                 one named finding — different work, and the reason the scheme carries \
+                 its own advice at all: {advice}"
+            );
+        } else {
+            assert!(
+                takes_a_value.contains(scheme),
+                "`{scheme}` names a work item and is refused without one, so it belongs \
+                 where a value is required: {advice}"
+            );
+            assert!(
+                !needs_none.contains(scheme),
+                "`{scheme}` written alone does not parse, so listing it among the \
+                 schemes that need no value is advice refused when followed: {advice}"
+            );
+        }
     }
 }

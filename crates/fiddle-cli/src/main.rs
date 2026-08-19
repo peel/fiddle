@@ -450,7 +450,9 @@ impl miette::Diagnostic for InvalidInvocationRef {
     /// The same arm reaches a caller whose scheme is not a scheme at all, because
     /// the grammar checks the value first. Those callers get the third message,
     /// which describes their scheme rather than a repair to the identifier they
-    /// did not write wrong.
+    /// did not write wrong — and describes it in the two halves the schemes
+    /// divide into, since a caller with no known scheme cannot be told one shape
+    /// that is true of all of them.
     ///
     /// Every arm produces a `String` rather than three `&'static str`s and one
     /// `format!`, because a `match` whose arms are two types is not a `match` —
@@ -485,11 +487,26 @@ impl miette::Diagnostic for InvalidInvocationRef {
                 // caller can act on. Reporting the unknown scheme *instead*
                 // would need the ordering in `InvocationRef::from_str`
                 // reversed, and the empty value would then go unmentioned.
+                //
+                // The set is offered in halves rather than as one list with one
+                // shape after it. Naming the whole set and then saying to write
+                // "the work it names" was true of four schemes and false of
+                // `cve`, which stands alone — so the arm that stopped claiming a
+                // scheme was recognised went on to claim every scheme takes a
+                // value, and advised a caller who mistyped the one scheme this
+                // milestone is about to write `cve:<identifier>`: a tracker read
+                // of one finding, not a sweep, which is the substitution the
+                // `stands_alone` arm above exists to prevent. Each half now
+                // carries only the shape that holds for it, and the two are
+                // complements over `InvocationScheme::ALL`, so the sentence still
+                // cannot name four of five.
                 None => format!(
-                    "no value follows the scheme, and the scheme is not one fiddle knows: \
-                     write one of {known}, then the work it names, as in \
-                     `beans:fiddle-m0-demo`",
-                    known = InvocationScheme::listed(),
+                    "no value follows the scheme, and the scheme is not one fiddle knows. \
+                     Schemes that name the work they act on take a value, as in \
+                     `beans:fiddle-m0-demo`: {naming}. Schemes that discover their own work \
+                     need none: {alone}",
+                    naming = InvocationScheme::listed_naming_work(),
+                    alone = InvocationScheme::listed_standing_alone(),
                 ),
             },
             InvocationRefError::IllegalValueCharacter { .. } => {
