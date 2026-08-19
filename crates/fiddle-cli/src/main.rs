@@ -447,6 +447,11 @@ impl miette::Diagnostic for InvalidInvocationRef {
     /// a sweep to a tracker read — the same exit code, different work. So the
     /// `EmptyValue` arm reads the scheme the error carries and offers both.
     ///
+    /// The same arm reaches a caller whose scheme is not a scheme at all, because
+    /// the grammar checks the value first. Those callers get the third message,
+    /// which describes their scheme rather than a repair to the identifier they
+    /// did not write wrong.
+    ///
     /// Every arm produces a `String` rather than three `&'static str`s and one
     /// `format!`, because a `match` whose arms are two types is not a `match` —
     /// and the alternative, boxing per arm, would put the sole interesting line of
@@ -459,17 +464,33 @@ impl miette::Diagnostic for InvalidInvocationRef {
             InvocationRefError::UnknownScheme(_) => {
                 "fiddle addresses work by its source; use a scheme it knows, such as `beans:fiddle-m0-demo`".to_string()
             }
-            // The scheme is `None` for an empty value written after a scheme
-            // fiddle does not know, which is the case with no scheme-specific
-            // advice to give — and it falls in with the schemes that name work,
-            // because every scheme fiddle knows but one does.
             InvocationRefError::EmptyValue { scheme } => match scheme {
                 Some(scheme) if scheme.stands_alone() => format!(
                     "`{scheme}` discovers its own work, so it takes either form and they are \
                      different runs: write `{scheme}` to sweep what the configuration names, \
                      or `{scheme}:<identifier>` to act on the one item you are naming"
                 ),
-                _ => "the scheme is recognised but names no work; append the identifier, as in `beans:fiddle-m0-demo`".to_string(),
+                Some(_) => "the scheme is recognised but names no work; append the identifier, as in `beans:fiddle-m0-demo`".to_string(),
+                // `None` is an empty value written after a scheme fiddle does
+                // not know, and it used to fall in with the schemes that name
+                // work — correct for every arm that could reach it when every
+                // reachable scheme was recognised. It told `notascheme:` that
+                // its scheme was recognised, which is false, and then sent the
+                // caller to append an identifier, which cannot help: the
+                // identifier is the half of their reference that is not wrong.
+                //
+                // Both defects are named, in the order the parse chose: the
+                // message above still complains about the empty value, and the
+                // advice is about the scheme, because that is the defect the
+                // caller can act on. Reporting the unknown scheme *instead*
+                // would need the ordering in `InvocationRef::from_str`
+                // reversed, and the empty value would then go unmentioned.
+                None => format!(
+                    "no value follows the scheme, and the scheme is not one fiddle knows: \
+                     write one of {known}, then the work it names, as in \
+                     `beans:fiddle-m0-demo`",
+                    known = InvocationScheme::listed(),
+                ),
             },
             InvocationRefError::IllegalValueCharacter { .. } => {
                 "a reference names work, never a location: fiddle derives the paths it writes from this value, so it is an identifier only — write it with ASCII letters, digits, `-`, `_` and `:`, as in `beans:fiddle-m0-demo`".to_string()

@@ -99,7 +99,13 @@ impl InvocationScheme {
     /// the single source of a spelling: as prose it named four of five schemes
     /// the moment a fifth existed, so a caller who mistyped `cve` would have
     /// been told there is no such scheme.
-    fn listed() -> String {
+    ///
+    /// Public because there are now two diagnostics that have to name the set:
+    /// [`InvocationRefError::UnknownScheme`] here, and the CLI's help for an
+    /// empty value written after a scheme fiddle does not know. A second copy in
+    /// the renderer would be the prose the paragraph above argues against, one
+    /// crate further from the enum.
+    pub fn listed() -> String {
         InvocationScheme::ALL
             .map(InvocationScheme::as_str)
             .join(", ")
@@ -232,8 +238,13 @@ pub enum InvocationRefError {
     /// visible rather than a convenience: the value is checked *before* the scheme
     /// is looked up, so that the more specific defect wins, and `mystery:` is
     /// therefore an empty value written after a scheme fiddle does not know.
-    /// `None` is that case, and it is exactly the case with no scheme-specific
-    /// advice to give.
+    /// `None` is that case. It has no *scheme-specific* advice to give, which is
+    /// not the same as having none: the caller has two defects and the one they
+    /// can act on is the scheme, so `None` is what tells a renderer to say the
+    /// scheme is unrecognised and name the set instead of describing a repair to
+    /// the half of the reference that is already fine. The ordering stands —
+    /// reporting the unknown scheme *as the defect* would drop the empty-value
+    /// complaint and trade one misleading message for another.
     #[error("invocation reference value must not be empty")]
     EmptyValue { scheme: Option<InvocationScheme> },
 

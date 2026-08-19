@@ -258,3 +258,57 @@ fn an_empty_value_is_told_every_repair_its_own_scheme_admits() {
         "the one repair a tracked scheme has is to name the work: {tracked}"
     );
 }
+
+/// **A scheme fiddle does not know is never described as recognised.**
+///
+/// `notascheme:` is two defects at once, and the grammar reports the empty value
+/// because that is the more specific one. The advice, though, was written for the
+/// schemes that *are* recognised: it told this caller their scheme was fine and
+/// sent them to append an identifier — the half of the reference that is not
+/// wrong, and a repair that cannot work, because `notascheme:anything` is
+/// refused for a different reason.
+///
+/// So the empty-value complaint is asserted to still be the one made — the parse
+/// order is unchanged and is not what this fixes — while the advice is asserted
+/// to name the defect the caller can act on. The legal schemes are spelled here
+/// rather than read from `fiddle-core`, for the reason this crate has no
+/// dependency on it: the list is a promise the design makes to an operator, and
+/// a lane that derived it from the enum would agree with any list the enum
+/// happened to hold.
+#[test]
+fn an_empty_value_after_an_unknown_scheme_is_not_told_its_scheme_is_recognised() {
+    let out = support::fiddle_command()
+        .args([
+            "inspect",
+            "notascheme:",
+            "--config",
+            "../../tests/fixtures/fiddle.toml",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+
+    assert!(
+        stderr.contains("must not be empty"),
+        "the empty value is still the defect reported, before the scheme is \
+         looked up: {stderr}"
+    );
+    assert!(
+        !stderr.contains("the scheme is recognised"),
+        "`notascheme` is not one of the schemes, so telling this caller it is \
+         recognised is a confident and wrong diagnosis: {stderr}"
+    );
+    assert!(
+        stderr.contains("not one fiddle knows"),
+        "the defect the caller can act on is the scheme, and it has to be \
+         named: {stderr}"
+    );
+    for scheme in ["beans", "jira", "scheduled", "scanner", "cve"] {
+        assert!(
+            stderr.contains(scheme),
+            "a caller told their scheme is unknown needs the ones that are not, \
+             and `{scheme}` is missing from: {stderr}"
+        );
+    }
+}
