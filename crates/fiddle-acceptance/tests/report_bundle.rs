@@ -1,17 +1,7 @@
-//! The published evidence bundle, observed from outside the process.
-//!
-//! Everything asserted here is read back off the filesystem the way an operator
-//! or a downstream tool would read it: the run is launched as a subprocess, the
-//! bundle path is taken from the payload the run printed, and the bundle itself
-//! is parsed as plain JSON. Nothing calls a library function.
-
 mod support;
 
 use support::{walkdir_dirs, walkdir_files, Scenario};
 
-/// The bundle is what makes a run auditable after the fact, so it has to name
-/// the build that produced it: a report that cannot be attributed to a version
-/// and a revision is evidence about nothing in particular.
 #[test]
 fn run_publishes_a_bundle_carrying_package_version_and_source_revision() {
     let s = Scenario::new();
@@ -35,7 +25,6 @@ fn run_publishes_a_bundle_carrying_package_version_and_source_revision() {
     assert_eq!(b["capability_executions"][0]["capability_id"], "stub_mark");
     assert!(b["observations"]["work_item"]["available"].is_object());
     assert!(b["observations"]["changes"]["available"].is_object());
-    // Design §4.7 requires `progress` alongside `capability_executions`.
     assert_eq!(b["progress"][0]["capability_id"], "stub_mark");
     assert_eq!(b["progress"][0]["stage"], "mark");
     assert_eq!(b["progress"][0]["status"], "completed");
@@ -50,12 +39,6 @@ fn run_publishes_a_bundle_carrying_package_version_and_source_revision() {
         !b["attempt_id"].as_str().unwrap().is_empty(),
         "the bundle must name the attempt that produced it"
     );
-    // A capability with no disposition table of its own answers no question
-    // about which row it reached, so neither document carries the key at all.
-    // Absent and not `null`, in both: a `null` would be a positive claim that
-    // this run came to nothing, and *the question does not apply* is a different
-    // answer from *the answer is nothing*. It is also what keeps this bundle and
-    // this payload byte-identical to the ones M0 published.
     assert!(
         b.get("disposition").is_none(),
         "the M0 bundle must be unchanged by a key belonging to another \
@@ -67,17 +50,6 @@ fn run_publishes_a_bundle_carrying_package_version_and_source_revision() {
     );
 }
 
-/// The atomicity property, injected at the publication boundary this milestone
-/// introduces — and, with it, the fail-closed rule that governs it.
-///
-/// An unwritable `<report.dir>` is where an attempt records *both* what it is
-/// about to do and what it did, so a wholly unwritable one stops the attempt
-/// before it touches anything. Four claims, all of which have to hold: the run
-/// exits `11` rather than `20` (repeating it after an operator fixes the
-/// directory succeeds, which is what `retryable` promises and `failed` denies),
-/// the diagnostic names the directory so they know which one, the fixture is
-/// untouched, and nothing partial survives — no bundle, and no staging directory
-/// either.
 #[cfg(unix)]
 #[test]
 fn an_unwritable_report_dir_exits_11_and_changes_nothing() {
@@ -88,8 +60,6 @@ fn an_unwritable_report_dir_exits_11_and_changes_nothing() {
     let out = s.run_raw("beans:fiddle-m0-demo");
 
     if out.status.code() == Some(0) {
-        // Running with an identity that ignores the permission bits, so the
-        // failure could not be injected at all.
         s.make_report_dir_writable();
         return;
     }
@@ -127,21 +97,10 @@ fn an_unwritable_report_dir_exits_11_and_changes_nothing() {
         "no report.json may exist when publication failed"
     );
 
-    // And the promise the exit code makes is kept: the same invocation, repeated
-    // after the operator fixed the directory, succeeds.
     let repeated = s.run_json("beans:fiddle-m0-demo", 0);
     assert_eq!(repeated["outcome"], "completed");
 }
 
-/// The other half of the publication boundary, which the fail-closed case above
-/// cannot reach: an attempt whose capability *succeeded* and whose bundle could
-/// not be published.
-///
-/// Injected by leaving the journal directory writable while `<report.dir>` itself
-/// is not, which is the state a `<report.dir>` sealed after an earlier attempt
-/// would be in. The claim is that the world moving is never unrecorded: the
-/// marker is on disk, no bundle exists, and the journal says which capability ran
-/// under which attempt.
 #[cfg(unix)]
 #[test]
 fn a_publication_failure_after_a_successful_execution_still_records_it() {
@@ -154,7 +113,7 @@ fn a_publication_failure_after_a_successful_execution_still_records_it() {
 
     s.make_report_dir_writable();
     if out.status.code() == Some(0) {
-        return; // an identity that ignores the permission bits
+        return;
     }
     assert_eq!(
         out.status.code(),
@@ -183,8 +142,6 @@ fn a_publication_failure_after_a_successful_execution_still_records_it() {
         "publication failed, so no bundle may exist"
     );
 
-    // The durable record of the execution, read the way an operator would find
-    // it: a file under `<report.dir>` naming the attempt and the capability.
     let records = s.journal_records();
     assert_eq!(records.len(), 1, "got {records:?}");
     let text = std::fs::read_to_string(&records[0]).unwrap();
@@ -194,12 +151,6 @@ fn a_publication_failure_after_a_successful_execution_still_records_it() {
     );
 }
 
-/// A publication failure must stay distinguishable from a capability failure.
-/// Both are retryable and both exit `11`, so the reason is what tells them
-/// apart — the capability names the change set, publication names the report
-/// bundle, and an intent that could not be recorded names the attempt journal.
-/// Same fixture, two different boundaries, asserted together so neither reason
-/// can drift into the other.
 #[cfg(unix)]
 #[test]
 fn a_capability_failure_stays_retryable_and_distinct_from_a_publication_failure() {
@@ -214,7 +165,6 @@ fn a_capability_failure_stays_retryable_and_distinct_from_a_publication_failure(
 
     std::fs::set_permissions(&changes, std::fs::Permissions::from_mode(0o755)).unwrap();
     if out.status.code() == Some(0) {
-        // Running with an identity that ignores the permission bits.
         return;
     }
     assert_eq!(
@@ -223,8 +173,6 @@ fn a_capability_failure_stays_retryable_and_distinct_from_a_publication_failure(
         "a failed change-set write is retryable; stderr = {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // The bundle is still published: the run failed at the capability, not at
-    // publication, and the record of *that* is exactly what a reader needs.
     let bundles: Vec<_> = walkdir_files(s.report_dir())
         .into_iter()
         .filter(|p| p.file_name().unwrap() == "report.json")

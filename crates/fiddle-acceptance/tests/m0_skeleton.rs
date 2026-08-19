@@ -1,44 +1,3 @@
-//! The M0 mandatory proof: one cumulative scenario, in order, through the
-//! public CLI only.
-//!
-//! The other files in this package each isolate one property. This one is
-//! deliberately *not* isolated: it is a single ordered walk through the whole
-//! milestone, sharing one fixture project from the first step to the last:
-//!
-//!   1. the configuration is valid, and an unknown key is rejected by name
-//!   2. `inspect` observes the fixture, assesses it, and changes nothing
-//!   3. an unobservable source fails closed with exit 20 and executes nothing
-//!   4. `run` executes the capability and publishes a bundle with build identity
-//!   5. a second, genuinely fresh process finds nothing left to do
-//!   6. credentials are neither required nor consulted
-//!   7. an invocation reference cannot name a place outside the configured roots
-//!
-//! That ordering is the claim. Seven independent `#[test]` functions could each
-//! pass while the sequence they describe does not work, because nothing would
-//! force the bundle assertion to be about the run that just happened, the
-//! fail-closed step to be about the fixture the other steps share, or the
-//! second invocation to see the world the first one left. Here every step
-//! observes what its predecessor did.
-//!
-//! Everything is observed from outside the process: an exit code, a `--json`
-//! payload, or a file on disk. Nothing calls a library function.
-//!
-//! These are the same seven properties, in the same order, that
-//! `scenarios/m0_skeleton.sh` in the public `peel/fiddle-acceptance` repository
-//! asserts as a plain shell script. The two lanes are kept in step by hand; see
-//! `docs/technical/acceptance-repository.md`. An assertion added here without
-//! being added there — or removed here without being removed there — makes one
-//! of them the weaker proof, which is the failure mode the pair exists to
-//! prevent.
-//!
-//! The scenario is also **credential-free by construction**. `Scenario`
-//! removes every name in [`support::CREDENTIAL_VARS`] from each subprocess it
-//! launches, so the milestone cannot quietly come to depend on a secret that
-//! happens to be exported on a developer's machine or defined by a CI runner.
-//! The last step closes the other half of that guarantee: with those same
-//! variables *present*, fiddle behaves identically, so it neither requires nor
-//! consults them.
-
 mod support;
 
 use support::Scenario;
@@ -50,9 +9,6 @@ const INVOCATION_REF: &str = "beans:fiddle-m0-demo";
 fn m0_executable_skeleton_scenario() {
     let s = Scenario::new();
 
-    // The list is pinned here, in the scenario itself, so shortening it in the
-    // harness fails this test rather than silently weakening the guarantee the
-    // milestone rests on.
     assert_eq!(
         support::CREDENTIAL_VARS,
         [
@@ -64,7 +20,6 @@ fn m0_executable_skeleton_scenario() {
         "the M0 lane must stay credential-free"
     );
 
-    // ---- 1. the configuration this whole scenario runs against is valid ----
     let checked = s.config_check();
     assert_eq!(
         checked.status.code(),
@@ -73,9 +28,6 @@ fn m0_executable_skeleton_scenario() {
         String::from_utf8_lossy(&checked.stderr)
     );
     let checked: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
-    // Every `--json` payload names the contract it is an instance of, so a
-    // caller can dispatch on the shape it is about to read rather than guess it
-    // from the keys that happen to be present.
     assert_eq!(
         checked["schema"], "fiddle.config_check.v0",
         "the config check payload must declare its schema, got {checked}"
@@ -83,10 +35,6 @@ fn m0_executable_skeleton_scenario() {
     assert_eq!(checked["status"], "valid");
     assert_eq!(checked["project"]["name"], support::PROJECT_NAME);
 
-    // ...and the schema is strict: an unknown key is a hard error, named in the
-    // diagnostic, not a silently ignored line. It belongs in the cumulative walk
-    // because "the configuration this scenario runs against is valid" is only
-    // worth asserting if an invalid one would have been caught.
     let bad = s.write_config_variant(
         "bad.toml",
         &s.config_text()
@@ -112,7 +60,6 @@ fn m0_executable_skeleton_scenario() {
         "the diagnostic must point at the offending line, got {diagnostic}"
     );
 
-    // ---- 2. the fixture state is observable, unstarted, and unharmed by looking ----
     s.write_work_item(WORK_ID, "open");
     let before_inspect = s.stub_snapshot();
 
@@ -128,9 +75,6 @@ fn m0_executable_skeleton_scenario() {
         pre["observations"]["work_item"]["available"]["value"]["status"],
         "open"
     );
-    // Available *and* unmarked. The `available` guard is what makes the null
-    // marker mean something: an unreadable change set would also index to null
-    // here, and "I could not see it" is not "I saw that it is unmarked".
     assert!(
         pre["observations"]["changes"]["available"].is_object()
             && pre["observations"]["changes"]["available"]["value"]["marker"].is_null(),
@@ -153,21 +97,10 @@ fn m0_executable_skeleton_scenario() {
         "inspect must not publish a report bundle"
     );
 
-    // ---- 3. an unobservable source fails closed, and executes nothing ----
-    //
-    // The stub root is taken away rather than emptied: "I cannot see the world"
-    // must be reported as unavailable and fail closed, never converted into "the
-    // world is empty" and treated as work to do. It belongs in the cumulative
-    // walk rather than only in an isolated test because the milestone's hard
-    // constraint is that *this* command, on the fixture the other steps share,
-    // refuses to act on a world it cannot see.
     s.hide_stub_root();
     let blocked = s.run_json(INVOCATION_REF, 20);
     s.restore_stub_root();
 
-    // A run that failed prints the same contract a run that completed prints:
-    // the discriminator is a property of the payload, not of the outcome, so a
-    // caller can parse the failure without first knowing it is one.
     assert_eq!(
         blocked["schema"], "fiddle.run.v0",
         "a failing run's payload must declare its schema too, got {blocked}"
@@ -205,14 +138,6 @@ fn m0_executable_skeleton_scenario() {
         blocked["next_action"]
     );
 
-    // ---- 4. the capability executes, and the bundle carries build identity ----
-    //
-    // The evidence is read back off the filesystem rather than out of the process
-    // output, the way a downstream reader would find it.
-    // Read as bytes before it is parsed, because design §3.2 shows the
-    // discriminator *leading* the payload and parsing throws key order away. A
-    // reader that dispatches on the first key it meets — a streaming parser, or
-    // an eye at a terminal — gets the contract before it gets the content.
     let first_raw = s.run_raw_with(&["--json"], INVOCATION_REF);
     assert_eq!(
         first_raw.status.code(),
@@ -280,8 +205,6 @@ fn m0_executable_skeleton_scenario() {
         "the bundle must record its attempt, got {}",
         b1["attempt_id"]
     );
-    // The bundle records the mode the run was *invoked* with, and these steps
-    // pass no `--mode`, so it must be the default the CLI documents.
     assert_eq!(b1["mode"], "unattended");
     assert_eq!(b1["outcome"], "completed");
     assert_eq!(b1["next_action"], serde_json::json!("complete"));
@@ -299,7 +222,6 @@ fn m0_executable_skeleton_scenario() {
         b1["observations"]["changes"]
     );
 
-    // ---- 5. a second, genuinely fresh process finds nothing left to do ----
     let after_first = s.stub_snapshot();
     let second = s.run_json(INVOCATION_REF, 0);
     let b2 = s.read_bundle(&second);
@@ -326,7 +248,6 @@ fn m0_executable_skeleton_scenario() {
         b2["progress"]
     );
     assert_eq!(b2["outcome"], "completed");
-    // Still a real attempt over the same work, not a replay of the first bundle.
     assert_ne!(
         b1["attempt_id"], b2["attempt_id"],
         "the second invocation must publish its own attempt"
@@ -336,11 +257,6 @@ fn m0_executable_skeleton_scenario() {
         "work identity must be stable across attempts"
     );
 
-    // ---- 6. credentials are neither required nor consulted ----
-    //
-    // Steps 1-5 ran with every credential variable removed, which shows fiddle
-    // does not *need* one. Running the same command with those variables
-    // present, and getting the same answer, shows it does not *use* one either.
     let with_credentials = s.run_raw_with_env(
         &support::CREDENTIAL_VARS.map(|name| (name, "poison-not-a-real-secret")),
         INVOCATION_REF,
@@ -367,23 +283,6 @@ fn m0_executable_skeleton_scenario() {
         "and it must not change what fiddle writes"
     );
 
-    // ---- 7. a reference cannot name a place outside the configured roots ----
-    //
-    // The identity every step above is addressed by arrives from outside — a
-    // beans id today, a ticket key or a scanner finding from M1 — and `run`
-    // derives the bundle path, the attempt journal path, and the sources the
-    // ports read from it. So the last thing this walk asserts is that the
-    // identity cannot be used to reach out of the two roots the configuration
-    // declares, against the very project the six steps before it built.
-    //
-    // Three levels, not two: the slug is `beans-` + value, so
-    // `<report.dir>/beans-../../pwned` normalises back *inside* to
-    // `<report.dir>/pwned` — the prefix absorbs one `..`. A two-dot form would
-    // pass here while proving nothing.
-    //
-    // Asserted against the filesystem rather than the exit code, because the
-    // escape also exited non-zero: exit 20, having written a bundle two levels
-    // above `<report.dir>`. Only the bytes on disk tell the two apart.
     let before_traversal = s.project_tree();
     let traversing = s.run_raw_with(&["--json"], "beans:../../../pwned");
     assert_eq!(

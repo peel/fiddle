@@ -1,18 +1,8 @@
-//! Black-box coverage of `fiddle run` — the first command that changes the
-//! world.
-//!
-//! Everything here is asserted from outside the process: an exit code, a
-//! `--json` payload, and the fixture file the run left behind. Each scenario
-//! builds its own temporary project, so no test depends on another's state and
-//! none of them touches the tracked fixtures.
-
 mod support;
 
 use std::path::{Path, PathBuf};
 use support::Scenario;
 
-/// The happy path of design §4.4: unstarted work derives `Execute`, the
-/// capability writes the correlation key, and the run completes.
 #[test]
 fn run_executes_the_stub_capability_and_completes() {
     let s = Scenario::new();
@@ -44,9 +34,6 @@ fn run_executes_the_stub_capability_and_completes() {
     );
 }
 
-/// The fail-closed arm of design §4.3, asserted where it matters most: a world
-/// fiddle cannot observe must not be acted on. Exit 20 is the numeric row of
-/// the exit-code table, read from outside the process.
 #[test]
 fn run_on_an_unobservable_source_fails_closed_with_exit_20() {
     let s = Scenario::new();
@@ -69,10 +56,6 @@ fn run_on_an_unobservable_source_fails_closed_with_exit_20() {
     );
 }
 
-/// A completed run must describe the state it left behind. The `execute` it
-/// derived on entry is no longer true by the time it reports, and echoing it
-/// would send the caller round the loop for work that is already done.
-/// Design §4.7.
 #[test]
 fn run_reports_complete_after_a_successful_execution() {
     let s = Scenario::new();
@@ -86,9 +69,6 @@ fn run_reports_complete_after_a_successful_execution() {
         "a completed run must not advertise work still to do, got {}",
         v["next_action"]
     );
-    // The observations reported must be the post-execution ones the action was
-    // derived from — otherwise `complete` would rest on a view that does not
-    // show the marker.
     assert_eq!(
         v["observations"]["changes"]["available"]["value"]["marker"],
         serde_json::json!(s.expected_marker("beans:fiddle-m0-demo")),
@@ -97,7 +77,6 @@ fn run_reports_complete_after_a_successful_execution() {
     );
 }
 
-/// The whole `run` surface design §4.5 documents, not a subset of it.
 #[test]
 fn run_accepts_the_documented_mode_and_capability_flags() {
     let s = Scenario::new();
@@ -115,7 +94,6 @@ fn run_accepts_the_documented_mode_and_capability_flags() {
         "the bundle must record the mode it ran under"
     );
 
-    // The other mode is accepted too, and is what a run defaults to.
     let d = Scenario::new();
     d.write_work_item("fiddle-m0-demo", "open");
     assert_eq!(
@@ -132,9 +110,6 @@ fn run_accepts_the_documented_mode_and_capability_flags() {
     );
 }
 
-/// An unknown capability id is a usage error, not a silent no-op: a run asked
-/// to do something this build has never heard of, and that exited 0 having done
-/// nothing, would be indistinguishable from a run that did the work.
 #[test]
 fn run_rejects_an_unknown_capability_id_rather_than_no_opping() {
     let s = Scenario::new();
@@ -161,8 +136,6 @@ fn run_rejects_an_unknown_capability_id_rather_than_no_opping() {
     );
 }
 
-/// A `--mode` fiddle does not know is rejected by the same row of the table,
-/// and the diagnostic names the alternatives.
 #[test]
 fn run_rejects_an_unknown_mode() {
     let s = Scenario::new();
@@ -179,14 +152,6 @@ fn run_rejects_an_unknown_mode() {
     assert!(s.read_change_marker("fiddle-m0-demo").is_none());
 }
 
-/// Row `11` of the exit-code table, asserted numerically from outside the
-/// process like the rest of them.
-///
-/// The world stays observable — the derivation has to reach `Execute` for the
-/// capability to fail at all — so the failure is injected as a change directory
-/// that can be listed but not written to. That is a Unix permission, hence the
-/// gate; an identity that ignores permission bits makes the case unbuildable,
-/// hence the early return.
 #[cfg(unix)]
 #[test]
 fn a_capability_that_cannot_write_exits_11_and_records_the_failed_execution() {
@@ -201,7 +166,7 @@ fn a_capability_that_cannot_write_exits_11_and_records_the_failed_execution() {
     std::fs::set_permissions(&changes, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     if out.status.code() == Some(0) {
-        return; // running with an identity that ignores the permission bits
+        return;
     }
 
     assert_eq!(
@@ -223,44 +188,8 @@ fn a_capability_that_cannot_write_exits_11_and_records_the_failed_execution() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Row 10, which had no producer until M3
-// ---------------------------------------------------------------------------
-//
-// **What these scenarios prove, and what they do not.**
-//
-// They prove that exit 10 is reachable from the compiled binary, that a run
-// reaching it is neither 11 nor 20, and that both renderings of it agree. That
-// is the whole of the row's contract, and none of it was true before: `10` was
-// a `match` arm in `exit_code_for` with nothing on the far side of it, unit
-// tested since M0 against a hand-built `RunOutcome` and never once produced by
-// a run.
-//
-// They do not prove that a *conversation* is named, because on this path there
-// is none. `propose_change` — the capability that publishes a question and
-// hands back a `CapabilityError::AwaitingDecision` carrying the conversation it
-// published on — is a later bean, so the honest producer available here is a
-// deployment document that says a person must decide before the branch is
-// published. `EffectError::HumanDecisionRequired` is the *other* condition ADR
-// 016 assigned to this row, so the route is not a stand-in for the real one; it
-// is one of the two things the row is for. The conversation half is asserted
-// one layer down, in `orchestration.rs`'s
-// `a_capability_awaiting_a_decision_suspends_rather_than_failing_or_retrying`,
-// against a capability that returns the variant carrying an `InteractionRef`.
-//
-// Everything below is offline. `[github] cli = { program, args }` is the
-// product seam an operator uses to pin or wrap `gh`, and it points at a shell
-// script; the exported token authenticates nothing.
-
-/// The variable the documents below name. Never a value.
 const CREDENTIAL: &str = "FIDDLE_GITHUB_TOKEN";
 
-/// A `gh` that answers every request `404`, so the branch this run would publish
-/// does not exist yet and the executor gets past its postcondition read to the
-/// point where the document's rule is consulted.
-///
-/// Exit 1 rather than 0 because that is what `gh` exits with on a 404, and the
-/// adapter reads the status line rather than the exit code.
 #[cfg(unix)]
 fn gh_answering_nothing_exists(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -274,17 +203,10 @@ fn gh_answering_nothing_exists(dir: &Path) -> PathBuf {
     path
 }
 
-/// A path as a TOML string, escaped rather than pasted.
 fn toml_path(path: &Path) -> String {
     format!("{:?}", path.display().to_string())
 }
 
-/// A scenario whose deployment says a person must decide before the first
-/// effect may happen, and whose world is otherwise ordinary.
-///
-/// `config_dir` is written down rather than defaulted: the default is relative
-/// to the working directory, so a test taking it would leave a scratch
-/// directory inside the package it was run from.
 #[cfg(unix)]
 fn awaiting_a_decision() -> Scenario {
     let scenario = Scenario::new();
@@ -311,8 +233,6 @@ fn awaiting_a_decision() -> Scenario {
     scenario
 }
 
-/// `fiddle run … --capability publish_change`, with the credential exported and
-/// the exit code left unjudged.
 #[cfg(unix)]
 fn suspending_run(scenario: &Scenario, extra: &[&str]) -> std::process::Output {
     scenario
@@ -324,12 +244,6 @@ fn suspending_run(scenario: &Scenario, extra: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
-/// **The row that had no producer, driven by a run rather than by a unit test
-/// of the mapping function.**
-///
-/// `exit_code_for`'s `Suspended => 10` arm has been unit tested since M0
-/// against a `RunOutcome` built by hand, and the row still had nothing on the
-/// far side of it. This is the far side.
 #[cfg(unix)]
 #[test]
 fn a_run_awaiting_a_decision_exits_ten_and_says_what_it_waits_for() {
@@ -357,10 +271,6 @@ fn a_run_awaiting_a_decision_exits_ten_and_says_what_it_waits_for() {
         "and must name what it is waiting about: {reason}"
     );
 
-    // The run executed, and the bundle must not contradict its own outcome. It
-    // said `failed` on every capability `Err` until this row existed, which
-    // would have had a reader of the progress entry conclude the opposite of
-    // what the exit code told them.
     assert_eq!(
         v["capability_executions"][0]["capability_id"],
         "publish_change"
@@ -379,13 +289,6 @@ fn a_run_awaiting_a_decision_exits_ten_and_says_what_it_waits_for() {
     );
 }
 
-/// **Not retryable, and not failed, and this is the point of the row.**
-///
-/// Automation retrying on 11 would loop on a question nobody has answered yet,
-/// and automation treating 20 as final would abandon a run that is merely
-/// waiting. Both exclusions are asserted rather than implied by the equality,
-/// because a build that regressed either one regresses a caller's behaviour and
-/// not only a number.
 #[cfg(unix)]
 #[test]
 fn a_suspended_run_is_neither_retryable_nor_failed() {
@@ -406,12 +309,6 @@ fn a_suspended_run_is_neither_retryable_nor_failed() {
     assert_eq!(out.status.code(), Some(10));
 }
 
-/// **The discriminator.** The same world, the same capability, the same
-/// scripted `gh` — without the rule the document is the one M2 already gates,
-/// and the run does not suspend.
-///
-/// Without this the scenario above would pass on a build that suspended every
-/// run, or that suspended for some reason unrelated to the document.
 #[cfg(unix)]
 #[test]
 fn the_same_world_without_the_rule_does_not_suspend() {
@@ -445,10 +342,6 @@ fn the_same_world_without_the_rule_does_not_suspend() {
     );
 }
 
-/// The human rendering says the same thing the payload says. Two renderings of
-/// one outcome that disagree is a defect an operator finds at the worst moment
-/// — and the outcome line is the only place a reader at a terminal learns that
-/// waiting is what happened.
 #[cfg(unix)]
 #[test]
 fn the_human_rendering_says_the_run_is_waiting_too() {
@@ -472,8 +365,6 @@ fn the_human_rendering_says_the_run_is_waiting_too() {
     );
 }
 
-/// A reader at a terminal is entitled to the same conclusions the payload
-/// carries, not only to the exit code.
 #[test]
 fn the_human_rendering_names_the_outcome_the_mode_and_what_ran() {
     let s = Scenario::new();

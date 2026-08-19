@@ -1,34 +1,7 @@
-//! Structural guards over the acceptance harness itself.
-//!
-//! Every other test in this package asserts something about `fiddle`. These
-//! assert something about the harness that runs them, because the harness has
-//! its own way of being silently wrong: a suite that drives *some* binary is
-//! exactly as green as a suite that drives the binary built from the sources
-//! under test, and only one of the two is evidence.
-//!
-//! A companion to `crate_boundary.rs`, which does the same job for
-//! `fiddle-core`'s purity, and deliberately the same shape: grep the sources for
-//! the construct that must not appear, and carry a non-vacuity assertion so the
-//! scan cannot pass by having found nothing to look at.
-
 mod support;
 
 use std::path::{Path, PathBuf};
 
-/// The construct no acceptance test may name.
-///
-/// `assert_cmd`'s `cargo_bin` resolves a *path* under the target directory and
-/// trusts that something already put a binary there. Under
-/// `cargo test --workspace` nothing does — this package does not depend on
-/// `fiddle-cli`, so `main.rs` is only ever compiled as a test harness under
-/// `deps/` — so the path holds whatever a previous `cargo build` left, or
-/// nothing at all. [`support::fiddle_binary`] carries the full account and the
-/// alternative.
-///
-/// That helper is why no scenario needs the convention. This constant is why the
-/// next scenario cannot reach for it anyway: the fix was behavioural, and a
-/// behaviour nothing enforces is a convention, which is how the defect entered
-/// the first time.
 const BANNED: &str = "cargo_bin";
 
 #[test]
@@ -41,10 +14,6 @@ fn no_acceptance_test_resolves_the_binary_by_convention() {
         root.display()
     );
 
-    // The other half of the non-vacuity claim, and the half that is easier to
-    // break: `code_only` could make the scan pass by returning nothing at all.
-    // Anchor on a declaration that has to survive stripping, so an over-eager
-    // stripper fails here instead of reporting a clean tree.
     let support = code_only(&read(&root.join("support/mod.rs")));
     assert!(
         support.contains("pub fn fiddle_binary"),
@@ -67,11 +36,6 @@ fn no_acceptance_test_resolves_the_binary_by_convention() {
 
 #[test]
 fn the_scan_reads_code_and_not_prose_about_it() {
-    // A guard on a clean tree and a guard that sees nothing look identical from
-    // the outside. These cases are the difference. The fixtures below hold the
-    // banned name as string data, which the scan strips before looking — so this
-    // file can describe what it forbids without tripping over itself, and
-    // without an allowlist that would go stale on the next edit.
     assert_eq!(
         offending_lines("let name = Command::cargo_bin(\"fiddle\");\n"),
         vec![1],
@@ -105,12 +69,6 @@ fn the_scan_reads_code_and_not_prose_about_it() {
 
 #[test]
 fn the_binary_under_test_is_built_beside_this_test_binary() {
-    // What `fiddle_binary` has to get right and cannot check for itself: the
-    // binary it hands out must have been built under the same profile as the
-    // test asking for it. A `<target>/<profile>/deps/<name>` test binary and a
-    // `<target>/<profile>/fiddle` executable agree exactly when the profile
-    // directory is one and the same, so compare the directories rather than
-    // re-deriving either name.
     let test_exe = std::env::current_exe().unwrap();
     let profile_dir = test_exe
         .parent()
@@ -125,7 +83,6 @@ fn the_binary_under_test_is_built_beside_this_test_binary() {
     );
 }
 
-/// Every line number in `src` whose *code* names [`BANNED`].
 fn offending_lines(src: &str) -> Vec<usize> {
     code_only(src)
         .lines()
@@ -135,26 +92,6 @@ fn offending_lines(src: &str) -> Vec<usize> {
         .collect()
 }
 
-/// `src` with every comment, string literal and character literal removed.
-///
-/// Comments go because the reason a construct is banned is worth keeping, and it
-/// cannot be worth reading without naming the construct — a guard that made
-/// `support/mod.rs` delete its explanation to stay green would have traded the
-/// account for the enforcement. String and character literals go for the same
-/// reason one level up: this file has to hold the banned name as data in order
-/// to search for it, and the cases above have to hold fixtures containing it.
-///
-/// Stripping both is stricter than exempting particular lines, not looser. What
-/// remains is only what the compiler resolves as code, which is the only place a
-/// call or an import can be, so no line is ever exempt and nothing goes stale
-/// when this file is edited. It also means the ban can be on the bare
-/// identifier rather than on call syntax, which catches a use declaration or an
-/// alias as well as a call.
-///
-/// Newlines survive, so the line numbers a failure reports point at the real
-/// source. The one construct not lexed exactly is the character literal, told
-/// apart from a lifetime by whether a closing quote follows within two
-/// characters — the same question Rust's own grammar asks.
 fn code_only(src: &str) -> String {
     let chars: Vec<char> = src.chars().collect();
     let mut out = String::with_capacity(src.len());
@@ -175,14 +112,6 @@ fn code_only(src: &str) -> String {
     out
 }
 
-/// The length of the string, byte string, raw string or character literal
-/// starting at `i`, or `None` if none starts there.
-///
-/// An unterminated literal runs to the end of the file rather than being
-/// reported: this scans sources the compiler has already accepted, so the case
-/// only arises for a file that would not build, and swallowing the tail is the
-/// safe direction — it cannot turn a real call into a miss without also turning
-/// the file into a compile error.
 fn literal_len(chars: &[char], i: usize) -> Option<usize> {
     let mut j = i;
     if chars.get(j) == Some(&'b') {
@@ -212,9 +141,6 @@ fn literal_len(chars: &[char], i: usize) -> Option<usize> {
                 }
             }
         }
-        // A tick is a character literal when a closing tick follows the one
-        // character it may hold, or when an escape closes further along;
-        // otherwise it opens a lifetime and is code.
         Some('\'') if !raw && chars.get(j + 1) == Some(&'\\') => (j + 3..j + 14)
             .find(|k| chars.get(*k) == Some(&'\''))
             .map(|k| k + 1 - i),
@@ -223,8 +149,6 @@ fn literal_len(chars: &[char], i: usize) -> Option<usize> {
     }
 }
 
-/// The length of the line or block comment starting at `i`, or `None` if none
-/// starts there. Block comments nest, as Rust's do.
 fn comment_len(chars: &[char], i: usize) -> Option<usize> {
     match (chars.get(i), chars.get(i + 1)) {
         (Some('/'), Some('/')) => {
@@ -257,7 +181,6 @@ fn comment_len(chars: &[char], i: usize) -> Option<usize> {
     }
 }
 
-/// Every `*.rs` path under `root`, recursively.
 fn rs_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(root).unwrap().flatten() {
