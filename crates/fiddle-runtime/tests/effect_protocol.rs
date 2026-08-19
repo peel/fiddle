@@ -74,6 +74,101 @@ fn the_authorization_envelope_has_no_public_constructor() {
     assert!(source.contains("pub struct AuthorizedEffect<T> {\n    effect_id:"));
 }
 
+fn rustc_program() -> PathBuf {
+    let cargo = PathBuf::from(env!("CARGO"));
+    let sibling = cargo.with_file_name("rustc");
+    if sibling.is_file() {
+        sibling
+    } else {
+        PathBuf::from("rustc")
+    }
+}
+
+fn compile_probe_against_this_crate(source: &str) -> std::process::Output {
+    let dir = TempDir::new().unwrap();
+    let probe = dir.path().join("probe.rs");
+    std::fs::write(&probe, source).unwrap();
+    let deps = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .expect("the test binary lives in cargo's deps directory")
+        .to_path_buf();
+    let mut rlibs: Vec<PathBuf> = std::fs::read_dir(&deps)
+        .unwrap()
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("libfiddle_runtime-") && name.ends_with(".rlib")
+                })
+        })
+        .collect();
+    rlibs.sort_by_key(|path| {
+        std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .unwrap()
+    });
+    let rlib = rlibs
+        .pop()
+        .expect("cargo builds fiddle_runtime's rlib beside this test binary");
+    std::process::Command::new(rustc_program())
+        .args([
+            "--edition",
+            "2021",
+            "--crate-type",
+            "lib",
+            "--emit",
+            "metadata",
+        ])
+        .arg("-o")
+        .arg(dir.path().join("probe.meta"))
+        .arg("-L")
+        .arg(format!("dependency={}", deps.display()))
+        .arg("--extern")
+        .arg(format!("fiddle_runtime={}", rlib.display()))
+        .arg(&probe)
+        .output()
+        .expect("the toolchain that built this test can compile a probe")
+}
+
+#[test]
+fn the_authorization_envelope_type_is_nameable_from_another_crate() {
+    let probe = compile_probe_against_this_crate(
+        "use fiddle_runtime::effect::AuthorizedEffect;\n\
+         pub fn takes_an_envelope<T>(_: &AuthorizedEffect<T>) {}\n",
+    );
+    assert!(
+        probe.status.success(),
+        "the envelope's public path must resolve outside its crate: {}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+}
+
+#[test]
+fn a_struct_literal_cannot_forge_an_authorization_envelope_from_another_crate() {
+    let probe = compile_probe_against_this_crate(
+        "use fiddle_runtime::core::{EffectId, PayloadHash};\n\
+         use fiddle_runtime::effect::AuthorizedEffect;\n\
+         pub fn forge() -> AuthorizedEffect<()> {\n\
+             AuthorizedEffect {\n\
+                 effect_id: EffectId(\"0000000000000000\".to_string()),\n\
+                 payload_hash: PayloadHash(\"0000000000000000\".to_string()),\n\
+                 operation: (),\n\
+             }\n\
+         }\n",
+    );
+    let stderr = String::from_utf8_lossy(&probe.stderr);
+    assert!(
+        !probe.status.success(),
+        "a struct literal must not build an envelope outside the executor"
+    );
+    assert!(
+        stderr.contains("E0451"),
+        "the refusal must be the private-field one, not some other error: {stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Step 3 before step 4, and both before the mutation
 // ---------------------------------------------------------------------------
