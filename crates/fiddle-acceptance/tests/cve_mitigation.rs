@@ -1191,21 +1191,7 @@ const SCAN_CLEAN: &str = "clean-image";
 /// tree can already have settled.
 const SCAN_LIBRARY_ONLY: &str = "library-only";
 
-/// The scanner arm that reports one library advisory naming **no published fix**,
-/// and nothing else.
-///
-/// The arm a run reaches Design §3 row 2 through, and — as far as this suite can
-/// build one — the only one that can. Row 2 is *nothing was attempted and there
-/// is still something to report*, and a run attempts what its bound left of
-/// `Projection::fixable`, so the world has to be one where that set is empty
-/// while the verdict report is not. An advisory the scanner published no
-/// `fixedVersion` for is exactly that: never offered to an attempt, and reported
-/// as upstream-blocked regardless.
-///
-/// Its OS array is present and empty for the same arithmetic. Every other
-/// document here writes an OS advisory that names a fix, which is fixable, which
-/// would be attempted — and row 5 shadows row 2 whenever anything is attempted.
-const SCAN_NO_FIX: &str = "no-published-fix";
+const SCAN_ONLY_ADVISORY_HAS_NO_PUBLISHED_FIX: &str = "no-published-fix";
 
 /// The scanner arm that reports the library advisory and **two** OS advisories.
 ///
@@ -2222,7 +2208,7 @@ fn pushed_commits(sweep: &Sweep, branch: &str) -> Vec<(String, Vec<String>)> {
 //     an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_needing_direction
 //     a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set
 //   row 2  VerdictsOnly            the `!verdicts.is_empty()` test -> `false`
-//     an_advisory_with_no_published_fix_is_reported_without_being_attempted
+//     an_advisory_with_no_published_fix_reaches_verdicts_only_with_nothing_attempted
 //   row 7  AlreadyInProgress       the `!covers.is_empty()` test -> `false`
 //     an_open_pull_request_covering_the_rest_reaches_already_in_progress
 //     the_plain_rendering_names_the_row_a_run_reached_and_its_pull_request
@@ -2259,7 +2245,7 @@ fn pushed_commits(sweep: &Sweep, branch: &str) -> Vec<(String, Vec<String>)> {
 //   verdict report all the same, filed `upstream_blocked`.
 // - *Every run with verdicts has attempts, so row 5 shadows row 2 in every world
 //   this file can build.* A document whose only advisory names no `fixedVersion`
-//   is a world this file can build, and does: `SCAN_NO_FIX`. Nothing is fixable,
+//   is a world this file can build, and does: `SCAN_ONLY_ADVISORY_HAS_NO_PUBLISHED_FIX`. Nothing is fixable,
 //   so nothing is attempted, so `!attempted.is_empty()` is false and row 5 does
 //   not fire; the verdict list is not empty, so row 2 does.
 // - *A lane that constructed a verdict with no attempt would be asserting about a
@@ -2979,6 +2965,18 @@ fn already_fixed_publishes() -> serde_json::Value {
     })
 }
 
+fn verdicts_only_publishes() -> serde_json::Value {
+    serde_json::json!({
+        "reason": "verdicts_only",
+        "verdicts": 1,
+        "already_fixed": [],
+        "deferred": [],
+        "attempts": [],
+        "branch": serde_json::Value::Null,
+        "pull_request": serde_json::Value::Null,
+    })
+}
+
 /// The document a run whose work an open pull request already carries publishes.
 ///
 /// See [`nothing_to_do_publishes`] for why these live here.
@@ -3115,7 +3113,7 @@ fn a_scan_of_an_empty_image_reaches_nothing_to_do() {
 ///
 /// Row 2 sits between this row and row 5 and is reached from neither of those two
 /// worlds — see
-/// [`an_advisory_with_no_published_fix_is_reported_without_being_attempted`],
+/// [`an_advisory_with_no_published_fix_reaches_verdicts_only_with_nothing_attempted`],
 /// which needs a document this one has no reason to write.
 #[test]
 fn a_tree_that_settles_every_finding_reaches_already_fixed() {
@@ -3333,102 +3331,44 @@ fn the_three_rows_that_used_to_publish_one_document_publish_three() {
     );
 }
 
-/// **An advisory the scanner published no fix for is reported without being
-/// attempted, and that run reaches `VerdictsOnly`.**
-///
-/// Design §3 row 2, and the row the census above spent a commit calling
-/// unreachable. It is not: `verdicts_of` reads `Projection::upstream_blocked`
-/// before it reads anything of the run's, and an advisory with no `fixedVersion`
-/// is in that set and in no other. The bound is applied to `Projection::fixable`,
-/// which never held it, so there is nothing for the one attempt to be shown and
-/// `mitigate` makes none — `!attempted.is_empty()` is false, row 5 does not fire,
-/// and the fall-through reaches row 2.
-///
-/// # Why this is the row worth reaching from out here
-///
-/// Because it is the one where a run has *something to say and nothing to do*,
-/// and those are the two halves an operator has to be able to see separately. A
-/// reader who is told only "nothing to do" concludes the image is clean; a reader
-/// who is told only "there are verdicts" goes looking for the attempt that
-/// produced them. Row 2 is the answer *the scanner knows about this and upstream
-/// has shipped no fix*, and the remedy is neither merge nor retry — it is wait, or
-/// go and read the advisory. No other row carries that.
-///
-/// # Why this world and not a cheaper one
-///
-/// [`SCAN_NO_FIX`] over the **vulnerable** tree, which is the honest arrangement:
-/// the project really does depend on the version the document reports, and there
-/// is nowhere to move it to. The tree is not what decides — nothing reads it,
-/// because deduplication is only asked about fixable findings — and that is worth
-/// stating rather than leaving to be inferred from `already_fixed` being empty.
-///
-/// The model is handed [`a_script_no_attempt_consumes`], and it is a *premise*
-/// here rather than a convenience: the claim is that no attempt was made, so a
-/// script the run could consume would make the empty `attempts` list ambiguous
-/// between *nothing was attempted* and *an attempt happened to change nothing*.
-/// [`SCAN_NO_FIX`]'s own doc gives the arithmetic that makes the world minimal.
-///
-/// # What is asserted, and in what order
-///
-/// The document first, because *reported without being attempted* is also what an
-/// advisory the scanner never mentioned looks like — the same reason
-/// [`a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set`]
-/// reads its scan artefact before its sets. Then the row, whole, as one object, so
-/// the empty `attempts` list is read beside the non-zero verdict count rather than
-/// checked on its own. Then the verdict report, because the row carries a verdict
-/// *count* and a count of one is satisfied by a row for the wrong advisory — and
-/// the judgement on that row, `upstream_blocked`, which is the one thing that says
-/// the verdict came from the projection rather than from an attempt nobody can see.
-/// Then the forge, which was never asked to open anything.
 #[test]
-fn an_advisory_with_no_published_fix_is_reported_without_being_attempted() {
-    let sweep = Sweep::scanning(VULNERABLE, SCAN_NO_FIX, 2, a_script_no_attempt_consumes());
+fn an_advisory_with_no_published_fix_reaches_verdicts_only_with_nothing_attempted() {
+    let sweep = Sweep::scanning(
+        VULNERABLE,
+        SCAN_ONLY_ADVISORY_HAS_NO_PUBLISHED_FIX,
+        2,
+        a_script_no_attempt_consumes(),
+    );
 
     let run = sweep.run();
     assert_eq!(
         run.status.code(),
         Some(0),
-        "an advisory with no fix is not a failed run — stderr: {}",
+        "an advisory with no published fix is not a failed run - stderr: {}",
         String::from_utf8_lossy(&run.stderr)
     );
 
-    // 0. The scanner really named the advisory, so everything below is about a
-    //    document rather than about a fixture that lost a finding.
-    let scanned = std::fs::read_to_string(sweep.scenario.report_dir().join("scan/scan.json"))
+    let scan_artefact = std::fs::read_to_string(sweep.scenario.report_dir().join("scan/scan.json"))
         .expect("the scanner left no artefact, so nothing below is about a document");
     assert!(
-        scanned.contains(LIBRARY_CVE),
-        "the scan does not name {LIBRARY_CVE}, so its verdict below would be a \
-         row about nothing: {scanned}"
+        scan_artefact.contains(LIBRARY_CVE),
+        "the scan does not name {LIBRARY_CVE}, so a verdict for it would be a \
+         row about a finding nobody reported: {scan_artefact}"
     );
     assert!(
-        !scanned.contains("fixedVersion"),
-        "the whole of this world is that no advisory in the document names a \
-         fix — one that did would be fixable, would be attempted, and the run \
-         would land on row 5: {scanned}"
+        !scan_artefact.contains("fixedVersion"),
+        "no advisory in this document may name a fix: one that did would be \
+         fixable, would be the attempt's, and the run would reach row 5 \
+         instead: {scan_artefact}"
     );
 
-    // 1. The row, whole. `verdicts` is not zero and `attempts` is empty, and it
-    //    is the pair that is row 2: either half alone is a row this run is not on.
     assert_eq!(
         the_row_both_surfaces_agree_on(&sweep, &run, "an advisory with no published fix"),
-        serde_json::json!({
-            "reason": "verdicts_only",
-            "verdicts": 1,
-            "already_fixed": [],
-            "deferred": [],
-            "attempts": [],
-            "branch": serde_json::Value::Null,
-            "pull_request": serde_json::Value::Null,
-        }),
-        "row 2 is *something to report and nothing attempted*: a verdict count \
-         that is not zero beside an attempt list that is empty"
+        verdicts_only_publishes(),
+        "row 2 is a verdict count that is not zero beside an attempt list that \
+         is empty, and either half alone is a row this run is not on"
     );
 
-    // 2. Whose verdict it is, and on whose authority. `upstream_blocked` is the
-    //    judgement the projection produces and the only one reachable with no
-    //    attempt behind it — `needs_work` here would mean the count above came
-    //    from an attempt the `attempts` list is not showing.
     let verdicts = sweep.verdicts();
     assert!(
         sweep.has_verdict(LIBRARY_CVE),
@@ -3441,9 +3381,6 @@ fn an_advisory_with_no_published_fix_is_reported_without_being_attempted() {
          attempt, or the empty attempt list above is hiding one: {verdicts}"
     );
 
-    // 3. And nothing was published, which is what makes the two nulls above
-    //    readable rather than incidental: no branch was pushed and no pull
-    //    request opened, because there was no work to put on one.
     assert!(
         sweep.pull_requests().is_empty(),
         "a run that attempted nothing opens nothing: {:?}",

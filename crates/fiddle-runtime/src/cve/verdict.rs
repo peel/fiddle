@@ -744,7 +744,7 @@ pub fn report_of(run: &Run) -> serde_json::Value {
 /// fix for, so no attempt is ever shown one. That leaves `attempted` empty and
 /// this list non-empty, which is [`Reason::VerdictsOnly`] — a row a run does reach,
 /// asserted from outside the process by
-/// `cve_mitigation::an_advisory_with_no_published_fix_is_reported_without_being_attempted`.
+/// `cve_mitigation::an_advisory_with_no_published_fix_reaches_verdicts_only_with_nothing_attempted`.
 /// The third producer reads `run.attempted`, so every verdict it contributes has
 /// an attempt behind it and the run is on row 4 or row 5 rather than row 2.
 ///

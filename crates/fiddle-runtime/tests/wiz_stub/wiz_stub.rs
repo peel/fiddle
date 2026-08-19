@@ -43,8 +43,8 @@
 //! the four after it, and they exist for Design §3's table rather than for the
 //! adapter: seven rows are reached from seven *worlds*, and a fixture that could
 //! report only `ok` or nothing could put a run on four of them. Each of the four
-//! is the only document here that reaches its row — `no-published-fix` is row 2
-//! and the arm's own comment gives the arithmetic — and `two-os-advisories` goes
+//! is the only document here that reaches its row — `no-published-fix` is row 2 —
+//! and `two-os-advisories` goes
 //! further than a row: it is the only document that makes a disposition's three
 //! finding sets non-empty at once, which is what it takes to assert that a
 //! deferred advisory is in one of them and not the other two. All four are
@@ -223,28 +223,6 @@ fn main() {
                     .to_string(),
             );
         }
-        // One library advisory naming **no published fix**, and an OS array that
-        // is present and empty.
-        //
-        // The arm a *run* reaches `VerdictsOnly` through, and the only one that
-        // can. That row is *nothing was attempted and there is still something to
-        // report*, so the document has to leave the fixable set empty while the
-        // upstream-blocked set is not: a run attempts the findings its bound left
-        // out of `Projection::fixable`, and an advisory the scanner published no
-        // `fixedVersion` for is never in that set at all.
-        //
-        // **`unfixed_libraries`, and the OS array present and empty.** Both
-        // halves are the arm. A `fixedVersion` on this advisory would make it
-        // fixable and the run would attempt it; an OS advisory beside it would be
-        // fixable too — every other document here writes one — and the run would
-        // attempt *that*. Either way something is attempted, and row 5 shadows
-        // row 2 whenever anything is. Empty rather than absent, for
-        // `library-clean`'s reason: absence is not clearance.
-        //
-        // This is the one row in Design §3 whose world is the scanner's own
-        // silence rather than a judgement of fiddle's, which is why no tree can
-        // produce it and no script can: `a_script_no_attempt_consumes` is what
-        // the lane hands the model, and the model is never reached.
         "no-published-fix" => {
             banner(&args);
             write(
