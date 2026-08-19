@@ -2042,6 +2042,33 @@ fn seed_repository(root: &Path, remote: &Path, name: &str) -> PathBuf {
 /// **git** saw — and never the list the model reported. A script that claimed the
 /// files would therefore prove nothing about which of the two the landing reads.
 fn a_bump_needing_no_edit() -> Vec<Reply> {
+    a_bump_disposing_of(&[LIBRARY_CVE])
+}
+
+/// [`a_bump_needing_no_edit`] for a world whose attempt is shown something other
+/// than [`LIBRARY_CVE`].
+///
+/// **The advisories are an argument because the report has to name exactly the
+/// ones the prompt showed.** `unaccounted` refuses a report in three directions —
+/// an advisory shown and not disposed of, one disposed of and never shown, and one
+/// disposed of twice — so a script cannot name a fixed list and cannot name a
+/// superset either. Which advisories a world's attempt is shown is therefore part
+/// of the world, and spelling it at the call site is what keeps a lane's script
+/// and its scanner arm from drifting apart silently.
+///
+/// Every disposition is `attempted: true`: this is the ordinary bump, and a
+/// declined one is [`an_attempt`]'s third argument.
+fn a_bump_disposing_of(shown: &[&str]) -> Vec<Reply> {
+    let dispositions: Vec<serde_json::Value> = shown
+        .iter()
+        .map(|cve| {
+            serde_json::json!({
+                "cve": cve,
+                "attempted": true,
+                "note": "the requirement already resolves to the fixed release",
+            })
+        })
+        .collect();
     vec![accepted(completion(
         serde_json::json!({
             "role": "assistant",
@@ -2049,22 +2076,26 @@ fn a_bump_needing_no_edit() -> Vec<Reply> {
                 "changed_files": [],
                 "summary": "the requirement was moved to the fixed release; no source change was needed",
                 "claimed_complete": true,
+                "findings": dispositions,
             }).to_string(),
         }),
         "stop",
     ))]
 }
 
-/// [`a_bump_needing_no_edit`], once per attempt a world will make.
+/// [`a_bump_disposing_of`], once per attempt a world will make, in the order the
+/// run makes them.
 ///
 /// The gateway answers each request with the next entry of its script and then
 /// stops accepting, so a script short by one leaves the second attempt with no
 /// answer at all — which presents as an attempt that failed rather than as a
-/// fixture that ran out. Spelled as a count rather than by repeating the literal,
-/// so the number in a lane is the number of groups it expects to be attempted.
-fn bumps_needing_no_edit(attempts: usize) -> Vec<Reply> {
-    (0..attempts)
-        .flat_map(|_| a_bump_needing_no_edit())
+/// fixture that ran out. Spelled as one advisory list per attempt rather than as a
+/// count, because each attempt is shown its own group's advisories and a report
+/// naming another group's is refused as one that was never shown.
+fn bumps_needing_no_edit(shown: &[&[&str]]) -> Vec<Reply> {
+    shown
+        .iter()
+        .flat_map(|group| a_bump_disposing_of(group))
         .collect()
 }
 
@@ -3679,7 +3710,12 @@ fn a_group_an_earlier_bump_already_cleared_is_folded_into_an_empty_commit() {
         // retryable — and the lane would then be evidence that the fixture ran
         // out rather than that the group was folded. With an answer waiting, a
         // second attempt succeeds, and what fails is the count below.
-        bumps_needing_no_edit(2),
+        //
+        // The spare disposes of [`SECOND_LIBRARY_CVE`] because that is what the
+        // second group's attempt would be shown: a spare naming the first group's
+        // advisory would be refused as a report of something never shown, and the
+        // lane would fail on the protocol rather than on the count.
+        bumps_needing_no_edit(&[&[LIBRARY_CVE], &[SECOND_LIBRARY_CVE]]),
     );
 
     let run = sweep.run();
@@ -3855,7 +3891,10 @@ fn a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed() {
         SCAN_CLEARING_BUMP,
         RESCAN_CLEARED_STILL_REPORTED,
         3,
-        bumps_needing_no_edit(2),
+        // `github.com/docker/docker` sorts before `golang.org/x/net`, so the
+        // clearing module's group is attempted first and the spare is the one the
+        // second group would be shown.
+        bumps_needing_no_edit(&[&[CLEARING_LIBRARY_CVE], &[SECOND_LIBRARY_CVE]]),
     );
 
     let run = sweep.run();
@@ -4155,8 +4194,9 @@ fn a_needs_work_groups_rescan_is_not_folded_on() {
         SCAN_TWO_LIBRARIES,
         3,
         // Two, because both groups are attempted. That is the claim, and the
-        // script is the first place it is made.
-        bumps_needing_no_edit(2),
+        // script is the first place it is made — one advisory list per group, in
+        // the order the run walks them.
+        bumps_needing_no_edit(&[&[LIBRARY_CVE], &[SECOND_LIBRARY_CVE]]),
     );
 
     let run = sweep.run();
@@ -5176,7 +5216,7 @@ fn a_second_run_reads_the_first_runs_own_commit_body() {
         SCAN_LIBRARY_ONLY,
         SCAN_CLEAN,
         2,
-        bumps_needing_no_edit(1),
+        bumps_needing_no_edit(&[&[LIBRARY_CVE]]),
     );
 
     // -- the first night -----------------------------------------------------
