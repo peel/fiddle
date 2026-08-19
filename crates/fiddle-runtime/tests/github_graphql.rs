@@ -1,18 +1,3 @@
-//! `GhCli::graphql`: the one call whose verdict is not on the status line.
-//!
-//! [ADR 018](../../../docs/technical/decisions/018-a-graphql-200-is-not-a-success.md)
-//! is the decision these cases enforce, and `scripts/verify-graphql-ready.sh` is
-//! where every response shape below was measured against real GitHub. A refused
-//! mutation answers 200 with `errors[]` and `gh` exits 1, so `api`'s rule —
-//! `status >= 400` — would read a refusal as a success. Everything here is about
-//! that one difference and about the fact that it is the *only* difference:
-//! the environment, the bound, the credential and the status-line parse are
-//! `api`'s own, shared rather than reimplemented, so this is a second call shape
-//! and not a second spawn site.
-//!
-//! Driven through the product's `cli.program` seam against the scripted `gh` in
-//! `tests/gh_stub/`, like `github_cli`. Nothing here reaches GitHub.
-
 use fiddle_runtime::effect::EffectOutcome;
 use fiddle_runtime::github::{GhCli, GhError};
 use std::path::PathBuf;
@@ -20,33 +5,17 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
-/// A generous bound for a stub that answers immediately. No case here is about
-/// the deadline; `github_cli` owns that one, and it is the same bound.
 const PATIENT: Duration = Duration::from_secs(30);
 
-/// The credential the client is built with. Sentinel-shaped so that "it did not
-/// appear in `argv`" is a claim about this value rather than about an empty
-/// string that could not have appeared anywhere.
 const TEST_TOKEN: &str = "ghp_graphql_sentinel_must_not_appear";
 
-/// The mutation this method exists for, parameterised exactly as the product
-/// must send it.
-///
-/// The node id is `$id` and never interpolated into the text. That is not style:
-/// a node id is a value from GitHub that this process passes on, and a value
-/// spliced into a query is a value that can rewrite the query. `-f id=…` binding
-/// as a GraphQL variable rather than as a form field was measured, not assumed —
-/// see step 0 of the probe script.
 const MUTATION: &str = "mutation($id: ID!) { markPullRequestReadyForReview(input: \
                         {pullRequestId: $id}) { pullRequest { isDraft } } }";
 
-/// A run nobody interrupted. Named for what it is rather than `token()`, because
-/// this module's other token is a credential and the two must not read alike.
 fn uncancelled() -> CancellationToken {
     CancellationToken::new()
 }
 
-/// A scratch world: a scripted `gh`, its answers, and the requests it recorded.
 struct World {
     dir: TempDir,
 }
@@ -58,16 +27,7 @@ impl World {
         }
     }
 
-    /// A `GhCli` pointed at the scripted `gh`.
-    ///
-    /// The stub's scratch directory arrives through `cli.args`, not through the
-    /// environment, for the reason the fixture's own header gives: the adapter
-    /// clears the environment and sets exactly five names, so a sixth could not
-    /// reach the child even if the test wanted one.
     fn gh(&self) -> GhCli {
-        // Empty, and stays empty: an empty GH_CONFIG_DIR beside an absent HOME
-        // is what makes a real `gh` refuse rather than reach a stored
-        // credential.
         let config = self.dir.path().join("config");
         std::fs::create_dir_all(&config).unwrap();
         GhCli::new(
@@ -83,8 +43,6 @@ impl World {
         )
     }
 
-    /// Script the next GraphQL answer, in call order. The status and the body
-    /// are given separately because for GraphQL they are independent facts.
     fn script_graphql(&self, status: u16, body: &str) {
         let scripts = self.dir.path().join("graphql");
         std::fs::create_dir_all(&scripts).unwrap();
@@ -109,7 +67,6 @@ impl World {
         serde_json::from_str(&request).unwrap()
     }
 
-    /// The environment the child actually received, as `NAME=value` entries.
     fn recorded_env(&self, n: usize) -> Vec<String> {
         strings(&self.recorded(n)["env"])
     }
@@ -128,7 +85,6 @@ fn strings(value: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-/// The environment's names alone, sorted, so a set can be compared to a set.
 fn names(env: &[String]) -> Vec<&str> {
     let mut names: Vec<&str> = env
         .iter()
@@ -138,10 +94,6 @@ fn names(env: &[String]) -> Vec<&str> {
     names
 }
 
-/// The defect this method exists to prevent, stated as a test: a refused
-/// mutation arrives with HTTP 200, and `api`'s rule (`status >= 400`) would read
-/// it as a success. The body below is the one the probe recorded off real
-/// GitHub, `path` and `locations` trimmed.
 #[tokio::test]
 async fn a_200_carrying_errors_is_a_refusal_and_not_a_success() {
     let world = World::new();
@@ -173,10 +125,6 @@ async fn a_200_carrying_errors_is_a_refusal_and_not_a_success() {
     );
 }
 
-/// Each kind, and the reason each is where it is. `FORBIDDEN` joins `NOT_FOUND`
-/// because both are conclusions about the request; `UNPROCESSABLE` joins the 422
-/// because it covers a refusal and an "already in that state" with one word, and
-/// only a postcondition read can tell those apart.
 #[tokio::test]
 async fn each_error_kind_classifies_by_what_it_settles() {
     for (kind, expected) in [
@@ -184,8 +132,6 @@ async fn each_error_kind_classifies_by_what_it_settles() {
         ("FORBIDDEN", EffectOutcome::NotCommitted),
         ("UNPROCESSABLE", EffectOutcome::Unknown),
         ("SERVICE_UNAVAILABLE", EffectOutcome::Unknown),
-        // The row that cannot be measured, and the one most likely to matter
-        // later: GitHub's error-type set is GitHub's to extend.
         ("SOMETHING_GITHUB_ADDS_LATER", EffectOutcome::Unknown),
     ] {
         let world = World::new();
@@ -209,10 +155,6 @@ async fn each_error_kind_classifies_by_what_it_settles() {
     }
 }
 
-/// An unrecognised kind is `Unknown`, so this classification errs toward looking
-/// again rather than toward believing an outcome. Asserted of an error with no
-/// `type` at all, which is the default arm's own case rather than one more
-/// example of a name nobody knows.
 #[tokio::test]
 async fn an_error_with_no_type_at_all_is_unknown() {
     let world = World::new();
@@ -231,9 +173,6 @@ async fn an_error_with_no_type_at_all_is_unknown() {
     );
 }
 
-/// The same rule for an `errors` that is present and not an array at all. It
-/// costs a read rather than a duplicate write, which is the direction every
-/// mistake in this classification is meant to fall.
 #[tokio::test]
 async fn an_errors_field_that_is_not_an_array_is_a_refusal_and_unknown() {
     let world = World::new();
@@ -248,26 +187,6 @@ async fn an_errors_field_that_is_not_an_array_is_a_refusal_and_unknown() {
     assert_eq!(err.outcome(), EffectOutcome::Unknown, "got {err:?}");
 }
 
-/// **And the same rule for a 200 that is not an object at all**, which is the
-/// asymmetry this case exists to close: a wrongly-shaped `errors` field above
-/// already cost a read, while a `null`, an array, a string or a number came back
-/// as `Ok(Null)` — a claimed success. Both are the same situation, a response
-/// that did not say what happened, and only one of them was treated as one.
-///
-/// `Unknown` is the honest answer and the direction ADR 018 argues for: being
-/// wrong this way costs one postcondition read, and being wrong the other way
-/// costs a duplicate external effect. Classified alongside the unreadable
-/// `errors` field rather than as `GhError::Malformed`, and the difference is not
-/// cosmetic — `Malformed` is `Unknown` and deliberately *not* worth reading
-/// again, on the reasoning that a program which is not `gh` will not become one.
-/// That reasoning does not hold here: `gh` answered, with a readable status line
-/// and a body that parsed as JSON, and the next answer to the same question may
-/// well be readable.
-///
-/// A `null` body is where an **empty** 200 lands too — `parse_body` reads a body
-/// that is not there as `Null`, since a 204 from a workflow dispatch is the
-/// ordinary case — so the two are one case by the time the verdict is read, and
-/// the fixture scripts the one it can express.
 #[tokio::test]
 async fn a_200_whose_body_cannot_be_interpreted_is_unknown_and_not_a_success() {
     for body in ["null", "[]", r#""a string""#, "42", "true"] {
@@ -290,17 +209,6 @@ async fn a_200_whose_body_cannot_be_interpreted_is_unknown_and_not_a_success() {
     }
 }
 
-/// And the neighbouring case stays where it is: a 200 that *is* an object is
-/// read for its verdict, never rejected for its shape. Fixing the hole above
-/// must not turn a legitimate answer into an error.
-///
-/// Deliberately close to `a_200_with_data_and_no_errors_returns_the_data`, and
-/// not the same subject: that one is about what a success *returns*, this one is
-/// the boundary of the shape check — the smallest body GitHub would send for a
-/// mutation that was not refused. **Measured, and it is not load-bearing**: with
-/// the check inverted to reject every body, nine tests fail and this is one of
-/// them, so it localises nothing the suite could not already see. It is here
-/// because the boundary is worth stating beside the case that motivated it.
 #[tokio::test]
 async fn a_200_with_data_is_still_a_claimed_success() {
     let world = World::new();
@@ -314,27 +222,6 @@ async fn a_200_with_data_is_still_a_claimed_success() {
     assert_eq!(value["x"], 1);
 }
 
-/// **The fixture cannot answer a call nobody scripted**, and this is the case
-/// that keeps that true.
-///
-/// The route used to answer an unscripted call with a silent `200 {"data":{}}`,
-/// which made a test that forgot to script an answer indistinguishable from one
-/// that meant that answer — and for this route the omission is worse than
-/// elsewhere, because a GraphQL verdict lives in the body, so a fabricated 200 is
-/// a fabricated verdict. It applied a mutation to the stub's world on the way
-/// past, too.
-///
-/// Written as a test rather than left to the fixture's own good behaviour because
-/// nothing else can notice it. Measured, not assumed: with the silent default
-/// restored, this is the **only** test in the workspace that fails — so until it
-/// existed the property was asserted nowhere, and withdrawing the default broke
-/// nothing precisely because nothing was looking.
-///
-/// It asserts the *filename* reaches the diagnostic, which is the whole of what
-/// makes the failure actionable: the panic leaves stdout empty, so the client
-/// reports `GhError::Malformed` — the one failure that quotes `stderr` — and the
-/// stub prints the missing path ahead of the panic so that the client's
-/// 120-character bound does not truncate it away.
 #[tokio::test]
 async fn an_unscripted_graphql_call_cannot_pass_for_an_answer() {
     let world = World::new();
@@ -354,9 +241,6 @@ async fn an_unscripted_graphql_call_cannot_pass_for_an_answer() {
     );
 }
 
-/// A success returns the data and nothing else. It is still only a claim — the
-/// executor's step 8 decides — and this asserts the method does not pretend
-/// otherwise by returning a receipt or an outcome of its own.
 #[tokio::test]
 async fn a_200_with_data_and_no_errors_returns_the_data() {
     let world = World::new();
@@ -378,9 +262,6 @@ async fn a_200_with_data_and_no_errors_returns_the_data() {
     );
 }
 
-/// An empty errors array is not an error. GitHub does not send one, and a
-/// classifier that treated `"errors": []` as a refusal would fail every success
-/// from a server that did.
 #[tokio::test]
 async fn an_empty_errors_array_is_not_a_refusal() {
     let world = World::new();
@@ -394,10 +275,6 @@ async fn an_empty_errors_array_is_not_a_refusal() {
     assert_eq!(value["x"], 1);
 }
 
-/// The transport half is `api`'s, unchanged: a 5xx is `Unknown` and worth
-/// reading again, and this method inherits that rather than reimplementing it.
-/// A status at or above 400 is still `GhError::Http`, with the same message and
-/// the same advice, because nothing about GraphQL changes what a 502 means.
 #[tokio::test]
 async fn a_transport_failure_is_unknown_exactly_as_it_is_for_api() {
     let world = World::new();
@@ -417,9 +294,6 @@ async fn a_transport_failure_is_unknown_exactly_as_it_is_for_api() {
     assert!(err.is_worth_reading_again());
 }
 
-/// A cancellation still refuses before any child exists, which is the check that
-/// makes a cancellation knowledge rather than an ambiguity. Shared with `api`
-/// rather than repeated, and this is what proves the sharing reaches this call.
 #[tokio::test]
 async fn a_cancelled_mutation_never_reaches_the_child() {
     let world = World::new();
@@ -440,9 +314,6 @@ async fn a_cancelled_mutation_never_reaches_the_child() {
     );
 }
 
-/// Not a new spawn site. The same five names with no `HOME` that
-/// `github_cli::the_gh_environment_is_exactly_five_names_and_no_home` pins for
-/// `api`, asserted here against what the child actually received.
 #[tokio::test]
 async fn the_graphql_environment_is_the_same_five_names_and_no_home() {
     let world = World::new();
@@ -476,8 +347,6 @@ async fn the_graphql_environment_is_the_same_five_names_and_no_home() {
     );
 }
 
-/// The credential never reaches `argv`, and neither does anything else that
-/// could grow into one. The query does, because a query is not a secret.
 #[tokio::test]
 async fn no_credential_reaches_argv() {
     let world = World::new();
@@ -504,13 +373,6 @@ async fn no_credential_reaches_argv() {
     );
 }
 
-/// A variable is its own argument and never part of the query text.
-///
-/// This is the property that keeps a node id from being able to rewrite the
-/// query it is used in. A node id is a value GitHub gave this process and this
-/// process passes back; interpolating one into the query would make a value
-/// containing a quote into syntax. The query that goes out must therefore be the
-/// constant it was written as, with `$id` still unresolved in it.
 #[tokio::test]
 async fn a_variable_is_its_own_argument_and_never_spliced_into_the_query() {
     let world = World::new();
