@@ -55,8 +55,8 @@ pub mod repair;
 pub mod stub;
 
 pub use cve::{
-    land, record_fold, ForbiddenShape, Git, GroupMigration, GroupStatus, InWorktree,
-    MigrationAttempt, MigrationConfig, NeedsWork,
+    land, record_fold, undeclared, DeclarationBreach, ForbiddenShape, Git, GroupMigration,
+    GroupStatus, InWorktree, MigrationAttempt, MigrationConfig, NeedsWork,
 };
 pub use mitigate::{CveMitigate, MitigateConfig};
 pub use propose::{attempt_worktree, ProposeChange, ProposeConfig};

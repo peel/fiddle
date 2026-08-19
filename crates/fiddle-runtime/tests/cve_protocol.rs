@@ -43,12 +43,13 @@
 mod support;
 
 use fiddle_runtime::capability::{
-    land, record_fold, CapabilityError, ForbiddenShape, GroupMigration, GroupStatus, InWorktree,
-    MigrationAttempt, NeedsWork,
+    land, record_fold, undeclared, CapabilityError, ForbiddenShape, GroupMigration, GroupStatus,
+    InWorktree, MigrationAttempt, NeedsWork,
 };
 use fiddle_runtime::cve::dedup::FixedInCommits;
 use fiddle_runtime::cve::fold::Landed;
 use fiddle_runtime::evaluate::{evaluate, Evaluation, RescanVerdict};
+use fiddle_runtime::workspace::{Content, FileEdit, WorkspacePath};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
 use std::time::Duration;
@@ -220,11 +221,33 @@ fn claims_success_without_editing() -> Vec<MockTurn> {
 ///
 /// The mirror of [`claims_success_without_editing`]: the claim points the other
 /// way from what the tree can be shown to be.
+///
+/// The **declaration is honest** and only `claimed_complete` is not, which is
+/// what keeps this lane about the claim. A script that also understated its diff
+/// would be refused by the declaration rule before `claimed_complete` came up,
+/// and the lane would pass while measuring the wrong thing — see
+/// [`migrates_and_understates_it`], which is that script on purpose.
 fn migrates_and_disowns_it() -> Vec<MockTurn> {
     let mut script = migrates_uniformly();
     script.pop();
     script.push(MockTurn::text(
-        r#"{"changed_files":["main.go"],"summary":"I do not think this is right","claimed_complete":false}"#,
+        r#"{"changed_files":["main.go","main_test.go"],"summary":"I do not think this is right","claimed_complete":false}"#,
+    ));
+    script
+}
+
+/// The uniform migration, declared as if it had only touched one of the two
+/// files.
+///
+/// Byte-for-byte the edit [`migrates_uniformly`] makes — every rule in
+/// [`ForbiddenShape`] is satisfied by it and the checks pass over it — with the
+/// declaration understated by exactly one path. So the only thing left that can
+/// refuse it is the declaration rule.
+fn migrates_and_understates_it() -> Vec<MockTurn> {
+    let mut script = migrates_uniformly();
+    script.pop();
+    script.push(MockTurn::text(
+        r#"{"changed_files":["main.go"],"summary":"applied the rename","claimed_complete":true}"#,
     ));
     script
 }
@@ -714,7 +737,11 @@ async fn the_model_cannot_return_a_verdict() {
         attempt.forbidden
     );
 
-    let refused = GroupStatus::of(&a_tree_that_will_not_build().await, &attempt.forbidden);
+    let refused = GroupStatus::of(
+        &a_tree_that_will_not_build().await,
+        &attempt.forbidden,
+        attempt.undeclared.as_ref(),
+    );
     assert!(
         matches!(
             &refused,
@@ -726,7 +753,11 @@ async fn the_model_cannot_return_a_verdict() {
          build clean, and the refusal names the check that decided: {refused:?}"
     );
 
-    let accepted = GroupStatus::of(&a_proved_tree().await, &attempt.forbidden);
+    let accepted = GroupStatus::of(
+        &a_proved_tree().await,
+        &attempt.forbidden,
+        attempt.undeclared.as_ref(),
+    );
     assert_eq!(
         accepted,
         GroupStatus::Clean,
@@ -750,7 +781,11 @@ async fn a_disowned_edit_the_checks_prove_is_still_clean() {
         "the premise: the model said it had not finished"
     );
     assert_eq!(
-        GroupStatus::of(&a_proved_tree().await, &attempt.forbidden),
+        GroupStatus::of(
+            &a_proved_tree().await,
+            &attempt.forbidden,
+            attempt.undeclared.as_ref()
+        ),
         GroupStatus::Clean,
         "the checks decide, and they proved this tree"
     );
@@ -916,7 +951,11 @@ async fn a_uniform_rename_reaching_the_test_file_is_in_scope() {
         attempt.forbidden
     );
     assert_eq!(
-        GroupStatus::of(&a_proved_tree().await, &attempt.forbidden),
+        GroupStatus::of(
+            &a_proved_tree().await,
+            &attempt.forbidden,
+            attempt.undeclared.as_ref()
+        ),
         GroupStatus::Clean
     );
 }
@@ -938,7 +977,11 @@ async fn an_added_skip_makes_the_group_needs_work() {
         "the skip is named, with the line it was written on: {shape:?}"
     );
     assert_eq!(
-        GroupStatus::of(&a_proved_tree().await, &attempt.forbidden),
+        GroupStatus::of(
+            &a_proved_tree().await,
+            &attempt.forbidden,
+            attempt.undeclared.as_ref()
+        ),
         GroupStatus::NeedsWork {
             reason: NeedsWork::OutOfScope(shape.clone())
         },
@@ -961,7 +1004,11 @@ async fn a_changed_test_assertion_makes_the_group_needs_work() {
         "the assertion that left the file is quoted as it read: {shape:?}"
     );
     assert_eq!(
-        GroupStatus::of(&a_proved_tree().await, &attempt.forbidden),
+        GroupStatus::of(
+            &a_proved_tree().await,
+            &attempt.forbidden,
+            attempt.undeclared.as_ref()
+        ),
         GroupStatus::NeedsWork {
             reason: NeedsWork::OutOfScope(shape.clone())
         }
@@ -984,7 +1031,11 @@ async fn a_replace_directive_makes_the_group_needs_work() {
         "the directive is named, in the file it was written to: {shape:?}"
     );
     assert_eq!(
-        GroupStatus::of(&a_proved_tree().await, &attempt.forbidden),
+        GroupStatus::of(
+            &a_proved_tree().await,
+            &attempt.forbidden,
+            attempt.undeclared.as_ref()
+        ),
         GroupStatus::NeedsWork {
             reason: NeedsWork::OutOfScope(shape.clone())
         }
@@ -1013,7 +1064,11 @@ async fn new_control_flow_makes_the_group_needs_work() {
         "the branch that appeared is named, with what the file had before"
     );
     assert_eq!(
-        GroupStatus::of(&a_proved_tree().await, &attempt.forbidden),
+        GroupStatus::of(
+            &a_proved_tree().await,
+            &attempt.forbidden,
+            attempt.undeclared.as_ref()
+        ),
         GroupStatus::NeedsWork {
             reason: NeedsWork::OutOfScope(shape.clone())
         }
@@ -1067,7 +1122,7 @@ async fn a_clean_group_is_exactly_an_accepted_one() {
         ("nothing proved", a_tree_nothing_was_proved_about().await),
     ] {
         assert_eq!(
-            GroupStatus::of(&evaluation, &[]) == GroupStatus::Clean,
+            GroupStatus::of(&evaluation, &[], None) == GroupStatus::Clean,
             evaluation.accepted(),
             "`{name}`: clean and accepted must be the same question"
         );
@@ -1079,10 +1134,218 @@ async fn a_clean_group_is_exactly_an_accepted_one() {
     let unproved = a_tree_nothing_was_proved_about().await;
     assert!(unproved.first_failure().is_none(), "every check passed");
     assert_eq!(
-        GroupStatus::of(&unproved, &[]),
+        GroupStatus::of(&unproved, &[], None),
         GroupStatus::NeedsWork {
             reason: NeedsWork::Unproved(RescanVerdict::NotCompared)
         }
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The one rule that survives the ecosystem: the attempt's own declaration
+// ---------------------------------------------------------------------------
+
+/// A [`FileEdit`] whose two sides differ, because one whose sides match is not a
+/// change and would make every fixture below prove nothing.
+///
+/// The paths are Python's on purpose. Nothing in [`undeclared`] can tell a
+/// `requirements.txt` from a `go.mod` from a `README`, and a fixture written in
+/// Go paths would leave that indistinguishable from a rule that happened to
+/// allow them.
+fn edit(path: &str) -> FileEdit {
+    FileEdit {
+        path: WorkspacePath::parse(path).expect("test path is relative and clean"),
+        before: Content::Text("old".to_string()),
+        after: Content::Text("new".to_string()),
+    }
+}
+
+/// **An edit the attempt did not declare is refused, and the refusal names it.**
+///
+/// The direction that matters most: the attempt changed a file it did not
+/// mention, which is exactly the shape of an edit nobody reviewed. Both files
+/// really are in the diff, so this cannot pass because the fixture was empty.
+#[test]
+fn an_edit_the_attempt_did_not_declare_is_refused() {
+    let declared = vec!["requirements.txt".to_string()];
+    let touched = vec![edit("requirements.txt"), edit("setup.py")];
+    let refusal = undeclared(&declared, &touched).expect("setup.py was not declared");
+    assert!(
+        refusal.to_string().contains("setup.py"),
+        "the refusal must name the file: {refusal}"
+    );
+}
+
+/// **A declared file the attempt did not touch is refused too**, so the
+/// declaration cannot be padded.
+///
+/// Without this half, an attempt could satisfy the rule above by declaring every
+/// path in the repository.
+#[test]
+fn a_declared_file_the_attempt_did_not_touch_is_refused() {
+    let declared = vec!["requirements.txt".to_string(), "poetry.lock".to_string()];
+    let touched = vec![edit("requirements.txt")];
+    let refusal = undeclared(&declared, &touched).expect("poetry.lock was declared and untouched");
+    assert!(refusal.to_string().contains("poetry.lock"), "{refusal}");
+}
+
+/// **An honest declaration is not a breach**, which is the positive control the
+/// two lanes above need: a function answering `Some` for every input would
+/// satisfy both of them.
+#[test]
+fn a_declaration_that_matches_the_diff_is_no_breach() {
+    let declared = vec!["requirements.txt".to_string(), "app/main.py".to_string()];
+    let touched = vec![edit("app/main.py"), edit("requirements.txt")];
+    assert!(
+        undeclared(&declared, &touched).is_none(),
+        "the same set in a different order is the same set"
+    );
+}
+
+/// **A real attempt that understated its diff is put back to a person, and the
+/// verdict names the file it did not declare.**
+///
+/// The three lanes above are the rule on its own; this is the rule *wired*. The
+/// premises are what stop it passing for another reason: the diff really holds
+/// both files, no forbidden shape fired, and the evaluation handed in is the
+/// accepting one — so a green check does not rescue an edit nobody declared,
+/// which is why the row sits above the checks.
+#[tokio::test]
+async fn an_attempt_that_understated_its_diff_is_needs_work_over_green_checks() {
+    let (_world, attempt) = attempted(migrates_and_understates_it()).await;
+
+    assert_eq!(
+        attempt
+            .changed
+            .iter()
+            .map(|path| path.as_str().to_string())
+            .collect::<Vec<_>>(),
+        vec![SOURCE.to_string(), TEST_SOURCE.to_string()],
+        "the premise: git saw both files change"
+    );
+    assert_eq!(
+        attempt.report.changed_files,
+        vec![SOURCE.to_string()],
+        "and the premise's other half: the attempt declared one of them"
+    );
+    assert!(
+        attempt.forbidden.is_empty(),
+        "no scope rule fired, so the declaration rule is the only thing that \
+         can refuse this: {:#?}",
+        attempt.forbidden
+    );
+
+    let status = GroupStatus::of(
+        &a_proved_tree().await,
+        &attempt.forbidden,
+        attempt.undeclared.as_ref(),
+    );
+    let GroupStatus::NeedsWork {
+        reason: NeedsWork::Undeclared(breach),
+    } = &status
+    else {
+        panic!("an undeclared edit is not clean, whatever the checks said: {status:?}");
+    };
+    assert_eq!(
+        breach.unannounced,
+        vec![TEST_SOURCE.to_string()],
+        "the one file it changed and did not mention: {breach:?}"
+    );
+    assert!(
+        breach.unmet.is_empty(),
+        "and it did mention the other one: {breach:?}"
+    );
+    assert!(
+        breach.to_string().contains(TEST_SOURCE),
+        "the sentence an operator reads names the file: {breach}"
+    );
+}
+
+/// **And the uniform migration, whose declaration matches, still lands.**
+///
+/// The positive control for the lane above at the level it operates: without it,
+/// a wiring that answered `NeedsWork` for every attempt would pass there.
+/// [`a_uniform_rename_reaching_the_test_file_is_in_scope`] asserts the same
+/// `Clean` and is now passed the breach as well, so it is the assertion that a
+/// correct declaration reaches it.
+#[tokio::test]
+async fn an_attempt_whose_declaration_matches_its_diff_has_no_breach() {
+    let (_world, attempt) = attempted(migrates_uniformly()).await;
+
+    assert_eq!(
+        attempt.undeclared, None,
+        "both files declared and both changed: {:?}",
+        attempt.undeclared
+    );
+}
+
+/// **The run's own pre-briefing edit is not the attempt's to declare — and
+/// nothing else is excused with it.**
+///
+/// A sweep applies the bump before the model is briefed, so the worktree is
+/// already dirty when the attempt starts and `HEAD` is behind the tree by an edit
+/// the attempt had no part in. Without this, the declaration rule refuses every
+/// ordinary sweep: the honest report of a bump that needed no further work is an
+/// empty `changed_files`, and the diff holds the bump.
+///
+/// The lane is one attempt with **both** kinds of path in its diff, which is what
+/// makes it an assertion about the boundary rather than about either side. The
+/// bumped file is excused and the undeclared source edit beside it is not, so an
+/// exclusion widened tomorrow to cover the whole diff fails here.
+#[tokio::test]
+async fn what_the_run_changed_before_briefing_is_excused_and_nothing_beside_it_is() {
+    let world = migration_world().await;
+    let workspace = world.workspace();
+
+    // Stands in for `go get` and `go mod tidy`: a tracked file the *run* moves,
+    // in the attempt's worktree, before any model is briefed. A comment line, so
+    // no scope rule reads anything into it — this lane is about the declaration
+    // and not about `classify`.
+    let manifest = workspace.root().join("go.mod");
+    let bumped = std::fs::read_to_string(&manifest).expect("the fixture tree has a go.mod")
+        + "\n// moved by the run, before the attempt began\n";
+    std::fs::write(&manifest, bumped).expect("the worktree is writable");
+
+    // And the attempt edits one file and declares nothing at all.
+    let script = vec![
+        MockTurn::tool_call("r", "read_file", json!({ "path": TEST_SOURCE })),
+        MockTurn::tool_call(
+            "w",
+            "write_file",
+            json!({ "path": TEST_SOURCE, "contents": RENAMED_TEST }),
+        ),
+        MockTurn::text(
+            r#"{"changed_files":[],"summary":"the bump was enough","claimed_complete":true}"#,
+        ),
+    ];
+    let attempt = GroupMigration::new(MockCompletionModel::new(script), world.config())
+        .migrate(&workspace, &world.group)
+        .await
+        .expect("a scripted migration completes");
+
+    assert_eq!(
+        attempt
+            .changed
+            .iter()
+            .map(|path| path.as_str().to_string())
+            .collect::<Vec<_>>(),
+        vec!["go.mod".to_string(), TEST_SOURCE.to_string()],
+        "the premise: the diff holds the run's edit and the attempt's together"
+    );
+
+    let breach = attempt
+        .undeclared
+        .as_ref()
+        .expect("the attempt declared nothing and edited a file");
+    assert_eq!(
+        breach.unannounced,
+        vec![TEST_SOURCE.to_string()],
+        "the bumped manifest is the run's and is excused; the source edit beside \
+         it is the attempt's and is not: {breach:?}"
+    );
+    assert!(
+        breach.unmet.is_empty(),
+        "the run's own paths are all still in the diff: {breach:?}"
     );
 }
 
@@ -1378,7 +1641,7 @@ async fn a_needs_work_group_reverts_and_leaves_no_id_in_any_commit_body() {
 async fn a_forbidden_shape_over_green_checks_reverts_rather_than_committing() {
     let (_migrated, attempt) = attempted(adds_a_skip()).await;
     let evaluation = a_proved_tree().await;
-    let status = GroupStatus::of(&evaluation, &attempt.forbidden);
+    let status = GroupStatus::of(&evaluation, &attempt.forbidden, attempt.undeclared.as_ref());
 
     assert!(
         matches!(the_one_shape(&attempt), ForbiddenShape::AddedSkip { .. }),

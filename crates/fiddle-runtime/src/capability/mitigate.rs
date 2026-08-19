@@ -426,7 +426,11 @@ where
             let evaluation = self
                 .judge(&workspace, &grouped, &projection, report)
                 .await?;
-            let status = GroupStatus::of(&evaluation, &attempt_outcome.forbidden);
+            let status = GroupStatus::of(
+                &evaluation,
+                &attempt_outcome.forbidden,
+                attempt_outcome.undeclared.as_ref(),
+            );
             let landed = land(&git, &grouped, &status, &attempt_outcome.changed).await?;
             prior = Some(PriorRescan::of(
                 &evaluation,

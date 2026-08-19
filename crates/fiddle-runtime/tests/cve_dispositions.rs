@@ -431,7 +431,7 @@ fn fixable_findings(run: &Run) -> Vec<ProjectedFinding> {
 /// into existence would let this suite pass against a rule that never says
 /// `Clean` at all.
 async fn clean_group(cve: &str) -> GroupStatus {
-    let status = GroupStatus::of(&cleanly_evaluated(cve).await, &[]);
+    let status = GroupStatus::of(&cleanly_evaluated(cve).await, &[], None);
     assert_eq!(
         status,
         GroupStatus::Clean,
@@ -452,7 +452,7 @@ async fn needs_work_group(cve: &str) -> GroupStatus {
     )
     .await
     .expect("an evaluation that was not cancelled");
-    let status = GroupStatus::of(&evaluation, &[]);
+    let status = GroupStatus::of(&evaluation, &[], None);
     assert!(
         matches!(
             status,
@@ -496,6 +496,10 @@ fn attempted_group(
             },
             changed: vec![WorkspacePath::parse("go.mod").expect("a workspace-relative path")],
             forbidden,
+            // The declaration above names the one file `changed` holds, so this
+            // fixture's attempt is honest about its diff and the declaration rule
+            // is not what any lane here is measuring.
+            undeclared: None,
         },
     }
 }
@@ -1210,7 +1214,7 @@ async fn every_forbidden_shape_reaches_the_record_in_path_order() {
     let mut run = one_fixable_finding();
     run.attempted = vec![attempted_group(
         FIXABLE_CVE,
-        GroupStatus::of(&cleanly_evaluated(FIXABLE_CVE).await, &shapes),
+        GroupStatus::of(&cleanly_evaluated(FIXABLE_CVE).await, &shapes, None),
         true,
         shapes.clone(),
     )];

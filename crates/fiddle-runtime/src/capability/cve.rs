@@ -482,6 +482,110 @@ fn keywords(text: &str, keyword: &str) -> usize {
         .filter(|word| *word == keyword)
         .count()
 }
+// ---------------------------------------------------------------------------
+// The one rule Rust holds an attempt's edit to
+// ---------------------------------------------------------------------------
+
+/// Both directions of a broken declaration, printed so a verdict names files.
+///
+/// Two lists rather than one, because the two are different things an operator
+/// does something different about: a file changed without being declared is an
+/// edit nobody reviewed, and a file declared without being changed is a
+/// declaration that was padded — or an edit the attempt believed it had made and
+/// had not.
+///
+/// `Clone`, `Eq` and `PartialEq` because this is carried by
+/// [`NeedsWork`], which has them, and a verdict two tests compare has to be
+/// comparable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeclarationBreach {
+    /// Touched and not declared.
+    pub unannounced: Vec<String>,
+
+    /// Declared and not touched.
+    pub unmet: Vec<String>,
+}
+
+impl std::fmt::Display for DeclarationBreach {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if !self.unannounced.is_empty() {
+            write!(
+                f,
+                "changed without declaring: {}",
+                self.unannounced.join(", ")
+            )?;
+        }
+        if !self.unmet.is_empty() {
+            if !self.unannounced.is_empty() {
+                write!(f, "; ")?;
+            }
+            write!(f, "declared without changing: {}", self.unmet.join(", "))?;
+        }
+        Ok(())
+    }
+}
+
+/// The one rule Rust holds an attempt's edit to.
+///
+/// Not "did you edit a manifest" or "did you leave the tests alone" — this
+/// function cannot tell a manifest from a test and that is the point. It asks
+/// only whether the attempt changed what it said it changed. Every judgement
+/// about *what those files mean* belongs to the attempt, and every judgement
+/// about whether the change *worked* belongs to the rescan.
+///
+/// # Why both directions
+///
+/// One direction alone is satisfiable without doing anything. A rule that only
+/// refused an *undeclared* edit is satisfied by declaring every path in the
+/// repository; a rule that only refused an *unmet* declaration is satisfied by
+/// declaring nothing. Together they are an equality between two sets, and there
+/// is no way to pass them but to say what you did.
+///
+/// # What it deliberately cannot see
+///
+/// No path suffix appears below, and no ecosystem's vocabulary either. The
+/// comparison is a set difference over strings, so `requirements.txt`,
+/// `go.mod`, `pom.xml` and `README` are the same kind of thing to it. That is
+/// what makes this rule portable to a repository nobody has written a
+/// classifier for — and it is why it can be the *only* rule, rather than the
+/// first of a family that grows one variant per language.
+///
+/// `declared` is the attempt's own [`RepairReport::changed_files`], which is a
+/// claim; `touched` is what git saw. Comparing a claim against the tree is the
+/// whole of it.
+///
+/// # The limit, stated rather than discovered
+///
+/// The comparison is over the strings as given. `touched` arrives normalised —
+/// [`WorkspacePath`] is what git's list was parsed into — and `declared` does
+/// not, so an attempt that wrote `./setup.py` where git says `setup.py` is in
+/// breach of a rule it meant to keep. That is a **false needs-work**, which
+/// costs one group a person's attention, and it is fixed where it belongs: the
+/// attempt is told to name paths as the repository does. Normalising here would
+/// mean deciding what to do with a declared path that does not parse at all,
+/// and a declaration containing `../etc/passwd` should be a breach rather than
+/// a value this function quietly repairs.
+pub fn undeclared(declared: &[String], touched: &[FileEdit]) -> Option<DeclarationBreach> {
+    // Sets rather than lists, so that order and repetition — neither of which
+    // an attempt controls or should be judged on — cannot produce a breach.
+    let declared: BTreeSet<&str> = declared.iter().map(String::as_str).collect();
+    let touched_paths: BTreeSet<&str> = touched.iter().map(|edit| edit.path.as_str()).collect();
+
+    let unannounced: Vec<String> = touched_paths
+        .difference(&declared)
+        .map(|path| path.to_string())
+        .collect();
+    let unmet: Vec<String> = declared
+        .difference(&touched_paths)
+        .map(|path| path.to_string())
+        .collect();
+
+    if unannounced.is_empty() && unmet.is_empty() {
+        None
+    } else {
+        Some(DeclarationBreach { unannounced, unmet })
+    }
+}
 
 /// How a group's one attempt ended.
 ///
@@ -515,6 +619,10 @@ pub enum GroupStatus {
 pub enum NeedsWork {
     /// The attempt edited something the scope rules do not allow it to.
     OutOfScope(ForbiddenShape),
+
+    /// The attempt's diff and its own declaration are not the same set of
+    /// files. See [`undeclared`].
+    Undeclared(DeclarationBreach),
 
     /// A check refused the tree. Carries the check's own command line, which is
     /// how [`CheckResult`](crate::evaluate::CheckResult) names itself.
@@ -551,6 +659,10 @@ impl std::fmt::Display for NeedsWork {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NeedsWork::OutOfScope(shape) => write!(f, "{shape}"),
+            // The breach's own `Display`, for the reason this `impl`'s header
+            // gives: the sentence names the files, and it is written beside the
+            // value that knows them rather than assembled here.
+            NeedsWork::Undeclared(breach) => write!(f, "{breach}"),
             NeedsWork::CheckFailed { check } => {
                 write!(f, "`{check}` did not pass over the tree the attempt left")
             }
@@ -641,19 +753,26 @@ impl std::fmt::Display for ForbiddenShape {
 impl GroupStatus {
     /// The first-match-wins table Design §2 puts in the *Rust* column.
     ///
-    /// Three rows, in this order, and the order is the substance:
+    /// Four rows, in this order, and the order is the substance:
     ///
     /// 1. **A forbidden shape refuses the group whatever the checks said.** It
     ///    has to come first, because the shapes are precisely the edits that
     ///    make a check pass when it should not: a `t.Skip` turns a failing test
     ///    green, and a table that consulted the checks first would call that
     ///    group clean and commit it.
-    /// 2. **Otherwise the checks decide**, earliest failure first.
-    /// 3. **And a rescan that proved nothing is not a pass** — see
-    ///    [`Evaluation::accepted`], whose exact condition rows 2 and 3 together
-    ///    reproduce. `Clean` is returned if and only if `accepted()` is true and
-    ///    nothing was out of scope; `a_clean_group_is_exactly_an_accepted_one`
-    ///    is what holds that rather than this comment.
+    /// 2. **An attempt that did not change what it said it changed is refused
+    ///    too**, and for the same reason it comes before the checks: an edit
+    ///    nobody declared is an edit nobody reviewed, and it may be exactly what
+    ///    turned a check green. See [`undeclared`], which is the *only* rule here
+    ///    that reads no meaning into any path.
+    /// 3. **Otherwise the checks decide**, earliest failure first.
+    /// 4. **And a rescan that proved nothing is not a pass** — see
+    ///    [`Evaluation::accepted`], whose exact condition rows 3 and 4 together
+    ///    reproduce. `Clean` is returned if and only if `accepted()` is true,
+    ///    nothing was out of scope and the declaration held —
+    ///    `a_clean_group_is_exactly_an_accepted_one` holds the first two of those
+    ///    and `an_attempt_that_understated_its_diff_is_needs_work_over_green_checks`
+    ///    the third, rather than this comment.
     ///
     /// # What this function is not given
     ///
@@ -664,7 +783,11 @@ impl GroupStatus {
     /// and the claim is not among it. The claim is still recorded, on
     /// [`MigrationAttempt::report`], where a disposition publishes it beside the
     /// verdict that overruled it.
-    pub fn of(evaluation: &Evaluation, forbidden: &[ForbiddenShape]) -> GroupStatus {
+    pub fn of(
+        evaluation: &Evaluation,
+        forbidden: &[ForbiddenShape],
+        undeclared: Option<&DeclarationBreach>,
+    ) -> GroupStatus {
         // Row 1. The *first* shape in path order, because [`classify`] returns
         // every one it found and this row needs a reason rather than a list —
         // the list is on [`MigrationAttempt::forbidden`], where an operator
@@ -675,7 +798,20 @@ impl GroupStatus {
             };
         }
 
-        // Row 2. The check's own command line, which is how a `CheckResult`
+        // Row 2, and above the checks for row 1's exact reason: an edit nobody
+        // declared is an edit nobody reviewed, and it can be the thing that made
+        // a check pass. A table that asked the checks first would commit it.
+        //
+        // Below row 1 rather than above it only because a forbidden shape names
+        // the line it found and this names a file — where both fire, the more
+        // specific sentence is the more useful one to lead with.
+        if let Some(breach) = undeclared {
+            return GroupStatus::NeedsWork {
+                reason: NeedsWork::Undeclared(breach.clone()),
+            };
+        }
+
+        // Row 3. The check's own command line, which is how a `CheckResult`
         // names itself, so the refusal an operator reads is the thing they would
         // type to see it again.
         if let Some(failed) = evaluation.first_failure() {
@@ -686,7 +822,7 @@ impl GroupStatus {
             };
         }
 
-        // Row 3. `Cleared` is the one arm that is proof — every other one is a
+        // Row 4. `Cleared` is the one arm that is proof — every other one is a
         // rescan that did not compare, could not be read, or contradicted the
         // repair. Matching the arm that passes and defaulting the rest is what
         // makes a verdict added to [`RescanVerdict`] tomorrow fail closed here.
@@ -765,6 +901,15 @@ pub struct MigrationAttempt {
     /// Every shape in that diff the scope rules forbid, in path order, and
     /// empty where there was none. See [`classify`].
     pub forbidden: Vec<ForbiddenShape>,
+
+    /// How [`MigrationAttempt::report`]'s `changed_files` and
+    /// [`MigrationAttempt::changed`] differ, and `None` where they do not.
+    ///
+    /// A fourth kind, and the only one that is a *comparison* of the first two:
+    /// the model's claim about which files it changed, held against what git
+    /// saw. Computed here, while the worktree still exists, for [`classify`]'s
+    /// reason — nothing about the diff is left for a caller to work out later.
+    pub undeclared: Option<DeclarationBreach>,
 }
 
 /// One bounded agent attempt at the migration a bump forced.
@@ -863,6 +1008,24 @@ where
             .collect();
         let task = migration_task(&findings);
 
+        // **What the run itself had already changed, read before the model is
+        // briefed.** The bump — `go get` then `go mod tidy` — runs in this
+        // worktree *before* this function, so `HEAD` is behind the tree by an
+        // edit the attempt had no part in and cannot have declared. Holding it to
+        // those paths would refuse every ordinary sweep, in which the honest
+        // report is that nothing further was needed.
+        //
+        // Read here rather than derived from the group's `Target`, so that this
+        // stays a question about the tree and learns nothing about what a bump is
+        // or which files one touches. When the bump becomes the attempt's own
+        // work this set is empty and the rule is over the whole diff, with no
+        // line here to remove.
+        let bumped: Vec<String> = workspace
+            .changed_files()?
+            .into_iter()
+            .map(|path| path.as_str().to_string())
+            .collect();
+
         let host = ToolHost {
             workspace: Arc::clone(workspace),
             cancel: self.config.cancel.clone(),
@@ -898,11 +1061,25 @@ where
         let edits = workspace.edits()?;
         let changed = edits.iter().map(|edit| edit.path.clone()).collect();
         let forbidden = classify(&edits);
+        // The one rule that outlives the four above: the declaration is asked to
+        // agree with the diff. Taken from the *same* `edits` the classifier read,
+        // so what was declared is compared against what was classified rather
+        // than against a second answer to the same question.
+        //
+        // The declaration held against the tree is the **run's** — the attempt's
+        // own list plus the paths the bump had already moved. Both directions
+        // still bite: a file neither the attempt nor the bump touched is
+        // unannounced, and a bumped file the tree no longer shows a change in is
+        // unmet, which is a bump the attempt undid.
+        let declared_by_the_run: Vec<String> =
+            report.changed_files.iter().cloned().chain(bumped).collect();
+        let breach = undeclared(&declared_by_the_run, &edits);
 
         Ok(MigrationAttempt {
             report,
             changed,
             forbidden,
+            undeclared: breach,
         })
     }
 }
