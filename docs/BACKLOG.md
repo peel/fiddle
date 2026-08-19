@@ -1959,3 +1959,16 @@ Two candidate guards were tried rather than assumed, and both fail for reasons t
 
 Origin: bean `fiddle-ye7n` (epic fiddle-eph7, M4a — evaluation iteration 1 failed `no_operator_facing_surface_promises_the_valued_form` on the fifth surface)
 Tags: #decision #testing #documentation
+
+### 2026-08-19 — Two gates in one worktree produce a failure that belongs to neither
+
+`scripts/gate.sh` was launched twice against `.worktrees/agentic-factory-m4` while the first run was still in flight. Both share `target/`, both invoke `cargo` and `nix develop`, and the first reported `TOTALS: 175 passed, 1 failed, 0 ignored, 14 binaries` with `GATE: FAIL` — against 53 binaries in every clean run of this epic. A count that low is a truncated run, not a failing tree, and the single failure belongs to the contention rather than to the code.
+
+The cost is not the wasted ten minutes. It is that **a FAIL from a raced gate is indistinguishable, in the log, from a real one.** The orchestrator nearly read it as a regression in freshly landed work, and the only thing that prevented it was the binary count being obviously wrong. Had the race truncated at 52 binaries instead of 14, there was nothing in the output to catch it.
+
+Two fixes, and the first is nearly free. `gate.sh` should refuse to start when another instance is running against the same worktree — a lock file keyed on the worktree path, removed on exit, reporting the holder's pid. Second, the TOTALS line should carry the expected binary count alongside the actual, so a truncated run is self-evidently truncated rather than requiring a reader who remembers that 53 is normal.
+
+There is a related discipline for the caller, recorded because it is the actual mistake: **a gate launched while another is running measures nothing, and a gate launched after a rebase that aborted measures the wrong tree.** Both happened here in one command — the same background invocation rebased two lanes, aborted the second on a conflict, and then gated. Sequence the landing and the gate as separate steps, and read the git result before trusting the gate that follows it.
+
+Origin: orchestration (epic fiddle-eph7, final remediation round — the raced FAIL was discarded and a clean gate run in its place)
+Tags: #bug #tooling #orchestration
