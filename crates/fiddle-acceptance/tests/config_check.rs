@@ -1722,14 +1722,81 @@ fn the_forge_table_the_product_manual_documents_names_the_keys_the_schema_admits
 // The manual that describes the schema, checked against the schema
 // ---------------------------------------------------------------------------
 
-/// A document naming every table this schema admits.
+/// A document that carries every table this schema admits.
 ///
 /// Assembled from the three constants above rather than written out a fourth
 /// time, and the forge half is sliced out of [`FORGE`] so the keys with no
 /// default are spelled in exactly one place.
+///
+/// **It is still kept in step with the schema by hand**, and that is the one
+/// piece of hand-maintenance left in this block: a ninth table would have to be
+/// added here for this document to carry it.
+/// [`config_check_echoes_every_table_the_schema_admits`] is what makes that
+/// maintenance a red lane naming the missing table rather than a silent
+/// assumption — it compares this document's payload against the set
+/// [`admitted_tables`] reads out of the binary.
 fn every_table() -> String {
     let forge = FORGE.split_once("[github]").expect("FORGE names a forge").1;
     format!("{AGENTIC}\n[github]{forge}{SWEEP}")
+}
+
+/// The top-level tables this build's schema admits, read out of the binary's own
+/// refusal.
+///
+/// `config::Config` carries `deny_unknown_fields`, so a document naming a table
+/// the schema has no field for is refused with serde's own enumeration of the
+/// fields that struct declares — ``unknown field `zzz`, expected one of
+/// `project`, `stub`, …``. That list is generated from the struct definition and
+/// written nowhere, which is why it is the source here rather than a constant in
+/// this file: there is nothing to keep in step with it, and a table added to
+/// `Config` appears in it on the next build.
+///
+/// Black-box for this package's reason — nothing here links `fiddle-cli`, so
+/// `config::Config` is unreachable as a type — and the same shape the capability
+/// census lane uses, which reads the registry out of `--capability`'s own
+/// diagnostic instead of out of `CAPABILITIES`.
+///
+/// Names are taken from every backtick-quoted token *after* `expected one of`
+/// rather than from a split on `", "`, because miette renders the label into a
+/// fixed-width frame: a schema wide enough to wrap it would otherwise red on the
+/// very change this exists to catch. The refused name is quoted *before* that
+/// phrase and so is not among them.
+///
+/// The floor below is a floor and not a proof of completeness — a parse that read
+/// the list short would check a shorter schema than there is, silently, which is
+/// the failure this whole bean was about.
+/// [`config_check_echoes_every_table_the_schema_admits`] is where completeness is
+/// established: it asserts this set and the payload's tables are *the same* set,
+/// so a name dropped in parsing reds there.
+fn admitted_tables() -> Vec<String> {
+    let refused = "surely_not_a_table_this_schema_admits";
+    let out = check(&format!("{AGENTIC}\n[{refused}]\nx = 1\n"));
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a table the schema does not admit is invalid input; stderr = {stderr}"
+    );
+    let (_, listed) = stderr.split_once("expected one of").unwrap_or_else(|| {
+        panic!("the refusal must enumerate the tables the schema admits: {stderr}")
+    });
+    let tables: Vec<String> = regex::Regex::new("`([a-z][a-z0-9_]*)`")
+        .unwrap()
+        .captures_iter(listed)
+        .map(|found| found[1].to_string())
+        .collect();
+    // Non-vacuity, and it is the whole reason the two lanes below can be
+    // trusted: a parse that quietly found nothing would make every assertion
+    // over this set hold over an empty one. The three M0 tables are mandatory
+    // fields of `Config`, so a build that admits a document at all admits them.
+    for mandatory in ["project", "stub", "report"] {
+        assert!(
+            tables.iter().any(|table| table == mandatory),
+            "the parsed set must be the set the binary enumerated, and `{mandatory}` \
+             is not optional in any build; got {tables:?} from {stderr}"
+        );
+    }
+    tables
 }
 
 /// **Every table the schema admits is a table the system document names.**
@@ -1742,40 +1809,38 @@ fn every_table() -> String {
 /// deliver-phase bean recorded that rather than fixing it, which is how a second
 /// reader came to find it again.
 ///
-/// The section list comes from the binary rather than from a constant here, for
-/// the reason the lane beside it reads the manual's own bytes: a transcription is
-/// the thing that drifts. `config check --json` echoes one key per table the
-/// document carried, so a table added to the schema and to nobody's prose reds
-/// here.
+/// # What this proves, exactly
 ///
-/// `[orchestration.cve]` is matched as a prefix because the nesting is the PRD's
-/// spelling and the paragraph names the sub-table an operator actually writes,
-/// not the parent.
+/// The set compared against the paragraph is [`admitted_tables`] — serde's own
+/// enumeration of `config::Config`'s fields, obtained from the binary. So a table
+/// added to the schema and named in no prose reds **here**, by name, on the next
+/// build, and nothing in this file has to be edited for that to happen.
+///
+/// It was not always so, and the earlier shape is worth recording because it read
+/// as stronger than it was: the set used to come from the keys `config check
+/// --json` echoed for [`every_table`] — a document hand-written in this file — so
+/// a ninth table entered no comparison and the lane stayed green. The eight
+/// agreed by hand. An evidence pack then described that as "assembled from the
+/// schema's own constants", which is how a hand-maintained agreement came to be
+/// recorded as a mechanical guarantee.
+///
+/// # What it does not prove
+///
+/// **Sub-tables.** The diagnostic enumerates the *top-level* fields only, so a
+/// second sub-table added under an existing one — a sibling of
+/// `[orchestration.cve]` — is not in this set and is not checked. `orchestration`
+/// is matched as a prefix, which is the PRD's spelling and lets the paragraph
+/// name the sub-table an operator actually writes; it also means any spelling of
+/// `[orchestration.*]` satisfies it.
+///
+/// **That an admitted field is a table at all.** serde does not distinguish a
+/// field holding a struct from one holding a scalar, so a top-level scalar added
+/// to `Config` would arrive here asking the paragraph for `[name]`. The schema has
+/// none today, and the failure would be a red lane asking a person to look —
+/// which is the direction to be wrong in.
 #[test]
 fn the_system_document_names_every_table_this_schema_admits() {
-    let payload = checked(&every_table());
-    // One key per table, and the two scalars — `schema` and `status` — are not
-    // tables. Discriminated by *shape* rather than by name, so a third scalar
-    // added to the payload does not arrive here as a table nobody documented.
-    let sections: Vec<String> = payload
-        .as_object()
-        .expect("the payload is an object")
-        .iter()
-        .filter(|(_, value)| value.is_object())
-        .map(|(key, _)| key.clone())
-        .collect();
-    // Non-vacuity: the document above carries every table, so a payload that
-    // echoed only the three M0 ones would mean this lane is checking almost
-    // nothing.
-    for expected in ["agent", "workspace", "github", "scanner", "orchestration"] {
-        assert!(
-            sections.iter().any(|section| section == expected),
-            "the document handed over names `{expected}` and the payload does \
-             not echo it, so this lane is checking a shorter schema than there \
-             is: {sections:?}"
-        );
-    }
-
+    let tables = admitted_tables();
     let document = std::fs::read_to_string(support::repo_root().join("docs/technical/SYSTEM.md"))
         .expect("the system document is part of the repository");
     let paragraph = document
@@ -1783,12 +1848,69 @@ fn the_system_document_names_every_table_this_schema_admits() {
         .find(|line| line.starts_with("**`fiddle.toml`**"))
         .expect("the system document describes the deployment document");
 
-    for section in &sections {
+    for table in &tables {
         assert!(
-            paragraph.contains(&format!("[{section}]"))
-                || paragraph.contains(&format!("[{section}.")),
-            "`[{section}]` is a table this schema admits and the `fiddle.toml` \
+            paragraph.contains(&format!("[{table}]")) || paragraph.contains(&format!("[{table}.")),
+            "`[{table}]` is a table this schema admits and the `fiddle.toml` \
              paragraph of docs/technical/SYSTEM.md does not name it"
+        );
+    }
+}
+
+/// **Every table the schema admits is a table `config check --json` echoes.**
+///
+/// The payload is what an operator reads a document back through, so a table the
+/// schema accepts and the payload drops is a table they cannot confirm they
+/// wrote. Nothing compared the two: `render::config_check_json` builds its keys
+/// one hand-written arm at a time.
+///
+/// This is also where [`every_table`]'s hand-maintenance is caught. Both
+/// omissions a ninth table can produce — the arm in `config_check_json`, and the
+/// line in [`every_table`] — land here as one failure naming the table, and the
+/// message says which two places to look, because from outside the binary the
+/// two are not distinguishable.
+///
+/// **The other direction is asserted too, and it is what makes
+/// [`admitted_tables`] trustworthy rather than merely mechanical.** A refusal
+/// parsed short would hand every lane a schema smaller than the real one and go
+/// green over the tables it dropped; a payload table missing from that set reds
+/// here instead. The two sets being *equal* is the claim, and neither half of it
+/// is written down in this file.
+#[test]
+fn config_check_echoes_every_table_the_schema_admits() {
+    let tables = admitted_tables();
+    let payload = checked(&every_table());
+    // One key per table the document carried, and the two scalars — `schema` and
+    // `status` — are not tables. Discriminated by *shape* rather than by name, so
+    // a third scalar added to the payload does not arrive here as a table.
+    let echoed: Vec<String> = payload
+        .as_object()
+        .expect("the payload is an object")
+        .iter()
+        .filter(|(_, value)| value.is_object())
+        .map(|(key, _)| key.clone())
+        .collect();
+
+    for table in &tables {
+        assert!(
+            echoed.iter().any(|section| section == table),
+            "`[{table}]` is a table this schema admits and `config check --json` \
+             did not echo it for a document meant to name every table: either \
+             `render::config_check_json` has no arm for it, so an operator cannot \
+             read it back, or `every_table()` in this file does not carry it. \
+             Echoed: {echoed:?}"
+        );
+    }
+
+    for section in &echoed {
+        assert!(
+            tables.iter().any(|table| table == section),
+            "`config check --json` echoed `{section}` as a table and the schema's \
+             own refusal does not enumerate it. Either the payload carries a key \
+             that is not a top-level field of `config::Config`, or \
+             `admitted_tables` read the refusal short — in which case every lane \
+             over that set has been checking a smaller schema than there is. \
+             Enumerated: {tables:?}"
         );
     }
 }
