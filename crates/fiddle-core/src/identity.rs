@@ -268,9 +268,21 @@ pub enum InvocationRefError {
     /// binary accepted and its own diagnostic called illegal. So the defect is
     /// stated as what the input is *not*, which is true of both callers and of
     /// however many shapes the grammar comes to admit.
+    ///
+    /// The schemes that need no value are then named *in this sentence*, not left
+    /// to the help beneath it, because the two do not travel together: a log line,
+    /// a CI summary and a shell scrollback each keep the verdict and lose the
+    /// advice. Read alone, the sentence without them tells a caller who wrote no
+    /// separator that such schemes exist and not which — the one fact that gets
+    /// them to an invocation the binary accepts. They come from
+    /// [`InvocationScheme::listed_standing_alone`], so this sentence cannot come
+    /// to name four of five the way [`InvocationRefError::UnknownScheme`]'s once
+    /// did.
     #[error(
         "`{0}` is not an invocation reference: it is neither a scheme followed by \
-         the work it names nor one of the schemes that discover their own work"
+         the work it names nor one of the schemes that discover their own work \
+         ({alone})",
+        alone = InvocationScheme::listed_standing_alone(),
     )]
     Malformed(String),
 

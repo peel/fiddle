@@ -561,7 +561,7 @@ impl miette::Diagnostic for InvalidInvocationRef {
 /// what both callers want is the tail of a sentence whose head is their own
 /// defect. Two callers assembling two sentences from two halves is how the
 /// wording drifts between the door a caller came in by — and the acceptance lane
-/// `every_grammar_surface_offers_the_bare_form_for_every_scheme_that_takes_it`
+/// `every_scheme_that_needs_no_value_is_named_on_each_surface_and_in_each_colonless_refusal`
 /// splits the rendered advice on a phrase from this sentence, so both doors are
 /// held to one partition by being held to one sentence.
 fn schemes_by_shape() -> String {

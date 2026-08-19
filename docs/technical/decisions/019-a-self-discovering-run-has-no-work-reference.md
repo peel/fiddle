@@ -180,6 +180,12 @@ and necessarily: it searches for `cve:` carrying a value, and text saying `cve` 
 a value never writes `cve:`. Both strings now name the two shapes from
 `InvocationScheme::stands_alone`'s halves, through one function so the two doors a caller
 with no known scheme can arrive by cannot describe different grammars, and the property
-is held by `every_grammar_surface_offers_the_bare_form_for_every_scheme_that_takes_it` —
-which derives the scheme set from the `unknown_scheme` diagnostic and each scheme's shape
-by driving the binary, rather than searching for a phrase in either direction.
+is held by `every_scheme_that_needs_no_value_is_named_on_each_surface_and_in_each_colonless_refusal` —
+which derives the scheme set from the `unknown_scheme` diagnostic, each scheme's shape by
+driving the binary, and the commands that take a reference by probing the ones the binary
+lists, rather than searching for a phrase in either direction. What it holds is narrower
+than a whole-coverage reading of that name: a refusal of an input with no colon in it must
+name the standing-alone schemes in every part an operator reads, and any part offering a
+`<scheme>:<value>` template must name the schemes the template is false of. A part that
+names those schemes and denies them anyway in prose is not held, and the lane's own doc
+comment says so.

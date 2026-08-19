@@ -625,8 +625,8 @@ fn no_operator_facing_surface_promises_the_valued_form() {
     }
 }
 
-/// **Every surface that says how a reference is written offers the bare form for
-/// every scheme that takes it.**
+/// **Every scheme that needs no value is named on each grammar surface, and in
+/// each part of a refusal of an input that carries no colon.**
 ///
 /// This is the sibling of `no_operator_facing_surface_promises_the_valued_form`
 /// and the direction that lane cannot see. That one hunts for a *promise of the
@@ -638,8 +638,9 @@ fn no_operator_facing_surface_promises_the_valued_form() {
 /// class, five days apart, and neither pattern caught it: the first looked for the
 /// form being promised, the second recorded the *phrase* it had found.
 ///
-/// So this lane hunts for no phrase. It asks each scheme's shape of the binary and
-/// then holds the binary's own words to the answer:
+/// So this lane hunts for no phrase. It asks the binary which schemes exist, what
+/// each one's shape is, and which commands take a reference at all, then holds the
+/// binary's own words to the answers:
 ///
 /// 1. the schemes are read off the `unknown_scheme` diagnostic, which derives its
 ///    list from `InvocationScheme::ALL`, so a sixth scheme joins this lane the day
@@ -647,77 +648,87 @@ fn no_operator_facing_surface_promises_the_valued_form() {
 /// 2. whether each one stands alone is decided by **driving the bare form** — if
 ///    `fiddle inspect <scheme>` is not refused as malformed, the bare form is
 ///    something a caller can type;
-/// 3. every grammar surface must then name each such scheme, and never in a valued
-///    position. Naming it is the half the old wording failed: a help that lists
-///    only the valued shape tells the operator this milestone exists for that
-///    their invocation is illegal;
-/// 4. and no *part* of a surface denies the bare form by itself. A diagnostic is
+/// 3. the commands are read off `fiddle --help` and then **probed**: one belongs
+///    here if it answers a malformed reference with
+///    `fiddle::invocation_ref::malformed`, so a third subcommand taking a
+///    reference joins this lane the day it is added, and a command with no
+///    reference to describe is never asked to describe one;
+/// 4. every grammar surface must then name each standing-alone scheme, and never
+///    in a valued position. Naming it is the half the old wording failed: a help
+///    that lists only the valued shape tells the operator this milestone exists
+///    for that their invocation is illegal;
+/// 5. and no *part* of a surface denies the bare form by itself. A diagnostic is
 ///    two things an operator reads separately — the line that judges what they
-///    typed, and the advice beneath it — so each is held to (3) alone: a part that
-///    gives a **shape template** must name the schemes that template is false of,
-///    in that part and not in a sentence below it. A template is a colon-joined
-///    pair whose scheme side is not one of the schemes (1) read off the binary, so
-///    it is recognised by standing for any scheme rather than by its spelling:
-///    `<source>:<id>` reads the same as `<scheme>:<value>`, and a sixth real scheme
-///    stops being a template the day it is added.
+///    typed, and the advice beneath it — so each is held to (4) alone, in two
+///    cases. The first is keyed on the **input** and not on the wording: a part
+///    refusing an input with no colon in it is answering the one caller for whom
+///    the bare form is a live repair, and a part that never names the schemes that
+///    take it has left that caller with nothing to type. The second is keyed on
+///    the text, and reaches a claim about references in general made where the
+///    input did carry a colon: a part giving a **shape template** must name the
+///    schemes that template is false of. A template is a colon-joined pair whose
+///    scheme side is not one of the schemes (1) read off the binary, so it is
+///    recognised by standing for any scheme rather than by its spelling:
+///    `<source>:<id>` reads the same as `<scheme>:<value>`, and a sixth real
+///    scheme stops being a template the day it is added.
 ///
-/// **(4) is here because (1)–(3) were measured to be blind without it**, and that
-/// measurement is the whole reason to believe this lane now guards what it is named
-/// for. With the `Malformed` message reverted in place to "invocation reference must
-/// be `<scheme>:<value>`" and the corrected help left underneath it, every
-/// assertion in (1)–(3) passed: `cve` was named in the advice, so the flattened
-/// whole text named it, and the one sentence that told the operator their reference
-/// was illegal was free to go on denying the form the binary accepts. The revert
-/// was caught only by two lanes that assert the message text — the coupling this
-/// lane exists so as not to need. Both halves of the defect it is named for are now
-/// covered: the advertised form nothing implements is
-/// `no_operator_facing_surface_promises_the_valued_form`'s, and the implemented form
-/// a surface denies is (4)'s.
+/// **The two cases in (5) are here because each was measured to be blind without
+/// the other**, and the measurements are the whole reason to believe this lane
+/// guards what it is named for. With the `Malformed` message reverted in place to
+/// "invocation reference must be `<scheme>:<value>`" and the corrected help left
+/// underneath it, every assertion in (1)–(4) passed: `cve` was named in the
+/// advice, so the flattened whole text named it, and the one sentence that told
+/// the operator their reference was illegal was free to go on denying the form the
+/// binary accepts. That revert was caught only by two lanes asserting the message
+/// text — the coupling this lane exists so as not to need. The template case is
+/// what caught that revert, and it was enough for exactly that wording. But a
+/// template case is a **gate on the wording**: rewriting the same message as "a
+/// value is required for this reference" opens it by dropping the placeholder, and
+/// the lane as it stood then passed that, measured — which is the phrase-hunt
+/// failure this class has already met twice. The colonless case is a gate on the *input*, which no
+/// rewording reaches: whatever that sentence comes to say, it is said to a caller
+/// who typed no colon, and it must name the schemes that need none.
 ///
 /// There is nothing here to keep in step with the wording, which is the point. The
 /// oracle is behaviour, not `stands_alone` — a lane reading the enum would agree
 /// with whatever the enum said, and this lane instead fails if the enum and the
 /// binary disagree with the prose.
 ///
-/// # What it cannot see, and why that is not fixable from here
+/// # What it cannot see, stated as the gaps it is
 ///
-/// **The surface list is enumerated by hand.** A process cannot be asked to render
-/// every string it might print: the diagnostics are reachable only by supplying an
-/// input that provokes each, and a sixth diagnostic added with a sixth defect is
-/// not discoverable from outside. Nor can the surfaces be *filtered* by whether
-/// they state the grammar — deciding that means reading meaning, and the two
-/// attempts available are both worse than the gap. Requiring **every** surface to
-/// name the standing-alone schemes fails honestly-silent text: `fiddle --help`
-/// lists subcommands and says nothing about references, and should not have to.
-/// Triggering on a pattern like `<scheme>:<value>` is the phrase hunt that let this
-/// defect through twice — the wording that misled had `must be` in it, and the next
-/// one need not. That last objection is to a template used as a **gate** on whether
-/// a surface gets checked, where a rewording quietly opts the surface out. (4) uses
-/// one as a **prohibition**, where the failure modes run the other way: a rewording
-/// that keeps the template still reds, and one that drops it gives up nothing this
-/// lane was holding. They are not the same instrument.
+/// **A part that names the standing-alone schemes and denies them anyway.** "`cve`
+/// requires a value" names `cve`, writes no template, and is false; nothing here
+/// reds on it. Catching it means deciding whether a sentence contradicts the
+/// binary, which is reading meaning, and the two mechanical approximations
+/// available are both worse than the gap: a phrase list is the instrument that let
+/// this defect through twice, and requiring the parts to agree with each other is
+/// the same meaning-reading one layer down. This is the residual of the class, and
+/// it is a review matter.
 ///
-/// **A denial written without a shape is not caught.** (4) recognises a universal
-/// claim about the grammar by the template it is made of, and "a reference must
-/// name the work it acts on" makes that claim in prose. Two stronger rules were
-/// weighed and rejected on evidence. Requiring every part to name the
-/// standing-alone schemes reds on the corrected verdict itself, which names two
-/// shapes and no schemes and is right to — a diagnostic that had to list `cve` in
-/// the sentence judging `cvfoo` would be worse text. Requiring the parts to agree
-/// with each other means deciding whether two sentences contradict, which is
-/// reading meaning. So the boundary is a *shape offered as the shape*, which is
-/// what both instances of this defect were made of; a prose denial is a review
-/// matter and `docs/BACKLOG.md` records it.
+/// **A prose denial in the verdict of a refusal whose input carried a colon.** The
+/// empty-value verdicts — `cve:`, `beans:`, `notascheme:` — are reached with the
+/// separator already written, so the colonless case does not gate on them, and a
+/// prose rewriting of one of them offers no template either. Extending the
+/// colonless case to every refusal was rejected rather than overlooked: `beans:`'s
+/// verdict would then have to name `cve`, which is not that caller's business —
+/// `beans` alone is refused and the sweep is not their repair — and a rule that
+/// makes every refusal enumerate the set is the rule that produced the sentence
+/// this bean exists to remove. What covers these instead is
+/// `an_empty_value_is_told_every_repair_its_own_scheme_admits`, which holds each
+/// scheme's own repair, and it holds advice rather than verdicts.
 ///
-/// So the boundary is: **placement** is derived and cannot go stale, while
-/// **membership of the list** — and the flag saying which surfaces enumerate the
-/// schemes — is a review matter, exactly as it is for
-/// `no_operator_facing_surface_promises_the_valued_form`. That is narrower than
-/// what was unheld before, where neither was. A new operator-facing surface that
-/// states the grammar and is not added below is the gap; `docs/BACKLOG.md` records
-/// it.
+/// **Membership of the surface list, which was a whole gap and is now half of
+/// one.** The commands are derived and probed (3), so a new subcommand cannot
+/// escape this lane by not being written here. The *inputs* are three cases
+/// written here — a one-letter typo of each
+/// standing-alone scheme, a token that is no scheme at all, and an empty value
+/// after an unknown scheme — and the first of those is generated from the scheme
+/// set rather than spelled. A process cannot be asked to render every string it
+/// might print: a diagnostic is reachable only through an input that provokes it,
+/// so the *case analysis* is this lane's own and a sixth defect with a sixth
+/// input is not discoverable from outside. That is what `docs/BACKLOG.md` records.
 #[test]
-fn every_grammar_surface_offers_the_bare_form_for_every_scheme_that_takes_it() {
+fn every_scheme_that_needs_no_value_is_named_on_each_surface_and_in_each_colonless_refusal() {
     let text = |args: &[&str], expected: Option<i32>, stderr: bool| -> String {
         let out = support::fiddle_command().args(args).output().unwrap();
         if let Some(expected) = expected {
@@ -767,19 +778,18 @@ fn every_grammar_surface_offers_the_bare_form_for_every_scheme_that_takes_it() {
     // A surface with no `×` is clap's, which has one part. The code line above
     // the verdict is dropped with the split: it is an identifier for machines,
     // not a sentence to an operator.
+    const VERDICT: &str = "the line that judges the reference";
+    const ADVICE: &str = "the advice beneath that line";
     let parts = |rendered: &str| -> Vec<(&'static str, String)> {
         let Some((_, judged)) = rendered.split_once('×') else {
             return vec![("its text", flatten(rendered))];
         };
         let (verdict, advice) = judged.split_once("help:").unwrap_or((judged, ""));
-        [
-            ("the line that judges the reference", verdict),
-            ("the advice beneath that line", advice),
-        ]
-        .into_iter()
-        .map(|(part, rendered)| (part, flatten(rendered)))
-        .filter(|(_, rendered)| !rendered.is_empty())
-        .collect()
+        [(VERDICT, verdict), (ADVICE, advice)]
+            .into_iter()
+            .map(|(part, rendered)| (part, flatten(rendered)))
+            .filter(|(_, rendered)| !rendered.is_empty())
+            .collect()
     };
 
     // Step 1: the schemes, from the one diagnostic whose job is to name them all.
@@ -831,69 +841,142 @@ fn every_grammar_surface_offers_the_bare_form_for_every_scheme_that_takes_it() {
          take_a_value={take_a_value:?}"
     );
 
-    // Step 3: every surface that tells a caller how a reference is written.
-    // `cvfoo` is here because it is the invocation that found this: one letter
-    // from the scheme the milestone ships, and it lands in `Malformed` rather
-    // than in the empty-value arm that had already learned this lesson.
+    // Step 3: the inputs that provoke a diagnostic, as a case analysis over the
+    // grammar rather than as a list of strings.
     //
-    // The flag says whether the surface *enumerates* the schemes, and it is
-    // written here rather than detected from the text. Detecting it — selecting
-    // the surfaces whose advice happens to contain the phrase the split looks
-    // for — would mean a reworded help silently left the partition below instead
-    // of failing it, and a check that opts itself out when the wording moves is
-    // the failure mode this whole lane exists about.
-    let surfaces = [
-        (
-            "fiddle inspect --help",
-            text(&["inspect", "--help"], Some(0), false),
-            false,
-        ),
-        (
-            "fiddle run --help",
-            text(&["run", "--help"], Some(0), false),
-            false,
-        ),
-        (
-            "the `bogus` diagnostic from inspect",
-            refusal("bogus", "inspect"),
-            true,
-        ),
-        (
-            "the `bogus` diagnostic from run",
-            refusal("bogus", "run"),
-            true,
-        ),
-        (
-            "the `cvfoo` diagnostic from inspect",
-            refusal("cvfoo", "inspect"),
-            true,
-        ),
-        (
-            "the `cvfoo` diagnostic from run",
-            refusal("cvfoo", "run"),
-            true,
-        ),
-        (
-            "the `notascheme:` diagnostic from inspect",
-            refusal("notascheme:", "inspect"),
-            true,
-        ),
-    ];
+    // The colonless cases are the ones a caller reaches by writing no separator,
+    // which is where the bare form is the repair they may have meant. One is
+    // generated per standing-alone scheme, a letter off the scheme itself, because
+    // `cvfoo` — one letter from the invocation this milestone ships — is the
+    // invocation that found this defect, and spelling it here would tie the lane
+    // to `cve` being the scheme that stands alone. The other is a token that is no
+    // scheme at all: the same arm answers it, and it must answer both.
+    let typo = |scheme: &str| -> String {
+        let stem: String = scheme.chars().take(scheme.chars().count() - 1).collect();
+        ('a'..='z')
+            .map(|letter| format!("{stem}{letter}"))
+            .find(|candidate| candidate != scheme && !schemes.contains(&candidate.as_str()))
+            .unwrap_or_else(|| panic!("no one-letter typo of `{scheme}` falls outside {schemes:?}"))
+    };
+    let mut colonless: Vec<String> = stand_alone.iter().map(|scheme| typo(scheme)).collect();
+    colonless.push("bogus".to_string());
+    // And the one colon-bearing case that has to describe the whole grammar: an
+    // empty value after a scheme fiddle does not know, whose caller cannot be told
+    // one shape because no shape is true of the set. The scheme-specific
+    // empty-value refusals are not here; each describes its own scheme's repair
+    // rather than the grammar, and
+    // `an_empty_value_is_told_every_repair_its_own_scheme_admits` holds those.
+    let unknown_with_no_value = "notascheme:";
+
+    // Step 4: the commands that take a reference, read off the binary's own
+    // command list and then asked. Reading the list is what stops a third
+    // subcommand from escaping this lane by not being written here; asking is what
+    // keeps `config`, which takes no reference, from being held to a promise about
+    // references it never makes. The probe is a refusal, so nothing runs: an
+    // invalid reference is rejected before any command acts.
+    let root = text(&["--help"], Some(0), false);
+    let (_, commands_block) = root.split_once("Commands:").unwrap_or_else(|| {
+        panic!("the binary has to list its commands, or the surfaces below are unfound: {root}")
+    });
+    let listed_commands = commands_block
+        .lines()
+        .skip(1)
+        .take_while(|line| !line.trim().is_empty())
+        .filter_map(|line| line.split_whitespace().next())
+        .collect::<Vec<_>>();
+    let probe = colonless
+        .first()
+        .expect("a scheme stands alone, so a typo of it exists");
+    let commands = listed_commands
+        .iter()
+        .copied()
+        .filter(|command| {
+            let out = support::fiddle_command()
+                .args([
+                    command,
+                    probe.as_str(),
+                    "--config",
+                    "../../tests/fixtures/fiddle.toml",
+                ])
+                .output()
+                .unwrap();
+            out.status.code() == Some(2)
+                && String::from_utf8_lossy(&out.stderr)
+                    .contains("fiddle::invocation_ref::malformed")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !commands.is_empty() && commands.len() < listed_commands.len(),
+        "the probe has to select some commands and reject some, or it is not \
+         selecting on taking a reference and every surface below is the wrong set: \
+         listed={listed_commands:?} selected={commands:?}"
+    );
+
+    // Step 5: the surfaces. Each is the compiled binary's own output, and each
+    // carries the two facts the checks below need that its text cannot tell them:
+    // whether the input that provoked it had a colon, and whether it offers the
+    // schemes as an enumerated set. Both are written at the point the surface is
+    // *asked for*, not detected in what came back — a check that reads its own
+    // gate off the wording is one a rewording can switch off, which is the failure
+    // this whole lane is about.
+    struct Surface {
+        what: String,
+        rendered: String,
+        enumerates: bool,
+        colonless: bool,
+    }
+    let mut surfaces = Vec::new();
+    for command in &commands {
+        surfaces.push(Surface {
+            what: format!("fiddle {command} --help"),
+            rendered: text(&[command, "--help"], Some(0), false),
+            enumerates: false,
+            colonless: false,
+        });
+        for input in &colonless {
+            let rendered = refusal(input, command);
+            assert!(
+                rendered.contains("fiddle::invocation_ref::malformed"),
+                "`{input}` carries no colon and has to reach the malformed arm, or the \
+                 colonless check below is holding a different diagnostic: {rendered}"
+            );
+            surfaces.push(Surface {
+                what: format!("the `{input}` diagnostic from {command}"),
+                rendered,
+                enumerates: true,
+                colonless: true,
+            });
+        }
+        surfaces.push(Surface {
+            what: format!("the `{unknown_with_no_value}` diagnostic from {command}"),
+            rendered: refusal(unknown_with_no_value, command),
+            enumerates: true,
+            colonless: false,
+        });
+    }
+    assert!(
+        surfaces.iter().any(|surface| surface.colonless)
+            && surfaces.iter().any(|surface| surface.enumerates)
+            && surfaces.iter().any(|surface| !surface.enumerates),
+        "each check below applies to one kind of surface, and a kind with no member \
+         is a check that ran on nothing"
+    );
 
     // The template half of the loop below is vacuous on a part that offers no
     // template, and whether any part offers one is a fact about today's wording
     // rather than about the property — a help that dropped its placeholder would
-    // silently take the check with it. So the detector is exercised on the two
-    // strings the distinction is about: the wording this lane is downstream of,
-    // and the concrete example that must not be mistaken for it.
+    // silently take that half with it, which is why it is not the only half. So the
+    // detector is exercised on the two strings the distinction is about: the
+    // wording this lane is downstream of, and the concrete example that must not be
+    // mistaken for it.
     assert_eq!(
         shape_templates(
             "invocation reference must be <scheme>:<value>, got `x`",
             &schemes
         ),
         vec!["<scheme>:<value>"],
-        "the detector no longer sees a shape template, so the check below holds \
-         nothing: schemes={schemes:?}"
+        "the detector no longer sees a shape template, so that half of the check \
+         below holds nothing: schemes={schemes:?}"
     );
     assert!(
         shape_templates(
@@ -905,96 +988,121 @@ fn every_grammar_surface_offers_the_bare_form_for_every_scheme_that_takes_it() {
          so the check below reds on correct text: schemes={schemes:?}"
     );
 
-    for (surface, rendered, _) in &surfaces {
-        let advice = flatten(rendered);
+    for surface in &surfaces {
+        let advice = flatten(&surface.rendered);
         for scheme in &stand_alone {
             assert!(
                 advice.contains(*scheme),
-                "{surface} says how a reference is written and never mentions \
-                 `{scheme}`, which is a complete reference on its own — so a caller \
-                 who meant it is shown only shapes that require a value and reads \
-                 their own invocation as illegal: {advice}"
+                "{} says how a reference is written and never mentions `{scheme}`, \
+                 which is a complete reference on its own — so a caller who meant it \
+                 is shown only shapes that require a value and reads their own \
+                 invocation as illegal: {advice}",
+                surface.what
             );
             let valued = valued_mentions(&advice, scheme);
             assert!(
                 valued.is_empty(),
-                "{surface} shows `{scheme}` carrying a value, and the bare form is \
-                 what this build acts on: {valued:?}"
+                "{} shows `{scheme}` carrying a value, and the bare form is what this \
+                 build acts on: {valued:?}",
+                surface.what
             );
         }
 
-        // And no part of it denies the bare form on its own. A part that offers a
-        // shape template offers it as *the* shape a reference has, so it has to
-        // name the schemes that shape is false of, in the same breath and not in a
-        // sentence beneath. Both `--help` surfaces do exactly that — they write
-        // `<scheme>:<value>` and then name `cve` as standing alone — and so passing
-        // this is not a demand to stop using placeholders. It is a demand that a
-        // placeholder not be the last word to a caller whose reference has no
-        // colon in it.
-        for (part, read) in parts(rendered) {
+        // And no part of it denies the bare form on its own, for either of the two
+        // reasons a part owes the schemes a mention. Both `--help` surfaces satisfy
+        // the template reason as written today — they write `<scheme>:<value>` and
+        // then name `cve` as standing alone — so passing this is not a demand to
+        // stop using placeholders. It is a demand that a placeholder not be the
+        // last word to a caller whose reference has no colon in it, and that such a
+        // caller not be answered without the form they can type.
+        for (part, read) in parts(&surface.rendered) {
             let templates = shape_templates(&read, &schemes);
-            if templates.is_empty() {
+            let owed = if surface.colonless {
+                Some("answers an input with no colon in it".to_string())
+            } else if templates.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "gives {templates:?} as the shape a reference takes"
+                ))
+            };
+            let Some(because) = owed else {
                 continue;
-            }
+            };
             for scheme in &stand_alone {
                 assert!(
                     read.contains(*scheme),
-                    "{surface}: {part} gives {templates:?} as the shape a reference \
-                     takes and never names `{scheme}`, which is a complete reference \
-                     on its own — so this part, read as an operator reads it, denies \
-                     the bare form. Whatever is written elsewhere in the same output \
-                     does not travel with it: {read}"
+                    "{}: {part} {because} and never names `{scheme}`, which is a \
+                     complete reference on its own — so this part, read as an operator \
+                     reads it, denies the bare form. Whatever is written elsewhere in \
+                     the same output does not travel with it: {read}",
+                    surface.what
                 );
             }
         }
     }
 
-    // Step 4: the two surfaces that offer the whole set are held to the whole
+    // Step 6: the surfaces that offer the whole set are held to the whole
     // partition, so a scheme cannot be placed in the half its own behaviour
     // refuses. The `--help` surfaces are not held to this: they name the shapes
     // without enumerating which schemes take each, which is a legitimate thing for
     // a positional's help to do and not a claim that can be wrong about a scheme.
-    for (surface, rendered, _) in surfaces.iter().filter(|(.., enumerates)| *enumerates) {
-        let advice = flatten(rendered);
+    //
+    // The partition is read off the *advice* rather than off the whole rendered
+    // text, because the verdict above it now names the standing-alone schemes as
+    // well — step 5 requires that of a colonless refusal — and it names them
+    // before the phrase the halves are split on, so a whole-text split would find
+    // every one of them on the valued side. The claim being held is the advice
+    // sentence's, and the advice sentence is what is read.
+    for surface in surfaces.iter().filter(|surface| surface.enumerates) {
+        let (_, advice) = parts(&surface.rendered)
+            .into_iter()
+            .find(|(part, _)| *part == ADVICE)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} offers the set of schemes and has no advice to offer it in: {}",
+                    surface.what, surface.rendered
+                )
+            });
         let Some((valued_half, bare_half)) =
             advice.split_once("discover their own work need none:")
         else {
             panic!(
-                "{surface} offers the set of schemes and has to separate the ones that \
+                "{} offers the set of schemes and has to separate the ones that \
                  require a value from the ones that do not, or it is offering one shape \
-                 to a set that has two: {advice}"
+                 to a set that has two: {advice}",
+                surface.what
             );
         };
         for scheme in &stand_alone {
             assert!(
                 bare_half.contains(*scheme),
-                "{surface} must offer `{scheme}` where no value is needed, because that \
-                 is the invocation the binary accepts: {advice}"
+                "{} must offer `{scheme}` where no value is needed, because that is \
+                 the invocation the binary accepts: {advice}",
+                surface.what
             );
             assert!(
                 !valued_half.contains(*scheme),
-                "{surface} places `{scheme}` among the schemes that take a value, and \
-                 the binary accepts it alone — advice that sends an operator who wanted \
-                 a sweep to a read of one named item: {advice}"
+                "{} places `{scheme}` among the schemes that take a value, and the \
+                 binary accepts it alone — advice that sends an operator who wanted a \
+                 sweep to a read of one named item: {advice}",
+                surface.what
             );
         }
         for scheme in &take_a_value {
             assert!(
                 valued_half.contains(*scheme),
-                "{surface} must offer `{scheme}` where a value is required, because the \
-                 binary refuses it alone: {advice}"
+                "{} must offer `{scheme}` where a value is required, because the \
+                 binary refuses it alone: {advice}",
+                surface.what
             );
             assert!(
                 !bare_half.contains(*scheme),
-                "{surface} lists `{scheme}` among the schemes that need no value, and \
-                 the binary refuses `{scheme}` written alone — advice refused when \
-                 followed: {advice}"
+                "{} lists `{scheme}` among the schemes that need no value, and the \
+                 binary refuses `{scheme}` written alone — advice refused when \
+                 followed: {advice}",
+                surface.what
             );
         }
     }
-    assert!(
-        surfaces.iter().any(|(.., enumerates)| *enumerates),
-        "no surface was marked as enumerating the schemes, so the partition above \
-         checked nothing"
-    );
 }
