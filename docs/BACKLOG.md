@@ -1742,6 +1742,18 @@ A related latent bug in the same area **was** fixed by that lane, and is worth r
 
 Origin: implementation (epic fiddle-eph7, Task 1 lane fiddle-typ7, reported as a concern with DONE_WITH_CONCERNS)
 Tags: #debt
+Status: 2026-08-19 — **all three resolved** (bean `fiddle-wr6v`), and the entry was
+partly stale by the time it was acted on. The first bullet had already been fixed:
+`cli.rs`'s two positionals now read "as `<scheme>:<value>` — for example
+`beans:fiddle-m0-demo`. A scheme that finds its own work stands alone and takes no
+value: `cve` scans the configured image and inspects what it finds", so the valued
+shape is an example rather than a requirement and the standing-alone half is named
+beside it. Nothing recorded that here, which is worth noting on its own: a backlog
+entry listing three sites is read as three live defects, and this one had one.
+`orchestration.rs`'s doc comment now spells both shapes. The third — the one this
+entry called out as actively misleading — was live for five days and through the
+remediation round that swept this exact class; see the 2026-08-19 entry "A promise
+and a denial are one class, and a lane that hunts phrases catches one of them".
 
 ### 2026-08-14 — ADR 011's traversal table enumerated two schemes, and the one whose values come from outside was not among them
 The M4a Task 1 lane's ninth mutation exempted standalone-scheme values from ADR 011's character class — the plausible over-generalisation of ADR 019, that "a self-discovering scheme supplies its own input". It was caught by that lane's new test **and by nothing else in the workspace**, because `refuses_a_value_that_could_be_read_as_a_path`, the test that reads as the canonical list, enumerated only `beans` and `scanner`.
@@ -1972,3 +1984,18 @@ There is a related discipline for the caller, recorded because it is the actual 
 
 Origin: orchestration (epic fiddle-eph7, final remediation round — the raced FAIL was discarded and a clean gate run in its place)
 Tags: #bug #tooling #orchestration
+
+### 2026-08-19 — A promise and a denial are one class, and a lane that hunts phrases catches one of them
+
+`InvocationRefError::Malformed` read **"invocation reference must be `<scheme>:<value>`, got `cvfoo`"**, and its help offered a colon and one valued example. That is the diagnostic a mistyped `cve` lands in — `cvfoo` has no separator, so it is malformed rather than an empty value — so the operator one letter away from `fiddle run cve`, the invocation M4a exists to provide, was told a colon was mandatory and shown nothing else to try.
+
+**Why it survived a round aimed at it.** The class is *operator-facing text asserting a grammar the binary does not have*, and it has now been met twice. Iteration 5 spent a remediation round on it and built `no_operator_facing_surface_promises_the_valued_form`, which reads `--help` and each diagnostic off the compiled binary — the right subject. It hunts for a **promise of the valued form**: occurrences of `cve:` followed by a value character. This string is the same class pointing the other way, a **denial of the bare form**, and saying that `cve` requires a value never spells `cve:`. The lane passed while the string was live, and this was measured rather than reasoned: restoring the old help in place leaves that lane green and the whole file green but one. The 2026-08-14 entry above had already named this string, five days and one sweep earlier. Two searches at one class and neither pattern caught it, because both patterns were phrases and the class is not a phrase.
+
+**What replaces it, and in what sense it is a property.** `every_grammar_surface_offers_the_bare_form_for_every_scheme_that_takes_it`, beside the older lane in `crates/fiddle-acceptance/tests/inspect_ref.rs`, hunts no phrase. It reads the scheme set off the `unknown_scheme` diagnostic — the one surface whose job is to name them all, and derived from `InvocationScheme::ALL`, so a sixth scheme joins the lane the day a caller may write it. It then asks the **binary** which of them stand alone, by driving each bare form and reading whether the grammar refuses it. Only then does it hold the rendered text to the answer: every scheme the binary accepts alone must be named on every grammar surface, never carrying a value, and on the two surfaces that offer the set in halves each scheme must sit in the half its own behaviour puts it in. Nothing in it is pinned to wording, and the oracle is behaviour rather than `stands_alone` — a lane reading the enum would ratify whatever the enum said, whereas this one reds if the enum, the binary and the prose disagree. Both directions were inverted in place to check it: the old help alone reds it with "the `bogus` diagnostic from inspect says how a reference is written and never mentions `cve`", and swapping the two halves reds it with "must offer `cve` where no value is needed, because that is the invocation the binary accepts".
+
+**The bounded gap, which is smaller than the last one and still real.** The *surface list is enumerated by hand*. A process cannot be asked to render every string it might print: each diagnostic is reachable only through an input that provokes it, and a sixth defect added later is not discoverable from outside. Nor can the list be replaced by a filter, and both available filters are worse than the gap. Requiring **every** surface to name the standing-alone schemes fails honestly-silent text — `fiddle --help` lists subcommands and says nothing about references, and should not have to. Triggering the check on a pattern such as `<scheme>:<value>` is the phrase hunt that let this defect through twice; the wording that misled had "must be" in it and the next one need not. So **placement** is derived and cannot go stale, while **membership of the list** is a review matter — the same boundary `no_operator_facing_surface_promises_the_valued_form` carries, and named on this lane's doc comment for the same reason: the lane's name reads like whole-tree coverage and is not.
+
+**The generalisable lesson, since two rounds have now paid for it.** A guard against a false operator-facing claim should be built over the *property the claim is about*, with the binary as oracle, not over the sentence that happened to be false. Both earlier attempts here were searches for a known string — one for the phrase found, one for the form promised — and a search knows only the direction it was pointed. The tell is a lane whose failure message quotes a phrase: it can only ever catch that phrase, in that direction.
+
+Origin: bean `fiddle-wr6v` (epic fiddle-eph7, M4a — proposed by holistic iteration 6, dispatched in the round after)
+Tags: #decision #testing #bug

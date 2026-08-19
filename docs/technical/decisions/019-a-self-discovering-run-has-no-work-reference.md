@@ -168,3 +168,18 @@ is pinned to today's wording. Source doc comments contradicting the binary are t
 **review** in this project and by nothing else; the boundary is recorded on the lane's
 own doc comment, where a reader meets it, and `docs/BACKLOG.md` carries the two
 experiments.
+
+**And a sixth, which was the same class pointing the other way.** Every surface counted
+above *promised* the valued form. `InvocationRefError::Malformed` **denied the bare
+one**: it read "invocation reference must be `<scheme>:<value>`" and its help offered a
+colon and a valued example, which is a grammar this decision's own `fiddle run cve` is
+excluded from. That variant is where a mistyped `cve` arrives — `cvfoo` carries no
+separator, so it is malformed rather than an empty value — so the caller this milestone
+exists for was the caller the sentence was most wrong for. The lane above passed over it,
+and necessarily: it searches for `cve:` carrying a value, and text saying `cve` requires
+a value never writes `cve:`. Both strings now name the two shapes from
+`InvocationScheme::stands_alone`'s halves, through one function so the two doors a caller
+with no known scheme can arrive by cannot describe different grammars, and the property
+is held by `every_grammar_surface_offers_the_bare_form_for_every_scheme_that_takes_it` —
+which derives the scheme set from the `unknown_scheme` diagnostic and each scheme's shape
+by driving the binary, rather than searching for a phrase in either direction.

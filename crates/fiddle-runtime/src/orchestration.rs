@@ -183,7 +183,13 @@ impl<'a> Addressed<'a> {
 pub struct RunContext<'a> {
     /// The project name the correlation key is derived from.
     pub project: &'a str,
-    /// The canonical `<scheme>:<value>` text of the invocation.
+    /// The canonical text of the invocation: `<scheme>:<value>`, or the scheme
+    /// alone where the scheme discovers its own work.
+    ///
+    /// Spelled with both shapes because `InvocationRef::as_str` produces both.
+    /// Describing only the valued one was the last of the three descriptions
+    /// `docs/BACKLOG.md` recorded on 2026-08-14 as outliving ADR 019's grammar,
+    /// and the only reason it was harmless is that no operator reads it.
     pub invocation_ref: &'a str,
     /// What this invocation addresses — and therefore whether the work-item
     /// port is asked at all. See [`Addressed`].

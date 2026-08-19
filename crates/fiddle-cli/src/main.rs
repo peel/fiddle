@@ -466,15 +466,36 @@ impl miette::Diagnostic for InvalidInvocationRef {
     /// divide into, since a caller with no known scheme cannot be told one shape
     /// that is true of all of them.
     ///
-    /// Every arm produces a `String` rather than three `&'static str`s and one
-    /// `format!`, because a `match` whose arms are two types is not a `match` —
-    /// and the alternative, boxing per arm, would put the sole interesting line of
-    /// this function behind four identical wrappers.
+    /// The `Malformed` arm reaches a caller who wrote no separator at all, which
+    /// is where a mistyped `cve` lands, and it used to answer with the valued
+    /// shape and nothing else. It now answers with [`schemes_by_shape`], the same
+    /// sentence the `None` arm gives — two arms, one caller's question, one place
+    /// that answers it.
+    ///
+    /// Every arm produces a `String` rather than three `&'static str`s and three
+    /// `format!`s, because a `match` whose arms are two types is not a `match` —
+    /// and the alternative, boxing per arm, would put the interesting lines of
+    /// this function behind six identical wrappers.
     fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
         let help = match self.0 {
-            InvocationRefError::Malformed(_) => {
-                "name the source scheme first, separated by a colon: `fiddle inspect beans:fiddle-m0-demo`".to_string()
-            }
+            // This arm is where a caller who mistyped `cve` arrives, and it used
+            // to read "name the source scheme first, separated by a colon:
+            // `fiddle inspect beans:fiddle-m0-demo`" — one shape, offered as the
+            // only one, with a valued example under it. Every word of that was
+            // advice against `fiddle run cve`: it told an operator whose typo was
+            // one letter from the milestone's own invocation that a colon was
+            // mandatory, and showed them nothing else to try. The `None` arm below
+            // had already learned that a caller with no known scheme cannot be
+            // told one shape; this arm reaches the same caller by the other door —
+            // `cvfoo` has no separator, so it is malformed rather than an empty
+            // value — and is owed the same answer. It gets the same sentence, from
+            // the same function, so the two doors cannot come to describe
+            // different grammars.
+            InvocationRefError::Malformed(_) => format!(
+                "write the scheme the work comes from, in the shape that scheme takes. \
+                 {shapes}",
+                shapes = schemes_by_shape(),
+            ),
             InvocationRefError::UnknownScheme(_) => {
                 "fiddle addresses work by its source; use a scheme it knows, such as `beans:fiddle-m0-demo`".to_string()
             }
@@ -500,25 +521,14 @@ impl miette::Diagnostic for InvalidInvocationRef {
                 // would need the ordering in `InvocationRef::from_str`
                 // reversed, and the empty value would then go unmentioned.
                 //
-                // The set is offered in halves rather than as one list with one
-                // shape after it. Naming the whole set and then saying to write
-                // "the work it names" was true of four schemes and false of
-                // `cve`, which stands alone — so the arm that stopped claiming a
-                // scheme was recognised went on to claim every scheme takes a
-                // value, and advised a caller who mistyped the one scheme this
-                // milestone is about to write `cve:<identifier>`: a tracker read
-                // of one finding, not a sweep, which is the substitution the
-                // `stands_alone` arm above exists to prevent. Each half now
-                // carries only the shape that holds for it, and the two are
-                // complements over `InvocationScheme::ALL`, so the sentence still
-                // cannot name four of five.
+                // Which shapes there are, and which schemes take each, is
+                // `schemes_by_shape`'s to say: this arm reaches a caller with no
+                // known scheme, and so does `Malformed`, so neither may hold its
+                // own copy of the answer.
                 None => format!(
                     "no value follows the scheme, and the scheme is not one fiddle knows. \
-                     Schemes that name the work they act on take a value, as in \
-                     `beans:fiddle-m0-demo`: {naming}. Schemes that discover their own work \
-                     need none: {alone}",
-                    naming = InvocationScheme::listed_naming_work(),
-                    alone = InvocationScheme::listed_standing_alone(),
+                     {shapes}",
+                    shapes = schemes_by_shape(),
                 ),
             },
             InvocationRefError::IllegalValueCharacter { .. } => {
@@ -527,6 +537,41 @@ impl miette::Diagnostic for InvalidInvocationRef {
         };
         Some(Box::new(help))
     }
+}
+
+/// **Every shape a reference can take, with the schemes each holds for.**
+///
+/// One sentence, in one place, because two diagnostics have to say it and a
+/// caller cannot be told one shape. `beans:fiddle-m0-demo` is the shape four
+/// schemes take, and offering it to the fifth's caller sends an operator who
+/// wanted a sweep to a tracker read — the difference ADR 019 exists to keep
+/// visible, and one an exit code of 2 either way does not reveal. So the set
+/// arrives in the two halves [`InvocationScheme::stands_alone`] divides it into,
+/// each carrying only the shape that is true of it.
+///
+/// Derived from the halves rather than written as prose, and the halves are
+/// complements over [`InvocationScheme::ALL`], so a sixth scheme is placed the
+/// day it is added instead of leaving a sentence that names five of six. Prose
+/// here is the failure this is downstream of twice over: `InvocationScheme::
+/// listed` exists because the set was once spelled in an `#[error]` attribute and
+/// went stale, and `InvocationRefError::Malformed`'s message asserted one shape
+/// and outlived the grammar that made it true.
+///
+/// The halves are joined into one string rather than returned as a pair, because
+/// what both callers want is the tail of a sentence whose head is their own
+/// defect. Two callers assembling two sentences from two halves is how the
+/// wording drifts between the door a caller came in by — and the acceptance lane
+/// `every_grammar_surface_offers_the_bare_form_for_every_scheme_that_takes_it`
+/// splits the rendered advice on a phrase from this sentence, so both doors are
+/// held to one partition by being held to one sentence.
+fn schemes_by_shape() -> String {
+    format!(
+        "Schemes that name the work they act on take a value, as in \
+         `beans:fiddle-m0-demo`: {naming}. Schemes that discover their own work \
+         need none: {alone}",
+        naming = InvocationScheme::listed_naming_work(),
+        alone = InvocationScheme::listed_standing_alone(),
+    )
 }
 
 /// **A reference whose shape this build implements no capability for.**

@@ -256,7 +256,22 @@ pub enum InvocationRefError {
     /// [`InvocationRefError::UnknownScheme`]: that variant answers "your scheme
     /// is not one of these", which would be a confident and wrong diagnosis of
     /// `beans`.
-    #[error("invocation reference must be <scheme>:<value>, got `{0}`")]
+    ///
+    /// The message names two shapes because there are two. It read "invocation
+    /// reference must be `<scheme>:<value>`", which was the whole grammar until a
+    /// scheme could [stand alone](InvocationScheme::stands_alone) and afterwards
+    /// was a *denial of the bare form* — and this variant is precisely where a
+    /// mistyped `cve` arrives, so the one caller the sentence was most wrong for
+    /// was the caller this milestone exists to serve. It could not be repaired by
+    /// naming the other shape as an aside either: "must be" is a claim about the
+    /// set of legal references, and while it stood, `fiddle run cve` was text the
+    /// binary accepted and its own diagnostic called illegal. So the defect is
+    /// stated as what the input is *not*, which is true of both callers and of
+    /// however many shapes the grammar comes to admit.
+    #[error(
+        "`{0}` is not an invocation reference: it is neither a scheme followed by \
+         the work it names nor one of the schemes that discover their own work"
+    )]
     Malformed(String),
 
     /// A scheme was present but is not one fiddle knows.
