@@ -76,7 +76,9 @@
 
 use super::propose::COMMITTER;
 use super::CapabilityError;
-use crate::agent::{attempt_briefed, AgentBudget, Brief, RepairReport, ToolHost, ToolReceipts};
+use crate::agent::{
+    attempt_briefed, unaccounted, AgentBudget, Brief, RepairReport, ToolHost, ToolReceipts,
+};
 use crate::cve::attribute::Target;
 use crate::cve::dedup::{Local, Spawn};
 use crate::cve::fold::{fold_commit_argv, Landed};
@@ -1115,6 +1117,30 @@ where
             },
         )
         .await?;
+
+        // The report is held to the advisories the prompt showed it, here and
+        // not in `attempt_briefed`, because this is where the shown set exists:
+        // it is `findings` — the same slice `migration_task` rendered above, so
+        // what the check compares against cannot drift from what the model was
+        // asked. M1's and M3's attempts go through `attempt_briefed` too, are
+        // shown no findings, and have nothing to account for.
+        //
+        // A [`Protocol`](crate::agent::AgentError::Protocol) failure, arriving by
+        // the same route a report that did not match the schema arrives by: `?`
+        // over `CapabilityError::Agent`. Deliberately *not* folded into the
+        // needs-work outcome a forbidden shape produces — needs-work is a
+        // statement about the project, reached from the rescan's evidence, and
+        // this is a statement about the model. See `agent::unaccounted`, which
+        // does not read `attempted` and so lets a declined advisory through: that
+        // report is well-formed, and the rescan is what finds the advisory still
+        // there.
+        let shown: Vec<&str> = findings
+            .iter()
+            .map(|finding| finding.cve.as_str())
+            .collect();
+        if let Some(failure) = unaccounted(&shown, &report.findings) {
+            return Err(failure.into());
+        }
 
         // Asked of git rather than of the report, because the worktree is what
         // git is being asked about.

@@ -42,6 +42,7 @@
 
 mod support;
 
+use fiddle_runtime::agent::AgentError;
 use fiddle_runtime::capability::{
     land, record_fold, undeclared, CapabilityError, ForbiddenShape, GroupMigration, GroupStatus,
     InWorktree, MigrationAttempt, NeedsWork,
@@ -55,8 +56,9 @@ use serde_json::json;
 use std::time::Duration;
 use support::cve::{
     ask_git, contract, contract_scanned_by, exit, green_tree, landing_worktree, landing_world,
-    migration_world, stdout, tree_rescanned_by, tree_where, LandingWorld, MigrationWorld, GO_BUILD,
-    HOST_ROOT, LANDING_CREATED, LANDING_UNRELATED, MIGRATION_SOURCE as SOURCE,
+    migration_world, stdout, tree_rescanned_by, tree_where, LandingWorld, MigrationWorld,
+    DEFAULT_LIBRARY_CVES, GO_BUILD, HOST_ROOT, LANDING_CREATED, LANDING_UNRELATED,
+    MIGRATION_SOURCE as SOURCE,
     MIGRATION_TEST_BEFORE, MIGRATION_TEST_SOURCE as TEST_SOURCE, SENTINEL_PROSE,
 };
 
@@ -85,10 +87,19 @@ fn migrates() -> Vec<MockTurn> {
         ),
         MockTurn::tool_call("c3", "run_check", json!({})),
         MockTurn::text(
-            r#"{"changed_files":["main.go"],"summary":"applied the rename","claimed_complete":true}"#,
+            r#"{"changed_files":["main.go"],"summary":"applied the rename","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"the bump reached this call site"}]}"#,
         ),
     ]
 }
+
+/// The one advisory [`migration_world`]'s group shows a model.
+///
+/// Taken from the document fixture rather than spelled a second time, and tied
+/// to the group by [`the_world_holds_everything_the_prompt_must_not`] — every
+/// report below disposes of this id, and a fixture that started showing another
+/// one would make each of them a report that accounts for nothing, which is a
+/// refusal and a confusing way to learn that a fixture moved.
+const SHOWN: &str = DEFAULT_LIBRARY_CVES[0];
 
 // ---------------------------------------------------------------------------
 // What a migration leaves behind (Task 14.b)
@@ -100,7 +111,23 @@ fn migrates() -> Vec<MockTurn> {
 /// that is the point rather than laziness: a model that had *said* it went out
 /// of scope would be an easy case, and the lanes here are about the one where
 /// the claim and the diff disagree.
-const CLAIMS_DONE: &str = r#"{"changed_files":["main.go","main_test.go"],"summary":"applied the rename","claimed_complete":true}"#;
+///
+/// It disposes of [`SHOWN`], because after Task 2 a report that says nothing
+/// about an advisory it was shown does not reach a diff at all — see
+/// [`a_report_that_leaves_an_advisory_out_is_refused`]. The lanes below are about
+/// what a *well-formed* report's diff is made of, so their reports have to get
+/// past the protocol first.
+const CLAIMS_DONE: &str = r#"{"changed_files":["main.go","main_test.go"],"summary":"applied the rename","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"the bump, and the call sites it moved"}]}"#;
+
+/// [`CLAIMS_DONE`] with the `findings` key left out entirely: the three-field
+/// shape M1 and M3 send, which for an attempt that *was* shown an advisory
+/// accounts for nothing.
+///
+/// The key is absent rather than empty on purpose. `RepairReport::findings`
+/// carries `#[serde(default)]` so that M1's shape keeps parsing, and this is the
+/// report that default produces — so the lane it drives asserts that the default
+/// smuggles nothing past the check.
+const ACCOUNTS_FOR_NOTHING: &str = r#"{"changed_files":["main.go","main_test.go"],"summary":"applied the rename","claimed_complete":true}"#;
 
 /// [`SOURCE`] after a rename that reached every call site.
 const RENAMED_SOURCE: &str = "\
@@ -213,7 +240,7 @@ fn adds_a_replace_directive(world: &MigrationWorld) -> Vec<MockTurn> {
 /// there is no diff to classify and no shape to find.
 fn claims_success_without_editing() -> Vec<MockTurn> {
     vec![MockTurn::text(
-        r#"{"changed_files":[],"summary":"nothing needed doing","claimed_complete":true}"#,
+        r#"{"changed_files":[],"summary":"nothing needed doing","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"the bump already cleared it"}]}"#,
     )]
 }
 
@@ -228,11 +255,20 @@ fn claims_success_without_editing() -> Vec<MockTurn> {
 /// and the lane would pass while measuring the wrong thing — see
 /// [`migrates_and_understates_it`], which is that script on purpose.
 fn migrates_and_disowns_it() -> Vec<MockTurn> {
+    reporting(
+        r#"{"changed_files":["main.go"],"summary":"I do not think this is right","claimed_complete":false,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"I made the change and I am not sure of it"}]}"#,
+    )
+}
+
+/// [`migrates_uniformly`] signing off with `report` instead of its own.
+///
+/// The uniform migration is the clean diff, so a lane built on this differs from
+/// the accepted one in its **report alone** — which is what makes a refusal here
+/// a statement about the protocol rather than about the edit.
+fn reporting(report: &str) -> Vec<MockTurn> {
     let mut script = migrates_uniformly();
     script.pop();
-    script.push(MockTurn::text(
-        r#"{"changed_files":["main.go","main_test.go"],"summary":"I do not think this is right","claimed_complete":false}"#,
-    ));
+    script.push(MockTurn::text(report));
     script
 }
 
@@ -250,6 +286,36 @@ fn migrates_and_understates_it() -> Vec<MockTurn> {
         r#"{"changed_files":["main.go"],"summary":"applied the rename","claimed_complete":true}"#,
     ));
     script
+}
+
+/// The uniform migration, reporting the one advisory it was shown **twice**.
+///
+/// Two entries and not two ids: the contract is one disposition per finding
+/// shown, and this is the report a set comparison over the ids cannot tell from
+/// the honest one.
+fn accounts_for_it_twice() -> Vec<MockTurn> {
+    reporting(
+        r#"{"changed_files":["main.go","main_test.go"],"summary":"applied the rename","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"pinned it"},{"cve":"CVE-2026-0001","attempted":false,"note":"actually I left it alone"}]}"#,
+    )
+}
+
+/// The uniform migration, disposing of the advisory it was shown and of one
+/// nobody showed it.
+fn names_an_advisory_nobody_showed_it() -> Vec<MockTurn> {
+    reporting(
+        r#"{"changed_files":["main.go","main_test.go"],"summary":"applied the rename","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"pinned it"},{"cve":"CVE-2026-9999","attempted":true,"note":"and this one too"}]}"#,
+    )
+}
+
+/// The uniform migration, declining the advisory it was shown.
+///
+/// A well-formed report and the one the design turns on: fiddle cannot know
+/// whether a fix exists in an ecosystem it does not understand, so *I could not
+/// clear this, and here is why* has to be an answer an attempt is allowed to give.
+fn declines_it() -> Vec<MockTurn> {
+    reporting(
+        r#"{"changed_files":["main.go","main_test.go"],"summary":"the rename is all I could do","claimed_complete":false,"findings":[{"cve":"CVE-2026-0001","attempted":false,"note":"clearing it needs a major bump I am not confident in"}]}"#,
+    )
 }
 
 /// A script that writes each `(path, contents)` in turn, runs the check and
@@ -480,6 +546,29 @@ async fn the_world_holds_everything_the_prompt_must_not() {
         "a group with no findings would let a prompt carrying no projection pass \
          every assertion in this file"
     );
+
+    // And it shows exactly the advisory every script in this file disposes of.
+    // Without this the scripted reports would be answering a question this world
+    // does not ask, which after Task 2 is a refusal — and a suite whose every
+    // lane failed on the protocol would say nothing about the diffs it is for.
+    assert_eq!(
+        world
+            .group
+            .cves()
+            .iter()
+            .map(|cve| cve.as_str().to_string())
+            .collect::<Vec<String>>(),
+        vec![SHOWN.to_string()],
+        "the scripted reports below dispose of {SHOWN} and of nothing else"
+    );
+    for report in [CLAIMS_DONE, ACCOUNTS_FOR_NOTHING] {
+        assert_eq!(
+            report.contains(SHOWN),
+            report != ACCOUNTS_FOR_NOTHING,
+            "exactly one of the two reports accounts for {SHOWN}, and it is not \
+             the three-field one: {report}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -802,6 +891,144 @@ async fn the_attempt_really_edits_the_tree_through_the_tools() {
     assert!(
         receipts.calls.iter().all(|call| call.outcome == "ok"),
         "a refusal would make the edit above somebody else's doing: {receipts:?}"
+    );
+
+    // And the report accounted for the advisory the attempt was shown, which is
+    // the accepted side of the rule the four lanes below refuse things by. A
+    // check nothing ever passes and a check nothing ever fails are the same
+    // check.
+    assert_eq!(
+        attempt
+            .report
+            .findings
+            .iter()
+            .map(|disposition| disposition.cve.clone())
+            .collect::<Vec<String>>(),
+        vec![SHOWN.to_string()],
+        "the disposition the script sent is carried back: {:?}",
+        attempt.report.findings
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The report accounts for every advisory the attempt was shown (Task 2)
+// ---------------------------------------------------------------------------
+
+/// The protocol failure `script` produces, or a panic naming what it produced
+/// instead.
+///
+/// Asserted at the level where the report is **received** — one real
+/// `GroupMigration::migrate` over the real tools and the real worktree — because
+/// the rule being checked here is not that a set comparison works. It is that
+/// something calls it. A unit test of `agent::unaccounted` passes over a build in
+/// which no production path calls it at all, which is exactly the state this file
+/// was written against.
+async fn refusal_reason(script: Vec<MockTurn>, world: &MigrationWorld) -> String {
+    let failure = run_migration(MockCompletionModel::new(script), world)
+        .await
+        .expect_err("a report that does not account for what it was shown is refused");
+
+    match failure {
+        // The same variant a report that did not match the schema arrives as, and
+        // for the same reason: the attempt did not produce the shape it was asked
+        // for, which a clearer prompt or a different model might fix. `Bounded`
+        // would say the host stopped it and `Provider` would blame the gateway.
+        CapabilityError::Agent(AgentError::Protocol { reason }) => reason,
+        other => panic!("a malformed report is a protocol failure, and this is {other:?}"),
+    }
+}
+
+/// **A report that says nothing about an advisory it was shown is refused, by
+/// name.**
+///
+/// The lane that says the rule *runs*. Its script performs the clean migration
+/// and calls the tools; the only thing wrong with it is the report, and the
+/// three-field report it sends is the one `#[serde(default)]` accepts happily —
+/// so nothing but the check standing in the attempt's own path can produce this
+/// failure.
+///
+/// The advisory is named in the reason because a refusal that only said a
+/// comparison failed is one nobody can act on: the whole content of this failure
+/// is *which* advisory went unanswered.
+#[tokio::test]
+async fn a_report_that_leaves_an_advisory_out_is_refused() {
+    let world = migration_world().await;
+    let reason = refusal_reason(reporting(ACCOUNTS_FOR_NOTHING), &world).await;
+
+    assert!(
+        reason.contains(SHOWN),
+        "the refusal has to name the advisory nothing was said about: {reason}"
+    );
+}
+
+/// **A report naming an advisory that was never shown is refused, by name.**
+///
+/// The same rule from the other side, and worth refusing rather than ignoring:
+/// a disposition for something nobody mentioned is what a report assembled from
+/// somewhere other than the prompt looks like.
+#[tokio::test]
+async fn a_report_naming_an_advisory_nobody_showed_it_is_refused() {
+    let world = migration_world().await;
+    let reason = refusal_reason(names_an_advisory_nobody_showed_it(), &world).await;
+
+    assert!(
+        reason.contains("CVE-2026-9999"),
+        "the refusal has to name the advisory the report invented: {reason}"
+    );
+}
+
+/// **One advisory disposed of twice is refused, by name.**
+///
+/// The contract is *one* entry per advisory shown, and a set comparison cannot
+/// enforce it: collect the reported side into a set and this report becomes the
+/// honest one. So the reported side is counted.
+///
+/// The asymmetry is deliberate and is the reason this is a refusal rather than a
+/// deduplication. The shown side is fiddle's own list and may be narrowed by
+/// fiddle as it likes; the reported side is the model's, and two answers to one
+/// question cannot be repaired by throwing one away, because nothing here knows
+/// which of the two was the answer. This script's two entries disagree —
+/// `attempted` is true in one and false in the other — which is precisely the
+/// case a deduplication would resolve by coin toss.
+#[tokio::test]
+async fn one_advisory_disposed_of_twice_is_refused() {
+    let world = migration_world().await;
+    let reason = refusal_reason(accounts_for_it_twice(), &world).await;
+
+    assert!(
+        reason.contains(SHOWN),
+        "the refusal has to name the advisory that arrived twice: {reason}"
+    );
+}
+
+/// **Declining an advisory is a protocol success, and the report is carried
+/// back whole.**
+///
+/// The accepted side of the same rule, and the distinction the criterion is
+/// about: *protocol* versus *verdict*. A declined advisory is a report fiddle
+/// accepts — the attempt accounted for everything it was shown and said why —
+/// and it is still in the tree at the rescan, which is what decides the group.
+/// Refusing it here would put an honest "I could not clear this" in the same
+/// bucket as a model that ignored its instructions.
+#[tokio::test]
+async fn a_declined_advisory_is_a_protocol_success() {
+    let world = migration_world().await;
+    let attempt = run_migration(MockCompletionModel::new(declines_it()), &world)
+        .await
+        .expect("declining what it was shown is an answer, not a broken contract");
+
+    let disposition = match attempt.report.findings.as_slice() {
+        [only] => only,
+        other => panic!("one advisory was shown, so one disposition comes back: {other:?}"),
+    };
+    assert_eq!(disposition.cve, SHOWN, "and it is the one that was shown");
+    assert!(
+        !disposition.attempted,
+        "the declining is carried back rather than smoothed over: {disposition:?}"
+    );
+    assert!(
+        !disposition.note.trim().is_empty(),
+        "what stopped it is the whole value of a declined disposition: {disposition:?}"
     );
 }
 

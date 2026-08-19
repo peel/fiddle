@@ -36,7 +36,7 @@ use rig_agent::agent::OutputMode;
 use rig_agent::completion::{PromptError, StructuredOutputError, TypedPrompt};
 use rig_agent::tool::ToolContext;
 use rig_agent::AgentBuilder;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::IntoFuture;
 use std::time::Duration;
 
@@ -334,9 +334,9 @@ pub struct FindingDisposition {
     pub note: String,
 }
 
-/// Every finding shown is accounted for, and nothing else is.
+/// Every finding shown is accounted for exactly once, and nothing else is.
 ///
-/// A set comparison over advisory ids in both directions, and it reads no meaning
+/// A comparison over advisory ids in both directions, and it reads no meaning
 /// into any of them — the counterpart of the declared-files rule over paths, and
 /// agnostic for the same reason. A missing disposition is a **silent gap**: the
 /// attempt was shown a finding and said nothing at all about it, which is the one
@@ -344,6 +344,26 @@ pub struct FindingDisposition {
 /// finding that was never shown is the same defect from the other side, and it is
 /// worth refusing rather than ignoring, because it is what a report assembled
 /// from something other than the prompt looks like.
+///
+/// # One entry per finding, which is why the two sides are not compared alike
+///
+/// The rule is *one* disposition per finding shown, and a set comparison cannot
+/// say so: collect the reported side into a set and two entries for one advisory
+/// become one, so the report that answers a question twice passes the rule
+/// written to stop it. So the **reported** side is counted and the shown side is
+/// not, and the asymmetry is the point rather than an oversight:
+///
+/// - `shown` is fiddle's own list. Whether it names an advisory once or twice is
+///   a fact about how a projection was assembled, and the attempt was asked about
+///   one advisory either way — so one disposition is the whole of the honest
+///   answer, and counting this side would refuse a well-formed report over a
+///   duplicate the prompt never distinguished.
+/// - `reported` is the model's. Two answers to one question is what a report
+///   assembled by concatenation looks like, and it cannot be repaired by
+///   discarding the duplicate: the two entries may disagree — one `attempted`,
+///   one not — and nothing here knows which was meant. Deduplicating would
+///   resolve a contradiction by coin toss and then call the result a report,
+///   which is hiding the defect rather than refusing it.
 ///
 /// # What this is not
 ///
@@ -360,26 +380,48 @@ pub struct FindingDisposition {
 /// a different model might fix. See that type's note on foreign text for why an
 /// id the *report* chose may be quoted back.
 ///
-/// **No production path calls this yet.** The step that runs one attempt over
-/// every selected finding is where the shown set exists to compare against, and
-/// it arrives later in this milestone; a caller invented here would have had to
-/// guess what the shown set was. What is settled now is the shape and the rule,
-/// so that the caller has something to call.
+/// # Where it is called
+///
+/// [`GroupMigration::migrate`](crate::capability::GroupMigration::migrate), on
+/// the report the attempt came back with, before anything downstream reads it —
+/// which is the one place both halves of the comparison exist: the shown set is
+/// the group's findings, the ones `migration_task` rendered into the prompt.
+/// M1's and M3's attempts do not call it and must not: they are shown no
+/// findings, so the shape their reports have always had is the correct one, and
+/// [`RepairReport::findings`] says why the field defaults rather than being
+/// required.
 pub fn unaccounted(shown: &[&str], reported: &[FindingDisposition]) -> Option<AgentError> {
     let shown: BTreeSet<&str> = shown.iter().copied().collect();
-    let disposed: BTreeSet<&str> = reported
-        .iter()
-        .map(|disposition| disposition.cve.as_str())
-        .collect();
 
-    let missing: Vec<&str> = shown.difference(&disposed).copied().collect();
-    let stray: Vec<&str> = disposed.difference(&shown).copied().collect();
-    if missing.is_empty() && stray.is_empty() {
+    // Counted, not collected into a set. See this function's second section:
+    // the count is the whole of what makes *one entry per finding* a rule
+    // anything can enforce.
+    let mut disposed: BTreeMap<&str, usize> = BTreeMap::new();
+    for disposition in reported {
+        *disposed.entry(disposition.cve.as_str()).or_default() += 1;
+    }
+
+    let missing: Vec<&str> = shown
+        .iter()
+        .copied()
+        .filter(|cve| !disposed.contains_key(cve))
+        .collect();
+    let stray: Vec<&str> = disposed
+        .keys()
+        .copied()
+        .filter(|cve| !shown.contains(cve))
+        .collect();
+    let twice: Vec<&str> = disposed
+        .iter()
+        .filter(|(_, count)| **count > 1)
+        .map(|(cve, _)| *cve)
+        .collect();
+    if missing.is_empty() && stray.is_empty() && twice.is_empty() {
         return None;
     }
 
-    // Both directions in one reason, because a report can be wrong in both at
-    // once and an operator reading only the first half would go and fix a
+    // Every direction in one reason, because a report can be wrong in more than
+    // one at once and an operator reading only the first would go and fix a
     // different bug than the one they have.
     let mut reason = String::from("the report does not account for what it was shown");
     if !missing.is_empty() {
@@ -387,6 +429,9 @@ pub fn unaccounted(shown: &[&str], reported: &[FindingDisposition]) -> Option<Ag
     }
     if !stray.is_empty() {
         reason.push_str(&format!("; reported and never shown: {}", stray.join(", ")));
+    }
+    if !twice.is_empty() {
+        reason.push_str(&format!("; reported more than once: {}", twice.join(", ")));
     }
     Some(AgentError::Protocol { reason })
 }
@@ -1124,6 +1169,64 @@ mod tests {
         ];
         let error = unaccounted(&shown, &stray).expect("CVE-2026-9999 was never shown");
         assert!(error.to_string().contains("CVE-2026-9999"), "{error}");
+    }
+
+    /// **One finding disposed of twice is refused, and the refusal names it.**
+    ///
+    /// The contract is *one* entry per finding shown, which a set comparison
+    /// cannot enforce: collect the reported side into a set and this report
+    /// becomes the honest one, and a report that answers one question twice
+    /// passes a rule written to stop exactly that.
+    ///
+    /// The two entries disagree with each other on `attempted`, which is why the
+    /// remedy is a refusal and not a deduplication: nothing here knows which of
+    /// the two was the answer, so discarding one would be resolving a
+    /// contradiction by coin toss and calling it a report.
+    ///
+    /// The second finding is in the lane as a control: it was disposed of once,
+    /// and it must not appear in a failure that is not about it.
+    #[test]
+    fn one_finding_disposed_of_twice_is_refused() {
+        let shown = ["CVE-2026-1111", "CVE-2026-2222"];
+        let twice = vec![
+            disposition("CVE-2026-1111", true),
+            disposition("CVE-2026-1111", false),
+            disposition("CVE-2026-2222", true),
+        ];
+
+        let error = unaccounted(&shown, &twice).expect("CVE-2026-1111 was disposed of twice");
+        assert!(
+            matches!(error, AgentError::Protocol { .. }),
+            "answering one question twice is the model not holding up its end: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("CVE-2026-1111"),
+            "the refusal has to name the finding that arrived twice: {error}"
+        );
+        assert!(
+            !error.to_string().contains("CVE-2026-2222"),
+            "the finding disposed of once is no part of this failure: {error}"
+        );
+    }
+
+    /// **A finding shown twice is not a report's problem.**
+    ///
+    /// The asymmetry [`unaccounted`] is written around, asserted rather than
+    /// commented. `shown` is fiddle's own list and a repeat in it is fiddle
+    /// repeating itself; the attempt was asked about one advisory whichever way
+    /// that list was built, and one disposition is the whole of the honest answer.
+    /// Counting *that* side would refuse a well-formed report over a duplicate
+    /// nothing in the prompt distinguished.
+    #[test]
+    fn a_finding_shown_twice_needs_one_disposition() {
+        let shown = ["CVE-2026-1111", "CVE-2026-1111"];
+        let reported = vec![disposition("CVE-2026-1111", true)];
+
+        assert!(
+            unaccounted(&shown, &reported).is_none(),
+            "the shown side is ours to repeat: {:?}",
+            unaccounted(&shown, &reported)
+        );
     }
 
     /// **Declining every finding is a well-formed report.**
