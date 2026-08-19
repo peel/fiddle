@@ -1,42 +1,15 @@
-//! Fixture-backed implementations of the observation ports.
-//!
-//! M0 introduces no authenticated adapter: both ports read a directory named by
-//! `stub.root` in the configuration, laid out as
-//!
-//! ```text
-//! <stub.root>/work/<work-id>.json      -> {"id":"fiddle-m0-demo","status":"open"}
-//! <stub.root>/changes/<work-id>.json   -> {"marker":"<correlation-key>"}
-//! ```
-//!
-//! The point of the stubs is not the fixtures — it is that the seam is already
-//! the one a real adapter will sit in. These are the first implementations of
-//! [`WorkItemPort`] and [`ChangePort`], and they prove themselves against the
-//! shared contract harness in [`crate::ports::contract`], not against tests of
-//! their own invention.
-
 use crate::ports::{ChangePort, WorkItemPort};
 use fiddle_core::{ChangeSetState, Observation, SourceRef, WorkItemState};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-/// The origin every source reference these ports produce is namespaced by.
-///
-/// Named once, so the wire contract (`stub:work/<id>.json`) and the contract
-/// harness's origin assertion can never drift apart.
 pub const STUB_ORIGIN: &str = "stub";
 
-/// Observes work items from `<root>/work/<work-id>.json`.
 pub struct StubWorkItemPort {
     root: PathBuf,
 }
 
 impl StubWorkItemPort {
-    /// A port reading the fixture directory at `root`.
-    ///
-    /// The directory is not checked here: whether it exists is an *observation*
-    /// about the world, reported by `observe`, not a construction error. A port
-    /// that refused to be built over a missing root would make an unobservable
-    /// source indistinguishable from a misconfigured one.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         StubWorkItemPort { root: root.into() }
     }
@@ -53,14 +26,11 @@ impl WorkItemPort for StubWorkItemPort {
     }
 }
 
-/// Observes change sets from `<root>/changes/<work-id>.json`.
 pub struct StubChangePort {
     root: PathBuf,
 }
 
 impl StubChangePort {
-    /// A port reading the fixture directory at `root`. See
-    /// [`StubWorkItemPort::new`] for why the root is not validated here.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         StubChangePort { root: root.into() }
     }
@@ -72,11 +42,6 @@ impl ChangePort for StubChangePort {
         let source = SourceRef(format!("{STUB_ORIGIN}:{rel}"));
         match read_fixture(&self.root, &rel) {
             Ok(text) => parse(&text, source),
-            // A run that has not executed yet finds no change set recorded, and
-            // that *is* an observation — but only if the fixture root itself
-            // was readable. `read_fixture` has already established that;
-            // reaching this arm means the root answered and the change set
-            // simply is not there.
             Err(reason) if reason == NOT_RECORDED => Observation::Available {
                 value: ChangeSetState { marker: None },
                 source,
@@ -87,18 +52,8 @@ impl ChangePort for StubChangePort {
     }
 }
 
-/// The sentinel `read_fixture` reports when the root is readable but the
-/// individual fixture is absent. Only [`StubChangePort`] treats that as an
-/// observation; for a work item, an absent fixture is an unobservable source.
 const NOT_RECORDED: &str = "stub source not recorded";
 
-/// Read `<root>/<rel>`, distinguishing "this fixture is not recorded" from
-/// "the fixture root could not be read at all".
-///
-/// The distinction is the whole reason this is a function rather than a call to
-/// `read_to_string`: a missing file under a readable root is a fact about the
-/// world, while a missing root is a failure to observe it, and collapsing the
-/// two would let a mistyped `stub.root` masquerade as an empty project.
 fn read_fixture(root: &Path, rel: &str) -> Result<String, String> {
     match std::fs::read_to_string(root.join(rel)) {
         Ok(text) => Ok(text),
@@ -114,10 +69,6 @@ fn read_fixture(root: &Path, rel: &str) -> Result<String, String> {
     }
 }
 
-/// Deserialize a fixture, reporting a parse failure as an unobservable source.
-///
-/// A malformed fixture is never defaulted: whatever the file was meant to say,
-/// what it actually says is unreadable, and the caller is told exactly that.
 fn parse<T: serde::de::DeserializeOwned>(text: &str, source: SourceRef) -> Observation<T> {
     match serde_json::from_str::<T>(text) {
         Ok(value) => Observation::Available {
@@ -143,9 +94,6 @@ mod tests {
 
     const WORK_ID: &str = "fiddle-m0-demo";
 
-    /// Builds the worlds the shared contract harness asks for out of temporary
-    /// fixture directories. One directory per world, so no world can leave
-    /// state behind that another depends on.
     struct StubWorlds {
         dirs: std::cell::RefCell<Vec<TempDir>>,
     }
@@ -157,8 +105,6 @@ mod tests {
             }
         }
 
-        /// A fresh fixture root holding `work/` and `changes/`, kept alive for
-        /// as long as this fixture is.
         fn root(&self) -> PathBuf {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().to_path_buf();
@@ -168,7 +114,6 @@ mod tests {
             root
         }
 
-        /// A path that does not exist, so the port has nothing to read.
         fn absent_root(&self) -> PathBuf {
             self.root().join("no-such-fixture-root")
         }
@@ -248,9 +193,6 @@ mod tests {
         change_port_contract(&StubWorlds::new());
     }
 
-    /// Beyond the shared contract: the source reference the stubs produce is
-    /// part of the CLI's observable payload, so its exact spelling is pinned
-    /// here rather than left to the harness's origin-prefix check.
     #[test]
     fn a_stub_source_ref_names_the_fixture_it_read() {
         let worlds = StubWorlds::new();
@@ -267,9 +209,6 @@ mod tests {
         );
     }
 
-    /// A work item that is simply not recorded is still an unobservable work
-    /// item: the invocation named work the source does not have, which is not
-    /// the same as the source saying the work is empty.
     #[test]
     fn an_unrecorded_work_item_is_unavailable_rather_than_defaulted() {
         let worlds = StubWorlds::new();
