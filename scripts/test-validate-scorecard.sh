@@ -38,7 +38,6 @@ SC="$TMPDIR/scorecard.json"
 ERR="$TMPDIR/err.json"
 
 run() {
-  # run <criteria-ids> ; sets EXIT_CODE, writes stderr to $ERR
   EXIT_CODE=0
   "$SCRIPT_DIR/validate-scorecard.sh" --scorecard "$SC" --criteria-ids "$1" >/dev/null 2>"$ERR" || EXIT_CODE=$?
 }

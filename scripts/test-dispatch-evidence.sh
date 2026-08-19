@@ -93,10 +93,6 @@ assert_contains "instruction ampersands preserved" "Instructions keep M&N and O&
 assert_contains "feedback ampersands preserved" "Feedback keeps I&J and K&&L intact" "$OUTPUT"
 
 echo "Test 5: a payload's own '## ' headings survive the empty-section strip"
-# Every real payload is a markdown document with headings of its own. The
-# stripper exists to drop unfilled *template* sections; scanning the assembled
-# prompt made it delete the injected document's headings instead — including
-# the two that define the scorecard schema.
 cat > "$TMPDIR/payload.md" << 'EOF'
 # Evaluate
 
@@ -140,9 +136,6 @@ assert_not_contains "no ## Previous Feedback header" "## Previous Feedback" "$OU
 assert_not_contains "no unsubstituted marker remains" "{DIFF}" "$OUTPUT"
 
 echo "Test 8: a JSONL event stream is extracted to the agent message"
-# codex exec --json emits JSONL; the reply is the text of the last completed
-# agent_message item, JSON-escaped inside the event. Forwarding the raw stream
-# leaves the caller hand-extracting an escaped object out of JSONL.
 cat > "$TMPDIR/bin/fake-jsonl" << 'EOF'
 #!/usr/bin/env bash
 cat > /dev/null

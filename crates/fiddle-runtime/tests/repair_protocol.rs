@@ -1,43 +1,3 @@
-//! The deterministic protocol suite: this milestone's gate.
-//!
-//! Everything here is free, offline and always runs. The model is
-//! `MockCompletionModel`, an ordinary test dependency of this crate rather than
-//! a seam in the product: `attempt` and `FixtureRepair` are generic over Rig's
-//! own `CompletionModel`, so a script substitutes where a gateway would, and
-//! nothing in `src/` knows a test is happening. There is no transcript provider
-//! and no test-only runtime mode, and there is no credential or socket anywhere
-//! in this file.
-//!
-//! # Why the success path lives here and not in a real-model smoke test
-//!
-//! A scripted model writes *known-correct* content, so the chain
-//! "check passed ⇒ Completed ⇒ marker written" is proven with zero model
-//! dependence. Without it the suite would be satisfiable by a `write_file` that
-//! silently did nothing, because "check failed ⇒ Retryable" is legal behaviour
-//! and every adversarial case below asserts exactly that. The two halves are
-//! deliberately the same fixture, the same check and the same tool: only the
-//! *contents* the script writes differ between
-//! [`the_success_path_is_proven_without_any_model_dependence`] and
-//! [`a_model_claiming_success_over_a_broken_fixture_is_disbelieved`], so a tool
-//! that no-ops cannot make the first pass, and a shell that believed the model
-//! could not make the second fail.
-//!
-//! # Why these are `fiddle-runtime` integration tests and not black-box
-//!
-//! Their claim is about the *shell's* response to a model input, not about the
-//! assembled binary. `m0_skeleton` remains the black-box proof of the
-//! deterministic path.
-//!
-//! # Why almost everything is driven through `orchestration::run`
-//!
-//! Several of these refusals already have unit tests in `agent/`, `workspace/`
-//! and `capability/repair.rs`, and those assert about an inner `Result`. What is
-//! asserted here is the *run outcome and the marker* — that a refusal survives
-//! the whole shell, that a bounded attempt is retryable rather than complete,
-//! and above all that no path but a passing check ever records a correlation
-//! key. A refusal that were somehow swallowed between the tool and the report
-//! would pass every unit test and fail every scenario in this file.
-
 mod fixture;
 
 use fiddle_runtime::agent::AgentBudget;
@@ -58,24 +18,6 @@ const SLUG: &str = "beans-fiddle-m1-demo";
 const PROJECT: &str = "icecube";
 const ATTEMPT: &str = "01JQZX0000000000000000000";
 
-// ---------------------------------------------------------------------------
-// The fixture builder's own test
-// ---------------------------------------------------------------------------
-
-/// The fixture has to be able to fail before anything asserted about a verdict
-/// means anything.
-///
-/// Written against `tests/fixture.rs`'s builder rather than against a copy,
-/// because the builder this suite drives and the builder that proves itself must
-/// be the same one. It lives in this file rather than in `fixture.rs` for a
-/// mechanical reason: `fixture.rs` is `mod fixture;` in three other test
-/// binaries *and* a test target of its own, so a `#[test]` there would run four
-/// nested `cargo test` invocations to prove one thing once.
-///
-/// The changed-file assertion is the second half and the one that is easy to
-/// omit: running the check writes `target/` and — even for a package with no
-/// dependencies — `Cargo.lock`, and unless both are ignored the repaired tree
-/// reports paths nobody edited.
 #[test]
 fn the_fixture_starts_broken_and_is_repairable_offline() {
     let dir = tempfile::tempdir().unwrap();
@@ -99,34 +41,6 @@ fn the_fixture_starts_broken_and_is_repairable_offline() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The success path
-// ---------------------------------------------------------------------------
-
-/// **The one thing no real-model test may assert.**
-///
-/// `execute` returning `Ok` is itself the proof that the shell's own check
-/// passed: that is the single path past the exit-code branch in
-/// `capability/repair.rs`, and the fixture underneath it genuinely fails
-/// `cargo test` until `src/lib.rs` is edited. So a `write_file` that resolved a
-/// path, reported bytes written and touched nothing would fail here — while
-/// still satisfying every adversarial case in this file, each of which expects
-/// the run to earn nothing.
-///
-/// The last pair is the stability property, end to end: the marker this
-/// capability wrote is the one the *next* invocation's assessment recognises,
-/// through the real derivation rather than through a comparison this test makes
-/// up.
-///
-/// What is deliberately *not* asserted is that the *fixture* now passes its
-/// check, and the two assertions in the middle say the opposite on purpose. M1
-/// delivers a verdict, not a repair: the worktree is per-attempt and removed
-/// however the execution ends, so what an accepted repair leaves behind is the
-/// marker and the evidence reference, and getting the repair itself out is M2's
-/// branch and pull request. The claim an assertion about the fixture's own tree
-/// would be reaching for is carried instead by that evidence reference, which
-/// names what *git* saw change inside the worktree — one file, which with a
-/// passing check can only be the source that was broken.
 #[tokio::test]
 async fn the_success_path_is_proven_without_any_model_dependence() {
     let f = broken_fixture();
@@ -146,7 +60,6 @@ async fn the_success_path_is_proven_without_any_model_dependence() {
         "the marker must be the one the next invocation's assessment expects"
     );
 
-    // The verdict, not the delivery.
     assert!(
         !f.check_passes(),
         "M1 leaves the repair in a worktree it then removes; the fixture is untouched"
@@ -163,22 +76,6 @@ async fn the_success_path_is_proven_without_any_model_dependence() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// What the bundle says the attempt did
-// ---------------------------------------------------------------------------
-
-/// **The published evidence names the tools that actually ran.**
-///
-/// Everything else in this file asserts what an attempt *earned*. This pair
-/// asserts what it *did*, and the distinction is not academic: for the whole of
-/// this milestone's development, `FixtureRepair` built a `ToolHost`, handed it
-/// to `attempt`, and never read `host.receipts()` back — so the bundle said
-/// nothing at all about tool use, however much or little there had been.
-///
-/// The receipts are a summary rather than the raw records, because
-/// `EvidenceRef` is a string and the report schema is a published contract. The
-/// summary answers what a bundle is actually asked: were any tools called,
-/// which, and how did each go.
 #[tokio::test]
 async fn the_published_evidence_names_the_tools_that_ran() {
     let f = broken_fixture();
@@ -204,17 +101,6 @@ async fn the_published_evidence_names_the_tools_that_ran() {
     );
 }
 
-/// **An attempt that called nothing says so, out loud.**
-///
-/// `tools:0` is the shape of the defect this evidence exists to make visible: a
-/// model that answers with the structured report on its first turn, calls no
-/// tool, changes nothing, and is refused by a check that was judging an
-/// untouched tree. From outside the process that is indistinguishable from a
-/// model that tried and lost — unless the bundle says which it was.
-///
-/// Reached here with a scripted model that claims completion immediately, which
-/// is exactly what every model on the gateway did while the agent pinned native
-/// structured output for the whole run.
 #[tokio::test]
 async fn an_attempt_that_called_no_tools_publishes_tools_zero() {
     let f = broken_fixture();
@@ -233,22 +119,6 @@ async fn an_attempt_that_called_no_tools_publishes_tools_zero() {
     );
 }
 
-/// **The count in a published evidence reference is git's, under the project's
-/// rules rather than the attempt's.**
-///
-/// `the_success_path_is_proven_without_any_model_dependence` asserts `repair:1:`
-/// over a model that changed one file and said so. It cannot see the failure
-/// this scenario is written against, because a cooperative script never tries:
-/// `.gitignore` is an ordinary versioned file, `write_file` will write it, and a
-/// changed-file derivation that applied the worktree's own ignore rules would
-/// publish `repair:1:` over an attempt that changed three files — a reference
-/// whose own test says it "names what git saw change, not what the model
-/// claimed".
-///
-/// The check still decides the verdict, and it decides it correctly here: the
-/// repair is real and the marker is earned. What a model-authored ignore rule
-/// defeats is the *evidence* and the bound, not the outcome, and this asserts
-/// the evidence while the outcome is a pass.
 #[tokio::test]
 async fn the_published_count_is_gits_however_the_attempt_wrote_the_ignore_rules() {
     let f = broken_fixture();
@@ -292,7 +162,6 @@ async fn the_published_count_is_gits_however_the_attempt_wrote_the_ignore_rules(
     );
 }
 
-/// The evidence of the one execution `report` recorded, as plain strings.
 fn evidence_of(report: &RunReport) -> Vec<String> {
     assert_eq!(report.executions.len(), 1, "{:?}", report.executions);
     report.executions[0]
@@ -302,17 +171,6 @@ fn evidence_of(report: &RunReport) -> Vec<String> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// The adversarial cases
-// ---------------------------------------------------------------------------
-
-/// **The centre of this milestone, through the whole shell.**
-///
-/// The unit test in `capability/repair.rs` asserts the typed
-/// `CapabilityError::CheckFailed`. What is asserted here is the run: a model
-/// that says it finished over a fixture that is still broken yields
-/// `Retryable`, not `Completed`, and records no change set for the next
-/// invocation to mistake for its own.
 #[tokio::test]
 async fn a_model_claiming_success_over_a_broken_fixture_is_disbelieved() {
     let f = broken_fixture();
@@ -336,17 +194,9 @@ async fn a_model_claiming_success_over_a_broken_fixture_is_disbelieved() {
     failed_once(&report);
 }
 
-/// A `..` component is refused by the syntactic half of the path check, and the
-/// run that spent its attempt on it earns nothing.
-///
-/// The tool-level refusal is already proven in `agent/tools.rs`. The addition
-/// here is that the refusal is not swallowed on the way out: the model goes on
-/// to claim it wrote the file, the check overrules the claim, and the file it
-/// named is not on disk.
 #[tokio::test]
 async fn a_path_escape_is_refused_and_mutates_nothing() {
     let f = broken_fixture();
-    // Resolved against the worktree root, whose parent is the workspace root.
     let outside = f.workspace_root().join("escape.txt");
 
     let report = f.run(writes_to("../escape.txt"), f.config()).await;
@@ -359,8 +209,6 @@ async fn a_path_escape_is_refused_and_mutates_nothing() {
     );
 }
 
-/// An absolute path is refused by the same parse, under a different rule, and
-/// with a target that is nowhere near the workspace.
 #[tokio::test]
 async fn an_absolute_path_is_refused() {
     let f = broken_fixture();
@@ -378,14 +226,6 @@ async fn an_absolute_path_is_refused() {
     );
 }
 
-/// The half a parse cannot decide: a syntactically innocent path whose
-/// *resolution* leaves the workspace.
-///
-/// The symlink is committed to the fixture, so the worktree the attempt branches
-/// carries it — which is how a real repository would carry one. Only
-/// `Workspace::resolve`, which canonicalises before opening anything, can refuse
-/// this, and it has to refuse it *before* the write: `std::fs::write` follows a
-/// link and creates the file at the far end.
 #[tokio::test]
 async fn a_symlink_out_of_the_workspace_is_refused() {
     let f = broken_fixture();
@@ -401,13 +241,6 @@ async fn a_symlink_out_of_the_workspace_is_refused() {
     );
 }
 
-/// A tool name that is not in the set is the model saying something false, and
-/// the run ends on it having changed nothing.
-///
-/// `AuditHook` records the call under `unknown_tool`, no tool body runs, and
-/// `classify` sorts Rig's `UnknownToolCall` into `Protocol` rather than
-/// `Bounded` — the tool set is a bound, but naming a tool outside it is not
-/// reaching a limit.
 #[tokio::test]
 async fn an_unregistered_tool_name_mutates_nothing() {
     let f = broken_fixture();
@@ -426,13 +259,6 @@ async fn an_unregistered_tool_name_mutates_nothing() {
     assert_earned_nothing(&f, &report);
 }
 
-/// A final message that is not the schema fails the run rather than becoming a
-/// default-valued report.
-///
-/// The attempt produced no report at all, so the check is never run: there is
-/// nothing for it to be a check *of*. That is the one short-circuit
-/// `capability/repair.rs` allows, and it is not the model's claim deciding
-/// anything — a bounded or malformed attempt has no claim to decide with.
 #[tokio::test]
 async fn malformed_structured_output_fails_the_run() {
     let f = broken_fixture();
@@ -445,8 +271,6 @@ async fn malformed_structured_output_fails_the_run() {
     assert_earned_nothing(&f, &report);
 }
 
-/// The cap is counted against git's changed set, never against the model's own
-/// list — so a model that touched two files and claimed none is still refused.
 #[tokio::test]
 async fn exceeding_the_changed_file_cap_fails_the_run() {
     let f = broken_fixture();
@@ -470,9 +294,6 @@ async fn exceeding_the_changed_file_cap_fails_the_run() {
     assert_earned_nothing(&f, &report);
 }
 
-/// A run that loops is stopped by the turn budget, and the reason names that
-/// bound rather than the deadline or the file cap, both of which are wide open
-/// here.
 #[tokio::test]
 async fn exceeding_the_turn_budget_fails_the_run() {
     let f = broken_fixture();
@@ -492,13 +313,6 @@ async fn exceeding_the_turn_budget_fails_the_run() {
     assert_earned_nothing(&f, &report);
 }
 
-/// Cancellation mid-attempt ends the run and leaves nothing behind.
-///
-/// The check is a long sleep, so the attempt is genuinely in flight when the
-/// token is cancelled: this is not a pre-cancelled token being noticed on the
-/// way in. The workspace assertion is the one that matters — a cancellation that
-/// ended the future without removing the worktree would leak a directory the
-/// next attempt's `worktree add` would collide with.
 #[tokio::test]
 async fn a_cancelled_attempt_leaves_the_fixture_unmutated() {
     let f = broken_fixture();
@@ -540,13 +354,6 @@ async fn a_cancelled_attempt_leaves_the_fixture_unmutated() {
     );
 }
 
-/// A refused tool call is a message to the model, not the end of the run.
-///
-/// The unit test in `tests/agent.rs` proves the model is *told*. What is proven
-/// here is the consequence: an attempt whose first call was refused and whose
-/// second was a real repair reaches a passing check and completes, marker and
-/// all. A shell that treated any refusal as fatal would fail this while passing
-/// every other case in the file.
 #[tokio::test]
 async fn a_tool_error_is_recoverable_within_the_same_attempt() {
     let f = broken_fixture();
@@ -591,28 +398,11 @@ async fn a_tool_error_is_recoverable_within_the_same_attempt() {
     );
 }
 
-// One refusal deliberately has no scenario here: a grant naming *another*
-// capability. It is the case that genuinely only makes sense below this level —
-// `run` derives the action and hands the capability the grant it derived, so the
-// two cannot disagree through the orchestration at all, and the mismatch is only
-// expressible by calling `execute` directly. `capability/repair.rs` already
-// tests it there, and repeating it here would be a duplicate that proves nothing
-// the unit test does not.
-
-// ---------------------------------------------------------------------------
-// The world these scenarios run in
-// ---------------------------------------------------------------------------
-
-/// A disposable project: a genuinely broken crate as a git repository, a place
-/// for per-attempt worktrees, a report directory, and the fixture root both
-/// observation ports read.
 struct Fixture {
     dir: tempfile::TempDir,
     repo: PathBuf,
 }
 
-/// A broken crate plus the stub world an `Execute` derivation needs: one open
-/// work item and no change set recorded.
 fn broken_fixture() -> Fixture {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let repo = fixture::broken_crate(dir.path());
@@ -628,8 +418,6 @@ fn broken_fixture() -> Fixture {
 }
 
 impl Fixture {
-    /// Everything the capability needs, with bounds loose enough that a scenario
-    /// which is not about a bound never trips one.
     fn config(&self) -> RepairConfig {
         RepairConfig {
             fixture: self.repo.clone(),
@@ -652,16 +440,8 @@ impl Fixture {
         }
     }
 
-    /// One whole run of the M1 shell over this fixture, driven by `script`.
-    ///
-    /// The ports, the journal and the capability are built here rather than in
-    /// each scenario because none of them is what a scenario varies: the script
-    /// and the config are, and they are the two arguments.
     async fn run(&self, script: Vec<MockTurn>, config: RepairConfig) -> RunReport {
         let capability = FixtureRepair::new(MockCompletionModel::new(script), config);
-        // One id for the journal *and* for the run, because that is now what a
-        // capability's evidence quotes: every `repair:<n>:<attempt>` asserted
-        // below is an assertion that the tie holds.
         let attempt = AttemptId(ATTEMPT.to_string());
         let journal = FileJournal::new(&self.report_dir(), SLUG, &attempt, INVOCATION_REF);
         orchestration::run(&RunContext {
@@ -677,8 +457,6 @@ impl Fixture {
         .await
     }
 
-    /// Commit a symlink pointing out of the repository, so the worktree branched
-    /// from it carries one too, and return where it points.
     fn plant_escaping_symlink(&self) -> PathBuf {
         let outside = self.dir.path().join("outside");
         std::fs::create_dir_all(&outside).unwrap();
@@ -696,9 +474,6 @@ impl Fixture {
                 "a symlink out of the tree",
             ],
         );
-        // Git has to have recorded it as a *link* — mode 120000 — or the
-        // worktree would check out an ordinary directory and the scenario would
-        // pass by refusing something that was never a symlink escape at all.
         let listed = std::process::Command::new("git")
             .args(["ls-files", "-s", "escape"])
             .current_dir(&self.repo)
@@ -724,8 +499,6 @@ impl Fixture {
         self.dir.path().join("reports")
     }
 
-    /// The correlation marker recorded for `work_id`, read the way the change
-    /// port reads it, or `None` when nothing wrote one.
     fn marker(&self, work_id: &str) -> Option<String> {
         let path = self.stub_root().join(format!("changes/{work_id}.json"));
         let text = std::fs::read_to_string(path).ok()?;
@@ -733,24 +506,15 @@ impl Fixture {
         value["marker"].as_str().map(str::to_string)
     }
 
-    /// Whether the *fixture repository* passes the check — which after an M1
-    /// repair it does not, the repair having lived in a worktree that is gone.
     fn check_passes(&self) -> bool {
         fixture::check(&self.repo).success()
     }
 
-    /// What the fixture repository reports as changed. Empty is the assertion:
-    /// an attempt writes to its worktree and never to the tree it branched from.
     fn changed_files(&self) -> Vec<String> {
         fixture::changed_files(&self.repo)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Scripts
-// ---------------------------------------------------------------------------
-
-/// The model writes the fix, runs the check itself, and reports.
 fn repairs() -> Vec<MockTurn> {
     vec![
         MockTurn::tool_call(
@@ -765,7 +529,6 @@ fn repairs() -> Vec<MockTurn> {
     ]
 }
 
-/// The model reads one file, changes nothing, and says it is done.
 fn lies() -> Vec<MockTurn> {
     vec![
         MockTurn::tool_call("c1", "read_file", json!({"path": "src/lib.rs"})),
@@ -773,11 +536,6 @@ fn lies() -> Vec<MockTurn> {
     ]
 }
 
-/// The model writes to `path` and then claims it finished, whatever happened.
-///
-/// The claim is the point: every escape scenario has the model insist it wrote
-/// the file, so what refuses it is visibly the check and the filesystem rather
-/// than the model's own account.
 fn writes_to(path: &str) -> Vec<MockTurn> {
     vec![
         MockTurn::tool_call(
@@ -789,7 +547,6 @@ fn writes_to(path: &str) -> Vec<MockTurn> {
     ]
 }
 
-/// A well-formed final report claiming completion and no changes.
 fn completion_claim() -> MockTurn {
     MockTurn::text(r#"{"changed_files":[],"summary":"all good","claimed_complete":true}"#)
 }
@@ -804,17 +561,6 @@ fn grant() -> ExecutionGrant {
     .expect("an Execute derivation authorises")
 }
 
-// ---------------------------------------------------------------------------
-// Assertions
-// ---------------------------------------------------------------------------
-
-/// The reason a retryable run gave, or a panic naming what it said instead.
-///
-/// Asserted against rather than a matched enum variant on purpose: `run` renders
-/// the capability's failure with `Display`, so this is the exact text an
-/// operator is shown, and each expectation below is a fragment of exactly one
-/// error's message — `CheckFailed`, `AgentError::Bounded`,
-/// `AgentError::Protocol` and `AgentError::Cancelled` are told apart by it.
 fn refusal(report: &RunReport) -> String {
     match &report.outcome {
         RunOutcome::Retryable { reason } => reason.to_string(),
@@ -822,7 +568,6 @@ fn refusal(report: &RunReport) -> String {
     }
 }
 
-/// The run was retryable for the named reason, and for no other.
 fn assert_retryable_because(report: &RunReport, expected: &str) {
     let reason = refusal(report);
     assert!(
@@ -831,24 +576,6 @@ fn assert_retryable_because(report: &RunReport, expected: &str) {
     );
 }
 
-/// Exactly one execution, recorded as having failed — and still saying what it
-/// did before it failed.
-///
-/// # What this assertion used to say, and why that was the bug
-///
-/// It used to require `evidence.is_empty()`, on the reasoning that "a failed
-/// execution has nothing to point at". That reasoning was wrong, and it was
-/// wrong in the direction that hides things: an execution which failed is
-/// exactly when an operator most needs to know what it *did*. Worse, the
-/// assertion actively defended the gap — a change that started publishing tool
-/// receipts on the failing arm would have been failed by this suite as a
-/// regression.
-///
-/// What the gap concealed: a repair capability calling **no tools at all**, for
-/// every model on the gateway, surfacing as an ordinary failed check that
-/// nothing outside the process could tell apart from a model that tried and
-/// lost. `tools:0` is now a thing a bundle can say, and this is the assertion
-/// that requires it to be said one way or the other.
 fn failed_once(report: &RunReport) {
     assert_eq!(report.executions.len(), 1, "{:?}", report.executions);
     assert_eq!(report.executions[0].capability_id, FIXTURE_REPAIR);
@@ -861,8 +588,6 @@ fn failed_once(report: &RunReport) {
     );
 }
 
-/// Nothing was earned and nothing survived: no marker, one failed execution, and
-/// an empty workspace root.
 fn assert_earned_nothing(f: &Fixture, report: &RunReport) {
     assert_eq!(
         f.marker(WORK_ID),
@@ -873,9 +598,6 @@ fn assert_earned_nothing(f: &Fixture, report: &RunReport) {
     assert_no_workspace_survived(f);
 }
 
-/// The specific shape every path-refusal scenario ends in: the tool declined,
-/// the model claimed completion anyway, and the check the shell ran itself
-/// overruled it.
 fn assert_check_refused(f: &Fixture, report: &RunReport) {
     assert_retryable_because(report, "so nothing was earned");
     assert!(
@@ -886,12 +608,6 @@ fn assert_check_refused(f: &Fixture, report: &RunReport) {
     assert_earned_nothing(f, report);
 }
 
-/// The workspace root exists and holds nothing.
-///
-/// The existence half is not decoration: "empty" over a directory that was never
-/// created is the vacuous truth of an attempt that never prepared a workspace,
-/// which would satisfy every teardown assertion in this file for the wrong
-/// reason.
 fn assert_no_workspace_survived(f: &Fixture) {
     assert!(
         f.workspace_root().exists(),

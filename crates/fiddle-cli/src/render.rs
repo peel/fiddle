@@ -1,25 +1,3 @@
-//! Human and `--json` renderers.
-//!
-//! Everything fiddle says *about a command it ran* — every `--json` payload,
-//! every human rendering, and the miette diagnostic for a request it refused —
-//! is produced here, so the observable output contract lives in one file rather
-//! than being scattered through the command handlers.
-//!
-//! Two things the process writes are outside that, and naming them is what
-//! stops the claim above from being the kind that quietly stops being true:
-//!
-//! - **clap's own output.** `--version`, `--help`, and the error for a
-//!   malformed command line are written and exited on by the parser, before
-//!   `dispatch` is reached and therefore before there is any command to say
-//!   anything about. `crates/fiddle-acceptance/tests/version.rs` pins the
-//!   `--version` shape at the boundary where it is actually produced.
-//! - **The interrupt notice.** `main.rs` writes "interrupted; stopping the
-//!   attempt" from inside the signal handler. It describes something happening
-//!   *to* the process rather than anything a run concluded, it is emitted while
-//!   the run is still in flight, and every payload this module produces is
-//!   still emitted afterwards unchanged. Routing it through here would have put
-//!   a renderer with no bundle to render beside the ones that always have one.
-
 use crate::config::Config;
 use fiddle_core::{
     CapabilityAssessment, CapabilityExecution, InvocationRef, NextAction, Observation,
@@ -28,145 +6,32 @@ use fiddle_core::{
 use fiddle_runtime::EvidenceError;
 use std::path::Path;
 
-/// One `--json` payload, led by the schema it is an instance of.
-///
-/// All three stdout contracts carry a discriminator, not only the `run` payload
-/// design §3.2 names: a consumer parsing `inspect` or `config check` stdout has
-/// exactly the same versioning problem, and a surface where only some payloads
-/// can be dispatched on is worse than one where none can — the absence of the
-/// key stops meaning anything. Each value is a named constant in `fiddle-core`
-/// beside `REPORT_SCHEMA`, never a literal spelled here, so a payload whose
-/// shape changes must change its version in the same edit.
-///
-/// This is a struct wrapping the body rather than one more key in the
-/// `serde_json` object because that object is a sorted map: `schema` would sort
-/// into the middle of the payload, and design §3.2 shows it *leading*. Serde
-/// writes struct fields in declaration order, which is the same mechanism that
-/// already puts `schema` first in a published [`ReportBundle`].
 #[derive(serde::Serialize)]
 struct Payload {
     schema: &'static str,
-    /// Flattened, so the body's keys sit beside `schema` rather than nested
-    /// under a key of their own. Always a `serde_json` object — flattening
-    /// anything else is a serialization error, which is why every construction
-    /// site below builds one with `json!({ .. })`.
     #[serde(flatten)]
     body: serde_json::Value,
 }
 
-/// Render `body` as the payload for `schema`, discriminator first.
 fn payload(schema: &'static str, body: serde_json::Value) -> String {
     serde_json::to_string(&Payload { schema, body })
         .expect("a payload of an object body is always serializable")
 }
 
-/// How many attempts at one capability a run actually makes.
-///
-/// A literal rather than a value read from the document, because that is
-/// precisely the point: `agent.max_capability_attempts` is parsed and not
-/// consumed, so the number that applies is this one whatever the document says.
-/// See `decisions/013-one-attempt-bound-not-two.md`, and
-/// [`crate::config::Agent::max_capability_attempts`].
 const ENFORCED_CAPABILITY_ATTEMPTS: usize = 1;
 
-/// The decision a reader following the unenforced bound is sent to.
 const ATTEMPT_BOUND_DECISION: &str = "013-one-attempt-bound-not-two";
 
-/// What a key that parses and fires nothing is reported as.
 const ACCEPTED_NOT_ENFORCED: &str = "accepted-not-enforced";
 
-/// What a key that is *read*, *acted on*, and still decides nothing is reported
-/// as.
-///
-/// A second word rather than a reuse of [`ACCEPTED_NOT_ENFORCED`], because the
-/// two are different and an operator debugging one would be misled by the
-/// other's promise. `agent.max_capability_attempts` is read by nothing at all:
-/// no code path anywhere consults the value. `github.required_checks` is
-/// consulted — it is handed to `Executor::observe_checks`, it decides which
-/// checks are looked up on the published head, and the answer reaches the
-/// bundle as `observations.verification`. What it does *not* do is change any
-/// outcome: `fiddle_core::assess` matches on the work item and the change set
-/// and never on the verification, so a required check that is missing, failed or
-/// pending leaves the run's conclusion exactly where an all-green one does.
-///
-/// Reported, in other words, and never required. See
-/// `decisions/017-required-checks-are-observed-not-enforced.md`.
 const OBSERVED_NOT_ENFORCED: &str = "observed-not-enforced";
 
-/// The decision a reader following the reported-but-unenforced check list is
-/// sent to.
 const REQUIRED_CHECKS_DECISION: &str = "017-required-checks-are-observed-not-enforced";
 
-/// What an entry in `[github.decision] authorized` is matched on.
-///
-/// Reported rather than left to be inferred, because the *kind* of identity is
-/// the property: an immutable numeric user id cannot be changed or reclaimed,
-/// which is exactly what a login can, and a reader who cannot tell which of the
-/// two `505401` is cannot tell whether the allowlist means what they think. A
-/// constant rather than a literal in the payload, so this word and the type in
-/// `config::Decision::authorized` cannot come to disagree without a reader of
-/// either being sent here.
 const AUTHORIZED_MATCHED_ON: &str = "numeric_user_id";
 
-/// What the decision channel is reported as, and **it is not `"enforced"`**.
-///
-/// The key parses, it is strict, and it is read by nothing. What an approver list
-/// could feed is `ProposeConfig::deciders`, and that is not reachable from a
-/// document, because `main::build_capability` cannot yet construct
-/// `propose_change`; see the arm there. So this is [`ACCEPTED_NOT_ENFORCED`]'s case
-/// exactly, and it is reported as that word rather than as a promise the build does
-/// not keep: a document naming an approver who cannot be consulted is precisely the
-/// state an operator running `config check` needs to be told about.
-///
-/// **This is the one line to change when that arm lands**, together with the
-/// human rendering's clause and the two tests that pin the word.
 const DECISION_STATUS: &str = ACCEPTED_NOT_ENFORCED;
 
-/// The machine-readable `config check` payload.
-///
-/// The shape is part of the CLI contract: `status` is `"valid"` and every
-/// configuration section the document carries is echoed back, so a caller can
-/// confirm *which* document was accepted without re-reading it. That is the
-/// command's whole stated purpose, and it is why `[agent]` and `[workspace]`
-/// are here: a payload naming only the three M0 tables could not show an
-/// operator the model, the endpoint, the fixture under repair, the check that
-/// decides whether a repair earned anything, or any of the six bounds.
-///
-/// # Three rules this payload keeps
-///
-/// **Never the resolved credential — the variable's name only.** `api_key` is
-/// echoed as `{ "env": "NAME" }`, the shape the document itself writes, and
-/// there is nothing else it could be: `config::EnvRef` has no value to hold.
-/// The same rule holds for `[github]`'s `token`, which is the schema's second
-/// `EnvRef` and is echoed the same way.
-///
-/// This function is also not where a credential could be resolved — the only
-/// reader of `std::env::var` in this binary is `main::resolve_credential`, called
-/// from the arms of `build_capability` that need a model, from the mitigating arm
-/// for `[scanner]`'s tenant pair, and from `main::resolve_forge`, none of which
-/// `config check` reaches.
-///
-/// **A table the document does not carry produces no key at all**, rather than
-/// a `null` one. A deployment that names no model has not left `[agent]` blank;
-/// it has described a deployment that does not have one, and the two are
-/// different claims. It is also what keeps the schema version honest: an
-/// M0-shaped document — three tables, which is what
-/// `crates/fiddle-acceptance/tests/m0_skeleton.rs` runs against — produces
-/// exactly the bytes it produced before either table existed, so
-/// [`CONFIG_CHECK_SCHEMA`] stays `v0`. Nothing a v0 reader ever saw has moved
-/// or changed meaning; the change is purely additive.
-///
-/// A key *inside* a table the document does carry is the opposite case, and is
-/// reported as `null`: `workspace.fixture` and `workspace.check` are the two a
-/// repair refuses by name when they are absent, so an operator confirming a
-/// document should learn which refusal is waiting for them rather than having
-/// to notice a missing key.
-///
-/// **A bound that does not fire does not look like one that does.** Every
-/// enforced bound is a plain scalar; `max_capability_attempts` is an object
-/// carrying what the document `configured`, what is `enforced`, a `status` a
-/// machine can key on, and the `decision` that explains it. See
-/// [`ENFORCED_CAPABILITY_ATTEMPTS`].
 pub fn config_check_json(config: &Config) -> String {
     let mut body = serde_json::json!({
         "status": "valid",
@@ -178,7 +43,6 @@ pub fn config_check_json(config: &Config) -> String {
         body["agent"] = serde_json::json!({
             "model": agent.model,
             "base_url": agent.base_url,
-            // The name, never the value. See the rules above.
             "api_key": { "env": agent.api_key.env },
             "max_turns": agent.max_turns,
             "max_tokens": agent.max_tokens,
@@ -201,12 +65,6 @@ pub fn config_check_json(config: &Config) -> String {
                 "program": check.program,
                 "args": check.args,
             })),
-            // The ordered list, each entry carrying back the criterion the
-            // document declared for it. Reported as an array rather than folded
-            // into `check`, because the two are different keys with different
-            // meanings and a document may name only one of them; an operator
-            // confirming a document should see which of the two shapes this one
-            // is written in.
             "checks": workspace.checks.iter().map(|check| serde_json::json!({
                 "program": check.program,
                 "args": check.args,
@@ -221,22 +79,11 @@ pub fn config_check_json(config: &Config) -> String {
         body["github"] = serde_json::json!({
             "repo": github.repo.to_string(),
             "base": github.base,
-            // The name, never the value. See the rules above: this is the
-            // second `EnvRef` in the schema and it is echoed the same way.
             "token": { "env": github.token.env },
             "cli": { "program": github.cli.program, "args": github.cli.args },
             "git": github.git,
-            // The two keys a publication refuses by name when they are absent,
-            // reported as `null` for the reason `workspace.fixture` is: an
-            // operator confirming a document should learn which refusal is
-            // waiting for them rather than having to notice a missing key.
             "work": github.work,
             "workflow": github.workflow,
-            // **A list that does not gate does not look like one that does.**
-            // The same object shape `max_capability_attempts` uses, for the same
-            // reason and with a status of its own: `enforced` is the empty list
-            // because no run outcome depends on any of these names, whatever the
-            // document says. See [`OBSERVED_NOT_ENFORCED`].
             "required_checks": {
                 "configured": github.required_checks,
                 "enforced": Vec::<String>::new(),
@@ -245,18 +92,11 @@ pub fn config_check_json(config: &Config) -> String {
             },
             "config_dir": github.config_dir,
             "timeout": github.timeout.to_string(),
-            // Echoed beside `timeout` because it is the same kind of thing: a
-            // wall-clock bound an operator set or inherited, and one they
-            // cannot otherwise confirm without reading this binary's defaults.
             "read_retry": {
                 "attempts": github.read_retry.attempts,
                 "initial": github.read_retry.initial.to_string(),
                 "max": github.read_retry.max.to_string(),
             },
-            // One row per effect kind this build can be given a rule for, so a
-            // rule an operator wrote is a rule they can confirm. A kind missing
-            // here is a document whose gate cannot be read back — which is what
-            // the two M3 kinds were until this task.
             "policy": {
                 "ensure_branch_published": rule(github.policy.ensure_branch_published),
                 "ensure_pull_request": rule(github.policy.ensure_pull_request),
@@ -265,15 +105,6 @@ pub fn config_check_json(config: &Config) -> String {
                 "ensure_pull_request_ready": rule(github.policy.ensure_pull_request_ready),
                 "ensure_pull_request_body": rule(github.policy.ensure_pull_request_body),
             },
-            // **Who may promote a change, and how the deployment is matched to
-            // them.** `matched_on` is a fact about the *kind* of identity rather
-            // than a detail: a reader who cannot tell whether an entry is an
-            // immutable id or something a login could become cannot tell whether
-            // the allowlist means what they think it means.
-            //
-            // `null` when the table is absent, for the reason `work` and
-            // `workflow` are: an operator confirming a document should learn that
-            // nobody is authorized here rather than having to notice a missing key.
             "decision": github.decision.as_ref().map(|decision| serde_json::json!({
                 "authorized": decision.authorized,
                 "matched_on": AUTHORIZED_MATCHED_ON,
@@ -284,12 +115,6 @@ pub fn config_check_json(config: &Config) -> String {
     if let Some(scanner) = &config.scanner {
         body["scanner"] = serde_json::json!({
             "cli": { "program": scanner.cli.program, "args": scanner.cli.args },
-            // The names, never the values. The third and fourth `EnvRef`s in the
-            // schema, echoed exactly as the first two are — and the reason is
-            // sharper here than anywhere else: `client_secret` is the one value
-            // this whole build redacts on the way out of a child process, so a
-            // `config check` that printed it would undo the redaction from the
-            // one command an operator runs to confirm their document.
             "client_id": { "env": scanner.client_id.env },
             "client_secret": { "env": scanner.client_secret.env },
             "timeout": scanner.timeout.to_string(),
@@ -303,24 +128,7 @@ pub fn config_check_json(config: &Config) -> String {
         body["orchestration"] = serde_json::json!({
             "cve": {
                 "image": cve.image,
-                // Ranked worst-first rather than in the order the document typed
-                // them. `Severities` is a *set* — two documents naming the same
-                // grades in either order describe one deployment — so echoing the
-                // typing back would invite an operator to compare two accepted
-                // documents and find a difference that is not one.
-                //
-                // Through `Severity`'s own `Serialize` and not a match here, which
-                // is the one departure from `rule` and `isolation` below and has a
-                // reason of its own: that enum carries `rename_all` on both
-                // directions precisely so a grade read as `HIGH` is written as
-                // `HIGH`, and a second spelling here would be the drift those
-                // attributes exist to prevent.
                 "severities": cve.severities.grades().collect::<Vec<_>>(),
-                // Echoed because it is a bound an operator set and cannot
-                // otherwise confirm — and because for the whole of M4a it was a
-                // key the PRD documented and nothing read, which is exactly the
-                // state a `config check` that echoes it makes impossible to
-                // repeat unnoticed.
                 "max_findings": cve.max_findings,
                 "go": { "program": cve.go.program, "args": cve.go.args },
             },
@@ -329,12 +137,6 @@ pub fn config_check_json(config: &Config) -> String {
     payload(CONFIG_CHECK_SCHEMA, body)
 }
 
-/// The spelling a document writes a deployment rule as.
-///
-/// Matched rather than derived through a `Serialize`, for the reason
-/// [`isolation`] is: [`fiddle_core::DeploymentRule`] deliberately has no
-/// `Serialize`, so a fourth rule has to be answered *here*, at the place that
-/// would otherwise report a new rule under an old name.
 fn rule(rule: fiddle_core::DeploymentRule) -> &'static str {
     match rule {
         fiddle_core::DeploymentRule::Allow => "allow",
@@ -343,24 +145,12 @@ fn rule(rule: fiddle_core::DeploymentRule) -> &'static str {
     }
 }
 
-/// The spelling a document writes an isolation mechanism as.
-///
-/// Matched rather than derived through `Serialize`, for the same reason
-/// `main::build_capability` matches it: adding a variant then has to be
-/// answered *here*, at the place that would otherwise report a new mechanism
-/// under an old name, instead of silently acquiring a serialization.
 fn isolation(isolation: crate::config::Isolation) -> &'static str {
     match isolation {
         crate::config::Isolation::GitWorktree => "git-worktree",
     }
 }
 
-/// The spelling a document writes a success criterion as. See [`isolation`] —
-/// and here the match matters more than it does there, because a criterion
-/// reported under the wrong name is an operator confirming a check that means
-/// something else. Reporting it at all is the point: the criterion is a
-/// *declared* fact about the document, so an operator must be able to read back
-/// what they declared.
 fn success(success: crate::config::Success) -> &'static str {
     match success {
         crate::config::Success::ExitZero => "exit-zero",
@@ -369,23 +159,12 @@ fn success(success: crate::config::Success) -> &'static str {
     }
 }
 
-/// The spelling a document writes a cleanup policy as. See [`isolation`].
 fn cleanup(cleanup: crate::config::Cleanup) -> &'static str {
     match cleanup {
         crate::config::Cleanup::Always => "always",
     }
 }
 
-/// The human-readable `config check` summary.
-///
-/// The same facts the payload carries, in the order the document writes them,
-/// so a reader at a terminal and a reader parsing `--json` confirm the same
-/// document. Each line is `<table>.<key> = <value>`, spelled exactly as the key
-/// is written in the file, because the reader's next move is to go and edit it.
-///
-/// The unenforced bound is the one line that says more than its value, and it
-/// says it in prose rather than in the payload's four keys: a person needs the
-/// consequence, which is that one attempt is made whatever the number is.
 pub fn config_check_human(config: &Config) -> String {
     let mut out = format!(
         "configuration valid\n  project.name = {}\n  stub.root    = {}\n  report.dir   = {}",
@@ -394,8 +173,6 @@ pub fn config_check_human(config: &Config) -> String {
         config.report.dir.display(),
     );
     if let Some(agent) = &config.agent {
-        // The name of the variable, never its value — there is none here to
-        // print, and `config check` never resolves one.
         out.push_str(&format!(
             "\n  agent.model = {}\
              \n  agent.base_url = {}\
@@ -440,12 +217,6 @@ pub fn config_check_human(config: &Config) -> String {
             workspace.command_timeout,
             cleanup(workspace.cleanup),
         ));
-        // One line per check, indexed the way the document orders them, and each
-        // carrying its criterion. An operator reading this back is checking two
-        // things a JSON payload would not help them with — that the order is the
-        // one they meant, and that the scanner is not about to be judged by an
-        // exit status. Written only when the document has a list, so an M1-shaped
-        // one renders exactly as it always did.
         for (index, check) in workspace.checks.iter().enumerate() {
             out.push_str(&format!(
                 "\n  workspace.checks[{index}] = {} (success: {})",
@@ -477,18 +248,11 @@ pub fn config_check_human(config: &Config) -> String {
              \n  github.decision.authorized = {}",
             github.repo,
             github.base,
-            // The name of the variable, never its value — there is none here to
-            // print, and `config check` never resolves one.
             github.token.env,
             program_line(&github.cli),
             github.git.display(),
             optional(github.work.as_ref().map(|p| p.display().to_string())),
             optional(github.workflow.clone()),
-            // "none" rather than a blank, for the reason `optional` gives — and
-            // the word is accurate rather than a stand-in: a deployment that
-            // lists no required check requires nothing of CI, which is a
-            // deployment decision and not a missing key. Each name quoted
-            // separately, as `program_line` argues.
             match github.required_checks.is_empty() {
                 true => "none".to_string(),
                 false => github
@@ -501,12 +265,6 @@ pub fn config_check_human(config: &Config) -> String {
             REQUIRED_CHECKS_DECISION,
             github.config_dir.display(),
             github.timeout,
-            // Beside `timeout` because it is the same kind of thing, and in the
-            // payload's own order: a wall-clock bound an operator set or
-            // inherited, and one they cannot otherwise confirm without reading
-            // this binary's defaults. Folded into one line rather than three,
-            // because the three numbers are one policy and a person reads them
-            // together.
             github.read_retry.attempts,
             github.read_retry.initial,
             github.read_retry.max,
@@ -516,15 +274,6 @@ pub fn config_check_human(config: &Config) -> String {
             rule(github.policy.publish_decision_request),
             rule(github.policy.ensure_pull_request_ready),
             rule(github.policy.ensure_pull_request_body),
-            // The ids as the document wrote them, followed by what they are
-            // matched on and by the fact that nothing reads them yet — a person
-            // needs the consequence, which is that naming an approver does not
-            // yet make one consultable. See [`DECISION_STATUS`].
-            //
-            // Through `optional`, so an absent table reads the way an absent
-            // `work` or `fixture` does: this is the third key a capability refuses
-            // by name when it is missing, and "not configured" is the word the
-            // other two already use for it.
             optional(github.decision.as_ref().map(|decision| {
                 format!(
                     "{} (matched on {}; accepted, not enforced: no capability in \
@@ -540,13 +289,6 @@ pub fn config_check_human(config: &Config) -> String {
             })),
         ));
     }
-    // **The image a sweep will scan and the credentials it will authenticate
-    // with.** Both tables are rendered here for the reason the header states as
-    // this function's contract: the reader without `--json` is the one confirming
-    // a document before a sweep acts on it, and for the whole of M4a these two
-    // tables reached the payload and no other surface — so the image, the grade
-    // set, the bound and the two variable names were confirmable only by a caller
-    // who knew to ask for JSON.
     if let Some(scanner) = &config.scanner {
         out.push_str(&format!(
             "\n  scanner.cli = {}\
@@ -554,14 +296,6 @@ pub fn config_check_human(config: &Config) -> String {
              \n  scanner.client_secret.env = {}\
              \n  scanner.timeout = {}",
             program_line(&scanner.cli),
-            // The names of the variables, never their values — the third and
-            // fourth `EnvRef`s in the schema, rendered exactly as the first two
-            // are. The rule is sharpest here: `client_secret` is the one value
-            // this build redacts on the way out of a child process, so printing
-            // it from the single command an operator runs to confirm a document
-            // would undo that redaction at the surface most likely to be pasted
-            // into a bug report. `config::EnvRef` holds no value to print, and
-            // `config check` reaches no reader of `std::env::var`.
             scanner.client_id.env,
             scanner.client_secret.env,
             scanner.timeout,
@@ -578,23 +312,11 @@ pub fn config_check_human(config: &Config) -> String {
              \n  orchestration.cve.max_findings = {}\
              \n  orchestration.cve.go = {}",
             cve.image,
-            // Ranked worst-first rather than in the order the document typed
-            // them, for the reason the payload gives: `Severities` is a *set*, so
-            // two documents naming the same grades in either order describe one
-            // deployment, and echoing the typing back would invite an operator to
-            // compare two accepted documents and find a difference that is not
-            // one. Space-separated and unquoted — a grade is a closed-set name
-            // and cannot contain a space, which is what `program_line` quotes
-            // against.
             cve.severities
                 .grades()
                 .map(grade)
                 .collect::<Vec<_>>()
                 .join(" "),
-            // The bound whose defect was that the manual documented it and no
-            // reader read it. It is read now, and leaving it off the surface an
-            // operator gets by default would have moved that defect rather than
-            // closed it.
             cve.max_findings,
             program_line(&cve.go),
         ));
@@ -602,15 +324,6 @@ pub fn config_check_human(config: &Config) -> String {
     out
 }
 
-/// The spelling a document writes a grade as.
-///
-/// Through [`fiddle_core::Severity`]'s own `Serialize` rather than a match here,
-/// which is the one departure from [`rule`] and [`isolation`] and has the same
-/// reason `config_check_json` gives for doing it this way: that enum carries
-/// `rename_all` on both directions precisely so a grade read as `HIGH` is written
-/// as `HIGH`, and a second spelling in this file would be exactly the drift those
-/// attributes exist to prevent. The two renderers that *do* match are the ones
-/// whose types deliberately have no `Serialize` to defer to.
 fn grade(severity: fiddle_core::Severity) -> String {
     serde_json::to_value(severity)
         .ok()
@@ -620,14 +333,6 @@ fn grade(severity: fiddle_core::Severity) -> String {
         .expect("a grade serializes as the string its `rename_all` spells")
 }
 
-/// A configured program and its arguments, each token quoted separately.
-///
-/// Rather than joined into one space-separated line: a [`crate::config::ProgramRef`]
-/// is a program and its arguments *already separated* precisely because a shell
-/// string has to be split by somebody and every splitter is wrong about quoting
-/// somewhere. Rendering one would put that ambiguity back at the surface an
-/// operator reads, and an argument containing a space would be
-/// indistinguishable from two arguments.
 fn program_line(program: &crate::config::ProgramRef) -> String {
     std::iter::once(&program.program)
         .chain(program.args.iter())
@@ -636,9 +341,6 @@ fn program_line(program: &crate::config::ProgramRef) -> String {
         .join(" ")
 }
 
-/// The program half of a check, quoted token by token. See [`program_line`],
-/// whose reasoning this shares exactly; the criterion is rendered by its caller
-/// because it is not part of what will be executed.
 fn check_line(check: &crate::config::CheckRef) -> String {
     std::iter::once(&check.program)
         .chain(check.args.iter())
@@ -647,29 +349,10 @@ fn check_line(check: &crate::config::CheckRef) -> String {
         .join(" ")
 }
 
-/// A key a present table left out, said out loud.
-///
-/// "not configured" rather than a blank, because a blank after `=` reads as an
-/// empty value — and for both keys that use this, absent is a fact a repair
-/// will refuse on by name.
 fn optional(value: Option<String>) -> String {
     value.unwrap_or_else(|| "not configured".to_string())
 }
 
-/// The machine-readable `inspect` payload.
-///
-/// `invocation_ref` is the canonical text of the *parsed* reference rather than
-/// the argument as typed, so a caller can confirm the round trip; `scheme` is
-/// the typed scheme, serialized by `fiddle-core`, so the spelling here can
-/// never drift from the spelling the parser accepts.
-///
-/// `observations` is `WorkStateView`'s own serialization rather than a shape
-/// re-derived here, so the payload a caller reads is the domain value fiddle
-/// reasoned about — including the fail-closed distinction that an unreadable
-/// source appears under `unavailable` with a reason and contributes no
-/// `available` key at all. `assessment` and `next_action` are likewise the
-/// core's own serializations: what a caller reads is the verdict fiddle acted
-/// on, not a restatement of it that could drift.
 pub fn inspect_json(
     reference: &InvocationRef,
     observed: &WorkStateView,
@@ -688,7 +371,6 @@ pub fn inspect_json(
     )
 }
 
-/// The human-readable `inspect` summary.
 pub fn inspect_human(
     reference: &InvocationRef,
     observed: &WorkStateView,
@@ -713,39 +395,6 @@ pub fn inspect_human(
     )
 }
 
-/// The machine-readable `run` payload — design §3.2's canonical output.
-///
-/// It leads with `schema`, exactly as §3.2 shows, on every path: the
-/// discriminator is a property of the payload, not of the outcome, so a caller
-/// can parse a failed run's stdout without first knowing it failed.
-///
-/// Projected from the very [`ReportBundle`] that was published rather than
-/// rebuilt from the run, so a caller reading stdout and a caller reading the
-/// published bundle cannot be reading two different documents. The payload is
-/// the subset of the bundle a caller at a shell needs plus `report`, the path
-/// of the bundle itself relative to `<report.dir>` — the pointer that lets them
-/// go and read the rest.
-///
-/// `report` is absent when publication failed. A key naming a bundle that is
-/// not there would be worse than no key: it invites a reader to open a path
-/// that does not exist and conclude something about the run from its absence.
-///
-/// `outcome`, `next_action`, `capability_executions`, `progress` and
-/// `observations` are the core's own serializations rather than shapes
-/// re-derived here — what a caller reads is what fiddle concluded and did, not
-/// a restatement of it that could drift. `next_action` in particular is the
-/// action derived *after* the run finished, so it describes the state the run
-/// left behind.
-///
-/// `disposition` joins them on the same terms and with the same conditionality
-/// as `report`: present when the capability that ran has a disposition table of
-/// its own, absent otherwise. A payload that carried `observations` and not the
-/// row would make the two documents disagree about what is *knowable* rather
-/// than about a value — a caller at a shell would have to open the bundle to
-/// learn which of seven situations they are in, while a caller who read the
-/// bundle would not. Absent rather than `null` for
-/// [`ReportBundle::disposition`]'s reason, and so that every payload M0, M1, M2
-/// and M3 emit is byte-identical.
 pub fn run_json(bundle: &ReportBundle, published: Option<&Path>) -> String {
     let mut body = serde_json::json!({
         "invocation_ref": bundle.invocation_ref,
@@ -766,20 +415,6 @@ pub fn run_json(bundle: &ReportBundle, published: Option<&Path>) -> String {
     payload(RUN_SCHEMA, body)
 }
 
-/// The human-readable `run` summary.
-///
-/// A reader at a terminal gets the same facts the payload carries: what was
-/// run, under which mode, how it ended, what it did, what is left, where the
-/// published bundle can be found, and — on the paths that reached one — which
-/// row of Design §3's table the run landed on.
-///
-/// The row is here on [`run_json`]'s own argument, which applies to this surface
-/// more sharply than to that one: a document carrying `observations` and not the
-/// row makes the two disagree about what is *knowable*, and the caller who would
-/// have to open the bundle to learn which of seven situations they are in is
-/// precisely the caller at a shell who did not ask for JSON. Row 7's remedy is to
-/// go and merge a numbered pull request, so a rendering that dropped the row
-/// dropped the number with it.
 pub fn run_human(bundle: &ReportBundle, published: Option<&Path>) -> String {
     let mut out = format!(
         "run {}\n  mode        = {}\n  outcome     = {}\n  next action = {}",
@@ -800,10 +435,6 @@ pub fn run_human(bundle: &ReportBundle, published: Option<&Path>) -> String {
     if let Some(path) = published {
         out.push_str(&format!("\n  report      = {}", path.display()));
     }
-    // Present on exactly the paths the payload carries it on, and absent on the
-    // rest: a capability with no disposition table of its own has not reached a
-    // row, and a line saying so would invent a seventh situation for every M0,
-    // M1, M2 and M3 run.
     if let Some(disposition) = &bundle.disposition {
         out.push_str(&format!(
             "\n  disposition = {}",
@@ -813,26 +444,6 @@ pub fn run_human(bundle: &ReportBundle, published: Option<&Path>) -> String {
     out
 }
 
-/// One published disposition as a single line of prose.
-///
-/// Leads with the row, because the row is the answer to the question the key
-/// exists for. The four counts after it are what separate *neighbouring* rows —
-/// *the scan found nothing* and *everything it found was already dealt with*
-/// differ by `already_fixed` alone — so a line carrying the reason and nothing
-/// else would name a row a reader could not check against the bundle beside it.
-///
-/// Counts rather than the lists themselves, which is the one place this line says
-/// less than the payload does and is deliberate: the advisory ids are in the
-/// published bundle and in `verdicts.json`, and a terminal line that grew with
-/// the size of a scan would push the reason off the screen at exactly the moment
-/// there was most to read.
-///
-/// The branch and the pull request are named **only when there is one**, which is
-/// the opposite of [`optional`]'s rule and for a reason that does not contradict
-/// it: there, an absent key is one a repair will refuse on by name, so an operator
-/// needs to be told. Here an absent value means this run landed nothing on a
-/// branch and belongs to no pull request, and a "not configured" beside it would
-/// read as a document somebody forgot to finish.
 fn disposition_line(disposition: &fiddle_core::RunDisposition) -> String {
     let mut line = format!(
         "{} ({} unfixed, {} already fixed, {} deferred, {} attempted)",
@@ -845,27 +456,12 @@ fn disposition_line(disposition: &fiddle_core::RunDisposition) -> String {
     if let Some(branch) = &disposition.branch {
         line.push_str(&format!(", branch {branch}"));
     }
-    // `#41` and not `41`, because the number *is* the remedy on row 7 and an
-    // operator's next move is to go and find it in a forge that spells it this
-    // way.
     if let Some(pull_request) = disposition.pull_request {
         line.push_str(&format!(", pull request #{pull_request}"));
     }
     line
 }
 
-/// The diagnostic for an attempt that could not record itself.
-///
-/// Plain lines rather than a `miette` report: the whole point of this
-/// diagnostic is that an operator can read `<report.dir>` out of it and go fix
-/// the permissions, and a graphical handler reflows long messages, which is
-/// exactly the wrong thing to do to a path. The directory is named on its own
-/// line, whole, whatever its length.
-///
-/// The headline distinguishes the two moments, because they have different
-/// consequences an operator needs to know about: a journal that could not be
-/// written means the run *did not act*, while a bundle that could not be
-/// published means it acted and the record of it is missing.
 pub fn evidence_failure(report_dir: &Path, error: &EvidenceError) -> String {
     let headline = match error {
         EvidenceError::Journal { .. } => "could not record this attempt before executing it",
@@ -879,8 +475,6 @@ pub fn evidence_failure(report_dir: &Path, error: &EvidenceError) -> String {
     )
 }
 
-/// One outcome as a single line of prose. A non-completing outcome leads with
-/// its reason, so a reader learns why without re-deriving it.
 fn outcome_line(outcome: &fiddle_core::RunOutcome) -> String {
     match outcome {
         fiddle_core::RunOutcome::Completed => "completed".to_string(),
@@ -890,7 +484,6 @@ fn outcome_line(outcome: &fiddle_core::RunOutcome) -> String {
     }
 }
 
-/// One capability execution as a single line of prose.
 fn execution_line(execution: &CapabilityExecution) -> String {
     format!(
         "{} {} (evidence {})",
@@ -900,7 +493,6 @@ fn execution_line(execution: &CapabilityExecution) -> String {
     )
 }
 
-/// One progress entry as a single line of prose.
 fn progress_line(entry: &ProgressEntry) -> String {
     format!(
         "{}/{} {} — {}",
@@ -908,10 +500,6 @@ fn progress_line(entry: &ProgressEntry) -> String {
     )
 }
 
-/// One assessment as a single line of prose.
-///
-/// A blocked verdict leads with its reason: the whole point of the variant is
-/// that a reader learns *why* fiddle stopped without having to re-derive it.
 fn assessment_line(assessment: &CapabilityAssessment) -> String {
     match assessment {
         CapabilityAssessment::NotStarted { evidence } => {
@@ -926,7 +514,6 @@ fn assessment_line(assessment: &CapabilityAssessment) -> String {
     }
 }
 
-/// One derived action as a single line of prose.
 fn next_action_line(next_action: &NextAction) -> String {
     match next_action {
         NextAction::Execute { capability_id } => format!("execute {capability_id}"),
@@ -935,8 +522,6 @@ fn next_action_line(next_action: &NextAction) -> String {
     }
 }
 
-/// The references a verdict rests on, as a comma-separated list. An empty list
-/// says so rather than rendering as a bare pair of brackets.
 fn join_evidence(evidence: &[fiddle_core::EvidenceRef]) -> String {
     if evidence.is_empty() {
         return "none".to_string();
@@ -948,12 +533,6 @@ fn join_evidence(evidence: &[fiddle_core::EvidenceRef]) -> String {
         .join(", ")
 }
 
-/// One observation as a single line of prose.
-///
-/// The three cases are spelled out differently on purpose: a reader of the
-/// human output must be able to tell "there is no marker" from "fiddle could
-/// not look", which is the same distinction the `--json` payload draws by
-/// variant name.
 fn observation_line<T>(observed: &Observation<T>, describe: impl Fn(&T) -> String) -> String {
     match observed {
         Observation::Available { value, source, .. } => {
@@ -966,12 +545,6 @@ fn observation_line<T>(observed: &Observation<T>, describe: impl Fn(&T) -> Strin
     }
 }
 
-/// Render a diagnostic the way design §4.6 requires: through miette's graphical
-/// report handler, so the offending source line and its caret are visible
-/// rather than only the error message.
-///
-/// The theme is chosen explicitly instead of inherited from the terminal so the
-/// rendering is identical whether stderr is a TTY, a pipe, or a test harness.
 pub fn diagnostic(error: &dyn miette::Diagnostic) -> String {
     let mut rendered = String::new();
     let handler = miette::GraphicalReportHandler::new()
@@ -979,8 +552,6 @@ pub fn diagnostic(error: &dyn miette::Diagnostic) -> String {
         .with_width(120);
     match handler.render_report(&mut rendered, error) {
         Ok(()) => rendered,
-        // A formatter failure must not swallow the error itself; fall back to
-        // the plain message so the caller still learns what went wrong.
         Err(_) => format!("{error}"),
     }
 }

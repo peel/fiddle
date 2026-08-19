@@ -32,7 +32,6 @@
     }
   }
 
-  // Capture clicks on choice elements
   document.addEventListener('click', (e) => {
     const target = e.target.closest('[data-choice]');
     if (!target) return;
@@ -44,7 +43,6 @@
       id: target.id || null
     });
 
-    // Update indicator bar (defer so toggleSelect runs first)
     setTimeout(() => {
       const indicator = document.getElementById('indicator-text');
       if (!indicator) return;
@@ -61,7 +59,6 @@
     }, 0);
   });
 
-  // Frame UI: selection tracking
   window.selectedChoice = null;
 
   window.toggleSelect = function(el) {
@@ -78,7 +75,6 @@
     window.selectedChoice = el.dataset.choice;
   };
 
-  // Expose API for explicit use
   window.brainstorm = {
     send: sendEvent,
     choice: (value, metadata = {}) => sendEvent({ type: 'choice', value, ...metadata })

@@ -1,18 +1,3 @@
-//! The `gh` adapter: what the child sees, and what a lost answer means.
-//!
-//! Every case here is driven through the product's own `cli.program` seam
-//! against the scripted `gh` in `tests/gh_stub/`, so the suite is offline,
-//! credential-free and deterministic. Nothing here reaches GitHub.
-//!
-//! Two properties are being defended, and they are not the same one. The first
-//! is *containment*: exactly five environment names reach the child and `HOME`
-//! is not among them, which is what makes "this adapter used the credential it
-//! was given and no other" a fact rather than a promise. The second is
-//! *honesty about ambiguity*: when a mutating request's answer is lost, the
-//! adapter says it does not know, so the caller goes and looks instead of
-//! guessing. Every classification that turns an unknown into a confident wrong
-//! answer produces a duplicate external effect.
-
 use fiddle_runtime::effect::EffectOutcome;
 use fiddle_runtime::github::{GhCli, GhError, RetryAdvice};
 use std::collections::BTreeMap;
@@ -21,22 +6,9 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
-/// A generous bound for a stub that answers immediately. The one test that is
-/// about the deadline sets its own.
 const PATIENT: Duration = Duration::from_secs(30);
 
-/// A `GhCli` pointed at the scripted `gh`, with a scratch directory for both the
-/// script and `GH_CONFIG_DIR`.
-///
-/// The stub's own scratch directory arrives through `cli.args` and not through
-/// the environment, and that is not an accident of convenience: the environment
-/// the adapter builds has room for exactly five names, so a sixth could not
-/// reach the child even if the fixture wanted one. The plumbing being forced
-/// into `argv` is the first piece of evidence that the boundary below is real.
 fn gh(dir: &Path, token: &str, timeout: Duration) -> GhCli {
-    // Empty, and stays empty: an empty GH_CONFIG_DIR beside an absent HOME is
-    // what makes a real `gh` refuse rather than fall back to a stored
-    // credential.
     let config = dir.join("config");
     std::fs::create_dir_all(&config).unwrap();
     GhCli::new(
@@ -49,7 +21,6 @@ fn gh(dir: &Path, token: &str, timeout: Duration) -> GhCli {
     )
 }
 
-/// Script one request key with `<status> <exit> <mode>`.
 fn script(dir: &Path, key: &str, spec: &str) {
     std::fs::create_dir_all(dir.join("script")).unwrap();
     std::fs::write(dir.join("script").join(key), spec).unwrap();
@@ -59,8 +30,6 @@ fn body() -> serde_json::Value {
     serde_json::json!({ "title": "a change", "head": "fiddle/abc", "base": "main" })
 }
 
-/// Run one scripted `POST /repos/o/r/pulls` and return what the adapter made of
-/// it.
 async fn post_scripted(
     dir: &Path,
     token: &str,
@@ -77,7 +46,6 @@ async fn post_scripted(
         .await
 }
 
-/// The environment of the first request the stub recorded, by name.
 fn recorded_environment(dir: &Path) -> BTreeMap<String, String> {
     let request = std::fs::read_to_string(dir.join("requests").join("0000.json"))
         .expect("the stub records every request it receives");
@@ -94,14 +62,6 @@ fn recorded_environment(dir: &Path) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The environment is the security boundary, so it is pinned exactly — the same
-/// move `workspace::a_workspace_command_inherits_no_credential` makes for the
-/// four-name workspace set. A sixth name cannot be added without changing this
-/// assertion, and a fifth cannot be dropped either.
-///
-/// Asserted against what the *child* received rather than against what the
-/// builder was asked to set, because those are different claims and only the
-/// first one is the guarantee.
 #[tokio::test]
 async fn the_gh_environment_is_exactly_five_names_and_no_home() {
     let dir = TempDir::new().unwrap();
@@ -131,10 +91,6 @@ async fn the_gh_environment_is_exactly_five_names_and_no_home() {
     );
 }
 
-/// The rule the previous test states, applied to the one variable that would
-/// undo it. `HOME` is what `gh` follows to `~/.config/gh`, so its absence is the
-/// difference between a credential source that is pinned and one that merely
-/// happens to be pinned today.
 #[tokio::test]
 async fn no_credential_of_this_process_survives_into_gh() {
     let dir = TempDir::new().unwrap();
@@ -148,8 +104,6 @@ async fn no_credential_of_this_process_survives_into_gh() {
         !seen.contains_key("HOME"),
         "HOME reopens the operator's keyring: {seen:?}"
     );
-    // The two the runner itself holds, named so that a regression is legible
-    // rather than only a set mismatch.
     for credential in ["LITELLM_API_KEY", "GITHUB_TOKEN", "GH_STUB_DIR"] {
         assert!(
             !seen.contains_key(credential),
@@ -158,9 +112,6 @@ async fn no_credential_of_this_process_survives_into_gh() {
     }
 }
 
-/// The credential must never be an argument. `/proc/<pid>/cmdline` is
-/// world-readable on Linux, so a token in `argv` is a token any user on the box
-/// can read for as long as the process lives.
 #[tokio::test]
 async fn the_credential_is_never_an_argument() {
     const TOKEN: &str = "ghp_argv_sentinel_must_not_appear";
@@ -181,10 +132,6 @@ async fn the_credential_is_never_an_argument() {
     );
 }
 
-/// `gh` documents exit 1 for every HTTP failure regardless of status, so the
-/// status must come from the `-i` status line. An adapter that branches on the
-/// exit code has read the wrong surface — and would report a 404, a 422 and a
-/// 500 as the same thing, which is three different outcomes collapsed into one.
 #[tokio::test]
 async fn the_http_status_comes_from_the_status_line_not_the_exit_code() {
     let dir = TempDir::new().unwrap();
@@ -196,8 +143,6 @@ async fn the_http_status_comes_from_the_status_line_not_the_exit_code() {
         "got {err:?}"
     );
 
-    // The same exit code, a different status. If the exit code were being read,
-    // these two would be indistinguishable.
     let dir = TempDir::new().unwrap();
     let err = post_scripted(dir.path(), "ghp_whatever", "500 1 normal")
         .await
@@ -208,8 +153,6 @@ async fn the_http_status_comes_from_the_status_line_not_the_exit_code() {
     );
 }
 
-/// A success is a success on the status line too, and what it carries is the
-/// parsed body rather than the raw stream.
 #[tokio::test]
 async fn a_successful_call_returns_the_parsed_status_and_body() {
     let dir = TempDir::new().unwrap();
@@ -221,21 +164,9 @@ async fn a_successful_call_returns_the_parsed_status_and_body() {
     assert_eq!(response.body, serde_json::json!([]));
 }
 
-/// The two exit codes that mean something on their own, and the only two the
-/// adapter is allowed to read as answers.
-///
-/// Exit 2 reaches the **after-spawn** cancellation, and the assertion says so
-/// deliberately rather than naming whichever variant is spelled "cancelled". A
-/// `gh` that exited 2 is a `gh` this process started: it reached whatever it
-/// reached and then reported a cancellation instead of an answer, so it is an
-/// ambiguous write and not an absence of a request. Classifying it with the
-/// pre-spawn refusal would be reading the exit code as evidence about GitHub,
-/// which is the mistake this module's status-line parsing exists to avoid.
 #[tokio::test]
 async fn exit_four_is_authentication_and_exit_two_is_cancellation() {
     let dir = TempDir::new().unwrap();
-    // A 200 status line beside a non-zero exit, so this asserts the exit code
-    // wins for these two rather than merely agreeing with the status.
     let err = post_scripted(dir.path(), "ghp_whatever", "200 4 normal")
         .await
         .unwrap_err();
@@ -259,8 +190,6 @@ async fn exit_four_is_authentication_and_exit_two_is_cancellation() {
     );
 }
 
-/// A cancelled attempt does not start a mutating request. Checked before the
-/// spawn, because a request that has already been sent cannot be un-sent.
 #[tokio::test]
 async fn a_cancelled_attempt_never_reaches_the_network() {
     let dir = TempDir::new().unwrap();
@@ -286,26 +215,9 @@ async fn a_cancelled_attempt_never_reaches_the_network() {
     );
 }
 
-/// The **second** cancellation provenance, and the one no test reached until M2's
-/// holistic review: a cancellation that arrives while `gh` is *already running*.
-///
-/// [`run_bounded`](fiddle_runtime) answers both provenances the same way — it
-/// kills the child's process group — so they are indistinguishable in what the
-/// runtime *did*, which is precisely why they must be distinguishable in what it
-/// *says*. This one is an ambiguous write: the request may already be at GitHub
-/// and it is the reply that was lost. Classifying it `NotCommitted` beside the
-/// pre-spawn refusal turns a `^C` during `POST .../pulls` into a settled failure,
-/// and a settled failure is retried into a duplicate.
-///
-/// The premise is *observed* rather than arranged. The scripted `gh` records
-/// every request on arrival, so a recorded request is proof the child ran before
-/// the token cancelled — and without that, this test would pass just as well
-/// against the pre-spawn case it exists to be different from.
 #[tokio::test]
 async fn a_cancellation_after_the_child_was_spawned_is_an_ambiguous_write() {
     let dir = TempDir::new().unwrap();
-    // A `gh` that will not answer on its own, so the cancellation is what ends
-    // it rather than a child that had already finished.
     std::fs::write(dir.path().join("sleep_ms"), "10000").unwrap();
     script(dir.path(), "POST_repos_o_r_pulls", "201 0 normal");
 
@@ -343,16 +255,6 @@ async fn a_cancellation_after_the_child_was_spawned_is_an_ambiguous_write() {
     );
 }
 
-/// The classification the milestone turns on. A lost answer is `Unknown`; an
-/// explicit refusal is `NotCommitted`.
-///
-/// Every variant is here, and the reason to write it as a whole table is the same
-/// one `GitError`'s table gives: the failure this guards against is a variant
-/// added later and defaulted into whichever arm happened to be nearby. What M2's
-/// holistic review found was the version of that mistake a table cannot catch on
-/// its own — one variant with two provenances, one of which the classification was
-/// wrong for — so each provenance is *also* driven through the adapter in the two
-/// tests above this one.
 #[test]
 fn a_lost_answer_is_unknown_and_a_refusal_is_not_committed() {
     let http = |status| GhError::Http {
@@ -370,10 +272,6 @@ fn a_lost_answer_is_unknown_and_a_refusal_is_not_committed() {
     assert_eq!(http(403).outcome(), EffectOutcome::NotCommitted);
     assert_eq!(http(404).outcome(), EffectOutcome::NotCommitted);
     assert_eq!(http(401).outcome(), EffectOutcome::NotCommitted);
-    // 422 is overloaded — malformed input, invalid ref syntax, spam protection
-    // and "already exists" all wear it — and is never classified on its face: it
-    // is Unknown so that the caller is forced into the postcondition read that
-    // can actually tell a refusal from a duplicate.
     assert_eq!(http(422).outcome(), EffectOutcome::Unknown);
 
     assert_eq!(
@@ -385,11 +283,6 @@ fn a_lost_answer_is_unknown_and_a_refusal_is_not_committed() {
         EffectOutcome::Unknown
     );
 
-    // The three ways nothing left this process: `gh` refusing before it
-    // dispatches, this runtime refusing before it spawns, and this runtime
-    // refusing a call it decided was wrong. These are the only `NotCommitted`
-    // failures there are, and each of them is an absent *request* rather than an
-    // absent *answer*.
     assert_eq!(GhError::Auth.outcome(), EffectOutcome::NotCommitted);
     assert_eq!(
         GhError::CancelledBeforeSpawn.outcome(),
@@ -400,9 +293,6 @@ fn a_lost_answer_is_unknown_and_a_refusal_is_not_committed() {
         EffectOutcome::NotCommitted
     );
 
-    // And its opposite number, which used to sit in the arm above: a cancellation
-    // that reached a running `gh`, and a `gh` whose answer could not be read at
-    // all. Both are lost answers, so both are `Unknown`.
     assert_eq!(
         GhError::CancelledAfterSpawn.outcome(),
         EffectOutcome::Unknown
@@ -413,21 +303,6 @@ fn a_lost_answer_is_unknown_and_a_refusal_is_not_committed() {
     );
 }
 
-/// The specific case the exactly-once harness depends on: a child killed on the
-/// way back is `Unknown`, so a landed write is never reported as one that never
-/// happened and never performed a second time by the retry.
-///
-/// Both spellings of a dead child are driven, because the adapter must not
-/// depend on which one it happens to get: an exit code at or above 128 is what a
-/// wrapper passes on, and `None` is what a real signal leaves behind.
-///
-/// The contrast this test used to draw — that a killed child must classify
-/// *differently* from a garbled response — is gone, and its removal is the point
-/// rather than a loosening. `Malformed` is now `Unknown` as well, because a
-/// wrapper is free to deliver the request and mangle what it prints afterwards, so
-/// the two really are the same fact about the world. What separates them is not
-/// the outcome but the variant, which is still distinct, still carries its own
-/// diagnostic, and is still not worth reading again.
 #[tokio::test]
 async fn a_child_that_died_before_answering_is_unknown() {
     for mode in ["commit_then_die", "commit_then_abort"] {
@@ -444,8 +319,6 @@ async fn a_child_that_died_before_answering_is_unknown() {
              separates it from a runner that will not repair itself"
         );
 
-        // The half that makes this a real ambiguity rather than a simulated one:
-        // the mutation is on disk, and the answer is gone.
         let world = std::fs::read_to_string(dir.path().join("world")).unwrap_or_default();
         assert!(
             world.contains("POST_repos_o_r_pulls"),
@@ -455,18 +328,6 @@ async fn a_child_that_died_before_answering_is_unknown() {
     }
 }
 
-/// `gh` has no timeout flag, so the runtime owns it — in its own process group,
-/// through the same bounded runner M1's workspace commands use.
-///
-/// The two marker files are the point. A parent that merely stopped waiting
-/// would also return `Timeout`; only a child that was actually killed leaves no
-/// marker behind, and an orphaned `gh` still holding a credential is exactly
-/// what this prevents.
-///
-/// The *descendant's* marker is the one that pins the process group. `gh` is
-/// free to fork, and `kill_on_drop` reaps only the process this runtime holds a
-/// handle to — so without a kill aimed at the whole group, the grandchild
-/// outlives the deadline and writes it.
 #[tokio::test]
 async fn a_gh_that_never_returns_is_killed_and_reported_as_unknown() {
     let dir = TempDir::new().unwrap();
@@ -490,8 +351,6 @@ async fn a_gh_that_never_returns_is_killed_and_reported_as_unknown() {
         "the deadline is the runtime's, so it fires without waiting for the child"
     );
 
-    // Well past the point the children would have finished sleeping had they
-    // lived.
     tokio::time::sleep(Duration::from_millis(2500)).await;
     assert!(
         !dir.path().join("survived_the_deadline").exists(),
@@ -504,13 +363,6 @@ async fn a_gh_that_never_returns_is_killed_and_reported_as_unknown() {
     );
 }
 
-/// The credential must not reach a diagnostic, which is the surface that reaches
-/// a bundle. Same sentinel discipline as `capability_selection.rs`, and the same
-/// defect class M1 shipped: a response body that echoed the key it received.
-///
-/// The stub echoes the token into the response body on purpose. An adapter that
-/// carried a body into its error — which is the natural thing to write — fails
-/// here rather than passing because nothing happened to be echoed.
 #[tokio::test]
 async fn the_token_value_appears_in_no_error_message() {
     const SENTINEL: &str = "ghp_sentinel_must_not_appear_anywhere";
@@ -531,8 +383,6 @@ async fn the_token_value_appears_in_no_error_message() {
         !format!("{err:?}").contains(SENTINEL),
         "Debug leaked the credential: {err:?}"
     );
-    // Proof the stub really did echo it, so the assertions above are testing the
-    // redaction rather than an empty body.
     let request = std::fs::read_to_string(dir.path().join("requests").join("0000.json")).unwrap();
     assert!(
         request.contains(SENTINEL),
@@ -540,9 +390,6 @@ async fn the_token_value_appears_in_no_error_message() {
     );
 }
 
-/// The other rendering that reaches an operator. `Debug` on the client itself is
-/// what a `dbg!` or a tracing attribute reaches for by default, so it names the
-/// variable the credential came from and never the credential.
 #[test]
 fn the_client_names_the_variable_it_read_and_never_the_value() {
     const SENTINEL: &str = "ghp_sentinel_must_not_appear_anywhere";
@@ -561,15 +408,6 @@ fn the_client_names_the_variable_it_read_and_never_the_value() {
     assert_eq!(cli.variable(), "FIDDLE_GITHUB_TOKEN");
 }
 
-/// `-i` is what makes a CLI workable here rather than a compromise: it yields
-/// everything a native HTTP client would have had, and these two are the ones a
-/// backoff will need.
-///
-/// Read by header *name*, which is the part worth testing. GitHub's real
-/// response carries an `Access-Control-Expose-Headers` whose value lists both of
-/// these names — a parser that searched the block for the strings would report a
-/// retry delay nobody sent. The header block the stub emits here is the shape
-/// taken from a probe of the real binary, including that trap.
 #[tokio::test]
 async fn the_retry_and_rate_limit_headers_are_read_by_name() {
     let dir = TempDir::new().unwrap();
@@ -581,23 +419,6 @@ async fn the_retry_and_rate_limit_headers_are_read_by_name() {
     assert_eq!(response.rate_limit_remaining, Some(0));
 }
 
-/// Something that is not a response is a **lost answer**, not a refusal.
-///
-/// This assertion is the reverse of what it was, and the reversal is the second
-/// half of what M2's holistic review found. The old reading was that a process
-/// which ran to a normal completion and produced garbage is a broken runner rather
-/// than an ambiguous write — true of the *runner* and false of the *world*.
-/// `cli.program` is an operator seam: what is on the far end of it may be a
-/// wrapper that delivered the request perfectly well and then printed something
-/// this client cannot read. §6.5's rule admits no exception for that case — a lost
-/// response is not evidence of a failed write — and reporting it `NotCommitted`
-/// is how the retry performs the write a second time.
-///
-/// What survives from the old reading is the half that was actually about the
-/// runner: a program that is not `gh` will not become one however often it is
-/// asked, so this is `Unknown` **and not worth reading again**, which is a pair no
-/// other variant carries. The misconfiguration is still named in the diagnostic
-/// for an operator to fix.
 #[tokio::test]
 async fn a_garbled_response_is_a_lost_answer_and_not_a_refusal() {
     const SENTINEL: &str = "ghp_sentinel_must_not_appear_anywhere";
@@ -617,9 +438,6 @@ async fn a_garbled_response_is_a_lost_answer_and_not_a_refusal() {
         !err.is_worth_reading_again(),
         "and a program that is not `gh` will not become one: {err:?}"
     );
-    // The diagnostic has to be actionable — stdout alone is silent about a
-    // `program` that is not `gh`, so stderr is quoted — and quoting a second
-    // stream is a second place the credential could escape.
     assert!(
         format!("{err}").contains("could not authenticate"),
         "an operator cannot fix this without what the program actually said: {err}"

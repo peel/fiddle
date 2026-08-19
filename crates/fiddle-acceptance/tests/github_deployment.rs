@@ -1,55 +1,15 @@
-//! Black-box acceptance for the `[github]` table as a *deployment*, rather than
-//! as a document.
-//!
-//! `config_check.rs` asserts what the schema accepts and refuses. This file
-//! asserts the half that a schema cannot: that the keys reach something. A
-//! configuration key that parses, defaults, and is consumed by nothing is the
-//! defect `agent.max_capability_attempts` shipped and ADR 013 had to price after
-//! the fact, so every scenario here drives the compiled binary and observes
-//! what it *did* with the value.
-//!
-//! Three properties are under test.
-//!
-//! - **The capability is constructible.** `run --capability publish_change`
-//!   selected the capability and then refused with `Unconfigured("[github]")`
-//!   until this table existed. It now builds the clients, the effect context and
-//!   the executor, and executes.
-//! - **`[github.policy]` reaches the executor.** A document saying `deny`
-//!   produces a policy refusal naming the effect kind, and — the discriminating
-//!   half — the same document *without* the rule does not.
-//! - **`inspect` still builds nothing.** For every value of `--capability`, on a
-//!   document that describes no forge at all, with no credential exported.
-//!
-//! # Offline, and credential-free in the sense that matters
-//!
-//! `[github] cli = { program, args }` is the product seam an operator uses to
-//! pin or wrap `gh`; these scenarios point it at a small script that answers
-//! from a `case` statement. Nothing here reaches a network, and the token these
-//! runs export authenticates nothing — it exists so that the *resolution* of the
-//! credential is exercised, and it is asserted to reach no observable surface.
-
 mod support;
 
 use std::path::{Path, PathBuf};
 use support::Scenario;
 
-/// The work this milestone's scenarios are about.
 const WORK_ID: &str = "fiddle-m0-demo";
 const INVOCATION_REF: &str = "beans:fiddle-m0-demo";
 
-/// The variable every document below names. Never a value.
 const CREDENTIAL: &str = "FIDDLE_GITHUB_TOKEN";
 
-/// What is exported as that credential: a string that authenticates nothing,
-/// and that must appear on no surface.
 const SENTINEL: &str = "ghp_sentinel_github_deployment_must_never_print_7c31";
 
-/// A scenario with one open work item and a git repository holding the change
-/// that is to be published.
-///
-/// Real git rather than a bare directory: the commit being published is read out
-/// of this worktree's `HEAD` by the binary itself, so a scenario over a
-/// non-repository would fail before anything policy-shaped happened.
 fn publishable() -> (Scenario, PathBuf) {
     let scenario = Scenario::new();
     scenario.write_work_item(WORK_ID, "open");
@@ -57,7 +17,6 @@ fn publishable() -> (Scenario, PathBuf) {
     (scenario, work)
 }
 
-/// The commit `work` is sitting on, read the way the binary reads it.
 fn head_sha(work: &Path) -> String {
     let out = std::process::Command::new("git")
         .current_dir(work)
@@ -68,12 +27,6 @@ fn head_sha(work: &Path) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-/// A `gh` that answers every request `404`, so nothing this run asks about
-/// exists yet.
-///
-/// Exit 1 rather than 0 because that is what `gh` itself exits with on a 404,
-/// and the adapter deliberately reads the status line rather than the exit code
-/// for anything that is not authentication, cancellation or a killed child.
 fn gh_answering_nothing_exists(dir: &Path) -> PathBuf {
     write_gh(
         dir,
@@ -82,12 +35,6 @@ fn gh_answering_nothing_exists(dir: &Path) -> PathBuf {
     )
 }
 
-/// A `gh` reporting that the branch is already published at `sha`, and that no
-/// pull request is open for it.
-///
-/// This is what lets a scenario reach the *second* effect offline: the branch's
-/// postcondition already holds, so the executor settles it at its step 3 and
-/// never pushes.
 fn gh_answering_the_branch_is_published(dir: &Path, sha: &str) -> PathBuf {
     write_gh(
         dir,
@@ -107,7 +54,6 @@ fn gh_answering_the_branch_is_published(dir: &Path, sha: &str) -> PathBuf {
     )
 }
 
-/// Write an executable `sh` script standing in for `gh`, and hand back its path.
 #[cfg(unix)]
 fn write_gh(dir: &Path, name: &str, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -117,14 +63,6 @@ fn write_gh(dir: &Path, name: &str, body: &str) -> PathBuf {
     path
 }
 
-/// The `[github]` table for `work`, driving `gh`, plus whatever `extra` lines a
-/// scenario needs.
-///
-/// `config_dir` is written down rather than left to its default, and that is a
-/// property of the harness rather than of the feature: the default is relative
-/// to the working directory, and a test that took it would create a scratch
-/// directory inside the package it is being run from. Every path a scenario
-/// names lives inside the scenario, so a scenario leaves nothing behind.
 fn forge_table(scenario: &Scenario, gh: &Path, work: &Path, extra: &str) -> String {
     format!(
         "[github]\n\
@@ -144,13 +82,10 @@ fn forge_table(scenario: &Scenario, gh: &Path, work: &Path, extra: &str) -> Stri
     )
 }
 
-/// A path as a TOML string, escaped rather than pasted.
 fn toml_path(path: &Path) -> String {
     format!("{:?}", path.display().to_string())
 }
 
-/// `fiddle run <ref> --capability publish_change --json`, with the credential
-/// exported, unjudged.
 fn publish(scenario: &Scenario) -> std::process::Output {
     scenario
         .run_command(INVOCATION_REF)
@@ -160,11 +95,6 @@ fn publish(scenario: &Scenario) -> std::process::Output {
         .unwrap()
 }
 
-/// What the run said about the stage it ran.
-///
-/// `progress[0].summary` rather than the outcome's reason: a run's own failure
-/// text lands there, filed under the stage it happened at, which is the field
-/// `report.rs` documents as carrying it.
 fn summary_of(payload: &serde_json::Value) -> String {
     payload["progress"][0]["summary"]
         .as_str()
@@ -172,8 +102,6 @@ fn summary_of(payload: &serde_json::Value) -> String {
         .to_string()
 }
 
-/// The `--json` run payload, and the stderr beside it for a failing assertion to
-/// quote.
 fn payload_of(out: &std::process::Output) -> serde_json::Value {
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     serde_json::from_str(&stdout).unwrap_or_else(|e| {
@@ -184,14 +112,6 @@ fn payload_of(out: &std::process::Output) -> serde_json::Value {
     })
 }
 
-/// **The criterion Task 9 could not satisfy.**
-///
-/// `run --capability publish_change` used to select the capability and then
-/// refuse: the `[github]` table did not exist, so `build_capability` had nothing
-/// to construct an executor from. With the table written, the binary builds the
-/// clients, owns the effect context, hands the capability a borrowed executor,
-/// and runs it — and the evidence that it *executed* rather than merely built is
-/// that the world was consulted: the run reaches an effect and reports on it.
 #[test]
 fn run_constructs_and_executes_the_publishing_capability() {
     let (s, work) = publishable();
@@ -214,24 +134,11 @@ fn run_constructs_and_executes_the_publishing_capability() {
         serde_json::Value::Null,
         "the run must have reached a conclusion, got {payload}"
     );
-    // The refusal this bean removes must be gone, on both surfaces.
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(
         !stderr.contains("[github]"),
         "the capability is configured and must no longer be refused: {stderr}"
     );
-    // Row 11 and not row 2. Row 2 is what a *refused invocation* exits on, and
-    // it is what this scenario exited on before the table existed — so the
-    // number itself is evidence that the capability was built rather than
-    // declined.
-    //
-    // Row 11 rather than 20, and that is no longer the default it once was:
-    // since `decisions/016-a-permanent-refusal-is-not-retryable.md` the row is
-    // decided per failure. Nothing on the far end of `git push` is an obstacle
-    // in front of the request — put a forge there and the same invocation
-    // succeeds — so it stays retryable, which is what makes this scenario the
-    // discriminator for the policy deny's 20 below. A build that mapped every
-    // capability failure to one row fails one of the two.
     assert_eq!(
         out.status.code(),
         Some(11),
@@ -240,11 +147,6 @@ fn run_constructs_and_executes_the_publishing_capability() {
     );
 }
 
-/// **`[github.policy]` reaches the executor.**
-///
-/// The first effect's own postcondition does not hold — the scripted `gh` says
-/// the branch is absent — so the executor gets past its step 3 and asks policy,
-/// which is the only place this document's word can be acted on.
 #[test]
 fn a_deployment_rule_in_the_document_refuses_the_effect_it_names() {
     let (s, work) = publishable();
@@ -260,22 +162,6 @@ fn a_deployment_rule_in_the_document_refuses_the_effect_it_names() {
     let payload = payload_of(&out);
     let summary = summary_of(&payload);
 
-    // **Row 20, and the comparison is against 11 as well as against 2.**
-    //
-    // Not row 2: the capability ran, and row 2 is what a document fiddle
-    // *declined to act on* exits with — so the number still says the deployment's
-    // rule was applied by the executor rather than by the CLI. That was the only
-    // comparison this assertion originally made, and it left the run on 11.
-    //
-    // Not row 11 either, which is what it used to be. `RunOutcome::Retryable`
-    // promises that repeating this invocation succeeds once the named thing is
-    // fixed; a `[github.policy]` deny hands `policy::combine` the same pair on
-    // every repeat and gets the same refusal back, so automation retrying on 11
-    // loops on it forever. `RunOutcome::Failed` promises exactly what is true
-    // here — *this will not succeed by being repeated as invoked*. See
-    // `decisions/016-a-permanent-refusal-is-not-retryable.md`;
-    // `run_constructs_and_executes_the_publishing_capability` above is the
-    // discriminator that keeps a transient failure on 11.
     assert_eq!(
         out.status.code(),
         Some(20),
@@ -293,12 +179,6 @@ fn a_deployment_rule_in_the_document_refuses_the_effect_it_names() {
     );
 }
 
-/// **The discriminator.** The same world without the rule does not produce a
-/// policy refusal.
-///
-/// Without this, the scenario above would pass on a build that refused every
-/// effect for some unrelated reason, and on one that never consulted the
-/// document at all.
 #[test]
 fn the_same_world_without_the_rule_is_not_refused_by_policy() {
     let (s, work) = publishable();
@@ -312,12 +192,6 @@ fn the_same_world_without_the_rule_is_not_refused_by_policy() {
     );
 }
 
-/// **The rule is per effect kind, not one switch.**
-///
-/// The scripted `gh` reports the branch as already published at this worktree's
-/// `HEAD`, so the branch effect settles at step 3 and the run reaches the pull
-/// request — where the *only* rule this document writes is waiting. A build that
-/// mapped every kind to one value would have refused at the branch instead.
 #[test]
 fn a_rule_written_for_one_kind_refuses_that_kind_and_not_the_one_before_it() {
     let (s, work) = publishable();
@@ -340,8 +214,6 @@ fn a_rule_written_for_one_kind_refuses_that_kind_and_not_the_one_before_it() {
         !summary.contains("EnsureBranchPublished"),
         "the branch carries no rule and must not have been refused, got {payload}"
     );
-    // And the effect that did happen left its receipt, which is what proves the
-    // run got past the branch rather than never having reached it.
     let evidence = payload["progress"][0]["evidence"].to_string();
     assert!(
         evidence.contains("effect:ensure_branch_published:"),
@@ -349,8 +221,6 @@ fn a_rule_written_for_one_kind_refuses_that_kind_and_not_the_one_before_it() {
     );
 }
 
-/// The credential is resolved on this arm and nowhere else, and it reaches no
-/// observable surface — a second sentinel beside `capability_selection.rs`'s.
 #[test]
 fn the_forge_credential_reaches_no_surface() {
     let (s, work) = publishable();
@@ -360,9 +230,6 @@ fn the_forge_credential_reaches_no_surface() {
     let out = publish(&s);
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    // Asserted first, because everything below it would hold trivially of a run
-    // that never resolved a credential at all. This one did: it built both
-    // clients from the variable and executed.
     assert_eq!(
         payload_of(&out)["capability_executions"][0]["capability_id"],
         "publish_change",
@@ -380,8 +247,6 @@ fn the_forge_credential_reaches_no_surface() {
     }
 }
 
-/// An absent credential is refused by the name of the variable, before anything
-/// is executed.
 #[test]
 fn a_publication_without_its_credential_names_the_variable() {
     let (s, work) = publishable();
@@ -404,8 +269,6 @@ fn a_publication_without_its_credential_names_the_variable() {
     assert!(!s.report_dir().exists(), "a refused run published nothing");
 }
 
-/// Each key a publication cannot invent is refused by the name it is written
-/// under, at the moment it is needed — the `workspace.fixture` precedent.
 #[test]
 fn a_publication_names_the_table_or_key_the_document_is_missing() {
     let cases: [(&str, &str); 3] = [
@@ -437,11 +300,6 @@ fn a_publication_names_the_table_or_key_the_document_is_missing() {
     }
 }
 
-/// **`inspect` builds nothing from the id, for every value of the flag.**
-///
-/// The document here describes no forge at all and no credential is exported,
-/// so a build that constructed the capability from the id would refuse. M1 had
-/// to repair exactly this once.
 #[test]
 fn inspect_names_the_publishing_capability_without_building_it() {
     let s = Scenario::new();

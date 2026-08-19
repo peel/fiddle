@@ -4,17 +4,11 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
-# Acceptance tests drive the compiled `fiddle` binary as a subprocess; they never
-# call library functions directly. The crate therefore has no library of its own
-# and no dependency on fiddle-core or fiddle-runtime.
 [lib]
 path = "src/lib.rs"
 
 [dev-dependencies]
 assert_cmd.workspace = true
-# Used to re-derive the expected correlation key from the design's definition,
-# so the acceptance lane checks the binary against the specification rather than
-# against `fiddle-core`'s implementation of it.
 blake3.workspace = true
 regex.workspace = true
 serde_json.workspace = true

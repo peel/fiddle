@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# resolve-domains.sh — Parse a task's domain list and resolve each to full evaluator config.
-# Exit 0 = all resolved (including fallbacks), 1 = app error, 2 = invalid input.
 set -euo pipefail
 
 usage() {
@@ -33,24 +31,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Validate required args
 [[ -n "$DOMAINS" ]] || { echo '{"error":"missing --domains"}' >&2; exit 2; }
 [[ -n "$CONFIG" ]]  || { echo '{"error":"missing --config"}' >&2; exit 2; }
 [[ -f "$CONFIG" ]]  || { echo '{"error":"config file not found: '"$CONFIG"'"}' >&2; exit 2; }
 
-# Check dependencies
 command -v jq >/dev/null 2>&1 || { echo '{"error":"jq not found"}' >&2; exit 2; }
 
-# Validate JSON
 if ! jq empty "$CONFIG" 2>/dev/null; then
   echo '{"error":"invalid JSON in config file"}' >&2
   exit 2
 fi
 
-# Split comma-separated domains into a JSON array of strings (trim whitespace, deduplicate)
 DOMAIN_LIST=$(echo "$DOMAINS" | jq -R '[split(",")[] | gsub("^\\s+|\\s+$"; "") | select(length > 0)] | unique')
 
-# Resolve each domain against evaluators.domains in config
 OUTPUT=$(jq -n \
   --argjson domain_list "$DOMAIN_LIST" \
   --slurpfile config "$CONFIG" '

@@ -1,26 +1,14 @@
-//! The fixture-backed capability: record this invocation's correlation key.
-
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::stub::STUB_ORIGIN;
 use fiddle_core::{correlation_key, CapabilityId, ChangeSetState, EvidenceRef};
 use std::path::{Path, PathBuf};
 
-/// The M0 capability: record this invocation's correlation key as the change
-/// set for the work item.
-///
-/// Holds the project name because the correlation key is a function of the
-/// project *and* the invocation reference (design §4.3); the capability derives
-/// the key it writes from the same pure function the assessment compares
-/// against, so a run's own marker is by construction the one its next
-/// assessment recognises.
 pub struct StubMark {
     root: PathBuf,
     project: String,
 }
 
 impl StubMark {
-    /// A capability writing into the fixture root at `root` on behalf of
-    /// `project`.
     pub fn new(root: impl Into<PathBuf>, project: impl Into<String>) -> Self {
         StubMark {
             root: root.into(),
@@ -35,9 +23,6 @@ impl Capability for StubMark {
         fiddle_core::STUB_MARK
     }
 
-    /// The one stage M0's capability has, and the name every M0 bundle already
-    /// carries. Stated here rather than in the orchestration so that it is this
-    /// capability's word for its own step.
     fn stage(&self) -> &'static str {
         "mark"
     }
@@ -68,19 +53,6 @@ impl Capability for StubMark {
     }
 }
 
-/// Serialize `state` to `destination` so that no reader ever observes it
-/// half-written.
-///
-/// Write-to-temp-then-rename, because the change set is the very file the next
-/// invocation's assessment reads: a torn write would be observed as a malformed
-/// source, which fails closed to `Blocked` and would strand the work. The
-/// temporary file is removed on every failure path, so a run that could not
-/// finish leaves no debris behind for the next one to trip over.
-///
-/// Shared with [`super::repair`] rather than reimplemented there: both
-/// capabilities write the same file for the same reader, and two spellings of
-/// "record the change set" would be two chances to get the torn-write rule
-/// wrong.
 pub(super) fn write_atomically(destination: &Path, state: &ChangeSetState) -> std::io::Result<()> {
     let directory = destination.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(directory)?;
@@ -124,9 +96,6 @@ mod tests {
         .expect("an Execute derivation authorises")
     }
 
-    /// What the capability writes must be what the change port reads back —
-    /// asserted through the port rather than by re-parsing the file, because
-    /// the next invocation's assessment reaches it that way.
     #[tokio::test]
     async fn the_marker_it_writes_is_the_marker_the_change_port_observes() {
         let dir = tempfile::tempdir().unwrap();
@@ -148,9 +117,6 @@ mod tests {
         }
     }
 
-    /// Executing twice must land on the same bytes: the capability is a
-    /// function of the fixture and the invocation reference, which is what the
-    /// stability proof rests on.
     #[tokio::test]
     async fn executing_twice_produces_byte_identical_output() {
         let dir = tempfile::tempdir().unwrap();
@@ -169,8 +135,6 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), first);
     }
 
-    /// The rename is what makes a partial write unobservable; the temporary
-    /// path it goes through must not survive a successful run either.
     #[tokio::test]
     async fn it_leaves_no_temporary_file_behind() {
         let dir = tempfile::tempdir().unwrap();
@@ -189,8 +153,6 @@ mod tests {
         assert!(leftovers.is_empty(), "got {leftovers:?}");
     }
 
-    /// A capability handed someone else's grant refuses rather than doing the
-    /// work the grant was not for.
     #[tokio::test]
     async fn a_grant_for_another_capability_is_refused() {
         let dir = tempfile::tempdir().unwrap();
@@ -217,13 +179,9 @@ mod tests {
         );
     }
 
-    /// A write that cannot land is reported with the path it failed on, and
-    /// leaves nothing behind — the caller turns this into a retryable outcome.
     #[tokio::test]
     async fn an_unwritable_root_is_reported_with_its_path() {
         let dir = tempfile::tempdir().unwrap();
-        // A file where the `changes` directory must go: `create_dir_all` cannot
-        // succeed, so the failure happens before any byte is written.
         std::fs::write(dir.path().join("changes"), "not a directory").unwrap();
 
         let error = StubMark::new(dir.path(), "icecube")

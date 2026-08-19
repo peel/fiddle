@@ -1,17 +1,3 @@
-//! One bounded attempt, driven by a scripted model.
-//!
-//! Everything here runs against `MockCompletionModel`, which is a
-//! [`CompletionModel`](rig_core::completion::CompletionModel) like any other:
-//! [`attempt`] is generic over the trait rather than over a Fiddle-owned
-//! provider abstraction, so a test substitutes a script where production
-//! substitutes a gateway. No test in this file holds a credential or opens a
-//! socket, and that is a consequence of the signature rather than of a mocking
-//! layer somebody has to maintain.
-//!
-//! The tools these runs drive are the real ones over a real git worktree. A
-//! scripted model that "wrote a file" and left the tree untouched would pass a
-//! transcript-shaped test and fail every one of these.
-
 mod fixture;
 
 use fiddle_runtime::agent::{attempt, AgentBudget, AgentError, Direction, ToolHost, ToolReceipts};
@@ -23,13 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-/// A plausible repair of the fixture crate, so a write is visible in `git`.
 const REPAIRED: &str = "pub fn f() -> u8 { 1 }\n";
 
-/// A host context over a throwaway one-commit repository.
-///
-/// The `TempDir` comes back with it because dropping it would take the
-/// workspace with it.
 fn test_host() -> (ToolHost, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let repo = fixture::trivial_repo(dir.path());
@@ -55,7 +36,6 @@ fn test_host() -> (ToolHost, tempfile::TempDir) {
     (host, dir)
 }
 
-/// Bounds loose enough that a test which is not about a bound never trips one.
 fn budget() -> AgentBudget {
     AgentBudget {
         max_turns: 8,
@@ -66,7 +46,6 @@ fn budget() -> AgentBudget {
     }
 }
 
-/// A final turn carrying a report that parses.
 fn report_turn(summary: &str, complete: bool) -> MockTurn {
     MockTurn::text(
         json!({"changed_files": [], "summary": summary, "claimed_complete": complete}).to_string(),
@@ -124,9 +103,6 @@ async fn the_turn_budget_is_enforced_by_the_runtime() {
     )
     .await;
 
-    // The three bounds all raise `Bounded`, so the reason is what tells them
-    // apart — and this one has to be the turn budget rather than the deadline
-    // or the file cap, both of which are wide open here.
     match outcome {
         Err(AgentError::Bounded { reason }) => assert!(
             reason.contains("turn budget of 2"),
@@ -138,9 +114,6 @@ async fn the_turn_budget_is_enforced_by_the_runtime() {
 
 #[tokio::test]
 async fn exceeding_the_changed_file_cap_fails_the_attempt() {
-    // The cap is checked against GIT's changed set, not the model's claimed
-    // list: the model's changed_files is a claim and could understate what it
-    // touched.
     let (host, _g) = test_host();
     let model = MockCompletionModel::new([
         MockTurn::tool_call("c1", "write_file", json!({"path": "a.rs", "contents": "x"})),
@@ -170,13 +143,6 @@ async fn exceeding_the_changed_file_cap_fails_the_attempt() {
 
 #[tokio::test]
 async fn an_ignore_rule_the_model_wrote_cannot_lift_the_changed_file_cap() {
-    // The cap counts git's changed set rather than the model's claim, which the
-    // test above proves. This is the next question along and the one that makes
-    // the first answer worth anything: *whose* rules does git apply when it
-    // answers? `.gitignore` is a file the model can write, so a derivation
-    // honouring the worktree's own ignore rules lets the model author the
-    // question as well as decline to answer it — four files changed, one
-    // reported, and a bound the host set quietly bypassed.
     let (host, _g) = test_host();
     let model = MockCompletionModel::new([
         MockTurn::tool_call(
@@ -232,8 +198,8 @@ async fn malformed_structured_output_is_a_protocol_error_not_a_default() {
 async fn a_tool_error_is_returned_to_the_model_which_can_recover() {
     let (host, _g) = test_host();
     let model = MockCompletionModel::new([
-        MockTurn::tool_call("c1", "read_file", json!({"path": "../nope"})), // refused
-        MockTurn::tool_call("c2", "read_file", json!({"path": "src/lib.rs"})), // recovers
+        MockTurn::tool_call("c1", "read_file", json!({"path": "../nope"})),
+        MockTurn::tool_call("c2", "read_file", json!({"path": "src/lib.rs"})),
         report_turn("recovered", false),
     ]);
 
@@ -242,8 +208,6 @@ async fn a_tool_error_is_returned_to_the_model_which_can_recover() {
         .expect("a refused tool call does not end the run");
 
     assert_eq!(report.summary, "recovered");
-    // `claimed_complete: false` and an `Ok` in the same breath: the flag is
-    // evidence, and evidence is not control flow.
     assert!(!report.claimed_complete);
 
     let receipts = host.receipts();
@@ -260,10 +224,6 @@ async fn a_tool_error_is_returned_to_the_model_which_can_recover() {
 
 #[tokio::test]
 async fn a_provider_fault_is_told_apart_from_a_misbehaving_model() {
-    // The script runs out, which is what the mock does when a gateway would
-    // have failed: the run never reaches a final message at all. That is the
-    // gateway's fault and not the model's, and a capability that cannot tell
-    // the two apart cannot decide whether retrying is worth anything.
     let (host, _g) = test_host();
     let model = MockCompletionModel::new([MockTurn::tool_call("c1", "list_files", json!({}))]);
 
@@ -277,9 +237,6 @@ async fn a_provider_fault_is_told_apart_from_a_misbehaving_model() {
 
 #[tokio::test]
 async fn cancelling_mid_attempt_stops_the_attempt_rather_than_waiting_for_it() {
-    // The check is a long sleep, so the attempt is genuinely in flight when the
-    // token is cancelled — this is not a pre-cancelled token being noticed on
-    // the way in.
     let (mut host, _g) = test_host();
     host.check = WorkspaceCommand {
         program: "sleep".to_string(),
@@ -317,9 +274,6 @@ async fn cancelling_mid_attempt_stops_the_attempt_rather_than_waiting_for_it() {
 
 #[tokio::test]
 async fn the_deadline_bounds_an_attempt_that_would_otherwise_run_on() {
-    // Nothing cancels and no turn budget is reached; the wall clock is the only
-    // bound left, and it has to be able to interrupt work rather than merely
-    // outlive it.
     let (mut host, _g) = test_host();
     host.check = WorkspaceCommand {
         program: "sleep".to_string(),
@@ -359,8 +313,6 @@ async fn the_deadline_bounds_an_attempt_that_would_otherwise_run_on() {
 
 #[tokio::test]
 async fn the_budgets_tool_timeout_bounds_a_single_tool_without_ending_the_run() {
-    // The host's own command carries a generous bound; the budget's is short.
-    // A budget that could not tighten it would be a field nothing reads.
     let (mut host, _g) = test_host();
     host.check = WorkspaceCommand {
         program: "sleep".to_string(),

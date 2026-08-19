@@ -1,14 +1,3 @@
-# The external half of the M0 proof. `.github/workflows/rust.yml` runs the same
-# scenario in-tree as `cargo test -p fiddle-acceptance --test m0_skeleton`; this
-# job runs it as a shell script from peel/fiddle-acceptance, against the release
-# binary, so the milestone is also provable by someone with no access to these
-# sources. See docs/technical/acceptance-repository.md.
-#
-# No secret appears anywhere in this file, and none is needed:
-# peel/fiddle-acceptance is public, so `actions/checkout` reaches it
-# credential-free. That keeps the external lane consistent with the milestone's
-# credential-free hard constraint, and keeps this job working unchanged on a
-# fork, where a repository secret would not exist.
 name: acceptance-repo
 on: [workflow_dispatch, push]
 jobs:
@@ -17,16 +6,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
-        # Kept in lockstep with rust-toolchain.toml: dtolnay/rust-toolchain
-        # requires an explicit toolchain and will not read that file.
         with: { toolchain: "1.97.1" }
       - run: cargo build --release
-      # Checked out with no `token:` and no `ssh-key:`. The repository is
-      # public, so the default read-only job token is never even required to
-      # reach it.
       - uses: actions/checkout@v4
         with: { repository: peel/fiddle-acceptance, path: acceptance }
-      # `jq` is preinstalled on ubuntu-latest; the scenario checks for it and
-      # fails with a clear message rather than a confusing one if it is not.
       - name: M0 acceptance scenario (external, credential-free)
         run: FIDDLE_BIN="$PWD/target/release/fiddle" bash acceptance/scenarios/m0_skeleton.sh

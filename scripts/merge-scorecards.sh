@@ -1,40 +1,30 @@
 #!/usr/bin/env bash
-# merge-scorecards.sh — Merge multiple provider scorecards into one.
-# Reads JSON array of scorecards on stdin, writes merged scorecard to stdout.
-# Disagreements (spread >= 3) emitted to stderr as JSON array.
-# Exit 0 = merged successfully, 2 = invalid input.
 set -euo pipefail
 
-# Read all stdin
 INPUT=$(cat)
 
-# Validate: must be valid JSON
 if ! echo "$INPUT" | jq empty 2>/dev/null; then
   echo "Error: invalid JSON input" >&2
   exit 2
 fi
 
-# Validate: must be an array
 INPUT_TYPE=$(echo "$INPUT" | jq -r 'type')
 if [ "$INPUT_TYPE" != "array" ]; then
   echo "Error: input must be a JSON array" >&2
   exit 2
 fi
 
-# Validate: must not be empty
 INPUT_LEN=$(echo "$INPUT" | jq 'length')
 if [ "$INPUT_LEN" -eq 0 ]; then
   echo "Error: input array must not be empty" >&2
   exit 2
 fi
 
-# Validate: every scorecard must carry a criteria array
 if ! echo "$INPUT" | jq -e 'all(.[]; type == "object" and (.criteria | type == "array"))' >/dev/null 2>&1; then
   echo '{"error": "every scorecard must contain a criteria array"}' >&2
   exit 2
 fi
 
-# Perform the merge entirely in jq
 echo "$INPUT" | jq -c '
   # Collect all unique domains and dimensions across all scorecards
   . as $cards |
@@ -141,7 +131,6 @@ echo "$INPUT" | jq -c '
   else . end
 ' 2>/dev/null
 
-# Now compute disagreements and emit to stderr
 echo "$INPUT" | jq -c '
   . as $cards |
   [.[] | .domains | keys[]] | unique as $all_domains |

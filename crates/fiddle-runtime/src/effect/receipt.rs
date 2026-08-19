@@ -1,187 +1,44 @@
-//! What an effect leaves behind: what was observed, and what was refused.
-//!
-//! A receipt is deliberately a record of an *observation* rather than of a
-//! response. Its `postcondition` and `external_ref` are read back out of the
-//! world after the mutation, because the case this whole milestone exists for is
-//! the one where the response never arrived — and a receipt assembled from a
-//! response would have nothing to say about it.
-//!
-//! The failures live here beside it for the same reason the outcome does: the
-//! interesting thing about an effect that did not happen is *which kind* of not
-//! happening it was, and that is a single taxonomy whether the answer is a
-//! receipt or an error.
-
 use crate::github::GhError;
 use fiddle_core::{EffectId, EffectKind, PayloadHash};
 
-/// Something the world was observed to contain.
-///
-/// Three methods rather than one, because a receipt needs three different
-/// things from an observation and they are not interchangeable: a sentence a
-/// person reads, an external reference a later run can look the object up by,
-/// and the typed value the calling capability actually wanted.
-///
-/// `into_value` takes `self` so the typed value is moved out rather than
-/// cloned, which is what lets an observation carry something a capability
-/// consumes.
 pub trait ObservedState {
-    /// The typed result the proposing capability asked for.
     type Value;
 
-    /// What is true out there, in terms a person reading a bundle understands.
     fn describe(&self) -> String;
 
-    /// The external revision or reference: a commit sha, a PR number, a run id.
-    /// `None` when the object has no stable external name.
     fn reference(&self) -> Option<String>;
 
-    /// The typed value, consuming the observation.
     fn into_value(self) -> Self::Value;
 }
 
-/// The verified result of one effect.
-///
-/// **A receipt is not serialized, and `Serialize` is inert here.** It reaches a
-/// published bundle as a *rendered* [`EvidenceRef`](fiddle_core::EvidenceRef) —
-/// see `receipt_evidence` in `crate::capability::publish`, which states the
-/// case: the bundle's evidence is a list of strings and giving a
-/// structured receipt a home in the report schema would widen a published
-/// contract. This comment used to claim the opposite, and the two could not both
-/// be right.
-///
-/// The derive is unexercised rather than merely unused, and by more than
-/// omission: none of the three `T`s a *run* instantiates it with —
-/// `PublishedBranch`, `PullRequest`, `WorkflowRun` — is itself `Serialize`, so
-/// the derived bound is unsatisfiable for every receipt production can produce.
-/// It stays because the epic's `## Contracts` pins the derive;
-/// `docs/BACKLOG.md` records removing it.
-///
-/// There is no `Deserialize`, and that part was always true: for the same reason
-/// [`fiddle_core::PolicyDecision`] has none, nothing reads a receipt back in as
-/// an authority. A later run re-derives the identity from canonical inputs and
-/// looks at the world again.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct EffectReceipt<T> {
     pub effect_id: EffectId,
     pub payload_hash: PayloadHash,
     pub target: String,
-    /// Always [`EffectOutcome::Committed`](super::EffectOutcome::Committed) on
-    /// every path that builds one: a receipt is the *observed* result, and both
-    /// construction sites in [`super`] reach it from a postcondition that was
-    /// read back. The other two outcomes leave as an [`EffectError`] instead, and
-    /// the field is still the three-valued type because that vocabulary is what a
-    /// bundle consumer matches on.
     pub outcome: super::EffectOutcome,
-    /// What was observed to be true after the operation, read back rather than
-    /// assumed from the response.
     pub postcondition: String,
-    /// The external revision or reference: a commit sha, a PR number, a run id.
     pub external_ref: Option<String>,
     pub value: T,
 }
 
-/// What repeating the *same* invocation against the *same* deployment document
-/// would do to a failure.
-///
-/// The question [`fiddle_core::RunOutcome::Retryable`] documents as its own
-/// test — *would repeating this invocation, once someone has fixed what the
-/// reason names, succeed?* — asked of one failure rather than left for a caller
-/// to guess from a message. It is the discriminator between exits **10**, **11**
-/// and **20**, one value per row the exit table gives a run that executed and
-/// did not complete.
-///
-/// **It was two-valued until M3,** and the third value is not a shade of the
-/// first two. `Correctable` and `Permanent` both answer a question about a
-/// *failure*; [`Recurrence::Awaiting`] answers that nothing failed. A run that
-/// published a question and stopped has done exactly what it was asked to do,
-/// and the only thing wrong with repeating it is that repeating is not what
-/// moves it forward — an answer is. Reading a wait as either of the other two
-/// is the defect the row exists to prevent: automation retrying on 11 would
-/// loop on a question nobody has answered, and automation treating 20 as final
-/// would abandon a run that is merely waiting.
-///
-/// **"Fixed" is narrower than "somebody could do something about it",** and the
-/// codebase already draws the line where this type draws it. A change set
-/// carrying a foreign correlation marker is fixable — somebody settles whose
-/// change set it is — and `crate::orchestration::concluded` maps it to
-/// [`fiddle_core::RunOutcome::Failed`] anyway, because repeating *re-derives the
-/// same verdict from the same observation*. That is the test: not whether a
-/// human could intervene, but whether the failure is an **obstacle in front of**
-/// the request or a **conclusion about** it. Read the loose way, every failure
-/// is correctable and exit 20 becomes unreachable — which is the reading that
-/// had automation looping on a denied effect forever.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Recurrence {
-    /// Something incidental got in the way, and the same invocation succeeds
-    /// once it is gone: a network comes back, a rate limit lifts, a lost answer
-    /// is settled by a read that works. Nothing here contradicts what the
-    /// invocation asked for. [`fiddle_core::RunOutcome::Retryable`].
     Correctable,
 
-    /// The same invocation, against the same document, reaches the same answer
-    /// — because the answer *is* the conclusion, drawn from inputs that repeat
-    /// unchanged. [`fiddle_core::RunOutcome::Failed`], whose promise is exactly
-    /// *this will not succeed by being repeated as invoked*.
     Permanent,
 
-    /// Nothing is wrong, and nothing will change until something outside this
-    /// process does: a question has been put to a person and no answer has
-    /// arrived. [`fiddle_core::RunOutcome::Suspended`], whose wording — *the
-    /// run stopped short of a decision it is not entitled to make* — is the
-    /// description, and exit **10**.
-    ///
-    /// The value ADR 016 promised. That decision classified
-    /// [`EffectError::HumanDecisionRequired`] as `Permanent` and said so in as
-    /// many words: `Suspended` promises that something can arrive and resume
-    /// the run, M2 had nothing that could arrive, and exiting 10 would have
-    /// told an operator to wait for something that was never coming. M3 builds
-    /// the channel, so the promise can be kept and the arm moves.
     Awaiting,
 }
 
-/// Every way an effect can fail to produce a receipt.
-///
-/// Each variant carries the [`EffectKind`] because a refusal reaches a person
-/// long after the run, and "denied" with no antecedent sends its reader back to
-/// the configuration to guess — the same argument [`fiddle_core::PolicyDecision`]
-/// makes for carrying a reason.
-///
-/// [`EffectError::Unresolved`] is the variant that is worth the type. It is not
-/// "it failed"; it is "nobody knows, and the read that was supposed to settle it
-/// did not". Collapsing it into [`EffectError::Adapter`] would tell a caller a
-/// write failed when it may well have landed, and the retry would perform it
-/// twice.
-///
-/// The variants split three ways, and the split is [`EffectError::recurrence`]
-/// rather than an ordering of the enum: three of them are permanent under
-/// repetition and reach exit 20, two are correctable and reach exit 11, and
-/// [`EffectError::HumanDecisionRequired`] is a wait and reaches exit 10. It was
-/// four and two until M3 gave the wait somewhere to go; see ADR 016.
 #[derive(Debug, thiserror::Error)]
 pub enum EffectError {
     #[error("policy denied {kind:?}: {reason}")]
     PolicyDenied { kind: EffectKind, reason: String },
-    /// The effect's minimum, or the document's rule, says a person decides —
-    /// and no person has. Names what would satisfy it, because the run is
-    /// waiting for exactly that.
     #[error("{kind:?} is awaiting a human decision on the channel M3 introduced: {reason}")]
     HumanDecisionRequired { kind: EffectKind, reason: String },
-    /// The result was unknown and the postcondition read did not settle it.
     #[error("{kind:?} left an unresolved outcome: {reason}")]
     Unresolved { kind: EffectKind, reason: String },
-    /// The envelope was minted for one payload and the operation would have
-    /// applied another.
-    ///
-    /// Its own variant rather than a [`EffectError::PolicyDenied`], because no
-    /// policy refused this: the proposal and the operation disagree about what
-    /// the request *is*, which is a defect in the caller rather than a rule about
-    /// what may be done. The identity is unchanged in this case — that is the
-    /// whole reason the payload is hashed separately — so without the digest the
-    /// mismatch would arrive looking like ordinary work.
-    ///
-    /// Both digests are carried because either one alone sends its reader to
-    /// recompute the other, and a diagnostic that named only what was refused
-    /// could not say what it was refused *against*.
     #[error(
         "{kind:?} was authorized for payload {} and would apply {}; nothing was performed",
         approved.0,
@@ -192,7 +49,6 @@ pub enum EffectError {
         approved: PayloadHash,
         applying: PayloadHash,
     },
-    /// More than one object matched where exactly one was the postcondition.
     #[error("{kind:?} found {count} matching objects, expected at most one")]
     DuplicateState { kind: EffectKind, count: usize },
     #[error("adapter failure for {kind:?}: {source}")]
@@ -200,88 +56,18 @@ pub enum EffectError {
 }
 
 impl EffectError {
-    /// Which exit row this failure belongs in, decided per variant and in one
-    /// visible table.
-    ///
-    /// Exhaustive by construction — no wildcard arm — so a seventh variant
-    /// cannot be added without its author being made to answer this question.
-    /// That is the point: the three permanent refusals below were added by M2
-    /// *without* the question being asked, every one of them inherited exit 11
-    /// from the arm that catches a capability `Err`, and automation retrying on
-    /// 11 looped on a denied effect indefinitely.
-    ///
-    /// See `docs/technical/decisions/016-a-permanent-refusal-is-not-retryable.md`.
     pub fn recurrence(&self) -> Recurrence {
         match self {
-            // A `[github.policy]` rule is a property of the document, and the
-            // document is an input to the invocation rather than a thing in its
-            // way. Repeating hands `policy::combine` the same pair and gets the
-            // same `Deny` back, forever. An operator who edits `fiddle.toml` is
-            // not repeating this invocation; they are describing a different
-            // deployment and running against that.
             EffectError::PolicyDenied { .. } => Recurrence::Permanent,
 
-            // **The arm ADR 016 said would move, moved.** `RequireHuman` is a
-            // rule that resolves through a decision channel. In M2 there was
-            // none, so nothing a repeat could reach would answer it and a
-            // repeat re-derived the same requirement — which is `Permanent`'s
-            // test, and which is why the decision put it there and wrote down
-            // the condition under which it would leave.
-            //
-            // That condition is met. M3 publishes the question and reads the
-            // answer back, so something *can* arrive and resume the run, which
-            // is precisely the promise `Suspended` makes and the one M2 could
-            // not keep. Nothing about the failure changed; what changed is that
-            // waiting is now a thing a run can do. The move is a behaviour
-            // change with a decision behind it rather than an exit code quietly
-            // meaning something new, which is the form ADR 016 asked for.
-            //
-            // It moves alone. The other three permanent refusals below are
-            // conclusions rather than questions, and no channel answers a
-            // conclusion.
             EffectError::HumanDecisionRequired { .. } => Recurrence::Awaiting,
 
-            // A defect in the caller, not a condition in the world: the
-            // proposal and the operation disagree about what the request *is*,
-            // and they are both this build's own code. Every repeat of this
-            // build disagrees identically. Fixing it means shipping a different
-            // fiddle.
             EffectError::PayloadDiverged { .. } => Recurrence::Permanent,
 
-            // **Considered separately from the two refusals above, and it lands
-            // here by a different argument.** Nothing refused this: two objects
-            // matched where the postcondition allows one, so the world holds an
-            // ambiguity fiddle is not entitled to resolve — picking the first is
-            // precisely what `GhError::Duplicate` exists to have refused.
-            //
-            // That is `Blocked`'s family rather than a refusal's, and `Blocked ⇒
-            // Failed` is already this codebase's rule, argued at length in
-            // `crate::orchestration::concluded` for the closest available
-            // precedent: a change set carrying a *different* invocation's
-            // correlation marker. That case is fixable too — somebody settles
-            // whose change set it is — and it is `Failed` anyway, because
-            // repeating re-derives the same verdict from the same observation
-            // and keeps doing so until a human intervenes in the world. A second
-            // pull request open on one head is the same shape, so it gets the
-            // same row for the same stated reason.
             EffectError::DuplicateState { .. } => Recurrence::Permanent,
 
-            // The variant the whole milestone is about, and the one place
-            // `Retryable` is the *only* honest answer. Nobody knows whether the
-            // write landed, and `Unknown` is resolved by reading the world — the
-            // first thing a repeat does, at the executor's step 3, before it
-            // proposes anything. `fiddle-cli`'s `read_retry` documentation
-            // already states this route: exhausting the budget reaches
-            // `Unresolved` → `Retryable` → exit 11.
             EffectError::Unresolved { .. } => Recurrence::Correctable,
 
-            // A forge that would not answer, a credential that was refused, a
-            // rate limit, a wrapper that printed something unreadable. Every one
-            // of them is an obstacle in front of the request rather than an
-            // answer to it, and every one satisfies `Retryable`'s test directly:
-            // fix what the reason names — the host, the token, the wait — and
-            // the same invocation succeeds. Pinned by
-            // `exactly_once::an_unreachable_github_publishes_nothing_and_reports_an_unread_forge`.
             EffectError::Adapter { .. } => Recurrence::Correctable,
         }
     }
@@ -297,10 +83,6 @@ mod tests {
         "because".to_string()
     }
 
-    /// **The table, asserted rather than described.** Every variant, both
-    /// families, in one place — so a change to any arm shows up as a failing
-    /// assertion naming the variant rather than as a silently different exit
-    /// code three crates away.
     #[test]
     fn every_effect_failure_declares_which_exit_row_it_belongs_in() {
         let cases: [(&str, EffectError, Recurrence); 6] = [
@@ -365,10 +147,6 @@ mod tests {
         }
     }
 
-    /// ADR 016 said this row moves the moment a decision channel exists. It
-    /// exists, so the move is asserted deliberately rather than being left to
-    /// the table above — where it would read as one more row and not as the
-    /// behaviour change it is.
     #[test]
     fn a_required_human_decision_is_now_awaiting_rather_than_permanent() {
         let error = EffectError::HumanDecisionRequired {
@@ -383,11 +161,6 @@ mod tests {
         );
     }
 
-    /// The other three permanent refusals do not move with it. `PolicyDenied`
-    /// is a settled refusal, `DuplicateState` is a world fiddle is not entitled
-    /// to resolve, and `PayloadDiverged` is a conclusion about the request. A
-    /// build that moved the whole family would satisfy the assertion above by
-    /// accident.
     #[test]
     fn no_other_permanent_refusal_became_a_wait() {
         let refusals = [
@@ -410,9 +183,6 @@ mod tests {
         }
     }
 
-    /// The discriminating half. A classification with every variant on one side
-    /// would satisfy the table above by accident, and the whole finding is that
-    /// exactly that had happened: all six were exit 11.
     #[test]
     fn the_two_families_are_both_inhabited() {
         assert_ne!(

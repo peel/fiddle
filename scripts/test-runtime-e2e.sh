@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# test-runtime-e2e.sh — Integration test: runtime evaluation e2e lifecycle
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -37,7 +36,6 @@ is_running() {
 }
 
 TEST_TMPDIR=$(mktemp -d)
-# Track PIDs to kill on cleanup
 CLEANUP_PIDS=()
 
 cleanup() {
@@ -50,14 +48,10 @@ cleanup() {
 }
 trap 'cleanup' EXIT
 
-# Pick a random high port to avoid conflicts
 TEST_PORT=$((RANDOM + 10000))
 
-# ═══════════════════════════════════════════════════════════════════════
 echo "=== Test 1: Full lifecycle — start, curl, stop ==="
-# ═══════════════════════════════════════════════════════════════════════
 
-# 1a. Create domains config
 cat > "$TEST_TMPDIR/domains.json" << EOF
 {
   "domains": {
@@ -70,45 +64,36 @@ cat > "$TEST_TMPDIR/domains.json" << EOF
 }
 EOF
 
-# 1b. Start runtimes and capture state JSON
 EXIT_CODE=0
 STATE_JSON=$("$SCRIPT_DIR/start-runtimes.sh" --domains "$TEST_TMPDIR/domains.json" 2>/dev/null) || EXIT_CODE=$?
 assert_exit "start-runtimes.sh exits 0" 0 "$EXIT_CODE"
 
-# 1c. Verify runtime state JSON has pid and port
 HAS_PID=$(echo "$STATE_JSON" | jq -r '.[0].pid // empty' 2>/dev/null)
 assert_true "state JSON has pid" "$([ -n "$HAS_PID" ] && echo "true" || echo "false")"
 
 HAS_PORT=$(echo "$STATE_JSON" | jq -r '.[0].port // empty' 2>/dev/null)
 assert_true "state JSON has port" "$([ -n "$HAS_PORT" ] && echo "true" || echo "false")"
 
-# Track pid for cleanup in case stop-runtimes fails
 if [ -n "$HAS_PID" ]; then
   CLEANUP_PIDS+=("$HAS_PID")
 fi
 
-# 1d. Curl the server and verify it responds
 CURL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$TEST_PORT/" 2>/dev/null || echo "0")
 assert_true "curl server returns 200" "$([ "$CURL_STATUS" = "200" ] && echo "true" || echo "false")"
 
-# 1e. Write state to file and stop runtimes
 echo "$STATE_JSON" > "$TEST_TMPDIR/runtime-state.json"
 EXIT_CODE=0
 "$SCRIPT_DIR/stop-runtimes.sh" --state "$TEST_TMPDIR/runtime-state.json" 2>/dev/null || EXIT_CODE=$?
 assert_exit "stop-runtimes.sh exits 0" 0 "$EXIT_CODE"
 
-# 1f. Verify the server process is dead
 sleep 0.5
 if [ -n "$HAS_PID" ]; then
   assert_true "server process is dead after stop" "$([ "$(is_running "$HAS_PID")" = "false" ] && echo "true" || echo "false")"
-  # Remove from cleanup since it's already dead
   CLEANUP_PIDS=()
 fi
 
 echo ""
-# ═══════════════════════════════════════════════════════════════════════
 echo "=== Test 2: Runtime-evidence skill exists and has required sections ==="
-# ═══════════════════════════════════════════════════════════════════════
 
 EVIDENCE_SKILL="$PROJECT_DIR/skills/runtime-evidence/SKILL.md"
 
@@ -118,9 +103,7 @@ assert_contains "contains Evidence Gathering" "$EVIDENCE_SKILL" "Evidence Gather
 assert_contains "contains Failure Classification" "$EVIDENCE_SKILL" "Failure Classification"
 
 echo ""
-# ═══════════════════════════════════════════════════════════════════════
 echo "=== Test 3: Domain evaluator templates exist ==="
-# ═══════════════════════════════════════════════════════════════════════
 
 FRONTEND_TEMPLATE="$PROJECT_DIR/skills/evaluate/evaluator-frontend.md"
 BACKEND_TEMPLATE="$PROJECT_DIR/skills/evaluate/evaluator-backend.md"
@@ -134,31 +117,14 @@ assert_contains "backend has API Contract Fidelity" "$BACKEND_TEMPLATE" "API Con
 assert_contains "backend has Error Handling" "$BACKEND_TEMPLATE" "Error Handling"
 
 echo ""
-# ═══════════════════════════════════════════════════════════════════════
 echo "=== Test 4: Develop loop and holistic skills have runtime lifecycle ==="
-# ═══════════════════════════════════════════════════════════════════════
 
 DEVELOP_LOOP_DIR="$PROJECT_DIR/skills/develop-loop"
 DEVELOP_HOLISTIC_DIR="$PROJECT_DIR/skills/develop-holistic"
 
-# The skill is the directory, not the file. These assertions named
-# `develop-loop/SKILL.md` and went red when the runtime lifecycle moved into
-# `dispatch-and-evidence.md` in the SKILL.md → companion-file split, while the
-# skill still said everything it had said before. What has to hold is that the
-# skill *carries* the reference; which of its files carries it is layout, and this
-# project has already reorganised that layout once.
-#
-# A pass prints where it found it, so the next move is visible in the log rather
-# than silent, and a failure prints the whole tree it searched — otherwise "not
-# referenced" and "searched the wrong directory" read identically.
 assert_contains_tree() {
   local desc="$1" dir="$2" pattern="$3"
   local hits
-  # `|| true` because this suite runs under `set -euo pipefail`, where a grep that
-  # matches nothing makes the whole substitution fail and kills the script before
-  # it can report anything. That is not a hypothetical: it is what this helper did
-  # on its first inversion, and a suite that dies on the failure path prints no
-  # denominator at all — the exact reading this fix exists to prevent.
   hits=$( { grep -rl -- "$pattern" "$dir" 2>/dev/null || true; } | sed "s|^$dir/||" | sort | tr '\n' ' ')
   if [ -n "$hits" ]; then
     PASS=$((PASS+1)); echo "  PASS: $desc (in ${hits% })"

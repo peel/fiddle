@@ -1,32 +1,4 @@
 #!/usr/bin/env bash
-# gate.sh — the accumulated gate, in one nix shell entry.
-#
-# `nix develop -c <cmd>` costs ~2.5s of shell entry, and an implementer verifying
-# a bean was issuing ~18 of them — plus, measurably, re-issuing some it had
-# already run, because the model recomposes the shell line each time and does not
-# notice the repeat. This runs them once and prints the per-binary counts, so the
-# named regression lanes need not be re-run individually to report them.
-#
-# Two rules this file learned the hard way, on its first day, from an implementer
-# that checked its output against its own log:
-#
-#   1. LOGS ARE PER-INVOCATION. The first version wrote to fixed /tmp paths. Five
-#      worktrees exist under .worktrees/; two agents running this at once
-#      truncated and interleaved into the same files, and whichever finished last
-#      left a file a different agent had already parsed. It printed GATE: FAIL
-#      over a green tree once, and a table missing a whole lane — with every
-#      label after it shifted by one — the next run.
-#   2. A REPORT THAT CAN DISAGREE WITH ITS LOG MUST SAY SO. The old table paired
-#      lines with `paste - -`, which assumes strict alternation in the grep
-#      stream. When that assumption breaks the table is silently wrong, and it is
-#      wrong in both directions: it can hide a real failure as easily as invent
-#      one. This version derives every number in a single awk pass and refuses to
-#      print a table it cannot reconcile with the log.
-#
-# Usage:
-#   scripts/gate.sh            # fmt, clippy, test, shell suites, build --release
-#   scripts/gate.sh --full     # the above plus nix flake check
-#   scripts/gate.sh --quick    # fmt, clippy, test only (no shell suites)
 set -uo pipefail
 
 MODE="${1:-default}"
@@ -53,9 +25,6 @@ nix develop -c bash -uo pipefail -c '
 
 TEST_LOG="$LOG_DIR/test.log"
 
-# One pass, a two-state machine: remember the binary a `Running`/`Doc-tests` line
-# names, attribute the next `test result:` to it. Nothing depends on stream
-# parity, so a line arriving out of order cannot shift a label onto another lane.
 awk '
   /^ *(Running|Doc-tests)/ {
     name = $0
@@ -83,16 +52,8 @@ awk '
   }
 ' "$TEST_LOG" 2> "$LOG_DIR/counts" || FAILED=1
 
-# Reconcile: the table must account for exactly the `test result:` lines in the
-# log, and the log's own failure count must agree. If they do not, the table is
-# not evidence and must not be presented as any.
 ROWS=$(awk '/^ROWS/{print $2}' "$LOG_DIR/counts")
 TFAIL=$(awk '/^FAILED/{print $2}' "$LOG_DIR/counts")
-# `grep -c` prints its count AND exits 1 when the count is zero, so a
-# `|| echo 0` fallback appends a SECOND zero and the variable becomes "0\n0",
-# which compares unequal to "0". That is how this script's first fix printed
-# GATE: FAIL over a green tree — the same false alarm it was written to stop,
-# one layer down. Let the count stand on its own and default it explicitly.
 RESULTS=$(grep -c '^test result:' "$TEST_LOG" 2>/dev/null); RESULTS=${RESULTS:-0}
 MARKERS=$(grep -c '^test result: FAILED' "$TEST_LOG" 2>/dev/null); MARKERS=${MARKERS:-0}
 
@@ -107,30 +68,6 @@ for L in fmt clippy; do
 done
 [ "$FAILED" -ne 0 ] && { echo "--- last failing test output ---"; grep -B 2 -A 12 '^failures:' "$TEST_LOG" 2>/dev/null | head -40; }
 
-# The shell suites, which until 2026-08-13 this gate did not run at all. Two of
-# them had been red on `main` for long enough that a person found them by reading
-# a transcript at finish-branch rather than the day the change landed — and the
-# change was a hook gaining an ownership guard, so the suites were stale rather
-# than the behaviour wrong. 49s measured against the Rust step's ~194s.
-#
-# Three things this step deliberately does not do, each of which was measured:
-#
-#   1. IT DOES NOT FOLD INTO `TOTALS`. The awk above attributes `test result:`
-#      lines to Rust binaries. Two suites print no parseable result line at all
-#      — one says "Maki installer tests passed", another prints a bare
-#      " 19 passed, 0 failed" — so a parser keyed on either would read two green
-#      suites as having measured nothing. This gets its own tally line.
-#   2. IT DOES NOT USE THE LOOP'S LAST EXIT CODE. `for t in …; do bash "$t"; done`
-#      exits with the *last* suite's status, which is the same defect as a
-#      driver's exit code standing in for a lane's. Every suite's code is
-#      recorded against its name.
-#   3. IT REFUSES AN EMPTY GLOB. Zero suites run and zero suites failing must not
-#      render identically; a moved directory would otherwise read as a pass.
-#
-# They need nothing the dev shell adds — bash, jq and coreutils — so they run
-# without a second `nix develop` entry. Three of them bind a port or spawn
-# processes; that is the whole flake surface, and it is deliberately gated rather
-# than excluded, because the runtime lifecycle is precisely what went stale here.
 if [ "$MODE" != "--quick" ]; then
   SHELL_PASS=0; SHELL_FAIL=0; SHELL_TOTAL=0
   : > "$LOG_DIR/shell.log"

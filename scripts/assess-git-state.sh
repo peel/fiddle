@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# assess-git-state.sh — Classify git state relative to a base commit.
-# Exit 0 = CLEAN, 1 = DIRTY, 2 = CORRUPTED
 set -euo pipefail
 
 BASE_SHA=""
@@ -16,14 +14,12 @@ done
 
 [[ -n "$BASE_SHA" ]] || { echo '{"error":"missing --base-sha"}'; exit 2; }
 
-# Check for merge conflicts
 if git ls-files --unmerged | grep -q .; then
   CONFLICT_FILES=$(git ls-files --unmerged | awk '{print $4}' | sort -u | jq -R -s 'split("\n") | map(select(. != ""))')
   jq -n --argjson files "$CONFLICT_FILES" '{"state":"CORRUPTED","reason":"merge conflict","files":$files}'
   exit 2
 fi
 
-# Check for uncommitted changes
 DIRTY_FILES=$(git status --porcelain 2>/dev/null | cut -c4-)
 if [[ -n "$DIRTY_FILES" ]]; then
   FILES_JSON=$(echo "$DIRTY_FILES" | jq -R -s 'split("\n") | map(select(. != ""))')
@@ -31,13 +27,11 @@ if [[ -n "$DIRTY_FILES" ]]; then
   exit 1
 fi
 
-# Validate base SHA exists
 if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
   jq -n --arg sha "$BASE_SHA" '{"state":"CORRUPTED","reason":"base SHA not found","base_sha":$sha}'
   exit 2
 fi
 
-# Clean — count commits ahead of base
 HEAD_SHA=$(git rev-parse HEAD)
 COMMITS_AHEAD=$(git rev-list "$BASE_SHA".."$HEAD_SHA" --count 2>/dev/null || echo "0")
 

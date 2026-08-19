@@ -3,16 +3,6 @@ name = "fiddle-core"
 version.workspace = true
 edition.workspace = true
 
-# Intentionally dependency-free at M0. `fiddle-core` holds pure domain types and
-# decision functions; it must never reach for an async runtime, an HTTP client,
-# or the process/filesystem/network/clock. `crates/fiddle-acceptance/tests/
-# crate_boundary.rs` enforces both halves of that rule mechanically.
-#
-# `serde`, `thiserror`, and `blake3` are admitted because all three are pure:
-# they generate code or compute over bytes they were handed, and none of them
-# reaches outside the process. The boundary test walks their resolved closures,
-# so a future transitive runtime dependency would be caught rather than assumed
-# away.
 [dependencies]
 blake3.workspace = true
 serde.workspace = true

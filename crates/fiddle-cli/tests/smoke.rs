@@ -1,143 +1,25 @@
-//! **Tier 1: is the agent loop still wired up?**
-//!
-//! One test, `#[ignore]`d, driving the compiled `fiddle` binary against a real
-//! model. It is the only test in the workspace that exercises the CLI wiring of
-//! `fixture_repair` end to end: the deterministic suite in `fiddle-runtime`
-//! proves the *shell's* response to a model input, and would stay green over a
-//! `main.rs` that built the wrong capability, resolved no credential, or never
-//! reached the gateway at all. That is the same failure shape as M0's
-//! stale-binary defect, and this file is the only thing standing in front of it.
-//!
-//! # The rule this file exists to obey
-//!
-//! **A real-model test never asserts the model succeeded.** Both outcomes are
-//! correct behaviour:
-//!
-//! - repaired → the check passes → `Completed`, exit 0, and the correlation
-//!   marker on disk;
-//! - not repaired → the check fails → `Retryable`, exit 11, and no marker.
-//!
-//! Which of the two happened is *data* — printed, never asserted. A weak model
-//! on a bad day must not fail anybody's build. What is asserted is protocol:
-//! the run reached the capability it was asked for, it concluded on a row of
-//! the exit-code table, the exit code is that row's, a bundle was published and
-//! parses, the fixture repository is untouched, the marker is present exactly
-//! when it was earned, and nothing anywhere holds the credential.
-//!
-//! # The one thing that is *not* the model's business to fail
-//!
-//! There is a third possibility neither of the two above covers: the run never
-//! got as far as a model turn — the gateway refused the connection, the
-//! workspace could not be prepared, the credential was rejected. That is not a
-//! weak model, it is an inconclusive run, and a test that reported it as a pass
-//! would be the M0 stale-binary defect wearing yet another hat: green, and
-//! evidence of nothing. [`classify`] separates the two, and the inconclusive
-//! class fails loudly and says so in those words.
-//!
-//! # Running it
-//!
-//! ```text
-//! ( set -a; . .env; set +a; \
-//!   nix develop -c cargo test -p fiddle-cli -- --ignored --nocapture )
-//! ```
-//!
-//! `--nocapture` because the interesting half of this test is the observation
-//! block it prints, and cargo swallows stdout for a test that passes.
-//!
-//! `FIDDLE_TIER1_MODEL` overrides the model. The default is
-//! [`DEFAULT_MODEL`], chosen from what this gateway was measured to do rather
-//! than from what family a model belongs to — the table and the retraction of
-//! the Claude-family rationale are recorded there and in ADR 012.
-//!
-//! # The fixture, and why it is copied rather than shared
-//!
-//! `broken_crate` in `crates/fiddle-runtime/tests/fixture.rs` builds exactly
-//! this repository, and this file does not use it. It cannot: that file is a
-//! `tests/` module of a different package, so it is compiled into
-//! `fiddle-runtime`'s test binaries and is reachable from nowhere else. Sharing
-//! it would mean promoting it to a published item of some crate — either a
-//! `#[cfg(feature = "test-fixtures")]` module in `fiddle-runtime`, which puts
-//! test scaffolding in a shipped library, or a fifth workspace member existing
-//! only to hold thirty lines of `std::fs::write`. Both are larger changes than
-//! the duplication they remove, and both touch crates this task must leave
-//! alone. So the builder below is a third copy — after `fixture.rs` and the
-//! one inside `capability/repair.rs`'s own unit tests — and is deliberately the
-//! smallest of the three.
-//!
-//! It is *trivial* on purpose: one obviously-wrong constant, and a test naming
-//! the value it should have. A model that cannot repair this is telling us
-//! something about the model; a model that cannot repair it *and* a run that
-//! never reached one are different findings, and a fixture with any real
-//! difficulty in it would blur them.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-/// The variable the configuration names, and the only credential this test
-/// knows about.
 const CREDENTIAL_VAR: &str = "LITELLM_API_KEY";
 
-/// Overrides for the deployment under test, so a developer can point Tier 1 at
-/// another model or another gateway without editing this file.
 const MODEL_VAR: &str = "FIDDLE_TIER1_MODEL";
 const BASE_URL_VAR: &str = "FIDDLE_TIER1_BASE_URL";
 
-/// The default, chosen from what the gateway was observed to do rather than
-/// from what family it belongs to.
-///
-/// The plan for this task named `claude-haiku-4-5`, reasoning that a
-/// Claude-family model is the most exercised translation path on a
-/// Claude-centric gateway. Measured, that turned out to be the wrong way round.
-/// Over the trivial fixture below, at reference-configuration bounds, once the
-/// tool loop worked at all:
-///
-/// | model | tool calls | outcome |
-/// |---|---|---|
-/// | `claude-haiku-4-5` | 1 (`list_files`) | check failed |
-/// | `claude-sonnet-5` | 1 (`list_files`) | report failed its schema |
-/// | `bedrock/moonshotai.kimi-k2.5` | 6 | **completed** |
-/// | `deepseek.v3.2` | 7 | **completed** |
-/// | `zai.glm-5` | 7 | **completed** |
-///
-/// Both Claude-family models finalise after a single tool call through this
-/// gateway; the other three drive the whole loop — list, read, write, check —
-/// and earn the marker. Three consecutive kimi runs produced an identical
-/// six-call profile, so the default is the one that reliably exercises the most
-/// wiring, and it is also the cheapest of the five at $0.60/$3.03 per Mtok.
-///
-/// Tier 1 asserts only that *some* tool was called, so haiku would still pass.
-/// But a smoke test earns its keep by how much of the machine it moves, and a
-/// model that never reaches `write_file`, the check, or the marker leaves most
-/// of this milestone unexercised. Set `FIDDLE_TIER1_MODEL` to compare.
-///
-/// That Claude-family models behave worst here is worth a bean of its own: it
-/// is a property of this gateway's translation, not of the models, and the
-/// deterministic suite cannot see it.
 const DEFAULT_MODEL: &str = "bedrock/moonshotai.kimi-k2.5";
 
-/// The gateway the epic is verified against.
 const DEFAULT_BASE_URL: &str = "https://litellm.firn.snplow.net/v1";
 
 const PROJECT: &str = "icecube";
 const WORK_ID: &str = "fiddle-m1-smoke";
 const INVOCATION_REF: &str = "beans:fiddle-m1-smoke";
 
-/// The defect the fixture ships with: an off-by-one that compiles cleanly and
-/// fails the package's own test, so a repair has to be a real edit rather than
-/// something a formatter could have made.
 const BROKEN: &str = "pub fn last_index(len: usize) -> usize { len }\n";
 
-/// Tier 1: is the agent loop still wired up?
-///
-/// `#[ignore]` so the gate stays offline and free. It asserts *protocol
-/// conformance*, never that the model succeeded — see the module documentation
-/// for why that distinction is the whole design of this test.
 #[test]
 #[ignore = "tier 1: requires LITELLM_API_KEY; run with --ignored"]
 fn the_agent_loop_still_works_against_a_real_model() {
-    // Loud, not skipped. A test that passes for want of a key proves nothing
-    // and says it proved something, which is worse than not existing.
     let credential = match std::env::var(CREDENTIAL_VAR) {
         Ok(value) if !value.trim().is_empty() => value,
         _ => panic!(
@@ -151,9 +33,6 @@ fn the_agent_loop_still_works_against_a_real_model() {
 
     let project = Project::new(&model, &base_url);
 
-    // The compiled binary, as a subprocess — never a library call. `cargo`
-    // builds it from these sources and hands its path over in
-    // `CARGO_BIN_EXE_fiddle`, so this cannot be driving a stale artefact.
     let started = Instant::now();
     let out = Command::new(env!("CARGO_BIN_EXE_fiddle"))
         .args([
@@ -172,16 +51,6 @@ fn the_agent_loop_still_works_against_a_real_model() {
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
 
-    // ---------------------------------------------------------------------
-    // The credential, first and unconditionally.
-    //
-    // Before any other assertion, because every other assertion in this file
-    // quotes stdout or stderr into its failure message. Checking the leak last
-    // would mean a run that *did* leak announced it through a panic about
-    // something else — printing the secret in the course of failing to notice
-    // it. Checking it first means everything below is already known safe to
-    // print.
-    // ---------------------------------------------------------------------
     assert!(
         !stdout.contains(&credential),
         "the credential reached stdout"
@@ -201,34 +70,15 @@ fn the_agent_loop_still_works_against_a_real_model() {
         "the credential was written to {leaked:?}"
     );
 
-    // ---------------------------------------------------------------------
-    // Protocol.
-    // ---------------------------------------------------------------------
     let payload: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
         panic!("stdout is not the `--json` payload ({e}):\nstdout = {stdout}\nstderr = {stderr}")
     });
 
-    // The run reached the capability it was asked for. This is the assertion
-    // the acceptance lane's `the_selected_capability_is_the_one_that_runs`
-    // makes offline; here it is made against a real gateway, so a build that
-    // resolves a credential and then runs `stub_mark` is caught too.
     assert_eq!(
         payload["capability_executions"][0]["capability_id"], "fixture_repair",
         "the run must execute the capability it was asked for: {payload}"
     );
 
-    // **Tools were actually called.**
-    //
-    // Protocol, not performance: it says the agent loop *ran*, and says nothing
-    // about whether it ran well. A model that listed the files, gave up and
-    // reported failure passes this; a model that answered with the structured
-    // report on its first turn without touching anything does not.
-    //
-    // This is the assertion that would have caught, on day one, the defect that
-    // made every model on this gateway useless — `output_schema` enforced
-    // natively for the whole run, which suppresses tool calls through a gateway
-    // fronting Anthropic. It could not be written until the capability began
-    // publishing its tool receipts, which is why the two landed together.
     let evidence: Vec<String> = payload["capability_executions"][0]["evidence"]
         .as_array()
         .unwrap_or_else(|| panic!("an execution must carry evidence: {payload}"))
@@ -257,9 +107,6 @@ fn the_agent_loop_still_works_against_a_real_model() {
          stderr = {stderr}"
     );
 
-    // Published, and readable by the path the payload names — which is how a
-    // downstream reader would find it, rather than by reconstructing an attempt
-    // directory here.
     let bundle_path = project.report_dir().join(
         payload["report"]
             .as_str()
@@ -279,19 +126,6 @@ fn the_agent_loop_still_works_against_a_real_model() {
         "the bundle must be about the invocation that was made: {bundle}"
     );
 
-    // **The marker is present exactly when it was earned, and it is a marker
-    // fiddle itself recognises.**
-    //
-    // Not a claim about the model — a claim about the rule that only a passing
-    // check writes one. Both directions are asserted, so neither a capability
-    // that marked a failed repair nor one that failed to mark a successful one
-    // gets through.
-    //
-    // `next_action` is the derivation the runtime made *after* the run, over
-    // the world the run left behind, so pairing it with the file on disk is
-    // what turns "a marker was written" into "the marker written is the one the
-    // next invocation will accept". A capability that wrote a plausible-looking
-    // but wrong key would satisfy the first and fail this.
     let marker = project.change_marker();
     match conclusion {
         Conclusion::Repaired => {
@@ -320,10 +154,6 @@ fn the_agent_loop_still_works_against_a_real_model() {
         }
     }
 
-    // The fixture on disk. M1's whole claim about what survives an attempt is
-    // that nothing does: the repair lives and dies in a per-attempt worktree,
-    // so the repository it was branched from is byte-identical afterwards and
-    // the workspace root is empty.
     assert_eq!(
         project.fixture_status(),
         Vec::<String>::new(),
@@ -335,9 +165,6 @@ fn the_agent_loop_still_works_against_a_real_model() {
         "the attempt left its worktree behind"
     );
 
-    // ---------------------------------------------------------------------
-    // Data. Printed, never asserted.
-    // ---------------------------------------------------------------------
     println!("\n─── tier 1 observation ────────────────────────────────────");
     println!("  model            = {model}");
     println!("  gateway          = {base_url}");
@@ -375,23 +202,12 @@ fn the_agent_loop_still_works_against_a_real_model() {
     );
 }
 
-/// How the run ended, restricted to the two answers that are *about the model*.
-///
-/// Anything else — a gateway that refused the connection, a workspace that
-/// could not be prepared, a credential the far end rejected — is inconclusive
-/// rather than a failure of the model, and [`Conclusion::read`] panics on it
-/// saying exactly that. The distinction is the difference between "we exercised
-/// the loop and the model lost" and "we never exercised the loop", and a test
-/// that ran green on the second would be worthless.
 enum Conclusion {
-    /// The check passed. The chain marker → assessment → `Completed` held.
     Repaired,
-    /// The loop ran and did not earn anything. Correct behaviour.
     NotRepaired { reason: String },
 }
 
 impl Conclusion {
-    /// The row of design §4.5's exit-code table this conclusion sits on.
     fn exit_code(&self) -> i32 {
         match self {
             Conclusion::Repaired => 0,
@@ -399,8 +215,6 @@ impl Conclusion {
         }
     }
 
-    /// Read the outcome out of a `run --json` payload, refusing anything that
-    /// is not evidence about the agent loop.
     fn read(payload: &serde_json::Value, stderr: &str) -> Self {
         if payload["outcome"] == "completed" {
             return Conclusion::Repaired;
@@ -420,34 +234,6 @@ impl Conclusion {
     }
 }
 
-/// Panic if `reason` describes something that happened *before* a model turn.
-///
-/// The three accepted shapes each require a completion to have come back and
-/// been judged — the model's report failed its schema, a bound we set was
-/// reached, or the check overruled the model's claim. Every one of them is the
-/// model being weak, and every one of them passes.
-///
-/// Matched on the leading clause of each error's `Display`, which is a fixed
-/// string in `fiddle_runtime`: `CapabilityError::Agent` wraps an `AgentError`
-/// whose variants are `the attempt was stopped by a bound`,
-/// `the model did not hold up its end`, `the provider did not hold up its
-/// end`, and `the attempt was cancelled`, and `CapabilityError::CheckFailed`
-/// leads with `the check exited`. Only the provider arm and the workspace arm
-/// are refused.
-///
-/// # What this does *not* have to claim
-///
-/// It does not have to establish that a tool ran, because the caller already
-/// asserted that against the execution's published receipts. The two together
-/// are what make a `Retryable` run readable: the receipts say the loop ran, and
-/// this says the reason it stopped is one a running loop produces.
-///
-/// That division is the fix for a real gap. The first Tier 1 run against this
-/// gateway found a defect neither half could have caught alone — with
-/// `output_schema` enforced natively for the whole run, every model answered
-/// with the structured report on turn one and called nothing, so the check
-/// judged an untouched tree and the run reported `Retryable` with a reason that
-/// looks exactly like a model that tried and lost.
 fn classify(reason: &str) {
     const REACHED_THE_MODEL: [&str; 3] = [
         "the check exited",
@@ -468,7 +254,6 @@ fn classify(reason: &str) {
     );
 }
 
-/// `name`'s value, or `fallback` when it is unset or empty.
 fn env_or(name: &str, fallback: &str) -> String {
     match std::env::var(name) {
         Ok(value) if !value.trim().is_empty() => value,
@@ -476,26 +261,11 @@ fn env_or(name: &str, fallback: &str) -> String {
     }
 }
 
-/// A disposable project: the configuration document, the broken crate it points
-/// at, the fixture root the marker lands in, and the report directory.
 struct Project {
     dir: tempfile::TempDir,
 }
 
 impl Project {
-    /// A project pointed at `model` on `base_url`, with one open work item and
-    /// a repository that fails its own check.
-    ///
-    /// The bounds are deliberately tight, and sized against what a working loop
-    /// was measured to need rather than guessed. The default model drives this
-    /// fixture in six tool calls — one `list_files`, three `read_file`, one
-    /// `write_file`, one `run_check` — so `max_turns = 16` leaves roughly double
-    /// the room a successful attempt uses, and `max_tokens = 4096` covers
-    /// rewriting the whole of a small file plus the structured report. The
-    /// deadline and the command timeout are minutes rather than the reference
-    /// configuration's tens of minutes, because a Tier 1 run that has taken five
-    /// minutes over a two-line crate has already told us what it is going to
-    /// tell us.
     fn new(model: &str, base_url: &str) -> Self {
         let project = Project {
             dir: tempfile::tempdir().expect("a temporary directory"),
@@ -548,14 +318,6 @@ impl Project {
         project
     }
 
-    /// A deliberately broken zero-dependency Rust crate, as a git repository.
-    ///
-    /// Zero dependencies so the check runs `--offline` against nothing.
-    /// `target/` **and** `Cargo.lock` are gitignored: cargo writes a lock file
-    /// on the first run even for a package with no dependencies, and a lock
-    /// file regenerated by the check is not a repair — counting it would spend
-    /// the changed-file cap on noise and put a fabricated path into published
-    /// evidence.
     fn write_broken_crate(&self) {
         let repo = self.fixture();
         std::fs::create_dir_all(repo.join("src")).unwrap();
@@ -611,9 +373,6 @@ impl Project {
         self.dir.path().join("fixture")
     }
 
-    /// The marker recorded at `<stub.root>/changes/<work_id>.json`, read the
-    /// way the stub change port reads it — so a capability that wrote a file
-    /// fiddle could not read back is a miss rather than a hit.
     fn change_marker(&self) -> Option<String> {
         let path = self.stub_root().join(format!("changes/{WORK_ID}.json"));
         let text = std::fs::read_to_string(path).ok()?;
@@ -621,8 +380,6 @@ impl Project {
         value["marker"].as_str().map(str::to_string)
     }
 
-    /// What `git status --porcelain` reports in the fixture repository. Empty
-    /// is the assertion: an attempt branches a worktree and never writes here.
     fn fixture_status(&self) -> Vec<String> {
         let out = Command::new("git")
             .args(["status", "--porcelain"])
@@ -635,14 +392,6 @@ impl Project {
             .collect()
     }
 
-    /// Every file anywhere under the whole project, as `(relative path,
-    /// bytes)`.
-    ///
-    /// Deliberately the *whole* project rather than the bundle alone: a
-    /// credential could just as easily land in the attempt journal, the
-    /// worktree, or a file the check wrote, and "nothing this run produced
-    /// holds it" is only a claim worth making if every one of those is looked
-    /// at.
     fn files(&self) -> Vec<(String, Vec<u8>)> {
         let root = self.dir.path();
         files_under(root)
@@ -655,12 +404,10 @@ impl Project {
     }
 }
 
-/// A path as a TOML basic string.
 fn toml_path(path: &Path) -> String {
     format!("{:?}", path.display().to_string())
 }
 
-/// Run git in `dir`, panicking with its stderr if it fails.
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
         .args(args)
@@ -674,7 +421,6 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
-/// Every file under `root`, recursively.
 fn files_under(root: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -695,8 +441,6 @@ fn files_under(root: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Every directory under `root`, recursively. An abandoned worktree is a
-/// directory, and an empty one is exactly as much of a leak as a full one.
 fn dirs_under(root: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut stack = vec![root.to_path_buf()];

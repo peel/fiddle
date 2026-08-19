@@ -1,10 +1,3 @@
-//! Black-box coverage of the observations `fiddle inspect --json` reports.
-//!
-//! Two halves of one contract are asserted here from outside the process: an
-//! observable source is reported `available` with a source reference naming
-//! where it came from, and an *un*observable source is reported `unavailable`
-//! with a reason — never degraded into an empty or absent value.
-
 mod support;
 
 use support::{repo_root, Scenario};
@@ -24,8 +17,6 @@ fn inspect_reports_available_observations_with_sources() {
         v["observations"]["work_item"]["available"]["source"],
         "stub:work/fiddle-m0-demo.json"
     );
-    // The change set has not been marked yet, and an unmarked change set over a
-    // readable fixture root is a real observation — not an unobservable one.
     assert!(
         v["observations"]["changes"]["available"].is_object(),
         "changes = {}",
@@ -34,10 +25,6 @@ fn inspect_reports_available_observations_with_sources() {
     assert!(v["observations"]["changes"]["available"]["value"]["marker"].is_null());
 }
 
-/// RFC line 796: `Unavailable` is not equivalent to empty or absent. A missing
-/// fixture root must surface as an explicit unobservable state carrying a
-/// reason, and must not leave an `available` observation behind for a consumer
-/// to mistake for "there is nothing there".
 #[test]
 fn missing_stub_root_is_unavailable_not_empty() {
     let s = Scenario::new();
@@ -69,8 +56,6 @@ fn missing_stub_root_is_unavailable_not_empty() {
     }
 }
 
-/// A fixture root that exists but whose work item is not JSON is unobservable
-/// too — a parse failure must never be silently defaulted into a work item.
 #[test]
 fn malformed_work_item_is_unavailable_not_defaulted() {
     let s = Scenario::new();
@@ -89,9 +74,6 @@ fn malformed_work_item_is_unavailable_not_defaulted() {
     assert!(observed["available"].is_null(), "got {observed}");
 }
 
-/// The tracked fixture in `tests/fixtures/` is the documented demo, and
-/// `stub.root` in it is repository-relative — so this runs the binary from the
-/// repository root, exactly as the documentation tells a reader to.
 #[test]
 fn the_tracked_demo_fixture_is_observable_from_the_repository_root() {
     let out = support::fiddle_command()

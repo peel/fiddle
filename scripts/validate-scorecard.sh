@@ -1,22 +1,4 @@
 #!/usr/bin/env bash
-# validate-scorecard.sh — Gate an evaluator scorecard before develop-loop merges it.
-# The expected criteria ids arrive via --criteria-ids (a comma list the orchestrator
-# extracts from the bean's eval block, mirroring resolve-domains.sh --domains); this
-# script parses NO YAML.
-#
-# A valid scorecard: is valid JSON; has a non-empty `provider` string; every
-# `domains.<domain>.dimensions` is an object (an explicitly empty `{}` is valid
-# evidence-only) and every scored dimension carries a non-empty justification in
-# `evidence` or in `comment` (the field name the provider-context schema shows
-# external evaluators, so both are accepted); its
-# `criteria[]` ids exactly match the --criteria-ids set (no extras, none missing)
-# and each criterion carries non-empty `evidence`; and any `spec_defect` with
-# `detected == true` carries a non-empty `reason`.
-#
-# Exit codes:
-#   0  Scorecard is valid
-#   2  Scorecard is invalid or input is invalid; a JSON array of error strings
-#      is printed to stderr
 set -euo pipefail
 
 usage() {

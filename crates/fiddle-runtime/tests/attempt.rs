@@ -1,17 +1,3 @@
-//! The run-and-publish transaction, exercised at the runtime layer.
-//!
-//! These are integration tests rather than unit tests inside the crate because
-//! the property they are about is the *whole* attempt: observe, record the
-//! intent, execute, re-observe, publish. A test able to reach a private helper
-//! could assert those halves separately, and the halves passing separately is
-//! exactly the failure this file exists to prevent — that was the state of the
-//! code before [`fiddle_runtime::attempt`] existed, when the CLI held the second
-//! half and no test in this crate covered the two together.
-//!
-//! Everything here is asserted against the filesystem the attempt wrote to, the
-//! way an operator or a later attempt would find it, and never through the CLI:
-//! the guarantee belongs to the runtime, so the runtime is where it is proven.
-
 use fiddle_core::{
     CapabilityId, ChangeSetState, EvidenceRef, FiddleBuild, InvocationRef, Mode, NextAction,
     Observation, RunOutcome, STUB_MARK, UNKNOWN_REVISION,
@@ -30,8 +16,6 @@ const INVOCATION_REF: &str = "beans:fiddle-m0-demo";
 const SLUG: &str = "beans-fiddle-m0-demo";
 const PROJECT: &str = "icecube";
 
-/// A disposable project: a fixture root holding one open work item, and a
-/// report directory that does not exist yet.
 struct Project {
     dir: tempfile::TempDir,
 }
@@ -59,14 +43,10 @@ impl Project {
         self.dir.path().join("reports")
     }
 
-    /// Take the fixture root away, so every source the ports name becomes
-    /// unobservable and the derivation is forced to block.
     fn hide_stub_root(&self) {
         std::fs::rename(self.stub_root(), self.dir.path().join("hidden")).unwrap();
     }
 
-    /// The marker the capability writes, read back the way the change port
-    /// reads it, or `None` when nothing wrote one.
     fn marker(&self) -> Option<String> {
         let path = self.stub_root().join(format!("changes/{WORK_ID}.json"));
         let text = std::fs::read_to_string(path).ok()?;
@@ -74,7 +54,6 @@ impl Project {
         value["marker"].as_str().map(str::to_string)
     }
 
-    /// Every `report.json` under `<report.dir>`, however deep.
     fn bundles(&self) -> Vec<PathBuf> {
         files(&self.report_dir())
             .into_iter()
@@ -82,14 +61,11 @@ impl Project {
             .collect()
     }
 
-    /// The attempts this project's journal still reports as in flight.
     fn in_flight(&self) -> Vec<journal::InterruptedAttempt> {
         journal::interrupted(&self.report_dir(), SLUG)
     }
 }
 
-/// Every file under `root`, recursively, sorted. A missing `root` yields an
-/// empty list, so "nothing was created at all" is expressible.
 fn files(root: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -110,17 +86,10 @@ fn files(root: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// The reference every scenario runs against, parsed once.
 fn reference() -> InvocationRef {
     INVOCATION_REF.parse().unwrap()
 }
 
-/// One attempt over `capability`, publishing into `report_dir`.
-///
-/// A free function taking every borrow explicitly rather than a builder, so each
-/// scenario's context is visible where the scenario is written — these tests are
-/// about what the attempt does with its ports, its capability, and its report
-/// directory, and hiding any of the three would hide the setup that matters.
 async fn run_attempt(
     project: &Project,
     capability: &dyn Capability,
@@ -135,11 +104,6 @@ async fn run_attempt(
     .await
 }
 
-/// The same attempt, over a caller-supplied change port.
-///
-/// Only the scenarios about what happens *between* the attempt's two
-/// observations need this; everything else reads the fixture directory through
-/// the ordinary stub, so the seam is opened exactly where it is used.
 async fn run_attempt_observing(
     project: &Project,
     capability: &dyn Capability,
@@ -157,16 +121,11 @@ async fn run_attempt_observing(
         work_items: &work_items,
         changes,
         capability,
-        // These scenarios drive a capability rather than an executor, so there
-        // is no step order to record. `the_executors_steps_reach_the_attempt_journal`
-        // below is where the trace's own sink is asserted.
         trace: None,
     })
     .await
 }
 
-/// A capability that counts its calls, so "the capability never ran" is
-/// asserted directly rather than inferred from the absence of its side effect.
 #[derive(Default)]
 struct Spy {
     calls: AtomicUsize,
@@ -193,9 +152,6 @@ impl Capability for Spy {
     }
 }
 
-/// A capability that really changes the world and then dies, which is the shape
-/// of an interruption: the effect landed and the process never reached
-/// publication.
 struct MutateThenDie(StubMark);
 
 #[async_trait::async_trait]
@@ -222,26 +178,8 @@ impl Capability for MutateThenDie {
     }
 }
 
-/// A marker belonging to somebody else — sixteen hex characters, so it is
-/// well-formed enough that only *whose* it is distinguishes it.
 const FOREIGN_MARKER: &str = "0123456789abcdef";
 
-/// Another agent rewriting the change set in the window between this attempt's
-/// two observations.
-///
-/// The window is real and unavoidable: `run` observes, executes, and observes
-/// again, and nothing holds a lock over `<stub.root>/changes/<id>.json` across
-/// those three steps. `fiddle-core`'s assessment deliberately treats a change
-/// set carrying a foreign marker as `Blocked`, so a writer landing in that
-/// window is all it takes for the post-execution derivation to disagree with the
-/// pre-execution one.
-///
-/// Simulated by counting observations rather than by racing a thread, so the
-/// disagreement happens on every run of this test rather than on some of them:
-/// the foreign write lands on disk immediately before the second read, which is
-/// exactly the moment a concurrent writer would have to land it. The port then
-/// delegates to the real stub, so what the attempt sees is a genuine observation
-/// of the file that is genuinely on disk — not a fabricated `Observation`.
 struct ForeignWriterBetweenObservations {
     inner: StubChangePort,
     change_set: PathBuf,
@@ -271,24 +209,18 @@ impl ChangePort for ForeignWriterBetweenObservations {
     }
 }
 
-/// Make `path` readable and listable but not writable.
 #[cfg(unix)]
 fn seal(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o500)).unwrap();
 }
 
-/// Undo [`seal`], so the test can read what the failed attempt left behind and
-/// the temporary directory can be removed on drop.
 #[cfg(unix)]
 fn unseal(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// The happy path, stated first so the failure cases are read against it: the
-/// bundle lands, and the journal — having been superseded by it — leaves no
-/// record of an attempt in flight.
 #[tokio::test]
 async fn a_published_attempt_leaves_the_bundle_and_no_journal_record() {
     let project = Project::unstarted();
@@ -322,20 +254,10 @@ async fn a_published_attempt_leaves_the_bundle_and_no_journal_record() {
     );
 }
 
-/// **The property this bean exists for.** A capability that succeeded and a
-/// publication that failed must not add up to a world that moved with nothing
-/// recording that it moved.
-///
-/// `<report.dir>` is sealed so publication cannot create the attempt directory
-/// under it, while the journal directory — created before the seal, as a
-/// previous attempt would have left it — stays writable. That isolates the one
-/// failure this is about: the effect landed, the bundle did not, and the
-/// question is what a later reader can still find out.
 #[cfg(unix)]
 #[tokio::test]
 async fn an_executed_capability_is_recorded_even_when_publication_fails() {
     let project = Project::unstarted();
-    // The journal's own directory, as an earlier attempt would have left it.
     std::fs::create_dir_all(project.report_dir().join(journal::JOURNAL_DIR)).unwrap();
     seal(&project.report_dir());
 
@@ -368,8 +290,6 @@ async fn an_executed_capability_is_recorded_even_when_publication_fails() {
         project.marker().is_some(),
         "the capability was expected to succeed; this case is about what happens next"
     );
-    // The record the attempt hands back, and the record on disk, must agree
-    // that the capability ran.
     assert_eq!(record.bundle.capability_executions.len(), 1);
     assert_eq!(record.bundle.capability_executions[0].status, "completed");
 
@@ -388,20 +308,6 @@ async fn an_executed_capability_is_recorded_even_when_publication_fails() {
     );
 }
 
-/// The interruption itself: the effect lands and the process dies before
-/// publication, exactly as a crash or a `SIGKILL` between the two would.
-///
-/// Simulated with a panic rather than described in a comment, because the whole
-/// claim is about a path no ordinary return takes. What has to be true
-/// afterwards is that the attempt is *detectable* — a later reader can tell
-/// "something ran and was never recorded" from "nothing ran", which is the
-/// distinction M2's non-idempotent GitHub effects cannot recover without.
-///
-/// The one test here that drives its own runtime rather than taking
-/// `#[tokio::test]`'s. The panic has to happen *inside* `catch_unwind`, and
-/// since the attempt became a future, calling it merely builds one — the death
-/// only occurs where it is polled. `block_on` is therefore inside the closure,
-/// which it cannot be while an outer runtime already owns this thread.
 #[test]
 fn an_attempt_interrupted_between_the_effect_and_publication_is_detectable() {
     let project = Project::unstarted();
@@ -440,9 +346,6 @@ fn an_attempt_interrupted_between_the_effect_and_publication_is_detectable() {
     );
 }
 
-/// The contrast that gives the previous test its meaning: an attempt that never
-/// reached its capability leaves nothing in flight. Without this, "a journal
-/// record exists" would be evidence of nothing in particular.
 #[tokio::test]
 async fn an_attempt_that_never_reached_its_capability_leaves_nothing_in_flight() {
     let project = Project::unstarted();
@@ -460,11 +363,6 @@ async fn an_attempt_that_never_reached_its_capability_leaves_nothing_in_flight()
     );
 }
 
-/// The fail-closed direction of the ordering decision: if the intent cannot be
-/// recorded durably, the capability must not run at all. A capability that ran
-/// without a durable record is the very hazard the journal exists to remove, so
-/// an unrecordable intent has to stop the attempt rather than proceed
-/// unrecorded.
 #[cfg(unix)]
 #[tokio::test]
 async fn an_unrecordable_intent_stops_the_attempt_before_the_capability_runs() {
@@ -511,13 +409,6 @@ async fn an_unrecordable_intent_stops_the_attempt_before_the_capability_runs() {
     assert!(record.evidence_failure.is_some());
 }
 
-/// A publication failure is reported as retryable, not failed: repeating the
-/// same invocation after the operator fixes `<report.dir>` succeeds, which is
-/// what `Retryable` promises and what `Failed` denies.
-///
-/// Asserted as a real repetition rather than as a claim about the word, because
-/// the whole defect being settled here was a variant name that did not match
-/// what repeating actually did.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_publication_failure_is_retryable_and_repeating_it_afterwards_succeeds() {
@@ -553,7 +444,6 @@ async fn a_publication_failure_is_retryable_and_repeating_it_afterwards_succeeds
         other => panic!("a publication failure that repeating fixes is retryable, got {other:?}"),
     }
 
-    // The operator fixed the directory; the same invocation, repeated.
     let repeated = run_attempt(
         &project,
         &StubMark::new(project.stub_root(), PROJECT),
@@ -568,13 +458,6 @@ async fn a_publication_failure_is_retryable_and_repeating_it_afterwards_succeeds
     );
     assert!(repeated.published.is_some());
 
-    // And the first attempt is *still* reported as interrupted. Only the
-    // publication of that attempt's own bundle clears its record; a later
-    // attempt succeeding does not, because concluding "the earlier effect is
-    // accounted for" requires knowing the capability is idempotent — which is
-    // true of `stub_mark` and false of M2's branch and pull request. Clearing it
-    // here would be the exact assumption this whole design exists to stop
-    // relying on.
     let in_flight = project.in_flight();
     assert_eq!(in_flight.len(), 1, "got {in_flight:?}");
     assert_ne!(
@@ -583,9 +466,6 @@ async fn a_publication_failure_is_retryable_and_repeating_it_afterwards_succeeds
     );
 }
 
-/// Nothing changes the world on a second attempt, so nothing is journaled: the
-/// journal records an *intent to mutate*, and an attempt over satisfied work has
-/// none. It still publishes its own bundle.
 #[tokio::test]
 async fn a_second_attempt_over_satisfied_work_publishes_without_journaling() {
     let project = Project::unstarted();
@@ -603,28 +483,6 @@ async fn a_second_attempt_over_satisfied_work_publishes_without_journaling() {
     assert!(project.in_flight().is_empty());
 }
 
-/// **The outcome is the re-derivation, not a hope about it.** A run whose
-/// capability succeeded but whose post-execution observation is `Blocked` must
-/// not report `completed`.
-///
-/// The bundle is the authoritative record of the attempt, and a bundle saying
-/// `"outcome":"completed"` beside `"next_action":{"blocked":…}` is a record that
-/// contradicts itself — the caller is told the work is done by the field it
-/// switches on and told fiddle is stuck by the field beside it. It exits 0, so a
-/// pipeline moves on to work that was never accounted for.
-///
-/// `Failed`, not `Retryable`, and the choice is forced by what the two words
-/// promise. `Retryable` says repeating this invocation succeeds once the named
-/// thing is fixed; repeating it here derives `Blocked` again from the entry
-/// observation and concludes `Failed`, deterministically, until a human resolves
-/// whose change set it is. Mapping it to `Retryable` would also make the exit
-/// code depend on the attempt's history rather than on the world: this run and a
-/// run that found the foreign marker on entry leave *identical* worlds, and
-/// would report 11 and 20 respectively.
-///
-/// Note what this test does not depend on: no unusual reference, no malformed
-/// input, nothing hostile. Just a second writer, which is what M1's second
-/// capability and external references make ordinary.
 #[tokio::test]
 async fn a_run_whose_world_is_taken_over_after_executing_reports_the_derivation_it_left() {
     let project = Project::unstarted();
@@ -666,9 +524,6 @@ async fn a_run_whose_world_is_taken_over_after_executing_reports_the_derivation_
         }
     }
 
-    // The record on disk says the same thing as the record handed back. It is
-    // the authoritative one, so a contradiction that only stdout avoided would
-    // still be a contradiction.
     let published = record
         .published
         .as_ref()
@@ -688,8 +543,6 @@ async fn a_run_whose_world_is_taken_over_after_executing_reports_the_derivation_
         bundle["next_action"]
     );
 
-    // What the capability did is still recorded: it really did run, and a
-    // reader has to be able to tell this from a run that never reached it.
     assert_eq!(record.bundle.capability_executions.len(), 1);
     assert_eq!(record.bundle.capability_executions[0].status, "completed");
     assert!(
@@ -699,19 +552,6 @@ async fn a_run_whose_world_is_taken_over_after_executing_reports_the_derivation_
     );
 }
 
-/// The other half of the same rule: a capability that returned `Ok` without the
-/// work becoming visible must not report `completed` either.
-///
-/// `Ok` from a capability means *the capability succeeded*, which is a claim
-/// about the capability rather than about the world. Here the world afterwards
-/// is fully observable and records no change set at all, so the re-derivation
-/// is `Execute` — there is still work to do, and saying `completed` beside it
-/// would be the same self-contradicting bundle by a different route.
-///
-/// `Retryable`, and this time the word fits directly: repeating the invocation
-/// derives `Execute` from its own entry observation and runs the capability
-/// again, which is exactly the "may succeed on a later attempt" `Retryable`
-/// promises.
 #[tokio::test]
 async fn a_run_whose_effect_left_no_trace_reports_that_there_is_still_work_to_do() {
     let project = Project::unstarted();
@@ -744,25 +584,6 @@ async fn a_run_whose_effect_left_no_trace_reports_that_there_is_still_work_to_do
     }
 }
 
-// ---------------------------------------------------------------------------
-// The executor's step trace, and the journal that is its production sink
-// ---------------------------------------------------------------------------
-
-/// **The trace's sink is the journal, asserted against the file.**
-///
-/// `EffectTrace` used to have exactly one non-default implementor — the
-/// deterministic suite — and production passed a private sink that discarded
-/// everything. That made the executor's order a *test* observation, which is a
-/// weaker claim than one the journal watches. This asserts the wiring where it
-/// has to be true: an [`Executor`] whose trace is an
-/// [`AttemptTrace`](fiddle_runtime::AttemptTrace) attached to a real
-/// [`FileJournal`](fiddle_runtime::journal) leaves the whole walk in the file an
-/// operator would open.
-///
-/// It is asserted against the journal's own bytes rather than by counting calls
-/// to a spy, and that is the point: a spy would prove the trait was called,
-/// which was never in doubt. What was in doubt is whether anything durable is on
-/// the other end of it.
 #[tokio::test]
 async fn the_executors_steps_reach_the_attempt_journal() {
     let dir = tempfile::tempdir().unwrap();
@@ -773,9 +594,6 @@ async fn the_executors_steps_reach_the_attempt_journal() {
         &attempt_id,
         INVOCATION_REF,
     ));
-    // The intent first, exactly as `attempt` writes it: the step records are an
-    // addition to a record whose existence is already guaranteed, never a
-    // replacement for it.
     journal
         .record_intent(fiddle_core::PUBLISH_CHANGE)
         .expect("the journal directory is writable");
@@ -783,9 +601,6 @@ async fn the_executors_steps_reach_the_attempt_journal() {
     let trace = fiddle_runtime::AttemptTrace::new();
     trace.attach(journal.clone() as std::sync::Arc<dyn fiddle_runtime::AttemptJournal>);
 
-    // The ordinary path — absent, written, then observed — so all seven steps are
-    // walked. A world that already satisfied the postcondition would stop at step
-    // 3 and prove nothing about the four after it.
     let harness = support::Harness::new(support::Script::AbsentThenWritten);
     let receipt = harness
         .executor_observed_by(&trace)
@@ -817,9 +632,6 @@ async fn the_executors_steps_reach_the_attempt_journal() {
         ],
         "the journal must hold the whole authorization order, in order"
     );
-    // The kind travels with the step, because seven anonymous steps repeated
-    // three times cannot tell a recovery *which* mutation `apply` was entered
-    // for — which is the only thing it needs to know.
     assert!(
         recorded
             .iter()
@@ -827,9 +639,6 @@ async fn the_executors_steps_reach_the_attempt_journal() {
             .all(|record| record["kind"] == "ensure_branch_published"),
         "every step must name the effect it belongs to: {recorded:?}"
     );
-    // And the record the journal already existed for is untouched: an append
-    // cannot damage the line before it, and an `InterruptedAttempt` still reads
-    // the same.
     assert_eq!(
         journal::interrupted(dir.path(), SLUG),
         vec![journal::InterruptedAttempt {
@@ -841,11 +650,6 @@ async fn the_executors_steps_reach_the_attempt_journal() {
     );
 }
 
-/// A trace with no attempt behind it discards, and does not panic.
-///
-/// The window between constructing one and `attempt` attaching the journal is a
-/// few statements long and no executor runs inside it — but "no path reaches
-/// this" is an argument, and a total function is cheaper than one.
 #[tokio::test]
 async fn an_unattached_trace_records_nothing_and_refuses_nothing() {
     let trace = fiddle_runtime::AttemptTrace::new();
@@ -856,9 +660,6 @@ async fn an_unattached_trace_records_nothing_and_refuses_nothing() {
         .await
         .expect("an unobserved walk is still a walk");
     assert_eq!(receipt.outcome, fiddle_runtime::EffectOutcome::Committed);
-    // The walk really happened; there was simply nowhere durable for its steps
-    // to go yet. Asserted on the world, because the trace is the thing under
-    // test and its whole behaviour here is to do nothing.
     assert_eq!(
         harness.world.mutations(),
         1,
@@ -870,8 +671,6 @@ async fn an_unattached_trace_records_nothing_and_refuses_nothing() {
     );
 }
 
-/// Every record one attempt's journal holds, parsed, in the order it was
-/// appended.
 fn read_journal(report_dir: &Path, attempt: &fiddle_core::AttemptId) -> Vec<serde_json::Value> {
     let path = report_dir
         .join(journal::JOURNAL_DIR)
