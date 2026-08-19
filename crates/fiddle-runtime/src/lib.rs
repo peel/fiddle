@@ -25,7 +25,20 @@
 //! of it: the executor that walks validate → identity → postcondition → policy →
 //! authorize → delegate → observe, the envelope no caller can forge, and the
 //! vocabulary in which the difference between a refused write and a lost answer
-//! is made. `process` is private and holds the one thing every child this runtime
+//! is made. `scanner` is the fourth spawn site and the only one that changes
+//! nothing out there: a container scanner run as a subprocess, whose success is
+//! the report it wrote rather than the status it exited with — which is the
+//! inverse of the usual rule and is why the port states it. `evaluate` is what
+//! that scan and four commands beside it add up to: an ordered contract of
+//! checks, each judged by the criterion its own declaration names rather than by
+//! one aggregate exit code, so a tree with a build error is still vetted and a
+//! formatter that exits zero while printing a filename still fails. Its
+//! `InWorkspace` is where that contract stops being a shape and becomes
+//! processes: it starts each check's own program inside the attempt's worktree
+//! and builds each rescan's scanner out of the check's own program, adding no
+//! spawn site of its own — the two it composes are `workspace` and `scanner`.
+//! `process` is private
+//! and holds the one thing every child this runtime
 //! spawns has in common: a deadline it cannot outlive and a process group that
 //! dies with it. What a child may *see* is never shared; only the bound is.
 //!
@@ -36,7 +49,9 @@
 
 pub mod agent;
 pub mod capability;
+pub mod cve;
 pub mod effect;
+pub mod evaluate;
 pub mod evidence;
 pub mod gateway;
 pub mod git;
@@ -46,6 +61,7 @@ pub mod journal;
 pub mod orchestration;
 pub mod ports;
 pub(crate) mod process;
+pub mod scanner;
 pub mod stub;
 pub mod workspace;
 
@@ -57,8 +73,9 @@ pub use agent::{AgentBudget, Direction, ToolHost, ToolReceipt, ToolReceipts};
 // reimplement the derivation — which is the drift the function exists to make
 // impossible. See `capability::propose`.
 pub use capability::{
-    attempt_worktree, Capability, CapabilityError, ExecutionGrant, FixtureRepair, ProposeChange,
-    ProposeConfig, PublishChange, PublishConfig, RepairConfig, StubMark, CAPABILITIES,
+    attempt_worktree, Capability, CapabilityError, CveMitigate, ExecutionGrant, FixtureRepair,
+    MitigateConfig, ProposeChange, ProposeConfig, PublishChange, PublishConfig, RepairConfig,
+    StubMark, CAPABILITIES,
 };
 // `mint_attempt_id` is deliberately *not* re-exported beside these, for the
 // same reason publication is not re-exported beside [`attempt`]: minting an id
@@ -95,8 +112,9 @@ pub use human::{
 };
 pub use journal::{AttemptJournal, AttemptTrace};
 pub use orchestration::{
-    attempt, observe, run, AttemptContext, AttemptRecord, RunContext, RunReport,
+    attempt, observe, run, Addressed, AttemptContext, AttemptRecord, RunContext, RunReport,
 };
 pub use ports::{ChangePort, WorkItemPort};
+pub use scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
 pub use stub::{StubChangePort, StubWorkItemPort};
 pub use workspace::{WorkspaceCommand, WorkspaceError, WorkspacePath};

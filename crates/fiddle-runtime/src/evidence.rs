@@ -228,6 +228,7 @@ mod tests {
                     reason: "fixture".to_string(),
                 },
             ),
+            disposition: None,
         }
     }
 

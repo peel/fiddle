@@ -18,6 +18,10 @@ use std::str::FromStr;
 /// implements only [`InvocationScheme::Beans`] end to end; the remaining
 /// variants are accepted as identities so later milestones add adapters without
 /// changing this grammar.
+///
+/// The set is not uniform in one respect: a scheme whose orchestration
+/// discovers its own work is a complete reference on its own. See
+/// [`InvocationScheme::stands_alone`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InvocationScheme {
@@ -25,6 +29,7 @@ pub enum InvocationScheme {
     Jira,
     Scheduled,
     Scanner,
+    Cve,
 }
 
 impl InvocationScheme {
@@ -38,16 +43,117 @@ impl InvocationScheme {
             InvocationScheme::Jira => "jira",
             InvocationScheme::Scheduled => "scheduled",
             InvocationScheme::Scanner => "scanner",
+            InvocationScheme::Cve => "cve",
         }
     }
 
     /// Every scheme, in the order a diagnostic should list them.
-    pub const ALL: [InvocationScheme; 4] = [
+    pub const ALL: [InvocationScheme; 5] = [
         InvocationScheme::Beans,
         InvocationScheme::Jira,
         InvocationScheme::Scheduled,
         InvocationScheme::Scanner,
+        InvocationScheme::Cve,
     ];
+
+    /// The scheme `text` is the spelling of, if it is a scheme at all.
+    ///
+    /// Extracted because there are now two callers asking the same question:
+    /// [`InvocationRef::from_str`] asks it of the part before the separator and
+    /// — since a scheme may stand alone — of the whole input when there is no
+    /// separator. A second spelling of the lookup is how the two forms would
+    /// come to recognise different sets of schemes.
+    fn of(text: &str) -> Option<Self> {
+        InvocationScheme::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == text)
+    }
+
+    /// Whether this scheme is a complete invocation reference without a value.
+    ///
+    /// True only for an orchestration that **discovers its own work**: there is
+    /// no piece of work to name, so a value could only restate something the
+    /// configuration already holds. That is not merely redundant — `effect_id`
+    /// derives from the reference, so two operators who invent two spellings of
+    /// one sweep compute two identities for it and open two pull requests over a
+    /// difference that means nothing. ADR 019 records the three placeholder
+    /// values tried and rejected before this.
+    ///
+    /// `beans` and `jira` name a work item and `scanner` names a finding, so
+    /// each is false and each still requires a value. Standing alone is a
+    /// property of *the scheme* rather than of the caller, which is what keeps
+    /// it from becoming a general licence to omit a value.
+    ///
+    /// `cve` admits both forms, and the presence of a value carries meaning
+    /// rather than decoration: `cve` discovers its own findings, while a value
+    /// would name one of them. The grammar states that difference, so no sentinel
+    /// word has to — and it states it whether or not anything acts on the second
+    /// form. Nothing in this build does, and the CLI refuses the valued form
+    /// rather than sweeping an entire image under a reference that narrows it;
+    /// ADR 019's amendment records why the grammar is kept regardless.
+    pub fn stands_alone(self) -> bool {
+        matches!(self, InvocationScheme::Cve)
+    }
+
+    /// The schemes a caller may write, as a diagnostic lists them.
+    ///
+    /// Derived from [`InvocationScheme::ALL`] rather than written out in the
+    /// `#[error]` attribute, for the same reason [`InvocationScheme::as_str`] is
+    /// the single source of a spelling: as prose it named four of five schemes
+    /// the moment a fifth existed, so a caller who mistyped `cve` would have
+    /// been told there is no such scheme.
+    ///
+    /// Public because there are now two diagnostics that have to name the set:
+    /// [`InvocationRefError::UnknownScheme`] here, and the CLI's help for an
+    /// empty value written after a scheme fiddle does not know. A second copy in
+    /// the renderer would be the prose the paragraph above argues against, one
+    /// crate further from the enum.
+    ///
+    /// This is the whole set and says nothing about *shape*. A diagnostic that
+    /// goes on to advise how a scheme is written wants one of the two halves
+    /// below instead, because no single shape is true of the whole set.
+    pub fn listed() -> String {
+        InvocationScheme::listed_where(|_| true)
+    }
+
+    /// The schemes that name the work they act on, so a value must follow them.
+    ///
+    /// The complement of [`InvocationScheme::listed_standing_alone`], and the
+    /// pair exists because advice about *how a scheme is written* cannot be true
+    /// of [`InvocationScheme::listed`] as a whole: `beans:fiddle-m0-demo` is the
+    /// shape four schemes take, and offering it to the fifth's caller sends an
+    /// operator who wanted a sweep to a tracker read instead — the difference
+    /// ADR 019 exists to keep visible, and one an exit code of 2 either way does
+    /// not reveal. Splitting on [`InvocationScheme::stands_alone`] is what lets
+    /// a diagnostic give each half only the advice that holds for it.
+    pub fn listed_naming_work() -> String {
+        InvocationScheme::listed_where(|scheme| !scheme.stands_alone())
+    }
+
+    /// The schemes that discover their own work, so they need no value.
+    ///
+    /// The complement of [`InvocationScheme::listed_naming_work`]: between them
+    /// they name every scheme in [`InvocationScheme::ALL`] exactly once, which
+    /// is what keeps a sentence built from both halves from advertising four of
+    /// five schemes — the failure [`InvocationScheme::listed`] was derived to
+    /// prevent, reintroduced by the split if the split were partial.
+    pub fn listed_standing_alone() -> String {
+        InvocationScheme::listed_where(InvocationScheme::stands_alone)
+    }
+
+    /// The schemes `admits` accepts, in [`InvocationScheme::ALL`]'s order and in
+    /// the spelling a diagnostic lists them by.
+    ///
+    /// One formatter for every list, so two halves of one sentence cannot come
+    /// to punctuate their schemes differently.
+    fn listed_where(admits: impl Fn(Self) -> bool) -> String {
+        InvocationScheme::ALL
+            .into_iter()
+            .filter(|scheme| admits(*scheme))
+            .map(InvocationScheme::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 impl std::fmt::Display for InvocationScheme {
@@ -114,12 +220,18 @@ impl std::fmt::Display for AttemptId {
     }
 }
 
-/// A parsed `<scheme>:<value>` invocation reference, such as
-/// `beans:fiddle-m0-demo`.
+/// A parsed invocation reference, such as `beans:fiddle-m0-demo` — or, for a
+/// scheme that [stands alone](InvocationScheme::stands_alone), `cve`.
 ///
 /// The fields are private so the only way to obtain one is through
 /// [`FromStr`]: a value of this type is proof that the grammar was satisfied,
 /// which is why no later layer needs to re-validate it.
+///
+/// An absent value is spelled as an empty `value`, rather than as an
+/// `Option<String>`, because every caller that reads it wants text: a bare
+/// reference names no work item, so the empty string is what the ports are
+/// asked to observe. The distinction the type would carry is already carried by
+/// the scheme, which is where it belongs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvocationRef {
     scheme: InvocationScheme,
@@ -134,17 +246,87 @@ pub struct InvocationRef {
 /// the defect.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum InvocationRefError {
-    /// No `:` separator at all, so no scheme could be read.
-    #[error("invocation reference must be <scheme>:<value>, got `{0}`")]
+    /// No `:` separator, and the input is not a scheme that stands alone.
+    ///
+    /// Covers two callers who look different and are owed the same thing: one
+    /// who wrote a scheme and forgot its value (`beans`), and one who wrote
+    /// something that is not a reference at all (`bogus`). Without a separator
+    /// there is nothing to tell them apart by — the shape is the defect, and
+    /// naming the shape serves both. This is why it is not
+    /// [`InvocationRefError::UnknownScheme`]: that variant answers "your scheme
+    /// is not one of these", which would be a confident and wrong diagnosis of
+    /// `beans`.
+    ///
+    /// The message names two shapes because there are two. It read "invocation
+    /// reference must be `<scheme>:<value>`", which was the whole grammar until a
+    /// scheme could [stand alone](InvocationScheme::stands_alone) and afterwards
+    /// was a *denial of the bare form* — and this variant is precisely where a
+    /// mistyped `cve` arrives, so the one caller the sentence was most wrong for
+    /// was the caller this milestone exists to serve. It could not be repaired by
+    /// naming the other shape as an aside either: "must be" is a claim about the
+    /// set of legal references, and while it stood, `fiddle run cve` was text the
+    /// binary accepted and its own diagnostic called illegal. So the defect is
+    /// stated as what the input is *not*, which is true of both callers and of
+    /// however many shapes the grammar comes to admit.
+    ///
+    /// The schemes that need no value are then named *in this sentence*, not left
+    /// to the help beneath it, because the two do not travel together: a log line,
+    /// a CI summary and a shell scrollback each keep the verdict and lose the
+    /// advice. Read alone, the sentence without them tells a caller who wrote no
+    /// separator that such schemes exist and not which — the one fact that gets
+    /// them to an invocation the binary accepts. They come from
+    /// [`InvocationScheme::listed_standing_alone`], so this sentence cannot come
+    /// to name four of five the way [`InvocationRefError::UnknownScheme`]'s once
+    /// did.
+    #[error(
+        "`{0}` is not an invocation reference: it is neither a scheme followed by \
+         the work it names nor one of the schemes that discover their own work \
+         ({alone})",
+        alone = InvocationScheme::listed_standing_alone(),
+    )]
     Malformed(String),
 
     /// A scheme was present but is not one fiddle knows.
-    #[error("unknown invocation scheme `{0}`; expected one of beans, jira, scheduled, scanner")]
+    #[error(
+        "unknown invocation scheme `{scheme}`; expected one of {known}",
+        scheme = .0,
+        known = InvocationScheme::listed(),
+    )]
     UnknownScheme(String),
 
-    /// A known scheme followed by nothing, so the reference names no work.
+    /// A scheme followed by nothing, so the reference names no work.
+    ///
+    /// The scheme is carried because the *repair* available to a caller depends on
+    /// it. For a scheme that names a work item it is to write the identifier; for a
+    /// scheme that [stands alone](InvocationScheme::stands_alone) it is to drop the
+    /// separator, and those are different work — `cve` sweeps the configured image
+    /// rather than reading a row. Advice that named only the appending repair sent
+    /// a caller who wanted the sweep to the wrong one. Which repair is meant is not
+    /// something a renderer can know from the defect alone, so the variant carries
+    /// the scheme.
+    ///
+    /// An `Option`, and that is [`InvocationRef::from_str`]'s parse order made
+    /// visible rather than a convenience: the value is checked *before* the scheme
+    /// is looked up, so that the more specific defect wins, and `mystery:` is
+    /// therefore an empty value written after a scheme fiddle does not know.
+    /// `None` is that case. It has no *scheme-specific* advice to give, which is
+    /// not the same as having none: the caller has two defects and the one they
+    /// can act on is the scheme, so `None` is what tells a renderer to say the
+    /// scheme is unrecognised and name the set instead of describing a repair to
+    /// the half of the reference that is already fine. The ordering stands —
+    /// reporting the unknown scheme *as the defect* would drop the empty-value
+    /// complaint and trade one misleading message for another.
+    ///
+    /// What `None` cannot do is describe *one* shape for the set it names. A
+    /// caller here has no known scheme, so a renderer knows nothing about which
+    /// shape they meant, and advice that assumed the common one told a mistyped
+    /// `cve` to write `cve:<something>` — the reading `Some(cve)` above is at
+    /// pains to distinguish from a sweep. So the set is offered in the two halves
+    /// [`InvocationScheme::listed_naming_work`] and
+    /// [`InvocationScheme::listed_standing_alone`] divide it into, each with the
+    /// shape that is true of it.
     #[error("invocation reference value must not be empty")]
-    EmptyValue,
+    EmptyValue { scheme: Option<InvocationScheme> },
 
     /// A non-empty value written with a character outside
     /// [`InvocationRef::VALUE_GRAMMAR`].
@@ -169,12 +351,40 @@ impl FromStr for InvocationRef {
     /// specific defect wins: `beans:` is reported as an empty value, and
     /// `beans:../x` as an illegal character, rather than either being dragged
     /// through scheme lookup.
+    ///
+    /// # Why the absence of a separator is not always a defect
+    ///
+    /// The separator is what makes a reference *two* things, and a scheme whose
+    /// orchestration discovers its own work is only one. So an input with no
+    /// `:` is offered to the scheme lookup rather than refused on sight, and
+    /// accepted when the scheme it names [stands
+    /// alone](InvocationScheme::stands_alone) — `cve` parses, `beans` does not.
+    ///
+    /// The distinction is between *no separator* and *a separator followed by
+    /// nothing*, and it is deliberate rather than an artefact of `split_once`.
+    /// `cve` is a caller who had nothing to name; `cve:` is a caller who meant
+    /// to name something and wrote it wrong, and the two are told different
+    /// things. That is also what keeps the four rejections pairwise distinct
+    /// once a fifth shape exists.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (scheme, value) = s
-            .split_once(':')
-            .ok_or_else(|| InvocationRefError::Malformed(s.to_string()))?;
+        let Some((scheme, value)) = s.split_once(':') else {
+            return match InvocationScheme::of(s) {
+                Some(scheme) if scheme.stands_alone() => Ok(InvocationRef {
+                    scheme,
+                    value: String::new(),
+                }),
+                _ => Err(InvocationRefError::Malformed(s.to_string())),
+            };
+        };
         if value.is_empty() {
-            return Err(InvocationRefError::EmptyValue);
+            // The lookup is done for the *error* and not for the parse: what a
+            // caller can be advised to write depends on whether their scheme
+            // stands alone, and an unknown one is admitted as `None` rather than
+            // being reported as an unknown scheme — which would undo the
+            // ordering the paragraph above argues for.
+            return Err(InvocationRefError::EmptyValue {
+                scheme: InvocationScheme::of(scheme),
+            });
         }
         if let Some(character) = value.chars().find(|c| !InvocationRef::admits(*c)) {
             return Err(InvocationRefError::IllegalValueCharacter {
@@ -182,9 +392,7 @@ impl FromStr for InvocationRef {
                 character,
             });
         }
-        let scheme = InvocationScheme::ALL
-            .into_iter()
-            .find(|candidate| candidate.as_str() == scheme)
+        let scheme = InvocationScheme::of(scheme)
             .ok_or_else(|| InvocationRefError::UnknownScheme(scheme.to_string()))?;
         Ok(InvocationRef {
             scheme,
@@ -253,9 +461,20 @@ impl InvocationRef {
         &self.value
     }
 
-    /// The canonical `<scheme>:<value>` text. Round-trips through [`FromStr`].
+    /// The canonical text of this reference. Round-trips through [`FromStr`].
+    ///
+    /// `<scheme>:<value>`, or the scheme alone when the reference has no value.
+    /// The round trip is the contract, and it is what forces the second form: a
+    /// bare reference rendered as `cve:` would parse back as
+    /// [`InvocationRefError::EmptyValue`], so the text a caller was shown would
+    /// not be text they could type. The separator is emitted only when there is
+    /// something on the far side of it.
     pub fn as_str(&self) -> String {
-        format!("{}:{}", self.scheme.as_str(), self.value)
+        if self.value.is_empty() {
+            self.scheme.as_str().to_string()
+        } else {
+            format!("{}:{}", self.scheme.as_str(), self.value)
+        }
     }
 
     /// A path- and filename-safe rendering, for naming the artefacts a run
@@ -267,14 +486,36 @@ impl InvocationRef {
     /// separator and no `.` component. That is what a caller deriving a path
     /// from it is entitled to rely on, and it is why deriving a *fourth* path
     /// from a slug needs no new sanitising step.
+    ///
+    /// A reference with no value slugs to its scheme alone. ADR 011 records the
+    /// slug as `<scheme>-<value>`; with no value there is nothing for the
+    /// separator to join, so emitting it would leave a trailing hyphen on every
+    /// path derived from a bare reference. Two references that name different
+    /// work still slug differently — a *present* value is never empty, so
+    /// `cve-<finding>` can never be `cve` — which is what stops one sweep's
+    /// bundle from being published over another's.
+    ///
+    /// The bare form is also the one case where safety is not owed to
+    /// [`InvocationRef::VALUE_GRAMMAR`] at all: with no value there is no
+    /// externally-supplied component, so there is nothing to sanitise rather
+    /// than something sanitised well.
     pub fn slug(&self) -> String {
-        format!("{}-{}", self.scheme.as_str(), self.value)
+        if self.value.is_empty() {
+            self.scheme.as_str().to_string()
+        } else {
+            format!("{}-{}", self.scheme.as_str(), self.value)
+        }
     }
 }
 
 impl std::fmt::Display for InvocationRef {
+    /// Delegates to [`InvocationRef::as_str`] rather than formatting again.
+    ///
+    /// The two spellings of the same text were identical until a reference
+    /// could render without a separator; a second `format!` here is how
+    /// `Display` would go on emitting `cve:` after `as_str` stopped.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.scheme.as_str(), self.value)
+        f.write_str(&self.as_str())
     }
 }
 
@@ -322,7 +563,16 @@ mod tests {
         );
         assert_eq!(
             "beans:".parse::<InvocationRef>(),
-            Err(InvocationRefError::EmptyValue)
+            Err(InvocationRefError::EmptyValue {
+                scheme: Some(InvocationScheme::Beans)
+            })
+        );
+        // The scheme is carried even when it is not one fiddle knows, because the
+        // value is checked before the lookup — and `None` is what tells a
+        // renderer it has no scheme-specific advice to offer.
+        assert_eq!(
+            "mystery:".parse::<InvocationRef>(),
+            Err(InvocationRefError::EmptyValue { scheme: None })
         );
         assert_eq!(
             "beans:../../../pwned".parse::<InvocationRef>(),
@@ -341,6 +591,12 @@ mod tests {
     /// boundary rather than at each use site: every one of these is refused
     /// before an `InvocationRef` exists at all, so no later layer can be the
     /// one that forgot to sanitise.
+    ///
+    /// The `cve:` rows are here because admitting the bare form invites exactly
+    /// one over-generalisation — *a self-discovering scheme supplies its own
+    /// input, so its values need no checking* — and `cve` is the scheme whose
+    /// values arrive from a scanner fiddle does not control. ADR 019 narrows
+    /// what may carry an external string; it does not exempt one that does.
     #[test]
     fn refuses_a_value_that_could_be_read_as_a_path() {
         for text in [
@@ -350,6 +606,8 @@ mod tests {
             "beans:a/b",
             "beans:/etc/passwd",
             "beans:a\\b",
+            "cve:../../../pwned",
+            "cve:a/b",
             "beans:.hidden",
             "beans:work/../../../pwned.json",
             "scanner:%2e%2e",
@@ -399,6 +657,165 @@ mod tests {
                 "a slug names one artefact, got {slug}"
             );
         }
+    }
+
+    /// **A scheme that discovers its own work is a complete reference alone.**
+    ///
+    /// ADR 019. The round trip is the part worth pinning: `as_str` documents
+    /// itself as text that parses back, so a bare reference has to render bare
+    /// — `cve`, never `cve:` — or the contract holds for four schemes and not
+    /// the fifth.
+    #[test]
+    fn a_self_discovering_scheme_stands_alone_and_round_trips() {
+        let parsed: InvocationRef = "cve".parse().expect("a bare `cve` is a complete reference");
+        assert_eq!(parsed.scheme(), InvocationScheme::Cve);
+        assert_eq!(parsed.value(), "");
+        assert_eq!(parsed.as_str(), "cve", "renders bare, never as `cve:`");
+        assert_eq!(parsed.to_string(), "cve", "and `Display` agrees with it");
+        assert_eq!(parsed.slug(), "cve", "no trailing separator");
+        assert_eq!(
+            "cve".parse::<InvocationRef>().unwrap(),
+            parsed,
+            "round trips"
+        );
+    }
+
+    /// The absence of a separator is the bare form; a separator followed by
+    /// nothing is still a caller who meant to name something and did not.
+    #[test]
+    fn a_colon_with_nothing_after_it_is_still_empty_value() {
+        assert_eq!(
+            "cve:".parse::<InvocationRef>(),
+            Err(InvocationRefError::EmptyValue {
+                // The scheme a renderer needs in order to offer the *other*
+                // repair: dropping the separator, which for this scheme is a
+                // complete reference and for no other one is.
+                scheme: Some(InvocationScheme::Cve)
+            })
+        );
+    }
+
+    /// **Standing alone is a property of the scheme, not of the caller.**
+    ///
+    /// Written over [`InvocationScheme::ALL`] rather than over the three
+    /// schemes that need a value today, so a variant added later is covered
+    /// the day it is added. The count is the tripwire: a scheme that starts
+    /// standing alone by accident fails here rather than in whatever derives a
+    /// path from its slug.
+    #[test]
+    fn the_bare_form_is_per_scheme_and_not_general() {
+        for scheme in InvocationScheme::ALL {
+            let bare = scheme.as_str().parse::<InvocationRef>();
+            if scheme.stands_alone() {
+                assert_eq!(
+                    bare.unwrap_or_else(|e| panic!("`{scheme}` must stand alone, got {e}"))
+                        .scheme(),
+                    scheme
+                );
+            } else {
+                assert_eq!(
+                    bare,
+                    Err(InvocationRefError::Malformed(scheme.as_str().to_string())),
+                    "`{scheme}` names a piece of work and must still be given one"
+                );
+            }
+        }
+        assert_eq!(
+            InvocationScheme::ALL
+                .into_iter()
+                .filter(|scheme| scheme.stands_alone())
+                .collect::<Vec<_>>(),
+            vec![InvocationScheme::Cve],
+            "only a self-discovering orchestration may stand alone"
+        );
+    }
+
+    /// Admitting the bare form widens nothing about the valued one: ADR 011's
+    /// grammar still applies to every value, and `cve` is the scheme whose
+    /// values come from a scanner fiddle does not control.
+    #[test]
+    fn a_valued_cve_reference_still_validates_its_value() {
+        let parsed: InvocationRef = "cve:CVE-2026-1234".parse().expect("a finding id parses");
+        assert_eq!(parsed.value(), "CVE-2026-1234");
+        assert_eq!(parsed.as_str(), "cve:CVE-2026-1234");
+        assert_eq!(
+            "cve:../../pwned".parse::<InvocationRef>(),
+            Err(InvocationRefError::IllegalValueCharacter {
+                value: "../../pwned".to_string(),
+                character: '.',
+            })
+        );
+    }
+
+    /// Two references that name different work must name different artefacts.
+    ///
+    /// `cve` and `cve:CVE-2026-1234` are different references, and that is all
+    /// this needs: one addresses whatever the configuration puts in scope, the
+    /// other addresses one finding named inside it, so a slug that collapsed the
+    /// two would publish one attempt's bundle over the other's. The distinction
+    /// is the grammar's and holds whatever any one build implements — nothing in
+    /// this one acts on the valued form, which the CLI refuses under ADR 019's
+    /// M4a amendment, and the milestone that implements narrowing inherits this
+    /// slug as it stands. Dropping the separator from the *valued* branch is the
+    /// mutation this catches, and nothing else here would.
+    #[test]
+    fn a_bare_slug_cannot_collide_with_a_valued_slug() {
+        let bare: InvocationRef = "cve".parse().unwrap();
+        let valued: InvocationRef = "cve:CVE-2026-1234".parse().unwrap();
+        assert_ne!(bare.slug(), valued.slug());
+        assert_eq!(bare.slug(), "cve");
+        assert_eq!(valued.slug(), "cve-CVE-2026-1234");
+    }
+
+    /// The diagnostic for an unknown scheme lists the schemes there are.
+    ///
+    /// Pinned because the list used to be prose in the `#[error]` attribute:
+    /// adding a variant left the message naming four of five, telling a caller
+    /// who mistyped `cve` that no such scheme exists.
+    #[test]
+    fn the_unknown_scheme_diagnostic_names_every_scheme() {
+        let rendered = "mystery:x"
+            .parse::<InvocationRef>()
+            .expect_err("an unknown scheme is refused")
+            .to_string();
+        for scheme in InvocationScheme::ALL {
+            assert!(
+                rendered.contains(scheme.as_str()),
+                "`{scheme}` is a scheme a caller may write and must be offered, got {rendered}"
+            );
+        }
+    }
+
+    /// **The two halves of the advice partition the schemes.**
+    ///
+    /// A diagnostic that tells a caller how to *write* a scheme cannot use
+    /// [`InvocationScheme::listed`], because no one shape is true of every
+    /// scheme; it uses the two halves, and is only as honest as the split. Each
+    /// scheme must appear in exactly one — a scheme in both would be described
+    /// two contradictory ways, one in neither would go unadvertised, and that
+    /// last is the four-of-five failure `listed` is derived to prevent, returning
+    /// through the split. Both halves must also be inhabited, or a sentence built
+    /// from them reads as a list with nothing in it.
+    #[test]
+    fn every_scheme_is_advised_by_exactly_one_half_of_the_set() {
+        let naming = InvocationScheme::listed_naming_work();
+        let alone = InvocationScheme::listed_standing_alone();
+        for scheme in InvocationScheme::ALL {
+            assert_eq!(
+                (
+                    naming.contains(scheme.as_str()),
+                    alone.contains(scheme.as_str())
+                ),
+                (!scheme.stands_alone(), scheme.stands_alone()),
+                "`{scheme}` belongs to whichever half `stands_alone` puts it in and to \
+                 no other, got naming={naming:?} alone={alone:?}"
+            );
+        }
+        assert!(
+            !naming.is_empty() && !alone.is_empty(),
+            "each half is read as a list in a sentence, so neither may be empty: \
+             naming={naming:?} alone={alone:?}"
+        );
     }
 
     #[test]

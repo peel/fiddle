@@ -279,7 +279,7 @@ The repository uses the existing `peel/rust.nix` design as a copied template rat
 
 Project configuration moves from `orchestrate.json` to `fiddle.toml`. TOML is a Rust ecosystem convention for project configuration through Cargo, but this is a product choice rather than a requirement imposed by Rust.[S15](#s15)
 
-The schema is organized by concrete component ownership, not by an abstract provider hierarchy. For example, GitHub owns repository, pull-request, and check settings under one authenticated integration; it is not selected once as a repository kind and again as a CI kind. Jira and Beans may coexist, and the `InvocationRef` selects the applicable adapter. The final field names may change during implementation, but this reference configuration fixes the intended boundaries:
+The schema is organized by concrete component ownership, not by an abstract provider hierarchy. For example, GitHub owns repository, pull-request, and check settings under one authenticated integration; it is not selected once as a repository kind and again as a CI kind. Jira and Beans may coexist, and the `InvocationRef` selects the applicable adapter. **The block below is a composite across the whole of V1 and it is not a document a deployment can load**; the note after it says how far from loadable it is and how to read it, and [the configuration this build loads](#the-configuration-this-build-loads) follows. The final field names may change during implementation, but this reference configuration fixes the intended boundaries:
 
 ```toml
 # fiddle.toml configures Fiddle's behavior in this repository. It does not
@@ -294,8 +294,8 @@ name = "icecube"
 # One integration owns source observations, branch publication, pull requests,
 # and check observations. Credentials are resolved from the named environment
 # source and are never exposed to capabilities or agents.
-repository = "snowplow/icecube"
-default_branch = "main"
+repo = "snowplow/icecube"
+base = "main"
 token = { env = "GITHUB_TOKEN" }
 
 [github.pull_requests]
@@ -346,7 +346,7 @@ timeout = "7d"
 # an explicitly supported local capability selects Claude Code in M6.
 default_runtime = "rig"
 max_turns = 40
-timeout = "45m"
+deadline = "45m"
 
 [agent.rig]
 # Primary CI implementation. The API key is resolved only by the host runtime
@@ -441,6 +441,12 @@ max_diff_lines = 500
 [orchestration.cve]
 # Selection and run-budget preferences for nightly CVE mitigation. Mitigation
 # behavior, immediate checks, and major-version approval rules live in Rust.
+# The image has no default and must be written down: the host workflow builds it
+# and Fiddle scans it, so a guessed value would scan whichever tag this build
+# happened to ship with. `severities` names grades and not a floor; findings below
+# it are still acted on where a public exploit and a published fix coincide, which
+# is a rule in Rust rather than a preference here.
+image = "ghcr.io/snowplow/icecube:latest"
 severities = ["HIGH", "CRITICAL"]
 max_findings = 5
 
@@ -453,6 +459,77 @@ max_turns = 15
 [capabilities.set_variant]
 # This longer operation overrides only the default it genuinely needs to change.
 timeout = "60m"
+```
+
+#### The reference configuration is a composite
+
+The block above is the whole of V1 written down at once, and most of its tables name milestones that have not shipped, so it is a boundary map rather than a document. Fed to the compiled binary it exits 2, and because strict deserialization reports one unknown or missing field at a time, each refusal hides the next: clearing them one at a time — deleting the key a message points at, or the table whose header it names — takes 20 passes before what is left of it loads. 18 of its 23 tables have to be deleted along the way, and the two tables the schema requires, `[stub]` and `[report]`, are not in the block at all. `crates/fiddle-acceptance/tests/config_check.rs` measures those two numbers against the compiled binary rather than quoting them, so this paragraph cannot drift from what the binary does.
+
+Read the block by one rule: a key is spelled the way this build spells it wherever the build already has that setting, and it keeps the manual's own spelling wherever it names behavior still to come. `[github]` therefore says `repo` and `base` rather than `repository` and `default_branch`, and `[agent]` says `deadline` rather than `timeout` — those three were the same settings under different words, which is a transcription defect and not a boundary. `[workspace] network`, `[orchestration] enabled`, and every table for an unshipped milestone stay as written, because they state intent rather than mis-name something that exists. Where a shipped table settled a boundary differently from this map, `crates/fiddle-cli/src/config.rs` is the schema of record: the deployment's effect ceiling is `[github.policy]`, keyed by effect kind rather than by the booleans `[policy]` shows, and `required_checks` is a key of `[github]` rather than of `[github.actions]`.
+
+#### The configuration this build loads
+
+Complete, and every key admitted by the strict schema — `fiddle config check --config fiddle.toml` exits 0 on it. It shows all eight tables the schema knows, which is the whole of what a deployment can say today, and an acceptance lane feeds the compiled binary these exact bytes so that this block cannot become as aspirational as the one above it.
+
+```toml
+# Complete and loadable. Every key here is admitted by the strict schema in
+# `crates/fiddle-cli/src/config.rs`, and no field of that schema accepts a secret
+# value, so this document is safe to track in version control.
+
+[project]
+# Repository-independent identity used in reports and telemetry.
+name = "icecube"
+
+[stub]
+# Where the fixture-backed ports read and write their state. Required today
+# because the ports a run reaches are still fixtures, and the table most likely
+# to leave once they are not.
+root = "tests/fixtures/stub-state"
+
+[report]
+# Where a run publishes its evidence bundles.
+dir = ".fiddle/reports"
+
+[agent]
+# Model, endpoint, and credential variable have no defaults and must be written
+# down: each names a deployment decision that cannot be guessed without being
+# wrong somewhere. The two bounds below have defaults and are written out so the
+# axes are visible.
+model = "claude-sonnet-5"
+base_url = "https://litellm.firn.snplow.net/v1"
+api_key = { env = "LITELLM_API_KEY" }
+max_turns = 12
+deadline = "45m"
+
+[workspace]
+# How Fiddle uses the checkout it receives. One isolation mechanism and one
+# cleanup rule are supported today; the keys exist so the axes are visible.
+root = ".fiddle/workspaces"
+isolation = "git-worktree"
+command_timeout = "15m"
+cleanup = "always"
+
+[github]
+# One integration owns branch publication, pull requests, and check observation.
+# Absent in a deployment that never publishes.
+repo = "snowplow/icecube"
+base = "main"
+token = { env = "FIDDLE_GITHUB_TOKEN" }
+
+[scanner]
+# The container scanner and the tenant it runs as. Absent in a deployment that
+# never scans.
+client_id = { env = "WIZ_CLIENT_ID" }
+client_secret = { env = "WIZ_CLIENT_SECRET" }
+timeout = "20m"
+
+[orchestration.cve]
+# The image has no default and must be written down: the host workflow builds it
+# and Fiddle scans it, so a guessed value would scan whichever tag this build
+# happened to ship with.
+image = "ghcr.io/snowplow/icecube:latest"
+severities = ["HIGH", "CRITICAL"]
+max_findings = 5
 ```
 
 Configuration requirements:
@@ -1425,6 +1502,8 @@ sequenceDiagram
 
 The static orchestration composes `cve_assess`, `cve_mitigate`, and shared `change_evaluate`. It is trackerless: scanner identity prevents duplicate work, and GitHub owns durable state when a mitigation PR exists.
 
+**The mitigation decision stays trackerless permanently.** From M5 the orchestration additionally reports the CVEs it could not patch to Jira as a policy-checked effect, and from M9 it reports a run's outcome to Slack. Neither is an input: no tracker state and no notification gates, informs, or deduplicates a mitigation, and a run with both integrations unavailable produces the same pull request and the same typed outcome as one with them configured. Requirement 22's "without requiring Jira" is therefore preserved — the verdict report is an additional output of a decision already made, and the capability holds no tracker credential, receiving an executor already bound to its own capability identity.
+
 ```mermaid
 sequenceDiagram
   autonumber
@@ -1531,11 +1610,13 @@ Planning may change task decomposition and implementation detail, but it may not
 | **M1 — Bounded agentic capability** | Pinned Rig integration, ephemeral workspace, host-only tool context, typed agent output, bounded inner tool loop, cancellation, and attempt limits | A scripted Rig model repairs a deliberately broken fixture through real workspace tools and passes its configured checks. A scheduled CI Anthropic canary exercises the same capability contract without becoming the deterministic gate. |
 | **M2 — Safe GitHub effects** | Capability-bound effect executor, policy combination, stable effect identity, local Git and authenticated GitHub adapters, pull-request publication, CI observation, and remote GitHub Actions execution | A disposable GitHub repository receives exactly one branch and pull request. Failure injection after an ambiguous write followed by a fresh-process retry proves that no branch, PR, or check request is duplicated. |
 | **M3 — Suspension and human direction** | GitHub conversation adapter, contextual human-decision request, suspended exit, fresh-process continuation, actor/effect validation, approval, rejection, redirection, and stale-decision invalidation | A remote risky-change scenario proves approval of the unchanged effect, redirection to a different change, rejection of stale approval, and continuation without prior Rig memory or runner state. |
-| **M4 — CVE mitigation** | Scanner/finding invocation, `cve_assess`, `cve_mitigate`, shared change evaluation, CI feedback across fresh attempts, and PR-or-no-PR disposition | A vulnerable fixture produces one evaluated mitigation PR; an already-fixed fixture produces evidenced `NoChange`; a failing CI result causes a fresh bounded mitigation attempt using observed failure evidence. |
-| **M5 — Jira and toil implementation** | Jira observation and progress, eligibility assessment, Jira interaction channel, Rig-backed bounded quick-fix implementation, and Jira-linked pull requests | Jira-compatible contract stubs run on every build. Progressive live acceptance proves that an eligible ticket produces one evaluated PR and linked Jira update, while an ambiguous or decision-heavy ticket is refused with evidence. |
+| **M4a — CVE mitigation capability** | Scanner invocation and the scan as an observation, `cve_assess`, `cve_mitigate`, shared change evaluation, deduplication by finding identity, and the PR-or-no-PR dispositions | A vulnerable fixture produces one evaluated mitigation PR; an already-fixed fixture produces evidenced `NoChange`; an unfixable finding produces an evidenced verdict. Offline and credential-free against a scripted scanner and a scripted forge: a scanner that errored, wrote nothing, found nothing or never ran must reach four distinguishable results, none of them a successful `NoChange`. |
+| **M4b — CVE workflow integration** | A published release artifact, the capability running from a real host workflow against a real forge and a real scanner, and CI feedback across fresh attempts | The capability runs unmodified from a host workflow in a real repository, replacing an agent invocation, and opens or updates one shared mitigation pull request. A failing CI result causes a fresh bounded mitigation attempt in a new process using observed failure evidence, bounded by the configured attempt limit. |
+| **M5 — Jira and toil implementation** | Jira observation and progress, eligibility assessment, Jira interaction channel, Rig-backed bounded quick-fix implementation, Jira-linked pull requests, and **CVE verdict reporting as a policy-checked Jira effect** | Jira-compatible contract stubs run on every build. Progressive live acceptance proves that an eligible ticket produces one evaluated PR and linked Jira update, while an ambiguous or decision-heavy ticket is refused with evidence. A CVE run's unpatchable verdicts file exactly one ticket each, deduplicated against existing tickets, and an interrupted run files no duplicate; the same run with Jira unavailable produces an identical pull request and typed outcome. |
 | **M6 — Local attended Beans execution** | Beans observation/progress, explicit `claude-code` runtime selection, local `claude -p` quick-fix implementation, Team OAuth preflight, attended interaction transport, Claude Code event/OTel integration, and parity with the M5 quick-fix contract | CI runs the Claude Code quick-fix implementation with `ANTHROPIC_API_KEY` against a disposable Beans project and asserts the same typed outcome/evidence contract as Rig. Process stubs prove auth, command, event, schema, cancellation, and failure behavior without credentials; an instrumented workspace operation proves that child tools cannot observe the model credential. An opt-in local canary repeats the scenario through Team OAuth with the API-key variable absent. |
 | **M7 — Stabilization** | Deterministic repository-history signal, revision-bound hotspot assessment, agentic stabilization proposal, change evaluation, and PR-or-no-PR disposition | A stable repository fixture produces evidenced `NoChange`; a hotspot fixture produces one justified, evaluated stabilization PR tied to the observed revision. |
 | **M8 — Concurrent set-based engineering** | Jira-epic invocation, bounded isolated workspace fan-out, common evaluation contract, typed synthesis, and publication of only the selected change set | Multiple real variants execute concurrently against the same contract; synthesis receives only typed results and evidence, and exactly one accepted change set is published or an explicit no-selection outcome is reported. |
+| **M9 — Notification channel** | A narrow outbound notification port, a Slack adapter as its first implementation, and run-outcome notification for the orchestrations that have one | A contract stub runs on every build. A notification is a policy-checked effect with stable identity, so an interrupted run posts no duplicate message. Deleting the notification configuration changes no outcome, no exit code and no evidence bundle: a scenario runs with the channel configured and unconfigured and asserts both produce the identical typed result. No notification is ever an input to a decision. |
 
 Every milestone gate includes:
 
@@ -1549,7 +1630,11 @@ Every milestone gate includes:
 
 Fiddle uses normal Cargo package versioning and reports the package version plus source build revision through `fiddle --version` and acceptance evidence. Milestone identifiers are planning boundaries rather than Git tags, runtime capability versions, or a second release mechanism. The implementation plan assigns concrete package versions and may reorder work within a milestone, but it must preserve each milestone's externally observable capability and automated gate.
 
-M0 proves the deterministic outer shell. M1 inserts a bounded Rig inner loop without giving it orchestration authority. M2 and M3 then prove that authenticated effects, idempotency, policy, suspension, and cross-process continuation remain owned by Fiddle core. M4 and M5 prove the first two product workflows remotely before M6 adds local `claude -p` and Beans against the established quick-fix contract. Stabilize and set-based engineering follow in M7 and M8. Completing the foundation or local runtime without all four product workflows does not complete this RFC.
+M0 proves the deterministic outer shell. M1 inserts a bounded Rig inner loop without giving it orchestration authority. M2 and M3 then prove that authenticated effects, idempotency, policy, suspension, and cross-process continuation remain owned by Fiddle core. M4 and M5 prove the first two product workflows remotely before M6 adds local `claude -p` and Beans against the established quick-fix contract.
+
+M4 is split into M4a and M4b because the two halves fail differently and are proved differently. M4a's claim is about *decisions*: the projection, the attribution, the deduplication and the dispositions are arithmetic and lookups whose wrong answers are silent, and every one of them can be gated offline against a scripted scanner and a scripted forge. M4b's claim is about *deployment*: that the same binary runs unmodified from a host workflow against a real forge, a real scanner and real CI feedback. Merging them would mean a milestone whose gate needs a credential to say anything, and M0's constraint that the acceptance lane is never gated on a secret is what keeps M4a's proof runnable by anyone. The split is along the line the gate already drew: the two fixture dispositions are M4a's, and the fresh attempt from observed CI evidence is M4b's. Stabilize and set-based engineering follow in M7 and M8. Completing the foundation or local runtime without all four product workflows does not complete this RFC.
+
+M9 is last deliberately, and it is the only milestone whose absence changes nothing observable. A notification is an output about work already decided, so it can only be built once there are outcomes worth reporting — and it must never become the reason a run behaves differently. Ordering it after the four product workflows keeps that honest: nothing earlier may take a dependency on a message having been sent.
 
 Jira-dependent milestones cannot complete live remote acceptance until the Jira adapter and deployment integration are available. Their contract-stub work may proceed, and trackerless GitHub milestones must continue independently while that external dependency is unresolved.
 

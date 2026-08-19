@@ -182,6 +182,76 @@ pub struct Publication {
     pub verification: Observation<VerificationState>,
 }
 
+/// Which revision a run's attempt worked at, and the other one it saw.
+///
+/// # Why a value here and not three keys the capability writes somewhere
+///
+/// Because there was nowhere else. This is Design §4's sentence —
+/// *the observation carries the base revision **and** the open pull request's
+/// head, and the record says which of the two the attempt actually ran against;
+/// a run that recorded only one of them cannot be read afterwards* — and the
+/// only durable record a run leaves is its bundle, whose `observations` is a
+/// [`WorkStateView`]. That was a closed set of four ports belonging to M0's
+/// assessment, so a capability with a fact of its own about *the tree* had it
+/// produced and unplaced.
+///
+/// A named struct rather than a free-form object: the four keys are a contract
+/// a reader parses, and a `serde_json::Value` here would make them whatever the
+/// last capability to write one happened to emit.
+///
+/// `attempt_tree` is the *name* of the field holding the revision that was used,
+/// so a reader finds the value beside a key of the same name rather than having
+/// to be told the mapping.
+///
+/// # Why the scanned image's digest is in here rather than beside it
+///
+/// Because the pair is the point, and a sibling key could be read apart from it.
+/// [`scanned_image_digest`](Self::scanned_image_digest) is not a fact about a
+/// tree; it is the other half of a question only both halves answer — *which
+/// image were these verdicts measured against, and which tree was remediated?*
+/// A run that published one without the other would leave a reader to assume the
+/// connection, which is exactly the assumption ADR 020 exists to stop being
+/// silent.
+///
+/// This struct has no `Default` and one producer, so a field rather than a
+/// second `Option` on [`WorkStateView`] makes the pairing the compiler's: there
+/// is no way to record the revision without recording the digest beside it. The
+/// same device the base revision already gets from being on both arms of
+/// `Checkout` one layer down.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct TreeObservation {
+    /// What `origin/<base>` resolved to. Present on both arms, which is the
+    /// half of Design §4's sentence a run is most likely to drop.
+    pub base_revision: String,
+    /// The reused pull request's remote tip, and `null` where none was open.
+    ///
+    /// `null` rather than absent, so a reader asking *was a pull request
+    /// reused* gets an answer instead of a missing key that could equally mean
+    /// an older build.
+    pub pr_head: Option<String>,
+    /// Which of the two above the attempt's worktree was made at, named as the
+    /// key that holds it.
+    pub attempt_tree: String,
+    /// The digest the scan resolved its image reference to, as the scanner
+    /// reported it.
+    ///
+    /// **The digest and never the configured tag.** A tag is a name somebody can
+    /// move, and the whole reason this key exists is that the tag names whatever
+    /// currently carries it rather than the thing that was measured.
+    ///
+    /// # What this asserts, and what it does not
+    ///
+    /// It asserts that *this run's verdicts were measured against these bytes*
+    /// and *this run remediated the revision beside it*. It does **not** assert
+    /// that the image was built from that revision: fiddle does not build the
+    /// image it scans — the host workflow does, which is ADR 020. So the pair is
+    /// a correspondence made **checkable** by whoever did build it, not one this
+    /// build verified. Anything stronger would need the builder to declare the
+    /// revision it built at, which nothing populates today; ADR 020's
+    /// consequences say who owes it.
+    pub scanned_image_digest: String,
+}
+
 /// Everything a run observed about one invocation, in one value.
 ///
 /// The observations are carried side by side rather than merged, so a readable
@@ -193,6 +263,14 @@ pub struct Publication {
 /// reads `observations` by path — `observations.work_item.available.value.status`
 /// — never as a key set, so two more keys are invisible to a reader that does
 /// not want them and are the whole payload to one that does.
+///
+/// [`WorkStateView::tree`] is the third appended the same way and the first that
+/// is *absent* rather than neutral when it does not apply. The other four are
+/// always serialized because [`Observation::NotApplicable`] is a real answer to
+/// each of them — the question was asked and does not apply — whereas "which
+/// revision did the attempt run at" is not a question a capability that creates
+/// no worktree can be asked at all. So it is `None` and `skip_serializing_if`,
+/// and every bundle M0, M1, M2 and M3 have ever published is byte-identical.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct WorkStateView {
     pub work_item: Observation<WorkItemState>,
@@ -201,6 +279,10 @@ pub struct WorkStateView {
     pub review: Observation<ReviewState>,
     /// What CI says about the head that was published.
     pub verification: Observation<VerificationState>,
+    /// Which revision this run's attempt worked at, where the capability made a
+    /// worktree and therefore had to choose one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tree: Option<TreeObservation>,
 }
 
 impl WorkStateView {
@@ -245,6 +327,11 @@ impl WorkStateView {
             verification: Observation::NotApplicable {
                 reason: "no forge was consulted, so no checks are expected".to_string(),
             },
+            // No worktree has been made at the moment either of this
+            // constructor's three callers runs, so there is no revision to have
+            // chosen. A capability that does choose one answers through
+            // [`WorkStateView::at_revision`], after the fact.
+            tree: None,
         }
     }
 
@@ -271,7 +358,84 @@ impl WorkStateView {
             changes,
             review: publication.review,
             verification: publication.verification,
+            tree: None,
         }
+    }
+
+    /// The same view, saying which revision the attempt worked at.
+    ///
+    /// Applied *after* whichever of the two constructors above built the view,
+    /// rather than as a fifth argument to both, because the two facts are
+    /// independent: a capability may reach a forge and make no worktree
+    /// (`publish_change`), or make one and reach no forge. Folding the revision
+    /// into `with_publication` would tie them together and make one of those two
+    /// unsayable.
+    pub fn at_revision(mut self, tree: Option<TreeObservation>) -> Self {
+        self.tree = tree;
+        self
+    }
+
+    /// Whether anything in this world can say the invocation's work is **done**.
+    ///
+    /// True for a reference that names a work item, where the change set is that
+    /// state: a marker equal to the invocation's correlation key means this work
+    /// has been accounted for, and design §4.3's exactly-once rests on it.
+    ///
+    /// False for a reference that names none. Such an invocation *discovers* its
+    /// work, so there is nothing whose completion could have been recorded — and
+    /// in particular the marker under its change set is not that record. The
+    /// marker is derived from the project and the reference
+    /// ([`correlation_key`](crate::correlation_key)); no capability and no
+    /// attempt enter it, so every run over the reference computes the same value
+    /// and a marker on disk says only *some run wrote one*. It cannot say which
+    /// capability, and it cannot say whether the work that reference names — a
+    /// container image scanned — was ever done. [ADR
+    /// 023](../../../docs/technical/decisions/023-a-sweep-has-no-completion-state.md)
+    /// is where the consequence is argued: such an invocation is idempotent by
+    /// *rescanning* rather than by remembering.
+    ///
+    /// Read off [`WorkStateView::work_item`] rather than taken as an argument,
+    /// so [`assess`](crate::assess) and the runtime's own conclusion about a run
+    /// decide it from one place and cannot come to disagree. And read as
+    /// [`Observation::NotApplicable`] specifically: a work item that *failed to
+    /// read* is a world fiddle did not see, which is
+    /// [`CapabilityAssessment::Blocked`](crate::CapabilityAssessment::Blocked)
+    /// and never a reference without a tracker.
+    ///
+    /// # Two readers, on purpose
+    ///
+    /// This predicate has exactly two callers and they are meant to move
+    /// together:
+    ///
+    /// - [`assess`](crate::assess) asks it to decide whether the marker under the
+    ///   change set may be read as completion at all.
+    /// - `fiddle_runtime::orchestration::concluded` asks it to decide what a run
+    ///   whose *post*-execution action is still `Execute` concluded — `Completed`
+    ///   for a reference with no completion state, `Retryable` for one that has
+    ///   some, because only the second kind can be said to have lost its effect.
+    ///
+    /// So the two are one question asked twice about one run, not a rule and an
+    /// unrelated exit-code mapping that happen to share a name. That is what the
+    /// second reader is for: derive `Execute` twice from a world that records
+    /// nothing about being done and you must not read the repeat as failure.
+    ///
+    /// The consequence is worth stating plainly, because it surprised someone
+    /// once: mutating this function moves both decisions in one edit — what a
+    /// marker means, and what a run that already executed concluded. That is the
+    /// point, and it is also a trap for a test. A test whose *premise* is "the
+    /// reference has been marked" must not establish that premise by running
+    /// fiddle: such a run derives through the very rule under test, so its outcome
+    /// is not independent of the mutation. While this predicate had two spellings —
+    /// this one and an `Observation::NotApplicable` pattern inside `assess` —
+    /// inverting it moved only the second decision, turned the setup run into an
+    /// exit-11 `RunOutcome::Retryable`, and the lane that meant to catch the marker
+    /// rule died on its own premise guard without ever reaching its claim. Write
+    /// the marker into the world directly and let the run under test be the only
+    /// run;
+    /// `a_marker_against_a_trackerless_reference_does_not_account_the_sweep_as_done`
+    /// in `fiddle-acceptance` does, and says why there too.
+    pub fn has_completion_state(&self) -> bool {
+        !matches!(self.work_item, Observation::NotApplicable { .. })
     }
 }
 
@@ -347,17 +511,72 @@ mod tests {
             verification: Observation::NotApplicable {
                 reason: "no checks are expected".to_string(),
             },
+            tree: None,
         };
 
         let json: serde_json::Value = serde_json::to_value(&view).unwrap();
         for key in ["work_item", "changes", "review", "verification"] {
             assert!(json.get(key).is_some(), "{key} must be present");
         }
+        // And the fifth is *absent* rather than null, which is what keeps every
+        // bundle published before it byte-identical. See [`WorkStateView::tree`].
+        assert!(
+            json.get("tree").is_none(),
+            "a view with no worktree behind it must not carry the key at all: {json}"
+        );
         // The two paths `m0_skeleton` and `inspect_observations` read, spelled
         // exactly as they spell them.
         assert_eq!(json["work_item"]["available"]["value"]["status"], "open");
         assert!(json["changes"]["available"].is_object());
         assert!(json["changes"]["available"]["value"]["marker"].is_null());
+    }
+
+    /// **The three shapes a work item comes in, and which of them has something
+    /// to be done.**
+    ///
+    /// The predicate two decisions share — `assess`'s trackerless reading and the
+    /// runtime's conclusion about a run that executed — so it is asserted over
+    /// every variant rather than over the one case each of those was written for.
+    /// The pairing that matters is the second and the third: a work item that
+    /// *failed to read* still has a completion state, because a reference naming a
+    /// tracker row does not stop naming one when the tracker is down. Collapsing
+    /// the two would make an unreadable tracker look like a reference that never
+    /// had one, which is the distinction `assess` keeps two arms apart for.
+    #[test]
+    fn only_a_reference_that_names_no_work_item_has_no_completion_state() {
+        let over = |work_item| {
+            WorkStateView::without_publication(
+                work_item,
+                Observation::Available {
+                    value: ChangeSetState { marker: None },
+                    source: SourceRef("stub:changes/x.json".to_string()),
+                    revision: None,
+                },
+            )
+            .has_completion_state()
+        };
+
+        assert!(
+            over(Observation::Available {
+                value: work_item(),
+                source: SourceRef("stub:work/fiddle-m0-demo.json".to_string()),
+                revision: None,
+            }),
+            "a reference that names a work item is accounted for by its change set"
+        );
+        assert!(
+            over(Observation::Unavailable {
+                source: SourceRef("stub:work/fiddle-m0-demo.json".to_string()),
+                reason: "unreadable".to_string(),
+            }),
+            "and it still names one when the tracker could not be read"
+        );
+        assert!(
+            !over(Observation::NotApplicable {
+                reason: "this invocation names no work item".to_string(),
+            }),
+            "a reference that names none has nothing whose completion could be recorded"
+        );
     }
 
     /// A capability that publishes nothing says the question does not apply,

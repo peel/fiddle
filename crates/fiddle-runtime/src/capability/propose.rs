@@ -215,7 +215,12 @@ const OPEN: &str = "open";
 /// property that keeps an operator's global settings — and their signing key —
 /// out of what fiddle commits. A deployment that wants its own name here is a
 /// document key nobody has asked for yet.
-const COMMITTER: [&str; 2] = ["user.name=fiddle", "user.email=fiddle@invalid"];
+/// Visible to the rest of `capability` rather than private, because
+/// [`super::cve`]'s committer makes commits in the same repositories under the
+/// same rules: two spellings of who fiddle is would be two things to keep in
+/// step, and a run whose M1 commits and whose M4 commits carried different
+/// authors would be one nobody could attribute.
+pub(super) const COMMITTER: [&str; 2] = ["user.name=fiddle", "user.email=fiddle@invalid"];
 
 /// The tool names this crate registers, and the only ones an evidence reference
 /// may repeat.

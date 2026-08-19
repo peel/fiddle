@@ -48,6 +48,7 @@ mod changes;
 pub mod command;
 pub mod path;
 
+pub use changes::{Content, FileEdit};
 pub use command::{CommandResult, WorkspaceCommand};
 pub use path::WorkspacePath;
 

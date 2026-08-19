@@ -19,6 +19,14 @@
 //!   it started with; design §4.7 shows `"next_action": "complete"` for a
 //!   successful first run, and a completed run that advertised work still to do
 //!   would send its caller round the loop for nothing.
+//!
+//!   With one exception, and it is not a caveat on that sentence but the case the
+//!   sentence does not cover. A reference with no [completion
+//!   state](fiddle_core::WorkStateView::has_completion_state) re-derives
+//!   `Execute`, because nothing about such a world can ever say the work is
+//!   accounted for. That is the honest reading for a sweep — there is always
+//!   another night's scan to do — and it is why the *outcome* and not the next
+//!   action is what says this run finished. [`concluded`] carries the argument.
 //! - Its *outcome* comes out of that same re-derivation, through [`concluded`].
 //!   Not a branch either, and deliberately not an assertion: the two fields of a
 //!   bundle a caller switches on are computed from one value, so no observation
@@ -69,9 +77,101 @@ use std::sync::Arc;
 pub fn observe(
     work_items: &dyn WorkItemPort,
     changes: &dyn ChangePort,
-    work_id: &str,
+    addressed: Addressed<'_>,
 ) -> WorkStateView {
-    WorkStateView::without_publication(work_items.observe(work_id), changes.observe(work_id))
+    let work_item = match addressed {
+        Addressed::WorkItem(work_id) => work_items.observe(work_id),
+        // **The port is not asked, and that is the whole of this arm.** It is
+        // not asked with an empty id and it is not asked with the slug either: a
+        // reference with no value names no work item, so there is nothing to
+        // read and a read that happened anyway could only fail. It used to
+        // happen: `fiddle inspect cve` observed `stub:work/.json`, an empty
+        // value interpolated into a path, and reported `Blocked` because the
+        // file it invented was not there.
+        //
+        // `NotApplicable` is what [`fiddle_core::assess`] has a trackerless reading
+        // for, and until something built one that reading was unreachable.
+        Addressed::NoWorkItem { .. } => fiddle_core::Observation::NotApplicable {
+            reason: "this invocation names no work item, so no tracker was consulted".to_string(),
+        },
+    };
+    WorkStateView::without_publication(work_item, changes.observe(addressed.change_set()))
+}
+
+/// What an invocation addresses, and therefore which of the two local ports has
+/// a question to answer.
+///
+/// # Why this is a type and not a `work_id` both ports are handed
+///
+/// Because for one scheme the two ports are not asked about the same thing, and
+/// a single string cannot say so. `cve` [stands
+/// alone](fiddle_core::InvocationScheme::stands_alone): a sweep discovers its own
+/// findings and addresses no tracker row. Both halves of that matter and they
+/// pull in opposite directions —
+///
+/// - the **work item** must not be read, because there is no id to read one by;
+/// - the **change set** must still be read and written, because that is where
+///   the correlation marker lives, and a capability that recorded nothing would
+///   leave a run no later reader could see the shape of.
+///
+/// It used to say that the marker "is the only thing that makes a repeat of the
+/// same invocation `Complete` rather than a second run of the work", and for this
+/// variant that was exactly wrong: the reference the marker is filed under
+/// accounts for no work item, so a repeat of the invocation *is* a second run of
+/// the work — by design, because the work is a fresh look at the world. ADR 023.
+///
+/// So the change set gets an id and the work item gets none, which is exactly
+/// what these two variants say.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Addressed<'a> {
+    /// A tracker item. Both ports answer about it, under one id.
+    WorkItem(&'a str),
+
+    /// No tracker item at all, and the id the change set is filed under.
+    NoWorkItem {
+        /// [`InvocationRef::slug`](fiddle_core::InvocationRef::slug), which for a
+        /// reference with no value is the scheme alone — `cve`. A path component
+        /// and never an empty one, which is what the empty `value()` was.
+        change_set: &'a str,
+    },
+}
+
+impl<'a> Addressed<'a> {
+    /// What `reference` addresses.
+    ///
+    /// Decided on the *value* rather than on the scheme, and that is the honest
+    /// test rather than the convenient one: a reference carrying a value names a
+    /// piece of work as much as `beans:x` does, while `cve` names nothing. The
+    /// grammar already guarantees the two cannot be confused — a present value is
+    /// never empty — so the emptiness *is* the question.
+    ///
+    /// This said that `cve:CVE-2026-1234` "remediates one finding a caller handed
+    /// in", and said it as fact. Nothing in this build does: `MitigateConfig`
+    /// declares no advisory field and the sweep scans `[orchestration.cve] image`
+    /// alone, so a sweep handed that reference would drop the name and scan
+    /// everything under an identity derived from the narrowed text. The CLI
+    /// therefore refuses the valued form of a scheme that stands alone before a
+    /// run reaches here, and `WorkItem` is reachable from a `cve` reference in
+    /// grammar only. The mapping is left exactly as it is, because it is about
+    /// values and not about which schemes happen to have a capability — the
+    /// milestone that implements narrowing needs it already right. ADR 019's
+    /// amendment records the rest.
+    pub fn of(reference: &'a fiddle_core::InvocationRef) -> Self {
+        match reference.value() {
+            "" => Addressed::NoWorkItem {
+                change_set: reference.scheme().as_str(),
+            },
+            value => Addressed::WorkItem(value),
+        }
+    }
+
+    /// The id the change set is filed under, which both variants have.
+    pub fn change_set(&self) -> &'a str {
+        match self {
+            Addressed::WorkItem(work_id) => work_id,
+            Addressed::NoWorkItem { change_set } => change_set,
+        }
+    }
 }
 
 /// Everything one run acts on: who it is for, what it may touch, and what it
@@ -83,10 +183,17 @@ pub fn observe(
 pub struct RunContext<'a> {
     /// The project name the correlation key is derived from.
     pub project: &'a str,
-    /// The canonical `<scheme>:<value>` text of the invocation.
+    /// The canonical text of the invocation: `<scheme>:<value>`, or the scheme
+    /// alone where the scheme discovers its own work.
+    ///
+    /// Spelled with both shapes because `InvocationRef::as_str` produces both.
+    /// Describing only the valued one was the last of the three descriptions
+    /// `docs/BACKLOG.md` recorded on 2026-08-14 as outliving ADR 019's grammar,
+    /// and the only reason it was harmless is that no operator reads it.
     pub invocation_ref: &'a str,
-    /// The work item both ports are asked about.
-    pub work_id: &'a str,
+    /// What this invocation addresses — and therefore whether the work-item
+    /// port is asked at all. See [`Addressed`].
+    pub addressed: Addressed<'a>,
     /// The attempt this run *is*, minted by [`attempt`] and borrowed here.
     ///
     /// Borrowed rather than minted: an id names an attempt, one attempt is one
@@ -104,7 +211,7 @@ pub struct RunContext<'a> {
 impl RunContext<'_> {
     /// What this run's ports say about the world right now.
     pub fn observe(&self) -> WorkStateView {
-        observe(self.work_items, self.changes, self.work_id)
+        observe(self.work_items, self.changes, self.addressed)
     }
 
     /// The same, plus whatever the capability saw of a forge.
@@ -240,14 +347,51 @@ impl Authorised {
 ///   `Blocked` from its entry observation and concludes `Failed` again, and will
 ///   keep doing so until somebody settles whose change set it is — which is
 ///   exactly [`RunOutcome::Failed`]'s "will not succeed by being repeated as
-///   invoked". `Suspended` is wrong for a different reason: nothing is waiting
-///   on a decision fiddle could offer a human here, and M0 has no decision point
-///   at all.
+///   invoked". `Suspended` is wrong for a different reason: nothing is waiting on
+///   a decision fiddle could offer a human here. This build does have a decision
+///   point — `propose_change`'s — and it is not on this path: a foreign
+///   correlation marker is not a question anybody can answer, so there is nothing
+///   for a run to be suspended *pending*.
 ///
-/// - `Execute` — [`RunOutcome::Retryable`]. The world is fully observable and
-///   records no change set, so the effect this run made did not survive;
-///   repeating the invocation executes again and may well succeed, which is
-///   precisely what `Retryable` promises and `Failed` denies.
+/// - `Execute` — [`RunOutcome::Retryable`], **where the reference has a
+///   completion state**. The world is fully observable and records no change set,
+///   so the effect this run made did not survive; repeating the invocation
+///   executes again and may well succeed, which is precisely what `Retryable`
+///   promises and `Failed` denies.
+///
+///   Where it has none — [`WorkStateView::has_completion_state`] — `Execute` is
+///   [`RunOutcome::Completed`] instead, and this is the one place the two
+///   derivations a run takes are allowed to mean different things. A reference
+///   that names no work item records nothing about being done, so its
+///   *post*-execution derivation cannot be read as "the effect did not survive":
+///   it is `Execute` for a marked change set and an unmarked one alike, because
+///   that is what having no completion state means. Concluding `Retryable` from
+///   it would report every successful sweep as an exit-11 failure to be tried
+///   again, and no observation could ever talk fiddle out of it.
+///
+///   What says such a run is done, then, is that the capability executed and
+///   returned evidence — and that is not the assumption [the section
+///   above](#why-this-is-a-function-of-the-re-derivation) rejects. That
+///   assumption is unsafe because a *second writer* can take a change set this
+///   run was accounting for, and the conclusion has to survive it; a reference
+///   that accounts for nothing has nothing to lose to one. What protects such an
+///   invocation from doing its work twice is not this mapping and never was: it
+///   is the capability's own dedup, design §4's commit-log and open-pull-request
+///   reads, which is why a second sweep lands nothing rather than a second pull
+///   request. ADR 023 argues it, and `Blocked` is untouched — an unreadable
+///   change set is still a world fiddle did not see, whatever the reference.
+///
+///   This mapping and `fiddle_core::assess` therefore read *the same predicate*,
+///   and that is intended rather than incidental: they are one question — does
+///   this reference record anything about being done — asked once about what a
+///   marker means and once about what a run concluded. Splitting them, so that
+///   the outcome mapping kept its own spelling of "trackerless", is the shape in
+///   which a sweep could read `not_started` and still exit 11: two derivations of
+///   one run disagreeing about which world it was in. The cost of sharing it is
+///   that anyone who inverts the predicate to test the assessment also inverts
+///   what a run *concludes*; that surprise is called out where the predicate is
+///   defined, under "Two readers, on purpose", because this is the reader that
+///   makes it surprising.
 ///
 /// Both reasons name the fact that the capability had already run, because
 /// `Failed` and `Retryable` each have other producers and the exit code alone
@@ -255,7 +399,7 @@ impl Authorised {
 /// world", and exit 11 otherwise names the change set, the attempt journal, or
 /// the report bundle. Neither adds a row to the exit-code table — the CLI's
 /// single `exit_code_for` maps these to 20 and 11 unchanged.
-fn concluded(next_action: &NextAction) -> RunOutcome {
+fn concluded(next_action: &NextAction, after: &WorkStateView) -> RunOutcome {
     match next_action {
         NextAction::Complete => RunOutcome::Completed,
         NextAction::Blocked { reason } => RunOutcome::Failed {
@@ -263,6 +407,14 @@ fn concluded(next_action: &NextAction) -> RunOutcome {
                 "the capability executed, and the work is not accounted for afterwards: {reason}"
             )),
         },
+        // The view is asked, rather than `Addressed` or the reference: it is the
+        // one `next_action` was derived from, and `fiddle_core::assess` calls this
+        // very predicate to decide what the marker meant. Literally the same call,
+        // not merely the same rule — two spellings of "this reference records no
+        // completion" is how the derivation and the conclusion would come to
+        // disagree about which world a run was in, and this one had two until a
+        // lane tried to invert it and found only half of the meaning moved.
+        NextAction::Execute { .. } if !after.has_completion_state() => RunOutcome::Completed,
         NextAction::Execute { capability_id } => RunOutcome::Retryable {
             reason: Published::of(format!(
                 "{} executed and reported success, and the work is still not started \
@@ -336,7 +488,15 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
     let capability_id = authorised.capability_id();
     match ctx
         .capability
-        .execute(authorised.grant, ctx.work_id, ctx.invocation_ref)
+        .execute(
+            authorised.grant,
+            // The change set's id and not the work item's, because writing the
+            // correlation marker is what a capability does with this argument
+            // and a trackerless run has a change set to write. They are the same
+            // string for every reference that names a work item.
+            ctx.addressed.change_set(),
+            ctx.invocation_ref,
+        )
         .await
     {
         Ok(evidence) => {
@@ -356,7 +516,7 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             RunReport {
                 // Derived from the re-derivation, never asserted to agree with
                 // it. See [`concluded`] for why the two can differ at all.
-                outcome: concluded(&next_action),
+                outcome: concluded(&next_action, &after),
                 next_action,
                 executions: vec![execution(
                     capability_id,
@@ -590,7 +750,7 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
     } = run(&RunContext {
         project: ctx.project,
         invocation_ref: &invocation,
-        work_id: ctx.reference.value(),
+        addressed: Addressed::of(ctx.reference),
         attempt: &attempt_id,
         work_items: ctx.work_items,
         changes: ctx.changes,
@@ -616,6 +776,13 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
         capability_executions: executions,
         progress,
         observations,
+        // Asked of the capability rather than derived from `outcome`, and asked
+        // on both arms. The outcome says `Completed` for five of Design §3's
+        // seven rows and `Retryable` for a sixth, so it identifies none of them;
+        // only the capability that ran the table knows which row it landed on.
+        // A capability with no table answers `None` and the key is absent — see
+        // [`Capability::disposition`].
+        disposition: ctx.capability.disposition(),
     };
 
     match publish(ctx.report_dir, &slug, &attempt_id, &bundle) {
@@ -667,12 +834,16 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
 /// the failing arm cannot come to disagree about whether a capability's
 /// observation of a forge is worth publishing. It is, on both.
 fn with_publication(view: WorkStateView, capability: &dyn Capability) -> WorkStateView {
-    match capability.publication() {
+    let observed = match capability.publication() {
         Some(publication) => {
             WorkStateView::with_publication(view.work_item, view.changes, publication)
         }
         None => view,
-    }
+    };
+    // Applied after, and to both arms, because the two answers are independent:
+    // see [`Capability::tree_observation`]. A capability that made no worktree
+    // returns `None` and the view is unchanged, key and all.
+    observed.at_revision(capability.tree_observation())
 }
 
 /// `earned` first, then whatever the capability observed of its own run.
@@ -895,7 +1066,7 @@ mod tests {
         RunContext {
             project: PROJECT,
             invocation_ref: INVOCATION_REF,
-            work_id: WORK_ID,
+            addressed: Addressed::WorkItem(WORK_ID),
             attempt,
             work_items,
             changes,

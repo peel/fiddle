@@ -2,7 +2,8 @@
   "providers": {
     "codex": {
       "command": "codex exec",
-      "flags": "--json -s read-only"
+      "flags": "--json -s read-only",
+      "extract": "codex-jsonl"
     },
     "phases": {
       "discover": [

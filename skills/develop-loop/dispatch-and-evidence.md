@@ -98,6 +98,51 @@ Start in `runtime_order`: for `[backend, frontend]`, start backend, wait for rea
 
 Runtimes stay up through evidence capture and stop after all evaluators finish. Evaluators interpret the captured evidence pack; they never interact with the running app.
 
+### Re-run the load-bearing probe, and only that one
+
+A DONE report's probe evidence is the implementer's account of its own work, so
+some of it has to be reproduced rather than read. Reproducing *all* of it costs
+as much as the implementation did; reproducing none of it means the loop's
+central discipline rests on self-report.
+
+Re-run **the probe the bean's criterion rests on** — the one whose failure is
+the reason to believe the change does anything. Where a bean has two directions
+that must hold independently (a rule fires / the same rule declines), that is
+two load-bearing probes, and running both is also what shows a single mutation
+does not fail them both.
+
+Check the failure text matches what the report claimed it said. A probe that
+fails by starving a fixture, timing out, or failing to build reads exactly like
+a probe that fails by assertion in a summary, and only the assertion is
+evidence.
+
+Everything else — the fixture-integrity lanes, the probes for behaviour the
+criterion does not name — is the evaluator's to judge from the evidence pack.
+
+**Snapshot before you mutate, because the tree is not yours.** The implementer's
+work is uncommitted when you probe it, so the file you are about to edit already
+holds changes that exist nowhere else. `git checkout -- <file>` to undo a probe
+reverts to HEAD and takes those with it — the probe and the work land in the same
+bin, and the loss is silent. Take a real snapshot first and restore from that:
+
+```bash
+SNAP=$(git stash create)          # a commit object; touches no stash stack
+# ...mutate, run, then:
+git checkout "$SNAP" -- <file>    # the tree as it was, probe removed
+```
+
+Do this even for a one-line mutation you are sure you can undo by hand. The
+mutation is easy to reverse; the forty lines of somebody else's prose sitting in
+the same file are not, and you will not notice they are gone — the suite still
+passes without them.
+
+**A probe that fails to reproduce is a finding, not a formality.** If the
+reported red set does not appear, do not assume you mis-applied the mutation:
+re-read the fixture and work out what the world actually does. Twice this has
+turned out to be a real gap — a claimed invariant with nothing holding it —
+and in both cases the implementer had reasoned about the mutation rather than
+running it.
+
 ## 1f. Dispatch Per-Domain Evaluator
 
 One evaluator per resolved domain, processed in `runtime_order` if specified, otherwise the `domains` order. Select its provider:
@@ -132,14 +177,16 @@ hooks/dispatch-provider.sh <provider> \
   --evidence-file evidence-{domain}.txt
 ```
 
-Then add the run-state sections the script cannot know about (positions 4 through 7 of the loading order): runtime state for runtime-configured domains, the bean's task criteria, and on iteration 2+ the diff since BASE_SHA with the prior scorecard and its guidance. External providers return their JSON scorecard as the last content block — see `skills/develop/provider-context.md` for the schema.
+Then add the run-state sections the script cannot know about (positions 4 through 7 of the loading order): runtime state for runtime-configured domains, the bean's task criteria, and on iteration 2+ the diff since BASE_SHA with the prior scorecard and its guidance. An external provider's whole reply is the scorecard JSON — see `skills/develop/provider-context.md` for the schema.
 
 Every evaluator returns one scorecard JSON with per-dimension scores under `.domains`, pass/fail criteria under `.criteria`, and a `"provider"` field naming its producer. Save it per domain and count the dispatch:
 
 ```bash
-cat > scorecard-{domain}-{provider}.json   # ← evaluator output for this domain
+hooks/dispatch-provider.sh <provider> ... > scorecard-{domain}-{provider}.json
 dispatch_count=$((dispatch_count + 1))
 ```
+
+Redirect the hook's stdout straight to the file; never hand-copy a scorecard out of provider output. The hook emits the reply already extracted from whatever transport the CLI uses — a provider whose CLI streams structured events declares an `extract` mode in `orchestrate.json` (codex sets `codex-jsonl`, for the JSONL stream `codex exec --json` produces). When it finds no reply it exits non-zero with the raw stream on stderr, so an empty or truncated scorecard fails loudly instead of reaching the merge. Reading a scorecard out of an event stream by eye is how one arrives a closing brace short, or with `criteria` nested under `.domains`.
 
 Dispatch accounting: one implementer + one evaluator per domain per iteration (2 domains = 3 dispatches). PASS_PENDING re-evaluation reuses the provider recorded in `selected-provider-{domain}.json`.
 

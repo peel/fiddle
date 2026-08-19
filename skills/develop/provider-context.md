@@ -28,9 +28,9 @@ Respond with your analysis only — no preamble, no meta-commentary.
 
 ## Scorecard Output Requirements
 
-When your role is `evaluator`, output a valid JSON scorecard as the **last content block** in your response: a single JSON object, not wrapped in markdown fences, conforming to the schema below.
+When your role is `evaluator`, your entire reply is the scorecard: one JSON object conforming to the schema below, with no prose before or after it and no markdown fences around it.
 
-Any text before the scorecard is treated as analysis/reasoning and is discarded. Only the final JSON block is parsed, so a scorecard that is missing, fenced, or off-schema is unusable and costs a re-dispatch.
+This is the same contract the evaluation protocol in `## Instructions` states, and it is the only one — an earlier revision of this file asked instead for the scorecard as the "last content block" with preceding text discarded, which contradicted those instructions and left the schema section itself ambiguous. Reply with anything other than the bare object and the scorecard is unusable, costing a re-dispatch.
 
 ### Scorecard JSON Schema
 

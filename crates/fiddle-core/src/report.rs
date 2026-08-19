@@ -149,6 +149,123 @@ pub const INSPECT_SCHEMA: &str = "fiddle.inspect.v0";
 /// schema name is the last place to introduce a second convention.
 pub const CONFIG_CHECK_SCHEMA: &str = "fiddle.config_check.v0";
 
+/// One finding a run's budget did not reach, as the bundle records it.
+///
+/// The bound travels with the advisory because *this run stopped at five* is the
+/// only sentence that separates a deferred finding from one fiddle assessed and
+/// declined, and the two are indistinguishable in a record that names only the
+/// advisory. Design §2.5.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct DeferredFinding {
+    /// The advisory that will have to wait for the next run.
+    pub cve: crate::finding::AdvisoryId,
+    /// The per-run bound that deferred it.
+    pub bound: usize,
+}
+
+/// What one attempted group left behind, as the bundle records it.
+///
+/// This is where `claimed_complete` becomes readable from outside a run, which
+/// is the whole of its stated purpose: it is *evidence beside the exit code that
+/// overruled it*, and evidence nothing publishes is a field, not evidence.
+///
+/// `forbidden` is rendered text rather than a structured shape, and that is the
+/// same decision [`TreeObservation::attempt_tree`] makes: the producing type is
+/// a runtime enum whose own `Display` is what an operator reads in the verdict,
+/// and a second, structured spelling here would be a second thing for that
+/// wording to drift from.
+///
+/// [`TreeObservation::attempt_tree`]: crate::observation::TreeObservation::attempt_tree
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct AttemptOutcome {
+    /// Every advisory the group covered.
+    pub cves: Vec<crate::finding::AdvisoryId>,
+    /// How the group ended, in the producing enum's own vocabulary.
+    pub status: String,
+    /// Whether the model said it had finished. **Evidence only** — nothing in
+    /// the product branches on it, and publishing it is what lets a reader see
+    /// the claim beside the check that overruled it.
+    pub claimed_complete: bool,
+    /// Every shape the scope rules forbid in the attempt's diff, in path order.
+    /// All of them, not the one that decided the group: by the time anybody
+    /// reads this the worktree it was computed in is gone.
+    pub forbidden: Vec<String>,
+}
+
+/// What a run came to, and the evidence for that reason, in one value.
+///
+/// # Why this is in the bundle at all
+///
+/// Design §3: *every `NoChange` carries the evidence for its own reason; one
+/// whose reason cannot be checked from the bundle is not evidenced.* Until this
+/// key existed, five of the seven rows of that table were indistinguishable from
+/// outside a run — a capability computed the pair, wrote the verdict array, and
+/// returned an evidence reference carrying neither half, so *nothing to do*,
+/// *already fixed in the tree* and *already covered by an open pull request*
+/// published byte-identical artefacts. A table proved pairwise-distinct inside
+/// the process is not a distinction anybody outside it can make.
+///
+/// # Why here and not beside the verdict array
+///
+/// The verdict array is a **contract with a different consumer** — the host
+/// workflow's Jira and Slack steps read it and nothing else, as a bare array of
+/// five-field rows — so a header wrapped around it would break them. It is also
+/// written flat into `<report.dir>` and overwritten by each run, so it could not
+/// answer *which run*. The bundle is per attempt, is schema-tagged, and is
+/// already the document Design §3's sentence names.
+///
+/// # What it does not carry
+///
+/// The verdicts themselves, and the scanner's diagnostic. Both are already
+/// published — the rows in the verdict report the receipt points at, the
+/// diagnostic in the bundle's own `outcome` — and a second copy of either would
+/// be a second place for one fact, which is the failure the whole
+/// [`crate::observation`] module is arranged to avoid. What is here is the count,
+/// which is what says whether the report a reader is about to open has anything
+/// in it.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct RunDisposition {
+    /// Which row of Design §3's table this run reached, in the producing enum's
+    /// own snake_case spelling.
+    ///
+    /// A string for [`TreeObservation`](crate::observation::TreeObservation)'s
+    /// reason: the enum belongs to the runtime and this crate is the one the
+    /// bundle's shape is fixed in, so what crosses is the name rather than the
+    /// type. The producer's match is exhaustive, so a row added to that table
+    /// has to be named here rather than defaulting to a neighbour's word.
+    pub reason: String,
+
+    /// How many advisories this run left unfixed — the length of the verdict
+    /// report published beside this bundle, not a second copy of it.
+    pub verdicts: usize,
+
+    /// The advisories deduplication settled before any group was formed.
+    ///
+    /// Row 3's evidence, and the reason row 3 is not row 1: *the scan found
+    /// nothing* and *everything the scan found was already dealt with* are two
+    /// situations, and a run that published neither list presented the second as
+    /// the first.
+    pub already_fixed: Vec<crate::finding::AdvisoryId>,
+
+    /// The findings the per-run budget did not reach. See [`DeferredFinding`].
+    pub deferred: Vec<DeferredFinding>,
+
+    /// What each attempted group left behind. See [`AttemptOutcome`].
+    ///
+    /// Non-empty on exactly the two rows where something was attempted, which is
+    /// what separates *a move was made, judged and taken back* from *there was
+    /// no move to make*.
+    pub attempts: Vec<AttemptOutcome>,
+
+    /// The shared branch this run's commits landed on, on the one row where any
+    /// did.
+    pub branch: Option<String>,
+
+    /// The pull request this run's work is in, or the open one that already
+    /// covered it.
+    pub pull_request: Option<u64>,
+}
+
 /// The machine-readable record of one attempt, as design §4.7 specifies it.
 ///
 /// Everything a reader needs to reconstruct the attempt without re-running it:
@@ -174,6 +291,17 @@ pub struct ReportBundle {
     pub capability_executions: Vec<CapabilityExecution>,
     pub progress: Vec<ProgressEntry>,
     pub observations: crate::observation::WorkStateView,
+    /// What the run came to and the evidence for that reason, where the
+    /// capability that ran has a disposition table of its own.
+    ///
+    /// Absent rather than neutral when it does not apply, exactly as
+    /// [`WorkStateView::tree`](crate::observation::WorkStateView::tree) is and
+    /// for its reason: *which row did this run reach* is not a question a
+    /// capability with no table can be asked, so a defaulted value here would be
+    /// an answer nobody gave. Every bundle M0, M1, M2 and M3 have ever published
+    /// is therefore byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<RunDisposition>,
 }
 
 #[cfg(test)]
@@ -251,7 +379,9 @@ mod tests {
                 verification: Observation::NotApplicable {
                     reason: "nothing to verify".to_string(),
                 },
+                tree: None,
             },
+            disposition: None,
         };
 
         let value = serde_json::to_value(&bundle).unwrap();
@@ -275,5 +405,61 @@ mod tests {
         // these keys and still carries them.
         assert!(value["observations"]["review"]["not_applicable"].is_object());
         assert!(value["observations"]["verification"]["not_applicable"].is_object());
+        // And unchanged by the disposition key: a capability with no table
+        // answers `None`, and the bundle carries no key rather than a `null` a
+        // reader would have to interpret. This is the M0 bundle, byte for byte.
+        assert!(
+            value.get("disposition").is_none(),
+            "a run with no disposition table must publish no key: {value}"
+        );
+    }
+
+    /// The other half: a capability that *has* a table publishes it, under keys
+    /// a reader can dispatch on.
+    ///
+    /// Asserted by path and by value rather than by a `Debug` rendering, because
+    /// the wire shape is the contract — the whole point of this key is that a
+    /// reader outside the process can tell one row from another, and a rendering
+    /// nobody parses would move that distinction back inside.
+    #[test]
+    fn a_disposition_publishes_its_row_and_the_evidence_for_it() {
+        let value = serde_json::to_value(RunDisposition {
+            reason: "unsafe_without_direction".to_string(),
+            verdicts: 2,
+            already_fixed: vec![crate::finding::AdvisoryId::parse("CVE-2026-0003").unwrap()],
+            deferred: vec![DeferredFinding {
+                cve: crate::finding::AdvisoryId::parse("CVE-2026-0004").unwrap(),
+                bound: 5,
+            }],
+            attempts: vec![AttemptOutcome {
+                cves: vec![crate::finding::AdvisoryId::parse("CVE-2026-0001").unwrap()],
+                status: "needs_work".to_string(),
+                claimed_complete: true,
+                forbidden: vec!["a_test.go added a skipped test: t.Skip()".to_string()],
+            }],
+            branch: None,
+            pull_request: Some(7),
+        })
+        .unwrap();
+
+        assert_eq!(value["reason"], "unsafe_without_direction");
+        assert_eq!(value["verdicts"], 2);
+        assert_eq!(value["already_fixed"][0], "CVE-2026-0003");
+        assert_eq!(value["deferred"][0]["cve"], "CVE-2026-0004");
+        assert_eq!(value["deferred"][0]["bound"], 5);
+        assert_eq!(value["attempts"][0]["cves"][0], "CVE-2026-0001");
+        assert_eq!(value["attempts"][0]["status"], "needs_work");
+        // The one field the product reads nowhere and publishes here. A record
+        // that dropped it would leave a reader unable to see that the model said
+        // it had finished and the check disagreed.
+        assert_eq!(value["attempts"][0]["claimed_complete"], true);
+        assert_eq!(
+            value["attempts"][0]["forbidden"][0],
+            "a_test.go added a skipped test: t.Skip()"
+        );
+        // `null` and not absent, both of them: *this run landed nothing* and
+        // *this run's build is older than the key* must not be the same reading.
+        assert!(value["branch"].is_null());
+        assert_eq!(value["pull_request"], 7);
     }
 }

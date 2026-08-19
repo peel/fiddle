@@ -166,6 +166,48 @@ pub fn git_stub_binary() -> &'static Path {
     BINARY.get_or_init(|| runtime_fixture("git_stub", "git-stub"))
 }
 
+/// The scripted `wizcli` the CVE gate scans through, built from the sources
+/// under test. `[scanner] cli` is the seam, and `[[workspace.checks]]`'s
+/// artefact entry is the second one — a rescan is the check's own program run as
+/// a scanner.
+///
+/// Everything [`gh_stub_binary`] argues for applies, with one addition of its
+/// own: this fixture is **permanent**. Wiz is testable only where the tenant
+/// credentials are, so no offline lane will ever call a real `wizcli`, and the
+/// arm list is therefore the adapter's contract rather than a convenience. Its
+/// own header says so at greater length.
+pub fn wiz_stub_binary() -> &'static Path {
+    static BINARY: OnceLock<PathBuf> = OnceLock::new();
+    BINARY.get_or_init(|| runtime_fixture("wiz_stub", "wiz-stub"))
+}
+
+/// The scripted `go` a sweep resolves and bumps a module graph through, built
+/// from the sources under test. `[orchestration.cve] go` is the seam.
+///
+/// Permanent for [`wiz_stub_binary`]'s reason and a sharper one: this project's
+/// development shell declares a Rust toolchain and no Go one, so the *production*
+/// adapter — which really spawns a `go`, in an environment built from nothing —
+/// can only be driven end to end against this. What is scripted is the toolchain
+/// and the upstream it resolves against; the spawn, the deadline, the
+/// environment and the `go.mod`/`go.sum` it leaves behind are the real ones.
+pub fn go_stub_binary() -> &'static Path {
+    static BINARY: OnceLock<PathBuf> = OnceLock::new();
+    BINARY.get_or_init(|| runtime_fixture("go_stub", "go-stub"))
+}
+
+/// The scripted check a contract is judged by, built from the sources under
+/// test. A `[[workspace.checks]]` entry's own `program` is the seam.
+///
+/// The same argument again, for the same reason: §2.6's five checks are
+/// `go build`, `go fmt`, `go vet`, `docker build` and a rescan, and this shell
+/// has none of the first four. What an evaluation needs is not those programs —
+/// it needs *a program*, started by the adapter, whose exit status and output the
+/// adapter reads back.
+pub fn check_stub_binary() -> &'static Path {
+    static BINARY: OnceLock<PathBuf> = OnceLock::new();
+    BINARY.get_or_init(|| runtime_fixture("check_stub", "check-stub"))
+}
+
 /// Build one of `fiddle-runtime`'s scripted fixtures and hand back the path
 /// cargo reports for it.
 ///
@@ -4068,7 +4110,7 @@ fn argv_of(request: &serde_json::Value) -> Vec<String> {
 /// HTTP's own rule and the one the product's client applies. Parsed loosely
 /// enough that a response carrying no array — a refusal, say — yields nothing
 /// rather than panicking, so a caller can ask what a failed read returned.
-fn body_of(response: &str) -> Vec<serde_json::Value> {
+pub fn body_of(response: &str) -> Vec<serde_json::Value> {
     let Some((_, body)) = response.split_once("\r\n\r\n") else {
         return Vec::new();
     };
@@ -4086,7 +4128,7 @@ fn body_of(response: &str) -> Vec<serde_json::Value> {
 /// the endpoint already decided. `None` means the response carried no object — a
 /// refusal, or a `gh` that answered something this fixture cannot read — so a caller
 /// can say which endpoint disappointed it rather than unwrapping a `null`.
-fn object_of(response: &str) -> Option<serde_json::Value> {
+pub fn object_of(response: &str) -> Option<serde_json::Value> {
     let (_, body) = response.split_once("\r\n\r\n")?;
     match serde_json::from_str(body) {
         Ok(value @ serde_json::Value::Object(_)) => Some(value),

@@ -1058,7 +1058,8 @@ async fn the_fourth_capability_is_registered_and_names_its_own_stage() {
             "stub_mark",
             "fixture_repair",
             "publish_change",
-            "propose_change"
+            "propose_change",
+            "cve_mitigate"
         ]
     );
 

@@ -58,8 +58,17 @@ pub enum Command {
         // malformed shape can be reported with its own diagnostic rather than
         // clap's generic value error. Doc comments on this field become
         // `--help` text, so the rationale stays a plain comment.
+        // `cve:CVE-2026-1234` is deliberately not described here. It parses —
+        // the grammar is what a milestone implementing narrowing builds on — and
+        // nothing in this build acts on one named finding, so the dispatcher
+        // refuses it (`reference_from` in `main.rs`). Help that offered the form
+        // would be an advertisement for work the binary cannot do, which is the
+        // defect this sentence was: it named the form as one of two things a
+        // caller could write. ADR 019's amendment records why the grammar stays.
         /// The work to inspect, as `<scheme>:<value>` — for example
-        /// `beans:fiddle-m0-demo`.
+        /// `beans:fiddle-m0-demo`. A scheme that finds its own work stands
+        /// alone and takes no value: `cve` scans the configured image and
+        /// inspects what it finds.
         #[arg(value_name = "INVOCATION_REF")]
         invocation_ref: String,
 
@@ -84,9 +93,9 @@ pub enum Command {
         // to need nothing: a capability that reaches a forge is exactly the one
         // whose selection could make a read-only command demand a credential,
         // and it does not, because selecting still stops at the derivation.
-        /// Report the plan for one capability id rather than for the default.
-        /// The same ids `run --capability` takes; an unknown id is a usage
-        /// error.
+        /// Report the plan for one capability id rather than for the one the
+        /// reference's scheme implies. The same ids and the same default as
+        /// `run --capability`; an unknown id is a usage error.
         #[arg(long, value_name = "CAPABILITY_ID")]
         capability: Option<String>,
 
@@ -101,8 +110,17 @@ pub enum Command {
     /// same derivation `inspect` reports, so a run over work that is already
     /// accounted for completes without executing.
     Run {
+        // `cve:CVE-2026-1234` is deliberately not described here. It parses —
+        // the grammar is what a milestone implementing narrowing builds on — and
+        // nothing in this build acts on one named finding, so the dispatcher
+        // refuses it (`reference_from` in `main.rs`). Help that offered the form
+        // would be an advertisement for work the binary cannot do, which is the
+        // defect this sentence was: it named the form as one of two things a
+        // caller could write. ADR 019's amendment records why the grammar stays.
         /// The work to run, as `<scheme>:<value>` — for example
-        /// `beans:fiddle-m0-demo`.
+        /// `beans:fiddle-m0-demo`. A scheme that finds its own work stands
+        /// alone and takes no value: `cve` scans the configured image and
+        /// runs what it finds.
         #[arg(value_name = "INVOCATION_REF")]
         invocation_ref: String,
 
@@ -111,9 +129,11 @@ pub enum Command {
         // parsed off the command line. `PossibleValuesParser` rather than the
         // bare `FromStr` so `--help` lists the choices and a bad value is
         // rejected by clap with the usual usage exit code.
-        /// Whether a human is available to decide. M0 has no decision point, so
-        /// both modes execute identically; the mode is recorded in what the run
-        /// publishes.
+        /// Whether a human is available to decide. Nothing branches on the
+        /// value: the one decision point this build has is `propose_change`'s,
+        /// and it asks its question whether or not a human was declared to be
+        /// waiting. So both modes execute identically, and the mode is recorded
+        /// in what the run publishes rather than acted on.
         #[arg(
             long,
             value_name = "MODE",
@@ -123,8 +143,16 @@ pub enum Command {
         )]
         mode: Mode,
 
-        /// Restrict execution to one capability id. Absent selects the default,
-        /// `stub_mark`. An unknown id is a usage error, never a silent no-op.
+        // The help names the *rule* rather than one capability, because the
+        // default now depends on the reference: an absent flag resolves through
+        // the scheme, so `fiddle run cve` sweeps and every other scheme marks.
+        // Help that named `stub_mark` as *the* default described the binding this
+        // milestone had rather than the one it has — and `--help` is the only
+        // place an operator learns either.
+        /// Restrict execution to one capability id. Absent selects what the
+        /// reference's scheme implies: `cve` sweeps its configured image, every
+        /// other scheme marks. An unknown id is a usage error, never a silent
+        /// no-op.
         #[arg(long, value_name = "CAPABILITY_ID")]
         capability: Option<String>,
 

@@ -5,13 +5,14 @@ mod render;
 use clap::Parser;
 use config::ConfigError;
 use fiddle_core::{
-    CapabilityId, FiddleBuild, InvocationRef, InvocationRefError, RunOutcome, WorkStateView,
+    CapabilityId, FiddleBuild, InvocationRef, InvocationRefError, InvocationScheme, RunOutcome,
+    WorkStateView,
 };
 use fiddle_runtime::effect::{EffectContext, Executor};
 use fiddle_runtime::human::interpret::InterpretationBounds;
 use fiddle_runtime::{
-    AgentBudget, AttemptContext, AttemptTrace, Capability, FixtureRepair, GatewayError, GhCli,
-    GitCli, ProposeChange, ProposeConfig, PublishChange, PublishConfig, RepairConfig,
+    Addressed, AgentBudget, AttemptContext, AttemptTrace, Capability, FixtureRepair, GatewayError,
+    GhCli, GitCli, ProposeChange, ProposeConfig, PublishChange, PublishConfig, RepairConfig,
     StubChangePort, StubMark, StubWorkItemPort, WorkspaceCommand, CAPABILITIES,
 };
 use std::path::{Path, PathBuf};
@@ -96,6 +97,10 @@ enum CliError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     PathUnusable(#[from] PathUnusable),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    UnimplementedForm(#[from] UnimplementedForm),
 }
 
 /// A `--capability` value naming nothing this build can execute.
@@ -138,6 +143,9 @@ enum Selection {
     /// to a person — the hybrid capability, whose run suspends rather than
     /// completing.
     Propose,
+    /// One sweep of a container image's advisories: scan, bump, judge, land,
+    /// and one shared pull request for the repository.
+    Mitigate,
 }
 
 impl Selection {
@@ -148,6 +156,7 @@ impl Selection {
             Selection::Repair => fiddle_core::FIXTURE_REPAIR,
             Selection::Publish => fiddle_core::PUBLISH_CHANGE,
             Selection::Propose => fiddle_core::PROPOSE_CHANGE,
+            Selection::Mitigate => fiddle_core::CVE_MITIGATE,
         }
     }
 
@@ -168,6 +177,8 @@ impl Selection {
             Ok(Selection::Publish)
         } else if requested == fiddle_core::PROPOSE_CHANGE.0 {
             Ok(Selection::Propose)
+        } else if requested == fiddle_core::CVE_MITIGATE.0 {
+            Ok(Selection::Mitigate)
         } else {
             Err(UnknownCapability {
                 requested: requested.to_string(),
@@ -177,6 +188,63 @@ impl Selection {
                     .collect::<Vec<_>>()
                     .join(", "),
             })
+        }
+    }
+
+    /// **The capability an invocation selects, flag or no flag.**
+    ///
+    /// One expression, called by `run` and by `inspect`, and that is the point
+    /// rather than an economy: a second spelling of the default is exactly how
+    /// the two commands would drift apart again — a read-only command whose whole
+    /// purpose is to say what a run would do, saying the wrong thing.
+    fn resolve(
+        requested: Option<&str>,
+        reference: &InvocationRef,
+    ) -> Result<Self, UnknownCapability> {
+        match requested {
+            Some(requested) => Selection::parse(requested),
+            None => Ok(Selection::default_for(reference.scheme())),
+        }
+    }
+
+    /// **The default is derived from the scheme.**
+    ///
+    /// It used to be the constant [`Selection::Mark`] for every scheme, and that
+    /// made the invocation every M4 document names — `fiddle run cve --mode
+    /// unattended` — execute M0's deterministic stub and exit 0 reporting
+    /// `completed`. Not merely a skipped sweep: `stub_mark` writes a correlation
+    /// marker under the reference's own slug, after which the sweep *was accounted
+    /// for*, so a host running it nightly reported success having never scanned.
+    /// ADR 022 records the change and what it costs a reader who knew the old
+    /// rule.
+    ///
+    /// The second half of that defect is not this function's to fix and is fixed
+    /// elsewhere: a marker against a reference that names no work item now
+    /// accounts for nothing, because such a reference has no completion state
+    /// (ADR 023). This arm stops a caller reaching the wrong capability; that
+    /// rule is what makes a marker already on disk — or one `--capability
+    /// stub_mark` writes deliberately — harmless.
+    ///
+    /// A flag was the alternative and it was rejected: `cve` and `cve_mitigate`
+    /// are the same fact twice, so `fiddle run cve --capability cve_mitigate`
+    /// restates its own subject, and requiring it would undo the bare
+    /// `fiddle run cve` that ADR 019 settled.
+    ///
+    /// Matched arm by arm rather than through a wildcard, because a scheme added
+    /// later has a capability question to answer and this is where it is asked. A
+    /// `_ =>` would answer it silently with `stub_mark`, which is the defect this
+    /// function exists to close, one scheme along.
+    fn default_for(scheme: InvocationScheme) -> Self {
+        match scheme {
+            // `cve` discovers its own work, and the only thing it could be asked
+            // to do with what it finds is remediate it.
+            InvocationScheme::Cve => Selection::Mitigate,
+            // Every scheme that names a work item keeps M0's default, which is
+            // what leaves M0's acceptance lane byte-identical and unmodified.
+            InvocationScheme::Beans
+            | InvocationScheme::Jira
+            | InvocationScheme::Scheduled
+            | InvocationScheme::Scanner => Selection::Mark,
         }
     }
 }
@@ -205,20 +273,106 @@ struct Unconfigured {
     path: String,
 }
 
+/// What a credential authenticates to, and where the document names it.
+///
+/// The two are one type because they are one question. A credential that failed
+/// to resolve leaves an operator with two things to find out — *what wanted this*
+/// and *where did I write it* — and answering the first without the second sends
+/// them to grep. Naming a purpose is also what stops [`CredentialAbsent`] from
+/// hardcoding a noun: it held `model` for every credential in the binary, so an
+/// unexported `[scanner]` tenant reported as a missing model credential and sent
+/// its reader to `[agent]`.
+///
+/// One variant per credential-carrying table rather than per call site, because
+/// the noun is a property of the thing reached and not of the arm that reached
+/// for it: both of `[scanner]`'s variables are the scanner's, and all three of
+/// `[agent]`'s resolution sites are the model's.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CredentialPurpose {
+    /// `[agent]`'s `api_key` — the gateway a bounded attempt reaches.
+    Model,
+    /// `[github]`'s `token` — the forge `gh` and `git push` authenticate to.
+    Forge,
+    /// `[scanner]`'s tenant pair — the service account a scan runs as.
+    Scanner,
+}
+
+impl CredentialPurpose {
+    /// Every purpose, so a test can hold a property over all of them and a
+    /// fourth credential-carrying table cannot arrive without one.
+    ///
+    /// `cfg(test)` because nothing in the binary enumerates purposes — each
+    /// resolution site names the one it means — and an array that exists for a
+    /// property is better spelled as such than kept alive by an allowance.
+    #[cfg(test)]
+    const ALL: [CredentialPurpose; 3] = [
+        CredentialPurpose::Model,
+        CredentialPurpose::Forge,
+        CredentialPurpose::Scanner,
+    ];
+
+    /// The table the document names this credential in, spelled the way the
+    /// document spells it — the same convention [`Unconfigured::missing`] keeps,
+    /// because the reader's next move is the same one: go and look at that line.
+    fn table(self) -> &'static str {
+        match self {
+            CredentialPurpose::Model => "[agent]",
+            CredentialPurpose::Forge => "[github]",
+            CredentialPurpose::Scanner => "[scanner]",
+        }
+    }
+}
+
+impl std::fmt::Display for CredentialPurpose {
+    /// The noun a diagnostic calls this credential by. The single source of the
+    /// word, so the message and the help cannot come to use two.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            CredentialPurpose::Model => "model",
+            CredentialPurpose::Forge => "forge",
+            CredentialPurpose::Scanner => "scanner",
+        })
+    }
+}
+
 /// The environment does not hold the credential the configuration names.
 ///
 /// The **only** failure in this binary that is about a credential, because
 /// [`resolve_credential`] is the only place one is read. It names the variable
 /// and never its value — there is none to name, which is the point: the lookup
 /// failed.
-#[derive(Debug, thiserror::Error, miette::Diagnostic)]
-#[error("the model credential {variable} is not set")]
-#[diagnostic(
-    code(fiddle::config::credential_absent),
-    help("export {variable}, or set it as a repository secret, before running a capability that needs a model")
-)]
+///
+/// It also names *what wanted it*. One error type reports every credential in
+/// the binary, and while there was one credential-carrying table the noun could
+/// be a literal in the message; with three, a literal is a borrowed noun for two
+/// of them. See [`CredentialPurpose`].
+///
+/// [`miette::Diagnostic`] is implemented rather than derived — the only hand-written
+/// one here besides [`InvalidInvocationRef`] — because the help is assembled from
+/// the purpose's *two* words, the noun and the table, and only the first of them is
+/// a field as it stands.
+#[derive(Debug, thiserror::Error)]
+#[error("the {purpose} credential {variable} is not set")]
 struct CredentialAbsent {
+    purpose: CredentialPurpose,
     variable: String,
+}
+
+impl miette::Diagnostic for CredentialAbsent {
+    fn code<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        Some(Box::new("fiddle::config::credential_absent"))
+    }
+
+    fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        Some(Box::new(format!(
+            "export {variable}, or set it as a repository secret, before running \
+             a capability that reaches the {purpose}; {table} is where the \
+             document names it",
+            variable = self.variable,
+            purpose = self.purpose,
+            table = self.purpose.table(),
+        )))
+    }
 }
 
 /// A model client could not be built from what the configuration named.
@@ -280,29 +434,207 @@ impl miette::Diagnostic for InvalidInvocationRef {
         Some(Box::new(match self.0 {
             InvocationRefError::Malformed(_) => "fiddle::invocation_ref::malformed",
             InvocationRefError::UnknownScheme(_) => "fiddle::invocation_ref::unknown_scheme",
-            InvocationRefError::EmptyValue => "fiddle::invocation_ref::empty_value",
+            InvocationRefError::EmptyValue { .. } => "fiddle::invocation_ref::empty_value",
             InvocationRefError::IllegalValueCharacter { .. } => {
                 "fiddle::invocation_ref::illegal_value_character"
             }
         }))
     }
 
+    /// The repair, in the words of the defect — and for one defect, of the
+    /// *scheme* it was made with.
+    ///
+    /// An empty value has one legal repair for a scheme that names a work item —
+    /// append the identifier — and a *different* one for a scheme that discovers
+    /// its own: drop the separator and sweep. This help named the appending one
+    /// for both. That was universally correct until a scheme could stand alone;
+    /// afterwards it was advice that quietly redirected a caller from a sweep to a
+    /// tracker read — the same exit code, different work. So the `EmptyValue` arm
+    /// reads the scheme the error carries and gives each the repair that is true
+    /// of it.
+    ///
+    /// It offered the valued form as a *second* repair for a scheme that stands
+    /// alone, and that is gone: `cve:<identifier>` parses and is then refused by
+    /// [`reference_from`], so offering it sent a caller from one refusal to
+    /// another. What replaces it is the reason, because a caller who wrote `cve:`
+    /// was on their way to writing the form that is refused.
+    ///
+    /// The same arm reaches a caller whose scheme is not a scheme at all, because
+    /// the grammar checks the value first. Those callers get the third message,
+    /// which describes their scheme rather than a repair to the identifier they
+    /// did not write wrong — and describes it in the two halves the schemes
+    /// divide into, since a caller with no known scheme cannot be told one shape
+    /// that is true of all of them.
+    ///
+    /// The `Malformed` arm reaches a caller who wrote no separator at all, which
+    /// is where a mistyped `cve` lands, and it used to answer with the valued
+    /// shape and nothing else. It now answers with [`schemes_by_shape`], the same
+    /// sentence the `None` arm gives — two arms, one caller's question, one place
+    /// that answers it.
+    ///
+    /// Every arm produces a `String` rather than three `&'static str`s and three
+    /// `format!`s, because a `match` whose arms are two types is not a `match` —
+    /// and the alternative, boxing per arm, would put the interesting lines of
+    /// this function behind six identical wrappers.
     fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
-        Some(Box::new(match self.0 {
-            InvocationRefError::Malformed(_) => {
-                "name the source scheme first, separated by a colon: `fiddle inspect beans:fiddle-m0-demo`"
-            }
+        let help = match self.0 {
+            // This arm is where a caller who mistyped `cve` arrives, and it used
+            // to read "name the source scheme first, separated by a colon:
+            // `fiddle inspect beans:fiddle-m0-demo`" — one shape, offered as the
+            // only one, with a valued example under it. Every word of that was
+            // advice against `fiddle run cve`: it told an operator whose typo was
+            // one letter from the milestone's own invocation that a colon was
+            // mandatory, and showed them nothing else to try. The `None` arm below
+            // had already learned that a caller with no known scheme cannot be
+            // told one shape; this arm reaches the same caller by the other door —
+            // `cvfoo` has no separator, so it is malformed rather than an empty
+            // value — and is owed the same answer. It gets the same sentence, from
+            // the same function, so the two doors cannot come to describe
+            // different grammars.
+            InvocationRefError::Malformed(_) => format!(
+                "write the scheme the work comes from, in the shape that scheme takes. \
+                 {shapes}",
+                shapes = schemes_by_shape(),
+            ),
             InvocationRefError::UnknownScheme(_) => {
-                "fiddle addresses work by its source; use a scheme it knows, such as `beans:fiddle-m0-demo`"
+                "fiddle addresses work by its source; use a scheme it knows, such as `beans:fiddle-m0-demo`".to_string()
             }
-            InvocationRefError::EmptyValue => {
-                "the scheme is recognised but names no work; append the identifier, as in `beans:fiddle-m0-demo`"
-            }
+            InvocationRefError::EmptyValue { scheme } => match scheme {
+                Some(scheme) if scheme.stands_alone() => format!(
+                    "`{scheme}` discovers its own work, so it needs no value: write \
+                     `{scheme}` to sweep what the configuration names; acting on one named \
+                     item is not implemented in this build"
+                ),
+                Some(_) => "the scheme is recognised but names no work; append the identifier, as in `beans:fiddle-m0-demo`".to_string(),
+                // `None` is an empty value written after a scheme fiddle does
+                // not know, and it used to fall in with the schemes that name
+                // work — correct for every arm that could reach it when every
+                // reachable scheme was recognised. It told `notascheme:` that
+                // its scheme was recognised, which is false, and then sent the
+                // caller to append an identifier, which cannot help: the
+                // identifier is the half of their reference that is not wrong.
+                //
+                // Both defects are named, in the order the parse chose: the
+                // message above still complains about the empty value, and the
+                // advice is about the scheme, because that is the defect the
+                // caller can act on. Reporting the unknown scheme *instead*
+                // would need the ordering in `InvocationRef::from_str`
+                // reversed, and the empty value would then go unmentioned.
+                //
+                // Which shapes there are, and which schemes take each, is
+                // `schemes_by_shape`'s to say: this arm reaches a caller with no
+                // known scheme, and so does `Malformed`, so neither may hold its
+                // own copy of the answer.
+                None => format!(
+                    "no value follows the scheme, and the scheme is not one fiddle knows. \
+                     {shapes}",
+                    shapes = schemes_by_shape(),
+                ),
+            },
             InvocationRefError::IllegalValueCharacter { .. } => {
-                "a reference names work, never a location: fiddle derives the paths it writes from this value, so it is an identifier only — write it with ASCII letters, digits, `-`, `_` and `:`, as in `beans:fiddle-m0-demo`"
+                "a reference names work, never a location: fiddle derives the paths it writes from this value, so it is an identifier only — write it with ASCII letters, digits, `-`, `_` and `:`, as in `beans:fiddle-m0-demo`".to_string()
             }
-        }))
+        };
+        Some(Box::new(help))
     }
+}
+
+/// **Every shape a reference can take, with the schemes each holds for.**
+///
+/// One sentence, in one place, because two diagnostics have to say it and a
+/// caller cannot be told one shape. `beans:fiddle-m0-demo` is the shape four
+/// schemes take, and offering it to the fifth's caller sends an operator who
+/// wanted a sweep to a tracker read — the difference ADR 019 exists to keep
+/// visible, and one an exit code of 2 either way does not reveal. So the set
+/// arrives in the two halves [`InvocationScheme::stands_alone`] divides it into,
+/// each carrying only the shape that is true of it.
+///
+/// Derived from the halves rather than written as prose, and the halves are
+/// complements over [`InvocationScheme::ALL`], so a sixth scheme is placed the
+/// day it is added instead of leaving a sentence that names five of six. Prose
+/// here is the failure this is downstream of twice over: `InvocationScheme::
+/// listed` exists because the set was once spelled in an `#[error]` attribute and
+/// went stale, and `InvocationRefError::Malformed`'s message asserted one shape
+/// and outlived the grammar that made it true.
+///
+/// The halves are joined into one string rather than returned as a pair, because
+/// what both callers want is the tail of a sentence whose head is their own
+/// defect. Two callers assembling two sentences from two halves is how the
+/// wording drifts between the door a caller came in by — and the acceptance lane
+/// `every_scheme_that_needs_no_value_is_named_on_each_surface_and_in_each_colonless_refusal`
+/// splits the rendered advice on a phrase from this sentence, so both doors are
+/// held to one partition by being held to one sentence.
+fn schemes_by_shape() -> String {
+    format!(
+        "Schemes that name the work they act on take a value, as in \
+         `beans:fiddle-m0-demo`: {naming}. Schemes that discover their own work \
+         need none: {alone}",
+        naming = InvocationScheme::listed_naming_work(),
+        alone = InvocationScheme::listed_standing_alone(),
+    )
+}
+
+/// **A reference whose shape this build implements no capability for.**
+///
+/// `cve:CVE-2026-1234` parses: [`InvocationScheme::stands_alone`] means a scheme
+/// *may* omit its value, not that it must, and ADR 019 keeps the valued form in
+/// the grammar because a milestone implementing narrowing builds on it. What does
+/// not exist is anything that acts on the narrowed reference. `MitigateConfig`
+/// declares no advisory field and the sweep scans `[orchestration.cve] image`
+/// alone, so both of the two things a run could do here are wrong: block on a
+/// work-item read that has no source, or — handed a stub work file — sweep the
+/// whole image while deriving `effect_id` from the narrowed reference, which is a
+/// second branch and a second pull request for work already covered.
+///
+/// So the invocation is refused, and refused *before* the configuration is
+/// loaded, so a caller is told about the argument they typed rather than about a
+/// table the run should never have got as far as needing. The alternative — an
+/// "accepted but not implemented" disclosure, as `max_capability_attempts` has —
+/// was rejected: a config bound that is merely unenforced is not the same risk as
+/// an invocation that would silently act on the wrong scope.
+///
+/// Keyed on `stands_alone` rather than on `Cve`, because the property is what
+/// makes the value meaningless to the capability: any scheme that discovers its
+/// own work has the same gap the day it is added, and M7's Stabilize is named in
+/// ADR 019 as inheriting this shape.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("`{reference}` is not implemented in this build")]
+#[diagnostic(
+    code(fiddle::invocation_ref::unimplemented_form),
+    help(
+        "`{scheme}` discovers its own work; write `{scheme}` to sweep what the configuration names"
+    )
+)]
+struct UnimplementedForm {
+    /// The reference as the caller wrote it, canonicalised — named because the
+    /// caller's next move is to edit exactly this argument.
+    reference: String,
+    /// The scheme alone, which is the whole of the repair.
+    scheme: &'static str,
+}
+
+/// **The positional reference, parsed and then checked for a form this build can
+/// act on.**
+///
+/// One function called by both `inspect` and `run`, and that is the point rather
+/// than an economy — the same one [`Selection::resolve`] is one function for.
+/// `inspect` exists to say what a run would do, so a build where `run` refuses a
+/// reference and `inspect` reports a plan for it would have `inspect` describing
+/// work the binary cannot do. **That is why `inspect` refuses it too**, and the
+/// refusal costs `inspect` nothing it is documented to keep: it is reached before
+/// the configuration is read, so nothing is opened, no fixture is touched and no
+/// credential is resolved. A diagnostic is the one thing a read-only command may
+/// always produce.
+fn reference_from(argument: &str) -> Result<InvocationRef, CliError> {
+    let reference: InvocationRef = argument.parse().map_err(InvalidInvocationRef::from)?;
+    if reference.scheme().stands_alone() && !reference.value().is_empty() {
+        return Err(UnimplementedForm {
+            reference: reference.as_str().to_string(),
+            scheme: reference.scheme().as_str(),
+        }
+        .into());
+    }
+    Ok(reference)
 }
 
 /// The single realisation of the exit-code table (design §4.5).
@@ -339,7 +671,12 @@ fn exit_code_for(termination: &Termination) -> u8 {
             | CliError::Gateway(_)
             // A path the document names that this machine cannot supply is a
             // setup to fix, not work that was attempted and failed.
-            | CliError::PathUnusable(_),
+            | CliError::PathUnusable(_)
+            // A reference in a shape this build has no capability for is the same
+            // row for the same reason: it is invalid input, and nothing was
+            // attempted. Not 20 — a failure is a conclusion fiddle reached about
+            // the work, and this invocation never started.
+            | CliError::UnimplementedForm(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -349,6 +686,18 @@ fn exit_code_for(termination: &Termination) -> u8 {
 /// M0 has one implementation of each; the rest of the binary depends on the
 /// traits, so the only thing that changes when a real adapter arrives is this
 /// one function.
+///
+/// **Every scheme gets these two, `cve` included, and the sweep needs nothing
+/// else from this seam.** Worth saying at the site, because a reader who has just
+/// learnt that the default capability is derived from the scheme
+/// ([`Selection::default_for`]) will reasonably wonder whether the *ports* are
+/// too. They are not, and the reason is what each port is for: the work-item port
+/// is never asked about a trackerless reference at all — [`Addressed::of`]
+/// decides that, not this function — and the change port is how *any* capability's
+/// change set is read before the run and recorded after it, which a sweep needs
+/// exactly as much as `stub_mark` does. What a sweep needs beyond them — a
+/// scanner, a toolchain, a forge — is named in its own configuration tables and
+/// resolved in `build_capability`, not here.
 fn ports(config: &config::Config) -> (StubWorkItemPort, StubChangePort) {
     (
         StubWorkItemPort::new(&config.stub.root),
@@ -363,9 +712,16 @@ fn ports(config: &config::Config) -> (StubWorkItemPort, StubChangePort) {
 /// *reported* to the caller instead of aborting the command. That is why
 /// `inspect` still exits 0 over a missing fixture root — it succeeded at
 /// looking, and what it saw was that it could not see.
+///
+/// **What the ports are asked about is [`Addressed::of`]'s to decide**, and this
+/// line used to decide it itself, wrongly: it passed `reference.value()`, which
+/// for the one scheme that stands alone is the empty string. `fiddle inspect cve`
+/// therefore reported `Blocked` with source `stub:work/.json` — an empty value
+/// interpolated into a path, a file that was never going to be there, and a
+/// diagnostic naming a work item nobody had asked about.
 fn observe(config: &config::Config, reference: &InvocationRef) -> WorkStateView {
     let (work_items, changes) = ports(config);
-    fiddle_runtime::observe(&work_items, &changes, reference.value())
+    fiddle_runtime::observe(&work_items, &changes, Addressed::of(reference))
 }
 
 /// The build identity every bundle this binary publishes carries.
@@ -388,19 +744,29 @@ fn build_identity() -> FiddleBuild {
 /// type, not passed to a capability, not journaled, and not published.
 /// Grepping for `std::env::var` in this binary is how that stays true.
 ///
-/// There are exactly **two** call sites, and both are the same shape: the
-/// repairing arm of [`build_capability`] resolves the model credential, and
-/// [`resolve_forge`] resolves the forge credential. Each is reached only after
-/// its own selection has been made and only after the tables that selection
-/// needs have been found, so no command resolves a credential it has no use for
-/// — which is what keeps `config check`, `inspect`, and `run` over the
-/// deterministic capability credential-free.
+/// Every call site is the same shape: the three arms of [`build_capability`] that
+/// need a model resolve `[agent]`'s credential, [`resolve_forge`] resolves
+/// `[github]`'s, and the mitigating arm resolves `[scanner]`'s tenant pair. Each
+/// is reached only after its own selection has been made and only after the tables
+/// that selection needs have been found, so no command resolves a credential it
+/// has no use for — which is what keeps `config check`, `inspect`, and `run` over
+/// the deterministic capability credential-free.
+///
+/// The **purpose** is an argument rather than something the diagnostic infers,
+/// because the variable's name cannot carry it: `WIZ_CLIENT_ID` is a scanner
+/// credential by virtue of the table that named it, and a function that guessed
+/// from spellings would be wrong the first time a deployment renamed one. See
+/// [`CredentialPurpose`].
 ///
 /// The absence of the variable is an error rather than an empty string, so a
 /// deployment that forgot to export it is told so instead of authenticating
 /// with nothing and being told by the far end.
-fn resolve_credential(variable: &str) -> Result<String, CredentialAbsent> {
+fn resolve_credential(
+    purpose: CredentialPurpose,
+    variable: &str,
+) -> Result<String, CredentialAbsent> {
     std::env::var(variable).map_err(|_| CredentialAbsent {
+        purpose,
         variable: variable.to_string(),
     })
 }
@@ -559,8 +925,8 @@ struct Publishing {
 /// One function rather than two, because everything else is identical and it is
 /// the *credential* half: one resolution site, two clients, `gh` pinned to the
 /// document's own configuration directory. A sibling resolver would be a second
-/// place a credential is read, and [`resolve_credential`] exists to be able to say
-/// there are exactly two in this binary.
+/// place the *forge* credential is read, and [`resolve_credential`] exists to be
+/// able to say there is one place per credential in this binary.
 ///
 /// The capability the diagnostics are attributed to is `selection`'s own id, so a
 /// deployment driving a proposal that is missing `[workspace]` is told which
@@ -607,7 +973,12 @@ async fn resolve_forge(
                     .ok_or_else(|| missing("github.workflow"))?,
             ),
         ),
-        Selection::Propose => {
+        // The two arms whose attempt *creates* the tree it publishes from, and
+        // they answer identically: the path is `attempt_worktree`'s to derive,
+        // it does not exist yet, and neither capability requests a workflow —
+        // `propose_change` asks a person instead, and `cve_mitigate` is judged by
+        // the checks `[workspace] checks` declares, inside the worktree.
+        Selection::Propose | Selection::Mitigate => {
             let workspace = config
                 .workspace
                 .as_ref()
@@ -636,9 +1007,9 @@ async fn resolve_forge(
     // programs with different environments, and they authenticate to the same
     // forge as the same principal — so this arm resolves the variable once, and
     // the value goes straight into the two clients that carry it and nowhere
-    // else. See [`resolve_credential`] for the other of this binary's two
-    // resolution sites and why there are exactly two.
-    let credential = resolve_credential(&github.token.env)?;
+    // else. See [`resolve_credential`] for this binary's other resolution sites
+    // and for why the purpose is passed in rather than inferred.
+    let credential = resolve_credential(CredentialPurpose::Forge, &github.token.env)?;
     let timeout = github.timeout.as_duration();
     let gh = GhCli::new(
         PathBuf::from(&github.cli.program),
@@ -824,7 +1195,7 @@ fn build_capability<'a>(
 
             // Only now, and only on this arm. Everything above could have
             // failed for a deployment that never intended to talk to a model.
-            let credential = resolve_credential(&agent.api_key.env)?;
+            let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
             let model = fiddle_runtime::completion_model(
                 &agent.base_url,
                 credential,
@@ -935,7 +1306,7 @@ fn build_capability<'a>(
 
             // Only now, and only on this arm — the repairing arm's order, for the
             // repairing arm's reason.
-            let credential = resolve_credential(&agent.api_key.env)?;
+            let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
             let model = fiddle_runtime::completion_model(
                 &agent.base_url,
                 credential,
@@ -1057,6 +1428,223 @@ fn build_capability<'a>(
                 },
             )))
         }
+
+        // **The arm every M4 module was waiting for.** Eighteen tasks built the
+        // scan, the projection, the dedup, the budget, the attribution, the
+        // grouping, the migration, the evaluation, the landing, the shared
+        // publication and the disposition, and none of them had a caller on a
+        // production path. This is the caller.
+        //
+        // Five tables, each refused by its own name and in the order an operator
+        // can act on: what to scan and what to bump it with, the tree to do it
+        // in, the model that does the one step arithmetic cannot, the forge it
+        // is published to, and only then the two credentials.
+        Selection::Mitigate => {
+            let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
+            let scanner = config
+                .scanner
+                .as_ref()
+                .ok_or_else(|| missing("[scanner]"))?;
+            let sweep = config
+                .orchestration
+                .as_ref()
+                .and_then(|orchestration| orchestration.cve.as_ref())
+                .ok_or_else(|| missing("[orchestration.cve]"))?;
+            let agent = config.agent.as_ref().ok_or_else(|| missing("[agent]"))?;
+            let workspace = config
+                .workspace
+                .as_ref()
+                .ok_or_else(|| missing("[workspace]"))?;
+            // The five checks of design §2.6, and a document declaring none is
+            // refused here rather than passing an empty contract to `evaluate`.
+            // An empty check list is not a permissive one: every group would end
+            // with no failing check, the rescan alone would decide, and the
+            // milestone's own rule — *the check decides, not the model* — would
+            // be decided by nothing.
+            //
+            // The same guard answers the *other* question this arm has to ask —
+            // which single command the `run_check` tool offers a model — and it
+            // is the **first** declared check rather than `[workspace] check`.
+            //
+            // **`[workspace] check` cannot be the source here, and reading it
+            // made this capability unbuildable.** `config::Workspace`'s own
+            // conversion refuses a document that names `check` *and*
+            // `[[workspace.checks]]` — there is no precedence between two answers
+            // to one question — while this arm requires the list. So every
+            // document that reaches this line has `check == None` by
+            // construction, and every document that would have satisfied the
+            // `ok_or_else` below fails to parse. `cve_mitigate` was reachable
+            // from no configuration at all; Task 20.b's first run through the
+            // binary is what found it.
+            //
+            // The first entry and not a new key, because §2.6 declares the list
+            // *in the order the checks run* and the first of the five is
+            // `go build` — which is exactly what a model runs to see whether its
+            // edit compiles. Derived rather than configured, so there is no
+            // second place for the two to disagree; a deployment that wants the
+            // model to run something else reorders the list it is judged by,
+            // which is a change it can see.
+            let Some(check) = workspace.checks.first() else {
+                return Err(missing("[[workspace.checks]]").into());
+            };
+            let forge = forge.ok_or_else(|| missing("[github]"))?;
+
+            // Only now, and only on this arm — the repairing arm's order, for
+            // the repairing arm's reason: a deployment missing a table is told
+            // about the table rather than about two variables it would also have
+            // had to export.
+            let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
+            let model = fiddle_runtime::completion_model(
+                &agent.base_url,
+                credential,
+                &agent.api_key.env,
+                &agent.model,
+            )
+            .map_err(GatewayUnavailable)?;
+            // The tenant pair, resolved through the same one function every other
+            // credential in this binary goes through, and never stored on a
+            // configuration type: `WizCredential` is built here and handed
+            // straight to the adapters that carry it.
+            let tenant = || -> Result<fiddle_runtime::WizCredential, CredentialAbsent> {
+                Ok(fiddle_runtime::WizCredential {
+                    client_id: resolve_credential(
+                        CredentialPurpose::Scanner,
+                        &scanner.client_id.env,
+                    )?,
+                    client_secret: resolve_credential(
+                        CredentialPurpose::Scanner,
+                        &scanner.client_secret.env,
+                    )?,
+                })
+            };
+
+            // A `^C` has to reach five kinds of child here: the scan, the `go`
+            // that resolves and bumps the module graph, the attempt's tools, the
+            // five checks, and the `gh` and `git` an effect spawns. They all stop
+            // through the one token.
+            cancel_on_interrupt(cancel);
+
+            // The repairing arm's two axes, matched for the repairing arm's
+            // reason: adding a variant is a compile error here instead of a
+            // document that loads and quietly means something else.
+            let config::Isolation::GitWorktree = workspace.isolation;
+            let config::Cleanup::Always = workspace.cleanup;
+
+            // Two scratch directories and not one. Both scanners write their
+            // report under a fixed filename, so a shared directory would have the
+            // first rescan overwrite the input scan's artefact — the one document
+            // every verdict in the run is measured against.
+            let scans = config.report.dir.join("scan");
+            let rescans = config.report.dir.join("rescan");
+
+            let executor = Executor::new(
+                fiddle_core::CVE_MITIGATE,
+                config.project.name.clone(),
+                reference.as_str(),
+                &github.policy,
+                &forge.ctx,
+                &forge.trace,
+                github.read_retry.as_read_retry(),
+            );
+
+            Ok(Box::new(fiddle_runtime::CveMitigate::new(
+                executor,
+                // The same context the executor holds, borrowed for the one
+                // forge read that is not an effect: discovering the shared pull
+                // request. See `capability::mitigate`.
+                &forge.ctx,
+                fiddle_runtime::Wizcli::new(
+                    PathBuf::from(&scanner.cli.program),
+                    scanner.cli.args.clone(),
+                    scans,
+                    scanner.timeout.as_duration(),
+                    cancel.clone(),
+                    tenant()?,
+                ),
+                model,
+                fiddle_runtime::MitigateConfig {
+                    repo: github.repo.to_string(),
+                    // The publishing arm's derivation and its reason: a head from
+                    // a fork is not something this milestone can produce, and
+                    // `repo` is refused at parse time unless it has an owner.
+                    head_owner: github.repo.owner.clone(),
+                    base: github.base.clone(),
+                    // Payload, and it names no advisory: the shared pull request
+                    // outlives any one run's findings, which is the same reason a
+                    // clean group's commit subject names none.
+                    title: format!("{}: dependency advisories", config.project.name),
+                    project: config.project.name.clone(),
+                    stub_root: config.stub.root.clone(),
+                    // The tree the sweep branches its worktree from, and the one
+                    // `github.work` would otherwise have named. It is
+                    // `workspace.fixture` because that is the key meaning *the
+                    // repository under repair*, and a sweep repairs one.
+                    tree: workspace
+                        .fixture
+                        .as_ref()
+                        .ok_or_else(|| missing("workspace.fixture"))?
+                        .clone(),
+                    workspace_root: workspace.root.clone(),
+                    image: sweep.image.clone(),
+                    // The grades the document named, or the two a document naming
+                    // none has always meant. Cloned from the same table
+                    // `max_findings` is read from, so the two documented
+                    // preferences of `[orchestration.cve]` reach the capability
+                    // from one place.
+                    severities: sweep.severities.clone(),
+                    scratch: rescans,
+                    rescan_credential: tenant()?,
+                    go: WorkspaceCommand {
+                        program: sweep.go.program.clone(),
+                        args: sweep.go.args.clone(),
+                        timeout: workspace.command_timeout.as_duration(),
+                    },
+                    checks: workspace
+                        .checks
+                        .iter()
+                        .map(|check| fiddle_runtime::evaluate::Check {
+                            program: check.program.clone(),
+                            args: check.args.clone(),
+                            success: match check.success {
+                                config::Success::ExitZero => {
+                                    fiddle_runtime::evaluate::Success::ExitZero
+                                }
+                                config::Success::ExitZeroAndNoOutput => {
+                                    fiddle_runtime::evaluate::Success::ExitZeroAndNoOutput
+                                }
+                                config::Success::ArtefactWritten => {
+                                    fiddle_runtime::evaluate::Success::ArtefactWritten
+                                }
+                            },
+                        })
+                        .collect(),
+                    check: WorkspaceCommand {
+                        program: check.program.clone(),
+                        args: check.args.clone(),
+                        timeout: workspace.command_timeout.as_duration(),
+                    },
+                    // The repairing arm's budget, handed over as configured
+                    // rather than pre-tightened, for the repairing arm's reason.
+                    budget: AgentBudget {
+                        max_turns: agent.max_turns,
+                        max_tokens: agent.max_tokens,
+                        deadline: agent.deadline.as_duration(),
+                        max_changed_files: agent.max_changed_files,
+                        tool_timeout: agent.tool_timeout.as_duration(),
+                    },
+                    command_timeout: workspace.command_timeout.as_duration(),
+                    findings: fiddle_runtime::cve::verdict::Budget::of(sweep.max_findings),
+                    report_dir: config.report.dir.clone(),
+                    // **The one clock read on this path**, taken here rather than
+                    // inside the decision that uses it: `plan` is pure so that
+                    // every rule it encodes can be asserted without a clock, and
+                    // a branch name is a fact a caller has to be able to
+                    // reproduce.
+                    today: fiddle_runtime::capability::cve::today_utc(),
+                    cancel: cancel.clone(),
+                },
+            )))
+        }
     }
 }
 
@@ -1123,17 +1711,18 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             //
             // The reference is validated *before* the configuration is loaded,
             // so a caller who mistyped the argument is told about the argument
-            // rather than about a document they never mentioned.
-            let reference: InvocationRef =
-                invocation_ref.parse().map_err(InvalidInvocationRef::from)?;
-            // Resolved through the very same two lines `run` uses, and that is
-            // the point rather than an economy: a second spelling of "absent
-            // means `stub_mark`" is exactly how the two commands would drift
-            // apart again.
-            let selection = match capability {
-                Some(requested) => Selection::parse(requested)?,
-                None => Selection::Mark,
-            };
+            // rather than about a document they never mentioned. `run`'s own
+            // parse is this same function, which is what makes the two commands
+            // refuse the same references — see [`reference_from`], and
+            // [`UnimplementedForm`] for the one refusal that is about a form
+            // rather than about the grammar.
+            let reference = reference_from(invocation_ref)?;
+            // Resolved through the very same expression `run` uses, and that is
+            // the point rather than an economy: a second spelling of the default
+            // is exactly how the two commands would drift apart again. It is one
+            // function now that the default reads the scheme — see
+            // [`Selection::default_for`].
+            let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
             let observed = observe(&config, &reference);
             // The CLI owns the configuration, so the CLI computes the marker
@@ -1179,15 +1768,13 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             // a document they never mentioned. `--capability` is resolved here
             // too, before anything is observed and long before anything could
             // be executed, so a rejected invocation provably did nothing.
-            let reference: InvocationRef =
-                invocation_ref.parse().map_err(InvalidInvocationRef::from)?;
-            // Absent means `stub_mark`, unchanged. The default did not move when
-            // a second capability was registered, which is what keeps M0's
-            // acceptance lane byte-identical without being modified.
-            let selection = match capability {
-                Some(requested) => Selection::parse(requested)?,
-                None => Selection::Mark,
-            };
+            let reference = reference_from(invocation_ref)?;
+            // Absent means whatever the reference's scheme means by it: `cve`
+            // selects the sweep, every other scheme keeps M0's `stub_mark`. The
+            // resolution is `inspect`'s own, for its reason — see
+            // [`Selection::resolve`] — and the reference is parsed first because
+            // the default now depends on it.
+            let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
 
             let (work_items, changes) = ports(&config);
@@ -1208,7 +1795,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 // that difference is decided — `propose_change`'s is derived rather
                 // than named by the document, because the tree its attempt publishes
                 // is the tree its attempt creates.
-                Selection::Publish | Selection::Propose => {
+                Selection::Publish | Selection::Propose | Selection::Mitigate => {
                     Some(resolve_forge(&config, &cli.config, &cancel, selection, &reference).await?)
                 }
                 // Neither of these reaches a forge, so neither resolves a forge
@@ -1331,13 +1918,14 @@ mod tests {
         );
         assert_eq!(
             exit_code_for(&Termination::Rejected(CliError::InvocationRef(
-                InvalidInvocationRef(InvocationRefError::EmptyValue)
+                InvalidInvocationRef(InvocationRefError::EmptyValue { scheme: None })
             ))),
             EXIT_INVALID_INPUT
         );
         assert_eq!(
             exit_code_for(&Termination::Rejected(CliError::CredentialAbsent(
                 CredentialAbsent {
+                    purpose: CredentialPurpose::Model,
                     variable: "LITELLM_API_KEY".into()
                 }
             ))),
@@ -1361,6 +1949,16 @@ mod tests {
                 })
             ))),
             EXIT_INVALID_INPUT
+        );
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(CliError::UnimplementedForm(
+                UnimplementedForm {
+                    reference: "cve:CVE-2026-1234".into(),
+                    scheme: "cve",
+                }
+            ))),
+            EXIT_INVALID_INPUT,
+            "a form this build cannot act on is invalid input, not a run that failed"
         );
     }
 
@@ -1407,13 +2005,60 @@ mod tests {
     /// one would be reaching into the others.
     #[test]
     fn an_absent_credential_is_reported_under_the_name_that_was_asked_for() {
-        let error = resolve_credential("FIDDLE_A_VARIABLE_NOTHING_EXPORTS").unwrap_err();
+        let error = resolve_credential(
+            CredentialPurpose::Model,
+            "FIDDLE_A_VARIABLE_NOTHING_EXPORTS",
+        )
+        .unwrap_err();
         assert_eq!(error.variable, "FIDDLE_A_VARIABLE_NOTHING_EXPORTS");
         let rendered = render::diagnostic(&error);
         assert!(
             rendered.contains("FIDDLE_A_VARIABLE_NOTHING_EXPORTS"),
             "an operator must learn which variable to export: {rendered}"
         );
+    }
+
+    /// **No credential is described by another one's noun.**
+    ///
+    /// The defect this closes: the message was `the model credential {variable}
+    /// is not set` for *every* credential in the binary, so an unexported
+    /// `[scanner]` tenant reported as a missing model credential and its help sent
+    /// the reader to a table that was present and correct. Reproduced against the
+    /// release binary as `the model credential WIZ_CLIENT_ID is not set`.
+    ///
+    /// Written over [`CredentialPurpose::ALL`] rather than over the three purposes
+    /// there are today, so a fourth credential-carrying table is covered the day
+    /// it is added. The exclusion is the half that matters and the half an
+    /// assertion on the variable alone passed straight through: each rendering must
+    /// name its own noun **and none of the others**, which is what makes borrowing
+    /// one a failure here rather than a report from a reader.
+    #[test]
+    fn each_credential_is_described_by_the_thing_that_needs_it() {
+        for purpose in CredentialPurpose::ALL {
+            let rendered = render::diagnostic(&CredentialAbsent {
+                purpose,
+                variable: "A_VARIABLE".to_string(),
+            });
+            assert!(
+                rendered.contains(&format!("the {purpose} credential A_VARIABLE is not set")),
+                "a {purpose} credential must be reported as one: {rendered}"
+            );
+            assert!(
+                rendered.contains(purpose.table()),
+                "and the help must name the table the document writes it in: {rendered}"
+            );
+            for other in CredentialPurpose::ALL
+                .into_iter()
+                .filter(|candidate| *candidate != purpose)
+            {
+                assert!(
+                    !rendered.contains(&other.to_string()),
+                    "a {purpose} credential described with `{other}` sends an \
+                     operator to {}: {rendered}",
+                    other.table()
+                );
+            }
+        }
     }
 
     /// The deterministic capability is built from the configuration alone, with
@@ -1452,6 +2097,83 @@ mod tests {
     /// the publishing arm's executor is bound to the run it will publish under.
     fn a_reference() -> InvocationRef {
         "beans:fiddle-m0-demo".parse().unwrap()
+    }
+
+    /// **The sweep never asks for a key its own schema forbids beside the list
+    /// it requires.**
+    ///
+    /// `cve_mitigate` needs two things of `[workspace]`: the checks a group is
+    /// judged by, and the one command the `run_check` tool offers a model. It
+    /// used to take the second from `[workspace] check` — and
+    /// `config::Workspace`'s conversion refuses a document naming `check` *and*
+    /// `[[workspace.checks]]`, because there is no precedence between two answers
+    /// to one question. So the arm demanded a key that could not be present, and
+    /// **this capability was reachable from no document that parses**: eighteen
+    /// tasks' modules wired to a caller nothing could call. It shipped because
+    /// every seam had a suite and the composition had only a compiler.
+    ///
+    /// Two halves, and the second is what makes the first mean something:
+    ///
+    /// 1. a document carrying the list and no singular `check` gets **past** the
+    ///    check question — it is refused for the next thing in the arm's order,
+    ///    the forge, and not for `workspace.check`;
+    /// 2. the document that *would* have satisfied the old requirement does not
+    ///    load at all, so there is no way to write one that satisfies both.
+    ///
+    /// Without (2), (1) is satisfied by an arm that reads `check` and happens to
+    /// be handed a document with one.
+    #[test]
+    fn the_sweep_takes_the_model_s_check_from_the_list_it_already_requires() {
+        let sweep = "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
+             [github]\nrepo=\"peel/fiddle\"\nbase=\"main\"\n\
+             token={env=\"FIDDLE_A_VARIABLE_NOTHING_EXPORTS\"}\n\
+             [scanner]\nclient_id={env=\"WIZ_ID\"}\nclient_secret={env=\"WIZ_SECRET\"}\n\
+             [orchestration.cve]\nimage=\"ghcr.io/acme/icecube:latest\"\n\
+             [agent]\nmodel=\"m\"\nbase_url=\"http://127.0.0.1:9/v1\"\n\
+             api_key={env=\"FIDDLE_A_VARIABLE_NOTHING_EXPORTS\"}\n\
+             [workspace]\nfixture=\"/nonexistent\"\n\
+             [[workspace.checks]]\nprogram=\"true\"\nargs=[]\nsuccess=\"exit-zero\"\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiddle.toml");
+        std::fs::write(&path, sweep).unwrap();
+        let loaded = config::load(&path).unwrap();
+
+        // `None` for the forge, so the arm's *next* refusal after the check
+        // question is the one that comes back. Reaching it at all is the
+        // assertion: `workspace.check` here would mean the arm still wants a key
+        // no loadable document can carry.
+        let Err(error) = build_capability(
+            Selection::Mitigate,
+            &loaded,
+            &path,
+            &CancellationToken::new(),
+            &a_reference(),
+            None,
+        ) else {
+            panic!("no forge was supplied, so nothing can be built")
+        };
+        match error {
+            CliError::Unconfigured(unconfigured) => assert_eq!(
+                unconfigured.missing, "[github]",
+                "the sweep must get past the check question without a \
+                 `[workspace] check`, and be refused for the next thing instead"
+            ),
+            other => panic!("expected the forge to be named, got {other:?}"),
+        }
+
+        // And the document that would have satisfied the old requirement is not a
+        // document at all.
+        let both = dir.path().join("both.toml");
+        std::fs::write(
+            &both,
+            format!("{sweep}[workspace]\ncheck={{ program = \"true\", args = [] }}\n"),
+        )
+        .unwrap();
+        assert!(
+            config::load(&both).is_err(),
+            "a document naming both check shapes must not load, or the arm above \
+             could have gone on reading the singular one"
+        );
     }
 
     /// **A publication over a document that describes no forge is refused by

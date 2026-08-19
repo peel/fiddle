@@ -7,7 +7,11 @@
 #          Outputs JSON: {"provider":"<name>","available":true/false,"command":"..."}
 #
 # Reads orchestrate.json for provider command/flags, builds prompt from template,
-# strips empty sections, pipes to provider CLI, outputs result to stdout.
+# drops unfilled sections, pipes to provider CLI, outputs the reply to stdout.
+#
+# A provider may set "extract" in orchestrate.json to say how its reply is
+# carried on stdout: absent (or "raw") for plain text, "codex-jsonl" for a
+# `codex exec --json` event stream.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -50,6 +54,8 @@ done
 
 COMMAND=$(jq -r --arg p "$PROVIDER" '.providers[$p].command // empty' "$CONF")
 FLAGS=$(jq -r --arg p "$PROVIDER" '.providers[$p].flags // empty' "$CONF")
+# How to read the reply out of this CLI's stdout. Absent means plain text.
+EXTRACT=$(jq -r --arg p "$PROVIDER" '.providers[$p].extract // empty' "$CONF")
 
 # --- Check mode: validate and exit ---
 if [[ "$CHECK_ONLY" == true ]]; then
@@ -84,6 +90,38 @@ replace_prompt_marker() {
   fi
 }
 
+# Drop the sections whose value is empty, on the TEMPLATE and before any
+# substitution. The earlier version stripped after substitution, scanning the
+# assembled prompt: every payload is a markdown document carrying "## " headings
+# of its own, and a heading followed by a blank line — ordinary markdown — looked
+# exactly like an unfilled section, so the payload's headings were deleted
+# instead. Pruning by marker name touches only lines the template owns.
+EMPTY_MARKERS=""
+add_if_empty() {
+  [[ -n "$2" ]] || EMPTY_MARKERS="${EMPTY_MARKERS}${1}"$'\n'
+}
+add_if_empty "{PROVIDER_ROLE}"      "$ROLE"
+add_if_empty "{TOPIC}"              "$TOPIC"
+add_if_empty "{INSTRUCTIONS}"       "$INSTRUCTIONS"
+add_if_empty "{APPROACHES}"         "$APPROACHES"
+add_if_empty "{DESIGN_DOC}"         "$DESIGN_DOC"
+add_if_empty "{DIFF}"               "$DIFF"
+add_if_empty "{EVIDENCE}"           "$EVIDENCE"
+add_if_empty "{PREVIOUS_FEEDBACK}"  "$PREVIOUS_FEEDBACK"
+
+PROMPT=$(printf '%s' "$PROMPT" | awk -v empty="$EMPTY_MARKERS" '
+  BEGIN { n = split(empty, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") drop[a[i]] = 1 }
+  # A section is "## Header" immediately followed by its single marker line.
+  /^## / {
+    header = $0
+    if ((getline marker) <= 0) { print header; next }
+    if (marker in drop) { pending_blank = 1; next }   # drop header, marker, trailing blank
+    print header; print marker; next
+  }
+  pending_blank { pending_blank = 0; if ($0 ~ /^[[:space:]]*$/) next }
+  { print }
+')
+
 replace_prompt_marker "{PROVIDER_ROLE}" "$ROLE"
 replace_prompt_marker "{TOPIC}" "$TOPIC"
 replace_prompt_marker "{INSTRUCTIONS}" "$INSTRUCTIONS"
@@ -93,19 +131,44 @@ replace_prompt_marker "{DIFF}" "$DIFF"
 replace_prompt_marker "{EVIDENCE}" "$EVIDENCE"
 replace_prompt_marker "{PREVIOUS_FEEDBACK}" "$PREVIOUS_FEEDBACK"
 
-# Strip sections where the value is empty (header + empty line)
-PROMPT=$(echo "$PROMPT" | awk '
-  /^## / { header=$0; value=""; next_is_value=1; next }
-  next_is_value { value=$0; next_is_value=0;
-    if (value != "" && value !~ /^[[:space:]]*$/) { print header; print value }
-    next
-  }
-  { print }
-')
-
 # --- Dispatch ---
 PROMPT_FILE=$(mktemp /tmp/provider-XXXX.md)
+RAW_FILE=$(mktemp /tmp/provider-raw-XXXX)
 echo "$PROMPT" > "$PROMPT_FILE"
-trap 'rm -f "$PROMPT_FILE"' EXIT
+trap 'rm -f "$PROMPT_FILE" "$RAW_FILE"' EXIT
 
-eval $COMMAND $FLAGS < "$PROMPT_FILE"
+PROVIDER_EXIT=0
+eval $COMMAND $FLAGS < "$PROMPT_FILE" > "$RAW_FILE" || PROVIDER_EXIT=$?
+
+# --- Extract the reply from the provider's transport ---
+# Some CLIs answer in plain text; others stream structured events and carry the
+# reply escaped inside one of them. Emitting the raw stream left every caller
+# hand-extracting an escaped JSON object out of JSONL.
+case "$EXTRACT" in
+  ""|raw)
+    cat "$RAW_FILE"
+    ;;
+  codex-jsonl)
+    # `codex exec --json` emits one JSON event per line; the answer is the text
+    # of the last completed agent_message item. fromjson? skips non-JSON lines
+    # rather than aborting on the CLI's occasional plain-text notices.
+    REPLY=$(jq -Rrn '[inputs
+      | fromjson?
+      | select(.type == "item.completed")
+      | .item
+      | select(.type == "agent_message")
+      | .text] | last // empty' < "$RAW_FILE")
+    if [[ -z "$REPLY" ]]; then
+      echo "dispatch-provider: no agent_message in '$PROVIDER' output (provider exit $PROVIDER_EXIT); raw stream follows" >&2
+      cat "$RAW_FILE" >&2
+      exit 1
+    fi
+    printf '%s\n' "$REPLY"
+    ;;
+  *)
+    echo "dispatch-provider: unknown extract mode '$EXTRACT' for provider '$PROVIDER'" >&2
+    exit 1
+    ;;
+esac
+
+exit "$PROVIDER_EXIT"

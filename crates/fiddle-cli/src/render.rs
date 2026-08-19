@@ -141,9 +141,10 @@ const DECISION_STATUS: &str = ACCEPTED_NOT_ENFORCED;
 /// `EnvRef` and is echoed the same way.
 ///
 /// This function is also not where a credential could be resolved — the only
-/// reader of `std::env::var` in this binary is `main::resolve_credential`,
-/// called from the repairing arm of `build_capability` and from
-/// `main::resolve_forge`, neither of which `config check` reaches.
+/// reader of `std::env::var` in this binary is `main::resolve_credential`, called
+/// from the arms of `build_capability` that need a model, from the mitigating arm
+/// for `[scanner]`'s tenant pair, and from `main::resolve_forge`, none of which
+/// `config check` reaches.
 ///
 /// **A table the document does not carry produces no key at all**, rather than
 /// a `null` one. A deployment that names no model has not left `[agent]` blank;
@@ -200,6 +201,17 @@ pub fn config_check_json(config: &Config) -> String {
                 "program": check.program,
                 "args": check.args,
             })),
+            // The ordered list, each entry carrying back the criterion the
+            // document declared for it. Reported as an array rather than folded
+            // into `check`, because the two are different keys with different
+            // meanings and a document may name only one of them; an operator
+            // confirming a document should see which of the two shapes this one
+            // is written in.
+            "checks": workspace.checks.iter().map(|check| serde_json::json!({
+                "program": check.program,
+                "args": check.args,
+                "success": success(check.success),
+            })).collect::<Vec<_>>(),
             "isolation": isolation(workspace.isolation),
             "command_timeout": workspace.command_timeout.to_string(),
             "cleanup": cleanup(workspace.cleanup),
@@ -251,6 +263,7 @@ pub fn config_check_json(config: &Config) -> String {
                 "ensure_check_requested": rule(github.policy.ensure_check_requested),
                 "publish_decision_request": rule(github.policy.publish_decision_request),
                 "ensure_pull_request_ready": rule(github.policy.ensure_pull_request_ready),
+                "ensure_pull_request_body": rule(github.policy.ensure_pull_request_body),
             },
             // **Who may promote a change, and how the deployment is matched to
             // them.** `matched_on` is a fact about the *kind* of identity rather
@@ -266,6 +279,51 @@ pub fn config_check_json(config: &Config) -> String {
                 "matched_on": AUTHORIZED_MATCHED_ON,
                 "status": DECISION_STATUS,
             })),
+        });
+    }
+    if let Some(scanner) = &config.scanner {
+        body["scanner"] = serde_json::json!({
+            "cli": { "program": scanner.cli.program, "args": scanner.cli.args },
+            // The names, never the values. The third and fourth `EnvRef`s in the
+            // schema, echoed exactly as the first two are — and the reason is
+            // sharper here than anywhere else: `client_secret` is the one value
+            // this whole build redacts on the way out of a child process, so a
+            // `config check` that printed it would undo the redaction from the
+            // one command an operator runs to confirm their document.
+            "client_id": { "env": scanner.client_id.env },
+            "client_secret": { "env": scanner.client_secret.env },
+            "timeout": scanner.timeout.to_string(),
+        });
+    }
+    if let Some(cve) = config
+        .orchestration
+        .as_ref()
+        .and_then(|orchestration| orchestration.cve.as_ref())
+    {
+        body["orchestration"] = serde_json::json!({
+            "cve": {
+                "image": cve.image,
+                // Ranked worst-first rather than in the order the document typed
+                // them. `Severities` is a *set* — two documents naming the same
+                // grades in either order describe one deployment — so echoing the
+                // typing back would invite an operator to compare two accepted
+                // documents and find a difference that is not one.
+                //
+                // Through `Severity`'s own `Serialize` and not a match here, which
+                // is the one departure from `rule` and `isolation` below and has a
+                // reason of its own: that enum carries `rename_all` on both
+                // directions precisely so a grade read as `HIGH` is written as
+                // `HIGH`, and a second spelling here would be the drift those
+                // attributes exist to prevent.
+                "severities": cve.severities.grades().collect::<Vec<_>>(),
+                // Echoed because it is a bound an operator set and cannot
+                // otherwise confirm — and because for the whole of M4a it was a
+                // key the PRD documented and nothing read, which is exactly the
+                // state a `config check` that echoes it makes impossible to
+                // repeat unnoticed.
+                "max_findings": cve.max_findings,
+                "go": { "program": cve.go.program, "args": cve.go.args },
+            },
         });
     }
     payload(CONFIG_CHECK_SCHEMA, body)
@@ -294,6 +352,20 @@ fn rule(rule: fiddle_core::DeploymentRule) -> &'static str {
 fn isolation(isolation: crate::config::Isolation) -> &'static str {
     match isolation {
         crate::config::Isolation::GitWorktree => "git-worktree",
+    }
+}
+
+/// The spelling a document writes a success criterion as. See [`isolation`] —
+/// and here the match matters more than it does there, because a criterion
+/// reported under the wrong name is an operator confirming a check that means
+/// something else. Reporting it at all is the point: the criterion is a
+/// *declared* fact about the document, so an operator must be able to read back
+/// what they declared.
+fn success(success: crate::config::Success) -> &'static str {
+    match success {
+        crate::config::Success::ExitZero => "exit-zero",
+        crate::config::Success::ExitZeroAndNoOutput => "exit-zero-and-no-output",
+        crate::config::Success::ArtefactWritten => "artefact-written",
     }
 }
 
@@ -368,6 +440,19 @@ pub fn config_check_human(config: &Config) -> String {
             workspace.command_timeout,
             cleanup(workspace.cleanup),
         ));
+        // One line per check, indexed the way the document orders them, and each
+        // carrying its criterion. An operator reading this back is checking two
+        // things a JSON payload would not help them with — that the order is the
+        // one they meant, and that the scanner is not about to be judged by an
+        // exit status. Written only when the document has a list, so an M1-shaped
+        // one renders exactly as it always did.
+        for (index, check) in workspace.checks.iter().enumerate() {
+            out.push_str(&format!(
+                "\n  workspace.checks[{index}] = {} (success: {})",
+                check_line(check),
+                success(check.success),
+            ));
+        }
     }
     if let Some(github) = &config.github {
         out.push_str(&format!(
@@ -382,11 +467,13 @@ pub fn config_check_human(config: &Config) -> String {
              (observed, not enforced: no outcome depends on them — see decision {})\
              \n  github.config_dir = {}\
              \n  github.timeout = {}\
+             \n  github.read_retry = {} attempts (initial {}, max {})\
              \n  github.policy.ensure_branch_published = {}\
              \n  github.policy.ensure_pull_request = {}\
              \n  github.policy.ensure_check_requested = {}\
              \n  github.policy.publish_decision_request = {}\
              \n  github.policy.ensure_pull_request_ready = {}\
+             \n  github.policy.ensure_pull_request_body = {}\
              \n  github.decision.authorized = {}",
             github.repo,
             github.base,
@@ -414,11 +501,21 @@ pub fn config_check_human(config: &Config) -> String {
             REQUIRED_CHECKS_DECISION,
             github.config_dir.display(),
             github.timeout,
+            // Beside `timeout` because it is the same kind of thing, and in the
+            // payload's own order: a wall-clock bound an operator set or
+            // inherited, and one they cannot otherwise confirm without reading
+            // this binary's defaults. Folded into one line rather than three,
+            // because the three numbers are one policy and a person reads them
+            // together.
+            github.read_retry.attempts,
+            github.read_retry.initial,
+            github.read_retry.max,
             rule(github.policy.ensure_branch_published),
             rule(github.policy.ensure_pull_request),
             rule(github.policy.ensure_check_requested),
             rule(github.policy.publish_decision_request),
             rule(github.policy.ensure_pull_request_ready),
+            rule(github.policy.ensure_pull_request_body),
             // The ids as the document wrote them, followed by what they are
             // matched on and by the fact that nothing reads them yet — a person
             // needs the consequence, which is that naming an approver does not
@@ -443,7 +540,84 @@ pub fn config_check_human(config: &Config) -> String {
             })),
         ));
     }
+    // **The image a sweep will scan and the credentials it will authenticate
+    // with.** Both tables are rendered here for the reason the header states as
+    // this function's contract: the reader without `--json` is the one confirming
+    // a document before a sweep acts on it, and for the whole of M4a these two
+    // tables reached the payload and no other surface — so the image, the grade
+    // set, the bound and the two variable names were confirmable only by a caller
+    // who knew to ask for JSON.
+    if let Some(scanner) = &config.scanner {
+        out.push_str(&format!(
+            "\n  scanner.cli = {}\
+             \n  scanner.client_id.env = {}\
+             \n  scanner.client_secret.env = {}\
+             \n  scanner.timeout = {}",
+            program_line(&scanner.cli),
+            // The names of the variables, never their values — the third and
+            // fourth `EnvRef`s in the schema, rendered exactly as the first two
+            // are. The rule is sharpest here: `client_secret` is the one value
+            // this build redacts on the way out of a child process, so printing
+            // it from the single command an operator runs to confirm a document
+            // would undo that redaction at the surface most likely to be pasted
+            // into a bug report. `config::EnvRef` holds no value to print, and
+            // `config check` reaches no reader of `std::env::var`.
+            scanner.client_id.env,
+            scanner.client_secret.env,
+            scanner.timeout,
+        ));
+    }
+    if let Some(cve) = config
+        .orchestration
+        .as_ref()
+        .and_then(|orchestration| orchestration.cve.as_ref())
+    {
+        out.push_str(&format!(
+            "\n  orchestration.cve.image = {}\
+             \n  orchestration.cve.severities = {}\
+             \n  orchestration.cve.max_findings = {}\
+             \n  orchestration.cve.go = {}",
+            cve.image,
+            // Ranked worst-first rather than in the order the document typed
+            // them, for the reason the payload gives: `Severities` is a *set*, so
+            // two documents naming the same grades in either order describe one
+            // deployment, and echoing the typing back would invite an operator to
+            // compare two accepted documents and find a difference that is not
+            // one. Space-separated and unquoted — a grade is a closed-set name
+            // and cannot contain a space, which is what `program_line` quotes
+            // against.
+            cve.severities
+                .grades()
+                .map(grade)
+                .collect::<Vec<_>>()
+                .join(" "),
+            // The bound whose defect was that the manual documented it and no
+            // reader read it. It is read now, and leaving it off the surface an
+            // operator gets by default would have moved that defect rather than
+            // closed it.
+            cve.max_findings,
+            program_line(&cve.go),
+        ));
+    }
     out
+}
+
+/// The spelling a document writes a grade as.
+///
+/// Through [`fiddle_core::Severity`]'s own `Serialize` rather than a match here,
+/// which is the one departure from [`rule`] and [`isolation`] and has the same
+/// reason `config_check_json` gives for doing it this way: that enum carries
+/// `rename_all` on both directions precisely so a grade read as `HIGH` is written
+/// as `HIGH`, and a second spelling in this file would be exactly the drift those
+/// attributes exist to prevent. The two renderers that *do* match are the ones
+/// whose types deliberately have no `Serialize` to defer to.
+fn grade(severity: fiddle_core::Severity) -> String {
+    serde_json::to_value(severity)
+        .ok()
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .expect("a grade serializes as the string its `rename_all` spells")
 }
 
 /// A configured program and its arguments, each token quoted separately.
@@ -457,6 +631,17 @@ pub fn config_check_human(config: &Config) -> String {
 fn program_line(program: &crate::config::ProgramRef) -> String {
     std::iter::once(&program.program)
         .chain(program.args.iter())
+        .map(|token| format!("{token:?}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The program half of a check, quoted token by token. See [`program_line`],
+/// whose reasoning this shares exactly; the criterion is rendered by its caller
+/// because it is not part of what will be executed.
+fn check_line(check: &crate::config::CheckRef) -> String {
+    std::iter::once(&check.program)
+        .chain(check.args.iter())
         .map(|token| format!("{token:?}"))
         .collect::<Vec<_>>()
         .join(" ")
@@ -551,6 +736,16 @@ pub fn inspect_human(
 /// a restatement of it that could drift. `next_action` in particular is the
 /// action derived *after* the run finished, so it describes the state the run
 /// left behind.
+///
+/// `disposition` joins them on the same terms and with the same conditionality
+/// as `report`: present when the capability that ran has a disposition table of
+/// its own, absent otherwise. A payload that carried `observations` and not the
+/// row would make the two documents disagree about what is *knowable* rather
+/// than about a value — a caller at a shell would have to open the bundle to
+/// learn which of seven situations they are in, while a caller who read the
+/// bundle would not. Absent rather than `null` for
+/// [`ReportBundle::disposition`]'s reason, and so that every payload M0, M1, M2
+/// and M3 emit is byte-identical.
 pub fn run_json(bundle: &ReportBundle, published: Option<&Path>) -> String {
     let mut body = serde_json::json!({
         "invocation_ref": bundle.invocation_ref,
@@ -564,14 +759,27 @@ pub fn run_json(bundle: &ReportBundle, published: Option<&Path>) -> String {
     if let Some(path) = published {
         body["report"] = serde_json::Value::String(path.display().to_string());
     }
+    if let Some(disposition) = &bundle.disposition {
+        body["disposition"] = serde_json::to_value(disposition)
+            .expect("a disposition holds no value serde can refuse");
+    }
     payload(RUN_SCHEMA, body)
 }
 
 /// The human-readable `run` summary.
 ///
 /// A reader at a terminal gets the same facts the payload carries: what was
-/// run, under which mode, how it ended, what it did, what is left, and where
-/// the published bundle can be found.
+/// run, under which mode, how it ended, what it did, what is left, where the
+/// published bundle can be found, and — on the paths that reached one — which
+/// row of Design §3's table the run landed on.
+///
+/// The row is here on [`run_json`]'s own argument, which applies to this surface
+/// more sharply than to that one: a document carrying `observations` and not the
+/// row makes the two disagree about what is *knowable*, and the caller who would
+/// have to open the bundle to learn which of seven situations they are in is
+/// precisely the caller at a shell who did not ask for JSON. Row 7's remedy is to
+/// go and merge a numbered pull request, so a rendering that dropped the row
+/// dropped the number with it.
 pub fn run_human(bundle: &ReportBundle, published: Option<&Path>) -> String {
     let mut out = format!(
         "run {}\n  mode        = {}\n  outcome     = {}\n  next action = {}",
@@ -592,7 +800,58 @@ pub fn run_human(bundle: &ReportBundle, published: Option<&Path>) -> String {
     if let Some(path) = published {
         out.push_str(&format!("\n  report      = {}", path.display()));
     }
+    // Present on exactly the paths the payload carries it on, and absent on the
+    // rest: a capability with no disposition table of its own has not reached a
+    // row, and a line saying so would invent a seventh situation for every M0,
+    // M1, M2 and M3 run.
+    if let Some(disposition) = &bundle.disposition {
+        out.push_str(&format!(
+            "\n  disposition = {}",
+            disposition_line(disposition)
+        ));
+    }
     out
+}
+
+/// One published disposition as a single line of prose.
+///
+/// Leads with the row, because the row is the answer to the question the key
+/// exists for. The four counts after it are what separate *neighbouring* rows —
+/// *the scan found nothing* and *everything it found was already dealt with*
+/// differ by `already_fixed` alone — so a line carrying the reason and nothing
+/// else would name a row a reader could not check against the bundle beside it.
+///
+/// Counts rather than the lists themselves, which is the one place this line says
+/// less than the payload does and is deliberate: the advisory ids are in the
+/// published bundle and in `verdicts.json`, and a terminal line that grew with
+/// the size of a scan would push the reason off the screen at exactly the moment
+/// there was most to read.
+///
+/// The branch and the pull request are named **only when there is one**, which is
+/// the opposite of [`optional`]'s rule and for a reason that does not contradict
+/// it: there, an absent key is one a repair will refuse on by name, so an operator
+/// needs to be told. Here an absent value means this run landed nothing on a
+/// branch and belongs to no pull request, and a "not configured" beside it would
+/// read as a document somebody forgot to finish.
+fn disposition_line(disposition: &fiddle_core::RunDisposition) -> String {
+    let mut line = format!(
+        "{} ({} unfixed, {} already fixed, {} deferred, {} attempted)",
+        disposition.reason,
+        disposition.verdicts,
+        disposition.already_fixed.len(),
+        disposition.deferred.len(),
+        disposition.attempts.len(),
+    );
+    if let Some(branch) = &disposition.branch {
+        line.push_str(&format!(", branch {branch}"));
+    }
+    // `#41` and not `41`, because the number *is* the remedy on row 7 and an
+    // operator's next move is to go and find it in a forge that spells it this
+    // way.
+    if let Some(pull_request) = disposition.pull_request {
+        line.push_str(&format!(", pull request #{pull_request}"));
+    }
+    line
 }
 
 /// The diagnostic for an attempt that could not record itself.

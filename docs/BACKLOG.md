@@ -1683,3 +1683,387 @@ directions: it neither enumerates the grant nor calls the success unexplained.
 
 **Nothing here widened or exercised a credential.** The gated-endpoint table this entry's parent records was
 re-verified by the lane that resolved the discrepancy; this entry copies it and measured nothing at GitHub.
+
+### 2026-08-13 — Jira and Slack belong inside the CVE capability, and the milestone table gained a row for it
+Raised by the user during M4 planning: CVE remediation should eventually own its Jira filing and Slack notification rather than leaving them to host-workflow steps. The argument for moving them is not tidiness — routed through the effect executor they gain stable effect identity and postcondition reads, so an interrupted run cannot double-file a ticket or repost a message, which the current `curl` steps cannot promise.
+
+Decided rather than deferred vaguely: `docs/fiddle-agentic-factory-prd.md`'s M5 row gains CVE verdict reporting as a policy-checked Jira effect, and a new **M9 — Notification channel** row adds a narrow outbound notification port with Slack as its first implementation. M9 is last because it is the only milestone whose absence changes nothing observable, and its gate is therefore an equality proof — the same scenario with the channel configured and unconfigured must produce the identical typed outcome, exit code and evidence bundle.
+
+Two properties the RFC now states explicitly at the CVE agent section, because both are the reason the split existed rather than accidents of it: the mitigation decision stays trackerless permanently, so no ticket state or notification gates, informs or deduplicates a mitigation and requirement 22 keeps its "without requiring Jira"; and the capability holds neither credential, receiving an executor already bound to its own capability identity. The reference pipeline keeps Jira credentials out of the model run deliberately, and moving the work must keep that rather than trade it for convenience.
+
+Origin: user direction during M4 seed planning (epic fiddle-eph7, seed fiddle-q7ct)
+Tags: #feature #idea
+Status: 2026-08-13 — recorded in the RFC (M5 row, new M9 row, CVE agent section) and in the tracker: M5 `fiddle-gyyo` body carries the added scope, M9 epic `fiddle-w4co` and seed `fiddle-tb0q` created under `fiddle-30ey`, blocked by M8 `fiddle-is3b`.
+
+### 2026-08-13 — M4 split into capability and integration, and the effect identity that would have silently no-opped
+Two outcomes of challenging the M4 design, recorded because the second is a defect that would have shipped looking successful.
+
+**The split.** M4 became M4a — CVE mitigation capability (`fiddle-eph7`, seed `fiddle-q7ct`) and M4b — CVE workflow integration (`fiddle-rwdm`, seed `fiddle-5cyx`), with `docs/fiddle-agentic-factory-prd.md` gaining a row for each and M5 rewired to wait on M4b. Sizing was the trigger — the combined scope exceeded M3, which ran 39 beans and lost two lanes to an individual spend limit at roughly 40 — but the better argument is that the halves are proved differently. M4a's claim is about decisions and gates offline against a scripted scanner and a scripted forge; M4b's is about deployment against a real forge, scanner and CI. Merged, the gate would need a credential to say anything, contradicting M0's constraint that the acceptance lane is never gated on a secret.
+
+**The defect the challenge found.** The shared-PR model regenerates the pull request body on every run as CVEs accumulate. `fiddle_core::effect::effect_id` derives from `(project, invocation_ref, kind, target)` and never from the payload; the shared PR's natural target is repo + head + base, which does not change between runs, and a nightly `scanner:<component>` reference is stable. So the second run computes the same effect identity, step 3 finds the postcondition already satisfied, and the executor performs no mutation — the accumulated CVE table never appears and **nothing reports a failure**, because the pull request that was opened on run one is real. Not a refusal, a silent no-op. The fix is to carry a digest of the intended body in the target, which is what M2's identity derivation is for and what M3 already did when it made a moved head a different question: a changed body is a new effect that applies, an unchanged body is idempotent.
+
+The general shape is worth keeping beyond this milestone: **an effect whose target is stable but whose payload is meant to change is invisible to postcondition inspection.** Any future operation that updates rather than creates has this hazard, and the identity is where it is fixed, not the postcondition.
+
+**A third finding, which removed work rather than adding it.** The design was going to widen the workspace command's pinned four-name environment allowlist to admit `DOCKER_HOST`, with an ADR — M4's only incursion into the boundary M1 and M2 fixed. Measured instead: under `env_clear` plus `PATH`, `HOME` and `LANG`, `docker version` reaches the daemon, because the CLI defaults to the Unix socket and *setting* `DOCKER_HOST` wrongly is what breaks it. Go needs nothing either, since `GOMODCACHE` and `GOCACHE` default under the scratch `HOME` the workspace already supplies outside the worktree. No ADR is owed and `workspace::a_workspace_command_inherits_no_credential` keeps pinning four names.
+
+Origin: fiddle:challenge --phase define during M4 seed planning (epic fiddle-eph7, seed fiddle-q7ct)
+Tags: #debt #risk #infrastructure
+Status: 2026-08-13 — split recorded in the RFC and the tracker; the effect-identity and allowlist findings are recorded in the M4a design spec and must survive into bean bodies, since docs/specs/ is gitignored.
+
+### 2026-08-14 — A plan's test snippets named real APIs with wrong shapes, and the lane that hit it was the third to find a DEFINE defect
+The M4a plan's task bodies carry Rust test snippets written during planning without being compiled. Several name a real API with the wrong shape: `assess(&view)` against the real `assess(work, expected_marker)`; `Observation::NotApplicable` against the real `NotApplicable { reason: String }`; `ChangeSetState::none()`, which has zero hits repo-wide; and `WorkStateView { .. }` as a struct literal where the constructor is `without_publication`. All four confirmed against the tree.
+
+The plan format already forbids "references to types, functions, or methods not defined in any task". This is the adjacent sin it does not name: referencing a type that *does* exist, with a signature that does not. The rule worth adding for later milestones is that a snippet against existing code is only evidence if it was compiled, and a plan that cannot compile its snippets should say they are intent rather than presenting them as code.
+
+Three DEFINE defects in this epic were found by something other than the lead's own review, which is the pattern worth recording rather than any one of them: a bean requiring helpers whose types no earlier bean builds; an assertion passing for two different causes (`is_err()` satisfied both by a refused field and by invalid JSON); and this one. Two were found by implementer lanes and one by the convergence machinery.
+
+Origin: implementation (epic fiddle-eph7, Task 2 lane fiddle-uwk0)
+Tags: #debt #infrastructure
+Status: 2026-08-14 — recorded on epic fiddle-eph7 as an instruction to every remaining lane: verify signatures against the tree, adapt, preserve intent, report the adaptation, and never add a shim to make a snippet compile as written.
+
+### 2026-08-14 — assess's fallback narrowed its extent while its arm count stayed three, and one guard is single-witness
+Two findings from the Task 2 lane about `crates/fiddle-core/src/assessment.rs`, both reported rather than left for a reader to discover.
+
+`docs/technical/SYSTEM.md` states that exit 20's `assess → Blocked` route has exactly three arms. That count is **unchanged** at `43cb3d7`, verified site by site at both shas. But the fallback's *extent* narrows: it previously caught `(NotApplicable work item, Available changes)` and no longer does, so the clause "the fallback for a view M0's orchestration cannot act on" remains true while no longer covering the trackerless case. The reason string is byte-unchanged and no test asserts it.
+
+Separately, the work-item half of the fail-closed guard is **single-witness**: under the arm-merge inversion only `an_unavailable_work_item_blocks_too` failed, because `unavailable_source_is_blocked` makes the *changes* half unavailable, which the narrowed guard still catches. That state is pre-existing, but the change makes it more load-bearing — there is now an adjacent arm that can swallow exactly that case where before there was only the fallback.
+
+Origin: implementation (epic fiddle-eph7, Task 2 lane fiddle-uwk0, reported as concerns with DONE_WITH_CONCERNS)
+Tags: #debt #risk
+
+### 2026-08-14 — Three descriptions still say an invocation reference is `<scheme>:<value>`, and one of them is a diagnostic that now misleads
+ADR 019 admits a bare reference, so `<scheme>:<value>` is no longer the whole grammar. Three descriptions outside the M4a Task 1 lane's Files block were left stale deliberately rather than widened into it:
+
+- `crates/fiddle-cli/src/cli.rs:61` and `:104` — the `inspect` and `run` positional help both read "as `<scheme>:<value>`". ADR 019 quotes the `run` one specifically, so the ADR and the help text now disagree.
+- `crates/fiddle-runtime/src/orchestration.rs:86` — "The canonical `<scheme>:<value>` text of the invocation."
+- `InvocationRefError::Malformed`'s own diagnostic still says the form must be `<scheme>:<value>`, so a caller who mistypes `cev` is given guidance that omits the legal bare form. This is the one that actively misleads rather than merely under-describing.
+
+A related latent bug in the same area **was** fixed by that lane, and is worth recording as the reason to take the rest seriously: `UnknownScheme`'s message hardcoded "beans, jira, scheduled, scanner" in its `#[error]` attribute, so adding a fifth scheme left it naming four of five — a caller who correctly typed `cve` before the variant existed would have been told there is no such scheme. It is now derived from `ALL` with a test over every scheme.
+
+Origin: implementation (epic fiddle-eph7, Task 1 lane fiddle-typ7, reported as a concern with DONE_WITH_CONCERNS)
+Tags: #debt
+Status: 2026-08-19 — **all three resolved** (bean `fiddle-wr6v`), and the entry was
+partly stale by the time it was acted on. The first bullet had already been fixed:
+`cli.rs`'s two positionals now read "as `<scheme>:<value>` — for example
+`beans:fiddle-m0-demo`. A scheme that finds its own work stands alone and takes no
+value: `cve` scans the configured image and inspects what it finds", so the valued
+shape is an example rather than a requirement and the standing-alone half is named
+beside it. Nothing recorded that here, which is worth noting on its own: a backlog
+entry listing three sites is read as three live defects, and this one had one.
+`orchestration.rs`'s doc comment now spells both shapes. The third — the one this
+entry called out as actively misleading — was live for five days and through the
+remediation round that swept this exact class; see the 2026-08-19 entry "A promise
+and a denial are one class, and a lane that hunts phrases catches one of them".
+
+### 2026-08-14 — ADR 011's traversal table enumerated two schemes, and the one whose values come from outside was not among them
+The M4a Task 1 lane's ninth mutation exempted standalone-scheme values from ADR 011's character class — the plausible over-generalisation of ADR 019, that "a self-discovering scheme supplies its own input". It was caught by that lane's new test **and by nothing else in the workspace**, because `refuses_a_value_that_could_be_read_as_a_path`, the test that reads as the canonical list, enumerated only `beans` and `scanner`.
+
+`cve` is precisely the scheme whose *valued* form carries a scanner-supplied advisory id — an input fiddle does not control — so it was the one most needing a row and the one that had none. Rows for `cve:../../../pwned` and `cve:a/b` were added to that table.
+
+The general shape, worth carrying beyond this milestone: **a test that reads as an exhaustive list over a closed set is a null the moment the set grows.** ADR 019 admits a fifth scheme; nothing made the traversal table notice.
+
+Origin: implementation (epic fiddle-eph7, Task 1 lane fiddle-typ7, found by its own inversion)
+Tags: #debt #risk #security
+
+### 2026-08-18 — The base-image arm is reporting-only in M4a, and that leaves the OS half of dedup with no producer
+Recorded as a decision with its consequence, because the consequence had no owner.
+
+**The decision.** M4a does not build a registry client, so it cannot select a base-image tag. Design §2.4 rule 4 is built as far as it goes without a network peer: an OS finding is attributed to `Target::DockerfileBaseImage` (`crates/fiddle-runtime/src/cve/attribute.rs`), every one of them keys onto that single group, and `select_target_version` already answers the floating-tag `needs-work` case when handed a tag list (`a_floating_tag_with_no_newer_pinned_tag_is_needs_work`). Missing is the tag list and the `Dockerfile` edit — an authenticated read of the image's published tags, a comparability rule for them, and a port, adapter, credential and policy decision to carry it. `CveMitigate::target_version` (`crates/fiddle-runtime/src/capability/mitigate.rs`) therefore refuses every base-image group with `GroupError::Unselectable { why: "selecting a base-image tag needs a registry this build does not read" }` and an OS finding is **reported, never attempted**. This is not M4b's either — M4b is the release artifact, the host workflow, the CI-feedback fresh attempt and the first real Wiz measurement — so the work is currently unowned, which is what this entry is for.
+
+**The consequence.** That refusal removes the only producer the OS half of deduplication could have had. A refused group is recorded blocked and skipped before either commit producer runs — not the fold's `--allow-empty` commit, whose message names the group's ids, and not `land`, which commits only `GroupStatus::Clean`. So **no M4a run can write an OS advisory into a commit body**, and `already_fixed`'s `PackageType::Os` arm (`crates/fiddle-runtime/src/cve/dedup.rs`) reads commit bodies and nothing else. It answers `true` only for history somebody else wrote; every OS case in the suite seeds one. Design §2.7's stated reason for listing every CVE id in a commit body is that same OS path, and is likewise dormant.
+
+**What this does not say.** `commit_log_dedup` and its shallow-history guard are not dead with it. Their set also feeds `Run::in_progress`'s `covers`, which filters every finding through the same scan and is what reaches the `AlreadyInProgress` disposition; library groups do commit `Fixes:` bodies and a reused branch's log is read back on the next run. It is the OS half of the answer that has no producer, not the reading of the log — and `covers` is what earns the commit body's completeness in the meantime.
+
+The refusal is held from outside the process by `a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch` (`crates/fiddle-acceptance/tests/cve_mitigation.rs`), which asserts the OS verdict's rationale carries `registry this build does not read`. Wiring a registry turns that lane red, which is the intended way back to the three notes at the sites: `target_version`'s doc comment, `cve/dedup.rs`'s module header and OS arm, and `commit_body`'s doc comment in `crates/fiddle-runtime/src/capability/cve.rs`.
+
+Origin: implementation (epic fiddle-eph7, remediation bean fiddle-rh0p)
+Tags: #debt #feature
+
+### 2026-08-18 — Verifying that the scanned image was built from the remediated tree needs a config field no milestone owns
+The decision behind this is recorded, and accepted, in `docs/technical/decisions/020-the-host-builds-the-image-fiddle-scans.md`: **the host workflow builds the image fiddle scans, and fiddle does not build it.** That is right for the offline gate — a real `docker build` pulls base layers, and a stubbed one yields a digest meaning nothing. This entry is only for the half the decision leaves owed.
+
+**What was built.** Fiddle now publishes the pair. `TreeObservation` (`crates/fiddle-core/src/observation.rs`) carries a fourth key, `scanned_image_digest`, assembled in `CveMitigate::sweep` (`crates/fiddle-runtime/src/capability/mitigate.rs`) — the one place in the build where the scan's resolved digest and the checkout's revision are both in hand, because the scan happens in `execute` before a worktree exists and `Checkout` never sees a scanner. Until this, `ScanReport::image_digest` was parsed by the `wizcli` adapter and read by nothing, so Design §2.2's *the digest is what makes a later re-scan comparable* was true of a struct field that died with the process. A bundle now says *these verdicts are about digest X and I remediated revision Y*, which a person or the workflow that did the build can check.
+
+**What is owed.** Making that a *checked precondition* rather than an auditable pair: the builder declares the revision it built the image at, and fiddle refuses a run where the declaration disagrees with `checkout.revision()`. It is two halves that have to land together. The **host half** — a workflow step building at the checked-out revision and passing it in — is M4b's, whose scope is the release artefact, the workflow in `snowplow-incubator/snowplow-identities` and the first real Wiz measurement. The **fiddle half** — a `[orchestration.cve]` field carrying the declared revision, plus the comparison and its refusal — is in no milestone's scope, because M4b is the host side. That is what this entry is for. Landing the fiddle half alone would add a field nothing populates, which is either off by default and asserts nothing or refuses every existing run; landing the host half alone gives fiddle a value it does not read.
+
+**What this does not say.** That the pair is worthless without the check. It is what makes the gap auditable at all, and it is the value the stronger check would compare against, so the two are a sequence rather than alternatives. What must not be assumed from it is provenance: fiddle did not build the image and cannot know it came from that revision. The doc comments on `TreeObservation::scanned_image_digest`, on `observed_tree`, and on `ScanReport::image_digest` all say so at the site, and `a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch` plus `an_unusable_scanner_exits_eleven_and_reaches_no_forge` (`crates/fiddle-acceptance/tests/cve_mitigation.rs`) hold the pair and its all-or-nothing publication from outside the process.
+
+Origin: implementation (epic fiddle-eph7, remediation bean fiddle-k38l)
+Tags: #debt #feature
+
+### 2026-08-18 — A false citation was caught, recorded, and then repeated into a dispatch by the lead who recorded it
+The M4a design spec and a Task 18 dispatch both claimed that "`docs/technical/SYSTEM.md` records that nothing in `fiddle-runtime` edits a comment and that the absence is load-bearing." It does not. `grep -niE 'comment|RequestEdited' docs/technical/SYSTEM.md` returns exactly one hit — line 173, about a purity grep that matches *source* comments.
+
+The constraint is real. It lives on the variant itself, `crates/fiddle-runtime/src/human/validate.rs`, whose doc comment reads "fiddle's own question has been edited, which fiddle has no path that does", and it is stated correctly in M3's milestone handoff on epic `fiddle-eoqx` — which is where the lead read it before mis-attributing it to SYSTEM.md.
+
+**The part worth recording is not the slip but the repeat.** An earlier round of the same bean already caught this and recorded the correction on the epic body and in `cve_shared_pr.rs`. The lead then wrote a fresh dispatch for that same bean without reading the correction, and reproduced the false citation verbatim. This is the propagation M3's handoff names — "the lead's own transcription errors propagated three times" — occurring again on the bean that had already caught it.
+
+The practice that follows: **a dispatch for a bean with prior iterations must be written from the bean body, not from the plan or from memory.** The corrections live on the bean, and a dispatch composed without reading them will reintroduce exactly what the previous iteration paid to find.
+
+Origin: implementation (epic fiddle-eph7, Task 18 lane, second occurrence)
+Tags: #debt #risk
+Status: 2026-08-18 — corrected in the design spec with the real location and a note that it had already been caught once.
+
+### 2026-08-18 — A worktree teardown that does not check for a live lane destroys measurements, and reads as a test failure
+The lead removed four lane worktrees and their branches while agents were still working in them, having concluded the beans were already converged. The conclusion was right; the sequencing was not — no lane was asked to stand down first.
+
+Three lanes lost in-flight measurements: a `cargo test --workspace` at 894 passed, another at 18 binaries reported, and an inversion probe mid-restore. Nothing was lost permanently, only because all three lanes had correctly declined to implement anything and so had nothing uncommitted. **A lane with uncommitted work would have lost it silently**, which is the failure `docs/technical/evidence-discipline.md` §3 already records and which the M4a seed evidence records for M3 (116 uncommitted deletions, 65,802 lines).
+
+The diagnostic signature is worth knowing because it is misleading. From inside a suite, a vanished tree presents as:
+
+    error: test failed, to rerun pass `-p fiddle-runtime --test scanner`
+    Caused by: could not execute process `.../deps/scanner-…` (never executed)
+    Caused by: No such file or directory (os error 2)
+
+`(never executed)` plus `No such file or directory` on the binary's own path is a tree disappearing under the runner, not a failing test — and a lane that reported the non-zero exit as a failure would be reporting a defect that does not exist. One lane also observed `error: couldn't read crates/fiddle-runtime/src/lib.rs` with `FAILED_BINARIES=0` across the binaries that had already reported, which is the same event seen from the compiler's side.
+
+The rule: **a teardown checks for a clean tree and for live build processes, and asks the lane to stand down first.** Deleting the branch as well as the checkout is what made it read as deliberate to the lanes rather than as corruption.
+
+Origin: implementation (epic fiddle-eph7, lanes for Tasks 4, 11, 18, 19)
+Tags: #debt #risk #infrastructure
+
+### 2026-08-18 — Correcting the entry above on the vanished-tree signature: the detection was a disagreement, not a signature
+The entry "A worktree teardown that does not check for a live lane destroys measurements, and reads as a test failure" describes the `(never executed)` / `No such file or directory` output as what a vanished tree looks like. True, but it names the wrong thing as the detection mechanism, and the lane that hit it has the better account.
+
+What caught it was that **the tally and the exit code disagreed**: cargo reported `error: 35 targets failed` with `BASELINE_EXIT=101`, while `FAILED_BINARIES=0` across the 18 binaries that had already reported. A lane reporting only the status would have published a 35-target failure at a sha where nothing was broken; a lane reporting only the count would have published a clean run of a suite that never finished. Neither number is trustworthy alone, and it is their disagreement that is the signal.
+
+That is `docs/technical/evidence-discipline.md`'s own argument for printing the count beside the status — the same rule that caught the `shellcheck` format mismatch — so the recognisable failure here is a discrepancy the discipline already tells you to look for, not a novel string to grep.
+
+### 2026-08-18 — Pointing at evidence-discipline.md is not sufficient on its own, and two consecutive dispatches are the evidence
+M3's handoff established the rule that a dispatch should **point** at `docs/technical/evidence-discipline.md` rather than restate it, because M3 copy-pasted ~700 lines of method into every dispatch and the lead's own transcription errors propagated three times. That rule was right about the failure it fixed. This entry records its limit.
+
+Two consecutive M4a dispatches tripped on rules that document is the record of, in lanes that had been pointed at it:
+
+- One launched its baseline as `cargo test --workspace --all-features 2>&1 | tail -60`, with no `EXIT=` marker and no `--no-fail-fast` — a pipe-truncated log of a 42-binary run, which §1 names in its first three paragraphs. The lane noticed only on reading the file afterwards, discarded the run and re-ran instrumented.
+- Another recorded `tail`'s exit status in place of clippy's, the same defect one level along, and also caught it by re-reading rather than at the point of writing the command.
+
+The lead did the same thing twice in this milestone: counting tests from a `tail -60` of a log, and reporting a `FAIL` verdict computed from a scorecard file that was never written.
+
+So the reading worth carrying: **pointing works for the rules a reader will look up, and fails for the rules that govern the command they are about to type.** The measurement rules — print the exit code you mean, print the denominator, never pipe a status you intend to report — are needed *before* the log exists, and a pointer consulted afterwards only diagnoses. Candidate fixes rather than a decision: name those three inline in a dispatch's verify section as concrete commands, or give them a script with an exit-code contract, which is what `docs/technical/decisions/009-mechanical-gates-as-validators.md` argues for generally.
+
+Origin: implementation (epic fiddle-eph7, Task 18 and Task 4 lanes, plus two lead-side instances)
+Tags: #debt #infrastructure
+
+### 2026-08-18 — The product manual's `fiddle.toml` example still cannot load, and `[orchestration.cve]` was only the table somebody looked at
+`fiddle-c64d` wired `[orchestration.cve] severities`, which the manual documented and the schema refused, and added the `image` key that table always required. The lane it added reads that **one table** out of `docs/fiddle-agentic-factory-prd.md` and drives the binary over it, so that table and the schema can no longer diverge unnoticed.
+
+The rest of the example is the same defect, unmeasured until now. Extracting the whole `fiddle.toml` block from the manual and running the compiled binary over it exits 2 at the *first* line of the *first* table after `[project]`:
+
+```
+ 10 │ repository = "snowplow/icecube"
+    ·      ╰── unknown field `repository`, expected one of `repo`, `base`, `token`, `cli`, `git`, …
+```
+
+`[github]` alone disagrees on `repository`/`repo` and `default_branch`/`base`. Behind it the example names `[jira]`, `[execution]`, `[policy]`, `[artifacts]`, `[telemetry]`, `[orchestration] enabled`, `[orchestration.stabilize]`, `[orchestration.set_based]`, `[orchestration.toil]`, `[capabilities.*]` and `[agent] default_runtime` — tables and keys the shipped schema has no reader for at all. **A deployment cannot copy the manual's example**, and that sentence is true of far more than the one key a holistic pass happened to find.
+
+Most of those tables belong to milestones that have not shipped, so this is not a claim that the schema is wrong. It is a claim about the document: an example presented as *what a repository writes* is refused at line 10, and nothing in the repository says which parts of it are aspirational. Two candidate fixes rather than a decision — mark the unshipped tables in the example as forward-looking, or extend the new extraction lane from one table to the whole block and let it fail until the two agree. The second is the stronger one and is a document decision rather than a test decision, which is why it is here and not in the bean.
+
+Origin: implementation (bean fiddle-c64d, epic fiddle-eph7 — measured with the compiled binary over the extracted block)
+Tags: #debt #documentation
+
+### 2026-08-18 — `check-thresholds.sh` returns PASS for a scorecard whose dimensions carry no threshold
+
+The script compares `select(.value.score < .value.threshold)`. When a scorecard's dimension objects carry `score` but no `threshold`, jq evaluates `5 < null` as false, every dimension lands in `passing_dimensions`, and the script exits 0 with `"verdict": "FAIL"` never reachable. A holistic scorecard scoring 5, 6, 6, 6, 9 against thresholds of 7, 7, 8, 6, 9 was reported as **PASS** on exactly this path, and `check-convergence.sh` then returned `PASS_PENDING` — one dispatch away from declaring a milestone's holistic review converged over a scorecard that failed three of five dimensions.
+
+The immediate cause was upstream and human: the envelope handed to the reviewer omitted the `threshold` field, so the reviewer produced a well-formed scorecard the gate could not grade. That is worth fixing separately. But a gate that cannot tell "nothing failed" from "nothing was compared" is the defect that made a spelling mistake into a false pass, and the same shape would swallow a renamed field or a merge that dropped the key.
+
+The fix is to refuse rather than to default: a dimension with no `threshold`, or a `--criteria` file whose entries carry no `pass`, should exit non-zero naming the missing field. Defaulting to the holistic thresholds would be worse than erroring — it would quietly grade one scorecard by a different rule than the one its author was given.
+
+The `--criteria` argument has the same shape of hazard from the other direction: it expects the scorecard's *graded* criteria array, and an ungraded array of criteria descriptions (the file used to brief the reviewer, which is the natural thing to reach for and has the same `id` keys) yields zero failing criteria rather than an error.
+
+Origin: orchestration (epic fiddle-eph7, holistic iteration 4 — the verdict was re-derived by hand and the three failing dimensions recovered)
+Tags: #bug #tooling #evaluation
+Status: Resolved 2026-08-19 by `fiddle-fgam` — `check-thresholds.sh` refuses ungradeable input with exit 2 before comparing anything, naming each missing field with the dimension or criterion it belongs to (``domain general dimension correctness: missing `threshold` ``, ``criterion c1: missing `pass` ``). The refusal also covers the same blind spot arrived at by type order rather than by a null: `"1" >= 7` is true, and `"false" == false` is false, so a stringly-typed score or `pass` read as passing too. `scripts/test-check-thresholds.sh` holds those cases, and replays the two verdicts of iteration 2 (`fiddle-ek1e` on a criterion, `fiddle-o1ly` on a dimension) byte for byte to pin the shape `check-convergence.sh` reads. The `--criteria` half of this finding had a second cause the entry did not name: `skills/develop-holistic/SKILL.md` instructed the caller to pass `criteria-holistic.json`, which *is* the ungraded briefing file; it now extracts the graded array from the merged scorecard.
+
+### 2026-08-18 — A probe taken from a stale binary, in the pack built to prevent exactly that
+
+The holistic evidence pack for iteration 4 captioned probe 5 "help now names the bare form (lead fix)" and headed the pack "run at HEAD 8fce238". The transcript came from `target/release/fiddle` as it stood *before* the gate rebuilt it, so it showed the help text without the fix it was offered as evidence of. The reviewer caught it by running the binary itself and noticing the extra sentence.
+
+The fix was real and its test passes; only the evidence was wrong. That is the whole hazard: a probe that agrees with what the author expects is not checked, and this pack exists precisely to stop unchecked expectation reaching a verdict. Commit `5dd2c9c` recorded the same failure as "a predicted probe is not a probe"; it recurred in the artefact written to prevent it, one iteration later.
+
+What would have caught it: taking probes *after* the build that the pack claims they came from, and stamping each probe with the binary's own mtime or `--version` rather than with the HEAD the author believes is built.
+
+Origin: orchestration (epic fiddle-eph7, holistic iteration 4 — reported by the reviewer as an antipattern against the pack rather than the tree)
+Tags: #process #evidence-discipline
+
+### 2026-08-19 — `dispatch-provider.sh` hands a provider whatever it is given, and a too-large prompt costs a whole review
+
+A holistic dispatch to `codex` failed at `turn/start` with `Input exceeds the maximum length of 1048576 characters. actual_chars: 2178394`. The cause was the caller: `--diff-file` was the whole 39k-line epic diff, and the assembled prompt was 2.1MB against a 1MB limit. The hook does `DIFF="$(cat "$2")"` and passes it straight through, so the first thing that knows the prompt is too big is the provider, after the dispatch is already committed.
+
+The cost is not the failure, it is the *shape* of the failure. The wrapper's completion notification lagged, so from the orchestrator's side this looked like a provider hanging for forty-five minutes; the first written account of it said codex "returned nothing after 45 minutes", which was true in effect and wrong in cause. A holistic iteration then reached a verdict on one reviewer instead of two, and the second opinion was lost to an input error rather than to a provider being unavailable — a distinction that matters, because one is worth retrying and the other is not.
+
+Two fixes, and the first is cheap: have the hook measure the assembled prompt and refuse before dispatching, naming the byte count and which input dominates. Then a caller learns at once, instead of learning from a provider error whose text does not mention `--diff-file`. Second, for whole-epic reviews, stop passing whole-epic diffs: send the diffstat and let the provider read the tree, or scope the diff to the paths under review. A 39k-line diff was never going to be read line by line anyway.
+
+Origin: orchestration (epic fiddle-eph7, holistic iteration 4 — the second reviewer was lost and the iteration proceeded single-provider)
+Tags: #bug #tooling #orchestration
+
+### 2026-08-19 — A bean asked a lane to edit a file that does not exist in a lane worktree
+
+`docs/specs/agentic-factory-m4-design.md` is gitignored. A `git worktree add` copies tracked content only, so the design document — the thing every bean is derived from — is **absent from every lane worktree**. Two consequences hit inside one milestone.
+
+An evaluator dispatch died outright: `hooks/dispatch-provider.sh ... --design-doc-file docs/specs/agentic-factory-m4-design.md` run from a lane produced `cat: ... No such file or directory` and the provider was handed nothing. That one is loud and was fixed by passing the epic worktree's absolute path.
+
+The quiet one is worse. Bean `fiddle-jq1g` carried two criteria requiring design-document edits — state the reference-to-capability binding, and resolve a split-table contradiction. The lane could not have satisfied them under any effort, and nothing in its environment said so; it simply left them undone, and the lead made those edits in the epic worktree at evaluation time. A criterion that cannot be met from the worktree it is dispatched into is not a criterion, it is a trap, and the lane that hits it looks negligent.
+
+Two fixes, and they are independent. First, `define-beans` should not write a criterion naming a path that is gitignored — that check is one `git check-ignore` per referenced path. Second, decide whether the design document should be gitignored at all: it is the reference for two milestones and it is read by every reviewer, which is an odd thing to keep out of the tree. If it stays out, lane briefs must say so explicitly, the way this milestone's later briefs began doing.
+
+Origin: orchestration (epic fiddle-eph7, bean fiddle-jq1g — the lead completed the criteria the lane could not see)
+Tags: #bug #orchestration #beans
+
+### 2026-08-19 — The evaluator envelope has now failed four times, in three different shapes
+
+Across this epic, external evaluator dispatches have returned: an object truncated one brace short (twice), an object with `criteria` nested under `.domains`, and an object with the domain key `general` at top level instead of under `domains`. Each was well-formed prose reasoning wrapped in a shape the grading scripts could not read.
+
+The two truncations were re-dispatched, because content was missing and repairing them would have meant guessing at scores. The two mis-nestings were repaired mechanically and the repair disclosed in the evaluation log — a single unambiguous move of a known key is lossless, and there is exactly one valid placement for a domain name. That distinction is worth keeping: *missing content must be re-dispatched, mis-shaped complete content may be normalized and said so.*
+
+Four failures in one epic is a tooling signal rather than four provider mistakes. `merge-scorecards.sh` should normalize a top-level domain key and a mis-nested `criteria` array, and say in its stderr that it did — then no caller hand-fixes anything, and the normalization is recorded in one place instead of in four evaluation logs. Spelling the envelope more loudly in each dispatch has been tried repeatedly this milestone and has not converged.
+
+Origin: orchestration (epic fiddle-eph7 — beans c64d, uwk0, jq1g and holistic iteration 4)
+Tags: #bug #tooling #evaluation
+Status: 2026-08-19 — action redirected rather than resolved. See *Envelope normalisation does not belong in `merge-scorecards.sh`, and one shape never reaches it* below: the merge is the wrong host, because one of the two shapes dies at `validate-scorecard.sh` before it and the merge's stderr is already consumed as `disagreements-holistic.json`. The distinction this entry draws — re-dispatch missing content, normalise mis-shaped complete content and say so — stands.
+
+### 2026-08-19 — Envelope normalisation does not belong in `merge-scorecards.sh`, and one shape never reaches it
+
+Acts on *The evaluator envelope has now failed four times, in three different shapes* above, which proposed that `merge-scorecards.sh` normalise a top-level domain key and a mis-nested `criteria` array and say on stderr that it did. Measured against the tree while fixing `check-thresholds.sh` (bean `fiddle-fgam`), that placement cannot cover both shapes, and its stderr is not free.
+
+The documented order is dispatch, then `validate-scorecard.sh` on the raw per-provider scorecard (`skills/develop-loop/dispatch-and-evidence.md`, "Gate each scorecard before the merge"), then `merge-scorecards.sh` — which is on every path, since step 1g normalises even a single provider through it. Running the two shapes through that order:
+
+- **`criteria` nested under `.domains`** — `validate-scorecard.sh` exits **5** with `jq: error (at <unknown>): Cannot index array with string ("dimensions")`, rather than the exit-2 JSON error array it documents, because `.domains | to_entries` hands the criteria array to `.value.dimensions`. The scorecard is rejected before the merge, so a normaliser inside the merge would never see this shape at all.
+- **a top-level domain key** — `validate-scorecard.sh` exits **0** and accepts it: with no `.domains`, it has zero dimensions to check. `merge-scorecards.sh` then exits **5 with nothing on stdout and nothing on stderr**, because the `2>/dev/null` on its merge `jq` swallows `null (null) has no keys`. A caller sees an empty file and no reason.
+
+The merge's stderr is also already a typed channel: `develop-holistic` runs `... | scripts/merge-scorecards.sh > scorecard-holistic.json 2> disagreements-holistic.json`, so a "normalised X" line printed there lands inside a file that is parsed as a JSON array of disagreements.
+
+So the normalisation belongs between dispatch and validation, on the raw scorecard — a `normalize-scorecard.sh` whose stdout is the repaired card and whose stderr is free to name what it moved — and it carries two prerequisites in the same area: `validate-scorecard.sh` must *report* a mis-nested `criteria` instead of crashing on it, and `merge-scorecards.sh` must stop hiding its jq errors. Three scripts and a suite of their own is why `fiddle-fgam` did not fold it in.
+
+What `fiddle-fgam` did change is the consequence of not normalising. Neither shape can now be graded: both stop at `check-thresholds.sh` with exit 2 naming the missing field, a top-level domain key reporting ``scorecard: missing `domains` ``. The cost of an un-normalised envelope is orchestrator toil, not a false pass — which is what makes this a bean to schedule rather than a rider on a critical gate fix.
+
+Origin: implementation (bean fiddle-fgam, epic fiddle-eph7 — measured by running both recorded mis-shapes through validate-scorecard.sh and merge-scorecards.sh)
+Tags: #bug #tooling #evaluation
+
+### 2026-08-19 — The eval log annotates a failing dimension by the same comparison that could not see one
+
+Related to *`check-thresholds.sh` returns PASS for a scorecard whose dimensions carry no threshold* above, in a script that does not gate anything. `scripts/append-eval-log.sh` line 63 writes `if .value.score < .value.threshold then " (FAIL, threshold …)"`, the same comparison and the same blind spot: run against the threshold-less scorecard from that finding, the entry it builds reads
+
+    **general:**
+    - correctness: 1/10
+    - domain_spec_fidelity: 1/10
+    …
+
+with no FAIL annotation anywhere. `fiddle-fgam` deliberately left this alone. The log decides nothing — convergence is decided by `check-thresholds.sh`, which now refuses such a scorecard outright — and a refusal here would break the one route that is *required* to log before routing: the SPEC_DEFECT path in `skills/develop-loop/scorecard-merge.md` logs a scorecard it has already declared defective. What it should probably do instead is annotate the missing threshold rather than omit the verdict — `(no threshold recorded)` beside the score — so the durable record cannot read as a clean sheet. That is a one-line change wanting a test, and a decision about whether the eval log should ever contain a dimension whose threshold is unknown.
+
+Origin: implementation (bean fiddle-fgam, epic fiddle-eph7 — found by grepping for the same comparison elsewhere, measured by running the log's jq filter on the threshold-less scorecard)
+Tags: #debt #tooling #evaluation
+Status: 2026-08-19 — **resolved in the same bean, by annotation rather than refusal**, after the evaluator priced the deferral (`code_quality` 8 → 7, "leaving a misleading durable record"). The reasoning for not refusing stood and the fix keeps it: nothing in `append-eval-log.sh` exits non-zero over a score, so the SPEC_DEFECT route still logs before it routes — verified end to end through `merge-scorecards.sh`, not assumed. A dimension the comparison cannot make now reads `- correctness: 1/10 (UNGRADED, no threshold recorded)`, and the same rule names a non-numeric score or threshold, a dimension that is not an object, and a missing `domains` or `dimensions` key. The last three used to abort the logger with a raw jq error and exit 5 — no entry written at all, which is a worse record than a bare score — as did an empty scorecard file, which is exactly what a failed merge hands over. `parse-eval-log.sh` reports `last_verdict: UNGRADED` for such an entry, checked ahead of `FAIL`, because without that branch the entry carries no marker anywhere and falls through to `PASS`: the same false pass, in the one state that outlives the session. Well-formed entries are byte-identical — checked against both verdicts this epic actually recorded — and all 109 real eval logs in the store parse unchanged.
+
+### 2026-08-19 — A doc comment that contradicts the binary is a review matter, and neither a doctest nor a grep changes that
+
+The valued `cve` reference was advertised on four operator-facing surfaces and implemented on none (bean `fiddle-ye7n`, ADR 019's M4a amendment). The lane written to stop that recurring reads `--help` and each diagnostic off the **compiled binary**, which is the right subject: help written from an ADR describes what was decided, and only something driving the binary can say what was built. It is also structurally blind to source prose, and a **fifth** surface was found behind it — the doc comment on `a_bare_slug_cannot_collide_with_a_valued_slug` in `crates/fiddle-core/src/identity.rs`, which stated as present fact that `cve:CVE-2026-1234` remediates one finding. Nothing in the suite would have caught it, and nothing would catch the next one.
+
+Two candidate guards were tried rather than assumed, and both fail for reasons that are properties of the tools and not of the effort spent.
+
+**A doctest cannot reach a test-module comment.** rustdoc builds the crate without `cfg(test)`, so `#[cfg(test)] mod tests` is stripped before documentation is collected. A deliberately failing doctest inserted in that module yielded `running 0 tests` and `cargo test --doc -p fiddle-core` exited **0**; the identical probe on the public `InvocationRef::slug` exited **101** and named the file and line. The control arm matters: doctests do run in this crate under the gate's `cargo test --workspace`, so this is rustdoc's blindness and no harness setting moves it. The generalisation is worth keeping: a doctest checks the *code* in a comment, never its prose, so the only claims it holds are the ones rewritten as assertions — and a claim about behaviour the build lacks cannot be written as a passing assertion at all, which is why deleting it was the whole fix.
+
+**A grep cannot separate a false claim from a true history note.** When the fifth surface was found, `remediates one finding` stood at five sites and four were correct: `orchestration.rs:148` and `inspect_ref.rs:490` quote the old sentence to record that it was wrong, and two ADR 019 lines state that nothing in this build does it. Only `identity.rs:725` asserted it. Writing this entry and the note on the lane added several more, every one of them saying the claim is false — which is the difficulty in one line. What distinguishes them is framing, which a pattern does not read; a pattern narrow enough to exclude the four is pinned to today's exact wording, so it passes the next paraphrase and reds on the next legitimate history note. That is a lane providing false comfort, which is worse than no lane, because a reader takes it for coverage.
+
+**The conclusion, recorded rather than papered over:** contradiction between a source doc comment and the binary is caught by review here, and by nothing else. The place a reader meets that fact is the lane itself — `no_operator_facing_surface_promises_the_valued_form` in `crates/fiddle-acceptance/tests/inspect_ref.rs` carries the boundary in its doc comment, with both experiments — because the lane's name reads like whole-tree coverage and is not. If this recurs a third time, the thing to weigh is not a stricter grep but a review step that reads every doc comment touching a milestone's changed behaviour, which is a process cost and should be priced as one.
+
+**Narrowed on review, 2026-08-19.** The two candidates above are genuinely ruled out, but "review and nothing else" is broader than they establish. A `fiddle-ye7n` evaluator named a third mechanism the lane did not try: a *file-scoped* assertion on one known-false phrase. The grep objection was that the phrase stood at five sites, one false and four true history notes — but that ambiguity is a property of searching the whole tree, not of asserting that one named file does not contain one named sentence. Such a test is narrow, it names its subject, and it would have caught this. It is not built, and the reason is scope rather than principle: the criterion was met, the dimension sat at threshold, and the milestone had one holistic dispatch left. Left as follow-up with the mechanism named, so the next reader inherits a bounded gap rather than a closed question. Overstating what has been ruled out is the same defect this entry is about, one artefact along.
+
+Origin: bean `fiddle-ye7n` (epic fiddle-eph7, M4a — evaluation iteration 1 failed `no_operator_facing_surface_promises_the_valued_form` on the fifth surface)
+Tags: #decision #testing #documentation
+
+### 2026-08-19 — Two gates in one worktree produce a failure that belongs to neither
+
+`scripts/gate.sh` was launched twice against `.worktrees/agentic-factory-m4` while the first run was still in flight. Both share `target/`, both invoke `cargo` and `nix develop`, and the first reported `TOTALS: 175 passed, 1 failed, 0 ignored, 14 binaries` with `GATE: FAIL` — against 53 binaries in every clean run of this epic. A count that low is a truncated run, not a failing tree, and the single failure belongs to the contention rather than to the code.
+
+The cost is not the wasted ten minutes. It is that **a FAIL from a raced gate is indistinguishable, in the log, from a real one.** The orchestrator nearly read it as a regression in freshly landed work, and the only thing that prevented it was the binary count being obviously wrong. Had the race truncated at 52 binaries instead of 14, there was nothing in the output to catch it.
+
+Two fixes, and the first is nearly free. `gate.sh` should refuse to start when another instance is running against the same worktree — a lock file keyed on the worktree path, removed on exit, reporting the holder's pid. Second, the TOTALS line should carry the expected binary count alongside the actual, so a truncated run is self-evidently truncated rather than requiring a reader who remembers that 53 is normal.
+
+There is a related discipline for the caller, recorded because it is the actual mistake: **a gate launched while another is running measures nothing, and a gate launched after a rebase that aborted measures the wrong tree.** Both happened here in one command — the same background invocation rebased two lanes, aborted the second on a conflict, and then gated. Sequence the landing and the gate as separate steps, and read the git result before trusting the gate that follows it.
+
+Origin: orchestration (epic fiddle-eph7, final remediation round — the raced FAIL was discarded and a clean gate run in its place)
+Tags: #bug #tooling #orchestration
+
+### 2026-08-19 — A promise and a denial are one class, and a lane that hunts phrases catches one of them
+
+`InvocationRefError::Malformed` read **"invocation reference must be `<scheme>:<value>`, got `cvfoo`"**, and its help offered a colon and one valued example. That is the diagnostic a mistyped `cve` lands in — `cvfoo` has no separator, so it is malformed rather than an empty value — so the operator one letter away from `fiddle run cve`, the invocation M4a exists to provide, was told a colon was mandatory and shown nothing else to try.
+
+**Why it survived a round aimed at it.** The class is *operator-facing text asserting a grammar the binary does not have*, and it has now been met twice. Iteration 5 spent a remediation round on it and built `no_operator_facing_surface_promises_the_valued_form`, which reads `--help` and each diagnostic off the compiled binary — the right subject. It hunts for a **promise of the valued form**: occurrences of `cve:` followed by a value character. This string is the same class pointing the other way, a **denial of the bare form**, and saying that `cve` requires a value never spells `cve:`. The lane passed while the string was live, and this was measured rather than reasoned: restoring the old help in place leaves that lane green and the whole file green but one. The 2026-08-14 entry above had already named this string, five days and one sweep earlier. Two searches at one class and neither pattern caught it, because both patterns were phrases and the class is not a phrase.
+
+**What replaces it, and in what sense it is a property.** The lane now named `every_scheme_that_needs_no_value_is_named_on_each_surface_and_in_each_colonless_refusal`, beside the older lane in `crates/fiddle-acceptance/tests/inspect_ref.rs`, hunts no phrase. It reads the scheme set off the `unknown_scheme` diagnostic — the one surface whose job is to name them all, and derived from `InvocationScheme::ALL`, so a sixth scheme joins the lane the day a caller may write it. It then asks the **binary** which of them stand alone, by driving each bare form and reading whether the grammar refuses it. Only then does it hold the rendered text to the answer: every scheme the binary accepts alone must be named on every grammar surface, never carrying a value, and on the two surfaces that offer the set in halves each scheme must sit in the half its own behaviour puts it in. Nothing in it is pinned to wording, and the oracle is behaviour rather than `stands_alone` — a lane reading the enum would ratify whatever the enum said, whereas this one reds if the enum, the binary and the prose disagree. Both directions were inverted in place to check it: the old help alone reds it with "the `bogus` diagnostic from inspect says how a reference is written and never mentions `cve`", and swapping the two halves reds it with "must offer `cve` where no value is needed, because that is the invocation the binary accepts".
+
+**The bounded gap, which is smaller than the last one and still real.** The *surface list is enumerated by hand*. A process cannot be asked to render every string it might print: each diagnostic is reachable only through an input that provokes it, and a sixth defect added later is not discoverable from outside. Nor can the list be replaced by a filter, and both available filters are worse than the gap. Requiring **every** surface to name the standing-alone schemes fails honestly-silent text — `fiddle --help` lists subcommands and says nothing about references, and should not have to. Triggering the check on a pattern such as `<scheme>:<value>` is the phrase hunt that let this defect through twice; the wording that misled had "must be" in it and the next one need not. So **placement** is derived and cannot go stale, while **membership of the list** is a review matter — the same boundary `no_operator_facing_surface_promises_the_valued_form` carries, and named on this lane's doc comment for the same reason: the lane's name reads like whole-tree coverage and is not.
+
+**The generalisable lesson, since two rounds have now paid for it.** A guard against a false operator-facing claim should be built over the *property the claim is about*, with the binary as oracle, not over the sentence that happened to be false. Both earlier attempts here were searches for a known string — one for the phrase found, one for the form promised — and a search knows only the direction it was pointed. The tell is a lane whose failure message quotes a phrase: it can only ever catch that phrase, in that direction.
+
+Origin: bean `fiddle-wr6v` (epic fiddle-eph7, M4a — proposed by holistic iteration 6, dispatched in the round after)
+Tags: #decision #testing #bug
+Status: 2026-08-19 — **the replacement lane did not, as first committed, guard the string this entry is about**, and the paragraph above overstated it. The inversion recorded there reverted the *help*; the fix had changed two sites, and reverting the other one — the `Malformed` `#[error]` message, signature unchanged, compiling clean — left the lane green: `1 passed; 0 failed`, exit 0. The revert was caught only by `inspect_rejects_a_malformed_invocation_ref` and `a_malformed_reference_is_reported_without_reference_to_configuration`, both of which assert the message text, which is precisely the coupling the new lane was built to replace. The cause was that the lane flattened each diagnostic into one string: `cve` appeared in the corrected advice, so "every surface names it" held, while the line above it went on calling the operator's reference illegal. The lane now holds each surface **part by part** — a diagnostic's verdict line and its advice are read separately — and forbids a part from giving a shape template unless it names the schemes that template is false of, where a template is a colon-joined pair whose scheme side is not one of the schemes read off the binary. Both `--help` surfaces satisfy that rule as written today (they show `<scheme>:<value>` and name `cve` in the same text), so it is not a ban on placeholders. What that state of the lane still did not cover is a universal denial written in **prose** rather than as a shape — "a value is required for this reference" would pass it — because the template is a **gate**: a rewording that drops the placeholder opens it. Two rules strong enough to catch that were weighed here and both recorded as rejected, and one of those rejections was wrong; the third entry below is where it was reopened and what replaced it.
+
+The lesson is narrower than the last one and worth as much: **an inversion proves detection only at the site it was applied to.** This fix touched two sites — a message and a help — and one inversion was generalised to both. A fix with N changed sites needs N mutations, or the report has to say which site was inverted.
+
+Origin: bean `fiddle-wr6v` continued (the guard was measured by the orchestrator, found green under the message revert, and dispatched back)
+Tags: #decision #testing
+
+Status: 2026-08-19 — **a guard that passes the mutation it was built against is weak evidence, and a different violation was constructed that it passed.** The evaluator's counterexample was the prose form of the same denial: with `Malformed`'s `#[error]` rewritten in place as "a value is required for this reference" — no colon, no placeholder, nothing for a shape detector to see — the part-by-part lane above exited **0**, measured, not reasoned. The class had been narrowed three times and named as closed each time.
+
+**What closed it, and why it is a property rather than a longer phrase list.** The second clause added to the lane is gated on the **input**, not on the wording: a refusal of an input with *no colon in it* must name the standing-alone schemes in every part an operator reads. No rewording opens that gate, because whatever the sentence comes to say, it is said to a caller who typed no separator — the one caller for whom the bare form is a live repair. Both mutations now red by name and the message names the missing scheme: `` the `cva` diagnostic from inspect: the line that judges the reference answers an input with no colon in it and never names `cve` ``. A third mutation was constructed for the other clause, to check it still has teeth where it is the only one: a `<scheme>:<value>` template added to the *empty-value* verdict, whose input does carry a colon, reds with `` gives ["<scheme>:<value>"] as the shape a reference takes and never names `cve` ``.
+
+**The rejection that was wrong.** The paragraph above rejected "requiring every part to name the standing-alone schemes" because it reds on the corrected verdict — true of the **unscoped** rule, and the scope is what was missing. Scoped to a colonless refusal it holds `beans:`'s verdict to nothing (its caller's repair is not a sweep) while holding the one arm a mistyped `cve` actually lands in. The cost is one clause of product text: `Malformed`'s message now ends "nor one of the schemes that discover their own work (cve)", derived from `InvocationScheme::listed_standing_alone`. That is not a concession to the test — it is the parts split applied to the message itself. A verdict travels without its help, and a verdict saying such schemes exist without saying which leaves the colonless caller with nothing to type.
+
+**The surface inventory is no longer enumerated by hand.** The commands are read off `fiddle --help` and then **probed**: one is a grammar surface if it answers a malformed reference with `fiddle::invocation_ref::malformed`, so a third subcommand taking a reference joins the lane the day it is added, and `config`, which takes none, is not held to a promise it never makes. The vacuity guard is that the probe must both select and reject — a filter that keeps everything is not selecting on taking a reference. What remains written here is the *case analysis over inputs*: a one-letter typo of each standing-alone scheme (generated from the scheme set, not spelled — `cva` today), a token that is no scheme at all, and an empty value after an unknown scheme. A process cannot be asked to render every string it might print, so a sixth defect reachable only through a sixth input is still not discoverable from outside.
+
+**The name was narrowed to what is held**, per the precedent from bean `fiddle-ye7n`: `every_scheme_that_needs_no_value_is_named_on_each_surface_and_in_each_colonless_refusal`. The old name read as whole coverage of the class and three iterations proved it was not. Two gaps remain and the doc comment states both where a reader meets them: a part that **names** the standing-alone schemes and denies them anyway ("`cve` requires a value") reds nowhere, because catching it means deciding whether a sentence contradicts the binary; and a prose denial in the verdict of a refusal whose input **did** carry a colon is outside both clauses, covered only by `an_empty_value_is_told_every_repair_its_own_scheme_admits`, which holds advice rather than verdicts.
+
+**The lesson, since a fourth round paid for it.** An inversion proves detection at the site it was applied to, and a mutation proves it against the wording it was written in. A guard keyed on the *text* of a false claim can always be reworded around; a guard keyed on the *input that provokes it* cannot. Where a class has been narrowed three times, the question to ask is not "what other phrasing" but "what does the check read that the author of the next wording controls".
+
+Origin: bean `fiddle-wr6v` continued (the evaluator constructed a violation the guard passed, and the lane was broadened and renamed)
+Tags: #decision #testing
+
+Status: 2026-08-19 — **the class is closed as far as an acceptance lane reaches, and the remaining dimension is accuracy, which review holds.** A fourth guard was considered and deliberately not built. The property the lane holds is **detectability**: every scheme that stands alone is *named* on each surface and in each colonless part. Naming `cve` is what makes a wrong description findable by a reader; it is not what makes the description right. So a verdict that names `cve` and misdescribes it passes, and this was measured rather than argued — `Malformed`'s `#[error]` replaced in place with "the normal form is a scheme and the item inside it, as in `beans:fiddle-m0-demo`, and that includes the schemes that discover their own work (cve)" leaves the lane green and the whole file green: `10 passed; 0 failed`, exit 0. That sentence names `cve`, writes no template (`beans:fiddle-m0-demo` is one real scheme's own example, not a claim about the set), and its last clause is false of the one scheme it is about.
+
+**The wording first reached for was not the one that gets through, and the difference is the point.** `cve:<id>` presented as the normal form *does* red — `valued_mentions` sees `cve:` in a valued position, and the lane reports "shows `cve` carrying a value". Paraphrasing the same false claim without putting a value after `cve:` opens it. A gap is only as narrow as the wordings that reach it, so the example recorded is the one that passes, checked, not the one that reads worst.
+
+**Why not a fourth guard: the regress is structural, not a shortfall of effort.** A lane can assert that a string is present, absent, or shaped a certain way. It cannot assert that a sentence *means* what it should. Each of the three guards built here narrowed the class and left a semantically-wrong-but-detectable case behind — a phrase hunt, then a shape template, then a naming rule — and a fourth would do the same, because the thing being approximated is comprehension. This is the same conclusion the entry above reached for a **source doc comment** contradicting the binary (bean `fiddle-ye7n`), arrived at from the other side: there the subject was the source and the lane read the binary; here the subject is the binary's own prose and the reader is the operator. Both land on review. The reasoning is not restated on the lane — the doc comment points at that entry, so the two do not drift apart.
+
+**What is stated where a reader meets it.** The lane's doc comment now opens its limits section with the bound rather than with a list of gaps: the property is detectability and not accuracy, the passing example above with its measurement, review as what catches it with a pointer to the `fiddle-ye7n` entry, and the *input* inventory named as hand-enumerated — the commands are derived and probed, the three input cases are written there, so the property holds over the surfaces the lane reaches and not over surfaces nobody thought of. It also says plainly what the lane *does* hold, because a limits section that only subtracts misleads in the other direction: the colonless case is gated on the input, no rewording reaches it, and both earlier guards at this class were gated on text and both were reworded around. Stating a bound is not retracting the property it bounds.
+
+**The lesson, and it is a scoping one.** Three iterations on one dimension, each failing on a newly constructed violation, is the signature of a dimension that is not reachable by the mechanism being aimed at it — not of a guard that needs one more clause. The tell is that each new counterexample is *constructed* rather than found in the tree: the author of the next wording controls the text, so any check that reads the text can be satisfied without the claim becoming true. When that pattern appears, the artefact worth producing is the bound, stated where a reader meets it, plus the review step that actually holds the residual. A stated bounded gap is a different artefact from a wrongly closed question, and only one of them decays quietly.
+
+Origin: bean `fiddle-wr6v` continued (the evaluator constructed a third violation; the lead ruled the dimension unreachable as scoped and dispatched the bound rather than a fourth guard)
+Tags: #decision #testing #documentation
+
+### 2026-08-19 — Three design sections specified a rule the build does not execute, and none of them said so
+
+Delivery's drift analysis found §2.6 naming five concrete checks in order — `go build`, `go fmt` with exit 0 *and no output*, `go vet`, `docker build`, the `wizcli` rescan — while `[[workspace.checks]]` is a `Vec<CheckRef>` that constrains neither count, order, nor which programs appear. Nothing in the tree said the concrete contract had become a deployment's choice. It is annotated now.
+
+That is the **third** instance of one shape in a single milestone, and the shape is worth naming rather than fixing three times:
+
+- **§7's release-workflow bullet** was assigned to M4a by the split table and to M4b by the same table's other row. Found by holistic iteration 4.
+- **§2.4 rule 4** specified a Dockerfile base-image tag rule needing a registry seam that §7 never designs, §9 never lists and §10 never excluded. Found by holistic iteration 6 and raised as the epic's `spec_defect`.
+- **§2.6** specified five concrete checks the schema does not enforce. Found by delivery drift analysis.
+
+Each was a section stating a rule in the imperative while the mechanism beneath it was general, and in each case the gap was visible only by cross-referencing a *different* section — the split table, §7's seam list, or the schema. None was a coding defect: the implementations were right every time and the documents were what changed.
+
+The lesson is about how this design document is written, not about these three paragraphs. A section that specifies a decision rule should say, in the same breath, **which seam executes it** — and when no seam does, that is the sentence that must be present. The three annotations now in the tree are the pattern to copy; what would be better is not needing them, which means the design phase asking of every rule "what runs this?" before the plan is written. Worth weighing for M4b, whose design is the same document.
+
+A cheaper mechanical partial: the acceptance lane that reads the capability census out of the binary's own diagnostic shows the shape of a guard that holds prose to a mechanism. Nothing equivalent exists for "this section names a rule and no seam executes it", and it is not obvious one can — deciding whether a paragraph implies an unbuilt seam is reading meaning, which this epic has twice concluded is a review matter (see the `fiddle-ye7n` and `fiddle-wr6v` entries).
+
+Origin: delivery (epic fiddle-eph7 — drift analysis, verified by the lead against §2.6, the schema, and a tree-wide search for a statement of the divergence)
+Tags: #process #documentation #design
+
+### 2026-08-19 — SYSTEM.md is eight times its stated size constraint, and delivery made it worse
+
+`skills/deliver-docs/SKILL.md` states SYSTEM.md's constraint as **1-2 pages max**. It is **7,981 words — about 16 pages** — and M4a's delivery added roughly 700 of them: a Components entry for the CVE capability, ADR 022's scheme-selection invariant, and two Known issues. Those additions were the right content and the gaps they filled were real; the point of this entry is that the constraint was checked *after* writing and found already violated by a factor of eight, and the honest response is not to note it and move on again.
+
+**Why it grew.** Every milestone M0 through M4a has added to it, and almost every entry is load-bearing: the invariants record decisions whose absence caused defects, the Known issues record gaps a reader needs, and the entries explain *why* rather than *what*, which is the reason they are useful and the reason they are long. Pruning by summarising would delete exactly the reasoning that stops the same defect twice — this milestone's `wr6v` and `ye7n` both turned on a written-down reason surviving.
+
+**Two additional constraints on any fix, both discovered rather than assumed.** Two acceptance lanes now *read this file*: `capability_selection.rs` requires its capability census to name every id the binary advertises and to state their number, and `config_check.rs` requires its `fiddle.toml` paragraph to name every table the schema admits. Both were verified passing after delivery's edits. So SYSTEM.md is no longer only prose — parts of it are asserted, and a split or a prune must keep those assertions pointing at the right file.
+
+**The choice is between two honest positions and one dishonest one.** Either the document is too long and should be split — Components, Invariants and Known issues are each plausibly their own file, with the guards re-pointed — or the constraint is wrong for a system five milestones in and should be raised to what the document actually needs. What should not continue is a stated limit of one to two pages that every milestone silently exceeds, because a constraint nobody enforces is worse than no constraint: it makes the next author think the size was considered when it was not.
+
+Recommend deciding this at M4b's delivery rather than mid-milestone, when a split can be planned against the guards instead of racing them.
+
+Origin: delivery (epic fiddle-eph7 — measured at 7,981 words after the update, against the skill's stated 1-2 page constraint)
+Tags: #debt #documentation #process

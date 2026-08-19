@@ -30,17 +30,35 @@
 //! holds [`ProposeChange`], the first **hybrid** one: it puts [`repair`]'s
 //! bounded attempt and its own check in front of [`publish`]'s operations, and
 //! then does the thing none of the other three can — it stops and asks, and a
-//! later process comes back and reads the answer. The run that asks ends in an
+//! later process comes back and reads the answer. [`cve`] holds
+//! [`GroupMigration`], which is not a capability at all but the one *step* inside
+//! M4's that consults a model — and is therefore where the opposite question from
+//! [`repair`]'s is settled: not what may be believed of what a model says, but how
+//! little it may be told. Every other decision in that milestone is arithmetic
+//! over facts, and none of the arithmetic is in the prompt. The run that asks ends in an
 //! `Err` on the path where everything worked, which is what
 //! [`Recurrence::Awaiting`](crate::effect::Recurrence::Awaiting) is for; the run
 //! that finds an approval is the only one in this build that performs an effect a
-//! person had to authorize.
+//! person had to authorize. [`mitigate`] holds [`CveMitigate`], which is M4's
+//! capability and the only one whose interesting property is that it *composes*:
+//! it decides nothing itself, and every branch in it is a match on a value some
+//! other module computed. It is also the first capability whose invocation names
+//! no work item — `cve` stands alone — which is why
+//! [`Addressed`](crate::orchestration::Addressed) exists and why
+//! [`fiddle_core::assess`]'s trackerless reading finally has something reaching it.
 
+pub mod cve;
+pub mod mitigate;
 pub mod propose;
 pub mod publish;
 pub mod repair;
 pub mod stub;
 
+pub use cve::{
+    land, record_fold, undeclared, DeclarationBreach, ForbiddenShape, Git, GroupMigration,
+    GroupStatus, InWorktree, MigrationAttempt, MigrationConfig, NeedsWork,
+};
+pub use mitigate::{CveMitigate, MitigateConfig};
 pub use propose::{attempt_worktree, ProposeChange, ProposeConfig};
 pub use publish::{PublishChange, PublishConfig};
 pub use repair::{FixtureRepair, RepairConfig};
@@ -50,6 +68,7 @@ use crate::human::validate::DecisionError;
 use crate::human::InteractionRef;
 use fiddle_core::{
     AttemptId, CapabilityId, DecisionRequestId, EvidenceRef, NextAction, Publication, Published,
+    RunDisposition, TreeObservation,
 };
 use std::path::PathBuf;
 
@@ -59,11 +78,12 @@ use std::path::PathBuf;
 /// against it, so a build that gains a capability offers it and names it in a
 /// diagnostic without anyone remembering to update a second list.
 ///
-pub const CAPABILITIES: [CapabilityId; 4] = [
+pub const CAPABILITIES: [CapabilityId; 5] = [
     fiddle_core::STUB_MARK,
     fiddle_core::FIXTURE_REPAIR,
     fiddle_core::PUBLISH_CHANGE,
     fiddle_core::PROPOSE_CHANGE,
+    fiddle_core::CVE_MITIGATE,
 ];
 
 /// Proof that a derivation authorised an execution, as part of a named attempt.
@@ -251,6 +271,66 @@ pub trait Capability: Send + Sync {
     /// an execution that failed part-way is precisely when an operator most
     /// needs to know what did reach the forge before it stopped.
     fn publication(&self) -> Option<Publication> {
+        None
+    }
+
+    /// Which revision this capability's attempt worked at, if it made a tree at
+    /// all.
+    ///
+    /// # Why this is a third accessor and not part of [`Capability::publication`]
+    ///
+    /// Because the two are independent facts about a run and pairing them would
+    /// make one of the honest combinations unsayable.
+    /// [`PublishChange`](publish::PublishChange) reaches a forge and creates no
+    /// worktree; a capability could equally work in one and reach no forge. A
+    /// `Publication` grown a third field would force every caller of one to have
+    /// an answer about the other.
+    ///
+    /// `None` is the neutral answer, the same neutrality
+    /// [`Capability::receipts`] gets from the empty list and
+    /// [`Capability::publication`] from `None`: a capability that made no
+    /// worktree chose no revision, the view carries no `tree` key at all, and
+    /// every bundle published before this existed is byte-identical. It is
+    /// deliberately not a [`TreeObservation`] of empty strings, which would be
+    /// the positive claim *the attempt ran at nothing*.
+    ///
+    /// Read *after* the execution, on both arms, for the reason the other two
+    /// are: a run that made a worktree and then failed in it is precisely when
+    /// an operator needs to know which revision it was looking at.
+    fn tree_observation(&self) -> Option<TreeObservation> {
+        None
+    }
+
+    /// What this capability's run came to, where it has a disposition table of
+    /// its own.
+    ///
+    /// # Why a fourth accessor rather than something on the evidence reference
+    ///
+    /// Because a capability's conclusion is not the same thing as a pointer to
+    /// an artefact, and squeezing it into one produced exactly the defect this
+    /// exists to close: `cve_mitigate` computed the row, wrote the verdict
+    /// report, and published `cve:<count>:<attempt>` — a locator that names
+    /// neither the outcome nor the reason. Five of Design §3's seven rows were
+    /// therefore indistinguishable from outside the process, and a distinction
+    /// only the process can make is not one an operator, a workflow or a
+    /// mutation test can act on.
+    ///
+    /// # Why `Option`, and why that keeps every earlier bundle unchanged
+    ///
+    /// `None` is the neutral answer for [`Capability::tree_observation`]'s
+    /// reason, one level further out: *which row of the table did this run
+    /// reach* is not a question a capability with no table can be asked at all,
+    /// so the bundle carries no `disposition` key rather than a defaulted one.
+    /// M0's `stub_mark`, M1's `fixture_repair`, M2's `propose_change` and
+    /// `publish_change` answer `None` and their bundles are byte-identical.
+    ///
+    /// Read *after* the execution, on both arms, for the reason the other three
+    /// are — and here the failing arm is the one that matters most:
+    /// [`Reason::ScanUnusable`](crate::evaluate::Reason::ScanUnusable) is a row
+    /// of the table reached by returning an error, so a bundle that only asked
+    /// on success would drop the one row Design §3 calls the milestone most
+    /// likely to get wrong.
+    fn disposition(&self) -> Option<RunDisposition> {
         None
     }
 }
@@ -443,6 +523,44 @@ pub enum CapabilityError {
         working: PathBuf,
     },
 
+    /// The scan this capability's whole run is derived from produced nothing it
+    /// can use.
+    ///
+    /// Carried whole rather than rendered into a string, and that is the entire
+    /// point of the variant. [`ScanError::recurrence`](crate::scanner::ScanError::recurrence)
+    /// is a six-row table decided per variant — a scanner that is not installed
+    /// is not the same row as a container daemon that is down — and it was
+    /// written before anything wrapped a `ScanError` into a `CapabilityError`,
+    /// so there was no seam for it to reach an exit code through. This is that
+    /// seam: without it every one of the six rows would arrive at
+    /// [`CapabilityError::recurrence`] as one arm and be given one answer.
+    #[error("{0}")]
+    Scan(#[from] crate::scanner::ScanError),
+
+    /// The scanner wrote a document this build cannot project.
+    ///
+    /// Distinct from [`CapabilityError::Scan`] because the scan *succeeded*: the
+    /// program ran, wrote a report and said which image it read. What failed is
+    /// this build's reading of it, and the two send an operator to opposite
+    /// places — one to the scanner or the host, the other to a version mismatch
+    /// between fiddle and the document shape it was written against.
+    #[error("{0}")]
+    Projection(#[from] crate::cve::project::ProjectionError),
+
+    /// Which branch this run adds to could not be decided.
+    #[error("{0}")]
+    Plan(#[from] crate::capability::cve::PlanError),
+
+    /// The already-fixed set could not be established.
+    ///
+    /// A failure and never an empty set, which is the whole reason it is here: a
+    /// dedup that could not read the branch's commits would otherwise report that
+    /// nothing had been fixed yet, and the run would re-propose every advisory the
+    /// branch already carries — against a tree whose `go.mod` is already past the
+    /// fix, under a security fix's commit message.
+    #[error("{0}")]
+    Dedup(#[from] crate::cve::dedup::DedupError),
+
     /// The executor a capability was built with names a different run than the
     /// one asking it to execute.
     ///
@@ -468,10 +586,14 @@ impl CapabilityError {
     /// exhaustive `match` so that the next variant's author is asked the same
     /// question by the compiler.
     ///
-    /// Only [`CapabilityError::Effect`] delegates, because only an effect can
-    /// fail in more than one family; see
-    /// [`EffectError::recurrence`](crate::effect::EffectError::recurrence) for
-    /// the six-way table behind it.
+    /// Two arms delegate, because two of the things a capability wraps can fail
+    /// in more than one family and already own the table that says which:
+    /// [`CapabilityError::Effect`], to
+    /// [`EffectError::recurrence`](crate::effect::EffectError::recurrence)'s
+    /// six-way table, and [`CapabilityError::Scan`], to
+    /// [`ScanError::recurrence`](crate::scanner::ScanError::recurrence)'s. The
+    /// second arrived with M4 and closed a table that had been computing an
+    /// answer nothing read.
     pub fn recurrence(&self) -> crate::effect::Recurrence {
         use crate::effect::Recurrence;
         match self {
@@ -618,6 +740,50 @@ impl CapabilityError {
             // The variant M2 added, and the one with three families inside it
             // since `HumanDecisionRequired` moved to the row above.
             CapabilityError::Effect(error) => error.recurrence(),
+
+            // **The second delegation, and the reason the sentence above this
+            // table used to say "only `Effect` delegates".** A scan can fail in
+            // six ways across two families — a program that is not installed and
+            // a container daemon that is down are not one row — and
+            // `ScanError::recurrence` is the table that says which is which. It
+            // was written with no caller: nothing wrapped a `ScanError` into a
+            // `CapabilityError`, so the six rows it computed reached no exit
+            // code. Answering here rather than delegating would be a seventh
+            // opinion, and the one it would get wrong is the one that matters —
+            // `DaemonUnreachable` is exit 11 and `Missing` is exit 20.
+            CapabilityError::Scan(error) => error.recurrence(),
+
+            // A document this build cannot read is the same shape of fact as an
+            // artefact it cannot parse — `ScanError::Unparseable`'s row, and for
+            // that row's reason: the same scanner over the same image writes the
+            // same bytes back, so a repeat re-derives the refusal. What has to
+            // change is a scanner version or this build, and neither is reached
+            // by running the invocation again.
+            CapabilityError::Projection(_) => Recurrence::Permanent,
+
+            // The two halves of the branch decision, and they are opposite rows.
+            // `PlanError`'s own doc says why they are two variants: a read that
+            // failed says nothing about the world and invites another attempt; a
+            // world that was read perfectly well and found to be one this run
+            // must not act in is a state somebody has to change out there. That
+            // is `Refusal::HeadOutsideThePushablePrefix`, whose own doc says a
+            // person has to move a label, and no repeat does it for them.
+            CapabilityError::Plan(error) => match error {
+                cve::PlanError::Read(_) => Recurrence::Correctable,
+                cve::PlanError::Refused(_) => Recurrence::Permanent,
+            },
+
+            // Dedup, and its three failures are two families for the reasons
+            // above. A `git` that could not be run and a resolver that could not
+            // be asked are obstacles a repeat gets past; a clone with no history
+            // to read is not — `--depth` and a missing `origin/<base>` are both
+            // properties of the checkout this deployment performs, so the next
+            // invocation of *this* one reads the same nothing.
+            CapabilityError::Dedup(error) => match error {
+                crate::cve::dedup::DedupError::ShallowHistory { .. } => Recurrence::Permanent,
+                crate::cve::dedup::DedupError::Git { .. }
+                | crate::cve::dedup::DedupError::Resolver(_) => Recurrence::Correctable,
+            },
         }
     }
 }
@@ -676,7 +842,8 @@ mod tests {
                 STUB_MARK,
                 fiddle_core::FIXTURE_REPAIR,
                 fiddle_core::PUBLISH_CHANGE,
-                fiddle_core::PROPOSE_CHANGE
+                fiddle_core::PROPOSE_CHANGE,
+                fiddle_core::CVE_MITIGATE
             ]
         );
     }
@@ -709,5 +876,90 @@ mod tests {
     #[test]
     fn a_grant_names_the_attempt_it_was_issued_under() {
         assert_eq!(grant().attempt_id(), &AttemptId(ATTEMPT.to_string()));
+    }
+
+    /// **A scan failure keeps the exit row its own table computed.**
+    ///
+    /// [`crate::scanner::ScanError::recurrence`] is six variants across two
+    /// families and it was written with no caller: nothing wrapped a `ScanError`
+    /// into a `CapabilityError`, so the row it decided reached no exit code. The
+    /// assertion is over *two* variants from *opposite* families, and that is
+    /// what makes it discriminating — an arm answering `Correctable` for the
+    /// whole variant, or `Permanent` for the whole variant, fails exactly one of
+    /// these two. A single row would pass under a blanket answer.
+    ///
+    /// The consequence is the process exit code: `main.rs` maps
+    /// `Retryable` to 11 and `Failed` to 20, so a scanner that is not installed
+    /// tells automation to stop and a container daemon that is down tells it to
+    /// come back.
+    #[test]
+    fn a_scan_failure_is_given_the_row_its_own_table_decided() {
+        use crate::effect::Recurrence;
+        use crate::scanner::ScanError;
+
+        let missing = CapabilityError::Scan(ScanError::Missing {
+            program: PathBuf::from("/nowhere/wizcli"),
+            reason: "No such file or directory".to_string(),
+        });
+        let daemon = CapabilityError::Scan(ScanError::DaemonUnreachable {
+            stderr: "cannot connect".to_string(),
+        });
+
+        assert_eq!(
+            missing.recurrence(),
+            ScanError::Missing {
+                program: PathBuf::from("/nowhere/wizcli"),
+                reason: "No such file or directory".to_string(),
+            }
+            .recurrence(),
+            "the capability must delegate rather than answer for itself"
+        );
+        assert_eq!(missing.recurrence(), Recurrence::Permanent);
+        assert_eq!(daemon.recurrence(), Recurrence::Correctable);
+    }
+
+    /// The branch decision's two halves are opposite rows, which is why
+    /// `PlanError` has two variants at all: a read that failed says nothing about
+    /// the world, and a world that was read and found unusable is a state
+    /// somebody has to change out there.
+    #[test]
+    fn a_branch_that_could_not_be_read_and_one_that_was_refused_are_different_rows() {
+        use crate::effect::Recurrence;
+
+        let unread = CapabilityError::Plan(cve::PlanError::Read(crate::GhError::Timeout(
+            std::time::Duration::from_secs(1),
+        )));
+        let refused = CapabilityError::Plan(cve::PlanError::Refused(
+            cve::Refusal::HeadOutsideThePushablePrefix {
+                number: 7,
+                head: "someones/branch".to_string(),
+                prefix: cve::PUSHABLE_PREFIX,
+            },
+        ));
+
+        assert_eq!(unread.recurrence(), Recurrence::Correctable);
+        assert_eq!(refused.recurrence(), Recurrence::Permanent);
+    }
+
+    /// The same shape once more, over dedup: a `git` that could not be run is an
+    /// obstacle, and a clone with no history in it is the checkout this
+    /// deployment performs.
+    #[test]
+    fn a_truncated_history_is_not_the_same_row_as_a_git_that_would_not_run() {
+        use crate::cve::dedup::DedupError;
+        use crate::effect::Recurrence;
+
+        let unrunnable = CapabilityError::Dedup(DedupError::Git {
+            repo: "/tmp/r".to_string(),
+            command: "log".to_string(),
+            message: "no such file".to_string(),
+        });
+        let shallow = CapabilityError::Dedup(DedupError::ShallowHistory {
+            repo: "/tmp/r".to_string(),
+            why: "the clone is shallow".to_string(),
+        });
+
+        assert_eq!(unrunnable.recurrence(), Recurrence::Correctable);
+        assert_eq!(shallow.recurrence(), Recurrence::Permanent);
     }
 }

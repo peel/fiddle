@@ -82,9 +82,116 @@ pub enum EffectKind {
     /// Marking a draft pull request ready for review. The first effect in this
     /// build whose capability minimum is `Human`.
     EnsurePullRequestReady,
+    /// Rewriting the body of a pull request that already exists.
+    ///
+    /// The first kind whose *target* carries a digest of what is being written,
+    /// and the reason is the one this enum's doc gives from the other side. Every
+    /// other kind acts on an object that a repeat run names identically — a
+    /// branch, a head-and-base pair, a pull request at a revision — so the
+    /// identity is stable across runs by construction and the payload is where a
+    /// change becomes visible.
+    ///
+    /// A body update has no such object. The pull request it rewrites is the same
+    /// pull request on every run, so a target of repository and number alone would
+    /// derive one identity for "say it covers one advisory" and for "say it covers
+    /// three" — and the second run would be indistinguishable from the first. That
+    /// is why [`crate::EffectKind::EnsurePullRequestBody`]'s target is built by
+    /// `fiddle_runtime::github::pull_request_body_target`, which folds
+    /// [`content_digest`] of the intended body in beside the repository and the
+    /// number.
+    ///
+    /// **Narrow to a pull request's body, and to nothing else.** There is no
+    /// comment-editing counterpart and there must not be:
+    /// `DecisionError::RequestEdited` refuses a request comment whose timestamps
+    /// disagree *because* nothing in this build can edit a comment, so a kind that
+    /// could would remove the ground that refusal stands on. That variant's own
+    /// documentation in `fiddle_runtime::human::validate` states it — *"fiddle's
+    /// own question has been edited, which fiddle has no path that does"* — and
+    /// `cve_shared_pr::no_comment_edit_path_exists` walks the workspace for it.
+    EnsurePullRequestBody,
 }
 
+/// How many kinds [`EffectKind`] has, and the size [`EffectKind::ALL`] is
+/// declared at.
+///
+/// Written once and then *checked* rather than trusted: [`EffectKind::chain`]
+/// refuses a successor chain that runs out before the array is full and refuses
+/// one that continues past its end, and both refusals are const-evaluated, so
+/// this number and the chain cannot disagree without the crate failing to build.
+const KINDS: usize = 6;
+
 impl EffectKind {
+    /// Every kind this build has, in declaration order.
+    ///
+    /// Derived from [`EffectKind::next`] rather than written out, and that is the
+    /// whole point of it existing. A hand-written array is a second list of the
+    /// variants, maintained by memory: a new variant compiles perfectly well
+    /// without a line in it, and every lane that iterates the array then silently
+    /// stops covering the new kind. `next` is an exhaustive match with **no
+    /// wildcard**, so a new variant does not compile until its author has placed
+    /// it in the chain, and [`EffectKind::chain`]'s two const assertions then
+    /// refuse a chain whose length has stopped agreeing with [`KINDS`].
+    ///
+    /// **What that does not close**, stated rather than left to look complete: an
+    /// author who adds a variant, answers `next` with `None` for it and points
+    /// nothing at it has written a variant the chain never reaches, and both
+    /// assertions still hold. Stable Rust has no way to enumerate an enum's
+    /// variants, so nothing short of generating the enum from a single list closes
+    /// that — and generating it would take the documentation above off each
+    /// variant and put the closed set behind a macro, which this crate's
+    /// legibility is worth more than the remaining gap. What the construction does
+    /// buy is that the author is *made to answer the question*, in the same place
+    /// and by the same mechanism the plan requires of `as_str`.
+    pub const ALL: [EffectKind; KINDS] = Self::chain();
+
+    /// Where the chain starts. Declaration order, so [`EffectKind::ALL`] reads as
+    /// the enum reads.
+    const FIRST: EffectKind = EffectKind::EnsureBranchPublished;
+
+    /// The kind after this one in declaration order, or `None` at the end.
+    ///
+    /// An exhaustive match with no wildcard, which is the forcing function
+    /// [`EffectKind::ALL`] rests on. A wildcard arm here would let a new variant
+    /// fall through to `None`, which is exactly the silence this construction
+    /// exists to prevent.
+    const fn next(self) -> Option<EffectKind> {
+        match self {
+            EffectKind::EnsureBranchPublished => Some(EffectKind::EnsurePullRequest),
+            EffectKind::EnsurePullRequest => Some(EffectKind::EnsureCheckRequested),
+            EffectKind::EnsureCheckRequested => Some(EffectKind::PublishDecisionRequest),
+            EffectKind::PublishDecisionRequest => Some(EffectKind::EnsurePullRequestReady),
+            EffectKind::EnsurePullRequestReady => Some(EffectKind::EnsurePullRequestBody),
+            EffectKind::EnsurePullRequestBody => None,
+        }
+    }
+
+    /// Walk the chain from [`EffectKind::FIRST`] into the array
+    /// [`EffectKind::ALL`] publishes.
+    ///
+    /// Both refusals are load-bearing and they fail in opposite directions. A
+    /// chain that ends early means [`KINDS`] claims more kinds than the chain
+    /// reaches, so the array would have to be padded with a repeat of `FIRST` — a
+    /// list with a duplicate in it, which every lane that iterates it would then
+    /// be quietly testing twice. A chain that continues past the end means a kind
+    /// exists that the array omits, which is the silence this whole construction
+    /// is about.
+    const fn chain() -> [EffectKind; KINDS] {
+        let mut all = [Self::FIRST; KINDS];
+        let mut i = 1;
+        while i < KINDS {
+            all[i] = match all[i - 1].next() {
+                Some(kind) => kind,
+                None => panic!("the successor chain ends before ALL is full"),
+            };
+            i += 1;
+        }
+        assert!(
+            all[KINDS - 1].next().is_none(),
+            "the successor chain continues past the end of ALL, so a kind is missing from it"
+        );
+        all
+    }
+
     /// A stable wire name, and the single source of the kind's spelling: the
     /// identity hashes it and serde renders it, so the two cannot drift.
     ///
@@ -97,6 +204,7 @@ impl EffectKind {
             EffectKind::EnsureCheckRequested => "ensure_check_requested",
             EffectKind::PublishDecisionRequest => "publish_decision_request",
             EffectKind::EnsurePullRequestReady => "ensure_pull_request_ready",
+            EffectKind::EnsurePullRequestBody => "ensure_pull_request_body",
         }
     }
 }
@@ -169,6 +277,37 @@ pub fn effect_id(project: &str, invocation_ref: &str, kind: EffectKind, target: 
 /// what would count as an equivalent spelling of the same request.
 pub fn payload_hash(payload: &str) -> PayloadHash {
     PayloadHash(truncated_digest(payload))
+}
+
+/// A digest of content that is *part of a target*, in the same
+/// 16-hex-character shape as an identity.
+///
+/// This exists for the one case [`EffectKind::EnsurePullRequestBody`] describes:
+/// an effect whose object is the same object on every run, so that what is being
+/// written has to enter the identity or two different writes become one effect.
+/// Folding the digest into the target is what makes them two.
+///
+/// **Not [`payload_hash`], and the distinction is deliberate rather than
+/// cosmetic.** [`PayloadHash`]'s own documentation is that it is *"carried
+/// beside — never folded into — the identity"*, because it is the value step 6
+/// compares to catch a request that widened after it was approved. A value
+/// serving both roles would mean an approval and the request it was given for
+/// could never disagree — the divergence check would compare a number against
+/// itself and always pass. So this returns a bare [`String`], which composes into
+/// a target and cannot be mistaken at a call site for the thing that is compared
+/// against one.
+///
+/// A digest rather than the content itself, for two reasons that both matter. A
+/// target is hashed into an identity and is also carried in a receipt and read by
+/// people, so an unbounded target is an unbounded record of something already
+/// recorded elsewhere; and a body is prose somebody may have written, which has
+/// no business appearing verbatim in an identity string.
+///
+/// Pure, like everything else here: arithmetic over the bytes it was handed, no
+/// clock and no local state, so a later process on another machine derives the
+/// same digest for the same content.
+pub fn content_digest(content: &str) -> String {
+    truncated_digest(content)
 }
 
 /// Encode fields so that distinct tuples always yield distinct bytes.
@@ -272,15 +411,15 @@ mod tests {
     /// [`EffectKind::as_str`] ever disagree, an identity would stop matching
     /// the record that describes it, so the two are pinned against each other
     /// here rather than trusted to stay in step.
+    ///
+    /// Over [`EffectKind::ALL`] rather than over a list written out here. The
+    /// list this used to hold was the second copy of the variants that
+    /// `ALL`'s documentation is about: a kind added without a line in it was a
+    /// kind whose two spellings nothing compared, and neither this test nor its
+    /// neighbour below would have said so.
     #[test]
     fn the_hashed_kind_and_the_serialized_kind_are_the_same_spelling() {
-        for kind in [
-            EffectKind::EnsureBranchPublished,
-            EffectKind::EnsurePullRequest,
-            EffectKind::EnsureCheckRequested,
-            EffectKind::PublishDecisionRequest,
-            EffectKind::EnsurePullRequestReady,
-        ] {
+        for kind in EffectKind::ALL {
             assert_eq!(
                 serde_json::to_value(kind).unwrap(),
                 serde_json::json!(kind.as_str()),
@@ -291,27 +430,109 @@ mod tests {
 
     /// The wire spelling is what a later process matches on, so two kinds
     /// sharing one spelling would make two different effects indistinguishable
-    /// on the wire and identical in the identity. The set is written out rather
-    /// than derived because there is no iterator over the variants; a kind added
-    /// without a line here is a kind this test does not defend.
+    /// on the wire and identical in the identity.
     #[test]
     fn every_kind_has_a_distinct_wire_spelling() {
-        let all = [
-            EffectKind::EnsureBranchPublished,
-            EffectKind::EnsurePullRequest,
-            EffectKind::EnsureCheckRequested,
-            EffectKind::PublishDecisionRequest,
-            EffectKind::EnsurePullRequestReady,
-        ];
         let mut seen = std::collections::BTreeSet::new();
-        for kind in all {
+        for kind in EffectKind::ALL {
             assert!(
                 seen.insert(kind.as_str()),
                 "{} is spelled twice",
                 kind.as_str()
             );
         }
-        assert_eq!(seen.len(), 5);
+        assert_eq!(seen.len(), EffectKind::ALL.len());
+    }
+
+    /// [`EffectKind::ALL`] is the chain, walked — so it holds every kind once,
+    /// in declaration order, and holds no duplicate.
+    ///
+    /// The duplicate half is the one worth stating. `chain` seeds the array with
+    /// [`EffectKind::FIRST`] and overwrites from index one, so a chain that ran
+    /// out early would leave a repeat of the first kind sitting in the tail; the
+    /// const assertion refuses that at build time and this is its runtime
+    /// witness. Without it, every lane that iterates `ALL` would be silently
+    /// testing one kind twice and another not at all.
+    #[test]
+    fn all_holds_every_kind_once_in_declaration_order() {
+        assert_eq!(EffectKind::ALL[0], EffectKind::FIRST);
+        assert_eq!(EffectKind::ALL.last().unwrap().next(), None);
+
+        let mut seen = std::collections::BTreeSet::new();
+        for kind in EffectKind::ALL {
+            assert!(
+                seen.insert(kind.as_str()),
+                "{} appears twice",
+                kind.as_str()
+            );
+        }
+        assert_eq!(seen.len(), KINDS);
+
+        // Adjacent entries really are successors, which is what makes the array
+        // the chain rather than a list that happens to be the same length.
+        for pair in EffectKind::ALL.windows(2) {
+            assert_eq!(pair[0].next(), Some(pair[1]));
+        }
+    }
+
+    /// The new kind is on the wire under the spelling the plan names, and the
+    /// spelling is pinned rather than derived from the variant's name — serde's
+    /// `rename_all` and [`EffectKind::as_str`] are two mechanisms that could
+    /// agree with each other while both drifting from what an earlier build
+    /// wrote into a record.
+    #[test]
+    fn the_body_kind_is_spelled_ensure_pull_request_body() {
+        assert_eq!(
+            EffectKind::EnsurePullRequestBody.as_str(),
+            "ensure_pull_request_body"
+        );
+        assert!(EffectKind::ALL.contains(&EffectKind::EnsurePullRequestBody));
+    }
+
+    /// A digest folded into a target has to be a digest: bounded, moving with
+    /// its content, and never the content itself.
+    ///
+    /// The last of the three is the one an implementation could lose by
+    /// accident. `format!("{repo}#{pr}@{body}")` also gives two bodies two
+    /// targets, so "the target moved" alone does not distinguish a digest from
+    /// the prose spliced in whole — and the prose in an identity string is both
+    /// unbounded and a copy of something already recorded in the payload.
+    #[test]
+    fn a_content_digest_is_bounded_and_moves_with_its_content() {
+        let short = content_digest("covers 1 CVE");
+        let long = content_digest(&"covers 3 CVEs. ".repeat(500));
+
+        assert_eq!(short.len(), 16);
+        assert_eq!(long.len(), short.len(), "a digest does not grow with input");
+        assert!(short.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(
+            !short.contains("covers"),
+            "the content is not in the digest"
+        );
+
+        assert_ne!(short, content_digest("covers 3 CVEs"));
+        assert_eq!(
+            short,
+            content_digest("covers 1 CVE"),
+            "and it is recomputable, which is what a later process depends on"
+        );
+    }
+
+    /// Every 16-hex value in this module is the same width, pinned against an
+    /// independently computed digest rather than against each other.
+    ///
+    /// ```text
+    /// printf '{"title":"a"}' | b3sum
+    /// ```
+    ///
+    /// The width is a contract: the marker's parser checks each field against a
+    /// fixed length, so a [`content_digest`] that drifted would put a target
+    /// into an identity a later build could no longer read back. Pinning it to
+    /// the published digest is what makes that checkable — comparing it to
+    /// [`payload_hash`] would only prove the two moved together.
+    #[test]
+    fn a_content_digest_is_pinned_to_the_same_published_width() {
+        assert_eq!(content_digest(r#"{"title":"a"}"#), "7950cf4c9a0b76f2");
     }
 
     /// The kind is one of the four framed inputs, so two kinds against the same

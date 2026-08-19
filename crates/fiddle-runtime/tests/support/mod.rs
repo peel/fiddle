@@ -10,12 +10,43 @@
 //! [`IntegrationOperation`] never touches its [`EffectContext`], which is what
 //! lets the protocol be decided by the executor rather than by whatever a
 //! network happened to do that afternoon.
+//!
+//! # A second family of worlds, and how to extend it
+//!
+//! [`cve`] holds the trees, scanner documents and histories the CVE lanes are
+//! written against. It is a separate file rather than more of this one because
+//! the two families share nothing: this one is a scripted *world behaviour* with
+//! no filesystem, and that one is real files on disk with no protocol.
+//!
+//! Both are here rather than beside the suites that use them, and that is the
+//! extension convention the milestone's later tasks follow: **a task that
+//! introduces a type adds the helpers built on it to this module rather than
+//! defining them locally.** Two lanes that each build a fixture called something
+//! slightly different are two worlds a reader has to compare by hand, and the
+//! first extraction in this file happened because a copied fixture had already
+//! drifted. What that means concretely for the tasks still to come is written
+//! down in [`cve`]'s own doc comment.
+//!
+//! `tests/support/support.rs` is the target that tests this module about itself,
+//! and its doc comment says why the tests are not in the files they are about.
 
 // This module is compiled once per test binary and no single suite needs every
 // helper — the pull-request suite drives real operations and reaches only
 // `Deployment` and the constants, which does not make the scripted operation
 // beside them dead code.
 #![allow(dead_code)]
+
+pub mod cve;
+
+/// Re-exported at the root because that is where the scanner suites name it:
+/// `support::wiz_stub(arm)`. The worlds are reached as `support::cve::*`, since a
+/// suite that wants a Go tree wants the whole family and a suite that wants the
+/// stub's location wants one function.
+///
+/// Allowed unused for the reason the `dead_code` allow above is: this module is
+/// compiled once per suite, and the suite that calls this one is Task 4's.
+#[allow(unused_imports)]
+pub use cve::wiz_stub;
 
 use async_trait::async_trait;
 use fiddle_core::{

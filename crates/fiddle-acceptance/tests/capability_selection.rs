@@ -803,3 +803,287 @@ fn interrupt(pid: u32) {
         .unwrap();
     assert!(status.success(), "could not interrupt process {pid}");
 }
+
+// ===========================================================================
+// The document that enumerates the registry, checked against the registry
+// ===========================================================================
+
+/// The count words this lane can read, in the range a capability registry
+/// plausibly occupies.
+///
+/// Prose spells small numbers as words, so a census that agrees with the binary
+/// on the *ids* and disagrees on the *number* is a document that reads as wrong
+/// to a person and passes any check written over ids alone. Two milestones' worth
+/// of drift is what earned this: `SYSTEM.md` said "Three capabilities are
+/// registered" while the binary advertised five, and it had already been wrong at
+/// four.
+const COUNT_WORDS: [&str; 9] = [
+    "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
+];
+
+/// The ids this build advertises, read out of the binary's own diagnostic.
+///
+/// Black-box for this package's reason — nothing here links `fiddle-runtime`, so
+/// `CAPABILITIES` is unreachable as a value — and the diagnostic is the right
+/// source rather than a convenient one: it is the list `--capability` validates
+/// against, so a document that agrees with it agrees with what an operator can
+/// actually ask for.
+///
+/// The list is split on commas *and* on whitespace, rather than on `", "`, because
+/// the diagnostic is rendered by a handler that wraps at a fixed width: a sixth
+/// capability would push the help line past it, and a parser that could not
+/// survive the wrap would red on the very change it exists to catch.
+fn advertised_capabilities() -> Vec<String> {
+    let scenario = Scenario::new();
+    let out = scenario.run_raw_with(&["--capability", "not-a-capability"], INVOCATION_REF);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an unknown id is invalid input; stderr = {stderr}"
+    );
+    let (_, listed) = stderr.split_once("can execute:").unwrap_or_else(|| {
+        panic!("the diagnostic must list what this build can execute: {stderr}")
+    });
+    let ids: Vec<String> = listed
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|token| {
+            !token.is_empty()
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
+        .map(str::to_string)
+        .collect();
+    // Non-vacuity, and it is the whole reason this helper can be trusted: a
+    // parse that quietly found nothing would make every assertion below hold
+    // over an empty set.
+    assert!(
+        ids.contains(&"stub_mark".to_string()) && ids.len() >= 2,
+        "the parsed list must be the list the binary printed, got {ids:?} from {stderr}"
+    );
+    ids
+}
+
+/// **The system document's capability census is checked against the binary.**
+///
+/// `docs/technical/SYSTEM.md` enumerates the registry `--capability` validates
+/// against, and it drifted across two milestones — first missing `propose_change`,
+/// then `cve_mitigate` as well — because nothing compared the two. A reviewer
+/// found it twice. This is what makes the third time a red lane instead.
+///
+/// Both halves are asserted, and the second is the one that drifted: every id the
+/// binary advertises has to be named, *and* the number the prose states has to be
+/// the number there are. A census naming five ids and opening with "Three" is
+/// wrong to every reader who counts.
+#[test]
+fn the_system_document_names_every_capability_this_build_registers() {
+    let ids = advertised_capabilities();
+    let document = std::fs::read_to_string(support::repo_root().join("docs/technical/SYSTEM.md"))
+        .expect("the system document is part of the repository");
+    let census = document
+        .lines()
+        .find(|line| line.contains("capabilities are registered"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the system document must carry a capability census for this lane \
+                 to check; nothing in it says `capabilities are registered`"
+            )
+        });
+
+    for id in &ids {
+        assert!(
+            census.contains(id),
+            "`{id}` is advertised by the binary and missing from the census in \
+             docs/technical/SYSTEM.md: {census}"
+        );
+    }
+
+    let expected = COUNT_WORDS
+        .get(ids.len() - 2)
+        .unwrap_or_else(|| panic!("{} capabilities is outside COUNT_WORDS", ids.len()));
+    // The word is required in front of the claim rather than anywhere in the
+    // paragraph, which is what makes this an assertion about the census and not
+    // about the prose around it: a sentence that recounts the history of this
+    // number is free to mention every other one.
+    assert!(
+        census.contains(&format!("{expected} capabilities are registered")),
+        "the census must state the number of capabilities there are — {} — as \
+         `{expected} capabilities are registered`: {census}",
+        ids.len()
+    );
+}
+
+// ===========================================================================
+// A credential is described by the thing that needs it
+// ===========================================================================
+
+/// The forge credential the mitigating document names.
+const FORGE_TOKEN: &str = "FIDDLE_GITHUB_TOKEN";
+
+/// The scanner tenant's two, named and never valued.
+const SCANNER_ID: &str = "WIZ_CLIENT_ID";
+const SCANNER_SECRET: &str = "WIZ_CLIENT_SECRET";
+
+/// The five tables a mitigating capability needs, and no sixth.
+///
+/// Not [`agentic_tables`] with two more: that one names `[workspace] check`, and a
+/// document naming both `check` and `[[workspace.checks]]` is refused rather than
+/// resolved by precedence — so a mitigating document has to declare the list.
+///
+/// Every program named here is only ever *constructed*, never spawned: this
+/// scenario stops at a credential, which is resolved before the scanner, the forge
+/// client or the model endpoint is reached for. `config_dir` is inside the
+/// scenario because it is created eagerly, and a defaulted one is relative — it
+/// would appear in the repository this suite runs from.
+fn mitigating_tables(scenario: &Scenario) -> String {
+    let fixture = scenario.write_fixture_repo();
+    format!(
+        "[agent]\n\
+         model = \"a-model\"\n\
+         base_url = \"{UNREACHABLE_GATEWAY}\"\n\
+         api_key = {{ env = \"{CREDENTIAL}\" }}\n\
+         max_turns = 1\n\
+         max_tokens = 64\n\
+         deadline = \"30s\"\n\
+         tool_timeout = \"30s\"\n\
+         \n\
+         [github]\n\
+         repo = \"acme/icecube\"\n\
+         base = \"main\"\n\
+         token = {{ env = \"{FORGE_TOKEN}\" }}\n\
+         config_dir = {config_dir}\n\
+         timeout = \"30s\"\n\
+         \n\
+         [scanner]\n\
+         cli = {{ program = \"wizcli\", args = [\"scan\"] }}\n\
+         client_id = {{ env = \"{SCANNER_ID}\" }}\n\
+         client_secret = {{ env = \"{SCANNER_SECRET}\" }}\n\
+         timeout = \"30s\"\n\
+         \n\
+         [orchestration.cve]\n\
+         image = \"ghcr.io/acme/icecube:latest\"\n\
+         go = {{ program = \"go\", args = [] }}\n\
+         \n\
+         [workspace]\n\
+         root = {root}\n\
+         fixture = {fixture}\n\
+         command_timeout = \"30s\"\n\
+         \n\
+         [[workspace.checks]]\n\
+         program = \"true\"\n\
+         args = []\n\
+         success = \"exit-zero\"\n",
+        config_dir = support::toml_string(&scenario.dir().join("gh-config")),
+        root = support::toml_string(&scenario.dir().join("workspaces")),
+        fixture = support::toml_string(&fixture),
+    )
+}
+
+/// A scenario whose document describes a deployment that scans.
+fn mitigating() -> Scenario {
+    let scenario = Scenario::new();
+    let tables = mitigating_tables(&scenario);
+    scenario.append_config(&tables);
+    scenario
+}
+
+/// **A missing scanner credential names the scanner.**
+///
+/// One error type reports every absent credential, and it hardcoded the noun:
+/// `the model credential WIZ_CLIENT_ID is not set`, with help about *a capability
+/// that needs a model*. So an operator whose `[scanner]` tenant was not exported
+/// was sent to `[agent]` — a table that is present, correct, and has nothing to do
+/// with what failed.
+///
+/// Asserted from outside the process, because what is under test is the text a
+/// person reads. Three things: the variable, so they know what to export; the
+/// table, so they know where it is named; and the *absence* of the other thing's
+/// noun, which is the half that was wrong and the half an assertion on the
+/// variable alone would have passed straight through.
+#[test]
+fn an_absent_scanner_credential_names_the_scanner_and_not_the_model() {
+    let s = mitigating();
+
+    let out = s
+        .run_command("cve")
+        .args(["--capability", "cve_mitigate", "--json"])
+        .env(CREDENTIAL, SENTINEL)
+        .env(FORGE_TOKEN, SENTINEL)
+        .env(SCANNER_SECRET, SENTINEL)
+        .env_remove(SCANNER_ID)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an absent credential is invalid configuration; stdout = {}, stderr = {stderr}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // The run has to have got as far as the credential for the rest to mean
+    // anything: a document refused by table would satisfy every assertion below
+    // about what the text does *not* say.
+    assert!(
+        stderr.contains(SCANNER_ID),
+        "the refusal must be the credential's, and must name the variable to \
+         export: {stderr}"
+    );
+    assert!(
+        stderr.contains("scanner credential"),
+        "the credential belongs to the scanner and must be described as the \
+         scanner's: {stderr}"
+    );
+    assert!(
+        stderr.contains("[scanner]"),
+        "and the operator must be sent to the table that names it: {stderr}"
+    );
+    assert!(
+        !stderr.contains("model"),
+        "a scanner credential borrowing the model's noun sends an operator to \
+         `[agent]`, which is not where this is written: {stderr}"
+    );
+    assert!(
+        !stderr.contains(SENTINEL),
+        "no credential value may be rendered: {stderr}"
+    );
+}
+
+/// The same rule for the forge, which borrowed the same noun and was reproduced
+/// nowhere because every lane that reached it asserted only the variable.
+///
+/// Kept beside the one above rather than folded into it: they are two arms of
+/// `build_capability` and two resolution sites, and a single scenario that
+/// happened to exercise one would say nothing about the other.
+#[test]
+fn an_absent_forge_credential_names_the_forge_and_not_the_model() {
+    let s = mitigating();
+
+    let out = s
+        .run_command("cve")
+        .args(["--capability", "cve_mitigate", "--json"])
+        .env(CREDENTIAL, SENTINEL)
+        .env(SCANNER_ID, SENTINEL)
+        .env(SCANNER_SECRET, SENTINEL)
+        .env_remove(FORGE_TOKEN)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(2), "stderr = {stderr}");
+    assert!(
+        stderr.contains(FORGE_TOKEN),
+        "the refusal must name the variable to export: {stderr}"
+    );
+    assert!(
+        stderr.contains("forge credential") && stderr.contains("[github]"),
+        "a forge credential is the forge's, and `[github]` is where it is \
+         named: {stderr}"
+    );
+    assert!(
+        !stderr.contains("model"),
+        "the forge credential must not be described as the model's: {stderr}"
+    );
+}

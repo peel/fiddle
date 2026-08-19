@@ -54,7 +54,26 @@
 //! this runs on. Slicing bytes cannot panic, and the one place where a path must
 //! become text is a checked decode that fails loudly.
 
+//! # Which paths changed, and what changed in them
+//!
+//! [`Workspace::changed_files`] answers the first and is the whole of what M1
+//! ever needed: a cap on how much an attempt may touch is a question about a
+//! count. [`Workspace::edits`] answers the second, because M4's scope rules are
+//! not about paths — *an added `t.Skip`*, *a changed test assertion*, *a
+//! `replace` directive*, *new control flow* are all questions about the bytes
+//! inside a file, and a list of names cannot be asked any of them.
+//!
+//! It is deliberately **not** a parsed `git diff`. A unified diff is a rendering
+//! with two properties that make it the wrong instrument here: a content line
+//! beginning `+++ ` is indistinguishable from a file header unless the hunk
+//! counts are tracked, and every consumer of it has to re-derive *what the file
+//! says now* from *what changed*. Both sides of each file are what the scope
+//! rules actually want — three of the four shapes are "there is more of this
+//! than there was" — so both sides are what this returns, and the reader does
+//! the subtraction it needs.
+
 use super::{WorkspaceError, WorkspacePath};
+use std::collections::HashMap;
 
 /// The status invocation, pinned to the format this parser was written against.
 ///
@@ -70,6 +89,130 @@ const PREFIX: usize = 3;
 /// A v1 status field meaning "git has never heard of this path".
 const UNTRACKED: &[u8] = b"??";
 
+/// Every path the attempt's starting commit held, by name.
+///
+/// Asked once per [`Workspace::edits`] rather than per path, and asked at all
+/// because *is there a `HEAD` version of this file* has to be answered before
+/// `git show HEAD:<path>` is run: that command fails for a path the commit does
+/// not carry, and reading its failure as "the attempt created this" would turn
+/// every genuine git error into a phantom creation.
+const COMMITTED: &[&str] = &["ls-tree", "-r", "--name-only", "-z", "HEAD"];
+
+/// What a file held on one side of an attempt.
+///
+/// Three states rather than `Option<String>`, because *not there* and *there and
+/// unreadable as text* are different facts and a caller that conflated them
+/// would read an undecodable file as one the attempt deleted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Content {
+    /// The file was not in the tree on this side: created by the attempt, or
+    /// deleted by it.
+    Absent,
+
+    /// The file's contents.
+    Text(String),
+
+    /// The file is there and its bytes are not valid UTF-8.
+    ///
+    /// Refused rather than decoded lossily, for [`decode`]'s reason: a `String`
+    /// containing U+FFFD is a document that reads cleanly and says something
+    /// other than what is on disk, and a rule applied to it would be
+    /// confidently wrong. What a caller does about it is the caller's — see
+    /// [`FileEdit::unreadable`].
+    Opaque,
+}
+
+impl Content {
+    /// What `bytes` are, as one of the three states.
+    fn of(bytes: Vec<u8>) -> Content {
+        match String::from_utf8(bytes) {
+            Ok(text) => Content::Text(text),
+            Err(_) => Content::Opaque,
+        }
+    }
+
+    /// The text, or the empty string for the two states that have none.
+    ///
+    /// The collapse is safe *here* and only here: every caller of this is a line
+    /// comparison, and both non-text states contribute no lines to one. A caller
+    /// that needs to tell the states apart matches the enum.
+    fn text(&self) -> &str {
+        match self {
+            Content::Text(text) => text,
+            Content::Absent | Content::Opaque => "",
+        }
+    }
+}
+
+/// One changed path, and what it held on each side of the attempt.
+///
+/// Both sides rather than a diff — see this module's header. The line-level
+/// questions a caller usually wants are [`FileEdit::added`] and
+/// [`FileEdit::removed`], derived here so that two callers cannot end up with
+/// two spellings of *a line appeared*.
+#[derive(Clone, Debug)]
+pub struct FileEdit {
+    /// The path, exactly as [`Workspace::changed_files`] reported it.
+    pub path: WorkspacePath,
+
+    /// What the attempt's starting commit held there.
+    pub before: Content,
+
+    /// What is there now.
+    pub after: Content,
+}
+
+impl FileEdit {
+    /// Lines that are in the file now and were not before.
+    ///
+    /// A **multiset** difference over whole lines, not a longest-common-
+    /// subsequence diff. That is a real difference and it is the one worth
+    /// having: a line moved from one function to another is in both sides, so it
+    /// is neither added nor removed — which is the right answer for every
+    /// question the scope rules ask, and the answer an LCS diff gives only by
+    /// accident of its heuristics.
+    pub fn added(&self) -> Vec<&str> {
+        only_in(self.after.text(), self.before.text())
+    }
+
+    /// Lines that were in the file and are not now. See [`FileEdit::added`].
+    ///
+    /// A *changed* line arrives here and in `added` both, which is why a rule
+    /// about "changed or removed" needs only this half.
+    pub fn removed(&self) -> Vec<&str> {
+        only_in(self.before.text(), self.after.text())
+    }
+
+    /// Whether either side of this edit is bytes this build cannot read as text.
+    ///
+    /// Exposed rather than swallowed: a caller applying an *allowlist* — as
+    /// M4's scope rules are — cannot show that an edit it could not read is in
+    /// scope, and needs to be able to say so.
+    pub fn unreadable(&self) -> bool {
+        matches!(self.before, Content::Opaque) || matches!(self.after, Content::Opaque)
+    }
+}
+
+/// Lines of `text` that `other` does not also have, counting repeats.
+///
+/// The counting is what makes it a multiset difference rather than a set one: a
+/// file that gained a second `\t}` should report one added line, not none.
+fn only_in<'a>(text: &'a str, other: &str) -> Vec<&'a str> {
+    let mut available: HashMap<&str, usize> = HashMap::new();
+    for line in other.lines() {
+        *available.entry(line).or_default() += 1;
+    }
+    text.lines()
+        .filter(|line| match available.get_mut(line) {
+            Some(count) if *count > 0 => {
+                *count -= 1;
+                false
+            }
+            _ => true,
+        })
+        .collect()
+}
+
 impl super::Workspace {
     /// The paths git reports as changed — the authoritative record of what this
     /// attempt did to the repository.
@@ -83,6 +226,65 @@ impl super::Workspace {
         paths.sort();
         paths.dedup();
         Ok(paths)
+    }
+
+    /// The same paths, each with what it held before the attempt and what it
+    /// holds now.
+    ///
+    /// Built on [`Workspace::changed_files`] rather than beside it, so there is
+    /// one answer to *what did this attempt touch* and the contents are that
+    /// answer's contents. A second derivation would be a second ignore-rule
+    /// decision, and the whole of this module is an argument about which rules
+    /// that question is answered under.
+    ///
+    /// One `git ls-tree` for the whole call and one `git show` per changed path.
+    /// A worktree is dropped when its attempt ends, so this has to be asked
+    /// while the attempt still owns one — see
+    /// [`GroupMigration::migrate`](crate::capability::GroupMigration::migrate).
+    pub fn edits(&self) -> Result<Vec<FileEdit>, WorkspaceError> {
+        let committed = self.committed()?;
+        let mut edits = Vec::new();
+        for path in self.changed_files()? {
+            // Asked of the commit rather than of `git show`'s exit status. See
+            // [`COMMITTED`].
+            let before = if committed.contains(&path) {
+                let spec = format!("HEAD:{}", path.as_str());
+                Content::of(super::git_stdout(self.root(), &["show", &spec])?)
+            } else {
+                Content::Absent
+            };
+            let after = self.working(&path)?;
+            edits.push(FileEdit {
+                path,
+                before,
+                after,
+            });
+        }
+        Ok(edits)
+    }
+
+    /// Every path the attempt's starting commit carries.
+    fn committed(&self) -> Result<Vec<WorkspacePath>, WorkspaceError> {
+        listed(COMMITTED, &super::git_stdout(self.root(), COMMITTED)?)
+    }
+
+    /// What is on disk at `path` now.
+    ///
+    /// `NotFound` is the deletion half of the answer and is the *only* io error
+    /// read as a state rather than reported: a file the attempt removed is a
+    /// changed path with nothing behind it, and every other failure — an
+    /// unreadable directory, a permission — is a question the filesystem
+    /// declined to answer and must not be recorded as an empty file.
+    fn working(&self, path: &WorkspacePath) -> Result<Content, WorkspaceError> {
+        let resolved = self.resolve(path)?;
+        match std::fs::read(&resolved) {
+            Ok(bytes) => Ok(Content::of(bytes)),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Content::Absent),
+            Err(source) => Err(WorkspaceError::Io {
+                path: resolved,
+                source,
+            }),
+        }
     }
 
     /// Every file of the project, as the project itself defines the project.

@@ -766,3 +766,1363 @@ fn config_check_reports_the_gh_program_the_document_pins() {
     );
     assert_eq!(github["timeout"], "90s", "{github}");
 }
+
+// ---------------------------------------------------------------------------
+// The ordered check list, each check carrying its own success criterion.
+//
+// M1 shipped one check and one meaning of success — the process exited zero.
+// M4 runs several in order, and they do not agree on what success is: a build
+// succeeds by exiting zero, a formatter succeeds by exiting zero *and printing
+// nothing*, and a scanner succeeds by *writing its artefact* whatever it exits.
+//
+// The criterion is therefore written in the document, next to the check it
+// judges. The alternative — recognising `go fmt` or `wizcli` by name and
+// applying the meaning that program is known to have — would make an
+// operator's rename a change of meaning, and a wrapper script the same. There
+// is no such recognition anywhere, and the scenarios below are what would
+// notice if one appeared.
+// ---------------------------------------------------------------------------
+
+/// The three checks the milestone was specified against, each declaring a
+/// different criterion, written the way an operator would write them.
+///
+/// Kept as one constant so the scenarios below can *subtract* from a document
+/// that is otherwise known to be accepted, which is how the both-shapes
+/// scenario tells a semantic refusal from a syntactic one.
+const CHECK_LIST: &str = r#"
+[[workspace.checks]]
+program = "go"
+args = ["build", "./..."]
+success = "exit-zero"
+
+[[workspace.checks]]
+program = "go"
+args = ["fmt", "./..."]
+success = "exit-zero-and-no-output"
+
+[[workspace.checks]]
+program = "wizcli"
+args = ["scan"]
+success = "artefact-written"
+"#;
+
+/// The list loads, keeps the order it was written in, and each entry reports
+/// back the criterion *it* declared rather than one derived from anything.
+#[test]
+fn config_check_reports_each_check_with_the_criterion_it_declared() {
+    let checks = checked(&format!("{AGENTIC}{CHECK_LIST}"))["workspace"]["checks"].clone();
+    assert_eq!(
+        checks,
+        serde_json::json!([
+            { "program": "go", "args": ["build", "./..."], "success": "exit-zero" },
+            { "program": "go", "args": ["fmt", "./..."], "success": "exit-zero-and-no-output" },
+            { "program": "wizcli", "args": ["scan"], "success": "artefact-written" },
+        ]),
+        "the list is ordered and each criterion is the declared one: {checks}"
+    );
+}
+
+/// And the plain rendering says it too, since an operator running `config
+/// check` without `--json` is the reader most likely to be confirming that the
+/// scanner is not about to be judged by an exit status.
+#[test]
+fn the_plain_rendering_discloses_each_check_and_its_criterion() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fiddle.toml");
+    std::fs::write(&path, format!("{AGENTIC}{CHECK_LIST}")).unwrap();
+    let out = support::fiddle_command()
+        .args(["config", "check", "--config", path.to_str().unwrap()])
+        .env_remove(CREDENTIAL)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        stdout.contains("workspace.checks[0] = \"go\" \"build\" \"./...\" (success: exit-zero)"),
+        "each check is rendered with the criterion it declared: {stdout}"
+    );
+    assert!(
+        stdout.contains("workspace.checks[2] = \"wizcli\" \"scan\" (success: artefact-written)"),
+        "including the one whose success is not its exit status: {stdout}"
+    );
+    // The index is in the line because the order is a fact about the list, and
+    // an operator confirming a document is confirming that too.
+    assert!(
+        stdout.find("workspace.checks[0]").unwrap() < stdout.find("workspace.checks[2]").unwrap(),
+        "{stdout}"
+    );
+}
+
+/// **The criterion comes from the document, never from the program's name.**
+///
+/// Two checks running the *same* command, differing only in what they declare
+/// success to be, and the payload keeps them apart. Nothing that inferred a
+/// meaning from `go fmt` could produce two different answers for one command,
+/// so this is the scenario that would fail the day somebody adds a lookup
+/// table keyed on a program name.
+#[test]
+fn one_command_declared_two_ways_keeps_two_meanings() {
+    let document = format!(
+        "{AGENTIC}\n\
+         [[workspace.checks]]\nprogram = \"go\"\nargs = [\"fmt\", \"./...\"]\n\
+         success = \"exit-zero\"\n\n\
+         [[workspace.checks]]\nprogram = \"go\"\nargs = [\"fmt\", \"./...\"]\n\
+         success = \"exit-zero-and-no-output\"\n"
+    );
+    let checks = checked(&document)["workspace"]["checks"].clone();
+    assert_eq!(checks[0]["success"], "exit-zero", "{checks}");
+    assert_eq!(checks[1]["success"], "exit-zero-and-no-output", "{checks}");
+}
+
+/// A check that declares nothing is refused, *including* one whose program a
+/// reader would happily guess the meaning of. `go fmt` is the most guessable
+/// command in the list and it still has to say what it means.
+#[test]
+fn config_check_refuses_a_check_that_declares_no_criterion() {
+    let out = check(&format!(
+        "{AGENTIC}\n[[workspace.checks]]\nprogram = \"go\"\nargs = [\"fmt\", \"./...\"]\n"
+    ));
+    assert_eq!(out.status.code(), Some(2), "a criterion is not optional");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("success"),
+        "the diagnostic must name the missing key, got: {stderr}"
+    );
+}
+
+/// The set is closed, so a criterion nobody implemented is refused at its line
+/// rather than accepted and then never honoured.
+#[test]
+fn config_check_refuses_a_criterion_outside_the_closed_set() {
+    let out = check(&format!(
+        "{AGENTIC}\n[[workspace.checks]]\nprogram = \"go\"\nsuccess = \"no-output\"\n"
+    ));
+    assert_eq!(out.status.code(), Some(2), "the set of criteria is closed");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("no-output") && stderr.contains("exit-zero-and-no-output"),
+        "the diagnostic must name what was written and what was available, \
+         got: {stderr}"
+    );
+}
+
+/// The singular `check` M1 shipped still loads on its own, unchanged.
+#[test]
+fn config_check_still_accepts_the_singular_check_on_its_own() {
+    let workspace = checked(&format!(
+        "{AGENTIC}check = {{ program = \"cargo\", args = [\"test\"] }}\n"
+    ))["workspace"]
+        .clone();
+    assert_eq!(workspace["check"]["program"], "cargo", "{workspace}");
+    assert_eq!(workspace["checks"], serde_json::json!([]), "{workspace}");
+}
+
+/// **A contradiction is refused, never ranked.**
+///
+/// A document naming both shapes has said two things about what judges a
+/// repair, and there is no reading of it that is what the operator meant:
+/// running the singular one, running the list, or running both are three
+/// different milestones. So it is refused, and the operator picks.
+///
+/// The hard part of this scenario is not the refusal, it is proving *why* it
+/// refused. A malformed document also exits 2, and a test that could not tell
+/// the two apart would pass just as happily against a schema that resolved the
+/// contradiction by precedence and a document with a typo in it. So the same
+/// bytes are run three ways: with the singular line removed, with the list
+/// removed, and whole. The first two are accepted, which is what establishes
+/// that every byte in the third parses — leaving *naming both* as the only
+/// thing that can have caused the refusal.
+#[test]
+fn config_check_refuses_a_document_naming_both_check_shapes() {
+    const SINGULAR: &str = "check = { program = \"cargo\", args = [\"test\"] }\n";
+    let both = format!("{AGENTIC}{SINGULAR}{CHECK_LIST}");
+
+    // Half one, alone: accepted.
+    assert_eq!(
+        check(&both.replace(SINGULAR, "")).status.code(),
+        Some(0),
+        "the list alone is a document this schema accepts"
+    );
+    // Half two, alone: accepted. Between them these two runs cover every byte
+    // of `both`, so nothing in it is a syntax error.
+    assert_eq!(
+        check(&both.replace(CHECK_LIST, "")).status.code(),
+        Some(0),
+        "the singular check alone is a document this schema accepts"
+    );
+
+    // Together: refused, and the refusal is the semantic one.
+    let out = check(&both);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("check") && stderr.contains("checks"),
+        "the diagnostic must name both shapes so the operator knows which two \
+         lines are in conflict, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("expected") || stderr.contains("checks"),
+        "a bare TOML syntax complaint would mean this scenario proved nothing, \
+         got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The two tables M4 adds (Task 20.a)
+// ---------------------------------------------------------------------------
+
+/// The scanner and the sweep, written the way an operator would write them.
+const SWEEP: &str = r#"
+[scanner]
+cli = { program = "wizcli", args = ["scan"] }
+client_id = { env = "WIZ_CLIENT_ID" }
+client_secret = { env = "WIZ_CLIENT_SECRET" }
+timeout = "20m"
+
+[orchestration.cve]
+image = "ghcr.io/acme/icecube:latest"
+max_findings = 3
+go = { program = "go", args = [] }
+"#;
+
+/// **Both preferences the PRD documents are preferences the document can set.**
+///
+/// `[orchestration.cve] max_findings` was in the product document's
+/// configuration example and in no reader for the whole of M4a, so the number a
+/// deployment believed it had set was a constant in the runtime — the same
+/// number, which is exactly why nobody noticed. This is what makes the two
+/// distinguishable: the document says `3`, and `3` is what comes back.
+///
+/// `severities` is the other key of that same two-key example, and it survived a
+/// pass longer: the table above omits it, so what is asserted here is the
+/// **default** — the set a document that says nothing about grades still means,
+/// and the set this build acted on for the whole of M4a. The lane that varies it
+/// is [`the_grades_a_sweep_acts_on_are_the_grades_the_document_named`].
+///
+/// The image is asserted beside them and is not decoration: it is the one key in
+/// this table with no default, because a guessed image would scan whichever tag
+/// this build shipped with.
+#[test]
+fn the_sweep_table_loads_and_reports_the_bound_the_document_set() {
+    let cve = checked(&format!("{AGENTIC}{SWEEP}"))["orchestration"]["cve"].clone();
+    assert_eq!(
+        cve,
+        serde_json::json!({
+            "image": "ghcr.io/acme/icecube:latest",
+            "severities": ["CRITICAL", "HIGH"],
+            "max_findings": 3,
+            "go": { "program": "go", "args": [] },
+        }),
+        "a bound nothing reports back is a bound an operator cannot confirm: {cve}"
+    );
+}
+
+/// **The `[orchestration.cve]` table in the product manual is a table this
+/// binary accepts — read out of the manual, not transcribed from it.**
+///
+/// The transcription is what failed. `severities = ["HIGH", "CRITICAL"]` sat in
+/// the PRD's configuration example while `OrchestrationCve` — `deny_unknown_fields`
+/// — admitted three other names, so a deployment that copied the manual exited 2
+/// with `unknown field \`severities\``. The table beside this one is *written the
+/// way an operator would write them*, which is exactly why it could not catch
+/// that: it is this suite's idea of the table, and the divergence was between the
+/// manual and the schema.
+///
+/// So this lane parses `docs/fiddle-agentic-factory-prd.md` and feeds the binary
+/// the manual's own bytes. Either document may now move and the other has to
+/// follow: a key added to the manual that the schema refuses reds here, and so
+/// does a key the schema stops admitting.
+///
+/// **The extraction is asserted before it is used.** A helper that silently found
+/// nothing would make this lane a `config check` over `AGENTIC` alone — green,
+/// and evidence for nothing — so the table is required to carry both keys the
+/// manual's example documents before a byte of it is handed over.
+#[test]
+fn the_sweep_table_the_product_manual_documents_is_one_the_schema_accepts() {
+    let documented = documented_sweep_table();
+    for key in ["severities", "max_findings", "image"] {
+        assert!(
+            documented.contains(key),
+            "the manual's `[orchestration.cve]` example must name {key}, or this \
+             lane is checking a document the manual does not contain: {documented}"
+        );
+    }
+    let out = check(&format!(
+        "{AGENTIC}[scanner]\n\
+         cli = {{ program = \"wizcli\", args = [\"scan\"] }}\n\
+         client_id = {{ env = \"WIZ_CLIENT_ID\" }}\n\
+         client_secret = {{ env = \"WIZ_CLIENT_SECRET\" }}\n\
+         timeout = \"20m\"\n\
+         \n{documented}"
+    ));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the manual's own sweep table was refused, so a deployment that copies \
+         the manual cannot start. stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The `[orchestration.cve]` table of the manual's reference configuration,
+/// verbatim.
+///
+/// Read from the product document rather than held as a constant here, because a
+/// constant is a transcription and a transcription is the thing that drifted. The
+/// table runs from its own header to the next TOML header or the end of the
+/// block, which is what a TOML table is; the comment lines inside it come along,
+/// and they are part of what an operator would copy.
+///
+/// **Which block it comes out of is now said rather than assumed.** When this was
+/// written the manual carried one TOML fence, so scanning the whole file for the
+/// header could only find that one. The manual now carries two — the reference
+/// configuration, which is a boundary map across the whole of V1 and deliberately
+/// does not load, and the shorter document beside it, which does — and both
+/// declare an `[orchestration.cve]` table. A file-wide scan would take whichever
+/// came first, which is a lane whose subject depends on document order, so this
+/// asks [`reference_configuration`] for the block it means.
+fn documented_sweep_table() -> String {
+    documented_table(&reference_configuration(), "[orchestration.cve]")
+}
+
+/// **The grades a sweep acts on are the grades the document named.**
+///
+/// The property `max_findings` has, for the key beside it, and it is asked the
+/// only way that distinguishes a wired key from an ignored one: this document
+/// names a set the build does **not** default to. `MEDIUM` is in it and
+/// `["CRITICAL", "HIGH"]` is what an omitting document means, so an
+/// implementation that read the key and threw it away comes back with two grades
+/// where this asserts three.
+///
+/// Reported ranked rather than as written. The value is a *set* — two documents
+/// spelling the same grades in different orders describe one deployment — and
+/// worst-first is the one spelling both of them share, so an operator comparing
+/// two accepted documents is comparing their meaning rather than their typing.
+#[test]
+fn the_grades_a_sweep_acts_on_are_the_grades_the_document_named() {
+    let document = format!(
+        "{AGENTIC}{}",
+        SWEEP.replace(
+            "max_findings = 3",
+            "severities = [\"HIGH\", \"MEDIUM\", \"CRITICAL\"]\nmax_findings = 3",
+        )
+    );
+    let cve = checked(&document)["orchestration"]["cve"].clone();
+    assert_eq!(
+        cve["severities"],
+        serde_json::json!(["CRITICAL", "HIGH", "MEDIUM"]),
+        "a grade set nothing reports back is one an operator cannot confirm: {cve}"
+    );
+}
+
+/// **A sweep that names no grade at all is refused rather than quietly run.**
+///
+/// `severities = []` parses as a TOML array and would leave the severity arm
+/// selecting nothing, so the run would act only on findings carrying a public
+/// exploit *and* a published fix — a sweep almost nothing reaches, presenting to
+/// an operator as *the scanner found nothing*. That is the failure this whole
+/// table's `deny_unknown_fields` exists to prevent one spelling of, and an empty
+/// list is the other spelling.
+///
+/// The diagnostic has to name the key, and it must **not** be the diagnostic
+/// this document used to get. `severities = []` was refused before this key
+/// existed too — as an unknown field — so a lane asserting only *exit 2, and the
+/// word `severities` appears* is satisfied by a build that never wired the key at
+/// all. The second assertion is what makes this one about the empty list.
+#[test]
+fn a_sweep_that_names_no_grade_is_refused() {
+    let out = check(&format!(
+        "{AGENTIC}{}",
+        SWEEP.replace("max_findings = 3", "severities = []\nmax_findings = 3")
+    ));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("severities"),
+        "the refusal must name the key an operator would fix, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("unknown field"),
+        "an empty list must be refused as an empty list; refusing it as an \
+         unknown key means the key is not wired, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("at least one grade"),
+        "the refusal must say what to write instead, got: {stderr}"
+    );
+}
+
+/// **The scanner's two credentials are echoed by name and never by value.**
+///
+/// The rule every `EnvRef` in this schema is under, and it is sharpest here:
+/// `client_secret` is the value the whole of `fiddle_runtime::scanner`'s
+/// redaction exists for, so a `config check` that printed it would undo that
+/// redaction from the one command an operator runs to confirm a document.
+///
+/// The variables are *exported with a sentinel* before the check runs, which is
+/// what makes the absence mean something: a payload that omits a value nobody
+/// set is not evidence about anything.
+#[test]
+fn the_scanner_table_names_its_credentials_and_prints_neither() {
+    let out = check_with_env(
+        &format!("{AGENTIC}{SWEEP}"),
+        &["--json"],
+        &[
+            ("WIZ_CLIENT_ID", "wiz-client-id-sentinel-9f21"),
+            ("WIZ_CLIENT_SECRET", "wiz-client-secret-sentinel-9f21"),
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        payload["scanner"]["client_id"]["env"], "WIZ_CLIENT_ID",
+        "{payload}"
+    );
+    assert_eq!(
+        payload["scanner"]["client_secret"]["env"], "WIZ_CLIENT_SECRET",
+        "{payload}"
+    );
+    for sentinel in [
+        "wiz-client-id-sentinel-9f21",
+        "wiz-client-secret-sentinel-9f21",
+    ] {
+        assert!(
+            !stdout.contains(sentinel),
+            "a credential reached stdout: {stdout}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&out.stderr).contains(sentinel),
+            "a credential reached a diagnostic"
+        );
+    }
+}
+
+/// A document that omits both tables still loads, and reports neither.
+///
+/// The property every optional table in this schema has, asserted for the two
+/// new ones: "absent is a legal document" and never "absent is filled in
+/// silently". A deployment that never scans has not left these blank — it has
+/// described a deployment that does not scan, and a `config check` inventing an
+/// image for it would be the guess the schema refuses.
+#[test]
+fn a_document_that_never_scans_reports_no_scanner_and_no_sweep() {
+    let payload = checked(AGENTIC);
+    assert!(payload.get("scanner").is_none(), "{payload}");
+    assert!(payload.get("orchestration").is_none(), "{payload}");
+}
+
+/// `fiddle config check` with `env` restored to the child.
+///
+/// The mirror of [`check_with`]'s credential-free default, and the half removal
+/// alone cannot make: removing a variable shows fiddle does not need it, while
+/// supplying one and finding it on no surface shows fiddle does not print it.
+fn check_with_env(text: &str, extra: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fiddle.toml");
+    std::fs::write(&path, text).unwrap();
+    let mut command = support::fiddle_command();
+    command
+        .args(["config", "check", "--config", path.to_str().unwrap()])
+        .args(extra)
+        .env_remove(CREDENTIAL);
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    command.output().unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// What the manual's configuration example *is* (fiddle-hrjg)
+// ---------------------------------------------------------------------------
+
+/// The product manual, read from the repository root.
+///
+/// `cargo test` runs a test binary with the package directory as its working
+/// directory, so the manual is two levels up — the same relative path
+/// [`fixture`] takes.
+fn manual() -> String {
+    std::fs::read_to_string("../../docs/fiddle-agentic-factory-prd.md")
+        .expect("the product manual is two levels up from this package")
+}
+
+/// The sentence introducing the manual's *reference configuration*: the boundary
+/// map across the whole of V1, most of whose tables name milestones that have not
+/// shipped.
+const REFERENCE_INTRO: &str = "fixes the intended boundaries";
+
+/// The heading introducing the document the manual offers as copyable.
+///
+/// The `####` is part of the marker deliberately. The sentence a reader meets
+/// before the boundary map links to this section by name, and a marker that
+/// matched that link text would select the first fence after it — the boundary
+/// map, the one block this lane must never be handed.
+const COPYABLE_INTRO: &str = "#### The configuration this build loads";
+
+/// The claim the manual makes about the reference configuration, in the manual's
+/// own words. Pinned because it is the disposition: a reader who cannot tell a
+/// boundary map from a document finds out from an exit code instead.
+const COMPOSITE_CLAIM: &str = "it is not a document a deployment can load";
+
+/// The manual's reference configuration, verbatim.
+fn reference_configuration() -> String {
+    fenced_toml_after(REFERENCE_INTRO)
+}
+
+/// The document the manual offers as copyable, verbatim.
+fn copyable_configuration() -> String {
+    fenced_toml_after(COPYABLE_INTRO)
+}
+
+/// The body of the fenced TOML block that the line containing `marker`
+/// introduces.
+///
+/// **Which block a lane reads is said rather than assumed.** The manual carries
+/// two TOML fences that mean opposite things — one deliberately does not load,
+/// one must — and both declare an `[orchestration.cve]` table. Selecting by a
+/// marker in the surrounding prose rather than by ordinal means that moving
+/// either block cannot silently point a lane at the other: the panics below fire
+/// instead of a plausible wrong answer coming back.
+fn fenced_toml_after(marker: &str) -> String {
+    let manual = manual();
+    let lines: Vec<&str> = manual.lines().collect();
+    let intro = lines
+        .iter()
+        .position(|line| line.contains(marker))
+        .unwrap_or_else(|| {
+            panic!(
+                "the manual no longer carries the line that introduces this block, \
+                 so this lane cannot say which fence it would be reading: {marker}"
+            )
+        });
+    let open = intro
+        + lines[intro..]
+            .iter()
+            .position(|line| line.trim() == "```toml")
+            .unwrap_or_else(|| panic!("a ```toml fence must follow: {marker}"));
+    let close = open
+        + 1
+        + lines[open + 1..]
+            .iter()
+            .position(|line| line.trim().starts_with("```"))
+            .unwrap_or_else(|| panic!("the fence opened after {marker} is never closed"));
+    lines[open + 1..close].join("\n")
+}
+
+/// The table `line` declares, if it declares one.
+fn table_header(line: &str) -> Option<&str> {
+    let line = line.trim();
+    line.strip_prefix('[')
+        .filter(|rest| !rest.starts_with('['))
+        .and_then(|rest| rest.strip_suffix(']'))
+}
+
+/// Every table `document` declares, in order.
+fn table_headers(document: &str) -> Vec<&str> {
+    document.lines().filter_map(table_header).collect()
+}
+
+/// One TOML table of `document`, verbatim: `header` through the line before the
+/// next header, or the end.
+///
+/// The comment lines inside it come along, because they are part of what an
+/// operator would copy.
+fn documented_table(document: &str, header: &str) -> String {
+    let wanted = header
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .expect("a header is written with its brackets");
+    let mut lines = document
+        .lines()
+        .skip_while(|line| table_header(line) != Some(wanted));
+    let first = lines
+        .next()
+        .unwrap_or_else(|| panic!("the document must declare a {header} table"));
+    let body = lines.take_while(|line| table_header(line).is_none());
+    std::iter::once(first)
+        .chain(body)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `document` without the table `header` names, and without its sub-tables.
+fn without_table(lines: &[String], header: &str) -> Vec<String> {
+    let mut kept = Vec::new();
+    let mut dropping = false;
+    for line in lines {
+        if let Some(declared) = table_header(line) {
+            dropping = declared == header || declared.starts_with(&format!("{header}."));
+        }
+        if !dropping {
+            kept.push(line.clone());
+        }
+    }
+    kept
+}
+
+/// The table line `at` (1-based) sits inside, if any.
+fn enclosing_table(lines: &[String], at: usize) -> Option<&str> {
+    lines[..at].iter().rev().find_map(|line| table_header(line))
+}
+
+/// The name serde quoted after `phrase`, as in ``unknown field `repository` ``.
+fn refused_name(stderr: &str, phrase: &str) -> Option<String> {
+    regex::Regex::new(&format!("{phrase} `([^`]+)`"))
+        .unwrap()
+        .captures(stderr)
+        .map(|found| found[1].to_string())
+}
+
+/// The 1-based line the diagnostic points at.
+fn refused_line(stderr: &str) -> usize {
+    regex::Regex::new(r"fiddle\.toml:(\d+):")
+        .unwrap()
+        .captures(stderr)
+        .unwrap_or_else(|| panic!("every refusal names the line it is about: {stderr}"))[1]
+        .parse()
+        .unwrap()
+}
+
+/// What clearing a document's refusals one at a time cost.
+struct Clearing {
+    /// One entry per refusal, in the order serde reached them.
+    trail: Vec<String>,
+    /// Tables the document declared.
+    declared: usize,
+    /// How many of those were still standing when it finally loaded.
+    survived: usize,
+}
+
+/// Clear `document`'s refusals one at a time, deleting exactly what the binary's
+/// own message points at, until it loads.
+///
+/// **Mechanical rather than a hand-written list of edits, and that is the whole
+/// point.** Strict deserialization reports one unknown or missing field at a
+/// time, so every refusal hides the next and the only honest way to count them
+/// is to clear each and ask again. A hand-written list would also count, but the
+/// number it produced would be a property of the author's choices — dropping a
+/// whole section where the message named one key gives a smaller number for the
+/// same document. The rule here has no choices in it: an unknown field whose line
+/// is a table header costs that table and its sub-tables, any other unknown field
+/// costs its own line, and a required table the manual never shows is supplied
+/// from the document the manual itself offers as copyable, so nothing in this
+/// measurement is invented here.
+fn clear_one_refusal_at_a_time(document: &str) -> Clearing {
+    let copyable = copyable_configuration();
+    let declared: Vec<String> = table_headers(document)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let mut lines: Vec<String> = document.lines().map(str::to_owned).collect();
+    let mut trail: Vec<String> = Vec::new();
+    loop {
+        let out = check(&format!("{}\n", lines.join("\n")));
+        if out.status.code() == Some(0) {
+            break;
+        }
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "a document is refused with exit 2 or accepted with 0, and this was \
+             neither. stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        let at = refused_line(&stderr);
+        assert!(
+            at <= lines.len(),
+            "a refusal points at line {at} of a {}-line document, so this helper \
+             is reading a line number it did not write: {stderr}",
+            lines.len()
+        );
+        if let Some(name) = refused_name(&stderr, "unknown field") {
+            match table_header(&lines[at - 1]) {
+                Some(header) => {
+                    let header = header.to_owned();
+                    trail.push(format!(
+                        "unknown field `{name}` at line {at}: delete [{header}] and its sub-tables"
+                    ));
+                    lines = without_table(&lines, &header);
+                }
+                None => {
+                    trail.push(format!(
+                        "unknown field `{name}` at line {at}: delete that key"
+                    ));
+                    lines.remove(at - 1);
+                }
+            }
+        } else if let Some(name) = refused_name(&stderr, "missing field") {
+            let absent = !lines
+                .iter()
+                .any(|line| table_header(line) == Some(name.as_str()));
+            if absent && table_headers(&copyable).contains(&name.as_str()) {
+                trail.push(format!(
+                    "missing field `{name}`: supply the [{name}] table from the \
+                     document the manual offers as copyable"
+                ));
+                lines.push(String::new());
+                lines.extend(
+                    documented_table(&copyable, &format!("[{name}]"))
+                        .lines()
+                        .map(str::to_owned),
+                );
+            } else {
+                let enclosing = enclosing_table(&lines, at)
+                    .unwrap_or_else(|| {
+                        panic!("`missing field {name}` belongs to a table: {stderr}")
+                    })
+                    .to_owned();
+                trail.push(format!(
+                    "missing field `{name}` inside [{enclosing}]: delete [{enclosing}]"
+                ));
+                lines = without_table(&lines, &enclosing);
+            }
+        } else {
+            panic!("this measurement can only clear an unknown or a missing field: {stderr}");
+        }
+        assert!(
+            trail.len() < 64,
+            "64 refusals is not a document with defects in it, it is a runaway \
+             loop in this helper. Trail:\n{}",
+            trail.join("\n")
+        );
+    }
+    let loaded = lines.join("\n");
+    let standing = table_headers(&loaded);
+    let survived = declared
+        .iter()
+        .filter(|header| standing.contains(&header.as_str()))
+        .count();
+    Clearing {
+        trail,
+        declared: declared.len(),
+        survived,
+    }
+}
+
+/// **The manual's reference configuration is a composite, and the manual says so
+/// where a reader meets it.**
+///
+/// `fiddle-c64d` made the `[orchestration.cve]` table of that block load and
+/// pinned it to the schema. The block as a whole still does not, and it never
+/// will: it is the whole of V1 written down at once, so most of its tables name
+/// milestones that have not shipped. That leaves two honest dispositions and one
+/// dishonest one. Making it load would mean deleting most of the product's own
+/// statement of intent, so the manual takes the other: it says plainly that the
+/// block is a boundary map rather than a document, and it shows a document
+/// beside it. Saying nothing was the third option, and it is the one this lane
+/// exists to prevent — after `c64d`, exactly one table of that block is known to
+/// be real, and a reader had no way to learn which.
+///
+/// So this asserts the claim *and* asserts that the claim is true: the block is
+/// fed to the binary and must be refused. A manual that called a loadable
+/// document a composite would be as wrong as the silence, in the other
+/// direction.
+#[test]
+fn the_manual_says_its_reference_configuration_is_not_a_document_that_loads() {
+    let reference = reference_configuration();
+    // The extraction is asserted before it is used. `[jira]` is the
+    // discriminator rather than decoration: it is in the boundary map and in no
+    // loadable document, so a lane that found the copyable block by mistake
+    // fails here rather than passing over the wrong bytes.
+    for header in ["project", "github", "jira", "orchestration.cve"] {
+        assert!(
+            table_headers(&reference).contains(&header),
+            "this is not the manual's reference configuration — that block \
+             declares [{header}]: {reference}"
+        );
+    }
+    let out = check(&format!("{reference}\n"));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "the reference configuration now loads, which is a better world than the \
+         one this lane was written for: retire the composite note it pins and let \
+         the block be the copyable one. stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let manual = manual();
+    for claim in [COMPOSITE_CLAIM, COPYABLE_INTRO] {
+        assert!(
+            manual.contains(claim),
+            "an example that cannot load is a defect or a deliberate composite, \
+             and a reader cannot tell which without being told. The manual must \
+             say: {claim}"
+        );
+    }
+}
+
+/// **How far the reference configuration is from loadable is measured, and the
+/// manual records the measurement.**
+///
+/// The number is the point. `severities` masked `missing field image` for a whole
+/// milestone in this same block, so "it fails at line 13" is never the end of the
+/// story — it is the first of however many, and nobody knew how many. This clears
+/// them one at a time and makes the manual state the count, so a reader learns
+/// the size of the gap rather than the depth of the first hole, and so neither
+/// document can move without the other following.
+#[test]
+fn the_refusals_the_reference_configuration_reaches_are_the_number_the_manual_records() {
+    let reference = reference_configuration();
+    assert!(
+        table_headers(&reference).contains(&"jira"),
+        "this is not the manual's reference configuration: {reference}"
+    );
+    let clearing = clear_one_refusal_at_a_time(&reference);
+    let trail = clearing.trail.join("\n");
+    let passes = format!("takes {} passes", clearing.trail.len());
+    let deleted = format!(
+        "{} of its {} tables have to be deleted",
+        clearing.declared - clearing.survived,
+        clearing.declared
+    );
+    let manual = manual();
+    for claim in [&passes, &deleted] {
+        assert!(
+            manual.contains(claim.as_str()),
+            "the manual must record what this document costs a reader who tries \
+             to load it, and say `{claim}`. Measured here, one line per refusal:\n\
+             {trail}"
+        );
+    }
+}
+
+/// **The document the manual offers as copyable is one this build loads.**
+///
+/// The other half of the disposition, and the half that makes it a disposition
+/// rather than a disclaimer: a manual whose only example does not load leaves an
+/// operator with nothing to start from, so saying "this one is a composite" is
+/// only honest beside something that is not.
+///
+/// The whole block is fed to the binary, not a table of it — that is the
+/// difference between this and `c64d`'s per-table lane, and it is what "copyable"
+/// has to mean. The extraction is asserted first, and asserted against every
+/// table the schema admits: a copyable document that quietly stopped covering
+/// `[scanner]` would still load, and would still be a worse starting point than
+/// the one this claim was made about.
+#[test]
+fn the_document_the_manual_offers_as_copyable_is_one_this_build_loads() {
+    let copyable = copyable_configuration();
+    let declared = table_headers(&copyable);
+    for header in [
+        "project",
+        "stub",
+        "report",
+        "agent",
+        "workspace",
+        "github",
+        "scanner",
+        "orchestration.cve",
+    ] {
+        assert!(
+            declared.contains(&header),
+            "the copyable document must show [{header}] — it is the whole of what \
+             a deployment can say today, and a table it omits is one an operator \
+             has to discover elsewhere: {copyable}"
+        );
+    }
+    assert!(
+        !declared.contains(&"jira"),
+        "this is the boundary map, not the copyable document: {copyable}"
+    );
+    let out = check_with(&format!("{copyable}\n"), &["--json"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the document the manual offers as copyable was refused, so the manual \
+         now has no example a deployment can copy at all. stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(payload["status"], "valid", "{payload}");
+    // Echoed back rather than merely accepted, and each expected value is read
+    // out of the block rather than transcribed beside it.
+    assert_eq!(
+        payload["project"]["name"],
+        documented_scalar(&copyable, "name"),
+        "{payload}"
+    );
+    assert_eq!(
+        payload["github"]["repo"],
+        documented_scalar(&copyable, "repo"),
+        "{payload}"
+    );
+    assert_eq!(
+        payload["orchestration"]["cve"]["image"],
+        documented_scalar(&copyable, "image"),
+        "{payload}"
+    );
+}
+
+/// The string `key` is assigned in `document`, unquoted.
+fn documented_scalar(document: &str, key: &str) -> String {
+    let assignment = format!("{key} = ");
+    document
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(&assignment))
+        .unwrap_or_else(|| panic!("the document must assign {key}: {document}"))
+        .trim()
+        .trim_matches('"')
+        .to_owned()
+}
+
+/// **The forge table the manual documents names the keys the schema admits.**
+///
+/// `c64d`'s lane one table over. The `[github]` table of the reference
+/// configuration spelled its repository `repository` and its base branch
+/// `default_branch`, where the schema shipped `repo` and `base` — the same two
+/// settings under different words, which is a transcription defect and not a
+/// boundary the build resolved differently. It presented at line 13 of the block
+/// as `unknown field \`repository\``, which is the same failure `severities` was.
+///
+/// Those two are corrected in the manual, and this holds them there. The table is
+/// read out of the manual and fed to the binary, so the correction cannot be
+/// undone in either document alone: renaming the key back reds here, and so does
+/// the schema dropping the name it now admits. Only the table's own keys are
+/// taken — `[github.pull_requests]` and `[github.actions]` are tables this build
+/// does not have, and they stay in the boundary map for the milestone that brings
+/// them.
+#[test]
+fn the_forge_table_the_product_manual_documents_names_the_keys_the_schema_admits() {
+    let documented = documented_table(&reference_configuration(), "[github]");
+    for key in ["repo", "base", "token"] {
+        assert!(
+            documented
+                .lines()
+                .any(|line| line.starts_with(&format!("{key} = "))),
+            "the manual's `[github]` example must name {key}, or this lane is \
+             checking a document the manual does not contain: {documented}"
+        );
+    }
+    let out = check(&format!("{AGENTIC}{documented}\n"));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the manual's own forge table was refused, so an operator who copies it \
+         cannot publish. stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The manual that describes the schema, checked against the schema
+// ---------------------------------------------------------------------------
+
+/// A document that carries every table this schema admits.
+///
+/// Assembled from the constants above rather than written out again, and the
+/// forge half is sliced out of [`FORGE`] so the keys with no default are spelled
+/// in exactly one place.
+///
+/// [`CHECK_LIST`] is carried so `workspace.checks` is a list with rows in it.
+/// That matters to
+/// [`the_plain_rendering_covers_every_table_and_key_the_payload_echoes`] and not
+/// to the payload lane: an empty list is a table the document wrote no row for,
+/// and the plain rendering deliberately writes nothing for one, so a document
+/// without rows would make that lane red over correct behaviour.
+///
+/// **It is still kept in step with the schema by hand**, and that is the one
+/// piece of hand-maintenance left in this block: a ninth table would have to be
+/// added here for this document to carry it.
+/// [`config_check_echoes_every_table_the_schema_admits`] is what makes that
+/// maintenance a red lane naming the missing table rather than a silent
+/// assumption — it compares this document's payload against the set
+/// [`admitted_tables`] reads out of the binary.
+fn every_table() -> String {
+    let forge = FORGE.split_once("[github]").expect("FORGE names a forge").1;
+    format!("{AGENTIC}{CHECK_LIST}\n[github]{forge}{SWEEP}")
+}
+
+/// The top-level tables this build's schema admits, read out of the binary's own
+/// refusal.
+///
+/// `config::Config` carries `deny_unknown_fields`, so a document naming a table
+/// the schema has no field for is refused with serde's own enumeration of the
+/// fields that struct declares — ``unknown field `zzz`, expected one of
+/// `project`, `stub`, …``. That list is generated from the struct definition and
+/// written nowhere, which is why it is the source here rather than a constant in
+/// this file: there is nothing to keep in step with it, and a table added to
+/// `Config` appears in it on the next build.
+///
+/// Black-box for this package's reason — nothing here links `fiddle-cli`, so
+/// `config::Config` is unreachable as a type — and the same shape the capability
+/// census lane uses, which reads the registry out of `--capability`'s own
+/// diagnostic instead of out of `CAPABILITIES`.
+///
+/// Names are taken from every backtick-quoted token *after* `expected one of`
+/// rather than from a split on `", "`, because miette renders the label into a
+/// fixed-width frame: a schema wide enough to wrap it would otherwise red on the
+/// very change this exists to catch. The refused name is quoted *before* that
+/// phrase and so is not among them.
+///
+/// The floor below is a floor and not a proof of completeness — a parse that read
+/// the list short would check a shorter schema than there is, silently, which is
+/// the failure this whole bean was about.
+/// [`config_check_echoes_every_table_the_schema_admits`] is where completeness is
+/// established: it asserts this set and the payload's tables are *the same* set,
+/// so a name dropped in parsing reds there.
+fn admitted_tables() -> Vec<String> {
+    let refused = "surely_not_a_table_this_schema_admits";
+    let out = check(&format!("{AGENTIC}\n[{refused}]\nx = 1\n"));
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a table the schema does not admit is invalid input; stderr = {stderr}"
+    );
+    let (_, listed) = stderr.split_once("expected one of").unwrap_or_else(|| {
+        panic!("the refusal must enumerate the tables the schema admits: {stderr}")
+    });
+    let tables: Vec<String> = regex::Regex::new("`([a-z][a-z0-9_]*)`")
+        .unwrap()
+        .captures_iter(listed)
+        .map(|found| found[1].to_string())
+        .collect();
+    // Non-vacuity, and it is the whole reason the two lanes below can be
+    // trusted: a parse that quietly found nothing would make every assertion
+    // over this set hold over an empty one. The three M0 tables are mandatory
+    // fields of `Config`, so a build that admits a document at all admits them.
+    for mandatory in ["project", "stub", "report"] {
+        assert!(
+            tables.iter().any(|table| table == mandatory),
+            "the parsed set must be the set the binary enumerated, and `{mandatory}` \
+             is not optional in any build; got {tables:?} from {stderr}"
+        );
+    }
+    tables
+}
+
+/// **Every table the schema admits is a table the system document names.**
+///
+/// `docs/technical/SYSTEM.md`'s `fiddle.toml` paragraph is where an operator goes
+/// to learn what the deployment document may contain, and this epic edited it to
+/// add `[[workspace.checks]]` and nothing else — so `[scanner]`, which carries two
+/// of the four credentials, and `[orchestration.cve]`, which decides what a sweep
+/// does, were absent from the one paragraph that enumerates the document. A
+/// deliver-phase bean recorded that rather than fixing it, which is how a second
+/// reader came to find it again.
+///
+/// # What this proves, exactly
+///
+/// The set compared against the paragraph is [`admitted_tables`] — serde's own
+/// enumeration of `config::Config`'s fields, obtained from the binary. So a table
+/// added to the schema and named in no prose reds **here**, by name, on the next
+/// build, and nothing in this file has to be edited for that to happen.
+///
+/// It was not always so, and the earlier shape is worth recording because it read
+/// as stronger than it was: the set used to come from the keys `config check
+/// --json` echoed for [`every_table`] — a document hand-written in this file — so
+/// a ninth table entered no comparison and the lane stayed green. The eight
+/// agreed by hand. An evidence pack then described that as "assembled from the
+/// schema's own constants", which is how a hand-maintained agreement came to be
+/// recorded as a mechanical guarantee.
+///
+/// # What it does not prove
+///
+/// **Sub-tables.** The diagnostic enumerates the *top-level* fields only, so a
+/// second sub-table added under an existing one — a sibling of
+/// `[orchestration.cve]` — is not in this set and is not checked. `orchestration`
+/// is matched as a prefix, which is the PRD's spelling and lets the paragraph
+/// name the sub-table an operator actually writes; it also means any spelling of
+/// `[orchestration.*]` satisfies it.
+///
+/// **That an admitted field is a table at all.** serde does not distinguish a
+/// field holding a struct from one holding a scalar, so a top-level scalar added
+/// to `Config` would arrive here asking the paragraph for `[name]`. The schema has
+/// none today, and the failure would be a red lane asking a person to look —
+/// which is the direction to be wrong in.
+#[test]
+fn the_system_document_names_every_table_this_schema_admits() {
+    let tables = admitted_tables();
+    let document = std::fs::read_to_string(support::repo_root().join("docs/technical/SYSTEM.md"))
+        .expect("the system document is part of the repository");
+    let paragraph = document
+        .lines()
+        .find(|line| line.starts_with("**`fiddle.toml`**"))
+        .expect("the system document describes the deployment document");
+
+    for table in &tables {
+        assert!(
+            paragraph.contains(&format!("[{table}]")) || paragraph.contains(&format!("[{table}.")),
+            "`[{table}]` is a table this schema admits and the `fiddle.toml` \
+             paragraph of docs/technical/SYSTEM.md does not name it"
+        );
+    }
+}
+
+/// **Every table the schema admits is a table `config check --json` echoes.**
+///
+/// The payload is what an operator reads a document back through, so a table the
+/// schema accepts and the payload drops is a table they cannot confirm they
+/// wrote. Nothing compared the two: `render::config_check_json` builds its keys
+/// one hand-written arm at a time.
+///
+/// This is also where [`every_table`]'s hand-maintenance is caught. Both
+/// omissions a ninth table can produce — the arm in `config_check_json`, and the
+/// line in [`every_table`] — land here as one failure naming the table, and the
+/// message says which two places to look, because from outside the binary the
+/// two are not distinguishable.
+///
+/// **The other direction is asserted too, and it is what makes
+/// [`admitted_tables`] trustworthy rather than merely mechanical.** A refusal
+/// parsed short would hand every lane a schema smaller than the real one and go
+/// green over the tables it dropped; a payload table missing from that set reds
+/// here instead. The two sets being *equal* is the claim, and neither half of it
+/// is written down in this file.
+#[test]
+fn config_check_echoes_every_table_the_schema_admits() {
+    let tables = admitted_tables();
+    let payload = checked(&every_table());
+    // One key per table the document carried, and the two scalars — `schema` and
+    // `status` — are not tables. Discriminated by *shape* rather than by name, so
+    // a third scalar added to the payload does not arrive here as a table.
+    let echoed: Vec<String> = payload
+        .as_object()
+        .expect("the payload is an object")
+        .iter()
+        .filter(|(_, value)| value.is_object())
+        .map(|(key, _)| key.clone())
+        .collect();
+
+    for table in &tables {
+        assert!(
+            echoed.iter().any(|section| section == table),
+            "`[{table}]` is a table this schema admits and `config check --json` \
+             did not echo it for a document meant to name every table: either \
+             `render::config_check_json` has no arm for it, so an operator cannot \
+             read it back, or `every_table()` in this file does not carry it. \
+             Echoed: {echoed:?}"
+        );
+    }
+
+    for section in &echoed {
+        assert!(
+            tables.iter().any(|table| table == section),
+            "`config check --json` echoed `{section}` as a table and the schema's \
+             own refusal does not enumerate it. Either the payload carries a key \
+             that is not a top-level field of `config::Config`, or \
+             `admitted_tables` read the refusal short — in which case every lane \
+             over that set has been checking a smaller schema than there is. \
+             Enumerated: {tables:?}"
+        );
+    }
+}
+
+/// The plain `config check` rendering over `text`, requiring exit 0.
+///
+/// The mirror of [`checked`], and the surface that whole block of lanes above
+/// was missing: an operator who does not pass `--json` reads *this*, and until
+/// this helper existed every parity claim in this file was made about the
+/// payload only.
+fn plain(text: &str) -> String {
+    let out = check(text);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// **The plain rendering names the image a sweep will scan, the grades it will
+/// act on, the bound it will stop at, and the toolchain it will build with.**
+///
+/// `render::config_check_human` states its contract as "the same facts the
+/// payload carries, in the order the document writes them, so a reader at a
+/// terminal and a reader parsing `--json` confirm the same document", and for
+/// the whole of M4a it ended after `[github]`. So the four keys that decide what
+/// a sweep *does* were confirmable only by a caller who knew to ask for JSON.
+///
+/// `severities` and `max_findings` are the sharpest case in the milestone: their
+/// original defect was that they were in the product manual and in no reader at
+/// all. They are read now, and a fix that left them off the default surface
+/// would have moved the defect rather than closed it.
+///
+/// The grades are asserted **worst-first and not in document order** —
+/// `severities` here is the default, which `config_check_json` ranks — because a
+/// set rendered in typing order invites an operator to compare two accepted
+/// documents and find a difference that is not one.
+#[test]
+fn the_plain_rendering_names_the_image_grades_and_bound_a_sweep_will_act_on() {
+    let stdout = plain(&format!("{AGENTIC}{SWEEP}"));
+    for line in [
+        "orchestration.cve.image = ghcr.io/acme/icecube:latest",
+        "orchestration.cve.severities = CRITICAL HIGH",
+        "orchestration.cve.max_findings = 3",
+        "orchestration.cve.go = \"go\"",
+    ] {
+        assert!(
+            stdout.contains(line),
+            "an operator at a terminal cannot confirm `{line}`: {stdout}"
+        );
+    }
+    // The scanner half of the same document, and the `timeout` beside it: a
+    // wall-clock bound an operator set and cannot otherwise read back.
+    for line in ["scanner.cli = \"wizcli\" \"scan\"", "scanner.timeout = 20m"] {
+        assert!(
+            stdout.contains(line),
+            "an operator at a terminal cannot confirm `{line}`: {stdout}"
+        );
+    }
+}
+
+/// **The plain rendering names both scanner credentials by variable and prints
+/// neither value.**
+///
+/// The terminal half of the payload lane
+/// `the_scanner_table_names_its_credentials_and_prints_neither`, and the two
+/// halves are making one claim from two directions: the
+/// variable *name* is what an operator needs — it is the thing they go and set —
+/// while `client_secret`'s value is the one string the whole of
+/// `fiddle_runtime::scanner`'s redaction exists for.
+///
+/// Both variables are **exported with a sentinel** before the check runs, which
+/// is what makes the absence mean something: a rendering that omits a value
+/// nobody set is not evidence about anything. This is the shape that would have
+/// caught a fix for this bean that reached for the value instead of the name.
+#[test]
+fn the_plain_rendering_names_the_scanner_credentials_and_never_their_values() {
+    let sentinels = [
+        ("WIZ_CLIENT_ID", "wiz-client-id-sentinel-9f21"),
+        ("WIZ_CLIENT_SECRET", "wiz-client-secret-sentinel-9f21"),
+    ];
+    let out = check_with_env(&format!("{AGENTIC}{SWEEP}"), &[], &sentinels);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+
+    for (variable, _) in sentinels {
+        assert!(
+            stdout.contains(variable),
+            "the plain rendering must name `{variable}`, which is the thing an \
+             operator goes and sets: {stdout}"
+        );
+    }
+    assert!(
+        stdout.contains("scanner.client_id.env = WIZ_CLIENT_ID"),
+        "named under the key the document writes it as, as `agent.api_key.env` \
+         and `github.token.env` already are: {stdout}"
+    );
+    assert!(
+        stdout.contains("scanner.client_secret.env = WIZ_CLIENT_SECRET"),
+        "{stdout}"
+    );
+    for (_, value) in sentinels {
+        assert!(
+            !stdout.contains(value),
+            "a credential value reached stdout: {stdout}"
+        );
+        assert!(
+            !stderr.contains(value),
+            "a credential value reached a diagnostic: {stderr}"
+        );
+    }
+}
+
+/// **Every table the payload echoes, and every key it echoes under one, the
+/// plain rendering names too.**
+///
+/// # The class, not the instance
+///
+/// `[scanner]` and `[orchestration.cve]` were added to `config_check_json` and
+/// to nothing else, and the omission survived a milestone because every parity
+/// lane in this file read the payload. Asserting the two tables by hand — which
+/// the two lanes above do — fixes this instance and leaves the next one open:
+/// a tenth table can repeat it exactly.
+///
+/// So the set compared here is not written down in this file. The tables come
+/// from [`admitted_tables`] — serde's own enumeration of `config::Config`'s
+/// fields, read out of the binary's `deny_unknown_fields` refusal — and the keys
+/// come from the payload the binary just produced. A table or key added to the
+/// schema and rendered on one surface only reds **here**, by name, on the next
+/// build, and nothing in this file has to be edited for that to happen.
+///
+/// # What "names it" means, and why one level
+///
+/// A plain line is `<table>.<key> = <value>`, so the claim is that the rendering
+/// carries a line whose key path begins `<table>.<key>`. One level under the
+/// table and not the whole tree, because plain deliberately *folds* an object
+/// into one line of prose where a person needs the consequence rather than the
+/// four fields: `agent.max_capability_attempts` and `github.required_checks` are
+/// both objects in the payload and both single lines here, and a recursive
+/// comparison would call that correct rendering a failure.
+///
+/// **The other direction is asserted too**, for the reason
+/// [`config_check_echoes_every_table_the_schema_admits`] gives: a rendering that
+/// names something the payload does not is the same drift seen from the other
+/// side, and a one-directional lane would go green over it.
+#[test]
+fn the_plain_rendering_covers_every_table_and_key_the_payload_echoes() {
+    let document = every_table();
+    let payload = checked(&document);
+    let stdout = plain(&document);
+
+    // Every `<table>.<key>` the plain rendering writes, keyed the way an
+    // operator reads it. The indexed spelling `workspace.checks[0]` is folded
+    // back to `workspace.checks`, because the index is a fact about the list and
+    // not a key of the table.
+    let rendered: Vec<String> = stdout
+        .lines()
+        .filter_map(|line| line.split_once(" = "))
+        .map(|(key, _)| key.trim())
+        .filter_map(|key| {
+            let mut parts = key.splitn(3, '.');
+            let table = parts.next()?;
+            let field = parts.next()?;
+            let field = field.split_once('[').map_or(field, |(name, _)| name);
+            Some(format!("{table}.{field}"))
+        })
+        .collect();
+
+    for table in admitted_tables() {
+        let echoed = payload[&table]
+            .as_object()
+            .unwrap_or_else(|| {
+                panic!(
+                    "`[{table}]` is a table this schema admits and the payload for a \
+                     document meant to name every table did not echo it as an object — \
+                     see `config_check_echoes_every_table_the_schema_admits`: {payload}"
+                )
+            })
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in echoed {
+            assert!(
+                rendered
+                    .iter()
+                    .any(|line| line == &format!("{table}.{key}")),
+                "`config check --json` echoes `{table}.{key}` and the plain \
+                 rendering an operator gets by default does not name it, so the \
+                 two surfaces do not confirm the same document. Either \
+                 `render::config_check_human` has no arm for it, or it spells the \
+                 key differently from the document. Rendered: {rendered:?}"
+            );
+        }
+    }
+
+    for key in &rendered {
+        let (table, field) = key.split_once('.').expect("a rendered key is dotted");
+        assert!(
+            payload[table].get(field).is_some(),
+            "the plain rendering names `{key}` and `config check --json` echoes no \
+             such key, so a reader at a terminal is being told something a reader \
+             parsing the payload cannot confirm: {payload}"
+        );
+    }
+}

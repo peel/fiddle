@@ -1,0 +1,503 @@
+//! A scripted `wizcli` for the offline CVE gate.
+//!
+//! It is reached through the product's own `program`/`args` seam — the one that
+//! exists for operators who must pin or wrap a scanner — and it is declared with
+//! `required-features`, so `cargo build --release` never produces it. Nothing
+//! here is compiled into the product.
+//!
+//! # It is permanent, not a placeholder
+//!
+//! Unlike `gh_stub` and `git_stub`, this fixture does not stand in for something
+//! the suite could reach if it tried harder. Wiz is testable only in CI, where
+//! the tenant credentials live, so **this milestone's gate never calls a real
+//! `wizcli` at all**: the scanner arm of every offline test is this program, for
+//! good. That makes its arm list the adapter's real contract rather than a
+//! convenience, which is why the arms are named for *situations in the world*
+//! and not for the errors they are expected to produce.
+//!
+//! # The arms, and the one that matters
+//!
+//! Thirteen of the fifteen are ordinary. `exit-nonzero-with-file` is the one this
+//! fixture exists for: `wizcli` exits non-zero when an organisation policy flags
+//! any finding in the tenant, including findings that have nothing to do with
+//! this scan, and it writes a perfectly good report while doing it. An adapter
+//! that read the status line first would report that as a failed scan. Producing
+//! it here — a real non-zero exit over a real, parseable document — is what makes
+//! "success is the artefact" a fact about a process rather than a claim about
+//! one, and it is why `exit-nonzero-no-file` sits beside it: the two differ only
+//! in the artefact, so an adapter that collapsed them would be caught.
+//!
+//! `library-clean` is the *rescan* half of the pair. Every
+//! other arm answers the question a run asks **before** it does anything; a
+//! sweep that bumped a module then asks the same scanner about the same image
+//! again, and `evaluate`'s rescan is `Cleared` only when the group's advisories
+//! are gone, nothing new has appeared, **both** package arrays are present, and
+//! the scanner version is the one the input was scanned at. A second `ok` would
+//! answer the second question with the first question's document and refuse
+//! every repair, so the fixture needs an arm whose library array is *present and
+//! empty* while the OS array is the input's unchanged — the shape of an image
+//! whose Go dependency was patched and whose base layer was not. It is the one
+//! arm that only makes sense in the presence of another scan.
+//!
+//! `clean-image`, `library-only` and `two-os-advisories` are the three after
+//! it, and they exist for Design §3's table rather than for the adapter: seven
+//! rows are reached from seven *worlds*, and a fixture that could report only
+//! `ok` or nothing could put a run on four of them. The third goes further than
+//! the row — it is the only document that makes a disposition's three finding
+//! sets non-empty at once, which is what it takes to assert that a deferred
+//! advisory is in one of them and not the other two. All three are ordinary
+//! successful scans and none is about a scanner failing.
+//!
+//! `two-library-advisories` is the fourth of that set and the only one that is
+//! about the *shape* of a run rather than about a row. A run forms one group per
+//! bump target and attempts one group at a time, and every other document here
+//! yields exactly one attemptable group — the library finding — because its OS
+//! half is a base image no tag can be selected for. So `cve::fold`, which asks
+//! what an *earlier* group's rescan already showed, has nothing to be consulted
+//! over on any of them. Two library findings in two different modules is the
+//! smallest document from which a second group comes.
+//!
+//! `bump-clears-a-later-group` and `only-the-cleared-group-reported` are the fifth
+//! and sixth, and they are a *pair*: the world where a bump clears a later group's
+//! finding **in the tree** rather than in the image. The first names an advisory
+//! against the module whose next release raises another module's requirement past
+//! its own fix, plus an advisory against that other module. The second is the
+//! rescan, and what makes it a different document from `library-clean` is what it
+//! still holds — the second advisory, unchanged. That is not a scanner being
+//! unhelpful: the rescan is of an *image*, and the tree is what minimal version
+//! selection moved. So the fold rule is refused its clearance and the selection is
+//! the only thing that can see one, which is exactly the run that used to file the
+//! advisory as unfixed.
+//! `a_group_a_bump_moved_past_its_fix_in_the_tree_is_not_reported_as_unfixed` is
+//! the lane, and `cve::fold`'s header is where the two paths are reconciled.
+//!
+//! # Why it selects its arm from `argv`
+//!
+//! Not the environment. The adapter's environment is an allowlist, so a variable
+//! carrying the test's own plumbing could not reach this process without
+//! widening the boundary the fixture exists to prove. The arm arrives as the
+//! first argument, through the same `args` seam an operator would wrap a real
+//! scanner with — `gh_stub` is arranged the same way and its header gives the
+//! same reason.
+//!
+//! # Why it records its own environment and argv on every arm
+//!
+//! The adapter's environment is an allowlist, and the only honest way to assert
+//! an allowlist is against what a child *received* — a `Command` nobody spawned
+//! proves that a builder was called and nothing more. So every arm writes
+//! [`CHILD_RECORD`] beside the report before it does anything else, exactly as
+//! `gh_stub` records every request it answers.
+//!
+//! Unconditionally, and not behind a `record-env` arm, because a recording arm
+//! would be a *different invocation* from the ones every other test drives: the
+//! environment it captured would be the environment of the arm that captures
+//! environments, and nothing would then connect it to the scans under test. This
+//! way the record comes from the same command line and the same spawn as an
+//! ordinary scan.
+//!
+//! # Why it prints the shared documents rather than embedding one
+//!
+//! `tests/support/document.rs` is where a scanner document is written down, and
+//! its bytes are what the projection lanes assert against. A second copy here
+//! would drift from those, and the drift would present as a projection bug in a
+//! lane that never touched this file. So the module is included rather than
+//! imitated — which is the whole reason those builders are in a file of their
+//! own; see that file's header.
+
+// Only the document builders are used here, and only some of them. The module
+// is shared with the test suites, which use the rest.
+#[allow(dead_code)]
+#[path = "../support/document.rs"]
+mod document;
+
+use document::{
+    libraries, libraries_graded, libraries_in_rows, os_packages, report_with, CLEARED_ROW,
+    CLEARING_LIBRARY_CVE, CLEARING_ROW, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, SECOND_LIBRARY_CVE,
+    SECOND_OS_CVE,
+};
+use std::path::{Path, PathBuf};
+
+/// The version this scanner announces. Not a version any real `wizcli` has, so
+/// an assertion that finds it cannot have been satisfied by a scanner somebody
+/// actually installed.
+const STUB_VERSION: &str = "0.0.0-fiddle-stub";
+
+/// What the scanner resolves an image reference to.
+///
+/// A full 64-hex digest, because that is what the adapter is entitled to expect
+/// and a short one would let a reader that truncates pass.
+const STUB_DIGEST: &str = "sha256:6f1b0d2c9a4e7385bd1c05fa9e37642c8b0d5713ae629f04c8d17b6a3e59042d";
+
+/// What this process was given, written where the suite can read it back.
+///
+/// Beside the report rather than in a directory of its own, because the scratch
+/// directory is the one location a test and a child already agree about: the
+/// adapter names it in `--json-output-file`, so no second channel — and no
+/// environment variable, which the allowlist would not carry anyway — has to be
+/// invented to say where this goes.
+const CHILD_RECORD: &str = "child.json";
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let arm = args
+        .first()
+        .cloned()
+        .expect("the arm is the first argument, passed through the adapter's `args` seam");
+    let report = output_file(&args)
+        .expect("--json-output-file <path> must be passed by the adapter under test");
+    // Before the arm runs, so that an arm which exits mid-way still leaves a
+    // record: the credential-boundary questions are about what was *handed* to
+    // this process, and they are as worth asking of a failed scan as of a
+    // successful one.
+    record(&report);
+
+    match arm.as_str() {
+        // A scan that worked. Both package arrays are populated, because the
+        // projection has to read both and a document with one of them empty
+        // would let a reader that found only `libraries` pass.
+        "ok" => {
+            banner(&args);
+            write(&report, document());
+        }
+        // The same image after its Go dependency moved: the library array is
+        // there and holds nothing, the OS array is the input scan's unchanged.
+        //
+        // **Present and empty, never absent.** `RescanVerdict::NotObserved`
+        // refuses an array the scanner never wrote, because both rescan
+        // conditions are satisfied by an absence and silence is not clearance.
+        // An arm that dropped the key would therefore fail every repair it was
+        // asked about — for the right reason, and not the one it is here to
+        // exercise.
+        //
+        // The OS advisory stays, and that is what makes condition (b)
+        // discriminating rather than decorative: it is in the input scan's
+        // baseline, so a rescan reporting it is a rescan reporting nothing
+        // *new*. An arm that reported an empty image would satisfy (b) whatever
+        // the baseline held.
+        "library-clean" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(libraries(&[]), os_packages(&DEFAULT_OS_CVES))
+                    .raw()
+                    .to_string(),
+            );
+        }
+        // An image with nothing in it. Both arrays present and both empty,
+        // which is the one shape that distinguishes *the scanner looked at both
+        // halves and found nothing* from *the scanner wrote about one half* —
+        // and, with `exit-nonzero-no-file`, from *there was no document to read
+        // at all*. Design §3's first and last rows are the same absence read two
+        // ways, so the fixture has to be able to produce each of them.
+        "clean-image" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(libraries(&[]), os_packages(&[]))
+                    .raw()
+                    .to_string(),
+            );
+        }
+        // One library advisory and an OS array that is present and empty.
+        //
+        // The arm a run reaches `AlreadyFixed` through, and it needs an arm of
+        // its own for a reason about the *other* advisory rather than this one:
+        // `ok`'s OS finding is a base image's, no `go get` can move it, and it
+        // therefore produces a verdict on every tree — so a run over `ok` lands
+        // on `VerdictsOnly` however thoroughly the library half was already
+        // dealt with. A document naming only what the tree has already fixed is
+        // what *every finding was already dealt with* actually looks like.
+        "library-only" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(libraries(&DEFAULT_LIBRARY_CVES), os_packages(&[]))
+                    .raw()
+                    .to_string(),
+            );
+        }
+        // The library advisory at **MEDIUM**, with an OS array that is present and
+        // empty.
+        //
+        // The one document in this file that reports a finding a deployment
+        // configuring no grades does *not* act on. It is the world
+        // `[orchestration.cve] severities` is asked in: under the default set the
+        // whole document selects nothing, and under a document naming `MEDIUM` the
+        // same bytes produce exactly the group `ok` produces at `HIGH`.
+        //
+        // The OS array is empty rather than the input scans' usual advisory,
+        // because a `HIGH` OS finding would be selected under either set and the
+        // run would have work to do either way — which is the one thing this arm
+        // must not have. Empty and never absent, for `library-clean`'s reason:
+        // absence is not clearance.
+        "medium-library-advisory" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(
+                    libraries_graded(&[DEFAULT_LIBRARY_CVES[0]], "MEDIUM"),
+                    os_packages(&[]),
+                )
+                .raw()
+                .to_string(),
+            );
+        }
+        // The library advisory, and a base layer that is two advisories behind
+        // rather than one.
+        //
+        // The one document from which all three of a disposition's finding sets
+        // come back non-empty and holding different advisories. Over the
+        // already-fixed tree the library finding is settled by `go.mod`; with a
+        // bound of one the first OS finding is taken and refused, because no
+        // `go get` moves a base image; and the second is left for the next run.
+        //
+        // `ok` cannot produce that world, and the reason is arithmetic rather
+        // than taste: over that tree it has exactly one finding the tree does not
+        // settle, so any bound low enough to defer something defers the only
+        // thing there was to judge, and the verdict set empties. A lane asserting
+        // *the deferred advisory is not in the verdict set* would then be
+        // asserting it against nothing. Two OS findings is the smallest change to
+        // the document that leaves one of each.
+        "two-os-advisories" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(
+                    libraries(&DEFAULT_LIBRARY_CVES),
+                    os_packages(&[DEFAULT_OS_CVES[0], SECOND_OS_CVE]),
+                )
+                .raw()
+                .to_string(),
+            );
+        }
+        // Two library advisories, in two different modules, and the OS array
+        // the input scans all carry.
+        //
+        // Two *modules* is the whole of it: [`libraries`] cycles its package
+        // table by position, so two ids land in `golang.org/x/crypto` and
+        // `golang.org/x/net` rather than twice in one package — and a group is
+        // keyed on the module a bump would move, so two findings in one module
+        // would be one group again. The OS finding stays for `library-clean`'s
+        // reason: it is the baseline that makes a rescan's condition (b)
+        // discriminating rather than satisfied by an empty image.
+        "two-library-advisories" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(
+                    libraries(&[DEFAULT_LIBRARY_CVES[0], SECOND_LIBRARY_CVE]),
+                    os_packages(&DEFAULT_OS_CVES),
+                )
+                .raw()
+                .to_string(),
+            );
+        }
+        // Two library advisories, in two modules, where bumping the **first**
+        // raises the second's requirement past its own fix. The rows are named
+        // rather than cycled, because a run walks its groups in target order and
+        // the module doing the moving has to come first; `document.rs`'s
+        // `CLEARING_ROW` says which rows and why.
+        //
+        // The OS finding stays for `library-clean`'s reason, and it earns its keep
+        // twice here: it is also the only advisory this world still reports as
+        // unfixed, so a lane asserting that the cleared one is *absent* from
+        // `verdicts.json` is asserting it against a document that is not empty.
+        "bump-clears-a-later-group" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(
+                    libraries_in_rows(&[
+                        (CLEARING_ROW, CLEARING_LIBRARY_CVE),
+                        (CLEARED_ROW, SECOND_LIBRARY_CVE),
+                    ]),
+                    os_packages(&DEFAULT_OS_CVES),
+                )
+                .raw()
+                .to_string(),
+            );
+        }
+        // The rescan half of that pair: the bumped module's advisory is gone and
+        // the *cleared* group's is still there.
+        //
+        // Which is what makes the world discriminating rather than decorative. A
+        // rescan that also cleared the second advisory would be folded by
+        // `cve::fold` on the ordinary path, and the lane would pass without the
+        // tree ever having been consulted. This one holds the second advisory, so
+        // the fold rule answers `Proceed` and the only thing that can see the
+        // clearance is the selection reading the tree.
+        //
+        // It is also the honest document. The scan is of an image and what an
+        // image holds is a binary; `go mod tidy` raised a requirement in `go.mod`,
+        // and until something rebuilds and relinks, the package the scanner found
+        // is the one that was there. Both arrays are present, for
+        // `library-clean`'s reason.
+        "only-the-cleared-group-reported" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(
+                    libraries_in_rows(&[(CLEARED_ROW, SECOND_LIBRARY_CVE)]),
+                    os_packages(&DEFAULT_OS_CVES),
+                )
+                .raw()
+                .to_string(),
+            );
+        }
+        // The reason this fixture exists. The document is written *first* and
+        // the non-zero exit comes after, in that order and for that reason: a
+        // stub that exited before writing would be testing a failed scan, which
+        // proves nothing about whether the artefact or the status line decides.
+        "exit-nonzero-with-file" => {
+            banner(&args);
+            write(&report, document());
+            eprintln!("wizcli: policy 'default-vulnerabilities' matched 3 findings in this tenant");
+            // 3 rather than 1, because 1 is what almost anything exits with and
+            // an assertion that happens to pass against a generic failure is not
+            // yet an assertion about a policy hit.
+            std::process::exit(3);
+        }
+        // The other half of that pair: the same non-zero ending with nothing
+        // written, so the two cases differ by the artefact alone.
+        "exit-nonzero-no-file" => {
+            banner(&args);
+            eprintln!("wizcli: internal error while analysing layers");
+            std::process::exit(3);
+        }
+        // The file is created and left empty, which is what a scanner killed
+        // between opening its output and filling it leaves behind. Exit 0, so
+        // nothing but the artefact can be what the adapter refuses on.
+        "empty-file" => {
+            banner(&args);
+            write(&report, String::new());
+        }
+        // Written, non-empty, and not a document. A truncated JSON object rather
+        // than prose, because a truncation is what a scanner that ran out of
+        // disk or was killed mid-write actually produces, and because an adapter
+        // testing for a leading `{` would pass on prose and fail here.
+        "unparseable-file" => {
+            banner(&args);
+            write(&report, "{\"result\": {\"libraries\": [".to_string());
+        }
+        // Nothing to scan. No banner, because there was no image to resolve a
+        // digest for, and the diagnostic is the daemon's own wording — it is the
+        // only thing that separates this from `exit-nonzero-no-file`, which ends
+        // identically.
+        "no-such-image" => {
+            eprintln!(
+                "wizcli: failed to inspect {}: Error response from daemon: no such image",
+                image(&args)
+            );
+            std::process::exit(3);
+        }
+        // The host a scanner reaches its images through is not listening. Not a
+        // failure of the scanner at all, which is the whole reason it is an arm:
+        // it ends exactly as `exit-nonzero-no-file` and `no-such-image` do — no
+        // banner, no artefact, the same status line — so the wording below is
+        // the only thing that can separate the three.
+        //
+        // The wording is the container client's own, and it deliberately does
+        // **not** name `DOCKER_HOST`: the real message names the socket it tried.
+        // An arm that printed the variable would let an adapter that merely
+        // passed this stream through satisfy an assertion about the remedy, and
+        // the remedy is the adapter's to add. See `ScanError::DaemonUnreachable`.
+        "no-daemon" => {
+            eprintln!(
+                "wizcli: failed to inspect {}: Cannot connect to the Docker daemon at \
+                 unix:///var/run/docker.sock. Is the docker daemon running?",
+                image(&args)
+            );
+            std::process::exit(3);
+        }
+        // A scanner that quotes its own configuration back at you when
+        // authentication fails, which is not a strange thing for a tool to do.
+        // It is here so that "no diagnostic carries the credential" is a claim
+        // with something behind it: this arm really does print the secret it was
+        // given, on the stream the adapter passes through into `ScanError`, so
+        // an adapter that did not redact would fail rather than pass for the
+        // want of anything to redact. Nothing is written, so the classification
+        // is `Failed` — the leak is the subject, not the arm's outcome.
+        "leaks-its-credential" => {
+            banner(&args);
+            eprintln!(
+                "wizcli: client {} rejected the secret {}",
+                std::env::var("WIZ_CLIENT_ID").unwrap_or_default(),
+                std::env::var("WIZ_CLIENT_SECRET").unwrap_or_default()
+            );
+            std::process::exit(3);
+        }
+        other => panic!("unknown arm {other}"),
+    }
+}
+
+/// Write down every argument and every environment variable this process was
+/// started with.
+///
+/// The whole environment, not the names the adapter is expected to have set: an
+/// assertion that a sixth name arrived can only be made against a record that
+/// would have carried a sixth name.
+///
+/// Arguments include this program's own path, because that is what `argv` is —
+/// and a record that dropped it would be a record of what the test expected
+/// rather than of what the operating system saw.
+fn record(report: &Path) {
+    let record = report.with_file_name(CHILD_RECORD);
+    let argv: Vec<String> = std::env::args().collect();
+    let env: Vec<String> = std::env::vars()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    std::fs::write(
+        &record,
+        serde_json::json!({ "argv": argv, "env": env }).to_string(),
+    )
+    .unwrap_or_else(|source| panic!("could not write {}: {source}", record.display()));
+}
+
+/// The document the successful arms write.
+///
+/// Both arrays, one advisory each, from the shared builders — so the bytes this
+/// program puts on disk and the bytes the projection lanes assert against are
+/// one value. The record is the scanner's own shape: nested under a package,
+/// carrying `hasExploit` and a free-form `description` that no projected finding
+/// admits, which is what leaves the injection boundary something to strip.
+fn document() -> String {
+    report_with(
+        libraries(&DEFAULT_LIBRARY_CVES),
+        os_packages(&DEFAULT_OS_CVES),
+    )
+    .raw()
+    .to_string()
+}
+
+/// Announce what ran and what it resolved the image to.
+///
+/// On `stdout`, in two lines a real scanner would print for a person, because
+/// the report itself carries neither: which scanner looked and what the tag
+/// resolved to are facts about the *scan*. Printed by every arm that got as far
+/// as having an image, so an arm that fails later still has its provenance
+/// recorded ahead of the failure.
+fn banner(args: &[String]) {
+    println!("wizcli {STUB_VERSION}");
+    println!("scanning {} at {STUB_DIGEST}", image(args));
+}
+
+/// Where the report goes: the adapter's `--json-output-file`.
+fn output_file(args: &[String]) -> Option<PathBuf> {
+    let at = args.iter().position(|arg| arg == "--json-output-file")?;
+    args.get(at + 1).map(PathBuf::from)
+}
+
+/// The image reference, which the adapter passes last.
+fn image(args: &[String]) -> String {
+    args.last().cloned().unwrap_or_default()
+}
+
+/// Write the report, failing loudly.
+///
+/// A fixture that could not write its artefact would surface as whichever
+/// classification the adapter reaches for a missing file, which is a passing
+/// test of the wrong arm.
+fn write(report: &PathBuf, body: String) {
+    std::fs::write(report, body)
+        .unwrap_or_else(|source| panic!("could not write {}: {source}", report.display()));
+}
