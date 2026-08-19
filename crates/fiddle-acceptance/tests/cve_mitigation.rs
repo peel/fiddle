@@ -78,9 +78,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use support::{
-    accepted, body_of, check_stub_binary, completion, gh_stub_binary, git, git_says,
-    go_stub_binary, toml_string, walkdir_files, wiz_stub_binary, Reply, Scenario, StubGateway,
-    CREDENTIAL_VARS,
+    accepted, body_of, calls, check_stub_binary, completion, gh_stub_binary, git, git_says,
+    go_stub_binary, reports, toml_string, walkdir_files, wiz_stub_binary, Reply, Scenario,
+    StubGateway, CREDENTIAL_VARS,
 };
 use tempfile::TempDir;
 
@@ -2068,6 +2068,81 @@ fn bumps_needing_no_edit(attempts: usize) -> Vec<Reply> {
         .collect()
 }
 
+/// One attempt's whole turn: every edit it makes, and then the report that
+/// declares them and disposes of every advisory it was shown.
+///
+/// **A tool call per edit, and that is the shape of this capability now.** The
+/// sweep applies no bump before the model is briefed — which version clears an
+/// advisory, and which file carries it, is the attempt's own judgement — so a
+/// script that changed no file leaves `land` with nothing to commit. The edits go
+/// through the binary's own `write_file` tool, into the binary's own worktree,
+/// exactly as `binary_repair`'s `a_real_repair` does: what is asserted afterwards
+/// is then a tree the product wrote rather than one the fixture arranged.
+///
+/// `fixed` and `declined` are both taken because the report must account for
+/// **every** advisory the prompt showed and for none it did not — `unaccounted`
+/// refuses either way round, so which advisories a script names is part of the
+/// world and not decoration. `claimed_complete` follows `declined` rather than
+/// being fixed at `true`: an attempt that declined something has not claimed it
+/// finished. Nothing in the product branches on it — `cve_protocol`'s
+/// `nothing_in_this_workspace_decides_on_claimed_complete` is that claim — so it
+/// is evidence here and no more.
+fn an_attempt(edits: &[(&str, String)], fixed: &[&str], declined: &[&str]) -> Vec<Reply> {
+    let mut script: Vec<Reply> = edits
+        .iter()
+        .map(|(path, contents)| {
+            accepted(calls(
+                "write_file",
+                serde_json::json!({ "path": path, "contents": contents }),
+            ))
+        })
+        .collect();
+
+    let dispositions: Vec<serde_json::Value> = fixed
+        .iter()
+        .map(|cve| {
+            serde_json::json!({
+                "cve": cve,
+                "attempted": true,
+                "note": "moved the requirement to the release that carries the fix",
+            })
+        })
+        .chain(declined.iter().map(|cve| {
+            serde_json::json!({
+                "cve": cve,
+                "attempted": false,
+                "note": "no fix I can apply to this project without reading a registry",
+            })
+        }))
+        .collect();
+
+    script.push(accepted(reports(serde_json::json!({
+        "changed_files": edits.iter().map(|(path, _)| *path).collect::<Vec<_>>(),
+        "summary": "the requirements this project pins were moved to the releases that carry the fixes",
+        "claimed_complete": declined.is_empty(),
+        "findings": dispositions,
+    }))));
+    script
+}
+
+/// The two-library fixture's manifest with **both** requirements moved.
+///
+/// Derived from the fixture by replacing the versions rather than spelled out, so
+/// a fixture whose pins move does not leave this lane asserting about a manifest
+/// nobody has.
+fn two_libraries_manifest() -> String {
+    read_fixture_file(TWO_LIBRARIES, "go.mod")
+        .replace(VULNERABLE_VERSION, FIXED_VERSION)
+        .replace(SECOND_VULNERABLE_VERSION, SECOND_FIXED_VERSION)
+}
+
+/// Its sums, moved with it. See [`two_libraries_manifest`].
+fn two_libraries_sums() -> String {
+    read_fixture_file(TWO_LIBRARIES, "go.sum")
+        .replace(VULNERABLE_VERSION, FIXED_VERSION)
+        .replace(SECOND_VULNERABLE_VERSION, SECOND_FIXED_VERSION)
+}
+
 /// The branch a sweep opened, and the assertion that it opened exactly one.
 ///
 /// The remote starts with [`SWEEP_BASE`] on it, so "one branch" is one branch
@@ -3386,6 +3461,138 @@ fn an_unprovable_repair_is_reverted_and_filed_as_needing_direction() {
     assert!(
         sweep.has_verdict(LIBRARY_CVE) && sweep.has_verdict(OS_CVE),
         "both advisories are still unfixed and both get a row: {verdicts}"
+    );
+}
+
+/// **Every finding this run selected is one attempt, one commit and one pull
+/// request — however many files the fix spans.**
+///
+/// The claim M4c's §2 is: *one bounded attempt, every selected finding, one
+/// worktree*. Until this lane the sweep grouped its findings by the bump target
+/// four mechanical Go rules elected and ran one attempt per group, so this world
+/// — two library advisories in two modules — produced **two** attempts and two
+/// commits on the branch. Grouping is what had to go: it cannot be computed
+/// without knowing which file fixes a finding, which is exactly the judgement
+/// this milestone hands to the agent.
+///
+/// # Why the count is the assertion, and what is asserted beside it
+///
+/// One commit is the observable difference between one attempt and several, and
+/// it is the only one that cannot be faked by a run that did less work: a
+/// grouping build reds here with two, and a build that attempted nothing at all
+/// reds on the pull request and on the manifest below.
+///
+/// So four readings, each ruling out a different way of being green:
+///
+/// 1. **One commit**, read with `rev-list` out of the bare repository.
+/// 2. **It carries both files the attempt declared**, which is the *different
+///    files* half of the claim: the diff a single attempt lands is the whole of
+///    what it changed, and a build that still committed per group would put the
+///    manifest in one commit and the sums in another.
+/// 3. **It names both advisories**, because the body is what the next run's log
+///    scan reads and a commit naming one of two leaves the other to be
+///    re-proposed against a tree that already carries its fix.
+/// 4. **Both requirements really moved**, read off the remote. Without this the
+///    three above are satisfied by one attempt that fixed one advisory and
+///    claimed both.
+///
+/// # The advisory that is not in it
+///
+/// [`SCAN_TWO_LIBRARIES`] also reports the OS advisory every input document in
+/// this file carries, and the bound of two leaves it deferred rather than
+/// attempted — which is why the rescan may be [`RESCAN_CLEAN`]: its OS array
+/// holds an advisory that is in the input scan's baseline, so condition (b) reads
+/// it as nothing *new*. A world that took all three would need a rescan clearing
+/// all three, which is
+/// [`a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch`]'s
+/// world and not this one's.
+#[test]
+fn two_findings_in_different_files_are_one_attempt_and_one_commit() {
+    // Two, so both library advisories are taken and the OS one is deferred. The
+    // script's one attempt is what this lane is about, and a second answer is
+    // waiting for it: a build that still formed two groups gets a complete
+    // second attempt and fails on the count below rather than by starving at the
+    // socket, which would be evidence about the fixture instead.
+    let sweep = Sweep::scanning(
+        TWO_LIBRARIES,
+        SCAN_TWO_LIBRARIES,
+        2,
+        [
+            an_attempt(&[], &[LIBRARY_CVE], &[]),
+            an_attempt(&[], &[SECOND_LIBRARY_CVE], &[]),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+    );
+
+    let run = sweep.run();
+    let payload = sweep.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(payload["outcome"], "completed", "{payload}");
+
+    let branch = the_one_new_branch(&sweep);
+    let commits = pushed_commits(&sweep, &branch);
+    assert_eq!(
+        commits.len(),
+        1,
+        "every selected finding is one attempt, so the branch carries one \
+         commit: {commits:?}"
+    );
+    let (body, paths) = &commits[0];
+
+    // 2. Both files the attempt changed, in one commit.
+    assert_eq!(
+        paths,
+        &["go.mod".to_string(), "go.sum".to_string()],
+        "one attempt lands its whole diff, however many files it spans: {body}"
+    );
+
+    // 3. Both advisories in its body.
+    for cve in [LIBRARY_CVE, SECOND_LIBRARY_CVE] {
+        assert!(
+            body.contains(cve),
+            "a commit body naming one of two advisories leaves the other for the \
+             next run to re-propose: {body}"
+        );
+    }
+
+    // 4. And both requirements really moved.
+    let landed = pushed_file(&sweep, &branch, "go.mod");
+    for (module, fixed) in [
+        (MODULE, FIXED_VERSION),
+        (SECOND_MODULE, SECOND_FIXED_VERSION),
+    ] {
+        assert!(
+            landed.contains(&format!("{module} {fixed}")),
+            "the branch must carry {module} at {fixed}: {landed}"
+        );
+    }
+
+    // One pull request, and one attempt in the record.
+    let pulls = sweep.pull_requests();
+    assert_eq!(pulls.len(), 1, "exactly one pull request: {pulls:?}");
+    let reached = sweep.disposition(&run);
+    assert_eq!(
+        reached["attempts"],
+        serde_json::json!([{
+            "cves": [LIBRARY_CVE, SECOND_LIBRARY_CVE],
+            "status": "clean",
+            "claimed_complete": true,
+            "forbidden": [],
+        }]),
+        "one row, naming every finding it covered: {reached}"
+    );
+    assert_eq!(
+        sweep.gateway.served(),
+        3,
+        "two edits and a report is one attempt's whole turn, and a second \
+         answer was waiting for a build that made a second attempt"
     );
 }
 
