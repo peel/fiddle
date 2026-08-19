@@ -18,12 +18,6 @@ jobs:
         run: bash scripts/test-audit-skills.sh
       - name: Run model resolution fixtures
         run: bash scripts/test-resolve-subagent-model.sh
-      # The credentialed lane's shape. It belongs here rather than in rust.yml
-      # because it validates the shape of a file in this repository rather than
-      # anything Cargo builds, which is what the three steps above do too — this
-      # job is the repository-shape lane whatever its name says. It is also the
-      # only lane that can run it: `rust.yml` and `acceptance-repo.yml` are not
-      # on the default branch, and `scripts/gate.sh` is `nix develop` plus Cargo.
       - name: Check the credentialed lane never skips and guards before it builds
         run: bash scripts/check-github-effects-lane.sh
       - name: Run credentialed-lane guard fixtures

@@ -1,12 +1,3 @@
-# CI deliberately does NOT run `nix flake check`: inputs.ai-devtools is path:/Users/peel/wrk/ai-devtools,
-# which exists on no runner and has no substitute providing flakeModules.ai-tools. See Task 0 Step 4.
-# `nix flake check` therefore stays the local-only developer gate, and CI runs the same four Cargo
-# gate commands directly, plus the named M0 acceptance scenario recorded in
-# docs/technical/SYSTEM.md.
-#
-# dtolnay/rust-toolchain requires an explicit `toolchain` input and will not read
-# rust-toolchain.toml, so the channel below is a duplicate that must be changed in
-# lockstep with rust-toolchain.toml and .github/workflows/acceptance-repo.yml.
 name: rust
 on: [push, pull_request]
 jobs:
@@ -19,12 +10,6 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
-      # Named separately from the workspace test run so the milestone proof is
-      # visible in the job log rather than buried in it. The scenario needs no
-      # credentials: it removes GITHUB_TOKEN, GH_TOKEN, ANTHROPIC_API_KEY, and
-      # JIRA_API_TOKEN from every subprocess it launches, so this job never
-      # needs a secret and works unchanged on a fork. Documented as the M0
-      # acceptance command in docs/technical/SYSTEM.md.
       - name: M0 acceptance scenario (credential-free black-box)
         run: cargo test -p fiddle-acceptance --test m0_skeleton -- --nocapture
       - run: cargo build --release

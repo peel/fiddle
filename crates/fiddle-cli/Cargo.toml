@@ -14,29 +14,11 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
-# `fancy` pulls in the graphical report handler, which renders the offending
-# source line and caret that design §4.6 requires of a configuration error.
 miette = { workspace = true, features = ["fancy"] }
 thiserror.workspace = true
-# The binary owns the executor, because `fiddle_runtime::attempt` is a future:
-# a capability may wait on a model turn or a subprocess. `fiddle-core` must
-# never gain this edge — `crate_boundary` walks its resolved closure and fails
-# if `tokio` appears in it — but the CLI is the impure end of the workspace, and
-# something has to drive the runtime.
 tokio.workspace = true
-# The cancellation token an interrupt handler flips. It reaches the check
-# through `RepairConfig`, and it is the only thing that does: a workspace
-# command runs in a process group of its own, so the terminal's `SIGINT` no
-# longer reaches it and cancellation is the whole of the channel.
 tokio-util.workspace = true
 
-# Only the exit-code table's tests reach for a filesystem: they drive a real
-# attempt over a fixture root so the code they pin is the code a real conclusion
-# produces, rather than one hand-written beside the mapping it is checking.
 [dev-dependencies]
 tempfile.workspace = true
-# `[github] read_retry` is only worth having if the document reaches the
-# executor, and the only way to assert that is to build one and count what it
-# does. `IntegrationOperation` is an async trait, so the minimal world that test
-# holds needs the same attribute the runtime's own operations are written with.
 async-trait.workspace = true

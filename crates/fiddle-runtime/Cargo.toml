@@ -3,77 +3,21 @@ name = "fiddle-runtime"
 version.workspace = true
 edition.workspace = true
 
-# The port contract is stated against the traits, not against the stubs, so a
-# later real adapter living outside this crate can run the same harness. It is
-# compiled for this crate's own tests unconditionally and exported to other
-# crates behind this feature.
 [features]
 contract-harness = []
-# Builds the scripted `gh` the deterministic GitHub suite drives. Off by default
-# and switched on only through the self dev-dependency below, so it is present
-# for every `cargo test` and absent from every `cargo build --release`.
 gh-stub = []
-# The same arrangement for the recording `git` the publish suite drives. A
-# feature of its own rather than one shared switch, so that neither fixture can
-# be pulled into a build by a caller reaching for the other.
 git-stub = []
-# And for the scripted `wizcli` the CVE gate drives. Unlike the two above, this
-# fixture is not standing in for a program the suite could reach if it tried
-# harder: Wiz is testable only in CI, so the offline gate scans through this and
-# through nothing else, permanently. It is still `required-features` and still
-# off by default, because "a permanent fixture" and "shipped in the product" are
-# not the same thing.
 wiz-stub = []
-# And for the scripted `go` the attribution gate drives. Permanent for the same
-# reason `wiz-stub` is, and for a sharper one: rule 2's parent viability is
-# measured by changing a tree and asking a module proxy again, and this project's
-# dev shell has neither a Go toolchain nor a proxy. The adapter that spawns a real
-# `go` is production code and ships; what this fixture replaces is the toolchain
-# it spawns, so the offline gate can drive bump → tidy → confirm → revert.
 go-stub = []
-# And for the scripted check the evaluation gate drives. Permanent for the same
-# reason the two above are: the five checks of design §2.6 are `go build`,
-# `go fmt`, `go vet`, `docker build` and a `wizcli` rescan, and this dev shell
-# has no Go toolchain, no container daemon and no scanner. The adapter that
-# spawns them — `evaluate::InWorkspace` — is production code and ships; what this
-# fixture replaces is the five programs it spawns, so the offline gate can show
-# that each check really became a child of its own, started with the program and
-# the arguments its own declaration named.
 check-stub = []
 
-# The scripted `gh` the deterministic suite points `[github] cli.program` at.
-#
-# A `[[bin]]` rather than an example or a `harness = false` test target, for one
-# mechanical reason: `CARGO_BIN_EXE_gh_stub` is the only way an integration test
-# can name a helper binary with certainty, and a bin is the only one of the three
-# cargo still builds when a single test target is asked for by name — which the
-# task's own `cargo test -p fiddle-runtime --test github_cli` does. Examples are
-# not built for a named test target, and a `harness = false` test binary lands
-# under a hashed path with nothing to resolve it by.
-#
-# `required-features` is what keeps it out of the product: with `gh-stub` off,
-# cargo skips the target entirely, so `cargo build --release` never produces it.
-#
-# The file is `tests/gh_stub/gh_stub.rs` and not `tests/gh_stub/main.rs` because
-# cargo auto-discovers `tests/*/main.rs` as an integration test; a file claimed
-# by two targets builds twice and warns on every single cargo invocation. The
-# alternative — `autotests = false` — would mean every future test file has to be
-# declared here or silently never run, which is a far worse trap than a filename.
 [[bin]]
 name = "gh_stub"
 path = "tests/gh_stub/gh_stub.rs"
 required-features = ["gh-stub"]
-# It is a fixture, not a unit under test: without these, `cargo test` reports an
-# extra binary that contains no tests and `cargo doc` documents a `gh` that does
-# not exist. Neither disables *building* it, which is what the suite needs.
 test = false
 doc = false
 
-# The recording `git` the publish suite points `GitCli`'s `program` seam at.
-# Everything the block above argues for applies here unchanged: the bin target,
-# the `required-features` guard that keeps it out of `cargo build --release`, the
-# `<name>/<name>.rs` path that avoids cargo's `tests/*/main.rs` auto-discovery,
-# and `test`/`doc` off because it is a fixture rather than a unit.
 [[bin]]
 name = "git_stub"
 path = "tests/git_stub/git_stub.rs"
@@ -81,15 +25,6 @@ required-features = ["git-stub"]
 test = false
 doc = false
 
-# The scripted `wizcli` the CVE gate points the scanner's `program` seam at. The
-# two blocks above argue for every line of this one.
-#
-# One thing is specific to this fixture: it includes `tests/support/document.rs`
-# so the documents it writes to disk are the ones the projection lanes assert
-# against. That module reaches `serde_json` and deliberately nothing else,
-# because a `[[bin]]` is compiled against `[dependencies]` alone — a fixture
-# module that reached `tempfile` could not be shared with a stub, which is why
-# the documents live apart from the Go trees in `tests/support/cve.rs`.
 [[bin]]
 name = "wiz_stub"
 path = "tests/wiz_stub/wiz_stub.rs"
@@ -97,13 +32,6 @@ required-features = ["wiz-stub"]
 test = false
 doc = false
 
-# The scripted `go` the attribution suite points `cve::go::Go`'s `program` seam
-# at. Every line is argued for three blocks above; only the shared module differs.
-#
-# It includes `tests/support/go_proxy.rs`, which is where the offline `go` and the
-# module proxy behind it are written down once — the same constraint `wiz_stub` is
-# under, and the same consequence: that module reaches `serde_json` and nothing
-# else, because a `[[bin]]` is compiled against `[dependencies]` alone.
 [[bin]]
 name = "go_stub"
 path = "tests/go_stub/go_stub.rs"
@@ -111,10 +39,6 @@ required-features = ["go-stub"]
 test = false
 doc = false
 
-# The scripted check the evaluation suite points a `Check`'s own `program` at.
-# Every line is argued for in the three blocks above; this one shares no module
-# with the suite at all, because what it has to say it says through the record it
-# writes rather than through a document whose bytes anybody else asserts on.
 [[bin]]
 name = "check_stub"
 path = "tests/check_stub/check_stub.rs"
@@ -122,16 +46,6 @@ required-features = ["check-stub"]
 test = false
 doc = false
 
-# The shared fixture module, asserted about itself.
-#
-# Declared rather than auto-discovered because the module lives in a directory:
-# cargo finds `tests/*.rs` and `tests/*/main.rs`, and `main.rs` is the name the
-# two stub blocks above avoid for the reason written there. The root is named
-# after the target, following `tests/gh_stub/gh_stub.rs`.
-#
-# Without this target the module is only ever compiled as part of the suites that
-# include it, so nothing asserts that the worlds it builds differ from one
-# another — and the whole CVE milestone is written against those worlds.
 [[test]]
 name = "support"
 path = "tests/support/support.rs"
@@ -141,10 +55,6 @@ fiddle-core = { path = "../fiddle-core" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-# The impure side of the boundary. These live here and in no other crate: the
-# crate_boundary acceptance test walks fiddle-core's resolved closure and fails
-# if any of them becomes reachable from the pure domain. Nothing consumes them
-# yet; the later M1 tasks that build the Rig capability do.
 rig-core.workspace = true
 rig-agent.workspace = true
 async-trait.workspace = true
@@ -152,20 +62,11 @@ tokio.workspace = true
 tokio-util.workspace = true
 schemars.workspace = true
 
-# One call: `killpg`, so a timed-out check takes its whole process group with it
-# rather than only the process this runtime holds a handle to. There is no std
-# API for signalling a group, and `kill_on_drop` reaps the direct child alone —
-# which is not enough for a `cargo test` that has already spawned test binaries.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
-# This crate depending on itself is deliberate and is the whole mechanism behind
-# `gh-stub`: cargo unifies dev-dependency features only when it is building test
-# targets, so the scripted `gh` exists for `cargo test` and for nothing else. A
-# plain default feature would put it in the release build; leaving it to
-# `--all-features` would break the single-target test command.
 fiddle-runtime = { path = ".", features = [
   "gh-stub",
   "git-stub",

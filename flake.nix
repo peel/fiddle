@@ -48,11 +48,6 @@
         ai-tools.enable = true;
 
         devenv.shells.default = {
-          # devenv derives its root from $PWD, which pure evaluation blanks out,
-          # and then asserts. Day-to-day use goes through direnv (`use flake . --impure`),
-          # so $PWD is set and this resolves to the real checkout. Under pure
-          # evaluation (`nix flake check`, plain `nix develop`) fall back to a
-          # writable scratch root so the gate can evaluate the shell.
           devenv.root = let
             pwd = builtins.getEnv "PWD";
           in
@@ -67,20 +62,6 @@
             pkgs.alejandra
             pkgs.gh
             pkgs.jq
-            # For the M4a CVE fixtures only, which are Go modules and have to be
-            # built to prove the pair differs in the dependency and nothing else.
-            #
-            # It does not make the gate reach a network: the dependency's two
-            # releases are checked in under `tests/fixtures/cve-registry/`, and
-            # `cve_mitigation.rs` serves them to the toolchain as a module proxy
-            # over `file://` with no `,direct` fallback, so this is a compiler
-            # and not a package manager. Vendoring was the other candidate and
-            # that suite's header says why it was not taken — in short, under
-            # `-mod=vendor` nothing reads `go.sum`, and the pair would then
-            # differ in a `vendor/` tree as well as in the two manifest files.
-            # Production reaches a real `go` through `cve::go`, which spawns
-            # whatever the host CI provides; nothing in the offline suite goes
-            # through that adapter.
             pkgs.go
           ];
           difftastic.enable = true;

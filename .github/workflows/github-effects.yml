@@ -1,117 +1,4 @@
-# M2's remote half: the walk `scripts/live-github.sh` performs, run from a real
-# runner, so "remote GitHub Actions execution" is evidenced by a run id and a
-# conclusion rather than claimed from a file. It invokes that script rather than
-# repeating it — one lane, two places it can be started from.
-#
-# ## READ THIS FIRST: how to dispatch it, and why the ref is the whole question
-#
-# This file is on `main` as of `aa86c60`, so the workflow entity exists (id
-# 330906808, state active) and dispatch works. Pass a ref that carries **both**
-# the Rust workspace and this file — which is a smaller set than it sounds,
-# because `main` has this file and no workspace while `plan/agentic-factory-m0`
-# and `-m1` have the workspace and not this file. Today it is exactly one ref:
-#
-#     $ gh workflow run github-effects.yml --repo peel/fiddle \
-#         --ref ci/github-effects-dispatch-proof
-#
-# Once the milestone stack merges, `main` carries both and `--ref main` is the
-# right thing to pass; that branch exists only until then.
-#
-# **The entity's branch and the dispatched ref are two different things.**
-# `workflow_dispatch` resolves the *entity* on the default branch only — that is
-# why this file had to land on `main` — but `actions/checkout@v4` below is bare,
-# so the *code* the job builds comes from whatever `--ref` names. The ref is a
-# dispatch-time argument, not state in this file. One entity on `main` therefore
-# serves every milestone: `--ref plan/agentic-factory-m3` for M3, `--ref main`
-# once the stack merges. Three runs against this one entity id with different
-# refs settled it, with the outcomes tracking the code and not the workflow.
-#
-# So there is never any repointing to do, and there is exactly one way to get
-# this wrong: dispatching a ref that carries no Cargo workspace. `main` is such a
-# ref today — it predates M0 and has no `Cargo.toml` and no `crates/` — and run
-# 31374051935 is what that used to look like: an opaque `could not find
-# Cargo.toml` forty lines into a build log. The second step in the job below now
-# refuses that case by name, before the toolchain and the build.
-#
-# ### The history, because the shape recurs
-#
-# Until this file was on `main` the lane was not slow or awkward, it was
-# **inert**: GitHub created no entity for it, `gh workflow run` answered `HTTP
-# 404: workflow github-effects.yml not found on the default branch` for every
-# ref, and the Actions UI button did not appear either, because
-# `workflow_dispatch` *is* the manual trigger and there is no ref that works
-# around a missing entity. That is why M2 first shipped this lane's evidence from
-# a run obtained under a temporarily flipped default branch (31364842113). The
-# reproducible replacement is **31374193249**: `event=workflow_dispatch`,
-# `conclusion=success`, credentialed walk confirmed to have run rather than
-# skipped, dispatched with no default-branch flip.
-#
-# The lesson generalises past this file: any future dispatch-only lane inherits
-# the same property, and a milestone that plans one on a feature branch has
-# planned something it cannot exercise.
-#
-# ## This lane never gates
-#
-# `workflow_dispatch` is its only trigger. No `push`, no `pull_request`, no
-# `schedule`, and no reusable-workflow entry point either, because it needs a
-# credential and an external repository — the two things M0's hard constraint
-# keeps out of a milestone lane. `.github/workflows/rust.yml` is the gate and
-# stays offline and credential-free; nothing here is reachable from it.
-#
-# ## Why a named repository secret and not the job's GITHUB_TOKEN
-#
-# The walk writes to `peel/fiddle-effects-acceptance`: it pushes a branch, opens
-# a pull request, and dispatches a workflow run there. `secrets.GITHUB_TOKEN` is
-# minted per run and scoped to **this** repository alone, so it cannot write to
-# another repository whatever the `permissions:` block below says — that block
-# can only *narrow* the job token, never widen its reach past `peel/fiddle`.
-# Hence `FIDDLE_EFFECTS_TOKEN`, a fine-grained personal access token whose
-# repository selection is `peel/fiddle-effects-acceptance` and nothing else — so
-# it excludes `peel/fiddle`, and it excludes `peel/fiddle-acceptance` too.
-# `docs/technical/effects-repository.md` records the probe table that establishes
-# it: 200 on the effects repository's `/collaborators`, **403 on both others**,
-# and 403 on `/actions/secrets` for all three, which is the row proving it cannot
-# enumerate any repository's secrets.
-#
-# That second row read 200 until 2026-08-10 — the selection really was two
-# repositories wide, and this header asserted otherwise for a while. The table is
-# the authority: if it and a sentence ever disagree again, the sentence is the
-# thing that is wrong.
-#
-# This is the mirror image of `.github/workflows/acceptance-repo.yml`, whose
-# header explains at equal length why *no* secret appears in it: that lane only
-# ever reads a public repository, so the credential-free rule costs it nothing.
-# This one writes, so it cannot be credential-free — and therefore cannot gate.
-#
-# ## Why an absent secret is a failure and not a skip
-#
-# A silently skipped lane is indistinguishable from a passing one. So there is no
-# `if:` anywhere in this file — a job or step conditioned on the secret would go
-# green by not running — and no `continue-on-error:`, so the job's conclusion is
-# the lane's verdict. `${{ secrets.X }}` renders as the empty string when `X`
-# does not exist (GitHub does not error), which is why the first step tests for
-# emptiness and exits non-zero, before the checkout and the build, naming what it
-# needs. The script it eventually calls holds the same line with `:?` on
-# `FIDDLE_GITHUB_TOKEN`; this step is the earlier and louder of the two, not a
-# replacement for it.
-#
-# That property used to be held by this paragraph and by whoever remembered to
-# grep. It is now held by `scripts/check-github-effects-lane.sh`, which fails if
-# an `if:` or a `continue-on-error:` key appears anywhere in this file, if the
-# credential guard is not the first step, or if the workspace preflight does not
-# precede the toolchain and the build. `scripts/test-check-github-effects-lane.sh`
-# proves that checker discriminates by injecting each of those defects into a
-# copy of this file and requiring a non-zero exit, and it executes this file's
-# own preflight shell against a tree with and without a `Cargo.toml`. Both run in
-# `.github/workflows/skill-quality.yml`, beside the repository's other
-# repository-shape validators. Do not restore the prose-and-grep arrangement:
-# an absence is only evidence when something would otherwise notice its return.
 name: github-effects
-# Echoes the input back, so a dispatch can be found again in the runs listing —
-# the same trick, for the same reason, as the `run-name` the dispatch target in
-# `peel/fiddle-effects-acceptance` carries. It also makes `inputs` observably
-# resolvable at workflow level, which is what the `concurrency` group below
-# depends on.
 run-name: github-effects ${{ inputs.fiddle_effect_id || github.run_id }}
 on:
   workflow_dispatch:
@@ -119,17 +6,8 @@ on:
       fiddle_effect_id:
         description: "Effect id, echoed into run-name so a dispatch can be found again"
         required: false
-# Only what `actions/checkout` of this repository needs. The credentialed work
-# does not use this token at all.
 permissions:
   contents: read
-# Keyed on the effect id with `cancel-in-progress: false` — the same contract
-# `EnsureCheckRequested` requires of its own dispatch target, and for the same
-# reason: `POST .../dispatches` answers 204 with no run id, so a run cancelled
-# mid-flight turns a write whose answer was already unavailable into a genuinely
-# ambiguous one, which is the single outcome this milestone must not manufacture.
-# With no id supplied the group falls back to this run's own id, so two anonymous
-# dispatches still never share a group and neither can cancel the other.
 concurrency:
   group: github-effects-${{ inputs.fiddle_effect_id || github.run_id }}
   cancel-in-progress: false
@@ -137,8 +15,6 @@ jobs:
   effects:
     runs-on: ubuntu-latest
     steps:
-      # First, because an absent credential should cost seconds and name itself
-      # rather than fail five minutes later inside the script's own `:?`.
       - name: Require FIDDLE_EFFECTS_TOKEN — fail loudly, never skip
         env:
           FIDDLE_EFFECTS_TOKEN: ${{ secrets.FIDDLE_EFFECTS_TOKEN }}
@@ -175,28 +51,6 @@ jobs:
           fi
           echo "FIDDLE_EFFECTS_TOKEN is present. Its value is never printed or logged."
       - uses: actions/checkout@v4
-      # Second, and for the same reason the credential guard is first: a
-      # dispatch that cannot possibly succeed should say why in seconds rather
-      # than forty lines into a build log.
-      #
-      # `actions/checkout@v4` is bare here, so the **dispatched `--ref` decides
-      # which code this job builds** — the workflow entity lives on `main`
-      # because `workflow_dispatch` resolves entities there, but the ref is a
-      # dispatch-time argument and is not state in this file. That is why one
-      # entity on `main` serves every milestone and why no repointing is ever
-      # owed. It is also why `--ref main` fails today: `main` predates M0 and
-      # carries no `Cargo.toml` and no `crates/` at all, so `cargo build
-      # --release` dies with `could not find Cargo.toml in
-      # /home/runner/work/fiddle/fiddle` — a legitimate invocation answered by
-      # an opaque error about the wrong thing. Run 31374051935 is that failure.
-      #
-      # This runs *after* checkout rather than before it because the precondition
-      # is a property of the checked-out tree, which is the same object
-      # `cargo build` will read; asserting it against anything else (a contents
-      # API probe at a ref, say) would assert over a different object and could
-      # disagree with the one that fails. Checkout of this repository costs
-      # seconds. The toolchain install and the release build, which this step
-      # precedes, cost minutes — so guarding here saves essentially all of it.
       - name: Require a Cargo workspace on the dispatched ref — fail before the build
         run: |
           if [ -f Cargo.toml ]; then
@@ -240,22 +94,8 @@ jobs:
           } >&2
           exit 1
       - uses: dtolnay/rust-toolchain@master
-        # Kept in lockstep with rust-toolchain.toml, rust.yml and
-        # acceptance-repo.yml: dtolnay/rust-toolchain requires an explicit
-        # toolchain and will not read that file.
         with: { toolchain: "1.97.1" }
       - run: cargo build --release
-      # `gh`, `git` and `jq` are all preinstalled on ubuntu-latest, and the
-      # script checks for each and fails with a clear message rather than a
-      # confusing one if any is missing.
-      #
-      # Only FIDDLE_GITHUB_TOKEN is set: that is the name both this script and
-      # the `[github] token = { env = ... }` table it writes agree on, and the
-      # secret's different name is mapped to it here, on one line. GH_TOKEN is
-      # deliberately *not* set, because the script exports it from
-      # FIDDLE_GITHUB_TOKEN itself — alongside a scratch GH_CONFIG_DIR, so the
-      # credential its `gh` uses is provably the one it was handed. A second
-      # source here would mask a regression in exactly that plumbing.
       - name: M2 GitHub-effect walk (live, credentialed, never part of the gate)
         env:
           FIDDLE_GITHUB_TOKEN: ${{ secrets.FIDDLE_EFFECTS_TOKEN }}
