@@ -488,6 +488,41 @@ fn valued_mentions(text: &str, scheme: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every **shape template** in `text`: a colon-joined pair whose scheme side is
+/// not one of `schemes`, and which therefore stands for any scheme at all.
+///
+/// `beans:fiddle-m0-demo` is not one — it is one scheme's shape, and true of that
+/// scheme. `<scheme>:<value>` is: it says what *a* reference is made of, so it is
+/// a claim about the whole grammar, and a grammar with two shapes has no single
+/// template that is true of it. Which side of that line a pair falls on is
+/// decided by the scheme list read off the binary, so nothing here is pinned to
+/// today's placeholder spelling — `<source>:<id>` reads the same way, and a sixth
+/// real scheme stops being a template the day it is added.
+///
+/// The `<` and `>` a placeholder is conventionally written in are trimmed before
+/// the comparison rather than required, because a template need not be written in
+/// angle brackets to be one. A doubled colon is excluded, so an identifier like
+/// `fiddle::invocation_ref::malformed` is not read as a shape.
+fn shape_templates(text: &str, schemes: &[&str]) -> Vec<String> {
+    let word = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '<' | '>');
+    text.match_indices(':')
+        .filter(|(at, _)| {
+            text[at + 1..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '<'))
+        })
+        .filter_map(|(at, _)| {
+            let head = text[..at].rsplit(|c: char| !word(c)).next()?;
+            let scheme = head.trim_matches(|c| matches!(c, '<' | '>'));
+            (!scheme.is_empty() && !schemes.contains(&scheme)).then(|| {
+                let tail: String = text[at + 1..].chars().take_while(|c| word(*c)).collect();
+                format!("{head}:{tail}")
+            })
+        })
+        .collect()
+}
+
 /// **No operator-facing surface promises a form this build does not implement.**
 ///
 /// This is the lane that was missing, and its absence is why four surfaces came
@@ -615,7 +650,29 @@ fn no_operator_facing_surface_promises_the_valued_form() {
 /// 3. every grammar surface must then name each such scheme, and never in a valued
 ///    position. Naming it is the half the old wording failed: a help that lists
 ///    only the valued shape tells the operator this milestone exists for that
-///    their invocation is illegal.
+///    their invocation is illegal;
+/// 4. and no *part* of a surface denies the bare form by itself. A diagnostic is
+///    two things an operator reads separately — the line that judges what they
+///    typed, and the advice beneath it — so each is held to (3) alone: a part that
+///    gives a **shape template** must name the schemes that template is false of,
+///    in that part and not in a sentence below it. A template is a colon-joined
+///    pair whose scheme side is not one of the schemes (1) read off the binary, so
+///    it is recognised by standing for any scheme rather than by its spelling:
+///    `<source>:<id>` reads the same as `<scheme>:<value>`, and a sixth real scheme
+///    stops being a template the day it is added.
+///
+/// **(4) is here because (1)–(3) were measured to be blind without it**, and that
+/// measurement is the whole reason to believe this lane now guards what it is named
+/// for. With the `Malformed` message reverted in place to "invocation reference must
+/// be `<scheme>:<value>`" and the corrected help left underneath it, every
+/// assertion in (1)–(3) passed: `cve` was named in the advice, so the flattened
+/// whole text named it, and the one sentence that told the operator their reference
+/// was illegal was free to go on denying the form the binary accepts. The revert
+/// was caught only by two lanes that assert the message text — the coupling this
+/// lane exists so as not to need. Both halves of the defect it is named for are now
+/// covered: the advertised form nothing implements is
+/// `no_operator_facing_surface_promises_the_valued_form`'s, and the implemented form
+/// a surface denies is (4)'s.
 ///
 /// There is nothing here to keep in step with the wording, which is the point. The
 /// oracle is behaviour, not `stands_alone` — a lane reading the enum would agree
@@ -634,7 +691,23 @@ fn no_operator_facing_surface_promises_the_valued_form() {
 /// lists subcommands and says nothing about references, and should not have to.
 /// Triggering on a pattern like `<scheme>:<value>` is the phrase hunt that let this
 /// defect through twice — the wording that misled had `must be` in it, and the next
-/// one need not.
+/// one need not. That last objection is to a template used as a **gate** on whether
+/// a surface gets checked, where a rewording quietly opts the surface out. (4) uses
+/// one as a **prohibition**, where the failure modes run the other way: a rewording
+/// that keeps the template still reds, and one that drops it gives up nothing this
+/// lane was holding. They are not the same instrument.
+///
+/// **A denial written without a shape is not caught.** (4) recognises a universal
+/// claim about the grammar by the template it is made of, and "a reference must
+/// name the work it acts on" makes that claim in prose. Two stronger rules were
+/// weighed and rejected on evidence. Requiring every part to name the
+/// standing-alone schemes reds on the corrected verdict itself, which names two
+/// shapes and no schemes and is right to — a diagnostic that had to list `cve` in
+/// the sentence judging `cvfoo` would be worse text. Requiring the parts to agree
+/// with each other means deciding whether two sentences contradict, which is
+/// reading meaning. So the boundary is a *shape offered as the shape*, which is
+/// what both instances of this defect were made of; a prose denial is a review
+/// matter and `docs/BACKLOG.md` records it.
 ///
 /// So the boundary is: **placement** is derived and cannot go stale, while
 /// **membership of the list** — and the flag saying which surfaces enumerate the
@@ -679,6 +752,34 @@ fn every_grammar_surface_offers_the_bare_form_for_every_scheme_that_takes_it() {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
+    };
+
+    // A diagnostic reaches an operator as two things that travel apart: the `×`
+    // line that judges what they typed, and the `help:` advice beneath it. They
+    // are read separately — a log line, a CI summary and a shell scrollback all
+    // keep the first and lose the second — and this lane has measured what
+    // reading them as one blob costs. The defect it exists for lived in the
+    // verdict; with the advice below it correct, every whole-text assertion in
+    // this lane was satisfied by the word `cve` appearing in that advice, and the
+    // verdict was free to go on denying the bare form. So the surfaces below are
+    // held part by part as well as whole.
+    //
+    // A surface with no `×` is clap's, which has one part. The code line above
+    // the verdict is dropped with the split: it is an identifier for machines,
+    // not a sentence to an operator.
+    let parts = |rendered: &str| -> Vec<(&'static str, String)> {
+        let Some((_, judged)) = rendered.split_once('×') else {
+            return vec![("its text", flatten(rendered))];
+        };
+        let (verdict, advice) = judged.split_once("help:").unwrap_or((judged, ""));
+        [
+            ("the line that judges the reference", verdict),
+            ("the advice beneath that line", advice),
+        ]
+        .into_iter()
+        .map(|(part, rendered)| (part, flatten(rendered)))
+        .filter(|(_, rendered)| !rendered.is_empty())
+        .collect()
     };
 
     // Step 1: the schemes, from the one diagnostic whose job is to name them all.
@@ -779,6 +880,31 @@ fn every_grammar_surface_offers_the_bare_form_for_every_scheme_that_takes_it() {
         ),
     ];
 
+    // The template half of the loop below is vacuous on a part that offers no
+    // template, and whether any part offers one is a fact about today's wording
+    // rather than about the property — a help that dropped its placeholder would
+    // silently take the check with it. So the detector is exercised on the two
+    // strings the distinction is about: the wording this lane is downstream of,
+    // and the concrete example that must not be mistaken for it.
+    assert_eq!(
+        shape_templates(
+            "invocation reference must be <scheme>:<value>, got `x`",
+            &schemes
+        ),
+        vec!["<scheme>:<value>"],
+        "the detector no longer sees a shape template, so the check below holds \
+         nothing: schemes={schemes:?}"
+    );
+    assert!(
+        shape_templates(
+            "take a value, as in `beans:fiddle-m0-demo`: beans, cve",
+            &schemes
+        )
+        .is_empty(),
+        "the detector reads one scheme's own example as a claim about every scheme, \
+         so the check below reds on correct text: schemes={schemes:?}"
+    );
+
     for (surface, rendered, _) in &surfaces {
         let advice = flatten(rendered);
         for scheme in &stand_alone {
@@ -795,6 +921,31 @@ fn every_grammar_surface_offers_the_bare_form_for_every_scheme_that_takes_it() {
                 "{surface} shows `{scheme}` carrying a value, and the bare form is \
                  what this build acts on: {valued:?}"
             );
+        }
+
+        // And no part of it denies the bare form on its own. A part that offers a
+        // shape template offers it as *the* shape a reference has, so it has to
+        // name the schemes that shape is false of, in the same breath and not in a
+        // sentence beneath. Both `--help` surfaces do exactly that — they write
+        // `<scheme>:<value>` and then name `cve` as standing alone — and so passing
+        // this is not a demand to stop using placeholders. It is a demand that a
+        // placeholder not be the last word to a caller whose reference has no
+        // colon in it.
+        for (part, read) in parts(rendered) {
+            let templates = shape_templates(&read, &schemes);
+            if templates.is_empty() {
+                continue;
+            }
+            for scheme in &stand_alone {
+                assert!(
+                    read.contains(*scheme),
+                    "{surface}: {part} gives {templates:?} as the shape a reference \
+                     takes and never names `{scheme}`, which is a complete reference \
+                     on its own — so this part, read as an operator reads it, denies \
+                     the bare form. Whatever is written elsewhere in the same output \
+                     does not travel with it: {read}"
+                );
+            }
         }
     }
 
