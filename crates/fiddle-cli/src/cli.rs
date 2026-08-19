@@ -58,10 +58,17 @@ pub enum Command {
         // malformed shape can be reported with its own diagnostic rather than
         // clap's generic value error. Doc comments on this field become
         // `--help` text, so the rationale stays a plain comment.
+        // `cve:CVE-2026-1234` is deliberately not described here. It parses —
+        // the grammar is what a milestone implementing narrowing builds on — and
+        // nothing in this build acts on one named finding, so the dispatcher
+        // refuses it (`reference_from` in `main.rs`). Help that offered the form
+        // would be an advertisement for work the binary cannot do, which is the
+        // defect this sentence was: it named the form as one of two things a
+        // caller could write. ADR 019's amendment records why the grammar stays.
         /// The work to inspect, as `<scheme>:<value>` — for example
         /// `beans:fiddle-m0-demo`. A scheme that finds its own work stands
         /// alone and takes no value: `cve` scans the configured image and
-        /// inspects what it finds, while `cve:CVE-2026-1234` names one finding.
+        /// inspects what it finds.
         #[arg(value_name = "INVOCATION_REF")]
         invocation_ref: String,
 
@@ -103,10 +110,17 @@ pub enum Command {
     /// same derivation `inspect` reports, so a run over work that is already
     /// accounted for completes without executing.
     Run {
+        // `cve:CVE-2026-1234` is deliberately not described here. It parses —
+        // the grammar is what a milestone implementing narrowing builds on — and
+        // nothing in this build acts on one named finding, so the dispatcher
+        // refuses it (`reference_from` in `main.rs`). Help that offered the form
+        // would be an advertisement for work the binary cannot do, which is the
+        // defect this sentence was: it named the form as one of two things a
+        // caller could write. ADR 019's amendment records why the grammar stays.
         /// The work to run, as `<scheme>:<value>` — for example
         /// `beans:fiddle-m0-demo`. A scheme that finds its own work stands
         /// alone and takes no value: `cve` scans the configured image and
-        /// runs what it finds, while `cve:CVE-2026-1234` names one finding.
+        /// runs what it finds.
         #[arg(value_name = "INVOCATION_REF")]
         invocation_ref: String,
 

@@ -97,6 +97,10 @@ enum CliError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     PathUnusable(#[from] PathUnusable),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    UnimplementedForm(#[from] UnimplementedForm),
 }
 
 /// A `--capability` value naming nothing this build can execute.
@@ -440,12 +444,20 @@ impl miette::Diagnostic for InvalidInvocationRef {
     /// The repair, in the words of the defect — and for one defect, of the
     /// *scheme* it was made with.
     ///
-    /// An empty value has one legal repair for a scheme that names a work item and
-    /// **two** for a scheme that discovers its own, and this help named only the
-    /// appending one for both. That was universally correct until a scheme could
-    /// stand alone; afterwards it was advice that quietly redirected a caller from
-    /// a sweep to a tracker read — the same exit code, different work. So the
-    /// `EmptyValue` arm reads the scheme the error carries and offers both.
+    /// An empty value has one legal repair for a scheme that names a work item —
+    /// append the identifier — and a *different* one for a scheme that discovers
+    /// its own: drop the separator and sweep. This help named the appending one
+    /// for both. That was universally correct until a scheme could stand alone;
+    /// afterwards it was advice that quietly redirected a caller from a sweep to a
+    /// tracker read — the same exit code, different work. So the `EmptyValue` arm
+    /// reads the scheme the error carries and gives each the repair that is true
+    /// of it.
+    ///
+    /// It offered the valued form as a *second* repair for a scheme that stands
+    /// alone, and that is gone: `cve:<identifier>` parses and is then refused by
+    /// [`reference_from`], so offering it sent a caller from one refusal to
+    /// another. What replaces it is the reason, because a caller who wrote `cve:`
+    /// was on their way to writing the form that is refused.
     ///
     /// The same arm reaches a caller whose scheme is not a scheme at all, because
     /// the grammar checks the value first. Those callers get the third message,
@@ -468,9 +480,9 @@ impl miette::Diagnostic for InvalidInvocationRef {
             }
             InvocationRefError::EmptyValue { scheme } => match scheme {
                 Some(scheme) if scheme.stands_alone() => format!(
-                    "`{scheme}` discovers its own work, so it takes either form and they are \
-                     different runs: write `{scheme}` to sweep what the configuration names, \
-                     or `{scheme}:<identifier>` to act on the one item you are naming"
+                    "`{scheme}` discovers its own work, so it needs no value: write \
+                     `{scheme}` to sweep what the configuration names; acting on one named \
+                     item is not implemented in this build"
                 ),
                 Some(_) => "the scheme is recognised but names no work; append the identifier, as in `beans:fiddle-m0-demo`".to_string(),
                 // `None` is an empty value written after a scheme fiddle does
@@ -517,6 +529,69 @@ impl miette::Diagnostic for InvalidInvocationRef {
     }
 }
 
+/// **A reference whose shape this build implements no capability for.**
+///
+/// `cve:CVE-2026-1234` parses: [`InvocationScheme::stands_alone`] means a scheme
+/// *may* omit its value, not that it must, and ADR 019 keeps the valued form in
+/// the grammar because a milestone implementing narrowing builds on it. What does
+/// not exist is anything that acts on the narrowed reference. `MitigateConfig`
+/// declares no advisory field and the sweep scans `[orchestration.cve] image`
+/// alone, so both of the two things a run could do here are wrong: block on a
+/// work-item read that has no source, or — handed a stub work file — sweep the
+/// whole image while deriving `effect_id` from the narrowed reference, which is a
+/// second branch and a second pull request for work already covered.
+///
+/// So the invocation is refused, and refused *before* the configuration is
+/// loaded, so a caller is told about the argument they typed rather than about a
+/// table the run should never have got as far as needing. The alternative — an
+/// "accepted but not implemented" disclosure, as `max_capability_attempts` has —
+/// was rejected: a config bound that is merely unenforced is not the same risk as
+/// an invocation that would silently act on the wrong scope.
+///
+/// Keyed on `stands_alone` rather than on `Cve`, because the property is what
+/// makes the value meaningless to the capability: any scheme that discovers its
+/// own work has the same gap the day it is added, and M7's Stabilize is named in
+/// ADR 019 as inheriting this shape.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("`{reference}` is not implemented in this build")]
+#[diagnostic(
+    code(fiddle::invocation_ref::unimplemented_form),
+    help(
+        "`{scheme}` discovers its own work; write `{scheme}` to sweep what the configuration names"
+    )
+)]
+struct UnimplementedForm {
+    /// The reference as the caller wrote it, canonicalised — named because the
+    /// caller's next move is to edit exactly this argument.
+    reference: String,
+    /// The scheme alone, which is the whole of the repair.
+    scheme: &'static str,
+}
+
+/// **The positional reference, parsed and then checked for a form this build can
+/// act on.**
+///
+/// One function called by both `inspect` and `run`, and that is the point rather
+/// than an economy — the same one [`Selection::resolve`] is one function for.
+/// `inspect` exists to say what a run would do, so a build where `run` refuses a
+/// reference and `inspect` reports a plan for it would have `inspect` describing
+/// work the binary cannot do. **That is why `inspect` refuses it too**, and the
+/// refusal costs `inspect` nothing it is documented to keep: it is reached before
+/// the configuration is read, so nothing is opened, no fixture is touched and no
+/// credential is resolved. A diagnostic is the one thing a read-only command may
+/// always produce.
+fn reference_from(argument: &str) -> Result<InvocationRef, CliError> {
+    let reference: InvocationRef = argument.parse().map_err(InvalidInvocationRef::from)?;
+    if reference.scheme().stands_alone() && !reference.value().is_empty() {
+        return Err(UnimplementedForm {
+            reference: reference.as_str().to_string(),
+            scheme: reference.scheme().as_str(),
+        }
+        .into());
+    }
+    Ok(reference)
+}
+
 /// The single realisation of the exit-code table (design §4.5).
 ///
 /// The whole table is one `match`, so every row is visible at once and a new
@@ -551,7 +626,12 @@ fn exit_code_for(termination: &Termination) -> u8 {
             | CliError::Gateway(_)
             // A path the document names that this machine cannot supply is a
             // setup to fix, not work that was attempted and failed.
-            | CliError::PathUnusable(_),
+            | CliError::PathUnusable(_)
+            // A reference in a shape this build has no capability for is the same
+            // row for the same reason: it is invalid input, and nothing was
+            // attempted. Not 20 — a failure is a conclusion fiddle reached about
+            // the work, and this invocation never started.
+            | CliError::UnimplementedForm(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -1586,9 +1666,12 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             //
             // The reference is validated *before* the configuration is loaded,
             // so a caller who mistyped the argument is told about the argument
-            // rather than about a document they never mentioned.
-            let reference: InvocationRef =
-                invocation_ref.parse().map_err(InvalidInvocationRef::from)?;
+            // rather than about a document they never mentioned. `run`'s own
+            // parse is this same function, which is what makes the two commands
+            // refuse the same references — see [`reference_from`], and
+            // [`UnimplementedForm`] for the one refusal that is about a form
+            // rather than about the grammar.
+            let reference = reference_from(invocation_ref)?;
             // Resolved through the very same expression `run` uses, and that is
             // the point rather than an economy: a second spelling of the default
             // is exactly how the two commands would drift apart again. It is one
@@ -1640,8 +1723,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             // a document they never mentioned. `--capability` is resolved here
             // too, before anything is observed and long before anything could
             // be executed, so a rejected invocation provably did nothing.
-            let reference: InvocationRef =
-                invocation_ref.parse().map_err(InvalidInvocationRef::from)?;
+            let reference = reference_from(invocation_ref)?;
             // Absent means whatever the reference's scheme means by it: `cve`
             // selects the sweep, every other scheme keeps M0's `stub_mark`. The
             // resolution is `inspect`'s own, for its reason — see
@@ -1822,6 +1904,16 @@ mod tests {
                 })
             ))),
             EXIT_INVALID_INPUT
+        );
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(CliError::UnimplementedForm(
+                UnimplementedForm {
+                    reference: "cve:CVE-2026-1234".into(),
+                    scheme: "cve",
+                }
+            ))),
+            EXIT_INVALID_INPUT,
+            "a form this build cannot act on is invalid input, not a run that failed"
         );
     }
 

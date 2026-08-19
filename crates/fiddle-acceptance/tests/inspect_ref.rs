@@ -203,19 +203,28 @@ fn a_traversing_reference_creates_nothing_anywhere() {
 /// for.**
 ///
 /// For every scheme but one there is a single legal repair: name the work. `cve`
-/// stands alone, so a caller who wrote `cve:` has *two* — drop the separator for a
-/// sweep that discovers its own findings, or name one finding to remediate — and
-/// those are different work. A
-/// sweep scans the configured image and opens what it finds; `cve:CVE-2026-1234`
-/// remediates the finding it was handed. Advice that named only the second sent
-/// an operator who wanted the first to the wrong one, silently and with an exit
-/// code of 2 either way.
+/// stands alone, so the repair a caller who wrote `cve:` needs is not the one the
+/// others need — drop the separator and sweep, rather than name the work — and
+/// those are different work. A sweep scans the configured image and opens what it
+/// finds. Advice that named only the appending repair sent an operator who wanted
+/// the sweep to the wrong one, silently and with an exit code of 2 either way.
 ///
 /// The two halves are asserted together, and the second is what makes the first
 /// worth having: the bare form has to be *offered* for `cve:`, and it has to be
 /// **absent** for `beans:`, where writing `beans` alone is refused by the grammar.
 /// A help string that offered both repairs to everybody would pass the first
 /// assertion and be a new defect.
+///
+/// # Why the valued form is asserted *absent* here
+///
+/// This assertion used to be its mirror image: it required the diagnostic to
+/// contain `cve:<identifier>` and called it "the valued form, which remediates
+/// one finding". Nothing in this build remediates one named finding, so that was
+/// a lane pinning a sentence rather than a behaviour — and it kept the sentence
+/// alive by pinning it. A repair has to be an invocation that works, and this one
+/// is refused; see `no_operator_facing_surface_promises_the_valued_form` for the
+/// property over every surface, and `the_valued_form_of_a_self_discovering_scheme
+/// _is_refused` for the refusal itself.
 #[test]
 fn an_empty_value_is_told_every_repair_its_own_scheme_admits() {
     let refuse = |arg: &str| {
@@ -243,8 +252,9 @@ fn an_empty_value_is_told_every_repair_its_own_scheme_admits() {
         "the bare form is one of the two repairs and must be spelled: {sweep}"
     );
     assert!(
-        sweep.contains("cve:<identifier>"),
-        "and so is the valued form, which remediates one finding: {sweep}"
+        valued_cve_mentions(&sweep).is_empty(),
+        "the valued form is not implemented in this build, so offering it as a repair \
+         sends a caller from one refusal to another: {sweep}"
     );
 
     let tracked = refuse("beans:");
@@ -370,5 +380,181 @@ fn an_empty_value_after_an_unknown_scheme_is_not_told_its_scheme_is_recognised()
                  schemes that need no value is advice refused when followed: {advice}"
             );
         }
+    }
+}
+
+/// **The valued form of a self-discovering scheme is refused, not silently
+/// rescoped.**
+///
+/// `cve:CVE-2026-1234` parses, and ADR 019 keeps it parsing — the grammar is
+/// what a milestone implementing narrowing builds on. What does not exist is a
+/// capability that acts on one named finding: `MitigateConfig` declares no
+/// advisory field and the sweep scans `[orchestration.cve] image` alone. So the
+/// two things a run over this reference could do are both wrong. It can block on
+/// a work-item read that has no source, which is what it did; or, handed a stub
+/// work file, it can sweep the entire image while deriving its identity from the
+/// narrowed reference — a second branch and a second pull request for work
+/// already covered, which is the duplicate-effect hazard ADR 019's own context
+/// names, arriving by the other door.
+///
+/// Refused before the configuration is read, and refused whatever
+/// `--capability` asked for: the *form* is what this build cannot act on, and no
+/// capability changes that. Both invocations are driven because they failed
+/// differently and neither failure mentioned the form — the operator's own
+/// `fiddle run cve:CVE-2026-1234` exited 2 naming a table it should never have
+/// got as far as needing, and `--capability stub_mark` exited 20 having asked
+/// the stub port for `stub:work/CVE-2026-1234.json`.
+///
+/// The filesystem is asserted for the same reason
+/// `a_traversing_reference_creates_nothing_anywhere` asserts it: a non-zero exit
+/// is not evidence that nothing was attempted.
+#[test]
+fn the_valued_form_of_a_self_discovering_scheme_is_refused() {
+    let s = Scenario::new();
+    let before = s.project_tree();
+
+    for extra in [Vec::new(), vec!["--capability", "stub_mark"]] {
+        let out = s.run_raw_with(&extra, "cve:CVE-2026-1234");
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "a form this build cannot act on is invalid input; extra={extra:?} \
+             stderr={stderr}"
+        );
+        assert!(
+            stderr.contains("not implemented in this build"),
+            "the refusal has to say the form is unimplemented, or its reader takes it \
+             for a configuration defect and goes looking for the table to add; \
+             extra={extra:?} stderr={stderr}"
+        );
+        assert!(
+            stderr.contains("cve:CVE-2026-1234"),
+            "and it has to name the reference it refused; extra={extra:?} \
+             stderr={stderr}"
+        );
+        assert!(
+            stderr.contains("write `cve`"),
+            "the one invocation this build does implement is the sweep, and it has to \
+             be spelled; extra={extra:?} stderr={stderr}"
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "a refused invocation must write nothing to stdout, got {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+
+    assert_eq!(
+        s.project_tree(),
+        before,
+        "a refused form must leave the project tree byte for byte as it found it"
+    );
+    assert!(
+        !s.report_dir().exists(),
+        "a refused form must not bring `<report.dir>` into existence"
+    );
+}
+
+/// Every occurrence in `text` of a `cve` reference *carrying a value*, with a
+/// little of what follows it, so a failure names the sentence it found.
+///
+/// A `cve:` written with nothing usable after it — as in "`cve:` is still an
+/// error" — is not a mention of the valued form, so the character after the
+/// colon is what decides. The set is the value grammar ADR 011 fixes, spelled
+/// here rather than read from `fiddle-core` for the reason this crate depends on
+/// nothing of it, plus `<`, which is how help text writes a placeholder.
+fn valued_cve_mentions(text: &str) -> Vec<String> {
+    text.match_indices("cve:")
+        .filter(|(at, _)| {
+            text[at + "cve:".len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '<'))
+        })
+        .map(|(at, _)| text[at..].chars().take(32).collect())
+        .collect()
+}
+
+/// **No operator-facing surface promises a form this build does not implement.**
+///
+/// This is the lane that was missing, and its absence is why four surfaces came
+/// to advertise `cve:CVE-2026-1234` while nothing implemented it. Two of the
+/// four were introduced by a commit whose subject was "help text describes the
+/// grammar the binary has, not the one it had": help written from an ADR
+/// describes what was *decided*, and only something driving the binary can say
+/// what was *built*.
+///
+/// The lane that should have caught it did the opposite. It asserted that the
+/// `cve:` diagnostic **contained** `cve:<identifier>` and called it "the valued
+/// form, which remediates one finding" — a test whose subject is a sentence,
+/// which cannot notice that the sentence is false. So every surface here is read
+/// off the compiled binary: `--help` as clap renders it, and each diagnostic as
+/// miette renders it.
+///
+/// The refusal is checked too, and it is the *only* surface allowed to name the
+/// valued form, because naming what it refuses is its job. Without that half the
+/// property would be satisfiable by saying nothing anywhere, which is how an
+/// operator ends up with an invocation that fails for no stated reason.
+#[test]
+fn no_operator_facing_surface_promises_the_valued_form() {
+    let text = |args: &[&str], expected: Option<i32>, stderr: bool| -> String {
+        let out = support::fiddle_command().args(args).output().unwrap();
+        if let Some(expected) = expected {
+            assert_eq!(
+                out.status.code(),
+                Some(expected),
+                "args={args:?} stdout={} stderr={}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        String::from_utf8(if stderr { out.stderr } else { out.stdout }).unwrap()
+    };
+    let help = |args: &[&str]| text(args, Some(0), false);
+    let refusal = |reference: &str, command: &str| {
+        text(
+            &[
+                command,
+                reference,
+                "--config",
+                "../../tests/fixtures/fiddle.toml",
+            ],
+            Some(2),
+            true,
+        )
+    };
+
+    for (surface, rendered) in [
+        ("fiddle --help", help(&["--help"])),
+        ("fiddle inspect --help", help(&["inspect", "--help"])),
+        ("fiddle run --help", help(&["run", "--help"])),
+        (
+            "the `cve:` diagnostic from inspect",
+            refusal("cve:", "inspect"),
+        ),
+        ("the `cve:` diagnostic from run", refusal("cve:", "run")),
+    ] {
+        let promised = valued_cve_mentions(&rendered);
+        assert!(
+            promised.is_empty(),
+            "{surface} offers a valued `cve` reference, and no capability in this \
+             build acts on one — an operator following it reaches a refusal: \
+             {promised:?}"
+        );
+    }
+
+    for command in ["inspect", "run"] {
+        let refused = refusal("cve:CVE-2026-1234", command);
+        assert!(
+            !valued_cve_mentions(&refused).is_empty(),
+            "the surface that refuses the form has to name it, or its reader cannot \
+             tell which half of their reference was the problem: {command} {refused}"
+        );
+        assert!(
+            refused.contains("not implemented in this build"),
+            "and it has to say why, in the words every other surface is silent in: \
+             {command} {refused}"
+        );
     }
 }

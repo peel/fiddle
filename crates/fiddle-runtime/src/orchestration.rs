@@ -140,11 +140,22 @@ impl<'a> Addressed<'a> {
     /// What `reference` addresses.
     ///
     /// Decided on the *value* rather than on the scheme, and that is the honest
-    /// test rather than the convenient one: `cve:CVE-2026-1234` remediates one
-    /// finding a caller handed in and is as much a named piece of work as
-    /// `beans:x` is, while `cve` names nothing. The grammar already guarantees
-    /// the two cannot be confused — a present value is never empty — so the
-    /// emptiness *is* the question.
+    /// test rather than the convenient one: a reference carrying a value names a
+    /// piece of work as much as `beans:x` does, while `cve` names nothing. The
+    /// grammar already guarantees the two cannot be confused — a present value is
+    /// never empty — so the emptiness *is* the question.
+    ///
+    /// This said that `cve:CVE-2026-1234` "remediates one finding a caller handed
+    /// in", and said it as fact. Nothing in this build does: `MitigateConfig`
+    /// declares no advisory field and the sweep scans `[orchestration.cve] image`
+    /// alone, so a sweep handed that reference would drop the name and scan
+    /// everything under an identity derived from the narrowed text. The CLI
+    /// therefore refuses the valued form of a scheme that stands alone before a
+    /// run reaches here, and `WorkItem` is reachable from a `cve` reference in
+    /// grammar only. The mapping is left exactly as it is, because it is about
+    /// values and not about which schemes happen to have a capability — the
+    /// milestone that implements narrowing needs it already right. ADR 019's
+    /// amendment records the rest.
     pub fn of(reference: &'a fiddle_core::InvocationRef) -> Self {
         match reference.value() {
             "" => Addressed::NoWorkItem {

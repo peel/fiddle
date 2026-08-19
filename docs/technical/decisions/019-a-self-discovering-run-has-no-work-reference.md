@@ -1,6 +1,7 @@
 # 019 — A self-discovering run is referenced by its scheme alone
 
-Status: accepted
+Status: accepted; amended in M4a by the note below, which leaves the decision
+standing and corrects what was read into it.
 
 Amends [011](011-invocation-reference-value-grammar.md), which stands.
 
@@ -89,3 +90,68 @@ a deliberate identity change rather than a transparent addition.
 
 M7's Stabilize is trackerless and self-discovering in the same way and inherits
 this decision rather than re-deciding it.
+
+## Amendment (M4a) — the valued form parses, and nothing acts on it
+
+Everything above stands as *grammar*, and that is the half worth keeping: it is why
+`cve:` with an empty value is still `EmptyValue`, why a bare reference's slug is the
+scheme, and why ADR 011 still validates every value that is present.
+
+What does not hold is the implication the Decision's last paragraph invited, and
+which four operator-facing surfaces went on to state — that `cve:CVE-2026-1234`
+remediates one finding. Nothing in this build remediates one named finding.
+`MitigateConfig` declares no advisory field and `cve_mitigate` scans
+`[orchestration.cve] image` alone, so a run over the valued form either blocks on a
+work-item read that has no source — it exited 20 naming
+`stub:work/CVE-2026-1234.json`, and published a bundle under
+`cve-CVE-2026-1234/` doing it — or, handed a stub work file, sweeps the whole image
+while deriving `effect_id` from the narrowed reference. That second one is the
+duplicate-effect hazard the Context above names, arriving by the other door: two
+identities for one piece of work, and therefore a second branch and a second pull
+request.
+
+So the CLI **refuses** `<scheme>:<value>` for any scheme that stands alone, on the
+invalid-input row (2), before the configuration document is opened. The refusal
+names the reference and gives the one invocation this build implements:
+
+```
+$ fiddle run cve:CVE-2026-1234
+  × `cve:CVE-2026-1234` is not implemented in this build
+  help: `cve` discovers its own work; write `cve` to sweep what the configuration names
+```
+
+`inspect` refuses it identically, and that is a deliberate choice rather than an
+oversight. `inspect` is read-only and credential-free for every input and stays so —
+the refusal is reached before the document is read, so nothing is opened, no fixture
+is touched and no credential is resolved — but its *purpose* is to say what a run
+would do, and a build where `run` refuses a reference while `inspect` reports a plan
+for it would have the read-only command describing work the binary cannot do. That
+is the failure mode `--capability` was added to `inspect` to close, one input along.
+Reporting a diagnostic is a thing a read-only command may always do; reporting a
+plan nobody can execute is not.
+
+Narrowing was the alternative and was rejected here rather than deferred silently:
+it is M4b's scope, and it needs an `effect_id` story of its own — an identity derived
+from a narrowed reference must not collide with, or duplicate, the sweep's. An
+"accepted but not implemented" disclosure in the manner of `max_capability_attempts`
+was also rejected: a configuration bound that is merely unenforced is not the same
+risk as an *invocation* that would silently act on the wrong scope.
+
+Kept deliberately, so the milestone that implements narrowing has something to build
+on: the `Cve` scheme still parses a value, `cve:` is still an error, the bare slug is
+still the scheme, and `Addressed::of` still decides on the value rather than on the
+scheme.
+
+**How four surfaces came to advertise it.** Two were introduced by the commit that
+corrected the help text under the subject "help text describes the grammar the binary
+has, not the one it had" — and it described a grammar the binary does not have *yet*.
+The same error class, in the opposite direction, in the commit written to fix it. The
+lane that should have caught it made the same mistake in test form: it asserted the
+`cve:` diagnostic *contained* `cve:<identifier>` and called it "the valued form,
+which remediates one finding", pinning the sentence rather than the behaviour, so it
+could not notice the sentence was false. Help written from an ADR describes what was
+*decided*; only something driving the binary can say what was *built*. What replaces
+it reads `--help` and each diagnostic off the compiled binary:
+`no_operator_facing_surface_promises_the_valued_form` in
+`crates/fiddle-acceptance/tests/inspect_ref.rs`, beside
+`the_valued_form_of_a_self_discovering_scheme_is_refused`.

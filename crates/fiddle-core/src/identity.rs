@@ -85,9 +85,12 @@ impl InvocationScheme {
     /// it from becoming a general licence to omit a value.
     ///
     /// `cve` admits both forms, and the presence of a value carries meaning
-    /// rather than decoration: `cve` discovers its own findings, while
-    /// `cve:CVE-2026-1234` remediates the one finding a caller handed in. The
-    /// grammar states that difference, so no sentinel word has to.
+    /// rather than decoration: `cve` discovers its own findings, while a value
+    /// would name one of them. The grammar states that difference, so no sentinel
+    /// word has to — and it states it whether or not anything acts on the second
+    /// form. Nothing in this build does, and the CLI refuses the valued form
+    /// rather than sweeping an entire image under a reference that narrows it;
+    /// ADR 019's amendment records why the grammar is kept regardless.
     pub fn stands_alone(self) -> bool {
         matches!(self, InvocationScheme::Cve)
     }
@@ -266,14 +269,14 @@ pub enum InvocationRefError {
 
     /// A scheme followed by nothing, so the reference names no work.
     ///
-    /// The scheme is carried because the *repairs* available to a caller depend on
-    /// it. For a scheme that names a work item there is one — write the
-    /// identifier — but a scheme that [stands
-    /// alone](InvocationScheme::stands_alone) has two, and they are different
-    /// work: `cve` sweeps the configured image, `cve:CVE-2026-1234` remediates one
-    /// finding. Advice that named only the second sent a caller who wanted the
-    /// first to the wrong one. Which of the two is meant is not something a
-    /// renderer can know from the defect alone, so the variant carries it.
+    /// The scheme is carried because the *repair* available to a caller depends on
+    /// it. For a scheme that names a work item it is to write the identifier; for a
+    /// scheme that [stands alone](InvocationScheme::stands_alone) it is to drop the
+    /// separator, and those are different work — `cve` sweeps the configured image
+    /// rather than reading a row. Advice that named only the appending repair sent
+    /// a caller who wanted the sweep to the wrong one. Which repair is meant is not
+    /// something a renderer can know from the defect alone, so the variant carries
+    /// the scheme.
     ///
     /// An `Option`, and that is [`InvocationRef::from_str`]'s parse order made
     /// visible rather than a convenience: the value is checked *before* the scheme
