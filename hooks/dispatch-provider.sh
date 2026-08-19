@@ -1,17 +1,4 @@
 #!/usr/bin/env bash
-# Dispatch a prompt to an external provider CLI.
-# Usage: dispatch-provider.sh <provider-name> [--check] --role <role> --topic <topic> --instructions <text>
-#   [--approaches <text>] [--design-doc-file <path>] [--diff-file <path>] [--evidence-file <path>] [--previous-feedback-file <path>]
-#
-# --check: Validate provider is configured and CLI is on PATH, then exit 0/1.
-#          Outputs JSON: {"provider":"<name>","available":true/false,"command":"..."}
-#
-# Reads orchestrate.json for provider command/flags, builds prompt from template,
-# drops unfilled sections, pipes to provider CLI, outputs the reply to stdout.
-#
-# A provider may set "extract" in orchestrate.json to say how its reply is
-# carried on stdout: absent (or "raw") for plain text, "codex-jsonl" for a
-# `codex exec --json` event stream.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -19,7 +6,6 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONF="$PROJECT_DIR/orchestrate.json"
 TEMPLATE="$PROJECT_DIR/skills/develop/provider-context.md"
 
-# --- Parse args ---
 PROVIDER=""
 ROLE=""
 TOPIC=""
@@ -49,17 +35,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# --- Read config ---
 [[ -f "$CONF" ]] || { echo "Config not found: $CONF" >&2; exit 1; }
 
 COMMAND=$(jq -r --arg p "$PROVIDER" '.providers[$p].command // empty' "$CONF")
 FLAGS=$(jq -r --arg p "$PROVIDER" '.providers[$p].flags // empty' "$CONF")
-# How to read the reply out of this CLI's stdout. Absent means plain text.
 EXTRACT=$(jq -r --arg p "$PROVIDER" '.providers[$p].extract // empty' "$CONF")
 
-# --- Check mode: validate and exit ---
 if [[ "$CHECK_ONLY" == true ]]; then
-  CLI_BIN="${COMMAND%% *}"  # first word of command, e.g. "codex" from "codex exec"
+  CLI_BIN="${COMMAND%% *}"
   if [[ -n "$COMMAND" ]] && command -v "$CLI_BIN" &>/dev/null; then
     echo "{\"provider\":\"$PROVIDER\",\"available\":true,\"command\":\"$COMMAND\"}"
     exit 0
@@ -75,14 +58,10 @@ fi
 
 [[ -z "$COMMAND" ]] && { echo "No config for provider '$PROVIDER' in $CONF" >&2; exit 1; }
 
-# --- Build prompt from template ---
 [[ -f "$TEMPLATE" ]] || { echo "Template not found: $TEMPLATE" >&2; exit 1; }
 
 PROMPT=$(cat "$TEMPLATE")
 
-# Bash 5.2+ treats '&' specially in parameter-substitution replacements when
-# patsub_replacement is enabled. Split around each single-use marker instead so
-# provider payloads remain literal.
 replace_prompt_marker() {
   local marker="$1" value="$2"
   if [[ "$PROMPT" == *"$marker"* ]]; then
@@ -90,12 +69,6 @@ replace_prompt_marker() {
   fi
 }
 
-# Drop the sections whose value is empty, on the TEMPLATE and before any
-# substitution. The earlier version stripped after substitution, scanning the
-# assembled prompt: every payload is a markdown document carrying "## " headings
-# of its own, and a heading followed by a blank line — ordinary markdown — looked
-# exactly like an unfilled section, so the payload's headings were deleted
-# instead. Pruning by marker name touches only lines the template owns.
 EMPTY_MARKERS=""
 add_if_empty() {
   [[ -n "$2" ]] || EMPTY_MARKERS="${EMPTY_MARKERS}${1}"$'\n'
@@ -131,7 +104,6 @@ replace_prompt_marker "{DIFF}" "$DIFF"
 replace_prompt_marker "{EVIDENCE}" "$EVIDENCE"
 replace_prompt_marker "{PREVIOUS_FEEDBACK}" "$PREVIOUS_FEEDBACK"
 
-# --- Dispatch ---
 PROMPT_FILE=$(mktemp /tmp/provider-XXXX.md)
 RAW_FILE=$(mktemp /tmp/provider-raw-XXXX)
 echo "$PROMPT" > "$PROMPT_FILE"
@@ -140,18 +112,11 @@ trap 'rm -f "$PROMPT_FILE" "$RAW_FILE"' EXIT
 PROVIDER_EXIT=0
 eval $COMMAND $FLAGS < "$PROMPT_FILE" > "$RAW_FILE" || PROVIDER_EXIT=$?
 
-# --- Extract the reply from the provider's transport ---
-# Some CLIs answer in plain text; others stream structured events and carry the
-# reply escaped inside one of them. Emitting the raw stream left every caller
-# hand-extracting an escaped JSON object out of JSONL.
 case "$EXTRACT" in
   ""|raw)
     cat "$RAW_FILE"
     ;;
   codex-jsonl)
-    # `codex exec --json` emits one JSON event per line; the answer is the text
-    # of the last completed agent_message item. fromjson? skips non-JSON lines
-    # rather than aborting on the CLI's occasional plain-text notices.
     REPLY=$(jq -Rrn '[inputs
       | fromjson?
       | select(.type == "item.completed")
