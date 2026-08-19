@@ -58,8 +58,8 @@ use support::cve::{
     ask_git, contract, contract_scanned_by, exit, green_tree, landing_worktree, landing_world,
     migration_world, stdout, tree_rescanned_by, tree_where, LandingWorld, MigrationWorld,
     DEFAULT_LIBRARY_CVES, GO_BUILD, HOST_ROOT, LANDING_CREATED, LANDING_UNRELATED,
-    MIGRATION_SOURCE as SOURCE,
-    MIGRATION_TEST_BEFORE, MIGRATION_TEST_SOURCE as TEST_SOURCE, SENTINEL_PROSE,
+    MIGRATION_SOURCE as SOURCE, MIGRATION_TEST_BEFORE, MIGRATION_TEST_SOURCE as TEST_SOURCE,
+    SENTINEL_PROSE,
 };
 
 // ---------------------------------------------------------------------------
@@ -256,7 +256,7 @@ fn claims_success_without_editing() -> Vec<MockTurn> {
 /// [`migrates_and_understates_it`], which is that script on purpose.
 fn migrates_and_disowns_it() -> Vec<MockTurn> {
     reporting(
-        r#"{"changed_files":["main.go"],"summary":"I do not think this is right","claimed_complete":false,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"I made the change and I am not sure of it"}]}"#,
+        r#"{"changed_files":["main.go","main_test.go"],"summary":"I do not think this is right","claimed_complete":false,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"I made the change and I am not sure of it"}]}"#,
     )
 }
 
@@ -279,13 +279,17 @@ fn reporting(report: &str) -> Vec<MockTurn> {
 /// [`ForbiddenShape`] is satisfied by it and the checks pass over it — with the
 /// declaration understated by exactly one path. So the only thing left that can
 /// refuse it is the declaration rule.
+///
+/// **Its `findings` account for the advisory it was shown**, for that last
+/// sentence's sake: the report protocol is checked where the report arrives,
+/// which is before any declaration is compared to any diff, so a script that
+/// left `findings` out would be refused as a protocol failure and the lane would
+/// never reach the rule it is about. See [`ACCOUNTS_FOR_NOTHING`] for the report
+/// that omission *is* a lane for.
 fn migrates_and_understates_it() -> Vec<MockTurn> {
-    let mut script = migrates_uniformly();
-    script.pop();
-    script.push(MockTurn::text(
-        r#"{"changed_files":["main.go"],"summary":"applied the rename","claimed_complete":true}"#,
-    ));
-    script
+    reporting(
+        r#"{"changed_files":["main.go"],"summary":"applied the rename","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"the bump, and the call sites it moved"}]}"#,
+    )
 }
 
 /// The uniform migration, reporting the one advisory it was shown **twice**.
@@ -1753,8 +1757,12 @@ async fn what_the_run_changed_before_briefing_is_excused_and_nothing_beside_it_i
             "write_file",
             json!({ "path": TEST_SOURCE, "contents": RENAMED_TEST }),
         ),
+        // The disposition is honest and only the declaration is empty: the
+        // report protocol is checked before any declaration is, so a script
+        // without `findings` would be refused there and never reach the
+        // exclusion this lane is about.
         MockTurn::text(
-            r#"{"changed_files":[],"summary":"the bump was enough","claimed_complete":true}"#,
+            r#"{"changed_files":[],"summary":"the bump was enough","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"the bump was enough"}]}"#,
         ),
     ];
     let attempt = GroupMigration::new(MockCompletionModel::new(script), world.config())
