@@ -1,6 +1,3 @@
-# The documented fiddle configuration. Every key here is admitted by the strict
-# schema in `crates/fiddle-cli/src/config.rs`; the schema deliberately admits no
-# secret-valued field, so this document is safe to track in version control.
 [project]
 name = "icecube"
 
