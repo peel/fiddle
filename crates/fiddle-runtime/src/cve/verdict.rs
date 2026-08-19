@@ -129,6 +129,11 @@ pub struct Run {
     /// not move to — a major bump, a minor with no release carrying it, a
     /// version string it cannot compare. Both produce verdicts and they are
     /// different sentences.
+    ///
+    /// **No production path sets this any more**, because the four mechanical Go
+    /// rules that filled it are what M4c deleted; `capability::mitigate`'s step 8
+    /// carries the argument for keeping the field. So of [`verdicts_of`]'s three
+    /// producers a run reaches two, and the other one is where row 2 comes from.
     pub blocked: Vec<Blocked>,
 
     /// Groups a bounded attempt actually ran on.
@@ -726,6 +731,22 @@ pub fn report_of(run: &Run) -> serde_json::Value {
 /// and groups that were moved and taken back. All three are *upstream* values
 /// rendered by their own [`Display`](std::fmt::Display) — nothing here composes
 /// a sentence.
+///
+/// # A run reaches two of the three, and which two is what decides row 2
+///
+/// The middle one is [`Run::blocked`], and **nothing in this build sets it** —
+/// see that field's own doc and `capability::mitigate`. So a *run* has two
+/// producers, and they differ in exactly the thing Design §3 row 2 turns on.
+///
+/// [`Projection::upstream_blocked`] is the only producer that can put a verdict in
+/// the report with **no attempt behind it**. The bound is applied to
+/// [`Projection::fixable`], which never holds an advisory the scanner published no
+/// fix for, so no attempt is ever shown one. That leaves `attempted` empty and
+/// this list non-empty, which is [`Reason::VerdictsOnly`] — a row a run does reach,
+/// asserted from outside the process by
+/// `cve_mitigation::an_advisory_with_no_published_fix_is_reported_without_being_attempted`.
+/// The third producer reads `run.attempted`, so every verdict it contributes has
+/// an attempt behind it and the run is on row 4 or row 5 rather than row 2.
 ///
 /// A **clean** group contributes nothing, because its advisories were patched. A
 /// **deferred** finding contributes nothing either, and that is the distinction

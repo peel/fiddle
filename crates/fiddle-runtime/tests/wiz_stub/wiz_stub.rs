@@ -111,9 +111,9 @@
 mod document;
 
 use document::{
-    libraries, libraries_graded, libraries_in_rows, os_packages, report_with, CLEARED_ROW,
-    CLEARING_LIBRARY_CVE, CLEARING_ROW, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, SECOND_LIBRARY_CVE,
-    SECOND_OS_CVE,
+    libraries, libraries_graded, libraries_in_rows, os_packages, report_with, unfixed_libraries,
+    CLEARED_ROW, CLEARING_LIBRARY_CVE, CLEARING_ROW, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES,
+    SECOND_LIBRARY_CVE, SECOND_OS_CVE,
 };
 use std::path::{Path, PathBuf};
 
@@ -201,17 +201,57 @@ fn main() {
         // One library advisory and an OS array that is present and empty.
         //
         // The arm a run reaches `AlreadyFixed` through, and it needs an arm of
-        // its own for a reason about the *other* advisory rather than this one:
-        // `ok`'s OS finding is a base image's, no `go get` can move it, and it
-        // therefore produces a verdict on every tree — so a run over `ok` lands
-        // on `VerdictsOnly` however thoroughly the library half was already
-        // dealt with. A document naming only what the tree has already fixed is
-        // what *every finding was already dealt with* actually looks like.
+        // its own for a reason about the *other* advisory rather than this one.
+        // `ok`'s OS advisory names a `fixedVersion`, so it is in the fixable set,
+        // and nothing in this build refuses a fixable finding before an attempt
+        // is shown it: over a tree that has already dealt with the library half
+        // that advisory is the one thing still open, so the run makes its one
+        // attempt and lands on `UnsafeWithoutDirection` or `PullRequest`. Row 3
+        // is reached only when there is nothing left at all, so it needs a
+        // document naming only what the tree has already fixed.
+        //
+        // Before M4c the same arm existed for a neighbouring reason that no
+        // longer holds: four mechanical Go rules refused a base-image advisory
+        // for want of a registry, so `ok` produced a verdict with no attempt
+        // behind it and put such a run on `VerdictsOnly`. `no-published-fix`
+        // below is what reaches that row now, and it reaches it from the
+        // *scanner's* silence rather than from a refusal of this build's.
         "library-only" => {
             banner(&args);
             write(
                 &report,
                 report_with(libraries(&DEFAULT_LIBRARY_CVES), os_packages(&[]))
+                    .raw()
+                    .to_string(),
+            );
+        }
+        // One library advisory naming **no published fix**, and an OS array that
+        // is present and empty.
+        //
+        // The arm a *run* reaches `VerdictsOnly` through, and the only one that
+        // can. That row is *nothing was attempted and there is still something to
+        // report*, so the document has to leave the fixable set empty while the
+        // upstream-blocked set is not: a run attempts the findings its bound left
+        // out of `Projection::fixable`, and an advisory the scanner published no
+        // `fixedVersion` for is never in that set at all.
+        //
+        // **`unfixed_libraries`, and the OS array present and empty.** Both
+        // halves are the arm. A `fixedVersion` on this advisory would make it
+        // fixable and the run would attempt it; an OS advisory beside it would be
+        // fixable too — every other document here writes one — and the run would
+        // attempt *that*. Either way something is attempted, and row 5 shadows
+        // row 2 whenever anything is. Empty rather than absent, for
+        // `library-clean`'s reason: absence is not clearance.
+        //
+        // This is the one row in Design §3 whose world is the scanner's own
+        // silence rather than a judgement of fiddle's, which is why no tree can
+        // produce it and no script can: `a_script_no_attempt_consumes` is what
+        // the lane hands the model, and the model is never reached.
+        "no-published-fix" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(unfixed_libraries(&DEFAULT_LIBRARY_CVES), os_packages(&[]))
                     .raw()
                     .to_string(),
             );
