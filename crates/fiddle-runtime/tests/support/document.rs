@@ -47,6 +47,22 @@ pub fn libraries_graded(cves: &[&str], grade: &str) -> Libraries {
     Libraries(packages_graded(cves, &LIBRARY_PACKAGES, grade))
 }
 
+pub fn libraries_carrying(carried: &[(usize, &str)]) -> Libraries {
+    Libraries(
+        carried
+            .iter()
+            .map(|&(at, cve)| {
+                let (name, current, fixed) = LIBRARY_PACKAGES[at % LIBRARY_PACKAGES.len()];
+                Package {
+                    name: name.to_string(),
+                    version: current.to_string(),
+                    vulnerabilities: vec![vulnerability(cve, Some(fixed), BENIGN_DESCRIPTION)],
+                }
+            })
+            .collect(),
+    )
+}
+
 pub fn os_packages(cves: &[&str]) -> OsPackages {
     OsPackages(packages(cves, &OS_PACKAGES))
 }

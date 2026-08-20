@@ -305,6 +305,16 @@ fn attempted_group(
     }
 }
 
+fn a_group_declining(cve: &str, status: GroupStatus) -> Attempted {
+    let mut group = attempted_group(cve, status, false, Vec::new());
+    group.attempt.report.findings = vec![FindingDisposition {
+        cve: cve.to_string(),
+        attempted: false,
+        note: "no fix I can apply to this project without reading a registry".to_string(),
+    }];
+    group
+}
+
 fn finding_for(cve: &str) -> ProjectedFinding {
     projection_of(document_of(&report_with(
         libraries(&[cve]),
@@ -651,8 +661,61 @@ async fn a_run_inside_its_budget_defers_nothing() {
     assert!(reached.deferred().is_empty());
 }
 
+#[tokio::test]
+async fn a_verdict_row_carries_what_the_attempt_said_about_that_finding() {
+    let mut run = one_fixable_finding();
+    run.attempted = vec![attempted_group(
+        FIXABLE_CVE,
+        needs_work_group(FIXABLE_CVE).await,
+        true,
+        Vec::new(),
+    )];
+
+    let json =
+        serde_json::to_value(&disposition(&run).verdicts()[0]).expect("a verdict serializes");
+    assert_eq!(
+        json["attempted"],
+        serde_json::json!(true),
+        "the attempt worked on this finding and the row says so: {json}"
+    );
+    assert_eq!(
+        json["note"],
+        serde_json::json!("bumped it"),
+        "verbatim, because it is the attempt's own account: {json}"
+    );
+}
+
+#[tokio::test]
+async fn a_declined_finding_reads_differently_from_one_the_attempt_worked_on() {
+    let mut run = one_fixable_finding();
+    run.attempted = vec![a_group_declining(
+        FIXABLE_CVE,
+        needs_work_group(FIXABLE_CVE).await,
+    )];
+
+    let json =
+        serde_json::to_value(&disposition(&run).verdicts()[0]).expect("a verdict serializes");
+    assert_eq!(
+        json["attempted"],
+        serde_json::json!(false),
+        "nothing was tried for this one and the row has to say so: {json}"
+    );
+    assert!(
+        json["note"]
+            .as_str()
+            .is_some_and(|it| !it.trim().is_empty()),
+        "a declined finding carries the reason the attempt gave: {json}"
+    );
+    assert_eq!(
+        json["verdict"],
+        serde_json::json!("needs_work"),
+        "declining is a verdict about the finding, not the model breaking its \
+         contract: {json}"
+    );
+}
+
 #[test]
-fn the_verdict_report_carries_five_fields_and_a_verbatim_rationale() {
+fn a_verdict_for_a_finding_no_attempt_saw_carries_five_fields_and_a_verbatim_rationale() {
     let reached = disposition(&blocked_by_a_major_bump());
     let verdict = &reached.verdicts()[0];
 

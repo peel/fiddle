@@ -1,3 +1,4 @@
+use crate::agent::FindingDisposition;
 use crate::capability::cve::{GroupStatus, MigrationAttempt};
 use crate::cve::group::GroupError;
 use crate::cve::project::Projection;
@@ -139,6 +140,16 @@ pub struct Verdict {
     pub severity: Severity,
 
     pub verdict: Judgement,
+
+    #[serde(flatten)]
+    pub disposed: Option<Disposed>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct Disposed {
+    pub attempted: bool,
+
+    pub note: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
@@ -350,7 +361,10 @@ fn verdicts_of(run: &Run, projection: &Projection) -> Vec<Verdict> {
         };
         let rationale = reason.to_string();
         for finding in &group.findings {
-            verdicts.push(verdict(finding, rationale.clone(), Judgement::NeedsWork));
+            verdicts.push(Verdict {
+                disposed: disposed_of(&group.attempt.report.findings, &finding.cve),
+                ..verdict(finding, rationale.clone(), Judgement::NeedsWork)
+            });
         }
     }
 
@@ -368,7 +382,18 @@ fn verdict(
         rationale,
         severity: finding.severity,
         verdict: judgement,
+        disposed: None,
     }
+}
+
+fn disposed_of(reported: &[FindingDisposition], cve: &AdvisoryId) -> Option<Disposed> {
+    reported
+        .iter()
+        .find(|disposition| disposition.cve == cve.as_str())
+        .map(|disposition| Disposed {
+            attempted: disposition.attempted,
+            note: disposition.note.clone(),
+        })
 }
 
 fn attempts_of(run: &Run) -> Vec<AttemptRecord> {
