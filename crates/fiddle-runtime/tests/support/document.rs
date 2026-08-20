@@ -6,6 +6,8 @@ const LIBRARY_PACKAGES: [(&str, &str, &str); 3] = [
     ("github.com/docker/docker", "v24.0.7", "v24.0.9"),
 ];
 
+const PYTHON_LIBRARY_PACKAGES: [(&str, &str, &str); 1] = [("urllib3", "2.0.4", "2.2.2")];
+
 const OS_PACKAGES: [(&str, &str, &str); 3] = [
     ("libssl3", "3.0.11-r0", "3.0.12-r0"),
     ("busybox", "1.36.1-r5", "1.36.1-r7"),
@@ -39,6 +41,10 @@ pub fn libraries(cves: &[&str]) -> Libraries {
     Libraries(packages(cves, &LIBRARY_PACKAGES))
 }
 
+pub fn python_libraries(cves: &[&str]) -> Libraries {
+    Libraries(packages(cves, &PYTHON_LIBRARY_PACKAGES))
+}
+
 pub fn unfixed_libraries(cves: &[&str]) -> Libraries {
     Libraries(unfixed_packages(cves, &LIBRARY_PACKAGES))
 }
@@ -67,11 +73,11 @@ pub fn os_packages(cves: &[&str]) -> OsPackages {
     OsPackages(packages(cves, &OS_PACKAGES))
 }
 
-fn packages(cves: &[&str], table: &[(&str, &str, &str); 3]) -> Vec<Package> {
+fn packages(cves: &[&str], table: &[(&str, &str, &str)]) -> Vec<Package> {
     packages_graded(cves, table, FIXTURE_GRADE)
 }
 
-fn packages_graded(cves: &[&str], table: &[(&str, &str, &str); 3], grade: &str) -> Vec<Package> {
+fn packages_graded(cves: &[&str], table: &[(&str, &str, &str)], grade: &str) -> Vec<Package> {
     cves.iter()
         .enumerate()
         .map(|(at, cve)| {
@@ -85,7 +91,7 @@ fn packages_graded(cves: &[&str], table: &[(&str, &str, &str); 3], grade: &str) 
         .collect()
 }
 
-fn unfixed_packages(cves: &[&str], table: &[(&str, &str, &str); 3]) -> Vec<Package> {
+fn unfixed_packages(cves: &[&str], table: &[(&str, &str, &str)]) -> Vec<Package> {
     cves.iter()
         .enumerate()
         .map(|(at, cve)| {
