@@ -53,15 +53,13 @@ a lockfile passes it. The one-time confirmation at completion provably cannot go
 clean either — the tests that prove Go-ignorance must name Go words to assert their
 absence, 11 residual hits by construction, at `capability/cve.rs:978` and `:1001-1006`.
 
-**One exception stands, and it is not resolved here.** `names_a_fix`
-(`crates/fiddle-runtime/src/cve/project.rs:197-202`) still has Rust decide that a
-finding naming no published fix is `upstream_blocked`
-(`cve/verdict.rs:328-334`) — so it never reaches the attempt and never reaches the
-rescan. Design §2's own illustration of the agent's report is exactly that case
-(`"note": "no published fix I can apply without a registry"`), so the example
-chosen to explain the agent's contract describes a finding the agent never sees.
-Whether "names no fixed version" is a projection fact or an ecosystem judgement is
-open, tracked as `fiddle-lmqw`.
+**One exception stood, and the amendment below closes it.** `names_a_fix` had Rust
+decide that a finding naming no published fix was `upstream_blocked`, so it reached
+neither the attempt nor the rescan. Design §2's own illustration of the agent's report
+was exactly that case (`"note": "no published fix I can apply without a registry"`), so
+the example chosen to explain the agent's contract described a finding the agent never
+saw. Whether "names no fixed version" was a projection fact or an ecosystem judgement
+was left open, tracked as `fiddle-lmqw`.
 
 **The `already_fixed` field survives with a different producer.** Its two
 computations are gone — `go list -m` and the commit-body reading — but the field in
