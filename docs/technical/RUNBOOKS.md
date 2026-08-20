@@ -96,6 +96,9 @@ adding a missing grant does not invalidate the secret.
 Neither gates. Both write to `peel/fiddle-effects-acceptance`, which exists to be
 dirtied and holds no secrets.
 
+Read the gate's coverage off its `TOTALS` line, which reads `N of M binaries`: `N < M`
+means the run stopped short and the counts beside it are a floor, not a total.
+
 ```sh
 # the gate: offline, credential-free, this is what must be green
 scripts/gate.sh --full

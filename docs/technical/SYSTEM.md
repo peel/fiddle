@@ -131,7 +131,7 @@ cargo test -p fiddle-runtime --test effect_protocol --test github_cli \
   --test git_publish --test pull_request_effect --test check_effect
 ```
 
-`m0_skeleton` and M1's three files run unmodified alongside them as M2's regression baseline. `scripts/gate.sh --full` runs the whole accumulated gate in **one** `nix develop` entry and prints per-binary counts, so the named lanes need not be re-run individually to report them.
+`m0_skeleton` and M1's three files run unmodified alongside them as M2's regression baseline. `scripts/gate.sh --full` runs the whole accumulated gate in **one** `nix develop` entry and prints per-binary counts, so the named lanes need not be re-run individually to report them. Its `TOTALS` line reads `N of M binaries`, the denominator derived per run by `scripts/gate-report.sh`, so a run that stopped short says so instead of printing its stopping point as a total.
 
 **M2 real-forge lanes** — Two more, neither of which gates and neither of which is reachable from `cargo test`.
 
