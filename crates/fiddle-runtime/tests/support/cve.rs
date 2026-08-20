@@ -3,7 +3,6 @@ use fiddle_runtime::agent::AgentBudget;
 use fiddle_runtime::capability::{CapabilityError, Git, MigrationConfig};
 use fiddle_runtime::cve::attribute::{Manifest, ModuleGraph, ResolverError};
 use fiddle_runtime::cve::dedup::{DedupError, Local, Ran, Spawn};
-use fiddle_runtime::cve::go::Go;
 use fiddle_runtime::cve::project::project;
 use fiddle_runtime::evaluate::{Answered, Check, Contract, Repair, Success, Tree, Unanswered};
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
@@ -471,119 +470,10 @@ impl GoWorkspace {
     }
 }
 
-const SCRIPTED_GO_TIMEOUT: Duration = Duration::from_secs(60);
-
 pub fn go_stub() -> ProgramRef {
     ProgramRef {
         program: env!("CARGO_BIN_EXE_go_stub").to_string(),
         args: Vec::new(),
-    }
-}
-
-pub fn spawned_go(workspace: &GoWorkspace) -> SpawnedGo {
-    let home = TempDir::new().expect("a temporary directory for a toolchain's caches");
-    let stub = go_stub();
-    SpawnedGo {
-        go: Go::new(
-            PathBuf::from(stub.program),
-            stub.args,
-            workspace.path().to_path_buf(),
-            home.path().to_path_buf(),
-            SCRIPTED_GO_TIMEOUT,
-            CancellationToken::new(),
-        ),
-        home,
-    }
-}
-
-pub struct SpawnedGo {
-    go: Go,
-    home: TempDir,
-}
-
-#[async_trait::async_trait]
-impl ModuleGraph for SpawnedGo {
-    async fn list(&self, module: &str) -> Result<String, ResolverError> {
-        self.go.list(module).await
-    }
-
-    async fn why(&self, module: &str) -> Result<String, ResolverError> {
-        self.go.why(module).await
-    }
-
-    async fn manifest(&self) -> Result<Manifest, ResolverError> {
-        self.go.manifest().await
-    }
-
-    async fn get(&self, module: &str, query: &str) -> Result<String, ResolverError> {
-        self.go.get(module, query).await
-    }
-
-    async fn tidy(&self) -> Result<String, ResolverError> {
-        self.go.tidy().await
-    }
-
-    async fn restore(&self, manifest: &Manifest) -> Result<(), ResolverError> {
-        self.go.restore(manifest).await
-    }
-}
-
-pub fn absent_go(workspace: &GoWorkspace) -> SpawnedGo {
-    let program = format!("{}-which-is-not-installed", env!("CARGO_BIN_EXE_go_stub"));
-    assert!(
-        !Path::new(&program).exists(),
-        "{program} exists, so it cannot stand for a toolchain that is not installed"
-    );
-    let home = TempDir::new().expect("a temporary directory for a toolchain's caches");
-    SpawnedGo {
-        go: Go::new(
-            PathBuf::from(program),
-            Vec::new(),
-            workspace.path().to_path_buf(),
-            home.path().to_path_buf(),
-            SCRIPTED_GO_TIMEOUT,
-            CancellationToken::new(),
-        ),
-        home,
-    }
-}
-
-const GO_CHILD_RECORD: &str = "child.json";
-
-impl SpawnedGo {
-    pub fn home(&self) -> &Path {
-        self.home.path()
-    }
-
-    pub fn child_env(&self) -> BTreeMap<String, String> {
-        self.child()["env"]
-            .as_array()
-            .expect("the scripted go records its environment as an array")
-            .iter()
-            .map(|entry| {
-                let entry = entry.as_str().expect("an environment entry is a string");
-                let (name, value) = entry
-                    .split_once('=')
-                    .unwrap_or_else(|| panic!("{entry} is not a NAME=VALUE entry"));
-                (name.to_string(), value.to_string())
-            })
-            .collect()
-    }
-
-    pub fn child_env_names(&self) -> Vec<String> {
-        self.child_env().into_keys().collect()
-    }
-
-    fn child(&self) -> serde_json::Value {
-        let record = self.home.path().join(GO_CHILD_RECORD);
-        let raw = std::fs::read_to_string(&record).unwrap_or_else(|source| {
-            panic!(
-                "no record at {}, so no child of this adapter was observed: {source}",
-                record.display()
-            )
-        });
-        serde_json::from_str(&raw)
-            .unwrap_or_else(|source| panic!("{} is not a record: {source}", record.display()))
     }
 }
 
