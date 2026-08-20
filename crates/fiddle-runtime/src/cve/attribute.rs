@@ -255,12 +255,6 @@ impl ModuleRecord {
     }
 }
 
-pub(crate) fn shipped_version(listed: &str) -> Option<String> {
-    ModuleRecord::read(listed)
-        .map(|record| record.version)
-        .filter(|version| !version.is_empty())
-}
-
 #[derive(Debug, Default)]
 struct Chain {
     hops: Vec<String>,

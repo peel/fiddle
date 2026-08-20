@@ -1125,6 +1125,29 @@ fn a_repair_moving_the_requirement() -> Vec<Reply> {
     )
 }
 
+fn an_attempt_finding_the_tree_already_at_the_fix(shown: &[&str]) -> Vec<Reply> {
+    vec![accepted(completion(
+        serde_json::json!({
+            "role": "assistant",
+            "content": serde_json::json!({
+                "changed_files": [],
+                "summary": "the requirements already resolve to the fixed releases",
+                "claimed_complete": true,
+                "findings": shown.iter().map(|cve| serde_json::json!({
+                    "cve": cve,
+                    "attempted": true,
+                    "note": "the requirement already resolves to the fixed release",
+                })).collect::<Vec<_>>(),
+            }).to_string(),
+        }),
+        "stop",
+    ))]
+}
+
+fn two_nights(first: Vec<Reply>, second: Vec<Reply>) -> Vec<Reply> {
+    first.into_iter().chain(second).collect()
+}
+
 fn an_attempt_declining(shown: &[&str]) -> Vec<Reply> {
     an_attempt(&[], &[], shown)
 }
@@ -1459,43 +1482,47 @@ fn a_reference_that_is_not_cve_still_selects_the_deterministic_capability() {
 }
 
 #[test]
-fn an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_needing_direction() {
-    let sweep = Sweep::scanning(FIXED, SCAN_OK, 2, an_attempt_declining(&[OS_CVE]));
+fn an_advisory_nothing_can_move_leaves_the_whole_attempt_needing_direction() {
+    let sweep = Sweep::scanning(
+        FIXED,
+        SCAN_OK,
+        2,
+        an_attempt(&[], &[LIBRARY_CVE], &[OS_CVE]),
+    );
 
     let run = sweep.run();
     let payload = sweep.payload(&run);
     assert_eq!(
         run.status.code(),
         Some(0),
-        "an image whose advisories are already dealt with is not a failed run — \
-         stderr: {}",
+        "an attempt that could not move one of its advisories is not a failed \
+         run - stderr: {}",
         String::from_utf8_lossy(&run.stderr)
     );
     assert_eq!(payload["outcome"], "completed", "{payload}");
 
     let scanned = std::fs::read_to_string(sweep.scenario.report_dir().join("scan/scan.json"))
-        .expect("the scanner left no artefact, so this no-change is not evidence about an image");
-    assert!(
-        scanned.contains(LIBRARY_CVE),
-        "the document this run was answering does not name the advisory the \
-         fixture is about, so nothing below is evidence about the tree: {scanned}"
-    );
+        .expect("the scanner left no artefact, so this outcome is not evidence about an image");
+    for cve in [LIBRARY_CVE, OS_CVE] {
+        assert!(
+            scanned.contains(cve),
+            "the document this run was answering does not name {cve}, so nothing \
+             below is evidence about the tree: {scanned}"
+        );
+    }
 
     let verdicts = sweep.verdicts();
-    assert!(
-        !sweep.has_verdict(LIBRARY_CVE),
-        "an advisory the tree already ships the fix for is not something this \
-         run left unfixed: {verdicts}"
-    );
-    assert!(
-        sweep.has_verdict(OS_CVE),
-        "and the advisory nothing could move must still be reported, or the \
-         report is empty for two different reasons: {verdicts}"
-    );
+    for cve in [LIBRARY_CVE, OS_CVE] {
+        assert!(
+            sweep.has_verdict(cve),
+            "one advisory did not clear, so the whole attempt needs work and \
+             every advisory in it is reported - {cve} is not: {verdicts}"
+        );
+    }
 
     assert!(
         sweep.pull_requests().is_empty(),
-        "a run with nothing to fix opens nothing: {:?}",
+        "a run whose attempt needs work opens nothing: {:?}",
         sweep.pull_requests()
     );
     assert_eq!(
@@ -1516,11 +1543,11 @@ fn an_already_fixed_fixture_yields_a_no_change_the_bundle_files_as_needing_direc
         disposition,
         serde_json::json!({
             "reason": "unsafe_without_direction",
-            "verdicts": 1,
-            "already_fixed": [LIBRARY_CVE],
+            "verdicts": 2,
+            "already_fixed": [],
             "deferred": [],
             "attempts": [{
-                "cves": [OS_CVE],
+                "cves": [LIBRARY_CVE, OS_CVE],
                 "status": "needs_work",
                 "claimed_complete": false,
                 "forbidden": [],
@@ -1572,7 +1599,7 @@ fn already_in_progress_publishes() -> serde_json::Value {
     serde_json::json!({
         "reason": "already_in_progress",
         "verdicts": 0,
-        "already_fixed": [LIBRARY_CVE, OS_CVE],
+        "already_fixed": [LIBRARY_CVE],
         "deferred": [],
         "attempts": [],
         "branch": serde_json::Value::Null,
@@ -1624,7 +1651,13 @@ fn a_scan_of_an_empty_image_reaches_nothing_to_do() {
 
 #[test]
 fn a_tree_that_settles_every_finding_reaches_already_fixed() {
-    let sweep = Sweep::scanning(FIXED, SCAN_LIBRARY_ONLY, 2, a_script_no_attempt_consumes());
+    let sweep = Sweep::scanning_rescanning(
+        FIXED,
+        SCAN_LIBRARY_ONLY,
+        SCAN_CLEAN,
+        2,
+        an_attempt_finding_the_tree_already_at_the_fix(&[LIBRARY_CVE]),
+    );
 
     let run = sweep.run();
     the_old_surface_says_nothing(&sweep, &run, "already fixed in the tree");
@@ -1633,16 +1666,34 @@ fn a_tree_that_settles_every_finding_reaches_already_fixed() {
         the_row_both_surfaces_agree_on(&sweep, &run, "already fixed in the tree"),
         already_fixed_publishes(),
         "row 3 names the advisory somebody else already dealt with, which is \
-         exactly what row 1 cannot say"
+         exactly what row 1 cannot say - and nothing pre-filtered it: the \
+         attempt was made, it changed nothing, and the rescan is what cleared it"
+    );
+    assert!(
+        sweep.pull_requests().is_empty(),
+        "an attempt that committed nothing publishes nothing, so no pull \
+         request stands for a branch with no commit on it: {:?}",
+        sweep.pull_requests()
+    );
+    assert_eq!(
+        sweep.remote_branches(),
+        vec![SWEEP_BASE.to_string()],
+        "and it cut no branch either"
     );
 }
 
 #[test]
 fn an_open_pull_request_covering_the_rest_reaches_already_in_progress() {
-    let sweep = Sweep::scanning(FIXED, SCAN_OK, 2, a_script_no_attempt_consumes());
+    let sweep = Sweep::scanning_rescanning(
+        FIXED,
+        SCAN_LIBRARY_ONLY,
+        SCAN_CLEAN,
+        2,
+        an_attempt_finding_the_tree_already_at_the_fix(&[LIBRARY_CVE]),
+    );
     sweep.seed_shared_pull_request_saying(
         STALE_BODY,
-        &format!("bump the base image, fixes {OS_CVE}"),
+        &format!("move the requirement, fixes {LIBRARY_CVE}"),
     );
 
     let run = sweep.run();
@@ -1659,10 +1710,16 @@ fn an_open_pull_request_covering_the_rest_reaches_already_in_progress() {
 
 #[test]
 fn the_plain_rendering_names_the_row_a_run_reached_and_its_pull_request() {
-    let sweep = Sweep::scanning(FIXED, SCAN_OK, 2, a_script_no_attempt_consumes());
+    let sweep = Sweep::scanning_rescanning(
+        FIXED,
+        SCAN_LIBRARY_ONLY,
+        SCAN_CLEAN,
+        2,
+        an_attempt_finding_the_tree_already_at_the_fix(&[LIBRARY_CVE]),
+    );
     sweep.seed_shared_pull_request_saying(
         STALE_BODY,
-        &format!("bump the base image, fixes {OS_CVE}"),
+        &format!("move the requirement, fixes {LIBRARY_CVE}"),
     );
 
     let run = sweep.run_plain();
@@ -1677,7 +1734,7 @@ fn the_plain_rendering_names_the_row_a_run_reached_and_its_pull_request() {
     assert!(
         stdout.contains(
             "disposition = already_in_progress \
-             (0 unfixed, 2 already fixed, 0 deferred, 0 attempted), \
+             (0 unfixed, 1 already fixed, 0 deferred, 0 attempted), \
              pull request #41"
         ),
         "an operator at a terminal must be told which of the seven rows this run \
@@ -2407,7 +2464,13 @@ fn the_grades_the_document_named_are_the_grades_the_run_acted_on() {
 
 #[test]
 fn a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set() {
-    let sweep = Sweep::scanning(FIXED, SCAN_TWO_OS, 1, an_attempt_declining(&[OS_CVE]));
+    let sweep = Sweep::scanning_rescanning(
+        VULNERABLE,
+        SCAN_TWO_OS,
+        SCAN_TWO_OS,
+        1,
+        an_attempt_declining(&[LIBRARY_CVE]),
+    );
 
     let run = sweep.run();
     assert_eq!(
@@ -2433,10 +2496,13 @@ fn a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set() 
         serde_json::json!({
             "reason": "unsafe_without_direction",
             "verdicts": 1,
-            "already_fixed": [LIBRARY_CVE],
-            "deferred": [{ "cve": SECOND_OS_CVE, "bound": 1 }],
+            "already_fixed": [],
+            "deferred": [
+                { "cve": OS_CVE, "bound": 1 },
+                { "cve": SECOND_OS_CVE, "bound": 1 },
+            ],
             "attempts": [{
-                "cves": [OS_CVE],
+                "cves": [LIBRARY_CVE],
                 "status": "needs_work",
                 "claimed_complete": false,
                 "forbidden": [],
@@ -2449,20 +2515,18 @@ fn a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set() 
 
     let verdicts = sweep.verdicts();
     assert!(
-        sweep.has_verdict(OS_CVE),
+        sweep.has_verdict(LIBRARY_CVE),
         "the finding inside the bound was judged, so it has a row: {verdicts}"
     );
-    assert!(
-        !sweep.has_verdict(SECOND_OS_CVE),
-        "the finding past the bound was never judged, and a row for it would be \
-         this build claiming an opinion it does not have — beside a report that \
-         does hold a row, so this is not an empty report passing: {verdicts}"
-    );
-    assert!(
-        !sweep.has_verdict(LIBRARY_CVE),
-        "and the advisory the tree had already dealt with is not unfixed \
-         either: {verdicts}"
-    );
+    for cve in [OS_CVE, SECOND_OS_CVE] {
+        assert!(
+            !sweep.has_verdict(cve),
+            "the finding past the bound was never judged, and a row for {cve} \
+             would be this build claiming an opinion it does not have — beside a \
+             report that does hold a row, so this is not an empty report \
+             passing: {verdicts}"
+        );
+    }
 
     assert!(
         sweep.pull_requests().is_empty(),
@@ -2679,63 +2743,49 @@ fn a_run_whose_shared_body_is_unchanged_dispatches_no_rewrite() {
 }
 
 #[test]
-fn a_second_run_reads_the_first_runs_own_commit_body() {
+fn a_second_run_opens_no_second_pull_request() {
     let sweep = Sweep::scanning_rescanning(
         VULNERABLE,
         SCAN_LIBRARY_ONLY,
         SCAN_CLEAN,
         2,
-        a_repair_moving_the_requirement(),
+        two_nights(
+            a_repair_moving_the_requirement(),
+            an_attempt_finding_the_tree_already_at_the_fix(&[LIBRARY_CVE]),
+        ),
     );
 
     let first = sweep.run();
     assert_eq!(
         first.status.code(),
         Some(0),
-        "the first night must land its work, or the second reads nothing — \
-         stderr: {}",
+        "the first night must land its work, or the second has nothing to \
+         deduplicate against - stderr: {}",
         String::from_utf8_lossy(&first.stderr)
     );
     let opened = the_row_both_surfaces_agree_on(&sweep, &first, "the first night");
     assert_eq!(
         opened["reason"], "pull_request",
-        "the first night is row 4: it cut a branch and landed a clean group on \
-         it, which is the only way it can leave a body behind: {opened}"
+        "the first night has to cut a branch and open a pull request, or this \
+         lane passes because there was never one to duplicate: {opened}"
     );
     let number = opened["pull_request"]
         .as_u64()
         .unwrap_or_else(|| panic!("the first night opened no pull request: {opened}"));
-    assert_ne!(
-        number, SHARED_PR,
-        "and it is a pull request this run created rather than one a fixture \
-         put there: nothing in this lane seeds a pull request, so the number \
-         must not be the seeded one"
+    assert_eq!(
+        sweep.pull_requests().len(),
+        1,
+        "the first night must open exactly one: {:?}",
+        sweep.pull_requests()
     );
 
     let branch = the_one_new_branch(&sweep);
-    assert_eq!(
-        opened["branch"].as_str(),
-        Some(branch.as_str()),
-        "the row names the branch the remote holds: {opened}"
-    );
     let commits = pushed_commits(&sweep, &branch);
-    assert_eq!(
-        commits.len(),
-        1,
-        "one group, one commit — and the body below is that commit's: {commits:?}"
-    );
+    assert_eq!(commits.len(), 1, "one attempt is one commit: {commits:?}");
     assert!(
         commits[0].0.contains(&format!("Fixes: {LIBRARY_CVE}")),
-        "the first run's own commit has to name the advisory it fixed, or there \
-         is nothing for the second run to read: {commits:?}"
-    );
-    let first_head = git_says(&sweep.remote, &["rev-parse", &branch]);
-
-    assert_eq!(
-        sweep.change_marker(),
-        Some(sweep.scenario.expected_marker(SWEEP_REF)),
-        "the first night's marker must still be there, or the second night is a \
-         second night for the wrong reason"
+        "the first night's commit names the advisory, which is what the second \
+         night's log read finds: {commits:?}"
     );
 
     let second = sweep.run();
@@ -2745,59 +2795,54 @@ fn a_second_run_reads_the_first_runs_own_commit_body() {
         "stderr: {}",
         String::from_utf8_lossy(&second.stderr)
     );
-    the_old_surface_says_nothing(&sweep, &second, "the second night");
+
+    let reached = the_row_both_surfaces_agree_on(&sweep, &second, "the second night");
+    assert_eq!(
+        reached["reason"], "already_in_progress",
+        "the second night reached the row for work that is already open, which \
+         is the commit log's answer and nothing else's: {reached}"
+    );
+    assert_eq!(
+        reached["pull_request"], number,
+        "the second night must say why it opened nothing, and the reason is the \
+         number it found already open: {reached}"
+    );
+    assert_eq!(
+        sweep.pull_requests().len(),
+        1,
+        "the open labelled pull request is the dedup: {:?}",
+        sweep.pull_requests()
+    );
+    assert_eq!(
+        sweep
+            .mutations()
+            .iter()
+            .filter(|key| *key == "POST_repos_acme_r_pulls")
+            .count(),
+        1,
+        "exactly one create across both nights - a second would be a second \
+          pull request whatever the listing says: {:?}",
+        sweep.mutations()
+    );
 
     assert_eq!(
-        the_row_both_surfaces_agree_on(&sweep, &second, "the second night"),
-        serde_json::json!({
-            "reason": "already_in_progress",
-            "verdicts": 0,
-            "already_fixed": [LIBRARY_CVE],
-            "deferred": [],
-            "attempts": [],
-            "branch": serde_json::Value::Null,
-            "pull_request": number,
-        }),
-        "row 7, reached through the first run's own `Fixes:` trailer: the tree \
-         arm settles the advisory too, which is row 3, so `already_in_progress` \
-         and the number beside it are the commit log's answer and nothing else's"
+        pushed_commits(&sweep, &branch).len(),
+        1,
+        "and the branch still carries the one commit the first night made, so \
+         the second landed nothing rather than landing it twice"
     );
 
     let bundle = sweep.bundle(&second);
     assert_eq!(
         bundle["observations"]["tree"]["attempt_tree"], "pr_head",
-        "the second night must work in the pull request's tree, or its log scan \
-         cannot see the first night's commit: {bundle}"
+        "the second night works in the pull request's tree, which is how it \
+         reads the first night's commit at all: {bundle}"
     );
-    assert_eq!(
-        bundle["observations"]["tree"]["pr_head"].as_str(),
-        Some(first_head.as_str()),
-        "and that head is the commit the first night pushed: {bundle}"
-    );
-
-    let pulls = sweep.pull_requests();
-    assert_eq!(
-        pulls.len(),
-        1,
-        "the second night opens nothing beside the pull request it found: \
-         {pulls:?}"
-    );
-    assert_eq!(
-        sweep.mutations(),
-        vec![
-            "POST_repos_acme_r_pulls".to_string(),
-            format!("POST_repos_acme_r_issues_{number}_labels"),
-        ],
-        "exactly the first night's two mutations — the create and the label \
-         that makes the object discoverable — and nothing the second night \
-         dispatched, because a run whose work is already open lands nothing"
-    );
-
     assert_eq!(
         sweep.change_marker(),
         Some(sweep.scenario.expected_marker(SWEEP_REF)),
-        "the second night records itself too — the marker is a record that a run \
-         happened, and only the reading of it changed"
+        "the second night records itself too - the marker is a record that a run \
+         happened, and only what it found changed"
     );
 }
 

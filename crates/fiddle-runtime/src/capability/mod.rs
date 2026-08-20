@@ -210,8 +210,7 @@ impl CapabilityError {
 
             CapabilityError::Dedup(error) => match error {
                 crate::cve::dedup::DedupError::ShallowHistory { .. } => Recurrence::Permanent,
-                crate::cve::dedup::DedupError::Git { .. }
-                | crate::cve::dedup::DedupError::Resolver(_) => Recurrence::Correctable,
+                crate::cve::dedup::DedupError::Git { .. } => Recurrence::Correctable,
             },
         }
     }
