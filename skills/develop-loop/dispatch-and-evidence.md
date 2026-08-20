@@ -177,7 +177,7 @@ hooks/dispatch-provider.sh <provider> \
   --evidence-file evidence-{domain}.txt
 ```
 
-Then add the run-state sections the script cannot know about (positions 4 through 7 of the loading order): runtime state for runtime-configured domains, the bean's task criteria, and on iteration 2+ the diff since BASE_SHA with the prior scorecard and its guidance. An external provider's whole reply is the scorecard JSON — see `skills/develop/provider-context.md` for the schema.
+Then add the run-state sections the script cannot know about (positions 4 through 7 of the loading order): runtime state for runtime-configured domains, the bean's task criteria, and on iteration 2+ the diff since BASE_SHA with the prior scorecard and its guidance. An external provider's whole reply is the scorecard JSON — see `skills/develop/provider-context.md` for the prompt and `skills/develop/scorecard-envelope.md` for the field names the graders accept.
 
 Every evaluator returns one scorecard JSON with per-dimension scores under `.domains`, pass/fail criteria under `.criteria`, and a `"provider"` field naming its producer. Save it per domain and count the dispatch:
 
@@ -198,6 +198,8 @@ Gate each scorecard before the merge:
 scripts/validate-scorecard.sh --scorecard scorecard-{domain}-{provider}.json \
   --criteria-ids "<comma-separated criterion ids from the bean's eval block>"
 ```
+
+This is the pre-flight for `check-thresholds.sh`: it checks the same fields the grader will need — numeric `score` and `threshold` on every scored dimension, string `id` and boolean `pass` on every criterion — so a mis-shaped envelope is caught where it was produced rather than three steps later at grading. The accepted names are listed once in `skills/develop/scorecard-envelope.md`.
 
 On exit 2, stderr is a JSON array naming the gaps: re-dispatch that evaluator once with those errors in its context, and if its second scorecard also fails, mark the bean `needs-attention`, `rm -f .fiddle/active-bean`, and escalate. Merging a scorecard whose criteria ids or evidence do not hold up launders an unusable evaluation into a convergence decision. The re-dispatch counts against the budget like any other.
 

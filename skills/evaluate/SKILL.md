@@ -100,6 +100,7 @@ Return this JSON structure to stdout, with no markdown fences and no commentary 
 - `domains.<domain>.dimensions`: scored dimensions when the task's eval block sets thresholds for the domain; an explicitly empty object `{}` for evidence-only evaluation. The key is always present; omitting it is a schema violation
 - `domains.<domain>.dimensions` keys: snake_case, matching the domain template's dimension names exactly (when thresholds are configured)
 - `score`: integer 1-10, no decimals, no nulls
+- `threshold`: number, required on every scored dimension — the domain template's "Default threshold" or the bean's override. `check-thresholds.sh` has nothing to compare against without it and refuses the card
 - `evidence`: required string for every scored dimension — an empty string is a schema violation
 - `provider`: required string naming the evaluator provider
 - `criteria[].id`: matches the task's Evaluation block criterion `id` exactly
@@ -110,7 +111,7 @@ Return this JSON structure to stdout, with no markdown fences and no commentary 
 - `guidance`: actionable fix instructions when any dimension is below threshold; empty string if all pass
 - `dispatch_count`: always 1 (the orchestrator tracks cumulative dispatches)
 
-`scripts/validate-scorecard.sh` gates your scorecard before the merge, checking the provider field, the criteria ids against the bean's eval block, non-empty evidence, the `dimensions` object type, and `spec_defect` shape. It accepts a dimension justification under `evidence` or under `comment`.
+`scripts/validate-scorecard.sh` gates your scorecard before the merge, checking the provider field, the criteria ids against the bean's eval block, non-empty evidence, numeric `score` and `threshold`, string `id` and boolean `pass`, the `dimensions` object type, and `spec_defect` shape. It accepts a dimension justification under `evidence` or under `comment`. The field names it and `check-thresholds.sh` accept are fixed and listed once in `skills/develop/scorecard-envelope.md` — `criterion` for `id` or `met` for `pass` is refused, not translated.
 
 ## Procedure
 

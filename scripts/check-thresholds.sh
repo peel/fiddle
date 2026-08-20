@@ -19,8 +19,16 @@ jq empty "$SCORECARD" 2>/dev/null || { echo '{"error":"scorecard is not valid JS
 jq empty "$CRITERIA" 2>/dev/null || { echo '{"error":"criteria is not valid JSON"}'; exit 2; }
 
 UNGRADEABLE=$(jq -n --slurpfile card "$SCORECARD" --slurpfile crit "$CRITERIA" '
-  def numeric($field; $where; $value):
-    if $value == null then "\($where): missing `\($field)`"
+  def misspelling($accepted; $obj):
+    [$accepted[] | select($obj[.] != null)] |
+    if length > 0 then
+      " (found `\(join("`, `"))`, which the scorecard envelope does not accept)"
+    else "" end;
+
+  def numeric($field; $aliases; $where; $obj):
+    ($obj[$field]) as $value |
+    if $value == null then
+      "\($where): missing `\($field)`" + misspelling($aliases; $obj)
     elif ($value | type) != "number" then
       "\($where): `\($field)` must be a number, got \($value | type)"
     else empty end;
@@ -48,8 +56,8 @@ UNGRADEABLE=$(jq -n --slurpfile card "$SCORECARD" --slurpfile crit "$CRITERIA" '
              if (.value | type) != "object" then
                "\($where): must be an object, got \(.value | type)"
              else
-               numeric("score"; $where; .value.score),
-               numeric("threshold"; $where; .value.threshold)
+               numeric("score"; ["rating"]; $where; .value),
+               numeric("threshold"; ["min", "target", "minimum"]; $where; .value)
              end)
          end)
      end),
@@ -63,11 +71,13 @@ UNGRADEABLE=$(jq -n --slurpfile card "$SCORECARD" --slurpfile crit "$CRITERIA" '
          if ($entry | type) != "object" then
            "\($where): must be an object, got \($entry | type)"
          else
-           (if $entry.id == null then "\($where): missing `id`"
+           (if $entry.id == null then
+              "\($where): missing `id`" + misspelling(["criterion", "name", "criterion_id"]; $entry)
             elif ($entry.id | type) != "string" then
               "\($where): `id` must be a string, got \($entry.id | type)"
             else empty end),
-           (if $entry.pass == null then "\($where): missing `pass`"
+           (if $entry.pass == null then
+              "\($where): missing `pass`" + misspelling(["met", "passed", "result", "status"]; $entry)
             elif ($entry.pass | type) != "boolean" then
               "\($where): `pass` must be a boolean, got \($entry.pass | type)"
             else empty end)
@@ -76,10 +86,19 @@ UNGRADEABLE=$(jq -n --slurpfile card "$SCORECARD" --slurpfile crit "$CRITERIA" '
   ]
 ')
 
+SCHEMA_DOC="skills/develop/scorecard-envelope.md"
+
 if [[ "$(echo "$UNGRADEABLE" | jq 'length')" -gt 0 ]]; then
+  {
+    echo "scorecard cannot be graded: it does not match the scorecard envelope."
+    echo "wanted: .domains.<domain>.dimensions.<name> = {score: number, threshold: number}"
+    echo "        .criteria (a bare array) = [{id: string, pass: boolean}]"
+    echo "schema: $SCHEMA_DOC — the accepted field names are exactly these, and a"
+    echo "        card spelling them otherwise is refused rather than translated."
+  } >&2
   echo "$UNGRADEABLE" | jq -r '.[]' >&2
-  jq -n --argjson problems "$UNGRADEABLE" \
-    '{error: "scorecard cannot be graded", problems: $problems}'
+  jq -n --argjson problems "$UNGRADEABLE" --arg schema "$SCHEMA_DOC" \
+    '{error: "scorecard cannot be graded", schema: $schema, problems: $problems}'
   exit 2
 fi
 
