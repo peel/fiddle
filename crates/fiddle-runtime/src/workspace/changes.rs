@@ -1,5 +1,4 @@
 use super::{WorkspaceError, WorkspacePath};
-use std::collections::HashMap;
 
 const STATUS: &[&str] = &["status", "--porcelain=v1", "-z", "-uno"];
 
@@ -25,13 +24,6 @@ impl Content {
             Err(_) => Content::Opaque,
         }
     }
-
-    fn text(&self) -> &str {
-        match self {
-            Content::Text(text) => text,
-            Content::Absent | Content::Opaque => "",
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -41,36 +33,6 @@ pub struct FileEdit {
     pub before: Content,
 
     pub after: Content,
-}
-
-impl FileEdit {
-    pub fn added(&self) -> Vec<&str> {
-        only_in(self.after.text(), self.before.text())
-    }
-
-    pub fn removed(&self) -> Vec<&str> {
-        only_in(self.before.text(), self.after.text())
-    }
-
-    pub fn unreadable(&self) -> bool {
-        matches!(self.before, Content::Opaque) || matches!(self.after, Content::Opaque)
-    }
-}
-
-fn only_in<'a>(text: &'a str, other: &str) -> Vec<&'a str> {
-    let mut available: HashMap<&str, usize> = HashMap::new();
-    for line in other.lines() {
-        *available.entry(line).or_default() += 1;
-    }
-    text.lines()
-        .filter(|line| match available.get_mut(line) {
-            Some(count) if *count > 0 => {
-                *count -= 1;
-                false
-            }
-            _ => true,
-        })
-        .collect()
 }
 
 impl super::Workspace {

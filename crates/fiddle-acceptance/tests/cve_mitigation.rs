@@ -1341,7 +1341,6 @@ fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
             "cves": [LIBRARY_CVE],
             "status": "clean",
             "claimed_complete": true,
-            "forbidden": [],
         }]),
         "{reached}"
     );
@@ -1548,7 +1547,6 @@ fn an_advisory_nothing_can_move_leaves_the_whole_attempt_needing_direction() {
                 "cves": [LIBRARY_CVE, OS_CVE],
                 "status": "needs_work",
                 "claimed_complete": false,
-                "forbidden": [],
             }],
             "branch": serde_json::Value::Null,
             "pull_request": serde_json::Value::Null,
@@ -1981,7 +1979,6 @@ fn an_unprovable_repair_is_reverted_and_filed_as_needing_direction() {
             "cves": [LIBRARY_CVE, OS_CVE],
             "status": "needs_work",
             "claimed_complete": false,
-            "forbidden": [],
         }]),
         "the row's evidence is that something was attempted, and the model's own \
          claim beside the judgement that overruled it — one row for the one \
@@ -2037,7 +2034,6 @@ fn a_check_that_says_no_reverts_the_attempt_and_publishes_nothing() {
             "cves": [LIBRARY_CVE],
             "status": "needs_work",
             "claimed_complete": true,
-            "forbidden": [],
         }]),
         "one attempt, refused — and `claimed_complete` is the model's own claim \
          beside the check that overruled it: {reached}"
@@ -2132,7 +2128,6 @@ fn two_findings_in_different_files_are_one_attempt_and_one_commit() {
             "cves": [LIBRARY_CVE, SECOND_LIBRARY_CVE],
             "status": "clean",
             "claimed_complete": true,
-            "forbidden": [],
         }]),
         "one row, naming every finding it covered: {reached}"
     );
@@ -2187,7 +2182,6 @@ fn a_finding_that_does_not_clear_reverts_the_whole_commit() {
             "cves": [LIBRARY_CVE, SECOND_LIBRARY_CVE],
             "status": "needs_work",
             "claimed_complete": true,
-            "forbidden": [],
         }]),
         "one row for the one attempt, needing work although the rescan cleared \
          one of the two findings it was shown: {reached}"
@@ -2503,7 +2497,6 @@ fn a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set() 
                 "cves": [LIBRARY_CVE],
                 "status": "needs_work",
                 "claimed_complete": false,
-                "forbidden": [],
             }],
             "branch": serde_json::Value::Null,
             "pull_request": serde_json::Value::Null,

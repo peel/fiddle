@@ -2,8 +2,8 @@ mod support;
 
 use fiddle_runtime::agent::AgentError;
 use fiddle_runtime::capability::{
-    land, undeclared, CapabilityError, ForbiddenShape, GroupMigration, GroupStatus, InWorktree,
-    Landed, MigrationAttempt, NeedsWork,
+    land, undeclared, CapabilityError, GroupMigration, GroupStatus, InWorktree, Landed,
+    MigrationAttempt, NeedsWork,
 };
 use fiddle_runtime::cve::dedup::FixedInCommits;
 use fiddle_runtime::evaluate::{evaluate, Evaluation, RescanVerdict};
@@ -15,8 +15,7 @@ use support::cve::{
     advisories_of, ask_git, contract, contract_scanned_by, exit, green_tree, landing_worktree,
     landing_world, migration_world, stdout, tree_rescanned_by, tree_where, LandingWorld,
     MigrationWorld, DEFAULT_LIBRARY_CVES, GO_BUILD, HOST_ROOT, LANDING_CREATED, LANDING_UNRELATED,
-    MIGRATION_SOURCE as SOURCE, MIGRATION_TEST_BEFORE, MIGRATION_TEST_SOURCE as TEST_SOURCE,
-    SENTINEL_PROSE,
+    MIGRATION_SOURCE as SOURCE, MIGRATION_TEST_SOURCE as TEST_SOURCE, SENTINEL_PROSE,
 };
 
 fn migrates() -> Vec<MockTurn> {
@@ -70,53 +69,6 @@ fn migrates_uniformly() -> Vec<MockTurn> {
     edits(&[
         (SOURCE, RENAMED_SOURCE.to_string()),
         (TEST_SOURCE, RENAMED_TEST.to_string()),
-    ])
-}
-
-fn adds_a_skip() -> Vec<MockTurn> {
-    edits(&[
-        (SOURCE, RENAMED_SOURCE.to_string()),
-        (
-            TEST_SOURCE,
-            RENAMED_TEST.replace(
-                "\trenamedName()\n",
-                "\tt.Skip(\"the bump changed this API\")\n\trenamedName()\n",
-            ),
-        ),
-    ])
-}
-
-fn weakens_an_assertion() -> Vec<MockTurn> {
-    edits(&[
-        (SOURCE, RENAMED_SOURCE.to_string()),
-        (TEST_SOURCE, RENAMED_TEST.replace("t.Errorf(", "t.Logf(")),
-    ])
-}
-
-fn adds_control_flow() -> Vec<MockTurn> {
-    edits(&[
-        (
-            SOURCE,
-            RENAMED_SOURCE.replace(
-                "\trenamedName()\n",
-                "\tif len(\"x\") > 0 {\n\t\trenamedName()\n\t}\n",
-            ),
-        ),
-        (TEST_SOURCE, RENAMED_TEST.to_string()),
-    ])
-}
-
-fn adds_a_replace_directive(world: &MigrationWorld) -> Vec<MockTurn> {
-    let module = world.checked_package();
-    let go_mod = std::fs::read_to_string(world.tree.path().join("go.mod"))
-        .expect("the fixture tree has a go.mod");
-    edits(&[
-        (SOURCE, RENAMED_SOURCE.to_string()),
-        (TEST_SOURCE, RENAMED_TEST.to_string()),
-        (
-            "go.mod",
-            format!("{go_mod}\nreplace {module} => ../vendored/{module}\n"),
-        ),
     ])
 }
 
@@ -625,25 +577,6 @@ async fn attempted(script: Vec<MockTurn>) -> (MigrationWorld, MigrationAttempt) 
     (world, attempt)
 }
 
-async fn attempted_with(build: impl Fn(&MigrationWorld) -> Vec<MockTurn>) -> MigrationAttempt {
-    let world = migration_world().await;
-    let script = build(&world);
-    run_migration(MockCompletionModel::new(script), &world)
-        .await
-        .expect("a scripted migration completes")
-}
-
-fn the_one_shape(attempt: &MigrationAttempt) -> &ForbiddenShape {
-    assert_eq!(
-        attempt.forbidden.len(),
-        1,
-        "each script here is the uniform migration plus exactly one further \
-         thing, so exactly one rule may fire: {:#?}",
-        attempt.forbidden
-    );
-    &attempt.forbidden[0]
-}
-
 #[tokio::test]
 async fn the_model_cannot_return_a_verdict() {
     let (_world, attempt) = attempted(claims_success_without_editing()).await;
@@ -659,15 +592,9 @@ async fn the_model_cannot_return_a_verdict() {
          below: {:?}",
         attempt.changed
     );
-    assert!(
-        attempt.forbidden.is_empty(),
-        "and no shape was found, for the same reason: {:#?}",
-        attempt.forbidden
-    );
 
     let refused = GroupStatus::of(
         &a_tree_that_will_not_build().await,
-        &attempt.forbidden,
         attempt.undeclared.as_ref(),
     );
     assert!(
@@ -681,11 +608,7 @@ async fn the_model_cannot_return_a_verdict() {
          build clean, and the refusal names the check that decided: {refused:?}"
     );
 
-    let accepted = GroupStatus::of(
-        &a_proved_tree().await,
-        &attempt.forbidden,
-        attempt.undeclared.as_ref(),
-    );
+    let accepted = GroupStatus::of(&a_proved_tree().await, attempt.undeclared.as_ref());
     assert_eq!(
         accepted,
         GroupStatus::Clean,
@@ -703,11 +626,7 @@ async fn a_disowned_edit_the_checks_prove_is_still_clean() {
         "the premise: the model said it had not finished"
     );
     assert_eq!(
-        GroupStatus::of(
-            &a_proved_tree().await,
-            &attempt.forbidden,
-            attempt.undeclared.as_ref()
-        ),
+        GroupStatus::of(&a_proved_tree().await, attempt.undeclared.as_ref()),
         GroupStatus::Clean,
         "the checks decide, and they proved this tree"
     );
@@ -799,7 +718,7 @@ fn recorded_rather_than_read(line: &str) -> bool {
 }
 
 #[tokio::test]
-async fn a_uniform_rename_reaching_the_test_file_is_in_scope() {
+async fn a_declared_edit_reaching_the_test_file_is_permitted_and_the_checks_prove_it() {
     let (_world, attempt) = attempted(migrates_uniformly()).await;
 
     assert_eq!(
@@ -809,136 +728,16 @@ async fn a_uniform_rename_reaching_the_test_file_is_in_scope() {
             .map(|path| path.as_str().to_string())
             .collect::<Vec<_>>(),
         vec![SOURCE.to_string(), TEST_SOURCE.to_string()],
-        "the premise: this attempt really rewrote both files"
-    );
-    assert!(
-        attempt.forbidden.is_empty(),
-        "a uniform rename is the one exception the scope rules allow: {:#?}",
-        attempt.forbidden
+        "the premise: this attempt really rewrote both files, one of them the \
+         test file"
     );
     assert_eq!(
-        GroupStatus::of(
-            &a_proved_tree().await,
-            &attempt.forbidden,
-            attempt.undeclared.as_ref()
-        ),
-        GroupStatus::Clean
-    );
-}
-
-#[tokio::test]
-async fn an_added_skip_makes_the_group_needs_work() {
-    let (_world, attempt) = attempted(adds_a_skip()).await;
-
-    let shape = the_one_shape(&attempt);
-    assert!(
-        matches!(shape, ForbiddenShape::AddedSkip { path, line }
-            if path == TEST_SOURCE && line.contains("t.Skip(")),
-        "the skip is named, with the line it was written on: {shape:?}"
-    );
-    assert_eq!(
-        GroupStatus::of(
-            &a_proved_tree().await,
-            &attempt.forbidden,
-            attempt.undeclared.as_ref()
-        ),
-        GroupStatus::NeedsWork {
-            reason: NeedsWork::OutOfScope(shape.clone())
-        },
-        "and every check passing does not rescue it"
-    );
-}
-
-#[tokio::test]
-async fn a_changed_test_assertion_makes_the_group_needs_work() {
-    let (_world, attempt) = attempted(weakens_an_assertion()).await;
-
-    let shape = the_one_shape(&attempt);
-    assert!(
-        matches!(shape, ForbiddenShape::ChangedTestAssertion { path, assertion }
-            if path == TEST_SOURCE && assertion.contains("t.Errorf(")),
-        "the assertion that left the file is quoted as it read: {shape:?}"
-    );
-    assert_eq!(
-        GroupStatus::of(
-            &a_proved_tree().await,
-            &attempt.forbidden,
-            attempt.undeclared.as_ref()
-        ),
-        GroupStatus::NeedsWork {
-            reason: NeedsWork::OutOfScope(shape.clone())
-        }
-    );
-}
-
-#[tokio::test]
-async fn a_replace_directive_makes_the_group_needs_work() {
-    let attempt = attempted_with(adds_a_replace_directive).await;
-
-    let shape = the_one_shape(&attempt);
-    assert!(
-        matches!(shape, ForbiddenShape::ReplaceDirective { path, directive }
-            if path == "go.mod" && directive.starts_with("replace ")),
-        "the directive is named, in the file it was written to: {shape:?}"
-    );
-    assert_eq!(
-        GroupStatus::of(
-            &a_proved_tree().await,
-            &attempt.forbidden,
-            attempt.undeclared.as_ref()
-        ),
-        GroupStatus::NeedsWork {
-            reason: NeedsWork::OutOfScope(shape.clone())
-        }
-    );
-}
-
-#[tokio::test]
-async fn new_control_flow_makes_the_group_needs_work() {
-    let (_world, attempt) = attempted(adds_control_flow()).await;
-
-    let shape = the_one_shape(&attempt);
-    assert_eq!(
-        shape,
-        &ForbiddenShape::NewControlFlow {
-            path: SOURCE.to_string(),
-            keyword: "if",
-            before: 0,
-            after: 1,
-        },
-        "the branch that appeared is named, with what the file had before"
-    );
-    assert_eq!(
-        GroupStatus::of(
-            &a_proved_tree().await,
-            &attempt.forbidden,
-            attempt.undeclared.as_ref()
-        ),
-        GroupStatus::NeedsWork {
-            reason: NeedsWork::OutOfScope(shape.clone())
-        }
-    );
-}
-
-#[tokio::test]
-async fn a_rename_on_a_branch_line_is_not_new_control_flow() {
-    let world = migration_world().await;
-    let rewritten = MIGRATION_TEST_BEFORE.replace("if testing.Short()", "if !testing.Verbose()");
-    assert_ne!(
-        rewritten, MIGRATION_TEST_BEFORE,
-        "the premise: the replacement really rewrote the branch line"
-    );
-    let attempt = run_migration(
-        MockCompletionModel::new(edits(&[(TEST_SOURCE, rewritten)])),
-        &world,
-    )
-    .await
-    .expect("a scripted migration completes");
-
-    assert!(
-        attempt.forbidden.is_empty(),
-        "the branch line changed and the number of branches did not: {:#?}",
-        attempt.forbidden
+        GroupStatus::of(&a_proved_tree().await, attempt.undeclared.as_ref()),
+        GroupStatus::Clean,
+        "nothing here refuses an edit for what the file is: the declaration \
+         matched the diff and the checks passed, so the attempt is clean even \
+         though it rewrote a test. A deployment that wants its tests protected \
+         declares a check that runs them"
     );
 }
 
@@ -950,7 +749,7 @@ async fn a_clean_group_is_exactly_an_accepted_one() {
         ("nothing proved", a_tree_nothing_was_proved_about().await),
     ] {
         assert_eq!(
-            GroupStatus::of(&evaluation, &[], None) == GroupStatus::Clean,
+            GroupStatus::of(&evaluation, None) == GroupStatus::Clean,
             evaluation.accepted(),
             "`{name}`: clean and accepted must be the same question"
         );
@@ -959,7 +758,7 @@ async fn a_clean_group_is_exactly_an_accepted_one() {
     let unproved = a_tree_nothing_was_proved_about().await;
     assert!(unproved.first_failure().is_none(), "every check passed");
     assert_eq!(
-        GroupStatus::of(&unproved, &[], None),
+        GroupStatus::of(&unproved, None),
         GroupStatus::NeedsWork {
             reason: NeedsWork::Unproved(RescanVerdict::NotCompared)
         }
@@ -1003,6 +802,20 @@ fn a_declaration_that_matches_the_diff_is_no_breach() {
     );
 }
 
+#[test]
+fn a_declared_edit_to_any_file_is_permitted_and_the_checks_are_what_judge_it() {
+    let declared = vec!["tests/test_thing.py".to_string()];
+    let touched = vec![edit("tests/test_thing.py")];
+    assert!(
+        undeclared(&declared, &touched).is_none(),
+        "fiddle no longer refuses an edit for what the file is, and nothing here \
+         could know which file is a test. \"Don't silence the tests\" is no \
+         longer a guarantee this crate makes: a deployment that wants its tests \
+         protected declares a check that runs them, and that check list is what \
+         stops a silenced test now"
+    );
+}
+
 #[tokio::test]
 async fn an_attempt_that_understated_its_diff_is_needs_work_over_green_checks() {
     let (_world, attempt) = attempted(migrates_and_understates_it()).await;
@@ -1021,18 +834,8 @@ async fn an_attempt_that_understated_its_diff_is_needs_work_over_green_checks() 
         vec![SOURCE.to_string()],
         "and the premise's other half: the attempt declared one of them"
     );
-    assert!(
-        attempt.forbidden.is_empty(),
-        "no scope rule fired, so the declaration rule is the only thing that \
-         can refuse this: {:#?}",
-        attempt.forbidden
-    );
 
-    let status = GroupStatus::of(
-        &a_proved_tree().await,
-        &attempt.forbidden,
-        attempt.undeclared.as_ref(),
-    );
+    let status = GroupStatus::of(&a_proved_tree().await, attempt.undeclared.as_ref());
     let GroupStatus::NeedsWork {
         reason: NeedsWork::Undeclared(breach),
     } = &status
@@ -1307,14 +1110,14 @@ async fn a_needs_work_group_reverts_and_leaves_no_id_in_any_commit_body() {
 }
 
 #[tokio::test]
-async fn a_forbidden_shape_over_green_checks_reverts_rather_than_committing() {
-    let (_migrated, attempt) = attempted(adds_a_skip()).await;
+async fn an_undeclared_edit_over_green_checks_reverts_rather_than_committing() {
+    let (_migrated, attempt) = attempted(migrates_and_understates_it()).await;
     let evaluation = a_proved_tree().await;
-    let status = GroupStatus::of(&evaluation, &attempt.forbidden, attempt.undeclared.as_ref());
+    let status = GroupStatus::of(&evaluation, attempt.undeclared.as_ref());
 
     assert!(
-        matches!(the_one_shape(&attempt), ForbiddenShape::AddedSkip { .. }),
-        "the premise: this attempt switched a test off"
+        attempt.undeclared.is_some(),
+        "the premise: this attempt changed a file it did not declare"
     );
     assert!(
         evaluation.accepted(),
@@ -1351,7 +1154,7 @@ async fn a_forbidden_shape_over_green_checks_reverts_rather_than_committing() {
     for cve in LANDED {
         assert!(
             !fixed.names(cve),
-            "an out-of-scope group must not claim {cve} was fixed: {}",
+            "a refused group must not claim {cve} was fixed: {}",
             world.tree.all_commit_bodies()
         );
     }

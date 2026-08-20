@@ -10,9 +10,7 @@ use crate::github::{
     find_labelled_pull_request, EnsureBranchPublished, EnsurePullRequest, EnsurePullRequestBody,
     SharedPullRequest,
 };
-use crate::workspace::{
-    Content, FileEdit, Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath,
-};
+use crate::workspace::{FileEdit, Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
 use crate::{GhCli, GhError};
 use async_trait::async_trait;
 use fiddle_core::{AdvisoryId, CapabilityId, EffectKind, ProjectedFinding, ProposedEffect};
@@ -86,136 +84,6 @@ fn migration_task(findings: &[&ProjectedFinding]) -> String {
     )
 }
 
-const ASSERTIONS: [&str; 4] = ["t.Error", "t.Fatal", "assert.", "require."];
-
-const SKIPS: [&str; 3] = [".Skip(", ".Skipf(", ".SkipNow("];
-
-const CONTROL_FLOW: [&str; 11] = [
-    "if", "else", "for", "switch", "select", "case", "goto", "break", "continue", "go", "defer",
-];
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ForbiddenShape {
-    AddedSkip {
-        path: String,
-        line: String,
-    },
-
-    ChangedTestAssertion {
-        path: String,
-        assertion: String,
-    },
-
-    ReplaceDirective {
-        path: String,
-        directive: String,
-    },
-
-    NewControlFlow {
-        path: String,
-        keyword: &'static str,
-        before: usize,
-        after: usize,
-    },
-
-    UnreadableEdit {
-        path: String,
-    },
-}
-
-fn classify(edits: &[FileEdit]) -> Vec<ForbiddenShape> {
-    let mut found = Vec::new();
-    for edit in edits {
-        let path = edit.path.as_str();
-
-        if edit.unreadable() {
-            found.push(ForbiddenShape::UnreadableEdit {
-                path: path.to_string(),
-            });
-            continue;
-        }
-
-        if is_go_test(path) {
-            for line in edit.added() {
-                if SKIPS.iter().any(|skip| line.contains(skip)) {
-                    found.push(ForbiddenShape::AddedSkip {
-                        path: path.to_string(),
-                        line: line.trim().to_string(),
-                    });
-                }
-            }
-            for line in edit.removed() {
-                if ASSERTIONS.iter().any(|call| line.contains(call)) {
-                    found.push(ForbiddenShape::ChangedTestAssertion {
-                        path: path.to_string(),
-                        assertion: line.trim().to_string(),
-                    });
-                }
-            }
-        }
-
-        if is_go_mod(path) {
-            for line in edit.added() {
-                if replaces(line) {
-                    found.push(ForbiddenShape::ReplaceDirective {
-                        path: path.to_string(),
-                        directive: line.trim().to_string(),
-                    });
-                }
-            }
-        }
-
-        if is_go(path) {
-            for keyword in CONTROL_FLOW {
-                let before = keywords(side(&edit.before), keyword);
-                let after = keywords(side(&edit.after), keyword);
-                if after > before {
-                    found.push(ForbiddenShape::NewControlFlow {
-                        path: path.to_string(),
-                        keyword,
-                        before,
-                        after,
-                    });
-                }
-            }
-        }
-    }
-    found
-}
-
-fn is_go(path: &str) -> bool {
-    path.ends_with(".go")
-}
-
-fn is_go_test(path: &str) -> bool {
-    path.ends_with("_test.go")
-}
-
-fn is_go_mod(path: &str) -> bool {
-    path == "go.mod" || path.ends_with("/go.mod")
-}
-
-fn replaces(line: &str) -> bool {
-    let line = line.trim();
-    line.contains("=>")
-        || line
-            .strip_prefix("replace")
-            .is_some_and(|rest| rest.starts_with([' ', '\t', '(']))
-}
-
-fn side(content: &Content) -> &str {
-    match content {
-        Content::Text(text) => text,
-        Content::Absent | Content::Opaque => "",
-    }
-}
-
-fn keywords(text: &str, keyword: &str) -> usize {
-    text.split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|word| *word == keyword)
-        .count()
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeclarationBreach {
     pub unannounced: Vec<String>,
@@ -271,8 +139,6 @@ pub enum GroupStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NeedsWork {
-    OutOfScope(ForbiddenShape),
-
     Undeclared(DeclarationBreach),
 
     CheckFailed { check: String },
@@ -283,7 +149,6 @@ pub enum NeedsWork {
 impl std::fmt::Display for NeedsWork {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NeedsWork::OutOfScope(shape) => write!(f, "{shape}"),
             NeedsWork::Undeclared(breach) => write!(f, "{breach}"),
             NeedsWork::CheckFailed { check } => {
                 write!(f, "`{check}` did not pass over the tree the attempt left")
@@ -324,48 +189,8 @@ fn unproved_sentence(verdict: &RescanVerdict) -> String {
     }
 }
 
-impl std::fmt::Display for ForbiddenShape {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ForbiddenShape::AddedSkip { path, line } => {
-                write!(f, "{path} added a skipped test: {line}")
-            }
-            ForbiddenShape::ChangedTestAssertion { path, assertion } => {
-                write!(f, "{path} no longer asserts: {assertion}")
-            }
-            ForbiddenShape::ReplaceDirective { path, directive } => {
-                write!(f, "{path} gained a replace directive: {directive}")
-            }
-            ForbiddenShape::NewControlFlow {
-                path,
-                keyword,
-                before,
-                after,
-            } => write!(
-                f,
-                "{path} went from {before} to {after} `{keyword}` keywords, \
-                 which is new control flow rather than a migration"
-            ),
-            ForbiddenShape::UnreadableEdit { path } => write!(
-                f,
-                "{path} was changed and this build cannot read its bytes as text"
-            ),
-        }
-    }
-}
-
 impl GroupStatus {
-    pub fn of(
-        evaluation: &Evaluation,
-        forbidden: &[ForbiddenShape],
-        undeclared: Option<&DeclarationBreach>,
-    ) -> GroupStatus {
-        if let Some(shape) = forbidden.first() {
-            return GroupStatus::NeedsWork {
-                reason: NeedsWork::OutOfScope(shape.clone()),
-            };
-        }
-
+    pub fn of(evaluation: &Evaluation, undeclared: Option<&DeclarationBreach>) -> GroupStatus {
         if let Some(breach) = undeclared {
             return GroupStatus::NeedsWork {
                 reason: NeedsWork::Undeclared(breach.clone()),
@@ -402,8 +227,6 @@ pub struct MigrationAttempt {
     pub report: RepairReport,
 
     pub changed: Vec<WorkspacePath>,
-
-    pub forbidden: Vec<ForbiddenShape>,
 
     pub undeclared: Option<DeclarationBreach>,
 }
@@ -477,7 +300,6 @@ where
 
         let edits = workspace.edits()?;
         let changed = edits.iter().map(|edit| edit.path.clone()).collect();
-        let forbidden = classify(&edits);
         let declared_by_the_run: Vec<String> =
             report.changed_files.iter().cloned().chain(bumped).collect();
         let breach = undeclared(&declared_by_the_run, &edits);
@@ -485,7 +307,6 @@ where
         Ok(MigrationAttempt {
             report,
             changed,
-            forbidden,
             undeclared: breach,
         })
     }
