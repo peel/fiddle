@@ -439,8 +439,10 @@ max_files_changed = 10
 max_diff_lines = 500
 
 [orchestration.cve]
-# Selection and run-budget preferences for nightly CVE mitigation. Mitigation
-# behavior, immediate checks, and major-version approval rules live in Rust.
+# Selection and run-budget preferences for nightly CVE mitigation. Which file
+# fixes a finding and what version to move to are the agent's, including whether
+# to take a major bump: nothing in Rust refuses a version, and the rescan is the
+# guarantee. The immediate checks are the deployment's, under [[workspace.checks]].
 # The image has no default and must be written down: the host workflow builds it
 # and Fiddle scans it, so a guessed value would scan whichever tag this build
 # happened to ship with. `severities` names grades and not a floor; findings below
@@ -509,6 +511,21 @@ isolation = "git-worktree"
 command_timeout = "15m"
 cleanup = "always"
 
+[[workspace.checks]]
+# The checks an attempt is judged by, run in the order written, each declaring
+# its own success criterion because a scanner's non-zero exit reports findings
+# rather than failure. Nothing in Rust reads what a changed file means, so a
+# test check declared here is what stops a silenced test: a deployment that
+# declares none has no such guarantee and gets no warning.
+program = "make"
+args = ["build"]
+success = "exit-zero"
+
+[[workspace.checks]]
+program = "make"
+args = ["test"]
+success = "exit-zero"
+
 [github]
 # One integration owns branch publication, pull requests, and check observation.
 # Absent in a deployment that never publishes.
@@ -542,7 +559,7 @@ Configuration requirements:
 - one authoritative interaction path for an invocation: Jira comments for remote Jira work and the invoking agent for attended Beans work;
 - credential references that name an environment source or profile, never secret values;
 - host scheduling, runner provisioning, and workflow definitions outside `fiddle.toml`;
-- capability prompts, runtime-specific bounded tools, immediate checks, minimum human-decision rules, and orchestration graphs in Rust rather than dynamic configuration;
+- capability prompts, runtime-specific bounded tools, minimum human-decision rules, and orchestration graphs in Rust rather than dynamic configuration — but **not** the immediate checks, which M4 moved into the document as `[[workspace.checks]]`;
 - explicit agent-runtime selection only for capability implementations that support it; no promise that every capability runs on every runtime;
 - global defaults expressed once, with orchestration or capability overrides only for genuine deviations;
 - `fiddle config check` resolving and validating the effective configuration without starting work.

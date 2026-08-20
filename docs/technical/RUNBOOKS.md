@@ -149,10 +149,17 @@ Expect branches to be exactly `main` and open PRs `0`. **Closed** pull requests
 are permanent — GitHub has no API that deletes one — so a non-zero closed count is
 normal and is the fingerprint of past runs, not residue.
 
+**`config check` exits 2 naming `go` as an unknown field under `[orchestration.cve]`.**
+The key existed in M4a as the Go toolchain seam and M4c deleted it. `OrchestrationCve`
+is strict, so a document still holding it is refused at load rather than ignored — a
+`fiddle.toml` that loaded yesterday fails today. Delete the key; the table admits
+`image`, `severities` and `max_findings` and nothing else. Nothing replaces it: the
+agent chooses the file and the version and no toolchain is invoked on its behalf.
+
 **A run exits 20 rather than 11.** That is a *permanent* refusal: a
 `[github.policy]` deny, a duplicate remote state, a diverged payload, or an
 unanswerable human-decision requirement. Repeating the same invocation will do the
 same thing. Exit 11 is the retryable row — fix what the reason names, then re-run.
 
 ---
-Last reviewed: 2026-08-10
+Last reviewed: 2026-08-20
