@@ -164,27 +164,25 @@ where
         let mut settled: Vec<AdvisoryId> = Vec::new();
         let mut attempted: Vec<Attempted> = Vec::new();
         if !taken.is_empty() {
-            let attempt_outcome = self.migration.migrate(&workspace, &taken).await?;
+            let attempt = self.migration.migrate(&workspace, &taken).await?;
             let evaluation = self.judge(&workspace, &taken, &projection, report).await?;
-            let status = GroupStatus::of(&evaluation, attempt_outcome.undeclared.as_ref());
+            let status = GroupStatus::of(&evaluation, attempt.undeclared.as_ref());
             let advisories = advisories_of(&taken);
-            match matches!(status, GroupStatus::Clean) && attempt_outcome.changed.is_empty() {
+            let group = Attempted {
+                findings: taken,
+                status,
+                attempt,
+            };
+            match group.settled() {
                 true => settled = advisories,
                 false => {
-                    land(&git, &advisories, &status, &attempt_outcome.changed).await?;
-                    attempted.push(Attempted {
-                        findings: taken,
-                        status,
-                        attempt: attempt_outcome,
-                    });
+                    land(&git, &advisories, &group.status, &group.attempt.changed).await?;
                 }
             }
+            attempted.push(group);
         }
 
-        let landed = match attempted
-            .iter()
-            .any(|group| group.status == GroupStatus::Clean)
-        {
+        let landed = match attempted.iter().any(Attempted::committed) {
             false => None,
             true => Some(self.publish(&git, &approved, &attempted).await?),
         };
@@ -420,10 +418,7 @@ fn advisories_of(findings: &[ProjectedFinding]) -> Vec<AdvisoryId> {
 
 fn summary_of(attempted: &[Attempted]) -> String {
     let advisories: usize = attempted.iter().map(|it| it.findings.len()).sum();
-    let committed = match attempted
-        .iter()
-        .any(|attempt| attempt.status == GroupStatus::Clean)
-    {
+    let committed = match attempted.iter().any(Attempted::committed) {
         true => "committed what it changed",
         false => "committed nothing",
     };

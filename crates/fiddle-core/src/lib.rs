@@ -35,7 +35,7 @@ pub use outcome::{Mode, RunOutcome, UnknownMode};
 pub use policy::{combine, DeploymentRule, HumanDecisionRequirement, PolicyDecision};
 pub use published::{Published, PUBLISHED_TEXT_LIMIT};
 pub use report::{
-    AttemptOutcome, CapabilityExecution, DeferredFinding, EvidenceRef, FiddleBuild, ProgressEntry,
-    ReportBundle, RunDisposition, CONFIG_CHECK_SCHEMA, INSPECT_SCHEMA, REPORT_SCHEMA, RUN_SCHEMA,
+    AttemptOutcome, CapabilityExecution, DeferredFinding, DisposedFinding, EvidenceRef, FiddleBuild,
+    ProgressEntry, ReportBundle, RunDisposition, CONFIG_CHECK_SCHEMA, INSPECT_SCHEMA, REPORT_SCHEMA, RUN_SCHEMA,
     UNKNOWN_REVISION,
 };

@@ -812,6 +812,12 @@ const SCAN_ONLY_ADVISORY_HAS_NO_PUBLISHED_FIX: &str = "no-published-fix";
 
 const DECLINED_NOTE: &str = "no published fix I can apply without a registry";
 
+const FIXED_NOTE: &str = "moved the requirement to the release that carries the fix";
+
+const NO_FIX_NOTE: &str = "no fix I can apply to this project without reading a registry";
+
+const SETTLED_NOTE: &str = "the requirement already resolves to the fixed release";
+
 const SCAN_TWO_OS: &str = "two-os-advisories";
 
 const RESCAN_CLEAN: &str = "library-clean";
@@ -1244,12 +1250,12 @@ fn a_script_no_attempt_consumes() -> Vec<Reply> {
             "role": "assistant",
             "content": serde_json::json!({
                 "changed_files": [],
-                "summary": "the requirement already resolves to the fixed release",
+                "summary": SETTLED_NOTE,
                 "claimed_complete": true,
                 "findings": [{
                     "cve": LIBRARY_CVE,
                     "attempted": true,
-                    "note": "the requirement already resolves to the fixed release",
+                    "note": SETTLED_NOTE,
                 }],
             }).to_string(),
         }),
@@ -1279,7 +1285,7 @@ fn an_attempt_finding_the_tree_already_at_the_fix(shown: &[&str]) -> Vec<Reply> 
                 "findings": shown.iter().map(|cve| serde_json::json!({
                     "cve": cve,
                     "attempted": true,
-                    "note": "the requirement already resolves to the fixed release",
+                    "note": SETTLED_NOTE,
                 })).collect::<Vec<_>>(),
             }).to_string(),
         }),
@@ -1320,14 +1326,14 @@ fn an_attempt(edits: &[(&str, String)], fixed: &[&str], declined: &[&str]) -> Ve
             serde_json::json!({
                 "cve": cve,
                 "attempted": true,
-                "note": "moved the requirement to the release that carries the fix",
+                "note": FIXED_NOTE,
             })
         })
         .chain(declined.iter().map(|cve| {
             serde_json::json!({
                 "cve": cve,
                 "attempted": false,
-                "note": "no fix I can apply to this project without reading a registry",
+                "note": NO_FIX_NOTE,
             })
         }))
         .collect();
@@ -1518,6 +1524,7 @@ fn one_labelled_pull_request_on_one_branch_for(ecosystem: &Ecosystem) {
             "cves": [LIBRARY_CVE],
             "status": "clean",
             "claimed_complete": true,
+            "dispositions": [disposed(LIBRARY_CVE, true, FIXED_NOTE)],
         }]),
         "{reached}"
     );
@@ -1734,12 +1741,29 @@ fn an_advisory_nothing_can_move_leaves_the_whole_attempt_needing_direction() {
                 "cves": [LIBRARY_CVE, OS_CVE],
                 "status": "needs_work",
                 "claimed_complete": false,
+                "dispositions": [
+                    disposed(LIBRARY_CVE, true, FIXED_NOTE),
+                    disposed(OS_CVE, false, NO_FIX_NOTE),
+                ],
             }],
             "branch": serde_json::Value::Null,
             "pull_request": serde_json::Value::Null,
         }),
         "the row, and the evidence for it, whole"
     );
+}
+
+fn disposed(cve: &str, attempted: bool, note: &str) -> serde_json::Value {
+    serde_json::json!({ "cve": cve, "attempted": attempted, "note": note })
+}
+
+fn a_settled_attempt() -> serde_json::Value {
+    serde_json::json!([{
+        "cves": [LIBRARY_CVE],
+        "status": "settled",
+        "claimed_complete": true,
+        "dispositions": [disposed(LIBRARY_CVE, true, SETTLED_NOTE)],
+    }])
 }
 
 fn nothing_to_do_publishes() -> serde_json::Value {
@@ -1760,7 +1784,7 @@ fn already_fixed_publishes() -> serde_json::Value {
         "verdicts": 0,
         "already_fixed": [LIBRARY_CVE],
         "deferred": [],
-        "attempts": [],
+        "attempts": a_settled_attempt(),
         "branch": serde_json::Value::Null,
         "pull_request": serde_json::Value::Null,
     })
@@ -1772,7 +1796,7 @@ fn already_in_progress_publishes() -> serde_json::Value {
         "verdicts": 0,
         "already_fixed": [LIBRARY_CVE],
         "deferred": [],
-        "attempts": [],
+        "attempts": a_settled_attempt(),
         "branch": serde_json::Value::Null,
         "pull_request": SHARED_PR,
     })
@@ -1838,7 +1862,9 @@ fn a_tree_that_settles_every_finding_reaches_already_fixed() {
         already_fixed_publishes(),
         "row 3 names the advisory somebody else already dealt with, which is \
          exactly what row 1 cannot say - and nothing pre-filtered it: the \
-         attempt was made, it changed nothing, and the rescan is what cleared it"
+         attempt was made, it changed nothing, and the rescan is what cleared \
+         it, so the row publishes that attempt and the note the agent wrote \
+         for it"
     );
     assert!(
         sweep.pull_requests().is_empty(),
@@ -1850,6 +1876,12 @@ fn a_tree_that_settles_every_finding_reaches_already_fixed() {
         sweep.remote_branches(),
         vec![SWEEP_BASE.to_string()],
         "and it cut no branch either"
+    );
+    let evidence = sweep.payload(&run)["capability_executions"][0]["evidence"].to_string();
+    assert!(
+        !evidence.contains("/tree/") && !evidence.contains("/pull/"),
+        "a settled attempt quotes no branch and no pull request, because it \
+         published neither: {evidence}"
     );
 }
 
@@ -1905,7 +1937,7 @@ fn the_plain_rendering_names_the_row_a_run_reached_and_its_pull_request() {
     assert!(
         stdout.contains(
             "disposition = already_in_progress \
-             (0 unfixed, 1 already fixed, 0 deferred, 0 attempted), \
+             (0 unfixed, 1 already fixed, 0 deferred, 1 attempted), \
              pull request #41"
         ),
         "an operator at a terminal must be told which of the seven rows this run \
@@ -2020,6 +2052,7 @@ fn an_advisory_with_no_published_fix_reaches_the_attempt_and_its_decline_is_the_
                 "cves": [LIBRARY_CVE],
                 "status": "needs_work",
                 "claimed_complete": false,
+                "dispositions": [disposed(LIBRARY_CVE, false, DECLINED_NOTE)],
             }],
             "branch": serde_json::Value::Null,
             "pull_request": serde_json::Value::Null,
@@ -2192,6 +2225,10 @@ fn an_unprovable_repair_is_reverted_and_filed_as_needing_direction() {
             "cves": [LIBRARY_CVE, OS_CVE],
             "status": "needs_work",
             "claimed_complete": false,
+            "dispositions": [
+                disposed(LIBRARY_CVE, true, FIXED_NOTE),
+                disposed(OS_CVE, false, NO_FIX_NOTE),
+            ],
         }]),
         "the row's evidence is that something was attempted, and the model's own \
          claim beside the judgement that overruled it — one row for the one \
@@ -2247,6 +2284,7 @@ fn a_check_that_says_no_reverts_the_attempt_and_publishes_nothing() {
             "cves": [LIBRARY_CVE],
             "status": "needs_work",
             "claimed_complete": true,
+            "dispositions": [disposed(LIBRARY_CVE, true, FIXED_NOTE)],
         }]),
         "one attempt, refused — and `claimed_complete` is the model's own claim \
          beside the check that overruled it: {reached}"
@@ -2341,6 +2379,10 @@ fn two_findings_in_different_files_are_one_attempt_and_one_commit() {
             "cves": [LIBRARY_CVE, SECOND_LIBRARY_CVE],
             "status": "clean",
             "claimed_complete": true,
+            "dispositions": [
+                disposed(LIBRARY_CVE, true, FIXED_NOTE),
+                disposed(SECOND_LIBRARY_CVE, true, FIXED_NOTE),
+            ],
         }]),
         "one row, naming every finding it covered: {reached}"
     );
@@ -2395,6 +2437,10 @@ fn a_finding_that_does_not_clear_reverts_the_whole_commit() {
             "cves": [LIBRARY_CVE, SECOND_LIBRARY_CVE],
             "status": "needs_work",
             "claimed_complete": true,
+            "dispositions": [
+                disposed(LIBRARY_CVE, true, FIXED_NOTE),
+                disposed(SECOND_LIBRARY_CVE, true, FIXED_NOTE),
+            ],
         }]),
         "one row for the one attempt, needing work although the rescan cleared \
          one of the two findings it was shown: {reached}"
@@ -2710,6 +2756,7 @@ fn a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set() 
                 "cves": [LIBRARY_CVE],
                 "status": "needs_work",
                 "claimed_complete": false,
+                "dispositions": [disposed(LIBRARY_CVE, false, NO_FIX_NOTE)],
             }],
             "branch": serde_json::Value::Null,
             "pull_request": serde_json::Value::Null,
