@@ -115,15 +115,8 @@ pub struct ProjectedFinding {
     pub package_type: PackageType,
 }
 
-pub fn selected(
-    severities: &Severities,
-    severity: Severity,
-    has_exploit: bool,
-    fixed_version: Option<&str>,
-) -> bool {
-    let high_enough = severities.contains(severity);
-    let fixable = fixed_version.is_some_and(|version| !version.trim().is_empty());
-    high_enough || (has_exploit && fixable)
+pub fn selected(severities: &Severities, severity: Severity, has_exploit: bool) -> bool {
+    severities.contains(severity) || has_exploit
 }
 
 #[cfg(test)]
@@ -274,21 +267,17 @@ mod tests {
     #[test]
     fn severity_selection_admits_the_exploit_arm() {
         let acted_on = Severities::default();
-        assert!(selected(&acted_on, Severity::High, false, None));
-        assert!(selected(&acted_on, Severity::Critical, false, None));
+        assert!(selected(&acted_on, Severity::High, false));
+        assert!(selected(&acted_on, Severity::Critical, false));
 
         for below in [Severity::Medium, Severity::Low, Severity::Informational] {
             assert!(
-                !selected(&acted_on, below, false, Some("1.2.3")),
-                "{below:?} does not qualify on severity, and a fix alone is not a reason to act"
+                !selected(&acted_on, below, false),
+                "{below:?} does not qualify on severity and nothing widens it"
             );
             assert!(
-                selected(&acted_on, below, true, Some("1.2.3")),
-                "a public exploit AND a fixed version qualifies below HIGH"
-            );
-            assert!(
-                !selected(&acted_on, below, true, None),
-                "an exploit with no fix does not qualify on this arm"
+                selected(&acted_on, below, true),
+                "a public exploit qualifies below HIGH"
             );
         }
     }
@@ -299,17 +288,17 @@ mod tests {
         let with_medium =
             Severities::of(&[Severity::Critical, Severity::High, Severity::Medium]).unwrap();
         assert!(
-            !selected(&default, Severity::Medium, false, Some("1.2.3")),
+            !selected(&default, Severity::Medium, false),
             "a document that names no grades means what this build always meant"
         );
         assert!(
-            selected(&with_medium, Severity::Medium, false, Some("1.2.3")),
+            selected(&with_medium, Severity::Medium, false),
             "a deployment that named MEDIUM acts on a MEDIUM finding with no exploit"
         );
 
         let medium_only = Severities::of(&[Severity::Medium]).unwrap();
         assert!(
-            !selected(&medium_only, Severity::High, false, None),
+            !selected(&medium_only, Severity::High, false),
             "control: a set is the grades it names, so a grade it omits is not \
              admitted by being worse than one it holds"
         );
@@ -352,17 +341,35 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_fixed_version_does_not_satisfy_the_exploit_arm() {
+    fn what_the_scanner_published_as_a_fix_is_no_part_of_the_selection() {
         let acted_on = Severities::default();
-        for no_fix in [Some(""), Some("   "), Some("\t"), None] {
+        let unfixed = ProjectedFinding {
+            cve: AdvisoryId::parse("CVE-2026-4242").expect("a canonical advisory id"),
+            package: "openssl".to_string(),
+            current: "3.0.2".to_string(),
+            fixed_version: None,
+            severity: Severity::Medium,
+            package_type: PackageType::Os,
+        };
+        let mut fixed = unfixed.clone();
+        fixed.fixed_version = Some("3.0.12-r0".to_string());
+        assert_ne!(
+            unfixed, fixed,
+            "the two findings have to differ in the field this test says is not read"
+        );
+
+        for finding in [&unfixed, &fixed] {
             assert!(
-                !selected(&acted_on, Severity::Medium, true, no_fix),
-                "{no_fix:?} names no version to upgrade to"
+                selected(&acted_on, finding.severity, true),
+                "an exploited MEDIUM is acted on whether or not the scanner \
+                 published a fix, and {:?} was not",
+                finding.fixed_version
+            );
+            assert!(
+                !selected(&acted_on, finding.severity, false),
+                "control: without the exploit the same grade is below the \
+                 threshold, so the assertion above is not a constant"
             );
         }
-        assert!(
-            selected(&acted_on, Severity::Medium, true, Some("1.2.3")),
-            "control: the same call with a real fixed version does qualify"
-        );
     }
 }

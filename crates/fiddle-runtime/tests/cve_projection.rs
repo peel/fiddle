@@ -6,7 +6,7 @@ use support::cve::{
     document_of, every_fixture_grade, libraries, libraries_graded, os_packages, report_with,
     report_with_advisory_description, report_with_duplicate_cve_one_fixed_one_not,
     report_with_libraries_absent, report_with_os_absent, report_with_os_empty, scan_of, scanned,
-    DEFAULT_LIBRARY_CVES, SENTINEL_PROSE,
+    unfixed_libraries, DEFAULT_LIBRARY_CVES, SENTINEL_PROSE,
 };
 
 #[test]
@@ -96,7 +96,7 @@ const DUPLICATED: &str = "CVE-2026-777";
 const RENAMED: &str = "CVE-2026-778";
 
 #[test]
-fn a_cve_reported_both_with_and_without_a_fix_is_fixable_only() {
+fn a_record_naming_no_fix_is_projected_beside_the_one_that_names_a_fix() {
     let document = document_of(&report_with_duplicate_cve_one_fixed_one_not(DUPLICATED));
     let p = project(&scan_of(document.clone()), &every_fixture_grade())
         .expect("a fixture document projects");
@@ -104,14 +104,14 @@ fn a_cve_reported_both_with_and_without_a_fix_is_fixable_only() {
     assert_eq!(
         p.all().filter(|f| f.cve.as_str() == DUPLICATED).count(),
         2,
-        "the fixture has to report {DUPLICATED} twice, or this test is about \
-         nothing"
+        "the fixture reports {DUPLICATED} twice, once naming a fix and once \
+         not, and the projection subtracts neither"
     );
-
-    assert!(p.fixable().any(|f| f.cve.as_str() == DUPLICATED));
     assert!(
-        !p.upstream_blocked().any(|f| f.cve.as_str() == DUPLICATED),
-        "subtract, never filter"
+        p.all()
+            .any(|f| f.cve.as_str() == DUPLICATED && f.fixed_version.is_none()),
+        "the record the scanner published no fix for is the one this test is \
+         about, and it has to be in the set the attempt is opened from"
     );
 
     let mut renamed = document.clone();
@@ -124,14 +124,64 @@ fn a_cve_reported_both_with_and_without_a_fix_is_fixable_only() {
 
     let q =
         project(&scan_of(renamed), &every_fixture_grade()).expect("the mutated document projects");
-    assert!(
-        q.upstream_blocked().any(|f| f.cve.as_str() == DUPLICATED),
-        "with no fix anywhere for {DUPLICATED}, it is upstream-blocked — this is \
-         the row that stops the assertion above passing vacuously"
+    assert_eq!(
+        q.all().filter(|f| f.cve.as_str() == DUPLICATED).count(),
+        1,
+        "with no fix anywhere for {DUPLICATED} it is still projected, so the \
+         assertion above is not passing on the fixed record alone"
     );
     assert!(
-        q.fixable().any(|f| f.cve.as_str() == RENAMED),
-        "and the renamed record is the fixable one it was before"
+        q.all().any(|f| f.cve.as_str() == RENAMED),
+        "and the renamed record is projected under its new id"
+    );
+}
+
+#[test]
+fn an_exploited_finding_below_the_threshold_is_projected_with_no_published_fix() {
+    let document = document_of(&report_with(
+        unfixed_libraries(&["CVE-1"]),
+        os_packages(&[]),
+    ));
+    let mut exploited = document.clone();
+    exploited["result"]["libraries"][0]["vulnerabilities"][0]["severity"] =
+        serde_json::Value::String("MEDIUM".to_string());
+    exploited["result"]["libraries"][0]["vulnerabilities"][0]["hasExploit"] =
+        serde_json::Value::Bool(true);
+    assert_ne!(
+        exploited, document,
+        "the mutation must reach the grade and the exploit flag it is about"
+    );
+    assert!(
+        !exploited.to_string().contains("fixedVersion"),
+        "the record must name no fix, or this test is about the arm that \
+         always worked: {exploited}"
+    );
+
+    let acted_on = Severities::default();
+    let p = project(&scan_of(exploited.clone()), &acted_on).expect("the mutated document projects");
+    assert_eq!(
+        p.all().count(),
+        1,
+        "a MEDIUM finding with a public exploit is acted on below the \
+         threshold, and the scanner having published no fix is the agent's \
+         judgement rather than a reason to drop it"
+    );
+    assert_eq!(
+        p.all().next().expect("asserted present").fixed_version,
+        None
+    );
+
+    let mut unexploited = exploited;
+    unexploited["result"]["libraries"][0]["vulnerabilities"][0]["hasExploit"] =
+        serde_json::Value::Bool(false);
+    assert_eq!(
+        project(&scan_of(unexploited), &acted_on)
+            .expect("the mutated document projects")
+            .all()
+            .count(),
+        0,
+        "control: without the exploit the same MEDIUM record is below the \
+         threshold, so the count above is not what every document produces"
     );
 }
 
@@ -216,7 +266,8 @@ fn a_deployment_that_names_a_lower_grade_projects_its_findings() {
         "the deployment named MEDIUM, so the MEDIUM finding is one it acts on"
     );
     assert!(
-        configured.fixable().any(|f| f.cve.as_str() == "CVE-1"),
-        "and it reaches the fixable set, which is what a run opens a group from"
+        configured.all().any(|f| f.cve.as_str() == "CVE-1"),
+        "and it reaches the projection, which is what a run opens the attempt \
+         from"
     );
 }

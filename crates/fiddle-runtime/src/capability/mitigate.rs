@@ -159,7 +159,7 @@ where
         let (taken, deferred) = self
             .config
             .findings
-            .apply(projection.fixable().cloned().collect());
+            .apply(projection.all().cloned().collect());
 
         let mut settled: Vec<AdvisoryId> = Vec::new();
         let mut attempted: Vec<Attempted> = Vec::new();

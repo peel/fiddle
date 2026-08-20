@@ -6,9 +6,9 @@ use fiddle_runtime::capability::{GroupStatus, MigrationAttempt, NeedsWork};
 use fiddle_runtime::cve::project::{project, Projection};
 use fiddle_runtime::cve::verdict::{
     disposition, report_of, Attempted, Budget, InProgress, Judgement, Landed, Run, Verdict,
-    NO_PUBLISHED_FIX, REPORT_FILE,
+    REPORT_FILE,
 };
-use fiddle_runtime::evaluate::{evaluate, Evaluation, Reason};
+use fiddle_runtime::evaluate::{evaluate, Evaluation, Reason, RescanVerdict};
 use fiddle_runtime::scanner::Scanner;
 use fiddle_runtime::workspace::WorkspacePath;
 use std::collections::HashSet;
@@ -25,6 +25,12 @@ const BLOCKED_CVE: &str = "CVE-2026-3002";
 
 const SECOND_CVE: &str = "CVE-2026-3003";
 
+const DECLINED: &str = "no fix I can apply to this project without reading a registry";
+
+fn still_reported(cve: &str) -> String {
+    format!("still reported after the bump: {cve}")
+}
+
 fn projection_of(document: serde_json::Value) -> Projection {
     project(&scan_of(document), &every_fixture_grade())
         .expect("a fixture document this build can project")
@@ -35,36 +41,51 @@ fn clean_scan_no_findings() -> Run {
         libraries(&[]),
         os_packages(&[]),
     ))));
-    let projection = run.projection().expect("a scan that produced a projection");
     assert_eq!(
-        (
-            projection.fixable().count(),
-            projection.upstream_blocked().count()
-        ),
-        (0, 0),
-        "this world's premise is both of the projection's sets being empty"
+        run.projection()
+            .expect("a scan that produced a projection")
+            .all()
+            .count(),
+        0,
+        "this world's premise is a projection that holds nothing"
     );
     run
 }
 
-fn both_sets_empty() -> Run {
-    clean_scan_no_findings()
-}
-
-fn verdicts_only() -> Run {
+fn one_finding_with_no_published_fix() -> Run {
     let run = Run::scanned(projection_of(document_of(&report_with(
         unfixed_libraries(&[BLOCKED_CVE]),
         os_packages(&[]),
     ))));
-    let projection = run.projection().expect("a scan that produced a projection");
+    let projected: Vec<&ProjectedFinding> = run
+        .projection()
+        .expect("a scan that produced a projection")
+        .all()
+        .collect();
+    assert_eq!(projected.len(), 1);
     assert_eq!(
-        (
-            projection.fixable().count(),
-            projection.upstream_blocked().count()
-        ),
-        (0, 1),
-        "this world's premise is an empty fixable set and a non-empty blocked one"
+        projected[0].fixed_version, None,
+        "this world's premise is one finding the scanner published no fix for, \
+         and the projection carries it to the attempt rather than deciding it"
     );
+    run
+}
+
+async fn the_attempt_declined_a_finding_with_no_published_fix() -> Run {
+    let mut run = one_finding_with_no_published_fix();
+    run.attempted = vec![a_group_declining_an_unfixed_finding(
+        BLOCKED_CVE,
+        still_reported_group(BLOCKED_CVE).await,
+    )];
+    run
+}
+
+async fn the_attempt_said_nothing_about_a_finding_with_no_published_fix() -> Run {
+    let mut run = one_finding_with_no_published_fix();
+    let mut group =
+        a_group_declining_an_unfixed_finding(BLOCKED_CVE, still_reported_group(BLOCKED_CVE).await);
+    group.attempt.report.findings = Vec::new();
+    run.attempted = vec![group];
     run
 }
 
@@ -148,13 +169,13 @@ async fn findings_beyond_budget(count: usize, bound: usize) -> Run {
     let fixable: Vec<ProjectedFinding> = run
         .projection()
         .expect("a scan that produced a projection")
-        .fixable()
+        .all()
         .cloned()
         .collect();
     assert_eq!(
         fixable.len(),
         count,
-        "this world's premise is {count} fixable findings"
+        "this world's premise is {count} projected findings"
     );
 
     let (taken, deferred) = Budget::of(bound).apply(fixable);
@@ -183,10 +204,10 @@ fn one_fixable_finding() -> Run {
     assert_eq!(
         run.projection()
             .expect("a scan that produced a projection")
-            .fixable()
+            .all()
             .count(),
         1,
-        "this world's premise is one fixable finding"
+        "this world's premise is one finding that names a fix"
     );
     run
 }
@@ -204,6 +225,23 @@ async fn clean_group(cve: &str) -> GroupStatus {
         status,
         GroupStatus::Clean,
         "this group's premise is an evaluation Task 14.b calls clean"
+    );
+    status
+}
+
+async fn still_reported_group(cve: &str) -> GroupStatus {
+    let evaluation = evaluate(&contract_for(&[cve]), &tree_whose_rescan_reports(&[cve]))
+        .await
+        .expect("an evaluation that was not cancelled");
+    let status = GroupStatus::of(&evaluation, None);
+    assert!(
+        matches!(
+            &status,
+            GroupStatus::NeedsWork {
+                reason: NeedsWork::Unproved(RescanVerdict::StillReported(cves)),
+            } if cves.iter().any(|reported| reported.as_str() == cve)
+        ),
+        "this group's premise is a rescan that still names {cve}, got {status:?}"
     );
     status
 }
@@ -257,11 +295,19 @@ fn attempted_group(cve: &str, status: GroupStatus, claimed_complete: bool) -> At
 
 fn a_group_declining(cve: &str, status: GroupStatus) -> Attempted {
     let mut group = attempted_group(cve, status, false);
+    group.attempt.report.changed_files = Vec::new();
+    group.attempt.changed = Vec::new();
     group.attempt.report.findings = vec![FindingDisposition {
         cve: cve.to_string(),
         attempted: false,
-        note: "no fix I can apply to this project without reading a registry".to_string(),
+        note: DECLINED.to_string(),
     }];
+    group
+}
+
+fn a_group_declining_an_unfixed_finding(cve: &str, status: GroupStatus) -> Attempted {
+    let mut group = a_group_declining(cve, status);
+    group.findings = vec![unfixed_finding_for(cve)];
     group
 }
 
@@ -270,7 +316,7 @@ fn unfixed_finding_for(cve: &str) -> ProjectedFinding {
         unfixed_libraries(&[cve]),
         os_packages(&[]),
     )))
-    .upstream_blocked()
+    .all()
     .next()
     .cloned()
     .expect("a fixture document with one finding the scanner published no fix for")
@@ -281,10 +327,10 @@ fn finding_for(cve: &str) -> ProjectedFinding {
         libraries(&[cve]),
         os_packages(&[]),
     )))
-    .fixable()
+    .all()
     .next()
     .cloned()
-    .expect("a fixture document with one fixable finding")
+    .expect("a fixture document with one finding that names a fix")
 }
 
 fn advisory(cve: &str) -> AdvisoryId {
@@ -296,19 +342,13 @@ fn document_of(report: &support::cve::Report) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn seven_causes_reach_seven_distinguishable_results() {
+async fn six_causes_reach_six_distinguishable_results() {
     let cases: Vec<(&str, Run, RunOutcome, Reason)> = vec![
         (
-            "both sets empty",
-            both_sets_empty(),
+            "nothing projected",
+            clean_scan_no_findings(),
             RunOutcome::Completed,
             Reason::NothingToDo,
-        ),
-        (
-            "fixable empty, blocked non-empty",
-            verdicts_only(),
-            RunOutcome::Completed,
-            Reason::VerdictsOnly,
         ),
         (
             "an open pull request covers it",
@@ -376,17 +416,16 @@ async fn seven_causes_reach_seven_distinguishable_results() {
         cases.len(),
         seen.len()
     );
-    assert_eq!(seen.len(), 7);
+    assert_eq!(seen.len(), 6);
 }
 
 #[tokio::test]
-async fn seven_causes_reach_seven_distinguishable_published_records() {
+async fn six_causes_reach_six_distinguishable_published_records() {
     let cases: Vec<(&str, Run, &str)> = vec![
-        ("both sets empty", both_sets_empty(), "nothing_to_do"),
         (
-            "fixable empty, blocked non-empty",
-            verdicts_only(),
-            "verdicts_only",
+            "nothing projected",
+            clean_scan_no_findings(),
+            "nothing_to_do",
         ),
         (
             "an open pull request covers it",
@@ -449,8 +488,8 @@ async fn seven_causes_reach_seven_distinguishable_published_records() {
         cases.len(),
         published.len()
     );
-    assert_eq!(published.len(), 7);
-    assert_eq!(without_reason.len(), 6);
+    assert_eq!(published.len(), 6);
+    assert_eq!(without_reason.len(), 5);
 }
 
 #[tokio::test]
@@ -488,13 +527,16 @@ async fn a_scanner_that_found_nothing_and_one_that_never_ran_are_not_the_same_re
     );
 }
 
-#[test]
-fn an_empty_fixable_set_with_verdicts_touches_no_branch_and_no_pull_request() {
-    let reached = disposition(&verdicts_only());
+#[tokio::test]
+async fn an_attempt_that_declined_everything_touches_no_branch_and_no_pull_request() {
+    let reached = disposition(&the_attempt_declined_a_finding_with_no_published_fix().await);
 
     assert!(!reached.verdicts().is_empty());
     assert!(reached.branch().is_none() && reached.pull_request().is_none());
-    assert_ne!(disposition(&both_sets_empty()).reason(), reached.reason());
+    assert_ne!(
+        disposition(&clean_scan_no_findings()).reason(),
+        reached.reason()
+    );
 }
 
 #[tokio::test]
@@ -553,21 +595,42 @@ fn a_fix_awaiting_review_and_a_fix_already_in_the_tree_are_not_one_row() {
 }
 
 #[tokio::test]
-async fn a_group_that_was_attempted_and_reverted_is_not_a_group_that_was_never_attempted() {
-    let attempted = disposition(&every_group_needs_work().await);
-    let never = disposition(&verdicts_only());
+async fn a_finding_with_no_published_fix_reaches_the_attempt_and_carries_its_own_reason() {
+    let reached = disposition(&the_attempt_declined_a_finding_with_no_published_fix().await);
 
-    assert_eq!(attempted.reason(), &Reason::UnsafeWithoutDirection);
-    assert_eq!(never.reason(), &Reason::VerdictsOnly);
     assert_eq!(
-        attempted.verdicts()[0].verdict,
+        reached.attempts().len(),
+        1,
+        "the finding reached an attempt rather than a verdict written before \
+         one was opened"
+    );
+    assert_eq!(reached.attempts()[0].cves, vec![advisory(BLOCKED_CVE)]);
+
+    let verdict = &reached.verdicts()[0];
+    assert_eq!(
+        verdict.verdict,
         Judgement::NeedsWork,
-        "something was tried and taken back"
+        "the judgement is the rescan's, and no projection wrote one before the \
+         attempt opened"
+    );
+
+    let json = serde_json::to_value(verdict).expect("a verdict serializes");
+    assert_eq!(
+        json["attempted"],
+        serde_json::json!(false),
+        "nothing was tried for it, and the row says so from the attempt's own \
+         report rather than from the projection: {json}"
     );
     assert_eq!(
-        never.verdicts()[0].verdict,
-        Judgement::UpstreamBlocked,
-        "there was no move to make"
+        json["note"],
+        serde_json::json!(DECLINED),
+        "and the reason is the agent's, verbatim: {json}"
+    );
+    assert_eq!(
+        json["rationale"],
+        serde_json::json!(still_reported(BLOCKED_CVE)),
+        "while the rationale is the rescan's own account of why the run is not \
+         done: {json}"
     );
 }
 
@@ -674,13 +737,14 @@ async fn a_declined_finding_reads_differently_from_one_the_attempt_worked_on() {
     );
 }
 
-#[test]
-fn a_verdict_for_a_finding_no_attempt_saw_carries_five_fields_and_a_verbatim_rationale() {
-    let reached = disposition(&verdicts_only());
+#[tokio::test]
+async fn a_verdict_the_attempt_said_nothing_about_carries_five_fields_and_a_verbatim_rationale() {
+    let reached =
+        disposition(&the_attempt_said_nothing_about_a_finding_with_no_published_fix().await);
     let verdict = &reached.verdicts()[0];
 
     assert_eq!(
-        verdict.rationale, NO_PUBLISHED_FIX,
+        verdict.rationale, "still reported after the bump: CVE-2026-3002",
         "verbatim: this is what a person reads in the ticket"
     );
 
@@ -690,21 +754,27 @@ fn a_verdict_for_a_finding_no_attempt_saw_carries_five_fields_and_a_verbatim_rat
             .expect("a verdict is a JSON object")
             .keys()
             .collect::<Vec<_>>(),
-        ["cve", "package", "rationale", "severity", "verdict"]
+        ["cve", "package", "rationale", "severity", "verdict"],
+        "the attempt reported no disposition for it, so the row is the five \
+         projection fields and nothing invented beside them: {json}"
     );
 }
 
-#[test]
-fn each_of_the_five_fields_carries_what_it_names() {
-    let reached = disposition(&verdicts_only());
+#[tokio::test]
+async fn each_of_the_five_fields_carries_what_it_names() {
+    let reached =
+        disposition(&the_attempt_said_nothing_about_a_finding_with_no_published_fix().await);
     let json = serde_json::to_value(&reached.verdicts()[0]).expect("a verdict serializes");
 
     let finding = unfixed_finding_for(BLOCKED_CVE);
     assert_eq!(json["cve"], serde_json::json!(BLOCKED_CVE));
     assert_eq!(json["package"], serde_json::json!(finding.package));
-    assert_eq!(json["rationale"], serde_json::json!(NO_PUBLISHED_FIX));
+    assert_eq!(
+        json["rationale"],
+        serde_json::json!("still reported after the bump: CVE-2026-3002")
+    );
     assert_eq!(json["severity"], serde_json::json!("HIGH"));
-    assert_eq!(json["verdict"], serde_json::json!("upstream_blocked"));
+    assert_eq!(json["verdict"], serde_json::json!("needs_work"));
     assert_eq!(finding.severity, Severity::High, "the fixture's own grade");
 }
 
@@ -737,13 +807,13 @@ async fn a_needs_work_verdict_carries_the_status_s_own_words() {
 
 #[test]
 fn the_report_is_written_even_when_empty() {
-    assert_eq!(report_of(&both_sets_empty()), serde_json::json!([]));
+    assert_eq!(report_of(&clean_scan_no_findings()), serde_json::json!([]));
 }
 
 #[test]
 fn the_empty_report_reaches_the_disk() {
     let scratch = tempfile::tempdir().expect("a temporary directory");
-    let path = disposition(&both_sets_empty())
+    let path = disposition(&clean_scan_no_findings())
         .write_report(scratch.path())
         .expect("the report is written");
 
@@ -758,10 +828,10 @@ fn the_empty_report_reaches_the_disk() {
     );
 }
 
-#[test]
-fn a_non_empty_report_reaches_the_disk_unchanged() {
+#[tokio::test]
+async fn a_non_empty_report_reaches_the_disk_unchanged() {
     let scratch = tempfile::tempdir().expect("a temporary directory");
-    let reached = disposition(&verdicts_only());
+    let reached = disposition(&the_attempt_declined_a_finding_with_no_published_fix().await);
     let path = reached
         .write_report(scratch.path())
         .expect("the report is written");
@@ -773,9 +843,9 @@ fn a_non_empty_report_reaches_the_disk_unchanged() {
     assert_eq!(written.as_array().expect("an array").len(), 1);
 }
 
-#[test]
-fn a_written_verdict_deserializes_into_the_scanner_s_own_spellings() {
-    let reached = disposition(&verdicts_only());
+#[tokio::test]
+async fn a_written_verdict_deserializes_into_the_scanner_s_own_spellings() {
+    let reached = disposition(&the_attempt_declined_a_finding_with_no_published_fix().await);
     let json = serde_json::to_value(&reached.verdicts()[0]).expect("a verdict serializes");
 
     assert_eq!(
@@ -849,20 +919,24 @@ async fn the_report_holds_only_what_this_run_could_not_patch() {
     assert_eq!(report_of(&run), serde_json::json!([]));
 }
 
-#[test]
-fn every_advisory_with_no_published_fix_gets_its_own_verdict() {
-    let run = Run::scanned(projection_of(document_of(&report_with(
+#[tokio::test]
+async fn every_advisory_with_no_published_fix_gets_its_own_verdict() {
+    let mut run = Run::scanned(projection_of(document_of(&report_with(
         unfixed_libraries(&[BLOCKED_CVE, SECOND_CVE]),
         os_packages(&[]),
     ))));
     assert_eq!(
         run.projection()
             .expect("a scan that produced a projection")
-            .upstream_blocked()
+            .all()
             .count(),
         2,
         "this world's premise is two findings the scanner published no fix for"
     );
+    run.attempted = vec![
+        a_group_declining_an_unfixed_finding(BLOCKED_CVE, still_reported_group(BLOCKED_CVE).await),
+        a_group_declining_an_unfixed_finding(SECOND_CVE, still_reported_group(SECOND_CVE).await),
+    ];
 
     let reached = disposition(&run);
     let reported: Vec<&AdvisoryId> = reached
@@ -875,4 +949,15 @@ fn every_advisory_with_no_published_fix_gets_its_own_verdict() {
         reported,
         vec![&advisory(BLOCKED_CVE), &advisory(SECOND_CVE)]
     );
+    for verdict in reached.verdicts() {
+        let disposed = verdict
+            .disposed
+            .as_ref()
+            .expect("the attempt reported a disposition for every finding it saw");
+        assert!(
+            !disposed.attempted,
+            "each row is the attempt's own decline rather than one row standing \
+             for both: {verdict:?}"
+        );
+    }
 }

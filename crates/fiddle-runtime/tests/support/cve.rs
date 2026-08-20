@@ -993,7 +993,7 @@ pub async fn migration_world() -> MigrationWorld {
 
     let projection =
         project(&scanned(&report), &every_fixture_grade()).expect("a fixture document projects");
-    let fixable: Vec<ProjectedFinding> = projection.fixable().cloned().collect();
+    let fixable: Vec<ProjectedFinding> = projection.all().cloned().collect();
     assert!(
         !fixable.is_empty(),
         "a migration is about findings there is a fix to write, and this \

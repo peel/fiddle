@@ -76,8 +76,6 @@ pub enum Reason {
 
     NothingToDo,
 
-    VerdictsOnly,
-
     AlreadyInProgress,
 
     AlreadyFixed,
@@ -97,7 +95,6 @@ impl Reason {
             Reason::NewFindingAppeared { .. } => "new_finding_appeared",
             Reason::Provisional { .. } => "provisional",
             Reason::NothingToDo => "nothing_to_do",
-            Reason::VerdictsOnly => "verdicts_only",
             Reason::AlreadyInProgress => "already_in_progress",
             Reason::AlreadyFixed => "already_fixed",
             Reason::PullRequest => "pull_request",

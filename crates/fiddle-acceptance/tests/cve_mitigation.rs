@@ -810,6 +810,8 @@ const SCAN_PYTHON: &str = "python-library-advisory";
 
 const SCAN_ONLY_ADVISORY_HAS_NO_PUBLISHED_FIX: &str = "no-published-fix";
 
+const DECLINED_NOTE: &str = "no published fix I can apply without a registry";
+
 const SCAN_TWO_OS: &str = "two-os-advisories";
 
 const RESCAN_CLEAN: &str = "library-clean";
@@ -1215,6 +1217,25 @@ fn seed_repository(root: &Path, remote: &Path, name: &str) -> PathBuf {
     );
     git(&tree, &["push", "-q", "origin", SWEEP_BASE]);
     tree
+}
+
+fn a_script_declining_the_only_advisory() -> Vec<Reply> {
+    vec![accepted(completion(
+        serde_json::json!({
+            "role": "assistant",
+            "content": serde_json::json!({
+                "changed_files": [],
+                "summary": DECLINED_NOTE,
+                "claimed_complete": false,
+                "findings": [{
+                    "cve": LIBRARY_CVE,
+                    "attempted": false,
+                    "note": DECLINED_NOTE,
+                }],
+            }).to_string(),
+        }),
+        "stop",
+    ))]
 }
 
 fn a_script_no_attempt_consumes() -> Vec<Reply> {
@@ -1745,18 +1766,6 @@ fn already_fixed_publishes() -> serde_json::Value {
     })
 }
 
-fn verdicts_only_publishes() -> serde_json::Value {
-    serde_json::json!({
-        "reason": "verdicts_only",
-        "verdicts": 1,
-        "already_fixed": [],
-        "deferred": [],
-        "attempts": [],
-        "branch": serde_json::Value::Null,
-        "pull_request": serde_json::Value::Null,
-    })
-}
-
 fn already_in_progress_publishes() -> serde_json::Value {
     serde_json::json!({
         "reason": "already_in_progress",
@@ -1961,12 +1970,13 @@ fn the_three_rows_that_used_to_publish_one_document_publish_three() {
 }
 
 #[test]
-fn an_advisory_with_no_published_fix_reaches_verdicts_only_with_nothing_attempted() {
-    let sweep = Sweep::scanning(
+fn an_advisory_with_no_published_fix_reaches_the_attempt_and_its_decline_is_the_verdict() {
+    let sweep = Sweep::scanning_rescanning(
         VULNERABLE,
         SCAN_ONLY_ADVISORY_HAS_NO_PUBLISHED_FIX,
+        SCAN_ONLY_ADVISORY_HAS_NO_PUBLISHED_FIX,
         2,
-        a_script_no_attempt_consumes(),
+        a_script_declining_the_only_advisory(),
     );
 
     let run = sweep.run();
@@ -1986,16 +1996,36 @@ fn an_advisory_with_no_published_fix_reaches_verdicts_only_with_nothing_attempte
     );
     assert!(
         !scan_artefact.contains("fixedVersion"),
-        "no advisory in this document may name a fix: one that did would be \
-         fixable, would be the attempt's, and the run would reach row 5 \
-         instead: {scan_artefact}"
+        "no advisory in this document may name a fix, or the finding reaching \
+         the attempt below proves nothing about the ones that name none: \
+         {scan_artefact}"
+    );
+
+    let briefed = sweep.gateway.request_bodies().join("\n");
+    assert!(
+        briefed.contains(LIBRARY_CVE) && briefed.contains("no published fix"),
+        "the advisory has to reach the attempt, named as one the scanner \
+         published no fix for, because deciding whether an ecosystem has a fix \
+         to apply is the agent's: {briefed}"
     );
 
     assert_eq!(
         the_row_both_surfaces_agree_on(&sweep, &run, "an advisory with no published fix"),
-        verdicts_only_publishes(),
-        "row 2 is a verdict count that is not zero beside an attempt list that \
-         is empty, and either half alone is a row this run is not on"
+        serde_json::json!({
+            "reason": "unsafe_without_direction",
+            "verdicts": 1,
+            "already_fixed": [],
+            "deferred": [],
+            "attempts": [{
+                "cves": [LIBRARY_CVE],
+                "status": "needs_work",
+                "claimed_complete": false,
+            }],
+            "branch": serde_json::Value::Null,
+            "pull_request": serde_json::Value::Null,
+        }),
+        "one attempt was opened for it, and the rescan still reporting it is \
+         what makes the run needs-work"
     );
 
     let verdicts = sweep.verdicts();
@@ -2005,14 +2035,31 @@ fn an_advisory_with_no_published_fix_reaches_verdicts_only_with_nothing_attempte
     );
     assert_eq!(
         verdicts[0]["verdict"],
-        serde_json::json!("upstream_blocked"),
-        "the verdict has to come from the projection rather than from an \
-         attempt, or the empty attempt list above is hiding one: {verdicts}"
+        serde_json::json!("needs_work"),
+        "the verdict is the rescan's, and no projection wrote one before the \
+         attempt opened: {verdicts}"
+    );
+    assert_eq!(
+        verdicts[0]["attempted"],
+        serde_json::json!(false),
+        "and the row says nothing was tried, from the agent's own report: \
+         {verdicts}"
+    );
+    assert_eq!(
+        verdicts[0]["note"],
+        serde_json::json!(DECLINED_NOTE),
+        "carrying the agent's reason verbatim rather than a sentence this \
+         build wrote for it: {verdicts}"
+    );
+    assert_eq!(
+        verdicts[0]["rationale"],
+        serde_json::json!(format!("still reported after the bump: {LIBRARY_CVE}")),
+        "while the rationale is the rescan's own account: {verdicts}"
     );
 
     assert!(
         sweep.pull_requests().is_empty(),
-        "a run that attempted nothing opens nothing: {:?}",
+        "a run that cleared nothing opens nothing: {:?}",
         sweep.pull_requests()
     );
     assert_eq!(
