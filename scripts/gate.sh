@@ -4,6 +4,10 @@ set -uo pipefail
 MODE="${1:-default}"
 cd "$(dirname "$0")/.." || exit 2
 
+for TOOL in nix git jq beans; do
+  command -v "$TOOL" >/dev/null 2>&1 || { echo "GATE: CANNOT RUN  ($TOOL is not on the PATH, so the gate cannot answer)"; exit 2; }
+done
+
 LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fiddle-gate-XXXXXX") || exit 2
 trap 'rm -rf "$LOG_DIR"' EXIT INT TERM
 echo "logs: $LOG_DIR"
@@ -56,7 +60,11 @@ if [ "$MODE" != "--quick" ]; then
     else
       SHELL_FAIL=$((SHELL_FAIL + 1))
       echo "  !! $t exit=$rc"
-      tail -12 "$LOG_DIR/shell-$(basename "$t" .sh).log"
+      if [ -s "$LOG_DIR/shell-$(basename "$t" .sh).log" ]; then
+        tail -12 "$LOG_DIR/shell-$(basename "$t" .sh).log"
+      else
+        echo "     the suite printed nothing, so it stopped before its first line"
+      fi
     fi
   done
   if [ "$SHELL_TOTAL" -eq 0 ]; then
