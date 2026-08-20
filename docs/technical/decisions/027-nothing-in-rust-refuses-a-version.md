@@ -1,6 +1,7 @@
 # 027 — Nothing in Rust refuses a version
 
 Status: accepted
+Cites: fiddle_core::AgentBudget, config::CheckRef
 
 ## Context
 

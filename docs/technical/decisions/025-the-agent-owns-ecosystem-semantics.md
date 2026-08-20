@@ -2,6 +2,7 @@
 
 Status: accepted; amended later in M4c by the note below, which leaves the decision
 standing and closes the one exception it left open.
+Cites: fiddle_core::selected, fiddle_runtime::cve::verdict::Budget, fiddle_runtime::cve::verdict::Row
 
 Amends the reasoning behind M4a's §2.4 bump-target rules. It does not supersede an
 ADR: the position it corrects was never written down as a decision, which is part
@@ -49,9 +50,12 @@ The pair carries `requirements.txt` and **no lockfile**, where Go carries `go.mo
 plus `go.sum`, so it exercises the manifest-plus-lockfile assumption a word search
 cannot see. A standing grep guard for `go.mod`, `go list`, `golang` was considered
 and declined: word-absence is not assumption-absence, and a core that still assumes
-a lockfile passes it. The one-time confirmation at completion provably cannot go
-clean either — the tests that prove Go-ignorance must name Go words to assert their
-absence, 11 residual hits by construction, at `capability/cve.rs:978` and `:1001-1006`.
+a lockfile passes it. The one-time confirmation at completion provably cannot go clean
+either — the tests that prove Go-ignorance must name Go words to assert their absence.
+`capability/cve.rs`'s `the_prompt_names_no_ecosystem_and_no_chosen_version` asserts
+against an eleven-word list and `the_composition_carries_the_scope_rules_and_no_mechanical_rule`
+against five mechanical commands, and fixtures in both crates carry `golang.org/x/...`
+package names because that is what Wiz reports.
 
 **One exception stood, and the amendment below closes it.** `names_a_fix` had Rust
 decide that a finding naming no published fix was `upstream_blocked`, so it reached
@@ -64,7 +68,7 @@ was left open, tracked as `fiddle-lmqw`.
 **The `already_fixed` field survives with a different producer.** Its two
 computations are gone — `go list -m` and the commit-body reading — but the field in
 `cve/verdict.rs` remains, now filled from a clean rescan over an attempt that
-changed nothing (`capability/mitigate.rs:164-202`). Nothing pre-filters an
+changed nothing — the `settled` arm of `capability/mitigate.rs`'s `sweep`. Nothing pre-filters an
 already-fixed finding: one that is fixed does not appear in the scan.
 
 **A new capability must not re-derive the M4a line.** The principle does not say
@@ -108,7 +112,8 @@ and the constant `the scanner published no fixed version` had no producer left, 
 they went with the partition. So did the `verdicts_only` disposition row: a verdict
 with no attempt behind it was reachable only from the projection's own verdict, and
 `disposition` now returns on `attempted` before it could be reached. The row count
-is six rather than seven. Nothing replaces it, because the finding it used to
+is six rather than seven, and `cve::verdict::Row` now has exactly those six variants —
+the rescan's own two reasons live in `evaluate::Reason` and reach no row. Nothing replaces it, because the finding it used to
 describe now travels the `unsafe_without_direction` row carrying the agent's own
 note beside the rescan's rationale — strictly more than the constant it replaced.
 
@@ -123,6 +128,7 @@ one thing the convention protects is that the change be visible rather than sile
 which the status line and this section do.
 
 **Budget::apply is not this decision.** `Budget` (`cve/verdict.rs`) still keeps a run
-to `max_findings` and defers the rest, and that stays. How many findings one night
+to `max_findings` and defers the rest, and that stays. It takes the whole projection —
+its parameter is `projected`, not the deleted partition's `fixable`. How many findings one night
 takes is a bound on the work, not a claim about an ecosystem; a deferred finding is
 published as deferred and the next run may take it.

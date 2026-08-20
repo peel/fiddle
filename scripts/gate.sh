@@ -67,6 +67,11 @@ if [ "$MODE" != "--quick" ]; then
   [ "$SHELL_FAIL" -ne 0 ] && FAILED=1
 fi
 
+CITES=0
+printf "  ADR CITES: "
+scripts/check-adr-cites.sh || CITES=$?
+[ "$CITES" -ne 0 ] && FAILED=1
+
 if [ "$MODE" != "--quick" ]; then
   if nix develop -c cargo build --release > "$LOG_DIR/build.log" 2>&1; then echo "build --release  ok"; else echo "build --release  FAILED"; tail -20 "$LOG_DIR/build.log"; FAILED=1; fi
 fi

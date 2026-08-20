@@ -73,35 +73,6 @@ pub enum Reason {
         scanned_at: String,
         rescanned_at: String,
     },
-
-    NothingToDo,
-
-    AlreadyInProgress,
-
-    AlreadyFixed,
-
-    PullRequest,
-
-    UnsafeWithoutDirection,
-
-    ScanUnusable {
-        why: String,
-    },
-}
-
-impl Reason {
-    pub fn row(&self) -> &'static str {
-        match self {
-            Reason::NewFindingAppeared { .. } => "new_finding_appeared",
-            Reason::Provisional { .. } => "provisional",
-            Reason::NothingToDo => "nothing_to_do",
-            Reason::AlreadyInProgress => "already_in_progress",
-            Reason::AlreadyFixed => "already_fixed",
-            Reason::PullRequest => "pull_request",
-            Reason::UnsafeWithoutDirection => "unsafe_without_direction",
-            Reason::ScanUnusable { .. } => "scan_unusable",
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

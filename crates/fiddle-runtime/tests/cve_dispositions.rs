@@ -5,10 +5,10 @@ use fiddle_runtime::agent::{FindingDisposition, RepairReport};
 use fiddle_runtime::capability::{GroupStatus, MigrationAttempt, NeedsWork};
 use fiddle_runtime::cve::project::{project, Projection};
 use fiddle_runtime::cve::verdict::{
-    disposition, report_of, Attempted, Budget, InProgress, Judgement, Landed, Run, Verdict,
+    disposition, report_of, Attempted, Budget, InProgress, Judgement, Landed, Row, Run, Verdict,
     REPORT_FILE,
 };
-use fiddle_runtime::evaluate::{evaluate, Evaluation, Reason, RescanVerdict};
+use fiddle_runtime::evaluate::{evaluate, Evaluation, RescanVerdict};
 use fiddle_runtime::scanner::Scanner;
 use fiddle_runtime::workspace::WorkspacePath;
 use std::collections::HashSet;
@@ -166,19 +166,19 @@ async fn findings_beyond_budget(count: usize, bound: usize) -> Run {
         os_packages(&[]),
     ))));
 
-    let fixable: Vec<ProjectedFinding> = run
+    let projected: Vec<ProjectedFinding> = run
         .projection()
         .expect("a scan that produced a projection")
         .all()
         .cloned()
         .collect();
     assert_eq!(
-        fixable.len(),
+        projected.len(),
         count,
         "this world's premise is {count} projected findings"
     );
 
-    let (taken, deferred) = Budget::of(bound).apply(fixable);
+    let (taken, deferred) = Budget::of(bound).apply(projected);
     let mut attempted = Vec::new();
     for finding in &taken {
         attempted.push(attempted_group(
@@ -343,36 +343,36 @@ fn document_of(report: &support::cve::Report) -> serde_json::Value {
 
 #[tokio::test]
 async fn six_causes_reach_six_distinguishable_results() {
-    let cases: Vec<(&str, Run, RunOutcome, Reason)> = vec![
+    let cases: Vec<(&str, Run, RunOutcome, Row)> = vec![
         (
             "nothing projected",
             clean_scan_no_findings(),
             RunOutcome::Completed,
-            Reason::NothingToDo,
+            Row::NothingToDo,
         ),
         (
             "an open pull request covers it",
             open_pr_covers_it(),
             RunOutcome::Completed,
-            Reason::AlreadyInProgress,
+            Row::AlreadyInProgress,
         ),
         (
             "already fixed in the tree",
             fixed_in_the_tree(),
             RunOutcome::Completed,
-            Reason::AlreadyFixed,
+            Row::AlreadyFixed,
         ),
         (
             "one group clean",
             one_group_clean().await,
             RunOutcome::Completed,
-            Reason::PullRequest,
+            Row::PullRequest,
         ),
         (
             "every group needs work",
             every_group_needs_work().await,
             RunOutcome::Completed,
-            Reason::UnsafeWithoutDirection,
+            Row::UnsafeWithoutDirection,
         ),
         (
             "the scanner never ran",
@@ -380,7 +380,7 @@ async fn six_causes_reach_six_distinguishable_results() {
             RunOutcome::Retryable {
                 reason: fiddle_core::Published::of("ignored: the discriminant is the claim"),
             },
-            Reason::ScanUnusable { why: String::new() },
+            Row::ScanUnusable { why: String::new() },
         ),
     ];
 
@@ -465,7 +465,7 @@ async fn six_causes_reach_six_distinguishable_published_records() {
             "two causes must not publish one document: {cause} published one an              earlier cause already had — {document}"
         );
 
-        if matches!(reached.reason(), Reason::ScanUnusable { .. }) {
+        if matches!(reached.reason(), Row::ScanUnusable { .. }) {
             assert!(
                 matches!(reached.outcome(), RunOutcome::Retryable { .. }),
                 "and it is the row the exit code separates: {:?}",
@@ -507,7 +507,7 @@ async fn an_unusable_scan_is_retryable_and_carries_the_scanner_s_own_diagnostic(
         "the outcome should carry the scanner's own diagnostic, got {reason:?}"
     );
 
-    let Reason::ScanUnusable { why } = reached.reason() else {
+    let Row::ScanUnusable { why } = reached.reason() else {
         panic!("got {:?}", reached.reason());
     };
     assert!(why.contains("-which-is-not-installed"), "got {why}");
@@ -562,7 +562,7 @@ async fn only_a_run_that_committed_something_names_the_branch_it_committed_to() 
 fn a_clean_image_is_not_an_image_somebody_had_already_fixed() {
     let reached = disposition(&clean_scan_no_findings());
 
-    assert_eq!(reached.reason(), &Reason::NothingToDo);
+    assert_eq!(reached.reason(), &Row::NothingToDo);
     assert!(
         reached.already_fixed().is_empty(),
         "there was nothing to have been fixed"
@@ -580,8 +580,8 @@ fn a_fix_awaiting_review_and_a_fix_already_in_the_tree_are_not_one_row() {
     let awaiting = disposition(&open_pr_covers_it());
     let landed = disposition(&fixed_in_the_tree());
 
-    assert_eq!(awaiting.reason(), &Reason::AlreadyInProgress);
-    assert_eq!(landed.reason(), &Reason::AlreadyFixed);
+    assert_eq!(awaiting.reason(), &Row::AlreadyInProgress);
+    assert_eq!(landed.reason(), &Row::AlreadyFixed);
     assert!(
         awaiting.already_fixed().is_empty(),
         "nothing is fixed in this tree; it is fixed on a branch nobody merged"
@@ -638,7 +638,7 @@ async fn a_finding_with_no_published_fix_reaches_the_attempt_and_carries_its_own
 async fn one_clean_group_beside_one_that_needs_work_still_opens_the_pull_request() {
     let reached = disposition(&one_group_clean().await);
 
-    assert_eq!(reached.reason(), &Reason::PullRequest);
+    assert_eq!(reached.reason(), &Row::PullRequest);
     assert_eq!(
         reached.verdicts().len(),
         1,
@@ -674,7 +674,7 @@ async fn a_finding_deferred_by_the_budget_is_reported_as_deferred() {
 async fn deferring_a_finding_does_not_change_what_the_run_came_to() {
     let reached = disposition(&findings_beyond_budget(6, 5).await);
 
-    assert_eq!(reached.reason(), &Reason::PullRequest);
+    assert_eq!(reached.reason(), &Row::PullRequest);
     assert_eq!(reached.outcome(), &RunOutcome::Completed);
     assert!(reached.branch().is_some());
 }

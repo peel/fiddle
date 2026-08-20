@@ -1,6 +1,7 @@
 # 026 — An attempt is held to the files it declared, and to nothing else
 
 Status: accepted
+Cites: fiddle_runtime::capability::cve::undeclared, DeclarationBreach
 
 ## Context
 
@@ -15,7 +16,7 @@ M1 asked for and nothing verified.
 ## Decision
 
 **The only rule is that the diff touched exactly `changed_files`.** `undeclared`
-(`capability/cve.rs:113-131`) compares the declared paths against the diff's paths
+(`capability/cve.rs`) compares the declared paths against the diff's paths
 set-wise: a path changed and undeclared is a `DeclarationBreach`, a path declared
 and unchanged is a `DeclarationBreach`, and a breach makes the attempt needs-work.
 Rust does not know what any of those paths mean.

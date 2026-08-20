@@ -1,11 +1,38 @@
 use crate::agent::FindingDisposition;
 use crate::capability::cve::{GroupStatus, MigrationAttempt};
 use crate::cve::project::Projection;
-use crate::evaluate::Reason;
 use fiddle_core::{AdvisoryId, Published, RunOutcome, Severity};
 use std::path::{Path, PathBuf};
 
 pub const REPORT_FILE: &str = "verdicts.json";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Row {
+    NothingToDo,
+
+    AlreadyInProgress,
+
+    AlreadyFixed,
+
+    PullRequest,
+
+    UnsafeWithoutDirection,
+
+    ScanUnusable { why: String },
+}
+
+impl Row {
+    pub fn row(&self) -> &'static str {
+        match self {
+            Row::NothingToDo => "nothing_to_do",
+            Row::AlreadyInProgress => "already_in_progress",
+            Row::AlreadyFixed => "already_fixed",
+            Row::PullRequest => "pull_request",
+            Row::UnsafeWithoutDirection => "unsafe_without_direction",
+            Row::ScanUnusable { .. } => "scan_unusable",
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Run {
@@ -96,9 +123,9 @@ impl Budget {
 
     pub fn apply(
         &self,
-        fixable: Vec<fiddle_core::ProjectedFinding>,
+        projected: Vec<fiddle_core::ProjectedFinding>,
     ) -> (Vec<fiddle_core::ProjectedFinding>, Vec<Deferred>) {
-        let mut taken = fixable;
+        let mut taken = projected;
         let overflow = taken.split_off(taken.len().min(self.max_findings));
         let deferred = overflow
             .into_iter()
@@ -158,7 +185,7 @@ pub struct AttemptRecord {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Disposition {
     outcome: RunOutcome,
-    reason: Reason,
+    reason: Row,
     deferred: Vec<Deferred>,
     verdicts: Vec<Verdict>,
     already_fixed: Vec<AdvisoryId>,
@@ -172,7 +199,7 @@ impl Disposition {
         &self.outcome
     }
 
-    pub fn reason(&self) -> &Reason {
+    pub fn reason(&self) -> &Row {
         &self.reason
     }
 
@@ -252,7 +279,7 @@ pub fn disposition(run: &Run) -> Disposition {
             outcome: RunOutcome::Retryable {
                 reason: Published::of(why),
             },
-            reason: Reason::ScanUnusable { why: why.clone() },
+            reason: Row::ScanUnusable { why: why.clone() },
             deferred: Vec::new(),
             verdicts: Vec::new(),
             already_fixed: Vec::new(),
@@ -264,7 +291,7 @@ pub fn disposition(run: &Run) -> Disposition {
 
     let verdicts = verdicts_of(run);
     let attempts = attempts_of(run);
-    let landed = |reason: Reason| Disposition {
+    let landed = |reason: Row| Disposition {
         outcome: RunOutcome::Completed,
         reason,
         deferred: run.deferred.clone(),
@@ -283,28 +310,28 @@ pub fn disposition(run: &Run) -> Disposition {
         return Disposition {
             branch: run.landed.as_ref().map(|it| it.branch.clone()),
             pull_request: run.landed.as_ref().map(|it| it.pull_request),
-            ..landed(Reason::PullRequest)
+            ..landed(Row::PullRequest)
         };
     }
 
     if !run.attempted.is_empty() {
-        return landed(Reason::UnsafeWithoutDirection);
+        return landed(Row::UnsafeWithoutDirection);
     }
 
     if let Some(in_progress) = &run.in_progress {
         if !in_progress.covers.is_empty() {
             return Disposition {
                 pull_request: Some(in_progress.number),
-                ..landed(Reason::AlreadyInProgress)
+                ..landed(Row::AlreadyInProgress)
             };
         }
     }
 
     if !run.already_fixed.is_empty() {
-        return landed(Reason::AlreadyFixed);
+        return landed(Row::AlreadyFixed);
     }
 
-    landed(Reason::NothingToDo)
+    landed(Row::NothingToDo)
 }
 
 pub fn report_of(run: &Run) -> serde_json::Value {
