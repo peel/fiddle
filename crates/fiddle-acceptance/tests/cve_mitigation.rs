@@ -2230,7 +2230,9 @@ fn a_declined_finding_reads_differently_from_one_that_was_attempted_and_failed()
          {declined}"
     );
     assert!(
-        declined["note"].as_str().is_some_and(|it| !it.trim().is_empty()),
+        declined["note"]
+            .as_str()
+            .is_some_and(|it| !it.trim().is_empty()),
         "a declined finding carries the attempt's reason: {declined}"
     );
     assert_ne!(

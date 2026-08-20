@@ -136,7 +136,7 @@ pub fn unaccounted(shown: &[&str], reported: &[FindingDisposition]) -> Option<Ag
         .map(|(cve, _)| *cve)
         .collect();
     if missing.is_empty() && stray.is_empty() && twice.is_empty() {
-        return None;
+        return unexplained_decline(reported);
     }
 
     let mut reason = String::from("the report does not account for what it was shown");
@@ -150,6 +150,23 @@ pub fn unaccounted(shown: &[&str], reported: &[FindingDisposition]) -> Option<Ag
         reason.push_str(&format!("; reported more than once: {}", twice.join(", ")));
     }
     Some(AgentError::Protocol { reason })
+}
+
+fn unexplained_decline(reported: &[FindingDisposition]) -> Option<AgentError> {
+    let silent: Vec<&str> = reported
+        .iter()
+        .filter(|disposition| !disposition.attempted && disposition.note.trim().is_empty())
+        .map(|disposition| disposition.cve.as_str())
+        .collect();
+    match silent.is_empty() {
+        true => None,
+        false => Some(AgentError::Protocol {
+            reason: format!(
+                "declining is an answer, but it has to say why; no reason given for: {}",
+                silent.join(", ")
+            ),
+        }),
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -561,6 +578,33 @@ mod tests {
             unaccounted(&shown, &declined).is_none(),
             "declining is a disposition, not a broken contract: {:?}",
             unaccounted(&shown, &declined)
+        );
+    }
+
+    #[test]
+    fn a_decline_that_gives_no_reason_is_refused_and_one_that_gives_one_is_not() {
+        let shown = ["CVE-2026-1111"];
+        let silent = vec![FindingDisposition {
+            cve: "CVE-2026-1111".to_string(),
+            attempted: false,
+            note: "   ".to_string(),
+        }];
+
+        let error = unaccounted(&shown, &silent).expect("a decline saying nothing is no answer");
+        assert!(
+            matches!(error, AgentError::Protocol { .. }),
+            "a decline with no reason is the model not holding up its end: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("CVE-2026-1111"),
+            "the refusal has to name the finding it is about: {error}"
+        );
+
+        let spoken = vec![disposition("CVE-2026-1111", false)];
+        assert!(
+            unaccounted(&shown, &spoken).is_none(),
+            "what is refused is the silence, not the decline: {:?}",
+            unaccounted(&shown, &spoken)
         );
     }
 
