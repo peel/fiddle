@@ -2130,3 +2130,30 @@ What follows for tooling in this repo, beyond the four fixes:
 
 Origin: M4c (epic fiddle-v4ka) — one per tool, none found by looking for it
 Tags: #tooling #evidence #process
+
+### 2026-08-20 — A capability shipped Go-only and four holistic reviews passed it
+
+M4a delivered `cve_mitigate` with **77 Go references in `fiddle-runtime/src`**, 3 in `fiddle-core/src`, 1 in `fiddle-cli/src`, across ten files including a whole `cve/go.rs`, and **no ecosystem seam anywhere** — `PackageType` was Wiz's `library`/`osPackage` taxonomy, which is a scanner's vocabulary and not a language's. The capability could not mitigate a Python repository at all. Not less well: at all. **The user found it, after delivery.** No check, no lane and no reviewer did.
+
+Holistic review ran four times over that milestone and passed it every time, and the reason is structural rather than a lapse: **every criterion asked whether the capability worked, and none asked what it assumed.** Each iteration measured the thing against a Go fixture, and against a Go fixture a Go-only core is indistinguishable from an agnostic one — which is also why the M4c fix is a Python fixture pair on the same lane rather than a grep for the word `go`.
+
+The question that would have caught it is one sentence long and belongs in holistic review's criteria, not in a lane: **"what would this refuse to run against?"** It is cheap, it is answerable from the code, and its answer for M4a was *every repository that is not a Go module* — which no artefact of that milestone stated, because nothing asked. The same question generalises past this defect: a capability whose answer is a named class of input is scoped, and one whose answer is *nothing* is either genuinely general or has not been looked at.
+
+Origin: M4c (bean `fiddle-imoj`, epic `fiddle-v4ka`) — counted at M4a's close, found by the user
+Tags: #process #evaluation #capability
+
+### 2026-08-20 — A release note is owed for a config key that was deleted, and three documents outlived their code
+
+**The release note.** Removing `[orchestration.cve] go` is a **breaking configuration change** and not a silent one. `OrchestrationCve` carries `deny_unknown_fields`, so a `fiddle.toml` still holding the key is **refused at load with exit 2** rather than ignored: a document that loaded yesterday fails today. Exposure is small — the key was never in the product manual (`:441` and `:526` both omitted it), so it only ever arrived via `default_go()` — but small exposure is not no exposure, and `docs/product/releases/` does not exist yet, so nothing carries this. `RUNBOOKS.md`'s common issues now names the exit-2 and the fix; the release note still owes the reader who has not hit it yet.
+
+**Three documents outlived their code, and one of them misinstructed.** `SYSTEM.md:57` documented `go = { program, args }` as the seam the module graph is resolved through — which, given the strict schema above, pointed an operator straight at an exit-2 refusal. That is worse than stale: a stale sentence is ignored, an instruction into a refusal is followed. `SYSTEM.md:47` narrated `cve::attribute`'s four bump-target rules and `docs/fiddle-agentic-factory-prd.md:442` told operators that "major-version approval rules live in Rust", both describing code deleted in `58e7616`. All three are corrected.
+
+Two more were found while correcting them, and neither was on the list:
+
+- **`docs/fiddle-agentic-factory-prd.md:545`** claimed "immediate checks ... in Rust rather than dynamic configuration". M4 moved them into the document as `[[workspace.checks]]`, so the bullet had been false since M4a rather than since M4c. Corrected.
+- **`decisions/021-the-grade-set-is-configuration-and-the-exploit-arm-is-not.md:19`** counts "**four readers, one value**" for `Severities` and names `cve::fold` as one of them. `cve::fold` is deleted, so there are three. **Not corrected, deliberately:** `decisions/` is append-only, and ADR 025 already records that the fold and both already-fixed computations are gone. Recorded here so the arithmetic is not read as current.
+
+The shape worth naming: **every one of these was found by a person reading the sentence next to a deleted symbol, not by any check.** A document that cites a symbol has a mechanically checkable claim in it — the symbol exists — and nothing in this repository checks it. Two lanes do pin `SYSTEM.md` prose (`config_check` pins the `fiddle.toml` paragraph's table list, `capability_selection` pins the capability census), and both are pins on *enumerations that the binary also prints*, which is why they work. A citation pin would be the same device applied to identifiers.
+
+Origin: implementation (bean `fiddle-imoj`, lane `lane/m4c-imoj`)
+Tags: #documentation #process #release
