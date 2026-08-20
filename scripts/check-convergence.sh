@@ -33,11 +33,83 @@ if [[ "$CURRENT_DISPATCHES" -gt "$MAX_DISPATCHES" ]]; then
 fi
 
 VERDICT=$(jq -r '.verdict' "$CURRENT")
+HISTORY_LEN=$(jq 'length' "$HISTORY")
+
+CURRENT_TREE=$(jq -r '.tree_sha // "" | tostring' "$CURRENT")
+PREVIOUS_TREE=""
+PREVIOUS_VERDICT=""
+if [[ "$HISTORY_LEN" -gt 0 ]]; then
+  PREVIOUS_TREE=$(jq -r '.[-1].tree_sha // "" | tostring' "$HISTORY")
+  PREVIOUS_VERDICT=$(jq -r '.[-1].verdict // ""' "$HISTORY")
+fi
+
+if [[ -z "$CURRENT_TREE" || -z "$PREVIOUS_TREE" ]]; then
+  TREE_COMPARISON="unknown"
+elif [[ "$CURRENT_TREE" == "$PREVIOUS_TREE" ]]; then
+  TREE_COMPARISON="unchanged"
+else
+  TREE_COMPARISON="changed"
+fi
+
+contradictions_of_previous_pass() {
+  jq -c --slurpfile hist "$HISTORY" '
+    ($hist[0] | .[-1]) as $previous |
+    {
+      criteria: [.failing_criteria[]? | . as $criterion |
+        select(([$previous.failing_criteria[]?] | index($criterion)) == null)],
+      dimensions: [.failing_dimensions[]? |
+        "\(.domain).\(.dimension)" as $key |
+        select((([$previous.passing_dimensions[]? | "\(.domain).\(.dimension)"]) | index($key)) != null) |
+        $key]
+    }
+  ' "$CURRENT"
+}
+
+findings_absent_from_previous() {
+  jq -c --slurpfile hist "$HISTORY" '
+    def above_low: ((.severity // "unspecified") | ascii_downcase) != "low";
+    [$hist[0] | .[-1].findings[]? | .id] as $already_reported |
+    [.findings[]? | select(above_low) | . as $finding |
+     select(($already_reported | index($finding.id)) == null)]
+  ' "$CURRENT"
+}
+
+score_deltas_against_previous() {
+  jq -c --slurpfile hist "$HISTORY" '
+    ($hist[0] | .[-1].dimensions // {}) as $previous |
+    [.dimensions // {} | to_entries[] |
+     select($previous[.key] != null and $previous[.key] != .value) |
+     {dimension: .key, previous: $previous[.key], current: .value}]
+  ' "$CURRENT"
+}
+
+emit_contested() {
+  local criteria="$1" dimensions="$2" findings="$3"
+  jq -n --arg tree_sha "$CURRENT_TREE" \
+        --argjson criteria "$criteria" \
+        --argjson dimensions "$dimensions" \
+        --argjson findings "$findings" \
+        '{"status":"CONTESTED","tree_comparison":"unchanged","tree_sha":$tree_sha,
+          "contested_criteria":$criteria,"contested_dimensions":$dimensions,
+          "new_findings":$findings}'
+  exit 2
+}
 
 if [[ "$VERDICT" != "PASS" ]]; then
+  if [[ "$TREE_COMPARISON" == "unchanged" && "$PREVIOUS_VERDICT" == "PASS" ]]; then
+    CONTRADICTIONS=$(contradictions_of_previous_pass)
+    CONTRADICTION_COUNT=$(echo "$CONTRADICTIONS" | jq '(.criteria | length) + (.dimensions | length)')
+    if [[ "$CONTRADICTION_COUNT" -gt 0 ]]; then
+      emit_contested \
+        "$(echo "$CONTRADICTIONS" | jq -c '.criteria')" \
+        "$(echo "$CONTRADICTIONS" | jq -c '.dimensions')" \
+        '[]'
+    fi
+  fi
   require_next_dispatch_or_exhaust
   ITERATION=$(jq 'length + 1' "$HISTORY")
-  jq -n --argjson iteration "$ITERATION" '{"status":"FAIL","iteration":$iteration}'
+  jq -n --argjson iteration "$ITERATION" --arg tree_comparison "$TREE_COMPARISON" \
+    '{"status":"FAIL","iteration":$iteration,"tree_comparison":$tree_comparison}'
   exit 1
 fi
 
@@ -47,18 +119,29 @@ if [[ "$DIM_COUNT" -eq 0 ]]; then
   exit 0
 fi
 
-HISTORY_LEN=$(jq 'length' "$HISTORY")
 if [[ "$HISTORY_LEN" -eq 0 ]]; then
   require_next_dispatch_or_exhaust
   echo '{"status":"PASS_PENDING"}'
   exit 1
 fi
 
-LAST_VERDICT=$(jq -r '.[-1].verdict' "$HISTORY")
-if [[ "$LAST_VERDICT" != "PASS" ]]; then
+if [[ "$PREVIOUS_VERDICT" != "PASS" ]]; then
   require_next_dispatch_or_exhaust
-  echo '{"status":"PASS_PENDING"}'
+  jq -n --arg tree_comparison "$TREE_COMPARISON" \
+    '{"status":"PASS_PENDING","tree_comparison":$tree_comparison}'
   exit 1
+fi
+
+if [[ "$TREE_COMPARISON" == "unchanged" ]]; then
+  NEW_FINDINGS=$(findings_absent_from_previous)
+  if [[ "$(echo "$NEW_FINDINGS" | jq 'length')" -gt 0 ]]; then
+    emit_contested '[]' '[]' "$NEW_FINDINGS"
+  fi
+  jq -n --arg tree_sha "$CURRENT_TREE" \
+        --argjson deltas "$(score_deltas_against_previous)" \
+        '{"status":"CONVERGED","tree_comparison":"unchanged","tree_sha":$tree_sha,
+          "ignored_score_deltas":$deltas}'
+  exit 0
 fi
 
 REGRESSIONS=$(jq -c --slurpfile hist "$HISTORY" '
@@ -74,10 +157,11 @@ REGRESSIONS=$(jq -c --slurpfile hist "$HISTORY" '
 REG_COUNT=$(echo "$REGRESSIONS" | jq 'length')
 if [[ "$REG_COUNT" -gt 0 ]]; then
   require_next_dispatch_or_exhaust
-  jq -n --argjson regressions "$REGRESSIONS" \
-    '{"status":"PASS_REGRESSED","regressions":$regressions}'
+  jq -n --argjson regressions "$REGRESSIONS" --arg tree_comparison "$TREE_COMPARISON" \
+    '{"status":"PASS_REGRESSED","regressions":$regressions,"tree_comparison":$tree_comparison}'
   exit 1
 fi
 
-echo '{"status":"CONVERGED"}'
+jq -n --arg tree_comparison "$TREE_COMPARISON" \
+  '{"status":"CONVERGED","tree_comparison":$tree_comparison}'
 exit 0

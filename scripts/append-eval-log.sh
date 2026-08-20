@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BEAN_ID="" INIT=false SPOT_CHECK=false BASE_SHA="" ITERATION="" SCORECARD="" DISPATCHES="" GUIDANCE="" DISAGREEMENTS="" CORRECTIONS="" ANTIPATTERNS=""
+BEAN_ID="" INIT=false SPOT_CHECK=false BASE_SHA="" ITERATION="" SCORECARD="" DISPATCHES="" GUIDANCE="" DISAGREEMENTS="" CORRECTIONS="" ANTIPATTERNS="" TREE_SHA="" CONVERGENCE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -16,6 +16,8 @@ while [[ $# -gt 0 ]]; do
     --disagreements) DISAGREEMENTS="$2"; shift 2;;
     --corrections) CORRECTIONS="$2"; shift 2;;
     --antipatterns) ANTIPATTERNS="$2"; shift 2;;
+    --tree-sha) TREE_SHA="$2"; shift 2;;
+    --convergence) CONVERGENCE="$2"; shift 2;;
     *) echo "Unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -50,7 +52,8 @@ else
   HEADING="### Iteration $ITERATION ($TIMESTAMP)"
 fi
 
-ENTRY=$(jq -r --arg heading "$HEADING" --arg disp "$DISPATCHES" --arg guide "$GUIDANCE" '
+ENTRY=$(jq -r --arg heading "$HEADING" --arg disp "$DISPATCHES" --arg guide "$GUIDANCE" \
+  --arg tree "$TREE_SHA" --arg convergence "$CONVERGENCE" '
   def ungraded($why): " (UNGRADED, \($why))";
   def dim_note($d):
     if ($d | type) != "object" then
@@ -65,6 +68,8 @@ ENTRY=$(jq -r --arg heading "$HEADING" --arg disp "$DISPATCHES" --arg guide "$GU
     else "" end;
 
   "\($heading)\ndispatches: \($disp)" +
+  (if $tree != "" then "\ntree: \($tree)" else "" end) +
+  (if $convergence != "" then "\nconvergence: \($convergence)" else "" end) +
   (if (.domains | type) != "object" then
      "\n**scorecard:**\n- domains" +
      ungraded(if .domains == null then "no `domains` recorded"
@@ -91,8 +96,14 @@ ENTRY=$(jq -r --arg heading "$HEADING" --arg disp "$DISPATCHES" --arg guide "$GU
 
 if [[ -z "$ENTRY" ]]; then
   echo "Warning: could not read scorecard $SCORECARD — logging the iteration without dimensions" >&2
-  ENTRY=$(printf '%s\ndispatches: %s\n**scorecard:** (UNGRADED, could not be read: %s)' \
-    "$HEADING" "$DISPATCHES" "$SCORECARD")
+  ENTRY=$(printf '%s\ndispatches: %s' "$HEADING" "$DISPATCHES")
+  if [[ -n "$TREE_SHA" ]]; then
+    ENTRY=$(printf '%s\ntree: %s' "$ENTRY" "$TREE_SHA")
+  fi
+  if [[ -n "$CONVERGENCE" ]]; then
+    ENTRY=$(printf '%s\nconvergence: %s' "$ENTRY" "$CONVERGENCE")
+  fi
+  ENTRY=$(printf '%s\n**scorecard:** (UNGRADED, could not be read: %s)' "$ENTRY" "$SCORECARD")
   if [[ -n "$GUIDANCE" ]]; then
     ENTRY=$(printf '%s\n**Guidance:** "%s"' "$ENTRY" "$GUIDANCE")
   fi
