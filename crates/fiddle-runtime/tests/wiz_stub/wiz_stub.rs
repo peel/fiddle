@@ -3,8 +3,8 @@
 mod document;
 
 use document::{
-    libraries, libraries_graded, os_packages, report_with, unfixed_libraries, DEFAULT_LIBRARY_CVES,
-    DEFAULT_OS_CVES, SECOND_LIBRARY_CVE, SECOND_OS_CVE,
+    libraries, libraries_carrying, libraries_graded, os_packages, report_with, unfixed_libraries,
+    DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, SECOND_LIBRARY_CVE, SECOND_OS_CVE,
 };
 use std::path::{Path, PathBuf};
 
@@ -84,6 +84,18 @@ fn main() {
                 report_with(
                     libraries(&DEFAULT_LIBRARY_CVES),
                     os_packages(&[DEFAULT_OS_CVES[0], SECOND_OS_CVE]),
+                )
+                .raw()
+                .to_string(),
+            );
+        }
+        "second-library-still-open" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(
+                    libraries_carrying(&[(1, SECOND_LIBRARY_CVE)]),
+                    os_packages(&DEFAULT_OS_CVES),
                 )
                 .raw()
                 .to_string(),

@@ -690,6 +690,8 @@ const SCAN_TWO_OS: &str = "two-os-advisories";
 
 const RESCAN_CLEAN: &str = "library-clean";
 
+const RESCAN_SECOND_LIBRARY_OPEN: &str = "second-library-still-open";
+
 const PASSING_CHECK: &[&str] = &[];
 const FAILING_CHECK: &[&str] = &["--exit", "1"];
 
@@ -1183,6 +1185,19 @@ fn two_libraries_sums() -> String {
     read_fixture_file(TWO_LIBRARIES, "go.sum")
         .replace(VULNERABLE_VERSION, FIXED_VERSION)
         .replace(SECOND_VULNERABLE_VERSION, SECOND_FIXED_VERSION)
+}
+
+fn a_repair_moving_only_the_first_of_two_requirements() -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "go.mod",
+            read_fixture_file(TWO_LIBRARIES, "go.mod").replace(VULNERABLE_VERSION, FIXED_VERSION),
+        ),
+        (
+            "go.sum",
+            read_fixture_file(TWO_LIBRARIES, "go.sum").replace(VULNERABLE_VERSION, FIXED_VERSION),
+        ),
+    ]
 }
 
 fn the_one_new_branch(sweep: &Sweep) -> String {
@@ -2071,6 +2086,157 @@ fn two_findings_in_different_files_are_one_attempt_and_one_commit() {
         3,
         "two edits and a report is one attempt's whole turn, and a second \
          answer was waiting for a build that made a second attempt"
+    );
+}
+
+#[test]
+fn a_finding_that_does_not_clear_reverts_the_whole_commit() {
+    let sweep = Sweep::scanning_rescanning(
+        TWO_LIBRARIES,
+        SCAN_TWO_LIBRARIES,
+        RESCAN_SECOND_LIBRARY_OPEN,
+        2,
+        an_attempt(
+            &a_repair_moving_only_the_first_of_two_requirements(),
+            &[LIBRARY_CVE, SECOND_LIBRARY_CVE],
+            &[],
+        ),
+    );
+
+    let run = sweep.run();
+    let payload = sweep.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "an attempt left for a person is not a failed run — stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    assert_eq!(
+        sweep.remote_branches(),
+        vec![SWEEP_BASE.to_string()],
+        "one finding the rescan still reports takes the whole commit back, so \
+         there is no branch to publish"
+    );
+    assert!(
+        sweep.pull_requests().is_empty(),
+        "and nothing to open: {:?}",
+        sweep.pull_requests()
+    );
+
+    let reached = sweep.disposition(&run);
+    assert_eq!(reached["reason"], "unsafe_without_direction", "{reached}");
+    assert_eq!(
+        reached["attempts"],
+        serde_json::json!([{
+            "cves": [LIBRARY_CVE, SECOND_LIBRARY_CVE],
+            "status": "needs_work",
+            "claimed_complete": true,
+            "forbidden": [],
+        }]),
+        "one row for the one attempt, needing work although the rescan cleared \
+         one of the two findings it was shown: {reached}"
+    );
+    assert!(
+        reached["branch"].is_null() && reached["pull_request"].is_null(),
+        "nothing landed, so there is nothing to point at: {reached}"
+    );
+
+    let verdicts = sweep.verdicts();
+    assert!(
+        sweep.has_verdict(LIBRARY_CVE),
+        "the finding the rescan no longer reports is still unfixed, because the \
+         edit that cleared it went back with everything else: {verdicts}"
+    );
+    assert!(
+        sweep.has_verdict(SECOND_LIBRARY_CVE),
+        "and so is the one that did not clear: {verdicts}"
+    );
+
+    assert_eq!(
+        walkdir_files(sweep.workspace_root()),
+        Vec::<PathBuf>::new(),
+        "the reverted attempt leaves no worktree behind"
+    );
+    assert_eq!(
+        git_says(&sweep.tree, &["status", "--porcelain"]),
+        "",
+        "and leaves the checkout it was pointed at exactly as it found it"
+    );
+    sweep.assert_every_receipt_is_logical(&run);
+}
+
+#[test]
+fn a_declined_finding_reads_differently_from_one_that_was_attempted_and_failed() {
+    let sweep = Sweep::scanning_rescanning(
+        TWO_LIBRARIES,
+        SCAN_TWO_LIBRARIES,
+        RESCAN_SECOND_LIBRARY_OPEN,
+        2,
+        an_attempt(
+            &a_repair_moving_only_the_first_of_two_requirements(),
+            &[LIBRARY_CVE],
+            &[SECOND_LIBRARY_CVE],
+        ),
+    );
+
+    let run = sweep.run();
+    let payload = sweep.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "declining is an honest answer, not the model breaking its contract — \
+         stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        payload["outcome"], "completed",
+        "a declined finding is a verdict, so the run completes rather than \
+         reporting a protocol failure: {payload}"
+    );
+
+    let reached = sweep.disposition(&run);
+    assert_eq!(
+        reached["reason"], "unsafe_without_direction",
+        "and it still leaves the finding unfixed, so the commit goes back: \
+         {reached}"
+    );
+    assert!(
+        sweep.pull_requests().is_empty(),
+        "opening nothing: {:?}",
+        sweep.pull_requests()
+    );
+
+    let verdicts = sweep.verdicts();
+    let row = |cve: &str| {
+        verdicts
+            .as_array()
+            .expect("the verdict report is an array")
+            .iter()
+            .find(|row| row["cve"] == cve)
+            .cloned()
+            .unwrap_or_else(|| panic!("{cve} has no verdict row: {verdicts}"))
+    };
+
+    let failed = row(LIBRARY_CVE);
+    let declined = row(SECOND_LIBRARY_CVE);
+    assert_eq!(
+        failed["attempted"], true,
+        "the finding the attempt worked on says so: {failed}"
+    );
+    assert_eq!(
+        declined["attempted"], false,
+        "the report must say the declined finding was never attempted: \
+         {declined}"
+    );
+    assert!(
+        declined["note"].as_str().is_some_and(|it| !it.trim().is_empty()),
+        "a declined finding carries the attempt's reason: {declined}"
+    );
+    assert_ne!(
+        failed["note"], declined["note"],
+        "a reader of one report tells the two apart by what each row says: \
+         {verdicts}"
     );
 }
 
