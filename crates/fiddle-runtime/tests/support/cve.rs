@@ -1,7 +1,6 @@
 use fiddle_core::{AdvisoryId, AttemptId, PackageType, ProjectedFinding, Severities, Severity};
 use fiddle_runtime::agent::AgentBudget;
 use fiddle_runtime::capability::{CapabilityError, Git, MigrationConfig};
-use fiddle_runtime::cve::attribute::{Manifest, ModuleGraph, ResolverError};
 use fiddle_runtime::cve::dedup::{DedupError, Local, Ran, Spawn};
 use fiddle_runtime::cve::project::project;
 use fiddle_runtime::evaluate::{Answered, Check, Contract, Repair, Success, Tree, Unanswered};
@@ -419,54 +418,6 @@ fn finding_under(
         fixed_version: Some(fixed.to_string()),
         severity: Severity::Critical,
         package_type,
-    }
-}
-
-#[async_trait::async_trait]
-impl ModuleGraph for GoWorkspace {
-    async fn list(&self, module: &str) -> Result<String, ResolverError> {
-        Ok(self.go(&["list", "-m", "-json", module]))
-    }
-
-    async fn why(&self, module: &str) -> Result<String, ResolverError> {
-        Ok(self.go(&["mod", "why", "-m", module]))
-    }
-
-    async fn manifest(&self) -> Result<Manifest, ResolverError> {
-        Ok(Manifest {
-            go_mod: self.go_mod(),
-            go_sum: std::fs::read_to_string(self.repo.join("go.sum")).ok(),
-        })
-    }
-
-    async fn get(&self, module: &str, query: &str) -> Result<String, ResolverError> {
-        Ok(self.go(&["get", &format!("{module}@{query}")]))
-    }
-
-    async fn tidy(&self) -> Result<String, ResolverError> {
-        Ok(self.go(&["mod", "tidy"]))
-    }
-
-    async fn restore(&self, manifest: &Manifest) -> Result<(), ResolverError> {
-        std::fs::write(self.repo.join("go.mod"), &manifest.go_mod).unwrap();
-        let go_sum = self.repo.join("go.sum");
-        match &manifest.go_sum {
-            Some(contents) => std::fs::write(&go_sum, contents).unwrap(),
-            None => {
-                let _ = std::fs::remove_file(&go_sum);
-            }
-        }
-        Ok(())
-    }
-}
-
-impl GoWorkspace {
-    fn go(&self, args: &[&str]) -> String {
-        go_proxy::run(&self.repo, args).text()
-    }
-
-    fn go_mod_requirements(&self) -> Vec<(String, String, bool)> {
-        go_proxy::requirements(&self.repo)
     }
 }
 
