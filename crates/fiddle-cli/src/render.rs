@@ -130,7 +130,6 @@ pub fn config_check_json(config: &Config) -> String {
                 "image": cve.image,
                 "severities": cve.severities.grades().collect::<Vec<_>>(),
                 "max_findings": cve.max_findings,
-                "go": { "program": cve.go.program, "args": cve.go.args },
             },
         });
     }
@@ -309,8 +308,7 @@ pub fn config_check_human(config: &Config) -> String {
         out.push_str(&format!(
             "\n  orchestration.cve.image = {}\
              \n  orchestration.cve.severities = {}\
-             \n  orchestration.cve.max_findings = {}\
-             \n  orchestration.cve.go = {}",
+             \n  orchestration.cve.max_findings = {}",
             cve.image,
             cve.severities
                 .grades()
@@ -318,7 +316,6 @@ pub fn config_check_human(config: &Config) -> String {
                 .collect::<Vec<_>>()
                 .join(" "),
             cve.max_findings,
-            program_line(&cve.go),
         ));
     }
     out

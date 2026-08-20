@@ -53,9 +53,6 @@ pub struct OrchestrationCve {
 
     #[serde(default = "default_max_findings")]
     pub max_findings: usize,
-
-    #[serde(default = "default_go")]
-    pub go: ProgramRef,
 }
 
 #[derive(Debug, Deserialize)]
@@ -586,13 +583,6 @@ fn default_workspace_root() -> PathBuf {
 fn default_wizcli() -> ProgramRef {
     ProgramRef {
         program: "wizcli".to_string(),
-        args: Vec::new(),
-    }
-}
-
-fn default_go() -> ProgramRef {
-    ProgramRef {
-        program: "go".to_string(),
         args: Vec::new(),
     }
 }

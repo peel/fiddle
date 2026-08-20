@@ -76,11 +76,6 @@ pub fn wiz_stub_binary() -> &'static Path {
     BINARY.get_or_init(|| runtime_fixture("wiz_stub", "wiz-stub"))
 }
 
-pub fn go_stub_binary() -> &'static Path {
-    static BINARY: OnceLock<PathBuf> = OnceLock::new();
-    BINARY.get_or_init(|| runtime_fixture("go_stub", "go-stub"))
-}
-
 pub fn check_stub_binary() -> &'static Path {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
     BINARY.get_or_init(|| runtime_fixture("check_stub", "check-stub"))

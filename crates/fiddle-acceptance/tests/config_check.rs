@@ -728,7 +728,6 @@ timeout = "20m"
 [orchestration.cve]
 image = "ghcr.io/acme/icecube:latest"
 max_findings = 3
-go = { program = "go", args = [] }
 "#;
 
 #[test]
@@ -740,7 +739,6 @@ fn the_sweep_table_loads_and_reports_the_bound_the_document_set() {
             "image": "ghcr.io/acme/icecube:latest",
             "severities": ["CRITICAL", "HIGH"],
             "max_findings": 3,
-            "go": { "program": "go", "args": [] },
         }),
         "a bound nothing reports back is a bound an operator cannot confirm: {cve}"
     );
@@ -1338,7 +1336,6 @@ fn the_plain_rendering_names_the_image_grades_and_bound_a_sweep_will_act_on() {
         "orchestration.cve.image = ghcr.io/acme/icecube:latest",
         "orchestration.cve.severities = CRITICAL HIGH",
         "orchestration.cve.max_findings = 3",
-        "orchestration.cve.go = \"go\"",
     ] {
         assert!(
             stdout.contains(line),

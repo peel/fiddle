@@ -47,8 +47,6 @@ pub struct MitigateConfig {
 
     pub rescan_credential: WizCredential,
 
-    pub go: WorkspaceCommand,
-
     pub checks: Vec<Check>,
 
     pub check: WorkspaceCommand,
