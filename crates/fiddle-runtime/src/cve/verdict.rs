@@ -7,8 +7,6 @@ use std::path::{Path, PathBuf};
 
 pub const REPORT_FILE: &str = "verdicts.json";
 
-pub const NO_PUBLISHED_FIX: &str = "the scanner published no fixed version";
-
 #[derive(Debug)]
 pub struct Run {
     scan: Result<Projection, String>,
@@ -145,8 +143,6 @@ pub struct Disposed {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Judgement {
-    UpstreamBlocked,
-
     NeedsWork,
 }
 
@@ -251,25 +247,22 @@ impl Disposition {
 }
 
 pub fn disposition(run: &Run) -> Disposition {
-    let projection = match &run.scan {
-        Err(why) => {
-            return Disposition {
-                outcome: RunOutcome::Retryable {
-                    reason: Published::of(why),
-                },
-                reason: Reason::ScanUnusable { why: why.clone() },
-                deferred: Vec::new(),
-                verdicts: Vec::new(),
-                already_fixed: Vec::new(),
-                attempts: Vec::new(),
-                branch: None,
-                pull_request: None,
-            };
-        }
-        Ok(projection) => projection,
-    };
+    if let Err(why) = &run.scan {
+        return Disposition {
+            outcome: RunOutcome::Retryable {
+                reason: Published::of(why),
+            },
+            reason: Reason::ScanUnusable { why: why.clone() },
+            deferred: Vec::new(),
+            verdicts: Vec::new(),
+            already_fixed: Vec::new(),
+            attempts: Vec::new(),
+            branch: None,
+            pull_request: None,
+        };
+    }
 
-    let verdicts = verdicts_of(run, projection);
+    let verdicts = verdicts_of(run);
     let attempts = attempts_of(run);
     let landed = |reason: Reason| Disposition {
         outcome: RunOutcome::Completed,
@@ -298,10 +291,6 @@ pub fn disposition(run: &Run) -> Disposition {
         return landed(Reason::UnsafeWithoutDirection);
     }
 
-    if !verdicts.is_empty() {
-        return landed(Reason::VerdictsOnly);
-    }
-
     if let Some(in_progress) = &run.in_progress {
         if !in_progress.covers.is_empty() {
             return Disposition {
@@ -322,16 +311,8 @@ pub fn report_of(run: &Run) -> serde_json::Value {
     disposition(run).report()
 }
 
-fn verdicts_of(run: &Run, projection: &Projection) -> Vec<Verdict> {
+fn verdicts_of(run: &Run) -> Vec<Verdict> {
     let mut verdicts = Vec::new();
-
-    for finding in projection.upstream_blocked() {
-        verdicts.push(verdict(
-            finding,
-            NO_PUBLISHED_FIX.to_string(),
-            Judgement::UpstreamBlocked,
-        ));
-    }
 
     for group in &run.attempted {
         let reason = match &group.status {
@@ -342,7 +323,7 @@ fn verdicts_of(run: &Run, projection: &Projection) -> Vec<Verdict> {
         for finding in &group.findings {
             verdicts.push(Verdict {
                 disposed: disposed_of(&group.attempt.report.findings, &finding.cve),
-                ..verdict(finding, rationale.clone(), Judgement::NeedsWork)
+                ..verdict(finding, rationale.clone())
             });
         }
     }
@@ -350,17 +331,13 @@ fn verdicts_of(run: &Run, projection: &Projection) -> Vec<Verdict> {
     verdicts
 }
 
-fn verdict(
-    finding: &fiddle_core::ProjectedFinding,
-    rationale: String,
-    judgement: Judgement,
-) -> Verdict {
+fn verdict(finding: &fiddle_core::ProjectedFinding, rationale: String) -> Verdict {
     Verdict {
         cve: finding.cve.clone(),
         package: finding.package.clone(),
         rationale,
         severity: finding.severity,
-        verdict: judgement,
+        verdict: Judgement::NeedsWork,
         disposed: None,
     }
 }

@@ -1,6 +1,7 @@
 # 025 — The agent owns ecosystem semantics; Rust owns the mechanical guarantees
 
-Status: accepted
+Status: accepted; amended later in M4c by the note below, which leaves the decision
+standing and closes the one exception it left open.
 
 Amends the reasoning behind M4a's §2.4 bump-target rules. It does not supersede an
 ADR: the position it corrects was never written down as a decision, which is part
@@ -71,3 +72,59 @@ already-fixed finding: one that is fixed does not appear in the scan.
 **A new capability must not re-derive the M4a line.** The principle does not say
 which side a question falls on; that is the judgement, and this record is where it
 was made. The test is whether a rule can be stated without naming an ecosystem.
+
+## Amendment (M4c) — "the scanner published no fixed version" is a fact, not a verdict
+
+The Consequences above left one exception open and named `fiddle-lmqw` for it. It is
+closed, and the answer is the one the Decision already implies rather than a
+qualification of it.
+
+**The judgement.** Whether the scanner's report carries a `fixedVersion` for an
+advisory is a **projection fact**: Rust reads the field, types it as
+`Option<String>`, and shows it to the attempt — the prompt renders `no published
+fix` when it is absent, and always did. Whether the *absence* of that field means
+the finding cannot be mitigated is an **ecosystem judgement**. It is not even one
+judgement: a Python constraint may already resolve to a safe release, an OS finding
+may need a base-image tag, a vendored tree may need a patch, and Wiz's
+`fixedVersion` is a registry's answer about one version space. Rust cannot rank
+those without knowing the ecosystem, so it does not rank them. It carries the fact
+and acts on it nowhere. Design §2's illustration of the agent's report —
+`{"attempted": false, "note": "no published fix I can apply without a registry"}` —
+is now a case the agent actually sees, and the note is its own.
+
+**Two sites acted on it, and both are gone.**
+
+- `names_a_fix` partitioned the projection into `fixable` and `upstream_blocked`, and
+  `upstream_blocked` got a Rust-written `UpstreamBlocked` verdict before any worktree
+  existed. `Projection` now exposes `all()` alone, `Budget` bounds the attempt over
+  it, and the finding reaches `must_clear` and the rescan like every other.
+- `fiddle_core::selected` widened below the configured grades on `has_exploit &&
+  fixable`, and the second conjunct read `fixedVersion`. An exploited MEDIUM naming
+  no published fix was therefore dropped at projection and appeared **nowhere** —
+  not in the attempt, not in `verdicts`, not in `deferred`. The rule is now
+  `severities.contains(severity) || has_exploit`, which is what §1.1 always
+  described it as: Wiz's taxonomy, and no version space.
+
+**What the deletion cost, stated rather than discovered.** `Judgement::UpstreamBlocked`
+and the constant `the scanner published no fixed version` had no producer left, so
+they went with the partition. So did the `verdicts_only` disposition row: a verdict
+with no attempt behind it was reachable only from the projection's own verdict, and
+`disposition` now returns on `attempted` before it could be reached. The row count
+is six rather than seven. Nothing replaces it, because the finding it used to
+describe now travels the `unsafe_without_direction` row carrying the agent's own
+note beside the rescan's rationale — strictly more than the constant it replaced.
+
+**Why this amends 025 rather than superseding it.** The Decision was not wrong; the
+code had not caught up with it. Rust keeping "what never knew a language" and the
+agent taking "what it declines and why" reads true now, so there is no wording in it
+to correct — which is the test for an amendment rather than a superseding record,
+and the same test ADR 019's M4a amendment was written under. A record whose whole
+content was "the exception 025 named is closed" would have to be held beside 025 to
+be understood, and 025 would go on reading as though the hole were still there. The
+one thing the convention protects is that the change be visible rather than silent,
+which the status line and this section do.
+
+**Budget::apply is not this decision.** `Budget` (`cve/verdict.rs`) still keeps a run
+to `max_findings` and defers the rest, and that stays. How many findings one night
+takes is a bound on the work, not a claim about an ecosystem; a deferred finding is
+published as deferred and the next run may take it.

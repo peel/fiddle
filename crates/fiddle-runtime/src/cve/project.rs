@@ -1,7 +1,6 @@
 use fiddle_core::{selected, AdvisoryId, PackageType, ProjectedFinding, Severities, Severity};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashSet;
 
 use crate::scanner::ScanReport;
 
@@ -15,8 +14,6 @@ pub enum Arm {
 #[derive(Debug)]
 pub struct Projection {
     findings: Vec<ProjectedFinding>,
-    fixable: Vec<usize>,
-    upstream_blocked: Vec<usize>,
     library_arm: Arm,
     os_arm: Arm,
 }
@@ -24,14 +21,6 @@ pub struct Projection {
 impl Projection {
     pub fn all(&self) -> impl Iterator<Item = &ProjectedFinding> + '_ {
         self.findings.iter()
-    }
-
-    pub fn fixable(&self) -> impl Iterator<Item = &ProjectedFinding> + '_ {
-        self.fixable.iter().map(|&at| &self.findings[at])
-    }
-
-    pub fn upstream_blocked(&self) -> impl Iterator<Item = &ProjectedFinding> + '_ {
-        self.upstream_blocked.iter().map(|&at| &self.findings[at])
     }
 
     pub fn os_arm(&self) -> Arm {
@@ -69,32 +58,8 @@ pub fn project(report: &ScanReport, acted_on: &Severities) -> Result<Projection,
         select_into(array, from, package_type, acted_on, &mut findings)?;
     }
 
-    let fixable: Vec<usize> = findings
-        .iter()
-        .enumerate()
-        .filter(|(_, finding)| names_a_fix(finding))
-        .map(|(at, _)| at)
-        .collect();
-
-    let upstream_blocked: Vec<usize> = {
-        let fixable_advisories: HashSet<&str> = fixable
-            .iter()
-            .map(|&at| findings[at].cve.as_str())
-            .collect();
-        findings
-            .iter()
-            .enumerate()
-            .filter(|(_, finding)| {
-                !names_a_fix(finding) && !fixable_advisories.contains(finding.cve.as_str())
-            })
-            .map(|(at, _)| at)
-            .collect()
-    };
-
     Ok(Projection {
         findings,
-        fixable,
-        upstream_blocked,
         library_arm,
         os_arm,
     })
@@ -180,7 +145,7 @@ fn record(
         Some(other) => return Err(format!("{cve:?} reports fixedVersion as {other}")),
     };
 
-    if !selected(acted_on, severity, has_exploit, fixed_version.as_deref()) {
+    if !selected(acted_on, severity, has_exploit) {
         return Ok(None);
     }
 
@@ -192,11 +157,4 @@ fn record(
         severity,
         package_type,
     }))
-}
-
-fn names_a_fix(finding: &ProjectedFinding) -> bool {
-    finding
-        .fixed_version
-        .as_deref()
-        .is_some_and(|version| !version.trim().is_empty())
 }
