@@ -51,10 +51,8 @@ FAILURES=$(jq -n \
   ([$ids | split(",")[] | gsub("^\\s+|\\s+$"; "") | select(length > 0)] | unique) as $expected |
 
   [
-    # provider must be a non-empty string
     (if ($c.provider | nonempty) then empty else "provider must be a non-empty string" end),
 
-    # dimensions per domain: object type, non-empty evidence (or comment) on each scored dimension
     ($c.domains // {} | to_entries[] |
       .key as $domain | (.value.dimensions) as $dims |
       if ($dims | type) != "object" then
@@ -65,20 +63,16 @@ FAILURES=$(jq -n \
           else "domain \($domain) dimension \(.key): evidence must be non-empty" end)
       end),
 
-    # criteria must be an array
     (if ($c.criteria | type) != "array" then "criteria must be an array" else empty end),
 
-    # each criterion carries non-empty evidence
     ((if ($c.criteria | type) == "array" then $c.criteria else [] end)[] |
       if (.evidence | nonempty) then empty
       else "criterion \(.id // "?"): evidence must be non-empty" end),
 
-    # criteria ids must exactly match the expected set
     (((if ($c.criteria | type) == "array" then $c.criteria else [] end) | map(.id) | unique) as $actual |
       (($actual - $expected)[] | "unexpected criterion id: \(.)"),
       (($expected - $actual)[] | "missing criterion id: \(.)")),
 
-    # spec_defect detected must carry a non-empty reason
     (if ($c.spec_defect | type) == "object" and ($c.spec_defect.detected == true) then
        if ($c.spec_defect.reason | nonempty) then empty
        else "spec_defect detected but reason is empty" end
