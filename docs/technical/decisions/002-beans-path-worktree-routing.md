@@ -1,19 +1,20 @@
-# 002 — Route worktree agent bean operations to main checkout via --beans-path
+# 002 — Route a worktree agent's bean operations to the main checkout
 
-**Date:** 2026-03-14
-**Status:** accepted
+Date: 2026-03-14
+Status: accepted
+Cites: MAIN_BEANS_PATH, `beans --beans-path`, skills/orchestrate/resumption.md
 
 ## Context
 
-When ralph spawns implementer and reviewer agents in git worktrees, their working directory is inside the worktree — not the main checkout where `.beans/` lives. Bean CLI calls from worktree agents either failed ("bean not found") or silently operated on the wrong directory, making progress updates invisible to the TUI and lead until the worktree was merged back.
+An agent spawned in a git worktree has its working directory inside that worktree. The main checkout holds `.beans/`, so a bean command from a worktree either failed or wrote to the wrong directory. Progress updates stayed invisible to the lead until somebody merged the worktree back.
 
 ## Decision
 
-Introduce a `{MAIN_BEANS_PATH}` placeholder in all agent role templates. The lead computes the absolute path to the main checkout's `.beans/` once at startup and substitutes it into every spawned agent's prompt. All `beans` CLI calls in agent templates use `beans --beans-path {MAIN_BEANS_PATH}`. Implementers are explicitly prohibited from changing bean status — only the lead manages status transitions. The lead itself is reminded to use `--beans-path` after `cd`-ing into a worktree for verification.
+Compute the main checkout's `.beans/` path once at startup and pass it to every agent as `MAIN_BEANS_PATH`. Give every bean command in an agent template the `--beans-path` flag. Let the lead alone change a bean's status.
 
 ## Consequences
 
-- Bean updates from worktree agents are immediately visible to the TUI and lead, regardless of the agent's working directory.
-- The `--beans-path` flag is harmless when already in the main checkout, so it can be used unconditionally for safety.
-- Implementers can no longer accidentally change bean status, preventing race conditions between the lead's status management and agent actions.
-- The lead must compute and propagate `MAIN_BEANS_PATH` to every agent — if omitted, agents fall back to cwd-based resolution which may fail in worktrees.
+- The lead and the TUI see a worktree agent's bean updates at once, whatever the agent's working directory.
+- `--beans-path` is harmless in the main checkout, so an agent can pass it unconditionally.
+- An implementer can no longer change a bean's status. The project gives up parallel status writes to remove the race with the lead.
+- The lead must propagate the path to every agent. An agent that does not receive it falls back to its working directory, which fails in a worktree.

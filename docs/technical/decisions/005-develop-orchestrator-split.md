@@ -1,25 +1,22 @@
-# 005 — Split develop into orchestrator + sub-skills
+# 005 — Split develop into an orchestrator and two sub-skills
 
-**Date:** 2026-04-02
-**Status:** accepted; partially superseded by [009]
+Date: 2026-04-02
+Status: accepted; partially superseded by 009
+Cites: skills/develop/SKILL.md, skills/develop-loop/SKILL.md, skills/develop-holistic/SKILL.md, scripts/validate-bean-body.sh
 
-<!-- The split into orchestrator plus sub-skills stands. Two elements below are
-     superseded by 009: the bean body validation HARD-GATE is now
-     scripts/validate-bean-body.sh, and the Iron Laws that drove the duplicated
-     bytes were deleted, their content absorbed into develop-loop. -->
-
+ADR 009 supersedes two elements below. The bean body gate is now `scripts/validate-bean-body.sh`, and the Iron Laws that drove the duplicated bytes are deleted.
 
 ## Context
 
-develop/SKILL.md was 34KB (628 lines) — a monolithic file containing setup, per-task evaluation loop (13 substeps), holistic review (5 substeps), completion, historical notes, and redundant constraints. Its size caused two problems: high per-invocation token cost, and agents silently skipping the entire protocol because they found it overwhelming and rationalized "this is too simple for the full loop."
+`skills/develop/SKILL.md` held 34KB across 628 lines, carrying setup, two loops, completion, historical notes and repeated constraints. Its size cost tokens on every invocation. Agents also skipped the whole protocol, judging it too heavy for the task in hand.
 
 ## Decision
 
-Split develop into a thin orchestrator (~5KB) that delegates to two sub-skills: develop-loop (~20KB, per-task evaluation) and develop-holistic (~9KB, cross-domain review). The orchestrator adds a bean body validation HARD-GATE that requires eval block, files section, and steps checklist before entering the loop.
+Split develop into a thin orchestrator and two sub-skills. Give `develop-loop` the per-task evaluation and `develop-holistic` the cross-domain review. Make the orchestrator check each bean body before the loop starts.
 
 ## Consequences
 
-- Peak single-agent token load drops from 34KB to 20.5KB (40% reduction). The orchestrator itself drops to 4.8KB — much harder for agents to rationalize skipping.
-- Bean body quality is now enforced at the gate, preventing thin descriptions from reaching implementers.
-- Total bytes across develop files increased (34KB → 34KB across 3 files) due to duplicated frontmatter and Iron Laws. This is acceptable — the goal was per-invocation load, not total file size.
-- Sub-skills must be kept in sync when the evaluation protocol changes — three files to update instead of one.
+- The peak load on one agent fell from 34KB to 20.5KB, and the orchestrator itself to 4.8KB. An agent finds 4.8KB much harder to argue past.
+- The gate requires an eval block, a files section and a steps checklist, so no implementer receives a thin body.
+- The total bytes across the develop files did not fall. The project gave up that saving for the per-invocation saving, and paid it in duplicated frontmatter and Iron Laws.
+- Three files now state the evaluation protocol. Every change to it has to reach all three.
