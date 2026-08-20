@@ -2,7 +2,7 @@
 
 Date: 2026-07-31
 Status: accepted
-Cites: skills/using-fiddle/SKILL.md, docs/technical/SYSTEM.md, skills/deliver-docs/SKILL.md "## Rules", skills/discover-docs/SKILL.md "## Rules"
+Cites: skills/using-fiddle/SKILL.md, docs/technical/SYSTEM.md, skills/deliver-docs/SKILL.md, skills/discover-docs/SKILL.md
 
 ## Context
 

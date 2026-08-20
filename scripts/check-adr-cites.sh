@@ -30,8 +30,19 @@ find_file() {
   find "$ROOT" \
     -name .git -prune -o \
     -name target -prune -o \
+    -name .beans -prune -o \
     -name node_modules -prune -o \
     -type f -path "*/$1" -print 2>/dev/null | head -1
+}
+
+resolves_in_tree() {
+  grep -rqF \
+    --exclude-dir=.git \
+    --exclude-dir=target \
+    --exclude-dir=.beans \
+    --exclude-dir=node_modules \
+    --exclude-dir=decisions \
+    -- "$1" "$ROOT"
 }
 
 adrs=0
@@ -53,9 +64,11 @@ for adr in "$DECISIONS"/[0-9][0-9][0-9]-*.md; do
     continue
   fi
 
-  printf '%s' "${line#Cites:}" | tr ',' '\n' | tr -d '[:blank:]' | grep -v '^$' > "$LEAVES"
+  printf '%s' "${line#Cites:}" | tr ',' '\n' \
+    | sed -e 's/^[[:blank:]]*//' -e 's/[[:blank:]]*$//' \
+    | grep -v '^$' > "$LEAVES"
 
-  while read -r entry; do
+  while IFS= read -r entry; do
     [ "$entry" = "none" ] && continue
     entries=$((entries + 1))
     if names_a_path "$entry"; then
@@ -66,8 +79,8 @@ for adr in "$DECISIONS"/[0-9][0-9][0-9]-*.md; do
       continue
     fi
     leaf="${entry##*::}"
-    if ! grep -rqF -- "$leaf" "$ROOT/crates"; then
-      printf '%s: Cites: %s resolves to nothing under crates/\n' "$base" "$leaf"
+    if ! resolves_in_tree "$leaf"; then
+      printf '%s: Cites: %s resolves to nothing in the repository\n' "$base" "$leaf"
       violations=$((violations + 1))
     fi
   done < "$LEAVES"

@@ -1,7 +1,7 @@
 # 030 — The project's committed ignore rules decide what changed
 
 Status: accepted
-Cites: fiddle_runtime::workspace::changes, workspace/changes.rs, `git status --porcelain=v1 -z -uno`, `git ls-files -z --exclude-from`
+Cites: fiddle_runtime::workspace::changes, workspace/changes.rs, changes::STATUS, Workspace::baseline_ignore, Workspace::changed_files
 
 ## Context
 

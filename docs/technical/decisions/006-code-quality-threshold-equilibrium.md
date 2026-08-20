@@ -2,15 +2,15 @@
 
 Date: 2026-07-23
 Status: accepted
-Cites: skills/evaluate/evaluator-general.md "Default threshold: 6", scripts/trend-eval-history.sh, skills/deliver/evaluator-evolve.md "Decay alarm"
+Cites: skills/evaluate/evaluator-general.md, scripts/trend-eval-history.sh, skills/deliver/evaluator-evolve.md
 
 ## Context
 
-An evaluator threshold acts as an equilibrium, not a floor. An unattended loop settles on the lowest passing score, and `code_quality` carries the lowest bar at 6. Raising that bar to 7 moves the equilibrium and leaves the dynamic in place.
+An evaluator threshold acts as an equilibrium, not a floor. An unattended loop settles on the lowest passing score, and `code_quality` carries the lowest bar at 6. Raising that bar to 7 moves the equilibrium and leaves the dynamic in place. `skills/evaluate/evaluator-general.md` writes "Default threshold: 6" against that dimension.
 
 ## Decision
 
-Keep the per-task `code_quality` threshold at 6. Control long-term drift with the decay alarm instead, which `scripts/trend-eval-history.sh` computes and the DELIVER evaluator-evolve step reports. Fold every dimension the alarm names into that step's calibration work.
+Keep the per-task `code_quality` threshold at 6. Control long-term drift with the decay alarm instead, which `scripts/trend-eval-history.sh` computes and the DELIVER evaluator-evolve step reports. Fold every dimension the alarm names into that step's calibration work. `skills/deliver/evaluator-evolve.md` prints the alarm on a line that starts "Decay alarm".
 
 ## Consequences
 
