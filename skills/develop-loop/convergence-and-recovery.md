@@ -50,7 +50,7 @@ When either sha is absent — history written before the field, or a caller pass
 
 On DISPATCHES_EXCEEDED, stop and ask the human. The budget is the only protection against iterating forever on a bean that is not converging, so spending past it — or lowering thresholds to fit — hides exactly the problem it just surfaced.
 
-The budget limits additional dispatches, not evaluation of work already returned. A terminal CONVERGED result from the final allowed dispatch wins; at the same count, FAIL, PASS_PENDING, or PASS_REGRESSED becomes DISPATCHES_EXCEEDED because satisfying it would require another dispatch.
+The budget limits additional dispatches, not evaluation of work already returned. A terminal CONVERGED result from the final allowed dispatch wins; at the same count, FAIL, PASS_PENDING, or PASS_REGRESSED becomes DISPATCHES_EXCEEDED because satisfying it would require another dispatch. CONTESTED requires none, so it is reported as itself at any count — it names why the loop stopped, which DISPATCHES_EXCEEDED would hide.
 
 ## 1l. Log Evaluation
 

@@ -241,7 +241,17 @@ assert_eq "two iterations are still listed" "2" "$(echo "$PLAIN_PARSED" | jq -r 
 assert_eq "absent trees are not counted as identical" "0" \
   "$(echo "$PLAIN_PARSED" | jq -r '.unchanged_tree_reevaluations')"
 
-echo "Case 17: the protocol the scripts implement is the one the skills describe"
+echo "Case 17: a contested pair at the budget is still reported as contested"
+verdict_pass 8c5dc5a 9 > "$TMP/prior.json"
+jq -s '.' "$TMP/prior.json" > "$TMP/history.json"
+verdict_pass 8c5dc5a 9 '[{"id":"stub_implementation","severity":"high"}]' > "$TMP/current.json"
+AT_BUDGET=0
+"$SCRIPT_DIR/check-convergence.sh" --current "$TMP/current.json" --history "$TMP/history.json" \
+  --max-dispatches 4 --current-dispatches 4 > "$OUT" 2>/dev/null || AT_BUDGET=$?
+assert_eq "contested at the budget → exit 2" "2" "$AT_BUDGET"
+assert_eq "contested at the budget names itself" "CONTESTED" "$(status_of_out)"
+
+echo "Case 18: the protocol the scripts implement is the one the skills describe"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 assert_contains() {
   local desc="$1" needle="$2" file="$3"
@@ -264,6 +274,7 @@ assert_contains "holistic routes CONTESTED" "| **CONTESTED** |" "skills/develop-
 assert_contains "CONTESTED is a terminal verdict for the gate" "CONTESTED / DISPATCHES_EXCEEDED" "skills/develop/SKILL.md"
 assert_contains "the envelope documents the stamped tree" "tree_sha" "skills/develop/scorecard-envelope.md"
 assert_contains "the envelope ties antipatterns to findings" "findings" "skills/develop/scorecard-envelope.md"
+assert_contains "the budget does not rename CONTESTED" "CONTESTED requires none" "$CONVERGENCE_DOC"
 
 echo
 echo "Results: $PASS passed, $FAIL failed"
