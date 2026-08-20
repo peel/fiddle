@@ -194,6 +194,21 @@ impl ResolvedDecision {
     }
 }
 
+/// ```
+/// use fiddle_runtime::effect::AuthorizedEffect;
+/// fn takes_an_envelope<T>(_: &AuthorizedEffect<T>) {}
+/// ```
+///
+/// ```compile_fail
+/// use fiddle_runtime::effect::AuthorizedEffect;
+/// use fiddle_runtime::core::{EffectId, PayloadHash};
+///
+/// let forged: AuthorizedEffect<()> = AuthorizedEffect {
+///     effect_id: EffectId("0000000000000000".to_string()),
+///     payload_hash: PayloadHash("0000000000000000".to_string()),
+///     operation: (),
+/// };
+/// ```
 pub struct AuthorizedEffect<T> {
     effect_id: EffectId,
     payload_hash: PayloadHash,

@@ -53,13 +53,11 @@ OUTPUT=$(jq -n \
     $domain_list[] |
     . as $name |
     if $all_domains[$name] then
-      # Known domain: copy all fields, add domain and resolved_via
       $all_domains[$name] + {
         "domain": $name,
         "resolved_via": "config"
       }
     else
-      # Unknown domain: fallback to general defaults
       $general_defaults + {
         "domain": $name,
         "template": "evaluator-general",

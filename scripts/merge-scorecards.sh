@@ -26,34 +26,26 @@ if ! echo "$INPUT" | jq -e 'all(.[]; type == "object" and (.criteria | type == "
 fi
 
 echo "$INPUT" | jq -c '
-  # Collect all unique domains and dimensions across all scorecards
   . as $cards |
 
-  # Gather all domain names across all providers
   [.[] | .domains | keys[]] | unique as $all_domains |
 
-  # For each domain, gather all dimension names across all providers
-  # and compute min score, threshold, and provider_scores
   ($all_domains | map(. as $domain |
     {
       ($domain): {
         "dimensions": (
-          # Collect all dimension names for this domain
           [$cards[] | .domains[$domain] // {} | .dimensions // {} | keys[]] | unique |
           map(. as $dim |
-            # Gather scores per provider for this dimension
             ($cards | map(
               select(.domains[$domain] != null and .domains[$domain].dimensions[$dim] != null) |
               {(.provider): .domains[$domain].dimensions[$dim].score}
             ) | add) as $provider_scores |
 
-            # Get threshold from first provider that has this dimension
             ($cards | map(
               select(.domains[$domain] != null and .domains[$domain].dimensions[$dim] != null) |
               .domains[$domain].dimensions[$dim].threshold
             ) | first) as $threshold |
 
-            # Min score
             ([$provider_scores | to_entries[].value] | min) as $min_score |
 
             {
@@ -69,7 +61,6 @@ echo "$INPUT" | jq -c '
     }
   ) | add // {}) as $merged_domains |
 
-  # Merge criteria: collect all criteria IDs, any fail = fail
   ([$cards[].criteria[]?] | group_by(.id) | map(
     {
       "id": .[0].id,
@@ -78,8 +69,6 @@ echo "$INPUT" | jq -c '
     }
   )) as $merged_criteria |
 
-  # Holistic scorecards carry two optional collections. Coverage chooses the
-  # least-complete provider verdict; remediation deduplicates by requirement.
   ([
     $cards[] as $card |
     $card.spec_coverage_matrix[]? |
@@ -112,7 +101,6 @@ echo "$INPUT" | jq -c '
     }) | del(.source_provider)
   )) as $merged_remediation |
 
-  # Build merged scorecard with metadata from first card.
   {
     "task_id": $cards[0].task_id,
     "iteration": $cards[0].iteration,
