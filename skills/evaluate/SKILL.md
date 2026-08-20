@@ -47,6 +47,8 @@ If antipatterns are listed above, check the implementation against each one. Add
 
 If a prior scorecard is provided, compare each dimension against the prior iteration and note improvements and regressions in your evidence. Explain what got worse for any regressed dimension, and address the regression in your guidance.
 
+Check first whether the prior card graded the tree you are grading. Where it did, it is not an earlier version of the work — it is another evaluator's reading of the same bytes, and there is no regression to explain. Score against the spec as you would with no prior card, and where you land somewhere else than it did, say in your evidence what you read differently. A dimension you cannot justify moving on unchanged code is one to leave where the spec puts it, not one to align with the prior number.
+
 ## Scorecard JSON Output
 
 Return this JSON structure to stdout, with no markdown fences and no commentary outside the JSON.

@@ -241,6 +241,30 @@ assert_eq "two iterations are still listed" "2" "$(echo "$PLAIN_PARSED" | jq -r 
 assert_eq "absent trees are not counted as identical" "0" \
   "$(echo "$PLAIN_PARSED" | jq -r '.unchanged_tree_reevaluations')"
 
+echo "Case 17: the protocol the scripts implement is the one the skills describe"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+assert_contains() {
+  local desc="$1" needle="$2" file="$3"
+  if grep -qF -- "$needle" "$ROOT/$file"; then
+    PASS=$((PASS+1)); echo "  PASS: $desc"
+  else
+    FAIL=$((FAIL+1)); echo "  FAIL: $desc ($needle absent from $file)"
+  fi
+}
+CONVERGENCE_DOC="skills/develop-loop/convergence-and-recovery.md"
+assert_contains "the loop doc passes the tree sha" "--tree-sha" "$CONVERGENCE_DOC"
+assert_contains "the loop doc names the tree, not the commit" 'git rev-parse HEAD^{tree}' "$CONVERGENCE_DOC"
+assert_contains "the loop doc lists CONTESTED among the results" "**CONTESTED** (exit 2)" "$CONVERGENCE_DOC"
+assert_contains "the loop doc routes CONTESTED" "| **CONTESTED** |" "$CONVERGENCE_DOC"
+assert_contains "the loop doc names the ignored deltas" "ignored_score_deltas" "$CONVERGENCE_DOC"
+assert_contains "the loop doc logs the tree and the verdict" "--convergence {status}" "$CONVERGENCE_DOC"
+assert_contains "the loop doc names the re-evaluation count" "unchanged_tree_reevaluations" "$CONVERGENCE_DOC"
+assert_contains "holistic passes the tree sha too" "--tree-sha" "skills/develop-holistic/SKILL.md"
+assert_contains "holistic routes CONTESTED" "| **CONTESTED** |" "skills/develop-holistic/SKILL.md"
+assert_contains "CONTESTED is a terminal verdict for the gate" "CONTESTED / DISPATCHES_EXCEEDED" "skills/develop/SKILL.md"
+assert_contains "the envelope documents the stamped tree" "tree_sha" "skills/develop/scorecard-envelope.md"
+assert_contains "the envelope ties antipatterns to findings" "findings" "skills/develop/scorecard-envelope.md"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
