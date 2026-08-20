@@ -2171,7 +2171,7 @@ fn a_declined_finding_reads_differently_from_one_that_was_attempted_and_failed()
     let sweep = Sweep::scanning_rescanning(
         TWO_LIBRARIES,
         SCAN_TWO_LIBRARIES,
-        RESCAN_SECOND_LIBRARY_OPEN,
+        SCAN_TWO_LIBRARIES,
         2,
         an_attempt(
             &a_repair_moving_only_the_first_of_two_requirements(),
@@ -2222,7 +2222,8 @@ fn a_declined_finding_reads_differently_from_one_that_was_attempted_and_failed()
     let declined = row(SECOND_LIBRARY_CVE);
     assert_eq!(
         failed["attempted"], true,
-        "the finding the attempt worked on says so: {failed}"
+        "the rescan still reports this one too, but the attempt did work on it \
+         and the row says so: {failed}"
     );
     assert_eq!(
         declined["attempted"], false,
