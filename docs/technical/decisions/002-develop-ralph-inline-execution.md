@@ -1,25 +1,23 @@
-# 002 — Run ralph inline instead of as nested subagent
+# 002 — Run ralph inline, not as a nested subagent
 
-**Date:** 2026-03-26
-**Status:** superseded by 004
-**Supersedes:** 001
+Date: 2026-03-26
+Status: superseded by 004
+Supersedes 001.
+Cites: ralph, RALPH_STATUS, TeamCreate, SendMessage
+
+None of the names above survive in this repository. ADR 004 replaced them.
 
 ## Context
 
-ADR 001 spawned ralph as a background subagent to save the leader's context window. However, ralph needs to spawn its own subagents (implementers, review coordinators), and subagents cannot reliably spawn sub-subagents — the nested agent gets stuck. This made the "Ralph Subs" execution mode non-functional.
+ADR 001 spawned ralph as a background subagent to save the leader's context. Ralph has to spawn its own implementers and review coordinators, and a subagent cannot reliably spawn a sub-subagent. The nested agent stalled, so the "Ralph Subs" mode did not work.
 
 ## Decision
 
-Both ralph variants (subs and team) now run **inline** in the main session. The orchestrator IS ralph. The difference between variants is only the worker dispatch mechanism:
-
-- **Subs:** workers are background subagents via `Agent()` (no team_name)
-- **Team:** workers are team members via `TeamCreate`/`SendMessage`
-
-The `RALPH_STATUS` machine-readable exit protocol is removed since ralph no longer exits — it runs in the same session as the develop skill.
+Run both ralph variants inline in the main session. Let the variant decide worker dispatch alone: subs dispatch through `Agent()`, and team dispatch through `TeamCreate` and `SendMessage`. Remove `RALPH_STATUS`, because ralph no longer exits.
 
 ## Consequences
 
-- Both execution modes work correctly — no subagent nesting.
-- The leader's context is consumed by ralph's "Assess and Act" loop. With 1M context this is acceptable for most epics. For very large epics, the user can respawn a fresh session.
-- The develop skill is simpler — no RALPH_STATUS parsing, no TaskOutput waiting.
-- Ralph can interact with the user directly during the loop (e.g., presenting diffs after implementer completion) instead of batching everything to the end.
+- Both execution modes work, because nothing nests a subagent.
+- Ralph's loop consumes the leader's context. The project gives up the fresh context window ADR 001 bought. A 1M window carries most epics, and a user can respawn a session for a large one.
+- The develop skill is simpler. It parses no `RALPH_STATUS` and waits on no task output.
+- Ralph can show the user a diff during the loop, rather than batching every diff to the end.

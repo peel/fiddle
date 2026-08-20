@@ -1,38 +1,23 @@
-# 006 — Keep code_quality threshold at 6, control drift with the decay alarm
+# 006 — Keep the code_quality threshold at 6 and watch drift with the decay alarm
 
-**Date:** 2026-07-23
-**Status:** accepted
+Date: 2026-07-23
+Status: accepted
+Cites: skills/evaluate/evaluator-general.md "Default threshold: 6", scripts/trend-eval-history.sh, skills/deliver/evaluator-evolve.md "Decay alarm"
 
 ## Context
 
-Evaluator thresholds act as equilibria, not floors: an unattended loop converges
-to the lowest passing score, so a codebase trends toward uniform threshold-level
-quality over time. code_quality has the lowest bar (6). The obvious fix is to
-raise it to 7 for long-lived code, but raising the threshold only moves the
-equilibrium point without removing the dynamic. The actual failure mode is
-quality drift across epics, which is now observable: `scripts/trend-eval-history.sh`
-aggregates per-dimension mean scores across epics and DELIVER step 5f raises an
-`alarm` when a dimension declines across the two most recent epics.
+An evaluator threshold acts as an equilibrium, not a floor. An unattended loop settles on the lowest passing score, and `code_quality` carries the lowest bar at 6. Raising that bar to 7 moves the equilibrium and leaves the dynamic in place.
 
 ## Decision
 
-Keep the per-task code_quality threshold at 6. Do not raise it to 7. Control
-long-term quality drift with the longitudinal decay alarm (DELIVER 5f over
-`scripts/trend-eval-history.sh`) instead of a higher per-task bar.
-
-Rationale: raising the threshold to 7 reproduces the same equilibrium dynamic at
-a higher number and forces every small config-tweak task to clear a "Good" bar
-designed for long-lived code. The decay alarm addresses drift over time directly,
-where the failure actually lives, and folds affected dimensions into the
-calibration updates from DELIVER 5b.
+Keep the per-task `code_quality` threshold at 6. Control long-term drift with the decay alarm instead, which `scripts/trend-eval-history.sh` computes and the DELIVER evaluator-evolve step reports. Fold every dimension the alarm names into that step's calibration work.
 
 ## Consequences
 
-- Small and short-lived tasks are not forced over a bar meant for long-lived code.
-- Quality regression is caught at the epic boundary, not per task; a single task
-  can still land at exactly 6. The alarm is the backstop, so DELIVER 5f must be
-  run each epic for this control to function.
-- The policy depends on eval-log history existing; with fewer than two epics of
-  data `trends` is null and no drift signal is available yet.
-- If the decay alarm proves insufficient in practice, revisit raising the
-  threshold as a follow-up decision that supersedes this one.
+- A small or short-lived task does not have to clear a bar written for long-lived code.
+- The project gives up per-task regression cover. A single task may land at exactly 6, and the alarm catches the decline only at the epic boundary.
+- The alarm needs two epics of eval-log history. With less, `trends` is null and the run reports insufficient history.
+- The control only works if somebody runs the evaluator-evolve step every epic.
+- A later decision may still raise the threshold, and would supersede this one.
+
+This ADR placed the alarm at "DELIVER step 5f". The deliver skill now has five steps, and the alarm lives in `skills/deliver/evaluator-evolve.md`, which step 3 reaches. `skills/evaluate/evaluator-general.md` still names step 5f as well.

@@ -1,46 +1,26 @@
 # 027 — Nothing in Rust refuses a version
 
 Status: accepted
+Cites: AgentBudget, `[[workspace.checks]]`, evaluate::RescanVerdict, cve::GroupStatus, cve::MigrationAttempt
+
+`crates/fiddle-runtime/src/cve/version.rs` and `crates/fiddle-runtime/src/cve/group.rs` are deleted. The `cve` module holds `dedup`, `project` and `verdict`.
 
 ## Context
 
-`cve/version.rs` compared mixed `v`-prefixed versions, selected the smallest patch
-within the same minor, and **refused a major bump**. That refusal was deliberate in
-M4a, not an accident of the implementation: it was provable, it was cheap, and it
-was the strongest thing the milestone could say about what a sweep would do to a
-repository. It is also ecosystem semantics — what a major bump *means* is a
-question only the ecosystem answers — so it falls on the agent's side of the line
-[ADR 025](025-the-agent-owns-ecosystem-semantics.md) draws.
+`cve/version.rs` compared mixed `v`-prefixed versions, took the smallest same-minor patch, and refused a major bump. That refusal was deliberate in M4a: it was provable, cheap, and the strongest claim the milestone could make. It is also ecosystem semantics, so it falls on the agent's side of the line ADR 025 draws.
 
 ## Decision
 
-**Rust refuses nothing about versions.** The agent chooses the version, including
-whether to take a major bump. `cve/version.rs` is deleted rather than relaxed.
-
-**The rescan is the guarantee.** One attempt, one commit, one rescan: a finding
-that does not clear makes the whole attempt needs-work and the commit is reverted,
-including edits that did clear their findings.
+Refuse nothing in Rust about versions. Let the agent choose the version, including a major bump, and delete `cve/version.rs` rather than relax it. Make the rescan the guarantee: one attempt, one commit, one rescan.
 
 ## Consequences
 
-**The property M4a could prove is now model output.** M4a could demonstrate that it
-took the smallest same-minor patch and refused a major bump. Nothing demonstrates
-that now. A major bump that clears the finding and passes every declared check
-**lands**, and a reader who knew the old rule should stop expecting a same-minor
-diff. This is the accepted cost of a capability that works outside Go, stated here
-rather than discovered in a pull request.
+- The property M4a could prove is now model output. M4a could demonstrate that it took the smallest same-minor patch and refused a major bump, and nothing demonstrates that now.
+- The project gave up version arithmetic for a capability that works outside Go. A major bump that clears the finding and passes every declared check lands. A reader who knew the old rule should stop expecting a same-minor diff.
+- A finding that does not clear makes the whole attempt needs-work. The commit is reverted, including edits that did clear their findings.
+- What a deployment can still say about version choice, it says through `[[workspace.checks]]`. A build, a test suite and a lint are how a repository objects to a bump it cannot absorb.
+- The five `AgentBudget` bounds are now the run's single grant. `max_turns`, `max_tokens`, `deadline`, `max_changed_files` and `tool_timeout` were a per-group allowance while grouping existed.
 
-**What a deployment can still say about version choice, it says through
-`[[workspace.checks]]`.** A build, a test suite and a lint are how a repository
-objects to a bump it cannot absorb; the rescan is how it objects to one that did
-not fix anything. Neither of those is version arithmetic, and version arithmetic is
-not coming back — a refusal that Rust can state is a refusal Rust has to justify in
-an ecosystem it does not read.
+M4a's refusal was the strongest thing that milestone could say about what a sweep would do to a repository. Version arithmetic is not coming back. A refusal that Rust can state is a refusal Rust has to justify in an ecosystem it does not read.
 
-**The five `AgentBudget` bounds are the run's single grant.** `max_turns`,
-`max_tokens`, `deadline`, `max_changed_files` and `tool_timeout` were a per-group
-allowance while grouping existed. Grouping is gone with `cve/group.rs`, one attempt
-covers every selected finding, and the same five numbers now bound the whole sweep
-rather than each batch within it. A deployment that sized them for one group of a
-few findings has sized them for all of them, which is a smaller grant than it looks
-and the thing to re-check first when an unattended sweep exhausts its budget.
+Grouping is gone with `cve/group.rs`, and one attempt now covers every selected finding. So the same five numbers bound the whole sweep rather than each batch within it. A deployment that sized them for one group of a few findings has sized them for all of them. That is a smaller grant than it looks. It is the thing to re-check first when an unattended sweep exhausts its budget.
