@@ -3,14 +3,10 @@ use fiddle_runtime::agent::AgentBudget;
 use fiddle_runtime::capability::{CapabilityError, Git, MigrationConfig};
 use fiddle_runtime::cve::attribute::{attribute, Manifest, ModuleGraph, ResolverError, Target};
 use fiddle_runtime::cve::dedup::{DedupError, Local, Ran, Spawn};
-use fiddle_runtime::cve::fold::{Landed, PriorRescan};
 use fiddle_runtime::cve::go::Go;
 use fiddle_runtime::cve::group::{group, Attributed, Group};
 use fiddle_runtime::cve::project::project;
-use fiddle_runtime::evaluate::{
-    evaluate, Answered, Check, Contract, Evaluation, Repair, RescanVerdict, Success, Tree,
-    Unanswered,
-};
+use fiddle_runtime::evaluate::{Answered, Check, Contract, Repair, Success, Tree, Unanswered};
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
 use fiddle_runtime::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
 use std::collections::BTreeMap;
@@ -1125,16 +1121,18 @@ impl Tree for ScriptedTree {
     }
 }
 
+const GROUPED_TARGET: &str = "example.com/grouped";
+
 pub fn group_of(cves: &[&str]) -> Group {
     let findings: Vec<Attributed> = cves
         .iter()
-        .map(|cve| attributed(cve, &format!("package-for-{cve}"), FOLD_TARGET))
+        .map(|cve| attributed(cve, &format!("package-for-{cve}"), GROUPED_TARGET))
         .collect();
     let mut groups = group(&findings);
     assert_eq!(
         groups.len(),
         1,
-        "a fold lane's group is one edit, and {cves:?} produced {} of them",
+        "this helper's group is one edit, and {cves:?} produced {} of them",
         groups.len()
     );
     groups.remove(0)
@@ -1154,90 +1152,6 @@ pub fn shown_findings(group: &Group) -> Vec<ProjectedFinding> {
 
 pub fn every_fixture_grade() -> Severities {
     Severities::default()
-}
-
-const FOLD_TARGET: &str = "example.com/folded";
-
-const EARLIER_GROUPS_ADVISORY: &str = "CVE-2026-9001";
-
-pub async fn rescan_from_committed_clean_group(still_reported: &[&str]) -> PriorRescan {
-    let evaluation = cleanly_evaluated(still_reported).await;
-    assert!(
-        evaluation.accepted(),
-        "this world's premise is a group that ended clean"
-    );
-    PriorRescan::of(&evaluation, Landed::Committed, &every_fixture_grade())
-}
-
-pub async fn rescan_from_needs_work_group(still_reported: &[&str]) -> PriorRescan {
-    let evaluation = evaluate(
-        &contract_for_a_fold(still_reported),
-        &tree_whose_rescan_reports(still_reported).where_check(GO_VET, exit(1), stdout("")),
-    )
-    .await
-    .expect("an evaluation that was not cancelled");
-
-    assert_eq!(
-        evaluation.rescan(),
-        &RescanVerdict::Cleared,
-        "the rescan itself is clean — the group is needs-work for another reason"
-    );
-    assert!(
-        !evaluation.accepted(),
-        "a failed check is what makes this group needs-work"
-    );
-    PriorRescan::of(&evaluation, Landed::Reverted, &every_fixture_grade())
-}
-
-pub async fn rescan_from_a_clean_group_that_was_not_committed(
-    still_reported: &[&str],
-) -> PriorRescan {
-    let evaluation = cleanly_evaluated(still_reported).await;
-    assert!(evaluation.accepted());
-    PriorRescan::of(&evaluation, Landed::Reverted, &every_fixture_grade())
-}
-
-pub async fn rescan_from_a_committed_group_at_another_scanner_version() -> PriorRescan {
-    let evaluation = evaluate(
-        &contract_scanned_by("wizcli/0.0.0-the-version-the-input-was-scanned-at"),
-        &tree_rescanned_by(FIXTURE_SCANNER_VERSION),
-    )
-    .await
-    .expect("an evaluation that was not cancelled");
-
-    assert!(
-        matches!(evaluation.rescan(), RescanVerdict::Provisional(_)),
-        "this world's premise is an absence seen through a moved feed"
-    );
-    PriorRescan::of(&evaluation, Landed::Committed, &every_fixture_grade())
-}
-
-pub async fn rescan_from_a_committed_group_that_reported_on_one_array() -> PriorRescan {
-    let evaluation = evaluate(
-        &contract_for_a_partially_reported_rescan(),
-        &tree_whose_rescan_omits_the_os_array(),
-    )
-    .await
-    .expect("an evaluation that was not cancelled");
-
-    assert!(
-        matches!(evaluation.rescan(), RescanVerdict::NotObserved { .. }),
-        "this world's premise is an array the scanner never reported on"
-    );
-    PriorRescan::of(&evaluation, Landed::Committed, &every_fixture_grade())
-}
-
-fn contract_for_a_fold(still_reported: &[&str]) -> Contract {
-    and_the_input_also_reported(contract_for(&[EARLIER_GROUPS_ADVISORY]), still_reported)
-}
-
-async fn cleanly_evaluated(still_reported: &[&str]) -> Evaluation {
-    evaluate(
-        &contract_for_a_fold(still_reported),
-        &tree_whose_rescan_reports(still_reported),
-    )
-    .await
-    .expect("an evaluation that was not cancelled")
 }
 
 pub fn document_of(report: &Report) -> serde_json::Value {

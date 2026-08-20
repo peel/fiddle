@@ -4,8 +4,6 @@ use crate::agent::{
     attempt_briefed, unaccounted, AgentBudget, Brief, RepairReport, ToolHost, ToolReceipts,
 };
 use crate::cve::dedup::{Local, Spawn};
-use crate::cve::fold::{fold_commit_argv, Landed};
-use crate::cve::group::Group;
 use crate::effect::{Executor, IntegrationOperation};
 use crate::evaluate::{Evaluation, RescanVerdict};
 use crate::github::{
@@ -568,6 +566,13 @@ impl Git for InRepository {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Landed {
+    Committed,
+
+    Reverted,
+}
+
 pub async fn land<G>(
     git: &G,
     advisories: &[AdvisoryId],
@@ -669,20 +674,6 @@ fn commit_body(advisories: &[AdvisoryId]) -> String {
         .map(|cve| format!("Fixes: {}", cve.as_str()))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-pub async fn record_fold<G>(git: &G, group: &Group) -> Result<(), CapabilityError>
-where
-    G: Git + ?Sized,
-{
-    let argv = fold_commit_argv(group);
-    let mut call: Vec<&str> = COMMITTER
-        .iter()
-        .flat_map(|setting| ["-c", setting])
-        .collect();
-    call.extend(argv.iter().map(|argument| argument.as_str()));
-    git.run(&call).await?;
-    Ok(())
 }
 
 pub const CVE_LABEL: &str = "security/cve";

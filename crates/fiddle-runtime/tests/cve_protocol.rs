@@ -2,11 +2,10 @@ mod support;
 
 use fiddle_runtime::agent::AgentError;
 use fiddle_runtime::capability::{
-    land, record_fold, undeclared, CapabilityError, ForbiddenShape, GroupMigration, GroupStatus,
-    InWorktree, MigrationAttempt, NeedsWork,
+    land, undeclared, CapabilityError, ForbiddenShape, GroupMigration, GroupStatus, InWorktree,
+    Landed, MigrationAttempt, NeedsWork,
 };
 use fiddle_runtime::cve::dedup::FixedInCommits;
-use fiddle_runtime::cve::fold::Landed;
 use fiddle_runtime::evaluate::{evaluate, Evaluation, RescanVerdict};
 use fiddle_runtime::workspace::{Content, FileEdit, WorkspacePath};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
@@ -1455,58 +1454,11 @@ async fn a_clean_group_that_changed_nothing_commits_nothing_and_says_so() {
 }
 
 #[tokio::test]
-async fn a_fold_is_an_empty_commit_naming_every_id_and_amending_nothing() {
-    let world = landing_world(&LANDED);
-    let before = world.tree.staged_paths();
-
-    record_fold(&world.tree, &world.group)
-        .await
-        .expect("a fold is recorded");
-
-    assert!(
-        world.tree.staged_paths().is_empty(),
-        "a fold changes no file, and this commit carries {:?}",
-        world.tree.staged_paths()
-    );
-    assert_ne!(
-        world.tree.staged_paths(),
-        before,
-        "the premise: the commit before this one was not itself empty, so \
-         `empty` above is a fact about the fold"
-    );
-
-    let fixed = FixedInCommits::read(&world.tree.head_commit_body());
-    for cve in LANDED {
-        assert!(
-            fixed.names(cve),
-            "a fold that named no advisory is invisible to the next run: {}",
-            world.tree.head_commit_body()
-        );
-    }
-
-    let calls = world.tree.git_calls();
-    assert!(
-        calls.iter().any(|call| call.contains("--allow-empty")),
-        "a fold changes nothing, so it needs the flag to become a commit: {calls:?}"
-    );
-    nothing_rewrites_history(&calls);
-    nothing_is_staged_by_directory(&calls);
-}
-
-#[tokio::test]
 async fn history_is_never_rewritten() {
     let (committed, _) = run_group_clean(&LANDED).await;
     let (reverted, _) = run_group_needs_work(&[NOT_LANDED]).await;
-    let folded = landing_world(&LANDED);
-    record_fold(&folded.tree, &folded.group)
-        .await
-        .expect("a fold is recorded");
 
-    for (name, tree) in [
-        ("clean", &committed.tree),
-        ("needs-work", &reverted.tree),
-        ("fold", &folded.tree),
-    ] {
+    for (name, tree) in [("clean", &committed.tree), ("needs-work", &reverted.tree)] {
         let calls = tree.git_calls();
         assert!(
             !calls.is_empty(),
