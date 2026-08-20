@@ -42,11 +42,14 @@ Longitudinal decay trends (oldest → newest epic):
 - Iterations: [from → to] ([direction])
 - Per-dimension scores: [dimension: from → to (direction), ...]
 - Provider disagreements: [from → to] ([direction])
+- Re-evaluations of an unchanged tree: [from → to] ([direction])
 
 Decay alarm: [RAISED — <alarm_reasons> | none]
 ```
 
 If the alarm is raised, fold affected dimensions into calibration work. If `trends` is null, report insufficient history.
+
+Report `unchanged_tree_reevaluations` even when the alarm is quiet. It counts dispatches that re-judged a tree the previous dispatch had already judged, which is what a bean re-rolled until two evaluators agreed looks like from outside; the reader least likely to volunteer it is the one who did the re-rolling. A rising count is a calibration problem, not an implementation one — the work was not changing.
 
 ## 5. Age calibration anchors and antipatterns
 

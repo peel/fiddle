@@ -138,6 +138,45 @@ assert_eq "empty dir zero epics" "0" "$(echo "$OUT" | jq '.epics | length')"
 assert_eq "empty dir trends null" "null" "$(echo "$OUT" | jq '.trends')"
 assert_eq "empty dir alarm false" "false" "$(echo "$OUT" | jq '.alarm')"
 
+echo "Scenario F: re-evaluations of an unchanged tree aggregate per epic and raise the alarm"
+BP="$TMP/f"; mkdir -p "$BP"; beans init --beans-path "$BP" >/dev/null 2>&1
+E1=$(mkbean "$BP" "Epic One" epic)
+E2=$(mkbean "$BP" "Epic Two" epic)
+T1=$(mkbean "$BP" "Task 1" task "$E1")
+T2=$(mkbean "$BP" "Task 2" task "$E2")
+T3=$(mkbean "$BP" "Task 3" task "$E2")
+set_created "$BP" "2026-01-01T00:00:00Z" "$E1"
+set_created "$BP" "2026-02-01T00:00:00Z" "$E2"
+append_iter_on_tree() {
+  local bp="$1" id="$2" iter="$3" tree="$4"
+  local sc="$TMP/sc-tree-$id-$iter.json"
+  cat > "$sc" <<EOF
+{"domains":{"general":{"dimensions":{"code_quality":{"score":8,"threshold":6},"correctness":{"score":8,"threshold":7},"domain_spec_fidelity":{"score":8,"threshold":8}}}},"criteria":[]}
+EOF
+  BEANS_PATH="$bp" "$SCRIPT_DIR/append-eval-log.sh" --bean-id "$id" --iteration "$iter" \
+    --scorecard "$sc" --dispatches 1 --guidance "" --tree-sha "$tree" --convergence CONVERGED
+}
+for t in "$T1" "$T2" "$T3"; do
+  BEANS_PATH="$BP" "$SCRIPT_DIR/append-eval-log.sh" --bean-id "$t" --init --base-sha "sha_$t"
+done
+append_iter_on_tree "$BP" "$T1" 1 treeone
+append_iter_on_tree "$BP" "$T1" 2 treetwo
+append_iter_on_tree "$BP" "$T2" 1 treethree
+append_iter_on_tree "$BP" "$T2" 2 treethree
+append_iter_on_tree "$BP" "$T3" 1 treefour
+append_iter_on_tree "$BP" "$T3" 2 treefour
+append_iter_on_tree "$BP" "$T3" 3 treefour
+OUT=$("$SCRIPT_DIR/trend-eval-history.sh" --beans-path "$BP")
+assert_eq "the epic that changed its tree counts none" "0" \
+  "$(echo "$OUT" | jq '.epics[0].unchanged_tree_reevaluations')"
+assert_eq "the epic that re-judged one tree sums its beans" "3" \
+  "$(echo "$OUT" | jq '.epics[1].unchanged_tree_reevaluations')"
+assert_eq "the rise is reported as a direction" "declining" \
+  "$(echo "$OUT" | jq -r '.trends[-1].unchanged_tree_reevaluations.direction')"
+assert_eq "the rise raises the alarm" "true" "$(echo "$OUT" | jq '.alarm')"
+assert_eq "the alarm says what rose" "1" \
+  "$(echo "$OUT" | jq '[.alarm_reasons[] | select(startswith("re-evaluations of an unchanged tree"))] | length')"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

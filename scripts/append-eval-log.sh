@@ -31,6 +31,7 @@ if $INIT; then
 ## Evaluation Log
 BASE_SHA: $BASE_SHA
 total_dispatches: 0
+unchanged_tree_reevaluations: 0
 EOF
 )" >/dev/null 2>&1 || { echo "Bean $BEAN_ID not found" >&2; exit 1; }
   exit 0
@@ -161,6 +162,17 @@ NEW_TOTAL=$((OLD_TOTAL + DISPATCHES))
 beans update "$BEAN_ID" \
   --body-replace-old "total_dispatches: $OLD_TOTAL" \
   --body-replace-new "total_dispatches: $NEW_TOTAL" >/dev/null 2>&1 || true
+
+if [[ -n "$TREE_SHA" ]] && ! $SPOT_CHECK; then
+  LAST_LOGGED_TREE=$(echo "$CURRENT_BODY" | sed -n 's/^tree: \(.*\)/\1/p' | tail -1)
+  if [[ "$LAST_LOGGED_TREE" == "$TREE_SHA" ]]; then
+    OLD_REEVALUATIONS=$(echo "$CURRENT_BODY" | sed -n 's/^unchanged_tree_reevaluations: \([0-9][0-9]*\)/\1/p' | tail -1)
+    OLD_REEVALUATIONS="${OLD_REEVALUATIONS:-0}"
+    beans update "$BEAN_ID" \
+      --body-replace-old "unchanged_tree_reevaluations: $OLD_REEVALUATIONS" \
+      --body-replace-new "unchanged_tree_reevaluations: $((OLD_REEVALUATIONS + 1))" >/dev/null 2>&1 || true
+  fi
+fi
 
 beans update "$BEAN_ID" --body-append "$ENTRY" >/dev/null 2>&1 || { echo "Bean $BEAN_ID not found" >&2; exit 1; }
 exit 0

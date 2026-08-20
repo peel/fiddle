@@ -227,7 +227,20 @@ assert_eq "each verdict is readable per iteration" "PASS_PENDING CONVERGED" \
 assert_eq "re-evaluating an unchanged tree is counted" "1" \
   "$(echo "$PARSED" | jq -r '.unchanged_tree_reevaluations')"
 
-echo "Case 16: an eval log without trees reports no unchanged re-evaluations"
+echo "Case 16: the count the log keeps is on the bean, not only in the parser"
+assert_eq "the first unchanged tree is counted on the bean" "1" \
+  "$(echo "$LOG_BODY" | grep -c '^unchanged_tree_reevaluations: 1')"
+log_iteration 3 1 46b1b98 PASS_PENDING
+log_iteration 4 1 46b1b98 CONVERGED
+LOG_BODY=$(beans show "$LOG_BEAN" --beans-path "$LOGDIR" --json 2>/dev/null | jq -r '.body')
+assert_eq "a second unchanged tree increments it" "1" \
+  "$(echo "$LOG_BODY" | grep -c '^unchanged_tree_reevaluations: 2')"
+assert_eq "the bean agrees with the parser" "2" \
+  "$(BEANS_PATH="$LOGDIR" "$SCRIPT_DIR/parse-eval-log.sh" --bean-id "$LOG_BEAN" | jq -r '.unchanged_tree_reevaluations')"
+assert_eq "the changed tree between them did not count" "0" \
+  "$(echo "$LOG_BODY" | grep -c '^unchanged_tree_reevaluations: 3')"
+
+echo "Case 17: an eval log without trees reports no unchanged re-evaluations"
 PLAINDIR="$TMP/beans-plain"
 beans init --beans-path "$PLAINDIR" >/dev/null 2>&1
 PLAIN_BEAN=$(beans create "Tree-free log" --beans-path "$PLAINDIR" -t task -s in-progress --json 2>/dev/null | jq -r '.bean.id // .id')
@@ -241,7 +254,10 @@ assert_eq "two iterations are still listed" "2" "$(echo "$PLAIN_PARSED" | jq -r 
 assert_eq "absent trees are not counted as identical" "0" \
   "$(echo "$PLAIN_PARSED" | jq -r '.unchanged_tree_reevaluations')"
 
-echo "Case 17: a contested pair at the budget is still reported as contested"
+assert_eq "a tree-free log leaves the count at zero" "1" \
+  "$(beans show "$PLAIN_BEAN" --beans-path "$PLAINDIR" --json 2>/dev/null | jq -r '.body' | grep -c '^unchanged_tree_reevaluations: 0')"
+
+echo "Case 18: a contested pair at the budget is still reported as contested"
 verdict_pass 8c5dc5a 9 > "$TMP/prior.json"
 jq -s '.' "$TMP/prior.json" > "$TMP/history.json"
 verdict_pass 8c5dc5a 9 '[{"id":"stub_implementation","severity":"high"}]' > "$TMP/current.json"
@@ -251,7 +267,7 @@ AT_BUDGET=0
 assert_eq "contested at the budget → exit 2" "2" "$AT_BUDGET"
 assert_eq "contested at the budget names itself" "CONTESTED" "$(status_of_out)"
 
-echo "Case 18: the protocol the scripts implement is the one the skills describe"
+echo "Case 19: the protocol the scripts implement is the one the skills describe"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 assert_contains() {
   local desc="$1" needle="$2" file="$3"
@@ -275,6 +291,9 @@ assert_contains "CONTESTED is a terminal verdict for the gate" "CONTESTED / DISP
 assert_contains "the envelope documents the stamped tree" "tree_sha" "skills/develop/scorecard-envelope.md"
 assert_contains "the envelope ties antipatterns to findings" "findings" "skills/develop/scorecard-envelope.md"
 assert_contains "the budget does not rename CONTESTED" "CONTESTED requires none" "$CONVERGENCE_DOC"
+assert_contains "the loop doc says the count reaches the bean" "next to \`total_dispatches\`" "$CONVERGENCE_DOC"
+assert_contains "the handoff carries the evaluation cost" "unchanged_tree_reevaluations" "skills/deliver/milestone-handoff.md"
+assert_contains "the evolve report presents the count" "Re-evaluations of an unchanged tree" "skills/deliver/evaluator-evolve.md"
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

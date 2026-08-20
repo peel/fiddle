@@ -37,7 +37,7 @@ resolve_epic() {
 }
 
 parse_eval_body() {
-  local body iters disp disagree lastsec dims
+  local body iters disp disagree reevals lastsec dims
   body="$(cat)"
   echo "$body" | grep -q '## Evaluation Log' || return 0
   iters=$(echo "$body" | grep -c '### Iteration ' || true)
@@ -45,6 +45,8 @@ parse_eval_body() {
   disp=$(echo "$body" | sed -n 's/^total_dispatches: \([0-9][0-9]*\).*/\1/p' | tail -1)
   disp="${disp:-0}"
   disagree=$(echo "$body" | grep -cE '^- .*: spread [0-9]' || true)
+  reevals=$(echo "$body" | sed -n 's/^unchanged_tree_reevaluations: \([0-9][0-9]*\).*/\1/p' | tail -1)
+  reevals="${reevals:-0}"
   lastsec=$(echo "$body" | awk '/^### Iteration /{buf=$0"\n";cap=1;next} /^### /{cap=0;next} cap{buf=buf $0"\n"} END{printf "%s", buf}')
   dims=$(echo "$lastsec" | sed -n 's/^- \([A-Za-z_][A-Za-z0-9_]*\): \([0-9][0-9]*\)\/10.*/{"\1":\2}/p' | jq -s 'add // {}')
   [[ -n "$dims" ]] || dims='{}'
@@ -52,8 +54,9 @@ parse_eval_body() {
     --argjson disp "$disp" \
     --argjson iters "$iters" \
     --argjson disagree "$disagree" \
+    --argjson reevals "$reevals" \
     --argjson dims "$dims" \
-    '{dispatches:$disp, iterations:$iters, disagreements:$disagree, dimensions:$dims}'
+    '{dispatches:$disp, iterations:$iters, disagreements:$disagree, unchanged_tree_reevaluations:$reevals, dimensions:$dims}'
 }
 
 PERTASK=$(mktemp)
@@ -102,6 +105,7 @@ jq -s \
           mean: (([$tasks[].iterations] | add) / ($tasks | length) | round2)
         },
         disagreements: ([$tasks[].disagreements] | add),
+        unchanged_tree_reevaluations: ([$tasks[].unchanged_tree_reevaluations] | add),
         dimensions: (
           reduce $dimkeys[] as $k ({};
             ([$ds[] | .[$k] // empty]) as $vals
@@ -131,6 +135,10 @@ jq -s \
               from: $p.disagreements, to: $c.disagreements,
               direction: dir_count($p.disagreements; $c.disagreements)
             },
+            unchanged_tree_reevaluations: {
+              from: $p.unchanged_tree_reevaluations, to: $c.unchanged_tree_reevaluations,
+              direction: dir_count($p.unchanged_tree_reevaluations; $c.unchanged_tree_reevaluations)
+            },
             dimensions: (
               ([($p.dimensions | keys[]), ($c.dimensions | keys[])] | unique) as $keys
               | reduce $keys[] as $k ({};
@@ -146,6 +154,7 @@ jq -s \
       ($trends[-1]) as $last
       | ($last.dispatches.direction == "declining")
         or ($last.disagreements.direction == "declining")
+        or ($last.unchanged_tree_reevaluations.direction == "declining")
         or ([$last.dimensions[] | .direction] | any(. == "declining"))
     end) as $alarm
   | (if $alarm then
@@ -154,6 +163,8 @@ jq -s \
             then "dispatches-to-convergence rose from \($last.dispatches.from) to \($last.dispatches.to)" else empty end),
           (if $last.disagreements.direction == "declining"
             then "provider disagreements rose from \($last.disagreements.from) to \($last.disagreements.to)" else empty end),
+          (if $last.unchanged_tree_reevaluations.direction == "declining"
+            then "re-evaluations of an unchanged tree rose from \($last.unchanged_tree_reevaluations.from) to \($last.unchanged_tree_reevaluations.to)" else empty end),
           ($last.dimensions | to_entries[] | select(.value.direction == "declining")
             | "\(.key) score fell from \(.value.from) to \(.value.to)") ]
     else [] end) as $alarm_reasons
