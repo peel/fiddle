@@ -19,6 +19,21 @@ DECISIONS="$ROOT/docs/technical/decisions"
 LEAVES=$(mktemp "${TMPDIR:-/tmp}/adr-cites-XXXXXX") || exit 2
 trap 'rm -f "$LEAVES"' EXIT INT TERM
 
+names_a_path() {
+  case "$1" in
+    */*.rs|*/*.sh|*/*.toml|*/*.md) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+find_file() {
+  find "$ROOT" \
+    -name .git -prune -o \
+    -name target -prune -o \
+    -name node_modules -prune -o \
+    -type f -path "*/$1" -print 2>/dev/null | head -1
+}
+
 adrs=0
 entries=0
 violations=0
@@ -42,8 +57,15 @@ for adr in "$DECISIONS"/[0-9][0-9][0-9]-*.md; do
 
   while read -r entry; do
     [ "$entry" = "none" ] && continue
-    leaf="${entry##*::}"
     entries=$((entries + 1))
+    if names_a_path "$entry"; then
+      if [ -z "$(find_file "$entry")" ]; then
+        printf '%s: Cites: %s names no file in the repository\n' "$base" "$entry"
+        violations=$((violations + 1))
+      fi
+      continue
+    fi
+    leaf="${entry##*::}"
     if ! grep -rqF -- "$leaf" "$ROOT/crates"; then
       printf '%s: Cites: %s resolves to nothing under crates/\n' "$base" "$leaf"
       violations=$((violations + 1))

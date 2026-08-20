@@ -25,8 +25,9 @@ template, the `Cites:` line the gate enforces, and the amendment convention.
    If the user already provided enough detail in the argument or conversation, skip questions and draft directly.
 4. Write `docs/technical/decisions/NNN-kebab-case-title.md` to the ADR template in
    `skills/using-fiddle/references/writing-templates.md`. The `Cites:` line names every
-   symbol the record's claims depend on; `scripts/check-adr-cites.sh` fails the gate on
-   one that resolves to nothing, and on an ADR numbered 021 or above that omits the line.
+   symbol or file the record's claims depend on; `scripts/check-adr-cites.sh` fails the
+   gate on a symbol no file under `crates/` contains, on a path that names no file, and
+   on an ADR numbered 021 or above that omits the line.
    Write `Cites: none` when the decision genuinely turns on no symbol, as ADR 024 does.
 5. Verify with `scripts/check-adr-cites.sh` before showing the user.
 6. Show the user the file content. Write after confirmation, creating `docs/technical/decisions/` if it does not exist.

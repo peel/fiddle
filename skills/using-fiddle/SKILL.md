@@ -41,7 +41,7 @@ External providers are optional. If a provider CLI is unavailable, continue with
 
 ADRs, bean bodies, commit messages, SYSTEM.md components and lane briefs follow
 `references/writing-templates.md`. Its `Cites:` line is the one part a gate enforces:
-`scripts/check-adr-cites.sh` refuses an ADR that cites a symbol the tree does not have.
+`scripts/check-adr-cites.sh` refuses an ADR that cites a symbol no file under `crates/` contains, or a file path that names nothing.
 
 ## Authoring Skills
 

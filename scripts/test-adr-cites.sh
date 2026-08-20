@@ -26,8 +26,15 @@ trap 'rm -rf "$WORK"' EXIT
 
 fresh() {
   rm -rf "$WORK/tree"
-  mkdir -p "$WORK/tree/docs/technical/decisions" "$WORK/tree/crates/fiddle-core/src"
+  mkdir -p "$WORK/tree/docs/technical/decisions" \
+           "$WORK/tree/crates/fiddle-core/src" \
+           "$WORK/tree/crates/fiddle-runtime/src/workspace" \
+           "$WORK/tree/crates/fiddle-acceptance/tests" \
+           "$WORK/tree/scripts"
   printf 'pub fn selected() {}\npub struct Severities;\n' > "$WORK/tree/crates/fiddle-core/src/finding.rs"
+  printf 'pub fn run() {}\n' > "$WORK/tree/crates/fiddle-runtime/src/workspace/command.rs"
+  printf 'fn boundary() {}\n' > "$WORK/tree/crates/fiddle-acceptance/tests/crate_boundary.rs"
+  printf 'echo hi\n' > "$WORK/tree/scripts/gate.sh"
 }
 
 adr() {
@@ -135,7 +142,65 @@ assert_exit "unknown argument → exit 2" 2 "$EXIT_CODE"
 assert_contains "error is JSON" '"error"' "$ERR"
 
 echo ""
-echo "=== Test 10: the repository's own ADRs pass ==="
+echo "=== Test 10: a cited path resolves as a file, not as file content ==="
+fresh
+adr "021-a-decision" "workspace/command.rs"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a partial path nothing mentions → exit 0" 0 "$EXIT_CODE"
+assert_contains "the path counted as measured" "1 cited symbols" "$OUT"
+if [ -z "$(grep -rlF 'workspace/command.rs' "$WORK/tree/crates")" ]; then
+  PASS=$((PASS+1)); echo "  PASS: nothing under crates/ mentions the path, so a content grep would have failed it"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: the premise is a path no file mentions"
+fi
+
+fresh
+adr "021-a-decision" "crates/fiddle-acceptance/tests/crate_boundary.rs"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a repository-relative path → exit 0" 0 "$EXIT_CODE"
+
+fresh
+adr "021-a-decision" "scripts/gate.sh"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a path outside crates/ → exit 0" 0 "$EXIT_CODE"
+
+echo ""
+echo "=== Test 11: a cited path that names no file fails ==="
+fresh
+adr "021-a-decision" "workspace/deleted_yesterday.rs"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a path that names no file → exit 1" 1 "$EXIT_CODE"
+assert_contains "says the file is missing, not the symbol" "workspace/deleted_yesterday.rs names no file" "$OUT"
+
+fresh
+mkdir -p "$WORK/tree/target/debug/build"
+printf 'pub fn gone() {}\n' > "$WORK/tree/target/debug/build/generated.rs"
+adr "021-a-decision" "build/generated.rs"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a build artefact cannot satisfy a citation → exit 1" 1 "$EXIT_CODE"
+
+echo ""
+echo "=== Test 12: a path with a symbol after it is still a symbol ==="
+fresh
+adr "021-a-decision" "workspace/command.rs::selected"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "file.rs::symbol resolves by content → exit 0" 0 "$EXIT_CODE"
+
+fresh
+adr "021-a-decision" "workspace/command.rs::deleted_yesterday"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "file.rs::missing_symbol → exit 1" 1 "$EXIT_CODE"
+assert_contains "reports the symbol, not the file" "deleted_yesterday resolves to nothing" "$OUT"
+
+echo ""
+echo "=== Test 13: the repository's own ADRs pass ==="
 EXIT_CODE=0
 OUT=$("$SCRIPT_DIR/check-adr-cites.sh" --root "$SCRIPT_DIR/.." 2>&1) || EXIT_CODE=$?
 assert_exit "this tree's decisions/ → exit 0" 0 "$EXIT_CODE"

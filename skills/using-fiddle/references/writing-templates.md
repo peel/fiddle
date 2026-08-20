@@ -4,6 +4,8 @@ Caps are targets; exceeding one is a signal the content belongs somewhere else, 
 
 `Cites:` names the symbols a document's claims depend on, so changing a symbol greps to every document asserting something about it. M4c lost a holistic pass because `fiddle_core::selected` changed and ADR 021's rationale — which depended on it — was never checked. ADRs 001 to 020 predate the line and are not retrofitted; the check's floor is where the retrofit stopped.
 
+An entry is a **path** if it contains `/` and ends in `.rs`, `.sh`, `.toml` or `.md`, and it must name a file that exists — `workspace/command.rs` resolves as a suffix, so a partial path is enough and `target/` cannot satisfy one. Anything else is a **symbol**, and it must appear in the text of some file under `crates/`. `cve/project.rs::names_a_fix` is a symbol: the check reads what follows the last `::`. Getting that distinction wrong is what shipped a red gate — a real file that no file happens to mention failed a content grep.
+
 Cite a symbol, not a line. A line number is invalidated by any edit above it, including an edit in the same commit: every one of ADR 028's three references into ADR 021 landed two lines short because the commit that wrote them also grew 021's Status by two lines. Quote the sentence or name the function. Where a line number is unavoidable, point it at a file the same change does not touch.
 
 ## ADR

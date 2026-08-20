@@ -24,6 +24,7 @@ Paths are relative to the repository root. A skill path omits `/SKILL.md`.
 | using-fiddle | `skills/using-fiddle` | routes requests, maps tool vocabulary | one text serves every harness (ADR 008) |
 | hooks | `hooks/` | check binaries, guard archives, gate a verdict | exit 0, or exit 2 to reject with feedback |
 | validators | `scripts/audit-skills.sh`, `check-portability.sh`, `check-github-effects-lane.sh` | hold repository shape mechanically (ADR 009) | exit 2 with a JSON error array |
+| ADR citations | `scripts/check-adr-cites.sh` | every `Cites:` symbol and path an ADR names still resolves | a retrofit floor at 021, and `Cites: none` is the deliberate answer |
 | `fiddle-core` | `crates/fiddle-core` | the pure domain: identity, assessment, outcome, report | reaches no process, file, socket, environment or clock (ADR 035) |
 | `fiddle-runtime` | `crates/fiddle-runtime` | every effect: ports, adapters, capabilities, journal | the only crate that imports Rig |
 | `fiddle-cli` | `crates/fiddle-cli` | arguments, configuration, rendering, the exit code | `main.rs::exit_code_for` is the single mapping |
