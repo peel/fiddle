@@ -1,10 +1,9 @@
 use fiddle_core::{AdvisoryId, AttemptId, PackageType, ProjectedFinding, Severities, Severity};
 use fiddle_runtime::agent::AgentBudget;
 use fiddle_runtime::capability::{CapabilityError, Git, MigrationConfig};
-use fiddle_runtime::cve::attribute::{attribute, Manifest, ModuleGraph, ResolverError, Target};
+use fiddle_runtime::cve::attribute::{Manifest, ModuleGraph, ResolverError};
 use fiddle_runtime::cve::dedup::{DedupError, Local, Ran, Spawn};
 use fiddle_runtime::cve::go::Go;
-use fiddle_runtime::cve::group::{group, Attributed, Group};
 use fiddle_runtime::cve::project::project;
 use fiddle_runtime::evaluate::{Answered, Check, Contract, Repair, Success, Tree, Unanswered};
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
@@ -422,28 +421,6 @@ fn finding_under(
         severity: Severity::Critical,
         package_type,
     }
-}
-
-pub fn attributed(cve: &str, package: &str, target: &str) -> Attributed {
-    attributed_fixed_at(cve, package, target, FINDING_FIXED)
-}
-
-pub fn attributed_fixed_at(cve: &str, package: &str, target: &str, fixed: &str) -> Attributed {
-    Attributed::new(
-        finding_under(cve, package, PackageType::Library, fixed),
-        Target::Module(target.to_string()),
-    )
-}
-
-pub fn attributed_os(cve: &str, package: &str) -> Attributed {
-    Attributed::new(
-        finding_under(cve, package, PackageType::Os, FINDING_FIXED),
-        Target::DockerfileBaseImage,
-    )
-}
-
-pub fn available(versions: &[&str]) -> Vec<String> {
-    versions.iter().map(|version| version.to_string()).collect()
 }
 
 #[async_trait::async_trait]
@@ -1121,33 +1098,27 @@ impl Tree for ScriptedTree {
     }
 }
 
-const GROUPED_TARGET: &str = "example.com/grouped";
-
-pub fn group_of(cves: &[&str]) -> Group {
-    let findings: Vec<Attributed> = cves
-        .iter()
-        .map(|cve| attributed(cve, &format!("package-for-{cve}"), GROUPED_TARGET))
-        .collect();
-    let mut groups = group(&findings);
-    assert_eq!(
-        groups.len(),
-        1,
-        "this helper's group is one edit, and {cves:?} produced {} of them",
-        groups.len()
-    );
-    groups.remove(0)
-}
-
-pub fn advisories_of(group: &Group) -> Vec<AdvisoryId> {
-    group.cves().into_iter().cloned().collect()
-}
-
-pub fn shown_findings(group: &Group) -> Vec<ProjectedFinding> {
-    group
-        .findings()
-        .iter()
-        .map(|attributed| attributed.finding().clone())
+pub fn findings_for(cves: &[&str]) -> Vec<ProjectedFinding> {
+    cves.iter()
+        .map(|cve| {
+            finding_under(
+                cve,
+                &format!("package-for-{cve}"),
+                PackageType::Library,
+                FINDING_FIXED,
+            )
+        })
         .collect()
+}
+
+pub fn advisories_of(findings: &[ProjectedFinding]) -> Vec<AdvisoryId> {
+    let mut advisories: Vec<AdvisoryId> = Vec::new();
+    for finding in findings {
+        if !advisories.contains(&finding.cve) {
+            advisories.push(finding.cve.clone());
+        }
+    }
+    advisories
 }
 
 pub fn every_fixture_grade() -> Severities {
@@ -1206,9 +1177,7 @@ pub struct MigrationWorld {
 
     pub report: Report,
 
-    pub group: Group,
-
-    pub resolved: String,
+    pub findings: Vec<ProjectedFinding>,
 
     workspaces: TempDir,
 }
@@ -1249,36 +1218,8 @@ pub async fn migration_world() -> MigrationWorld {
         "the call site a migration rewrites",
     ]);
 
-    let mut attributed = Vec::new();
-    let mut resolved = String::new();
-    for finding in &fixable {
-        let attribution = attribute(finding, &tree)
-            .await
-            .unwrap_or_else(|why| panic!("{} has no bump target: {why}", finding.package));
-        resolved.push_str(attribution.resolved());
-        attributed.push(Attributed::new(
-            finding.clone(),
-            attribution.target().clone(),
-        ));
-    }
-    assert!(
-        resolved.contains("go list -m"),
-        "attribution's own transcript has to name the mechanical rule, or \
-         `the prompt carries no mechanical rule` is a claim about a string \
-         nothing in this run ever held: {resolved}"
-    );
-
-    let mut groups = group(&attributed);
-    assert_eq!(
-        groups.len(),
-        1,
-        "a migration lane's group is one edit, and this document produced {} of them",
-        groups.len()
-    );
-
     MigrationWorld {
-        group: groups.remove(0),
-        resolved,
+        findings: fixable,
         tree,
         report,
         workspaces: TempDir::new().expect("a temporary directory for worktrees"),
@@ -1296,7 +1237,7 @@ impl MigrationWorld {
         let go = go_stub();
         let mut args = go.args.clone();
         args.extend(
-            ["list", "-m", "-json", self.target_module().as_str()]
+            ["list", "-m", "-json", self.checked_package().as_str()]
                 .iter()
                 .map(|arg| arg.to_string()),
         );
@@ -1317,11 +1258,8 @@ impl MigrationWorld {
         }
     }
 
-    pub fn target_module(&self) -> String {
-        match self.group.target() {
-            Target::Module(path) => path.clone(),
-            other => panic!("this world's group edits a module, and edits {other:?}"),
-        }
+    pub fn checked_package(&self) -> String {
+        self.findings[0].package.clone()
     }
 
     pub fn attempt(&self) -> AttemptId {
@@ -1352,7 +1290,7 @@ pub const LANDING_CREATED: &str = "vendor_notes.md";
 pub struct LandingWorld {
     pub tree: GoWorkspace,
 
-    pub group: Group,
+    pub findings: Vec<ProjectedFinding>,
 
     pub changed: Vec<WorkspacePath>,
 
@@ -1385,7 +1323,7 @@ pub fn landing_world(cves: &[&str]) -> LandingWorld {
     .expect("the fixture tree is writable");
     std::fs::write(
         tree.path().join(LANDING_UNRELATED),
-        format!("{LANDING_UNRELATED_BEFORE}and a line nobody asked the group about\n"),
+        format!("{LANDING_UNRELATED_BEFORE}and a line nobody asked the attempt about\n"),
     )
     .expect("the fixture tree is writable");
 
@@ -1400,7 +1338,7 @@ pub fn landing_world(cves: &[&str]) -> LandingWorld {
     );
 
     LandingWorld {
-        group: group_of(cves),
+        findings: findings_for(cves),
         changed: workspace_paths(&["go.mod", "go.sum"]),
         history_before: tree.all_commit_bodies(),
         tree,
@@ -1499,7 +1437,7 @@ pub const ONLY_ON_THE_REMOTE_BASE: &str = "moved_on.txt";
 pub struct RemoteWorld {
     pub tree: GoWorkspace,
 
-    pub group: Group,
+    pub findings: Vec<ProjectedFinding>,
 
     pub base_revision: String,
 
@@ -1633,7 +1571,7 @@ pub fn remote_world(remote: &Path, head_branch: Option<&str>, cves: &[&str]) -> 
             root,
             calls: Mutex::new(Vec::new()),
         },
-        group: group_of(cves),
+        findings: findings_for(cves),
         base_revision,
         pr_head,
         stale_main,
