@@ -30,6 +30,30 @@ ITERATION_COUNT=$(echo "$BODY" | grep -c '### Iteration ' || true)
 LAST_GUIDANCE=$(echo "$BODY" | sed -n 's/^\*\*Guidance:\*\* "\(.*\)"/\1/p' | tail -1)
 LAST_GUIDANCE="${LAST_GUIDANCE:-}"
 
+ITERATION_ROWS=$(echo "$BODY" | awk '
+  /^### Iteration /{ if (n != "") print n "\t" d "\t" t "\t" c; n=$3; d=""; t=""; c=""; next }
+  /^dispatches: /{ d=$2; next }
+  /^tree: /{ t=$2; next }
+  /^convergence: /{ c=$2; next }
+  END{ if (n != "") print n "\t" d "\t" t "\t" c }
+')
+
+ITERATIONS=$(printf '%s' "$ITERATION_ROWS" | jq -R -s -c '
+  split("\n") | map(select(length > 0) | split("\t")) |
+  map({
+    iteration: (.[0] | tonumber? // .[0]),
+    dispatches: (.[1] | tonumber? // null),
+    tree: (.[2] // ""),
+    convergence: (.[3] // "")
+  })
+')
+
+REEVALUATIONS=$(printf '%s' "$ITERATIONS" | jq '
+  . as $i |
+  [range(1; ($i | length)) | . as $n |
+   select($i[$n].tree != "" and $i[$n].tree == $i[$n - 1].tree)] | length
+')
+
 LAST_VERDICT="UNKNOWN"
 if [[ "$ITERATION_COUNT" -gt 0 ]]; then
   LAST_SECTION=$(echo "$BODY" | awk '/### Iteration '"$ITERATION_COUNT"'/{found=1} found{print}')
@@ -48,4 +72,6 @@ jq -n \
   --argjson total_dispatches "$TOTAL_DISPATCHES" \
   --arg last_verdict "$LAST_VERDICT" \
   --arg last_guidance "$LAST_GUIDANCE" \
-  '{base_sha: $base_sha, iteration_count: $iteration_count, total_dispatches: $total_dispatches, last_verdict: $last_verdict, last_guidance: $last_guidance}'
+  --argjson iterations "$ITERATIONS" \
+  --argjson unchanged_tree_reevaluations "$REEVALUATIONS" \
+  '{base_sha: $base_sha, iteration_count: $iteration_count, total_dispatches: $total_dispatches, last_verdict: $last_verdict, last_guidance: $last_guidance, iterations: $iterations, unchanged_tree_reevaluations: $unchanged_tree_reevaluations}'

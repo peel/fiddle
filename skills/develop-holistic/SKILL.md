@@ -122,7 +122,7 @@ Run both scripts on the merged scorecard and act on their verdicts:
 ```bash
 jq '.criteria' scorecard-holistic.json > crit-graded-holistic.json
 
-scripts/check-thresholds.sh --scorecard scorecard-holistic.json --criteria crit-graded-holistic.json
+scripts/check-thresholds.sh --scorecard scorecard-holistic.json --criteria crit-graded-holistic.json --tree-sha "$(git rev-parse HEAD^{tree})"
 scripts/check-convergence.sh --current {verdict_file} --history {holistic_history_file} --max-dispatches {max_iterations} --current-dispatches {holistic_dispatch_count}
 ```
 
@@ -137,9 +137,9 @@ Holistic thresholds default to those in `skills/develop/holistic-dimensions.md`:
 
 `evaluators.holistic.thresholds` in `orchestrate.json` overrides them when present.
 
-Convergence follows the same protocol as per-task evaluation — two consecutive passes — but against a holistic-specific history file, keeping holistic dispatch history separate from per-task history.
+Convergence follows the same protocol as per-task evaluation — two consecutive passes — but against a holistic-specific history file, keeping holistic dispatch history separate from per-task history. That includes the tree-identity split described in `skills/develop-loop/convergence-and-recovery.md`: `--tree-sha` stamps the verdict with the tree it graded, the score-regression guard applies only between iterations whose trees differ, and two holistic reviews of an unchanged tree are compared by criteria and findings instead. A holistic review is the case most likely to re-run without remediation, so without the sha its second pass is the one most likely to be blocked for disagreeing about the same bytes.
 
-The final allowed holistic dispatch can still produce CONVERGED. If its result is FAIL, PASS_PENDING, or PASS_REGRESSED, return DISPATCHES_EXCEEDED instead of scheduling work beyond the budget.
+The final allowed holistic dispatch can still produce CONVERGED. If its result is FAIL, PASS_PENDING, or PASS_REGRESSED, return DISPATCHES_EXCEEDED instead of scheduling work beyond the budget. CONTESTED needs no further dispatch and is reported whatever the remaining budget.
 
 ## 2d. Handle Remediation
 
@@ -161,6 +161,7 @@ Once every remediation bean completes, re-run holistic review from 2a and increm
 | **FAIL** | Create remediation beans → use `fiddle:develop-loop` for each → re-run holistic review. → 2a |
 | **PASS_PENDING** | Re-run holistic review without remediation; the scorecard may stabilize. → 2b |
 | **PASS_REGRESSED** | Create remediation beans targeting the regressed dimensions → develop-loop → re-run holistic review. → 2a |
+| **CONTESTED** | Two reviews of one tree contradict each other. Escalate to human with both scorecards and the contested items; create no remediation beans and re-run nothing. |
 | **DISPATCHES_EXCEEDED** | Budget exhausted. Escalate to human. |
 
 On DISPATCHES_EXCEEDED, stop and hand the epic to the human: mark it `needs-attention` and report the latest holistic scorecard, the coverage matrix with its remaining gaps, the dimensions still below threshold, and the full remediation history (which beans were created and how they turned out). The budget is the only protection against remediating forever on an epic that is not converging, so spending past it — or lowering thresholds to fit — hides exactly the problem it just surfaced.

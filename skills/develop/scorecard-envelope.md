@@ -61,7 +61,7 @@ evaluator with this file in its context instead.
 
 ## Optional fields
 
-- `antipatterns_detected` — array, empty when none found.
+- `antipatterns_detected` — array, empty when none found. Entries are either an id string or `{"id", "severity", "evidence"}`. `check-thresholds.sh` carries them into its verdict as `findings`, which is what convergence compares when two iterations graded the same tree; an entry stating `severity: "low"` is excluded from that comparison and one stating no severity is not. See `skills/develop-loop/convergence-and-recovery.md`.
 - `spec_defect` — `null`, absent, or `{"detected": true, "reason": "<non-empty>"}`. Flags
   spec-vs-reality, not implementation-vs-spec; see `skills/evaluate/SKILL.md`.
 - `guidance` — actionable fix instructions; empty string when every dimension passes.
@@ -74,7 +74,13 @@ evaluator with this file in its context instead.
 | --- | --- | --- |
 | `scripts/validate-scorecard.sh` | one raw per-provider card, plus `--criteria-ids` | any field above missing or mistyped, criteria ids not matching the bean in both directions, empty evidence, a `spec_defect` with no reason |
 | `scripts/merge-scorecards.sh` | a JSON array of validated cards | — |
-| `scripts/check-thresholds.sh` | `--scorecard` the merged card, `--criteria` its graded `criteria` array | a dimension with no numeric `score` or `threshold`, a criterion with no string `id` or boolean `pass` |
+| `scripts/check-thresholds.sh` | `--scorecard` the merged card, `--criteria` its graded `criteria` array, `--tree-sha` the tree graded | a dimension with no numeric `score` or `threshold`, a criterion with no string `id` or boolean `pass` |
+
+`check-thresholds.sh` also stamps whatever `--tree-sha` it is given onto the verdict it emits, as
+`tree_sha`. Nothing in the envelope carries it: the tree is a property of the checkout that was
+graded, not of the card, and the verdict is where convergence reads it to tell an iteration that
+judged new work from one that re-judged the same tree. See
+`skills/develop-loop/convergence-and-recovery.md`.
 
 `check-thresholds.sh` takes the criteria as a **separate file holding the bare array**, which is
 the scorecard's own graded array, not the ungraded briefing array the evaluator was handed:

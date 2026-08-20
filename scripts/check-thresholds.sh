@@ -3,11 +3,13 @@ set -euo pipefail
 
 SCORECARD=""
 CRITERIA=""
+TREE_SHA=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --scorecard) SCORECARD="$2"; shift 2;;
     --criteria) CRITERIA="$2"; shift 2;;
+    --tree-sha) TREE_SHA="$2"; shift 2;;
     *) echo "Unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -121,6 +123,14 @@ PASSING_DIMS=$(jq -c '
    {domain: $domain, dimension: .key, score: .value.score, threshold: .value.threshold}]
 ' "$SCORECARD")
 
+FINDINGS=$(jq -c '
+  [(.antipatterns_detected // [])[] |
+   if type == "string" then {id: ., severity: "unspecified"}
+   else {id: (.id // .antipattern // .antipattern_id // "unknown"),
+         severity: (.severity // "unspecified")}
+   end]
+' "$SCORECARD")
+
 DIMENSIONS_MAP=$(jq -c '
   [.domains | to_entries[] | .key as $domain |
    .value.dimensions | to_entries[] |
@@ -129,24 +139,32 @@ DIMENSIONS_MAP=$(jq -c '
 
 if [[ "$FAIL_DIM_COUNT" -eq 0 && "$FAIL_CRIT_COUNT" -eq 0 ]]; then
   jq -n --argjson passing "$PASSING_DIMS" \
-        --argjson dimensions "$DIMENSIONS_MAP" '{
+        --argjson dimensions "$DIMENSIONS_MAP" \
+        --argjson findings "$FINDINGS" \
+        --arg tree_sha "$TREE_SHA" '{
     verdict: "PASS",
+    tree_sha: $tree_sha,
     failing_dimensions: [],
     failing_criteria: [],
     passing_dimensions: $passing,
-    dimensions: $dimensions
-  }'
+    dimensions: $dimensions,
+    findings: $findings
+  } | if .tree_sha == "" then del(.tree_sha) else . end'
   exit 0
 else
   jq -n --argjson failing_dims "$FAILING_DIMS" \
         --argjson failing_crit "$FAILING_CRITERIA" \
         --argjson passing "$PASSING_DIMS" \
-        --argjson dimensions "$DIMENSIONS_MAP" '{
+        --argjson dimensions "$DIMENSIONS_MAP" \
+        --argjson findings "$FINDINGS" \
+        --arg tree_sha "$TREE_SHA" '{
     verdict: "FAIL",
+    tree_sha: $tree_sha,
     failing_dimensions: $failing_dims,
     failing_criteria: $failing_crit,
     passing_dimensions: $passing,
-    dimensions: $dimensions
-  }'
+    dimensions: $dimensions,
+    findings: $findings
+  } | if .tree_sha == "" then del(.tree_sha) else . end'
   exit 1
 fi

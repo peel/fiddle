@@ -376,7 +376,8 @@ cat > "$TMPDIR/expected.json" << 'EOF'
     "general.correctness": 8,
     "general.domain_spec_fidelity": 9,
     "general.code_quality": 7
-  }
+  },
+  "findings": []
 }
 EOF
 
@@ -437,7 +438,8 @@ cat > "$TMPDIR/expected.json" << 'EOF'
     "general.correctness": 8,
     "general.domain_spec_fidelity": 7,
     "general.code_quality": 8
-  }
+  },
+  "findings": []
 }
 EOF
 
