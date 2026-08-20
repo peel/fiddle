@@ -1,15 +1,12 @@
-use crate::cve::attribute::{shipped_version, ModuleGraph};
-use crate::cve::version;
-use fiddle_core::{PackageType, ProjectedFinding};
 use std::collections::BTreeSet;
 use std::path::Path;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DedupError {
     #[error(
-        "the history in {repo} cannot say what this branch already fixed: {why}. \
+        "the history in {repo} cannot say what this branch already carries: {why}. \
          Fetch the whole history — `fetch-depth: 0` on actions/checkout — because \
-         a truncated log names nothing, and every OS finding then reads as unfixed"
+         a truncated log names nothing, and the branch then reads as carrying no work"
     )]
     ShallowHistory { repo: String, why: String },
 
@@ -19,9 +16,6 @@ pub enum DedupError {
         command: String,
         message: String,
     },
-
-    #[error(transparent)]
-    Resolver(#[from] crate::cve::attribute::ResolverError),
 }
 
 pub trait Spawn: Sync {
@@ -124,33 +118,4 @@ where
     }
 
     Ok(FixedInCommits::read(&bodies.stdout))
-}
-
-pub async fn already_fixed<G>(
-    finding: &ProjectedFinding,
-    graph: &G,
-    fixed: &FixedInCommits,
-) -> Result<bool, DedupError>
-where
-    G: ModuleGraph + ?Sized,
-{
-    match finding.package_type {
-        PackageType::Library => library_is_at_the_fix(finding, graph).await,
-        PackageType::Os => Ok(fixed.names(finding.cve.as_str())),
-    }
-}
-
-async fn library_is_at_the_fix<G>(finding: &ProjectedFinding, graph: &G) -> Result<bool, DedupError>
-where
-    G: ModuleGraph + ?Sized,
-{
-    let Some(fixed_version) = finding.fixed_version.as_deref() else {
-        return Ok(false);
-    };
-
-    let Some(shipped) = shipped_version(&graph.list(finding.package.as_str()).await?) else {
-        return Ok(false);
-    };
-
-    Ok(version::at_least(&shipped, fixed_version))
 }

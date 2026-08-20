@@ -4,8 +4,7 @@ use super::cve::{
 };
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::AgentBudget;
-use crate::cve::dedup::{already_fixed, commit_log_dedup};
-use crate::cve::go::Go;
+use crate::cve::dedup::commit_log_dedup;
 use crate::cve::project::{project, Projection};
 use crate::cve::verdict::{disposition, Attempted, Budget, Disposition, InProgress, Run};
 use crate::effect::{EffectContext, Executor};
@@ -156,28 +155,15 @@ where
             self.config.cancel.clone(),
         )?);
         let git = InWorktree::new(&workspace, self.config.budget.tool_timeout);
-        let graph = Go::new(
-            PathBuf::from(&self.config.go.program),
-            self.config.go.args.clone(),
-            workspace.root().to_path_buf(),
-            workspace.home().to_path_buf(),
-            self.config.go.timeout,
-            self.config.cancel.clone(),
-        );
 
         let fixed = commit_log_dedup(workspace.root(), &self.config.base)?;
 
+        let (taken, deferred) = self
+            .config
+            .findings
+            .apply(projection.fixable().cloned().collect());
+
         let mut settled: Vec<AdvisoryId> = Vec::new();
-        let mut open: Vec<ProjectedFinding> = Vec::new();
-        for finding in projection.fixable().cloned().collect::<Vec<_>>() {
-            match already_fixed(&finding, &graph, &fixed).await? {
-                true => settled.push(finding.cve),
-                false => open.push(finding),
-            }
-        }
-
-        let (taken, deferred) = self.config.findings.apply(open);
-
         let mut attempted: Vec<Attempted> = Vec::new();
         if !taken.is_empty() {
             let attempt_outcome = self.migration.migrate(&workspace, &taken).await?;
@@ -187,19 +173,18 @@ where
                 &attempt_outcome.forbidden,
                 attempt_outcome.undeclared.as_ref(),
             );
-            land(
-                &git,
-                &advisories_of(&taken),
-                &status,
-                &attempt_outcome.changed,
-            )
-            .await?;
-
-            attempted.push(Attempted {
-                findings: taken,
-                status,
-                attempt: attempt_outcome,
-            });
+            let advisories = advisories_of(&taken);
+            match matches!(status, GroupStatus::Clean) && attempt_outcome.changed.is_empty() {
+                true => settled = advisories,
+                false => {
+                    land(&git, &advisories, &status, &attempt_outcome.changed).await?;
+                    attempted.push(Attempted {
+                        findings: taken,
+                        status,
+                        attempt: attempt_outcome,
+                    });
+                }
+            }
         }
 
         let landed = match attempted
