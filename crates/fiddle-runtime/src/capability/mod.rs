@@ -6,8 +6,8 @@ pub mod repair;
 pub mod stub;
 
 pub use cve::{
-    land, undeclared, DeclarationBreach, ForbiddenShape, Git, GroupMigration, GroupStatus,
-    InWorktree, Landed, MigrationAttempt, MigrationConfig, NeedsWork,
+    land, undeclared, DeclarationBreach, Git, GroupMigration, GroupStatus, InWorktree, Landed,
+    MigrationAttempt, MigrationConfig, NeedsWork,
 };
 pub use mitigate::{CveMitigate, MitigateConfig};
 pub use propose::{attempt_worktree, ProposeChange, ProposeConfig};

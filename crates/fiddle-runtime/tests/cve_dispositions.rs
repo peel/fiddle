@@ -2,7 +2,7 @@ mod support;
 
 use fiddle_core::{AdvisoryId, ProjectedFinding, RunOutcome, Severity};
 use fiddle_runtime::agent::{FindingDisposition, RepairReport};
-use fiddle_runtime::capability::{ForbiddenShape, GroupStatus, MigrationAttempt, NeedsWork};
+use fiddle_runtime::capability::{GroupStatus, MigrationAttempt, NeedsWork};
 use fiddle_runtime::cve::project::{project, Projection};
 use fiddle_runtime::cve::verdict::{
     disposition, report_of, Attempted, Budget, InProgress, Judgement, Landed, Run, Verdict,
@@ -86,18 +86,8 @@ fn fixed_in_the_tree() -> Run {
 async fn one_group_clean() -> Run {
     let mut run = two_fixable_findings();
     run.attempted = vec![
-        attempted_group(
-            FIXABLE_CVE,
-            clean_group(FIXABLE_CVE).await,
-            true,
-            Vec::new(),
-        ),
-        attempted_group(
-            SECOND_CVE,
-            needs_work_group(SECOND_CVE).await,
-            true,
-            Vec::new(),
-        ),
+        attempted_group(FIXABLE_CVE, clean_group(FIXABLE_CVE).await, true),
+        attempted_group(SECOND_CVE, needs_work_group(SECOND_CVE).await, true),
     ];
     run.landed = Some(Landed {
         branch: "security/cve-remediation-20260817".to_string(),
@@ -121,18 +111,8 @@ async fn one_group_clean() -> Run {
 async fn every_group_needs_work() -> Run {
     let mut run = two_fixable_findings();
     run.attempted = vec![
-        attempted_group(
-            FIXABLE_CVE,
-            needs_work_group(FIXABLE_CVE).await,
-            true,
-            Vec::new(),
-        ),
-        attempted_group(
-            SECOND_CVE,
-            needs_work_group(SECOND_CVE).await,
-            false,
-            Vec::new(),
-        ),
+        attempted_group(FIXABLE_CVE, needs_work_group(FIXABLE_CVE).await, true),
+        attempted_group(SECOND_CVE, needs_work_group(SECOND_CVE).await, false),
     ];
     assert!(
         run.attempted
@@ -184,7 +164,6 @@ async fn findings_beyond_budget(count: usize, bound: usize) -> Run {
             finding.cve.as_str(),
             clean_group(finding.cve.as_str()).await,
             true,
-            Vec::new(),
         ));
     }
     run.attempted = attempted;
@@ -220,7 +199,7 @@ fn two_fixable_findings() -> Run {
 }
 
 async fn clean_group(cve: &str) -> GroupStatus {
-    let status = GroupStatus::of(&cleanly_evaluated(cve).await, &[], None);
+    let status = GroupStatus::of(&cleanly_evaluated(cve).await, None);
     assert_eq!(
         status,
         GroupStatus::Clean,
@@ -236,7 +215,7 @@ async fn needs_work_group(cve: &str) -> GroupStatus {
     )
     .await
     .expect("an evaluation that was not cancelled");
-    let status = GroupStatus::of(&evaluation, &[], None);
+    let status = GroupStatus::of(&evaluation, None);
     assert!(
         matches!(
             status,
@@ -255,12 +234,7 @@ async fn cleanly_evaluated(cve: &str) -> Evaluation {
         .expect("an evaluation that was not cancelled")
 }
 
-fn attempted_group(
-    cve: &str,
-    status: GroupStatus,
-    claimed_complete: bool,
-    forbidden: Vec<ForbiddenShape>,
-) -> Attempted {
+fn attempted_group(cve: &str, status: GroupStatus, claimed_complete: bool) -> Attempted {
     Attempted {
         findings: vec![finding_for(cve)],
         status,
@@ -276,14 +250,13 @@ fn attempted_group(
                 }],
             },
             changed: vec![WorkspacePath::parse("go.mod").expect("a workspace-relative path")],
-            forbidden,
             undeclared: None,
         },
     }
 }
 
 fn a_group_declining(cve: &str, status: GroupStatus) -> Attempted {
-    let mut group = attempted_group(cve, status, false, Vec::new());
+    let mut group = attempted_group(cve, status, false);
     group.attempt.report.findings = vec![FindingDisposition {
         cve: cve.to_string(),
         attempted: false,
@@ -656,7 +629,6 @@ async fn a_verdict_row_carries_what_the_attempt_said_about_that_finding() {
         FIXABLE_CVE,
         needs_work_group(FIXABLE_CVE).await,
         true,
-        Vec::new(),
     )];
 
     let json =
@@ -859,54 +831,6 @@ async fn the_claim_changes_no_part_of_the_disposition_but_the_record_of_it() {
         with.attempts(),
         without.attempts(),
         "the two worlds do differ, so the equalities above are not vacuous"
-    );
-}
-
-#[tokio::test]
-async fn every_forbidden_shape_reaches_the_record_in_path_order() {
-    let shapes = vec![
-        ForbiddenShape::ReplaceDirective {
-            path: "a/go.mod".to_string(),
-            directive: "replace example.com/x => ../x".to_string(),
-        },
-        ForbiddenShape::AddedSkip {
-            path: "b/main_test.go".to_string(),
-            line: "\tt.Skip(\"flaky\")".to_string(),
-        },
-        ForbiddenShape::NewControlFlow {
-            path: "c/main.go".to_string(),
-            keyword: "if",
-            before: 1,
-            after: 3,
-        },
-    ];
-
-    let mut run = one_fixable_finding();
-    run.attempted = vec![attempted_group(
-        FIXABLE_CVE,
-        GroupStatus::of(&cleanly_evaluated(FIXABLE_CVE).await, &shapes, None),
-        true,
-        shapes.clone(),
-    )];
-
-    let reached = disposition(&run);
-
-    assert_eq!(
-        reached.attempts()[0].forbidden,
-        shapes,
-        "all of them, in the order `classify` found them"
-    );
-    assert_eq!(
-        reached.attempts()[0].status,
-        GroupStatus::NeedsWork {
-            reason: NeedsWork::OutOfScope(shapes[0].clone()),
-        },
-        "and the status still names only the first, which is Task 14.b's rule"
-    );
-    assert!(
-        reached.verdicts()[0].rationale.contains("a/go.mod"),
-        "the verdict reports the shape that decided the group, got {}",
-        reached.verdicts()[0].rationale
     );
 }
 

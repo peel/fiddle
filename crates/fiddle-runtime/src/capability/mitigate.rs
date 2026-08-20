@@ -166,11 +166,7 @@ where
         if !taken.is_empty() {
             let attempt_outcome = self.migration.migrate(&workspace, &taken).await?;
             let evaluation = self.judge(&workspace, &taken, &projection, report).await?;
-            let status = GroupStatus::of(
-                &evaluation,
-                &attempt_outcome.forbidden,
-                attempt_outcome.undeclared.as_ref(),
-            );
+            let status = GroupStatus::of(&evaluation, attempt_outcome.undeclared.as_ref());
             let advisories = advisories_of(&taken);
             match matches!(status, GroupStatus::Clean) && attempt_outcome.changed.is_empty() {
                 true => settled = advisories,

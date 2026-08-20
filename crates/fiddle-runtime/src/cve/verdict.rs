@@ -157,8 +157,6 @@ pub struct AttemptRecord {
     pub status: GroupStatus,
 
     pub claimed_complete: bool,
-
-    pub forbidden: Vec<crate::capability::cve::ForbiddenShape>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -234,7 +232,6 @@ impl Disposition {
                     }
                     .to_string(),
                     claimed_complete: attempt.claimed_complete,
-                    forbidden: attempt.forbidden.iter().map(ToString::to_string).collect(),
                 })
                 .collect(),
             branch: self.branch.clone(),
@@ -391,7 +388,6 @@ fn attempts_of(run: &Run) -> Vec<AttemptRecord> {
                     .collect(),
                 status: group.status.clone(),
                 claimed_complete: report.claimed_complete,
-                forbidden: group.attempt.forbidden.clone(),
             }
         })
         .collect()
