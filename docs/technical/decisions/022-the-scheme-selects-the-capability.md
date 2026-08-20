@@ -1,6 +1,7 @@
 # 022 — An absent `--capability` resolves through the scheme
 
 Status: accepted
+Cites: fiddle_core::InvocationScheme, Selection::resolve
 
 Amends nothing formally. It replaces an invariant that had never been written
 down: *absent means `stub_mark`*, which two call sites in `fiddle-cli` implemented

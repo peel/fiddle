@@ -90,7 +90,7 @@ After user confirmation:
 
 **SYSTEM.md** — Update in place. Follow schema constraints. Keep entries concise. Don't expand sections beyond their purpose. Set `Last reviewed:` to today.
 
-**ADRs** — Find highest numbered existing ADR: `ls docs/technical/decisions/`. Create next number. Use format: `NNN-kebab-case-title.md`. Follow template: Status: accepted, Context (2-3 sentences), Decision (concrete), Consequences (tradeoffs).
+**ADRs** — Find highest numbered existing ADR: `ls docs/technical/decisions/`. Create next number. Use format: `NNN-kebab-case-title.md`. Follow the ADR template in `skills/using-fiddle/references/writing-templates.md`, including the `Cites:` line, and verify with `scripts/check-adr-cites.sh`.
 
 **BACKLOG.md** — Append new entries at the end. Format: `### YYYY-MM-DD — Title`, Description, `Origin:` tag, hashtag tags.
 

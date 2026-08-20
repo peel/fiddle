@@ -1,6 +1,7 @@
 # 023 — A reference that names no work item has no completion state
 
 Status: accepted
+Cites: fiddle_core::assess, WorkStateView::has_completion_state, CapabilityAssessment
 
 Amends [ADR 019](019-a-self-discovering-run-has-no-work-reference.md), which gave
 `cve` a reference that stands alone and left open what its change set means. It

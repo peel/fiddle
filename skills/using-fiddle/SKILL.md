@@ -37,6 +37,12 @@ Before dispatching an internal subagent, resolve its configured model with `scri
 
 External providers are optional. If a provider CLI is unavailable, continue with the current harness and report the reduced coverage.
 
+## Authoring Artefacts
+
+ADRs, bean bodies, commit messages, SYSTEM.md components and lane briefs follow
+`references/writing-templates.md`. Its `Cites:` line is the one part a gate enforces:
+`scripts/check-adr-cites.sh` refuses an ADR that cites a symbol the tree does not have.
+
 ## Authoring Skills
 
 Write a skill as judgment plus rationale: one purpose sentence, the flow, plain script invocations, explicit cross-references to sub-skills and reference files, and a one-line reason wherever an invariant needs weight.
