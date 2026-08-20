@@ -1,12 +1,13 @@
 use crate::agent::FindingDisposition;
 use crate::capability::cve::{GroupStatus, MigrationAttempt};
-use crate::cve::group::GroupError;
 use crate::cve::project::Projection;
 use crate::evaluate::Reason;
 use fiddle_core::{AdvisoryId, Published, RunOutcome, Severity};
 use std::path::{Path, PathBuf};
 
 pub const REPORT_FILE: &str = "verdicts.json";
+
+pub const NO_PUBLISHED_FIX: &str = "the scanner published no fixed version";
 
 #[derive(Debug)]
 pub struct Run {
@@ -15,8 +16,6 @@ pub struct Run {
     pub already_fixed: Vec<AdvisoryId>,
 
     pub in_progress: Option<InProgress>,
-
-    pub blocked: Vec<Blocked>,
 
     pub attempted: Vec<Attempted>,
 
@@ -31,7 +30,6 @@ impl Run {
             scan: Ok(projection),
             already_fixed: Vec::new(),
             in_progress: None,
-            blocked: Vec::new(),
             attempted: Vec::new(),
             deferred: Vec::new(),
             landed: None,
@@ -43,7 +41,6 @@ impl Run {
             scan: Err(why.into()),
             already_fixed: Vec::new(),
             in_progress: None,
-            blocked: Vec::new(),
             attempted: Vec::new(),
             deferred: Vec::new(),
             landed: None,
@@ -60,13 +57,6 @@ pub struct InProgress {
     pub number: u64,
 
     pub covers: Vec<AdvisoryId>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Blocked {
-    pub findings: Vec<fiddle_core::ProjectedFinding>,
-
-    pub error: GroupError,
 }
 
 #[derive(Debug)]
@@ -338,20 +328,12 @@ pub fn report_of(run: &Run) -> serde_json::Value {
 fn verdicts_of(run: &Run, projection: &Projection) -> Vec<Verdict> {
     let mut verdicts = Vec::new();
 
-    let no_fix = GroupError::NoFixedVersion.to_string();
     for finding in projection.upstream_blocked() {
-        verdicts.push(verdict(finding, no_fix.clone(), Judgement::UpstreamBlocked));
-    }
-
-    for group in &run.blocked {
-        let rationale = group.error.to_string();
-        for finding in &group.findings {
-            verdicts.push(verdict(
-                finding,
-                rationale.clone(),
-                Judgement::UpstreamBlocked,
-            ));
-        }
+        verdicts.push(verdict(
+            finding,
+            NO_PUBLISHED_FIX.to_string(),
+            Judgement::UpstreamBlocked,
+        ));
     }
 
     for group in &run.attempted {

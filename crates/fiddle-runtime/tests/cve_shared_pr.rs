@@ -991,7 +991,7 @@ async fn publish(forge: &Forge, world: &RemoteWorld) -> Published {
     let before = journal.records().len();
     land(
         &InWorktree::new(&workspace, PATIENT),
-        &advisories_of(&world.group),
+        &advisories_of(&world.findings),
         &GroupStatus::Clean,
         &changed,
     )
@@ -1285,7 +1285,7 @@ async fn discover_then_land(forge: &Forge, world: &LandingWorld) -> Result<Appro
 
     land(
         &world.tree,
-        &advisories_of(&world.group),
+        &advisories_of(&world.findings),
         &fiddle_runtime::capability::GroupStatus::Clean,
         &world.changed,
     )

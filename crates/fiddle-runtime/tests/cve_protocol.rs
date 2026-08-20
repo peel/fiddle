@@ -2,11 +2,10 @@ mod support;
 
 use fiddle_runtime::agent::AgentError;
 use fiddle_runtime::capability::{
-    land, record_fold, undeclared, CapabilityError, ForbiddenShape, GroupMigration, GroupStatus,
-    InWorktree, MigrationAttempt, NeedsWork,
+    land, undeclared, CapabilityError, ForbiddenShape, GroupMigration, GroupStatus, InWorktree,
+    Landed, MigrationAttempt, NeedsWork,
 };
 use fiddle_runtime::cve::dedup::FixedInCommits;
-use fiddle_runtime::cve::fold::Landed;
 use fiddle_runtime::evaluate::{evaluate, Evaluation, RescanVerdict};
 use fiddle_runtime::workspace::{Content, FileEdit, WorkspacePath};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
@@ -14,10 +13,10 @@ use serde_json::json;
 use std::time::Duration;
 use support::cve::{
     advisories_of, ask_git, contract, contract_scanned_by, exit, green_tree, landing_worktree,
-    landing_world, migration_world, shown_findings, stdout, tree_rescanned_by, tree_where,
-    LandingWorld, MigrationWorld, DEFAULT_LIBRARY_CVES, GO_BUILD, HOST_ROOT, LANDING_CREATED,
-    LANDING_UNRELATED, MIGRATION_SOURCE as SOURCE, MIGRATION_TEST_BEFORE,
-    MIGRATION_TEST_SOURCE as TEST_SOURCE, SENTINEL_PROSE,
+    landing_world, migration_world, stdout, tree_rescanned_by, tree_where, LandingWorld,
+    MigrationWorld, DEFAULT_LIBRARY_CVES, GO_BUILD, HOST_ROOT, LANDING_CREATED, LANDING_UNRELATED,
+    MIGRATION_SOURCE as SOURCE, MIGRATION_TEST_BEFORE, MIGRATION_TEST_SOURCE as TEST_SOURCE,
+    SENTINEL_PROSE,
 };
 
 fn migrates() -> Vec<MockTurn> {
@@ -108,7 +107,7 @@ fn adds_control_flow() -> Vec<MockTurn> {
 }
 
 fn adds_a_replace_directive(world: &MigrationWorld) -> Vec<MockTurn> {
-    let module = world.target_module();
+    let module = world.checked_package();
     let go_mod = std::fs::read_to_string(world.tree.path().join("go.mod"))
         .expect("the fixture tree has a go.mod");
     edits(&[
@@ -266,7 +265,7 @@ async fn run_migration(
     world: &MigrationWorld,
 ) -> Result<MigrationAttempt, fiddle_runtime::capability::CapabilityError> {
     GroupMigration::new(model, world.config())
-        .migrate(&world.workspace(), &shown_findings(&world.group))
+        .migrate(&world.workspace(), &world.findings)
         .await
 }
 
@@ -279,11 +278,6 @@ async fn the_world_holds_everything_the_prompt_must_not() {
         "the document the findings were projected from must carry advisory prose"
     );
     assert!(
-        world.resolved.contains("go list -m"),
-        "attribution really ran the mechanical rule for this group: {}",
-        world.resolved
-    );
-    assert!(
         world.workspace_root().to_string_lossy().contains(HOST_ROOT),
         "the attempt's worktree must live under a path carrying the host \
          sentinel, or `no host fact` is a claim about a path nothing holds: {}",
@@ -291,15 +285,13 @@ async fn the_world_holds_everything_the_prompt_must_not() {
     );
 
     assert!(
-        !world.group.findings().is_empty(),
-        "a group with no findings would let a prompt carrying no projection pass \
+        !world.findings.is_empty(),
+        "a world with no findings would let a prompt carrying no projection pass \
          every assertion in this file"
     );
 
     assert_eq!(
-        world
-            .group
-            .cves()
+        advisories_of(&world.findings)
             .iter()
             .map(|cve| cve.as_str().to_string())
             .collect::<Vec<String>>(),
@@ -323,7 +315,7 @@ async fn the_prompt_carries_the_projection_and_the_scope_rules_and_nothing_else(
     let _ = run_migration(model.clone(), &world).await;
     let sent = sent(&model);
 
-    let cve = world.group.cves()[0].as_str().to_string();
+    let cve = world.findings[0].cve.as_str().to_string();
     assert!(
         sent.json.contains(&cve),
         "the projection has to reach the model, or every absence below is the \
@@ -365,9 +357,7 @@ async fn the_prompt_names_no_ecosystem_and_no_chosen_version() {
     let model = MockCompletionModel::new(migrates());
     let _ = run_migration(model.clone(), &world).await;
 
-    let cves: Vec<String> = world
-        .group
-        .cves()
+    let cves: Vec<String> = advisories_of(&world.findings)
         .iter()
         .map(|cve| cve.as_str().to_string())
         .collect();
@@ -406,7 +396,7 @@ async fn the_prompt_names_no_ecosystem_and_no_chosen_version() {
         );
     }
 
-    let finding = world.group.findings()[0].finding();
+    let finding = &world.findings[0];
     let fixed = finding
         .fixed_version
         .as_deref()
@@ -435,7 +425,7 @@ async fn the_six_fields_arrive_and_the_record_they_came_from_does_not() {
     let _ = run_migration(model.clone(), &world).await;
     let sent = sent(&model);
 
-    let finding = world.group.findings()[0].finding();
+    let finding = &world.findings[0];
     for value in [
         finding.cve.as_str(),
         finding.package.as_str(),
@@ -463,33 +453,11 @@ async fn the_six_fields_arrive_and_the_record_they_came_from_does_not() {
 }
 
 #[tokio::test]
-async fn the_bump_target_the_rules_elected_is_not_in_the_prompt() {
-    let world = migration_world().await;
-    let model = MockCompletionModel::new(migrates());
-    let _ = run_migration(model.clone(), &world).await;
-    let sent = sent(&model);
-
-    let target = format!("{:?}", world.group.target());
-    assert!(
-        target.contains(&world.target_module()),
-        "the premise: this group's target names the module, so a prompt that \
-         rendered the target would be visible: {target}"
-    );
-    for rendering in ["Module(", "DockerfileBaseImage", "Rule::", "attribution"] {
-        assert!(
-            !sent.carries(rendering),
-            "`{rendering}` belongs to the answer attribution gave, not to what \
-             the model is asked"
-        );
-    }
-}
-
-#[tokio::test]
 async fn the_attempt_really_edits_the_tree_through_the_tools() {
     let world = migration_world().await;
     let migration = GroupMigration::new(MockCompletionModel::new(migrates()), world.config());
     let attempt = migration
-        .migrate(&world.workspace(), &shown_findings(&world.group))
+        .migrate(&world.workspace(), &world.findings)
         .await
         .expect("a scripted migration completes");
 
@@ -1119,7 +1087,7 @@ async fn what_the_run_changed_before_briefing_is_excused_and_nothing_beside_it_i
         ),
     ];
     let attempt = GroupMigration::new(MockCompletionModel::new(script), world.config())
-        .migrate(&workspace, &shown_findings(&world.group))
+        .migrate(&workspace, &world.findings)
         .await
         .expect("a scripted migration completes");
 
@@ -1165,7 +1133,7 @@ async fn run_group_clean(cves: &[&str]) -> (LandingWorld, Landed) {
     let world = landing_world(cves);
     let landed = land(
         &world.tree,
-        &advisories_of(&world.group),
+        &advisories_of(&world.findings),
         &GroupStatus::Clean,
         &world.changed,
     )
@@ -1178,7 +1146,7 @@ async fn run_group_needs_work(cves: &[&str]) -> (LandingWorld, Landed) {
     let world = landing_world(cves);
     let landed = land(
         &world.tree,
-        &advisories_of(&world.group),
+        &advisories_of(&world.findings),
         &refused(),
         &world.changed,
     )
@@ -1362,7 +1330,7 @@ async fn a_forbidden_shape_over_green_checks_reverts_rather_than_committing() {
     let world = landing_world(&LANDED);
     let landed = land(
         &world.tree,
-        &advisories_of(&world.group),
+        &advisories_of(&world.findings),
         &status,
         &world.changed,
     )
@@ -1403,7 +1371,7 @@ async fn a_file_the_attempt_created_does_not_survive_the_revert() {
 
     let landed = land(
         &world.tree,
-        &advisories_of(&world.group),
+        &advisories_of(&world.findings),
         &refused(),
         &world.changed,
     )
@@ -1432,7 +1400,7 @@ async fn a_clean_group_that_changed_nothing_commits_nothing_and_says_so() {
 
     let refusal = land(
         &world.tree,
-        &advisories_of(&world.group),
+        &advisories_of(&world.findings),
         &GroupStatus::Clean,
         &[],
     )
@@ -1455,58 +1423,11 @@ async fn a_clean_group_that_changed_nothing_commits_nothing_and_says_so() {
 }
 
 #[tokio::test]
-async fn a_fold_is_an_empty_commit_naming_every_id_and_amending_nothing() {
-    let world = landing_world(&LANDED);
-    let before = world.tree.staged_paths();
-
-    record_fold(&world.tree, &world.group)
-        .await
-        .expect("a fold is recorded");
-
-    assert!(
-        world.tree.staged_paths().is_empty(),
-        "a fold changes no file, and this commit carries {:?}",
-        world.tree.staged_paths()
-    );
-    assert_ne!(
-        world.tree.staged_paths(),
-        before,
-        "the premise: the commit before this one was not itself empty, so \
-         `empty` above is a fact about the fold"
-    );
-
-    let fixed = FixedInCommits::read(&world.tree.head_commit_body());
-    for cve in LANDED {
-        assert!(
-            fixed.names(cve),
-            "a fold that named no advisory is invisible to the next run: {}",
-            world.tree.head_commit_body()
-        );
-    }
-
-    let calls = world.tree.git_calls();
-    assert!(
-        calls.iter().any(|call| call.contains("--allow-empty")),
-        "a fold changes nothing, so it needs the flag to become a commit: {calls:?}"
-    );
-    nothing_rewrites_history(&calls);
-    nothing_is_staged_by_directory(&calls);
-}
-
-#[tokio::test]
 async fn history_is_never_rewritten() {
     let (committed, _) = run_group_clean(&LANDED).await;
     let (reverted, _) = run_group_needs_work(&[NOT_LANDED]).await;
-    let folded = landing_world(&LANDED);
-    record_fold(&folded.tree, &folded.group)
-        .await
-        .expect("a fold is recorded");
 
-    for (name, tree) in [
-        ("clean", &committed.tree),
-        ("needs-work", &reverted.tree),
-        ("fold", &folded.tree),
-    ] {
+    for (name, tree) in [("clean", &committed.tree), ("needs-work", &reverted.tree)] {
         let calls = tree.git_calls();
         assert!(
             !calls.is_empty(),
@@ -1525,7 +1446,7 @@ async fn the_production_seam_lands_a_group_in_a_real_worktree() {
 
     let landed = land(
         &InWorktree::new(&attempt.workspace, Duration::from_secs(60)),
-        &advisories_of(&world.group),
+        &advisories_of(&world.findings),
         &GroupStatus::Clean,
         &attempt.changed,
     )

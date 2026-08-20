@@ -1,16 +1,9 @@
 use fiddle_core::{AdvisoryId, AttemptId, PackageType, ProjectedFinding, Severities, Severity};
 use fiddle_runtime::agent::AgentBudget;
 use fiddle_runtime::capability::{CapabilityError, Git, MigrationConfig};
-use fiddle_runtime::cve::attribute::{attribute, Manifest, ModuleGraph, ResolverError, Target};
 use fiddle_runtime::cve::dedup::{DedupError, Local, Ran, Spawn};
-use fiddle_runtime::cve::fold::{Landed, PriorRescan};
-use fiddle_runtime::cve::go::Go;
-use fiddle_runtime::cve::group::{group, Attributed, Group};
 use fiddle_runtime::cve::project::project;
-use fiddle_runtime::evaluate::{
-    evaluate, Answered, Check, Contract, Evaluation, Repair, RescanVerdict, Success, Tree,
-    Unanswered,
-};
+use fiddle_runtime::evaluate::{Answered, Check, Contract, Repair, Success, Tree, Unanswered};
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
 use fiddle_runtime::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
 use std::collections::BTreeMap;
@@ -428,189 +421,10 @@ fn finding_under(
     }
 }
 
-pub fn attributed(cve: &str, package: &str, target: &str) -> Attributed {
-    attributed_fixed_at(cve, package, target, FINDING_FIXED)
-}
-
-pub fn attributed_fixed_at(cve: &str, package: &str, target: &str, fixed: &str) -> Attributed {
-    Attributed::new(
-        finding_under(cve, package, PackageType::Library, fixed),
-        Target::Module(target.to_string()),
-    )
-}
-
-pub fn attributed_os(cve: &str, package: &str) -> Attributed {
-    Attributed::new(
-        finding_under(cve, package, PackageType::Os, FINDING_FIXED),
-        Target::DockerfileBaseImage,
-    )
-}
-
-pub fn available(versions: &[&str]) -> Vec<String> {
-    versions.iter().map(|version| version.to_string()).collect()
-}
-
-#[async_trait::async_trait]
-impl ModuleGraph for GoWorkspace {
-    async fn list(&self, module: &str) -> Result<String, ResolverError> {
-        Ok(self.go(&["list", "-m", "-json", module]))
-    }
-
-    async fn why(&self, module: &str) -> Result<String, ResolverError> {
-        Ok(self.go(&["mod", "why", "-m", module]))
-    }
-
-    async fn manifest(&self) -> Result<Manifest, ResolverError> {
-        Ok(Manifest {
-            go_mod: self.go_mod(),
-            go_sum: std::fs::read_to_string(self.repo.join("go.sum")).ok(),
-        })
-    }
-
-    async fn get(&self, module: &str, query: &str) -> Result<String, ResolverError> {
-        Ok(self.go(&["get", &format!("{module}@{query}")]))
-    }
-
-    async fn tidy(&self) -> Result<String, ResolverError> {
-        Ok(self.go(&["mod", "tidy"]))
-    }
-
-    async fn restore(&self, manifest: &Manifest) -> Result<(), ResolverError> {
-        std::fs::write(self.repo.join("go.mod"), &manifest.go_mod).unwrap();
-        let go_sum = self.repo.join("go.sum");
-        match &manifest.go_sum {
-            Some(contents) => std::fs::write(&go_sum, contents).unwrap(),
-            None => {
-                let _ = std::fs::remove_file(&go_sum);
-            }
-        }
-        Ok(())
-    }
-}
-
-impl GoWorkspace {
-    fn go(&self, args: &[&str]) -> String {
-        go_proxy::run(&self.repo, args).text()
-    }
-
-    fn go_mod_requirements(&self) -> Vec<(String, String, bool)> {
-        go_proxy::requirements(&self.repo)
-    }
-}
-
-const SCRIPTED_GO_TIMEOUT: Duration = Duration::from_secs(60);
-
 pub fn go_stub() -> ProgramRef {
     ProgramRef {
         program: env!("CARGO_BIN_EXE_go_stub").to_string(),
         args: Vec::new(),
-    }
-}
-
-pub fn spawned_go(workspace: &GoWorkspace) -> SpawnedGo {
-    let home = TempDir::new().expect("a temporary directory for a toolchain's caches");
-    let stub = go_stub();
-    SpawnedGo {
-        go: Go::new(
-            PathBuf::from(stub.program),
-            stub.args,
-            workspace.path().to_path_buf(),
-            home.path().to_path_buf(),
-            SCRIPTED_GO_TIMEOUT,
-            CancellationToken::new(),
-        ),
-        home,
-    }
-}
-
-pub struct SpawnedGo {
-    go: Go,
-    home: TempDir,
-}
-
-#[async_trait::async_trait]
-impl ModuleGraph for SpawnedGo {
-    async fn list(&self, module: &str) -> Result<String, ResolverError> {
-        self.go.list(module).await
-    }
-
-    async fn why(&self, module: &str) -> Result<String, ResolverError> {
-        self.go.why(module).await
-    }
-
-    async fn manifest(&self) -> Result<Manifest, ResolverError> {
-        self.go.manifest().await
-    }
-
-    async fn get(&self, module: &str, query: &str) -> Result<String, ResolverError> {
-        self.go.get(module, query).await
-    }
-
-    async fn tidy(&self) -> Result<String, ResolverError> {
-        self.go.tidy().await
-    }
-
-    async fn restore(&self, manifest: &Manifest) -> Result<(), ResolverError> {
-        self.go.restore(manifest).await
-    }
-}
-
-pub fn absent_go(workspace: &GoWorkspace) -> SpawnedGo {
-    let program = format!("{}-which-is-not-installed", env!("CARGO_BIN_EXE_go_stub"));
-    assert!(
-        !Path::new(&program).exists(),
-        "{program} exists, so it cannot stand for a toolchain that is not installed"
-    );
-    let home = TempDir::new().expect("a temporary directory for a toolchain's caches");
-    SpawnedGo {
-        go: Go::new(
-            PathBuf::from(program),
-            Vec::new(),
-            workspace.path().to_path_buf(),
-            home.path().to_path_buf(),
-            SCRIPTED_GO_TIMEOUT,
-            CancellationToken::new(),
-        ),
-        home,
-    }
-}
-
-const GO_CHILD_RECORD: &str = "child.json";
-
-impl SpawnedGo {
-    pub fn home(&self) -> &Path {
-        self.home.path()
-    }
-
-    pub fn child_env(&self) -> BTreeMap<String, String> {
-        self.child()["env"]
-            .as_array()
-            .expect("the scripted go records its environment as an array")
-            .iter()
-            .map(|entry| {
-                let entry = entry.as_str().expect("an environment entry is a string");
-                let (name, value) = entry
-                    .split_once('=')
-                    .unwrap_or_else(|| panic!("{entry} is not a NAME=VALUE entry"));
-                (name.to_string(), value.to_string())
-            })
-            .collect()
-    }
-
-    pub fn child_env_names(&self) -> Vec<String> {
-        self.child_env().into_keys().collect()
-    }
-
-    fn child(&self) -> serde_json::Value {
-        let record = self.home.path().join(GO_CHILD_RECORD);
-        let raw = std::fs::read_to_string(&record).unwrap_or_else(|source| {
-            panic!(
-                "no record at {}, so no child of this adapter was observed: {source}",
-                record.display()
-            )
-        });
-        serde_json::from_str(&raw)
-            .unwrap_or_else(|source| panic!("{} is not a record: {source}", record.display()))
     }
 }
 
@@ -1125,119 +939,31 @@ impl Tree for ScriptedTree {
     }
 }
 
-pub fn group_of(cves: &[&str]) -> Group {
-    let findings: Vec<Attributed> = cves
-        .iter()
-        .map(|cve| attributed(cve, &format!("package-for-{cve}"), FOLD_TARGET))
-        .collect();
-    let mut groups = group(&findings);
-    assert_eq!(
-        groups.len(),
-        1,
-        "a fold lane's group is one edit, and {cves:?} produced {} of them",
-        groups.len()
-    );
-    groups.remove(0)
-}
-
-pub fn advisories_of(group: &Group) -> Vec<AdvisoryId> {
-    group.cves().into_iter().cloned().collect()
-}
-
-pub fn shown_findings(group: &Group) -> Vec<ProjectedFinding> {
-    group
-        .findings()
-        .iter()
-        .map(|attributed| attributed.finding().clone())
+pub fn findings_for(cves: &[&str]) -> Vec<ProjectedFinding> {
+    cves.iter()
+        .map(|cve| {
+            finding_under(
+                cve,
+                &format!("package-for-{cve}"),
+                PackageType::Library,
+                FINDING_FIXED,
+            )
+        })
         .collect()
+}
+
+pub fn advisories_of(findings: &[ProjectedFinding]) -> Vec<AdvisoryId> {
+    let mut advisories: Vec<AdvisoryId> = Vec::new();
+    for finding in findings {
+        if !advisories.contains(&finding.cve) {
+            advisories.push(finding.cve.clone());
+        }
+    }
+    advisories
 }
 
 pub fn every_fixture_grade() -> Severities {
     Severities::default()
-}
-
-const FOLD_TARGET: &str = "example.com/folded";
-
-const EARLIER_GROUPS_ADVISORY: &str = "CVE-2026-9001";
-
-pub async fn rescan_from_committed_clean_group(still_reported: &[&str]) -> PriorRescan {
-    let evaluation = cleanly_evaluated(still_reported).await;
-    assert!(
-        evaluation.accepted(),
-        "this world's premise is a group that ended clean"
-    );
-    PriorRescan::of(&evaluation, Landed::Committed, &every_fixture_grade())
-}
-
-pub async fn rescan_from_needs_work_group(still_reported: &[&str]) -> PriorRescan {
-    let evaluation = evaluate(
-        &contract_for_a_fold(still_reported),
-        &tree_whose_rescan_reports(still_reported).where_check(GO_VET, exit(1), stdout("")),
-    )
-    .await
-    .expect("an evaluation that was not cancelled");
-
-    assert_eq!(
-        evaluation.rescan(),
-        &RescanVerdict::Cleared,
-        "the rescan itself is clean — the group is needs-work for another reason"
-    );
-    assert!(
-        !evaluation.accepted(),
-        "a failed check is what makes this group needs-work"
-    );
-    PriorRescan::of(&evaluation, Landed::Reverted, &every_fixture_grade())
-}
-
-pub async fn rescan_from_a_clean_group_that_was_not_committed(
-    still_reported: &[&str],
-) -> PriorRescan {
-    let evaluation = cleanly_evaluated(still_reported).await;
-    assert!(evaluation.accepted());
-    PriorRescan::of(&evaluation, Landed::Reverted, &every_fixture_grade())
-}
-
-pub async fn rescan_from_a_committed_group_at_another_scanner_version() -> PriorRescan {
-    let evaluation = evaluate(
-        &contract_scanned_by("wizcli/0.0.0-the-version-the-input-was-scanned-at"),
-        &tree_rescanned_by(FIXTURE_SCANNER_VERSION),
-    )
-    .await
-    .expect("an evaluation that was not cancelled");
-
-    assert!(
-        matches!(evaluation.rescan(), RescanVerdict::Provisional(_)),
-        "this world's premise is an absence seen through a moved feed"
-    );
-    PriorRescan::of(&evaluation, Landed::Committed, &every_fixture_grade())
-}
-
-pub async fn rescan_from_a_committed_group_that_reported_on_one_array() -> PriorRescan {
-    let evaluation = evaluate(
-        &contract_for_a_partially_reported_rescan(),
-        &tree_whose_rescan_omits_the_os_array(),
-    )
-    .await
-    .expect("an evaluation that was not cancelled");
-
-    assert!(
-        matches!(evaluation.rescan(), RescanVerdict::NotObserved { .. }),
-        "this world's premise is an array the scanner never reported on"
-    );
-    PriorRescan::of(&evaluation, Landed::Committed, &every_fixture_grade())
-}
-
-fn contract_for_a_fold(still_reported: &[&str]) -> Contract {
-    and_the_input_also_reported(contract_for(&[EARLIER_GROUPS_ADVISORY]), still_reported)
-}
-
-async fn cleanly_evaluated(still_reported: &[&str]) -> Evaluation {
-    evaluate(
-        &contract_for_a_fold(still_reported),
-        &tree_whose_rescan_reports(still_reported),
-    )
-    .await
-    .expect("an evaluation that was not cancelled")
 }
 
 pub fn document_of(report: &Report) -> serde_json::Value {
@@ -1292,9 +1018,7 @@ pub struct MigrationWorld {
 
     pub report: Report,
 
-    pub group: Group,
-
-    pub resolved: String,
+    pub findings: Vec<ProjectedFinding>,
 
     workspaces: TempDir,
 }
@@ -1335,36 +1059,8 @@ pub async fn migration_world() -> MigrationWorld {
         "the call site a migration rewrites",
     ]);
 
-    let mut attributed = Vec::new();
-    let mut resolved = String::new();
-    for finding in &fixable {
-        let attribution = attribute(finding, &tree)
-            .await
-            .unwrap_or_else(|why| panic!("{} has no bump target: {why}", finding.package));
-        resolved.push_str(attribution.resolved());
-        attributed.push(Attributed::new(
-            finding.clone(),
-            attribution.target().clone(),
-        ));
-    }
-    assert!(
-        resolved.contains("go list -m"),
-        "attribution's own transcript has to name the mechanical rule, or \
-         `the prompt carries no mechanical rule` is a claim about a string \
-         nothing in this run ever held: {resolved}"
-    );
-
-    let mut groups = group(&attributed);
-    assert_eq!(
-        groups.len(),
-        1,
-        "a migration lane's group is one edit, and this document produced {} of them",
-        groups.len()
-    );
-
     MigrationWorld {
-        group: groups.remove(0),
-        resolved,
+        findings: fixable,
         tree,
         report,
         workspaces: TempDir::new().expect("a temporary directory for worktrees"),
@@ -1382,7 +1078,7 @@ impl MigrationWorld {
         let go = go_stub();
         let mut args = go.args.clone();
         args.extend(
-            ["list", "-m", "-json", self.target_module().as_str()]
+            ["list", "-m", "-json", self.checked_package().as_str()]
                 .iter()
                 .map(|arg| arg.to_string()),
         );
@@ -1403,11 +1099,8 @@ impl MigrationWorld {
         }
     }
 
-    pub fn target_module(&self) -> String {
-        match self.group.target() {
-            Target::Module(path) => path.clone(),
-            other => panic!("this world's group edits a module, and edits {other:?}"),
-        }
+    pub fn checked_package(&self) -> String {
+        self.findings[0].package.clone()
     }
 
     pub fn attempt(&self) -> AttemptId {
@@ -1438,7 +1131,7 @@ pub const LANDING_CREATED: &str = "vendor_notes.md";
 pub struct LandingWorld {
     pub tree: GoWorkspace,
 
-    pub group: Group,
+    pub findings: Vec<ProjectedFinding>,
 
     pub changed: Vec<WorkspacePath>,
 
@@ -1471,7 +1164,7 @@ pub fn landing_world(cves: &[&str]) -> LandingWorld {
     .expect("the fixture tree is writable");
     std::fs::write(
         tree.path().join(LANDING_UNRELATED),
-        format!("{LANDING_UNRELATED_BEFORE}and a line nobody asked the group about\n"),
+        format!("{LANDING_UNRELATED_BEFORE}and a line nobody asked the attempt about\n"),
     )
     .expect("the fixture tree is writable");
 
@@ -1486,7 +1179,7 @@ pub fn landing_world(cves: &[&str]) -> LandingWorld {
     );
 
     LandingWorld {
-        group: group_of(cves),
+        findings: findings_for(cves),
         changed: workspace_paths(&["go.mod", "go.sum"]),
         history_before: tree.all_commit_bodies(),
         tree,
@@ -1585,7 +1278,7 @@ pub const ONLY_ON_THE_REMOTE_BASE: &str = "moved_on.txt";
 pub struct RemoteWorld {
     pub tree: GoWorkspace,
 
-    pub group: Group,
+    pub findings: Vec<ProjectedFinding>,
 
     pub base_revision: String,
 
@@ -1719,7 +1412,7 @@ pub fn remote_world(remote: &Path, head_branch: Option<&str>, cves: &[&str]) -> 
             root,
             calls: Mutex::new(Vec::new()),
         },
-        group: group_of(cves),
+        findings: findings_for(cves),
         base_revision,
         pr_head,
         stale_main,

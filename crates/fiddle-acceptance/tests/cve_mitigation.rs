@@ -7,8 +7,8 @@ use std::process::{Command, Output};
 
 use support::{
     accepted, body_of, calls, check_stub_binary, completion, gh_stub_binary, git, git_says,
-    go_stub_binary, reports, toml_string, walkdir_files, wiz_stub_binary, Reply, Scenario,
-    StubGateway, CREDENTIAL_VARS,
+    reports, toml_string, walkdir_files, wiz_stub_binary, Reply, Scenario, StubGateway,
+    CREDENTIAL_VARS,
 };
 use tempfile::TempDir;
 
@@ -845,7 +845,6 @@ impl Sweep {
              image = \"{SWEEP_IMAGE}\"\n\
              {severities}\
              max_findings = {findings}\n\
-             go = {{ program = {go}, args = [] }}\n\
              \n\
              [workspace]\n\
              root = {workspaces}\n\
@@ -873,7 +872,6 @@ impl Sweep {
                 .unwrap_or_default(),
             gh = toml_string(gh_stub_binary()),
             wiz = toml_string(wiz_stub_binary()),
-            go = toml_string(go_stub_binary()),
             check = toml_string(check_stub_binary()),
             check_args = check_args
                 .iter()

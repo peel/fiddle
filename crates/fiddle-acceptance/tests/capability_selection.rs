@@ -655,7 +655,6 @@ fn mitigating_tables(scenario: &Scenario) -> String {
          \n\
          [orchestration.cve]\n\
          image = \"ghcr.io/acme/icecube:latest\"\n\
-         go = {{ program = \"go\", args = [] }}\n\
          \n\
          [workspace]\n\
          root = {root}\n\

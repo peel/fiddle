@@ -3,11 +3,10 @@ mod support;
 use fiddle_core::{AdvisoryId, ProjectedFinding, RunOutcome, Severity};
 use fiddle_runtime::agent::{FindingDisposition, RepairReport};
 use fiddle_runtime::capability::{ForbiddenShape, GroupStatus, MigrationAttempt, NeedsWork};
-use fiddle_runtime::cve::group::{select_target_version, GroupError};
 use fiddle_runtime::cve::project::{project, Projection};
 use fiddle_runtime::cve::verdict::{
-    disposition, report_of, Attempted, Blocked, Budget, InProgress, Judgement, Landed, Run,
-    Verdict, REPORT_FILE,
+    disposition, report_of, Attempted, Budget, InProgress, Judgement, Landed, Run, Verdict,
+    NO_PUBLISHED_FIX, REPORT_FILE,
 };
 use fiddle_runtime::evaluate::{evaluate, Evaluation, Reason};
 use fiddle_runtime::scanner::Scanner;
@@ -15,9 +14,9 @@ use fiddle_runtime::workspace::WorkspacePath;
 use std::collections::HashSet;
 use std::mem::discriminant;
 use support::cve::{
-    absent_scanner, available, contract_for, every_fixture_grade, exit, image, libraries,
-    os_packages, report_with, scan_of, scanner_with, stdout, tree_whose_rescan_reports,
-    unfixed_libraries, GO_VET,
+    absent_scanner, contract_for, every_fixture_grade, exit, image, libraries, os_packages,
+    report_with, scan_of, scanner_with, stdout, tree_whose_rescan_reports, unfixed_libraries,
+    GO_VET,
 };
 
 const FIXABLE_CVE: &str = "CVE-2026-3001";
@@ -197,20 +196,6 @@ async fn findings_beyond_budget(count: usize, bound: usize) -> Run {
     run
 }
 
-fn blocked_by_a_major_bump() -> Run {
-    let error = select_target_version(&["2.0.0"], &available(&["1.4.0", "2.0.0"]), "1.4.0")
-        .expect_err("a fix in the next major is a refusal");
-    assert!(
-        matches!(error, GroupError::MajorBump { .. }),
-        "this world's premise is Task 9's major-bump refusal, got {error:?}"
-    );
-
-    let mut run = one_fixable_finding();
-    let findings = fixable_findings(&run);
-    run.blocked = vec![Blocked { findings, error }];
-    run
-}
-
 fn one_fixable_finding() -> Run {
     let run = Run::scanned(projection_of(document_of(&report_with(
         libraries(&[FIXABLE_CVE]),
@@ -232,14 +217,6 @@ fn two_fixable_findings() -> Run {
         libraries(&[FIXABLE_CVE, SECOND_CVE]),
         os_packages(&[]),
     ))))
-}
-
-fn fixable_findings(run: &Run) -> Vec<ProjectedFinding> {
-    run.projection()
-        .expect("a scan that produced a projection")
-        .fixable()
-        .cloned()
-        .collect()
 }
 
 async fn clean_group(cve: &str) -> GroupStatus {
@@ -313,6 +290,17 @@ fn a_group_declining(cve: &str, status: GroupStatus) -> Attempted {
         note: "no fix I can apply to this project without reading a registry".to_string(),
     }];
     group
+}
+
+fn unfixed_finding_for(cve: &str) -> ProjectedFinding {
+    projection_of(document_of(&report_with(
+        unfixed_libraries(&[cve]),
+        os_packages(&[]),
+    )))
+    .upstream_blocked()
+    .next()
+    .cloned()
+    .expect("a fixture document with one finding the scanner published no fix for")
 }
 
 fn finding_for(cve: &str) -> ProjectedFinding {
@@ -716,11 +704,11 @@ async fn a_declined_finding_reads_differently_from_one_the_attempt_worked_on() {
 
 #[test]
 fn a_verdict_for_a_finding_no_attempt_saw_carries_five_fields_and_a_verbatim_rationale() {
-    let reached = disposition(&blocked_by_a_major_bump());
+    let reached = disposition(&verdicts_only());
     let verdict = &reached.verdicts()[0];
 
     assert_eq!(
-        verdict.rationale, "requires a major version bump from 1 to 2",
+        verdict.rationale, NO_PUBLISHED_FIX,
         "verbatim: this is what a person reads in the ticket"
     );
 
@@ -736,28 +724,16 @@ fn a_verdict_for_a_finding_no_attempt_saw_carries_five_fields_and_a_verbatim_rat
 
 #[test]
 fn each_of_the_five_fields_carries_what_it_names() {
-    let reached = disposition(&blocked_by_a_major_bump());
+    let reached = disposition(&verdicts_only());
     let json = serde_json::to_value(&reached.verdicts()[0]).expect("a verdict serializes");
 
-    let finding = finding_for(FIXABLE_CVE);
-    assert_eq!(json["cve"], serde_json::json!(FIXABLE_CVE));
+    let finding = unfixed_finding_for(BLOCKED_CVE);
+    assert_eq!(json["cve"], serde_json::json!(BLOCKED_CVE));
     assert_eq!(json["package"], serde_json::json!(finding.package));
-    assert_eq!(
-        json["rationale"],
-        serde_json::json!("requires a major version bump from 1 to 2")
-    );
+    assert_eq!(json["rationale"], serde_json::json!(NO_PUBLISHED_FIX));
     assert_eq!(json["severity"], serde_json::json!("HIGH"));
     assert_eq!(json["verdict"], serde_json::json!("upstream_blocked"));
     assert_eq!(finding.severity, Severity::High, "the fixture's own grade");
-}
-
-#[test]
-fn the_rationale_is_the_upstream_value_s_own_words_and_nothing_around_them() {
-    let error = select_target_version(&["2.0.0"], &available(&["1.4.0", "2.0.0"]), "1.4.0")
-        .expect_err("a fix in the next major is a refusal");
-    let reached = disposition(&blocked_by_a_major_bump());
-
-    assert_eq!(reached.verdicts()[0].rationale, error.to_string());
 }
 
 #[tokio::test]
@@ -813,7 +789,7 @@ fn the_empty_report_reaches_the_disk() {
 #[test]
 fn a_non_empty_report_reaches_the_disk_unchanged() {
     let scratch = tempfile::tempdir().expect("a temporary directory");
-    let reached = disposition(&blocked_by_a_major_bump());
+    let reached = disposition(&verdicts_only());
     let path = reached
         .write_report(scratch.path())
         .expect("the report is written");
@@ -827,12 +803,12 @@ fn a_non_empty_report_reaches_the_disk_unchanged() {
 
 #[test]
 fn a_written_verdict_deserializes_into_the_scanner_s_own_spellings() {
-    let reached = disposition(&blocked_by_a_major_bump());
+    let reached = disposition(&verdicts_only());
     let json = serde_json::to_value(&reached.verdicts()[0]).expect("a verdict serializes");
 
     assert_eq!(
         serde_json::from_value::<AdvisoryId>(json["cve"].clone()).expect("an advisory id"),
-        advisory(FIXABLE_CVE)
+        advisory(BLOCKED_CVE)
     );
     assert_eq!(
         serde_json::from_value::<Severity>(json["severity"].clone()).expect("a severity"),
@@ -950,13 +926,19 @@ async fn the_report_holds_only_what_this_run_could_not_patch() {
 }
 
 #[test]
-fn a_blocked_group_produces_one_verdict_for_every_advisory_in_it() {
-    let error = select_target_version(&["2.0.0"], &available(&["1.4.0", "2.0.0"]), "1.4.0")
-        .expect_err("a fix in the next major is a refusal");
-    let mut run = two_fixable_findings();
-    let findings = fixable_findings(&run);
-    assert_eq!(findings.len(), 2, "this world's premise is a group of two");
-    run.blocked = vec![Blocked { findings, error }];
+fn every_advisory_with_no_published_fix_gets_its_own_verdict() {
+    let run = Run::scanned(projection_of(document_of(&report_with(
+        unfixed_libraries(&[BLOCKED_CVE, SECOND_CVE]),
+        os_packages(&[]),
+    ))));
+    assert_eq!(
+        run.projection()
+            .expect("a scan that produced a projection")
+            .upstream_blocked()
+            .count(),
+        2,
+        "this world's premise is two findings the scanner published no fix for"
+    );
 
     let reached = disposition(&run);
     let reported: Vec<&AdvisoryId> = reached
@@ -967,6 +949,6 @@ fn a_blocked_group_produces_one_verdict_for_every_advisory_in_it() {
 
     assert_eq!(
         reported,
-        vec![&advisory(FIXABLE_CVE), &advisory(SECOND_CVE)]
+        vec![&advisory(BLOCKED_CVE), &advisory(SECOND_CVE)]
     );
 }

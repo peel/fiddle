@@ -769,11 +769,6 @@ fn build_capability<'a>(
                     severities: sweep.severities.clone(),
                     scratch: rescans,
                     rescan_credential: tenant()?,
-                    go: WorkspaceCommand {
-                        program: sweep.go.program.clone(),
-                        args: sweep.go.args.clone(),
-                        timeout: workspace.command_timeout.as_duration(),
-                    },
                     checks: workspace
                         .checks
                         .iter()
