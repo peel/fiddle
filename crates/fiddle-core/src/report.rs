@@ -243,7 +243,10 @@ mod tests {
         assert_eq!(value["attempts"][0]["cves"][0], "CVE-2026-0001");
         assert_eq!(value["attempts"][0]["status"], "needs_work");
         assert_eq!(value["attempts"][0]["claimed_complete"], true);
-        assert_eq!(value["attempts"][0]["dispositions"][0]["cve"], "CVE-2026-0001");
+        assert_eq!(
+            value["attempts"][0]["dispositions"][0]["cve"],
+            "CVE-2026-0001"
+        );
         assert_eq!(value["attempts"][0]["dispositions"][0]["attempted"], true);
         assert_eq!(
             value["attempts"][0]["dispositions"][0]["note"],
