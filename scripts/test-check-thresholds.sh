@@ -446,6 +446,52 @@ EXIT_CODE=0
 assert_exit "recorded dimension failure -> exit 1" 1 "$EXIT_CODE"
 assert_identical "output matches the recorded v-o1ly-it2 verdict byte for byte" "$TMPDIR/expected.json" "$OUTFILE"
 
+echo "Test 16: The criterion/met envelope every brief asked for is refused by name"
+cat > "$TMPDIR/scorecard.json" << 'EOF'
+{
+  "domains": {
+    "general": {
+      "dimensions": {
+        "correctness": {"score": 8, "min": 7, "comment": "x"}
+      }
+    }
+  }
+}
+EOF
+cat > "$TMPDIR/criteria.json" << 'EOF'
+[{"criterion": "the gate reports every binary", "met": true, "evidence": "e"}]
+EOF
+
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/scorecard.json" --criteria "$TMPDIR/criteria.json" > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+ERRTEXT=$(cat "$ERRFILE")
+assert_exit "criterion/met envelope -> exit 2" 2 "$EXIT_CODE"
+assert_json "verdict is not PASS" ".verdict" "null" "$OUTPUT"
+assert_contains "stderr names the wanted criteria shape" "[{id: string, pass: boolean}]" "$ERRTEXT"
+assert_contains "stderr names the wanted dimension shape" "{score: number, threshold: number}" "$ERRTEXT"
+assert_contains "stderr names the schema document" "skills/develop/scorecard-envelope.md" "$ERRTEXT"
+assert_contains "stderr names criterion as the wrong spelling of id" 'missing `id` (found `criterion`' "$ERRTEXT"
+assert_contains "stderr names met as the wrong spelling of pass" 'missing `pass` (found `met`' "$ERRTEXT"
+assert_contains "stderr names min as the wrong spelling of threshold" 'missing `threshold` (found `min`' "$ERRTEXT"
+assert_json "stdout carries the schema pointer" ".schema" "skills/develop/scorecard-envelope.md" "$OUTPUT"
+
+echo "Test 17: A field that is simply absent reports no spurious misspelling"
+cat > "$TMPDIR/criteria.json" << 'EOF'
+[{"id": "bare", "evidence": "e"}]
+EOF
+
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/scorecard.json" --criteria "$TMPDIR/criteria.json" > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
+ERRTEXT=$(cat "$ERRFILE")
+assert_exit "absent pass -> exit 2" 2 "$EXIT_CODE"
+assert_contains "stderr names the missing field" 'criterion bare: missing `pass`' "$ERRTEXT"
+if [[ "$ERRTEXT" == *'criterion bare: missing `pass` (found'* ]]; then
+  FAIL=$((FAIL+1)); echo "  FAIL: absent pass invents a misspelling"
+else
+  PASS=$((PASS+1)); echo "  PASS: absent pass reports no misspelling"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

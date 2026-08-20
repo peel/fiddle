@@ -117,17 +117,16 @@ Disagreements (spread >= 3 between providers on a dimension) land in `disagreeme
 
 Run both scripts on the merged scorecard and act on their verdicts:
 
+`--criteria` wants the reviewer's *graded* criteria, not the briefing file written for them: `criteria-holistic.json` carries `id` and `description`, and only the merged scorecard carries `pass`. The envelope both scripts read is `skills/develop/scorecard-envelope.md`.
+
 ```bash
-# --criteria wants the reviewer's *graded* criteria, not the briefing file that
-# was written for them: criteria-holistic.json carries id and description, and
-# only the merged scorecard carries pass.
 jq '.criteria' scorecard-holistic.json > crit-graded-holistic.json
 
 scripts/check-thresholds.sh --scorecard scorecard-holistic.json --criteria crit-graded-holistic.json
 scripts/check-convergence.sh --current {verdict_file} --history {holistic_history_file} --max-dispatches {max_iterations} --current-dispatches {holistic_dispatch_count}
 ```
 
-`check-thresholds.sh` exits 2 rather than grading when a dimension carries no `threshold` or a criterion no `pass` — the shape a mis-spelled envelope produces. Its stderr names each missing field and the dimension or criterion it belongs to; repair the scorecard or re-dispatch, and do not pass an exit-2 result to `check-convergence.sh`.
+`check-thresholds.sh` exits 2 rather than grading when a dimension carries no `threshold` or a criterion no `pass` — the shape a mis-spelled envelope produces, `criterion`/`met` being the one asked for most often. Its stderr names the schema it wanted along with each missing field and the dimension or criterion it belongs to; repair the scorecard against `skills/develop/scorecard-envelope.md` or re-dispatch, and do not pass an exit-2 result to `check-convergence.sh`.
 
 Holistic thresholds default to those in `skills/develop/holistic-dimensions.md`:
 - Integration: 7

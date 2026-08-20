@@ -71,6 +71,6 @@ This is the same contract the evaluation protocol in `## Instructions` states, a
 - **score** (required): Integer 1-10 for each dimension.
 - **threshold** (required): The minimum passing score for this dimension (copied from the evaluation template).
 - **comment** (required per scored dimension): Brief justification, non-empty. `evidence` is accepted as an alias; `scripts/validate-scorecard.sh` checks either.
-- **criteria** (required): Array of pass/fail criteria results. Each entry has `id`, `pass` (boolean), and non-empty `evidence`. The ids match the task's eval-block criteria exactly.
+- **criteria** (required): Array of pass/fail criteria results. Each entry has `id`, `pass` (boolean), and non-empty `evidence`. The ids match the task's eval-block criteria exactly. `criterion` and `met` are not accepted spellings; the graders refuse a card that uses them rather than translating it. Full field list: `skills/develop/scorecard-envelope.md`.
 - **guidance** (required): Actionable instructions for the implementer. Empty string if all dimensions pass.
 - **dispatch_count** (required): Always `1` (each scorecard represents one dispatch).

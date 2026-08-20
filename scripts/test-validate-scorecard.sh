@@ -243,6 +243,81 @@ run "a,b"
 assert_exit "malformed JSON → exit 2" 2 "$EXIT_CODE"
 assert_json_array "malformed error is a JSON array" "$ERR"
 
+echo "Test 9: criterion/met instead of id/pass → exit 2 naming both spellings"
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": { "general": { "dimensions": {} } },
+  "criteria": [
+    { "criterion": "a", "met": true, "evidence": "e1" }
+  ]
+}
+EOF
+run "a"
+assert_exit "criterion/met → exit 2" 2 "$EXIT_CODE"
+assert_json_array "error is a JSON array" "$ERR"
+assert_contains "names criterion as the wrong spelling of id" 'missing .id. (found .criterion.' "$ERR"
+assert_contains "names met as the wrong spelling of pass" 'missing .pass. (found .met.' "$ERR"
+assert_contains "points at the envelope document" "skills/develop/scorecard-envelope.md" "$ERR"
+
+echo "Test 10: a dimension with no threshold → exit 2, before the grader ever sees it"
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": {
+    "general": {
+      "dimensions": {
+        "correctness": { "score": 8, "evidence": "traced it" }
+      }
+    }
+  },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" }
+  ]
+}
+EOF
+run "a"
+assert_exit "missing threshold → exit 2" 2 "$EXIT_CODE"
+assert_contains "names the missing threshold" 'missing .threshold.' "$ERR"
+assert_contains "names the dimension" "domain general dimension correctness" "$ERR"
+
+echo "Test 11: a stringly-typed score → exit 2"
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": {
+    "general": {
+      "dimensions": {
+        "correctness": { "score": "8", "threshold": 7, "evidence": "traced it" }
+      }
+    }
+  },
+  "criteria": [
+    { "id": "a", "pass": "true", "evidence": "e1" }
+  ]
+}
+EOF
+run "a"
+assert_exit "stringly-typed score and pass → exit 2" 2 "$EXIT_CODE"
+assert_contains "says score must be a number" 'score. must be a number, got string' "$ERR"
+assert_contains "says pass must be a boolean" 'pass. must be a boolean, got string' "$ERR"
+
+echo "Test 12: criteria mis-nested under domains is reported, not a jq crash"
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": {
+    "criteria": [
+      { "id": "a", "pass": true, "evidence": "e1" }
+    ]
+  }
+}
+EOF
+run "a"
+assert_exit "mis-nested criteria → exit 2" 2 "$EXIT_CODE"
+assert_json_array "error is a JSON array, not a jq trace" "$ERR"
+assert_contains "names the mis-nested key as a domain" "domain criteria" "$ERR"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

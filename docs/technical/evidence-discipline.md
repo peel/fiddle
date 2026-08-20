@@ -14,6 +14,29 @@ discarded 34 of 42 result lines and reported `binaries=8 passed=0` — a catastr
 pipe. Write an `EXIT=` marker after every run and check for it before reading any figure. The lead read a
 partial log as final **six times** and was caught by a missing marker each time.
 
+**The same truncation reached the gate, and the gate's own summary hid it.** `scripts/gate.sh` ran
+`cargo test --workspace --all-features` with no `--no-fail-fast`, so cargo stopped at the first failing test
+binary and the `TOTALS` line printed where it stopped in the same shape as a complete run. Measured on a red
+head: `6 binaries`, against 53 for a complete run of this workspace — four milestones' acceptance lanes silently
+absent while the gate said only `GATE: FAIL`. The file's reconciliation block checked the table against the log
+and passed, because **a truncated log is internally consistent with itself**: internal consistency is not
+completeness, and only a denominator from outside the log can tell them apart.
+
+So `scripts/gate-report.sh` derives the expected lane set from `cargo test --workspace --all-features --no-run
+--message-format=json` plus the `doctest` targets in `cargo metadata`, and `TOTALS` reads `N of M binaries` —
+never a bare count. A shortfall prints `INCOMPLETE` and names every lane that produced no result. The
+denominator is derived rather than hardcoded because a constant would have to be edited by whoever adds the
+suite that changes it, and a stale constant fails as a gate reporting complete coverage of a set it no longer
+describes — the same mistake one layer down. `TOTALS` remains the single authoritative summary: any figure
+quoted from a gate run comes from that line, including its denominator.
+
+**`--no-fail-fast` does not disturb the table's positional attribution, and the report now checks rather than
+assumes it.** The awk matches each `test result:` line to the most recent `Running` header, which is an
+assumption about cargo's output ordering. Verified against three deliberate failures placed early, middle and
+late in the run order: all three were attributed to their own lanes at `53 of 53`. A result line arriving with
+no header since the last one is now counted as an orphan and reported as `REPORT UNRELIABLE`, so a future
+change in cargo's interleaving surfaces as a refusal instead of a mislabelled row.
+
 **The marker goes into the log, not into the console.** Of five inversion drivers in M3, two echoed the exit
 code to stdout instead, and **158 of 194 inversion-shaped logs carry no `EXIT=` marker** as a result. That
 figure was first recorded here as "79 of 132" — wrong on both numbers, because the count globbed `inv-*.log`

@@ -2084,3 +2084,28 @@ Three things follow, and the first is the only one that is free:
 
 Origin: orchestration (epic fiddle-v4ka, M4c — found by `fiddle-5swi` measuring its base; verified by the lead at 22/36 on the pushed head)
 Tags: #process #evaluation #orchestration
+
+### 2026-08-20 — The scorecard envelope is written down once, and two things can still drift from it
+
+Closes the `--criteria` half of *`check-thresholds.sh` returns PASS for a scorecard whose dimensions carry no threshold* above, and the finding behind bean `fiddle-njrc`: every evaluator brief written in M4c asked for `criterion`/`met` while the checker required `id`/`pass`, so `check-thresholds.sh` exited 2 and the lead hand-translated fields before grading. Hand-translating evidence until the grader accepts it is the position a grader exists to prevent.
+
+`skills/develop/scorecard-envelope.md` now states the envelope once and both checkers name it on exit 2. `validate-scorecard.sh` checks what `check-thresholds.sh` will grade on — numeric `score` and `threshold`, string `id`, boolean `pass` — so the pre-flight and the grader want the same card, and `criterion`, `met`, `min` and their siblings are named as wrong spellings rather than normalised (normalising them silently is hand-translation one layer down). Its former jq crash on a `criteria` array mis-nested under `.domains` is now a reported problem, closing one of the two prerequisites named in *Envelope normalisation does not belong in `merge-scorecards.sh`* above.
+
+Two gaps stay open, both deliberate and neither a false pass:
+
+1. **`merge-scorecards.sh` sits between the two enforcement points and checks neither.** A card that skips `validate-scorecard.sh` still reaches `check-thresholds.sh`, which refuses it — so the cost is a late refusal, not a bad verdict. Adding a third checker was out of the bean's scope and would touch the merge's byte-for-byte recorded behaviour.
+2. **The assembled evaluator brief restates the schema instead of citing it.** `assemble-evaluator-context.sh` inlines `skills/evaluate/SKILL.md`, whose field list is a second copy of the envelope — kept because a dispatched external provider cannot be relied on to read a repo file. Two copies is one fewer than the three that produced this finding, and it is still two: the honest fix is for the assembler to append the envelope document and for `evaluate/SKILL.md` to drop its copy.
+
+Origin: implementation (bean `fiddle-njrc`, lane `lane/tooling` — measured by running the recorded `criterion`/`met` card through both scripts)
+Tags: #evaluation #tooling
+
+### 2026-08-20 — The gate's denominator is derived per run, and one truncation shape is still invisible
+
+Closes bean `fiddle-dn0j`. `scripts/gate.sh` ran `cargo test` with no `--no-fail-fast`, so its `TOTALS` line printed where cargo gave up in the shape of a complete run: measured `6 binaries` on a red head against 53 for a complete run. The file's reconciliation block passed throughout, because a truncated log is internally consistent with itself.
+
+The log analysis is now `scripts/gate-report.sh`, testable against fixture logs rather than only against whatever the tree happens to be, with `scripts/test-gate-report.sh` holding the truncated, orphaned, un-enumerated and crashed-lane shapes. `TOTALS` reads `N of M binaries`, `M` derived per run from `cargo test --no-run --message-format=json` plus the `doctest` targets in `cargo metadata`. Proved on a deliberately red tree: the old command line reported **2 of 53** result lines and the new one **53 of 53** with the failure named, and three failures placed early, middle and late in the run order were each attributed to their own lane, so `--no-fail-fast` does not disturb the awk's positional attribution.
+
+What remains invisible: a lane whose **test count** shrinks. Coverage is checked at the granularity of binaries, so a suite that silently stops registering half its tests still reports as one reached lane. `1005 passed` is the only signal there, and nothing compares it to a previous run — which is the same shape as this finding, one level down, and wants a recorded per-lane baseline rather than a derived denominator.
+
+Origin: implementation (bean `fiddle-dn0j`, lane `lane/tooling` — measured on a red tree at both command lines)
+Tags: #tooling #evidence
