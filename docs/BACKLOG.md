@@ -2109,3 +2109,24 @@ What remains invisible: a lane whose **test count** shrinks. Coverage is checked
 
 Origin: implementation (bean `fiddle-dn0j`, lane `lane/tooling` — measured on a red tree at both command lines)
 Tags: #tooling #evidence
+
+### 2026-08-20 — Four defects in one milestone that returned a plausible number instead of an error
+
+M4c surfaced the same failure shape four times in different tools, and it is worth naming as a class because each instance was found by accident rather than by looking:
+
+1. **`gate.sh` without `--no-fail-fast`** stopped at the first failing binary and printed the partial count in the same shape as a complete run — `6 binaries` where complete is 53. Four milestones' acceptance lanes had not run; the line read as a denominator. (`fiddle-dn0j`, fixed: `N of M`.)
+2. **`test-eval-log.sh` resolving `.beans` by walking up from cwd** aborts under `set -euo pipefail` with **no output** when run from a worktree outside the repo. `GATE: FAIL` on a green tree, nothing printed. (`fiddle-92v5`.)
+3. **`jq`'s `index(.id)` inside `select`** resolves `.` against the array being searched rather than the item, silently returns null, and selects everything. Found while writing a comparison that would otherwise have shipped passing every case. (Fixed in `fiddle-cehd` with an explicit `. as $binding`.)
+4. **`check-convergence.sh` comparing evaluator scores across an unchanged tree** returned `PASS_REGRESSED` three times on byte-identical code, and the cheapest response — re-dispatch until two evaluators agree — is score-shopping indistinguishable in the log from convergence. (`fiddle-cehd`, fixed: same-tree pairs compare findings, and a contradiction is terminal `CONTESTED`.)
+
+**The common shape: each returned something that looked like an answer.** A count, a FAIL, a filtered list, a verdict. None returned an error, so none prompted a second look, and in three of the four a human acted on the wrong number before noticing. The lane that found #2 put it best on the general case: *a gate that degrades quietly under contention is worse than one that refuses, because the quiet version gets believed.*
+
+What follows for tooling in this repo, beyond the four fixes:
+
+- **A tool that cannot answer must say so, not answer partially.** Prefer exit 2 with a reason over a number computed from incomplete input. `check-thresholds.sh` already does this — it refused an ungradeable scorecard rather than defaulting — and that refusal is why one class of false PASS was caught.
+- **Print the denominator, always.** `957 passed` is not evidence; `957 passed, 52 of 52 binaries` is.
+- **Assert preconditions up front.** #2 would have been a one-line check on `.beans` reachability.
+- **A comparison over a collection deserves a test that would fail if it matched everything.** #3 passed every case it was given while being wrong.
+
+Origin: M4c (epic fiddle-v4ka) — one per tool, none found by looking for it
+Tags: #tooling #evidence #process
