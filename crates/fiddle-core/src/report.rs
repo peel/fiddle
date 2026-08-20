@@ -66,6 +66,14 @@ pub struct AttemptOutcome {
     pub cves: Vec<crate::finding::AdvisoryId>,
     pub status: String,
     pub claimed_complete: bool,
+    pub dispositions: Vec<DisposedFinding>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct DisposedFinding {
+    pub cve: crate::finding::AdvisoryId,
+    pub attempted: bool,
+    pub note: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -216,6 +224,11 @@ mod tests {
                 cves: vec![crate::finding::AdvisoryId::parse("CVE-2026-0001").unwrap()],
                 status: "needs_work".to_string(),
                 claimed_complete: true,
+                dispositions: vec![DisposedFinding {
+                    cve: crate::finding::AdvisoryId::parse("CVE-2026-0001").unwrap(),
+                    attempted: true,
+                    note: "the bump moved the call sites it named".to_string(),
+                }],
             }],
             branch: None,
             pull_request: Some(7),
@@ -230,6 +243,12 @@ mod tests {
         assert_eq!(value["attempts"][0]["cves"][0], "CVE-2026-0001");
         assert_eq!(value["attempts"][0]["status"], "needs_work");
         assert_eq!(value["attempts"][0]["claimed_complete"], true);
+        assert_eq!(value["attempts"][0]["dispositions"][0]["cve"], "CVE-2026-0001");
+        assert_eq!(value["attempts"][0]["dispositions"][0]["attempted"], true);
+        assert_eq!(
+            value["attempts"][0]["dispositions"][0]["note"],
+            "the bump moved the call sites it named"
+        );
         assert!(value["branch"].is_null());
         assert_eq!(value["pull_request"], 7);
     }

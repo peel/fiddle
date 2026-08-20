@@ -27,6 +27,8 @@ const SECOND_CVE: &str = "CVE-2026-3003";
 
 const DECLINED: &str = "no fix I can apply to this project without reading a registry";
 
+const SETTLED: &str = "the requirement already resolves to the fixed release";
+
 fn still_reported(cve: &str) -> String {
     format!("still reported after the bump: {cve}")
 }
@@ -102,6 +104,31 @@ fn fixed_in_the_tree() -> Run {
     let mut run = one_fixable_finding();
     run.already_fixed = vec![advisory(FIXABLE_CVE)];
     run
+}
+
+async fn the_attempt_found_the_tree_already_at_the_fix() -> Run {
+    let mut run = one_fixable_finding();
+    run.already_fixed = vec![advisory(FIXABLE_CVE)];
+    run.attempted = vec![a_settled_group(FIXABLE_CVE).await];
+    run
+}
+
+async fn a_settled_group(cve: &str) -> Attempted {
+    let mut group = attempted_group(cve, clean_group(cve).await, true);
+    group.attempt.report.changed_files = Vec::new();
+    group.attempt.report.summary = format!("{cve} needed nothing");
+    group.attempt.report.findings = vec![FindingDisposition {
+        cve: cve.to_string(),
+        attempted: true,
+        note: SETTLED.to_string(),
+    }];
+    group.attempt.changed = Vec::new();
+    assert!(
+        group.settled(),
+        "this group's premise is a clean evaluation over a tree the attempt did \
+         not change"
+    );
+    group
 }
 
 async fn one_group_clean() -> Run {
@@ -591,6 +618,52 @@ fn a_fix_awaiting_review_and_a_fix_already_in_the_tree_are_not_one_row() {
         landed.pull_request(),
         None,
         "there is no pull request to point a reader at"
+    );
+}
+
+#[tokio::test]
+async fn a_settled_attempt_is_counted_and_still_reaches_already_fixed() {
+    let reached = disposition(&the_attempt_found_the_tree_already_at_the_fix().await);
+
+    assert_eq!(
+        reached.reason(),
+        &Row::AlreadyFixed,
+        "an attempt that changed nothing is not a pull request and is not a run \
+         needing direction"
+    );
+    assert_eq!(reached.already_fixed(), &[advisory(FIXABLE_CVE)]);
+    assert_eq!(
+        reached.attempts().len(),
+        1,
+        "the run consumed a completion and ran the checks, so the count of \
+         attempts is one"
+    );
+    assert!(
+        reached.attempts()[0].settled,
+        "and the record says the tree needed nothing"
+    );
+    assert!(
+        reached.verdicts().is_empty(),
+        "nothing is unfixed, so nothing is reported unfixed"
+    );
+    assert_eq!(
+        reached.branch(),
+        None,
+        "a settled attempt cuts no branch, so the row names none"
+    );
+    assert_eq!(reached.pull_request(), None, "and opens no pull request");
+
+    let published = reached.published();
+    assert_eq!(published.attempts[0].status, "settled");
+    assert_eq!(
+        published.attempts[0].dispositions,
+        vec![fiddle_core::DisposedFinding {
+            cve: advisory(FIXABLE_CVE),
+            attempted: true,
+            note: SETTLED.to_string(),
+        }],
+        "the note the agent wrote reaches the published surface on this path \
+         too, and it is the only surface that carries it"
     );
 }
 

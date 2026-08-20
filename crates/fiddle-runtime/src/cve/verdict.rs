@@ -93,6 +93,16 @@ pub struct Attempted {
     pub attempt: MigrationAttempt,
 }
 
+impl Attempted {
+    pub fn settled(&self) -> bool {
+        self.status == GroupStatus::Clean && self.attempt.changed.is_empty()
+    }
+
+    pub fn committed(&self) -> bool {
+        self.status == GroupStatus::Clean && !self.attempt.changed.is_empty()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Landed {
     pub branch: String,
@@ -180,6 +190,10 @@ pub struct AttemptRecord {
     pub status: GroupStatus,
 
     pub claimed_complete: bool,
+
+    pub settled: bool,
+
+    pub dispositions: Vec<fiddle_core::DisposedFinding>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -249,12 +263,14 @@ impl Disposition {
                 .iter()
                 .map(|attempt| fiddle_core::AttemptOutcome {
                     cves: attempt.cves.clone(),
-                    status: match attempt.status {
-                        GroupStatus::Clean => "clean",
-                        GroupStatus::NeedsWork { .. } => "needs_work",
+                    status: match (attempt.settled, &attempt.status) {
+                        (true, _) => "settled",
+                        (false, GroupStatus::Clean) => "clean",
+                        (false, GroupStatus::NeedsWork { .. }) => "needs_work",
                     }
                     .to_string(),
                     claimed_complete: attempt.claimed_complete,
+                    dispositions: attempt.dispositions.clone(),
                 })
                 .collect(),
             branch: self.branch.clone(),
@@ -302,11 +318,7 @@ pub fn disposition(run: &Run) -> Disposition {
         pull_request: None,
     };
 
-    if run
-        .attempted
-        .iter()
-        .any(|group| group.status == GroupStatus::Clean)
-    {
+    if run.attempted.iter().any(Attempted::committed) {
         return Disposition {
             branch: run.landed.as_ref().map(|it| it.branch.clone()),
             pull_request: run.landed.as_ref().map(|it| it.pull_request),
@@ -314,7 +326,7 @@ pub fn disposition(run: &Run) -> Disposition {
         };
     }
 
-    if !run.attempted.is_empty() {
+    if run.attempted.iter().any(|group| !group.settled()) {
         return landed(Row::UnsafeWithoutDirection);
     }
 
@@ -392,7 +404,25 @@ fn attempts_of(run: &Run) -> Vec<AttemptRecord> {
                     .collect(),
                 status: group.status.clone(),
                 claimed_complete: report.claimed_complete,
+                settled: group.settled(),
+                dispositions: dispositions_of(group),
             }
+        })
+        .collect()
+}
+
+fn dispositions_of(group: &Attempted) -> Vec<fiddle_core::DisposedFinding> {
+    group
+        .findings
+        .iter()
+        .filter_map(|finding| {
+            disposed_of(&group.attempt.report.findings, &finding.cve).map(|disposed| {
+                fiddle_core::DisposedFinding {
+                    cve: finding.cve.clone(),
+                    attempted: disposed.attempted,
+                    note: disposed.note,
+                }
+            })
         })
         .collect()
 }
