@@ -19,6 +19,81 @@ const FIXED_VERSION: &str = "v0.35.0";
 const VULNERABLE: &str = "cve-vulnerable";
 const FIXED: &str = "cve-fixed";
 
+const DISTRIBUTION: &str = "urllib3";
+const PY_VULNERABLE_VERSION: &str = "2.0.4";
+const PY_FIXED_VERSION: &str = "2.2.2";
+
+const VULNERABLE_PY: &str = "cve-vulnerable-py";
+const FIXED_PY: &str = "cve-fixed-py";
+
+struct Ecosystem {
+    vulnerable: &'static str,
+    fixed: &'static str,
+    scan: &'static str,
+    package: &'static str,
+    vulnerable_version: &'static str,
+    fixed_version: &'static str,
+    declares: &'static str,
+    separator: &'static str,
+    pinned_in: &'static [&'static str],
+}
+
+const GO: Ecosystem = Ecosystem {
+    vulnerable: VULNERABLE,
+    fixed: FIXED,
+    scan: SCAN_OK,
+    package: MODULE,
+    vulnerable_version: VULNERABLE_VERSION,
+    fixed_version: FIXED_VERSION,
+    declares: "require ",
+    separator: " ",
+    pinned_in: &["go.mod", "go.sum"],
+};
+
+const PYTHON: Ecosystem = Ecosystem {
+    vulnerable: VULNERABLE_PY,
+    fixed: FIXED_PY,
+    scan: SCAN_PYTHON,
+    package: DISTRIBUTION,
+    vulnerable_version: PY_VULNERABLE_VERSION,
+    fixed_version: PY_FIXED_VERSION,
+    declares: "",
+    separator: "==",
+    pinned_in: &["requirements.txt"],
+};
+
+impl Ecosystem {
+    fn manifest(&self) -> &'static str {
+        self.pinned_in[0]
+    }
+
+    fn pin(&self, version: &str) -> String {
+        format!(
+            "{}{}{}{version}",
+            self.declares, self.package, self.separator
+        )
+    }
+
+    fn pinned_files(&self) -> Vec<String> {
+        self.pinned_in.iter().map(|it| (*it).to_string()).collect()
+    }
+
+    fn a_repair_moving_the_pin(&self) -> Vec<Reply> {
+        let edits: Vec<(&str, String)> = self
+            .pinned_in
+            .iter()
+            .map(|path| {
+                (
+                    *path,
+                    read_fixture_file(self.vulnerable, path)
+                        .replace(self.vulnerable_version, self.fixed_version),
+                )
+            })
+            .collect();
+        an_attempt(&edits, &[LIBRARY_CVE], &[])
+    }
+}
+
 const REGISTRY: &str = "cve-registry";
 
 fn repo_root() -> PathBuf {
@@ -348,16 +423,28 @@ fn run(binary: &Path) -> String {
     String::from_utf8(out.stdout).expect("the fixture prints UTF-8")
 }
 
-#[test]
-fn the_two_fixtures_differ_only_in_the_dependency_under_remediation() {
-    let (a, b) = (fixture(VULNERABLE), fixture(FIXED));
-    let changed = changed_paths(&tracked_files(&a), &tracked_files(&b));
+fn the_pair_differs_only_in_the_pin(ecosystem: &Ecosystem) {
+    let changed = changed_paths(
+        &tracked_files(&fixture(ecosystem.vulnerable)),
+        &tracked_files(&fixture(ecosystem.fixed)),
+    );
     assert_eq!(
         changed,
-        ["go.mod", "go.sum"],
+        ecosystem.pinned_files(),
         "a fixture pair that differs elsewhere cannot isolate the mitigation"
     );
+}
 
+#[test]
+fn the_two_python_fixtures_differ_only_in_the_dependency_under_remediation() {
+    the_pair_differs_only_in_the_pin(&PYTHON);
+}
+
+#[test]
+fn the_two_fixtures_differ_only_in_the_dependency_under_remediation() {
+    the_pair_differs_only_in_the_pin(&GO);
+
+    let (a, b) = (fixture(VULNERABLE), fixture(FIXED));
     let registry = Registry::serve();
     if let Err(why) = build(&registry, &a, "vulnerable") {
         panic!("both must build, or a failing check proves nothing about the fix: {why}");
@@ -367,10 +454,9 @@ fn the_two_fixtures_differ_only_in_the_dependency_under_remediation() {
     }
 }
 
-#[test]
-fn the_only_difference_inside_go_mod_is_the_version_of_the_module_under_remediation() {
-    let vulnerable = read_fixture_file(VULNERABLE, "go.mod");
-    let fixed = read_fixture_file(FIXED, "go.mod");
+fn the_only_line_that_differs_inside_the_manifest_is_the_pin(ecosystem: &Ecosystem) {
+    let vulnerable = read_fixture_file(ecosystem.vulnerable, ecosystem.manifest());
+    let fixed = read_fixture_file(ecosystem.fixed, ecosystem.manifest());
 
     let differing: Vec<(&str, &str)> = vulnerable
         .lines()
@@ -386,11 +472,21 @@ fn the_only_difference_inside_go_mod_is_the_version_of_the_module_under_remediat
     assert_eq!(
         differing,
         [(
-            format!("require {MODULE} {VULNERABLE_VERSION}").as_str(),
-            format!("require {MODULE} {FIXED_VERSION}").as_str()
+            ecosystem.pin(ecosystem.vulnerable_version).as_str(),
+            ecosystem.pin(ecosystem.fixed_version).as_str()
         )],
         "exactly one line differs, and it is the requirement under remediation"
     );
+}
+
+#[test]
+fn the_only_difference_inside_go_mod_is_the_version_of_the_module_under_remediation() {
+    the_only_line_that_differs_inside_the_manifest_is_the_pin(&GO);
+}
+
+#[test]
+fn the_only_difference_inside_requirements_is_the_version_of_the_distribution_under_remediation() {
+    the_only_line_that_differs_inside_the_manifest_is_the_pin(&PYTHON);
 }
 
 #[test]
@@ -453,29 +549,55 @@ fn a_build_leaves_the_fixture_exactly_as_it_found_it() {
     );
 }
 
-#[test]
-fn the_pair_is_pinned_to_the_module_and_versions_the_shared_scanner_document_names() {
+fn the_pair_is_pinned_to_what_the_shared_scanner_document_names(ecosystem: &Ecosystem) {
     let table = std::fs::read_to_string(
         repo_root().join("crates/fiddle-runtime/tests/support/document.rs"),
     )
     .expect("the shared scanner documents are where this suite says they are");
-    let entry = format!(r#"("{MODULE}", "{VULNERABLE_VERSION}", "{FIXED_VERSION}")"#);
+    let entry = format!(
+        r#"("{}", "{}", "{}")"#,
+        ecosystem.package, ecosystem.vulnerable_version, ecosystem.fixed_version
+    );
     assert!(
         table.contains(&entry),
-        "the fixture pair moves {MODULE} from {VULNERABLE_VERSION} to \
-         {FIXED_VERSION}, and document.rs's library table no longer has the row \
-         {entry} that says so: a scanner document built from that table would \
-         report a finding this fixture pair is not about"
+        "the fixture pair moves {} from {} to {}, and document.rs no longer has \
+         the row {entry} that says so: a scanner document built from that table \
+         would report a finding this fixture pair is not about",
+        ecosystem.package,
+        ecosystem.vulnerable_version,
+        ecosystem.fixed_version
     );
 
     assert!(
-        read_fixture_file(VULNERABLE, "go.mod")
-            .contains(&format!("require {MODULE} {VULNERABLE_VERSION}")),
-        "the vulnerable fixture must require the version the document reports"
+        read_fixture_file(ecosystem.vulnerable, ecosystem.manifest())
+            .contains(&ecosystem.pin(ecosystem.vulnerable_version)),
+        "the vulnerable fixture must pin the version the document reports"
     );
     assert!(
-        read_fixture_file(FIXED, "go.mod").contains(&format!("require {MODULE} {FIXED_VERSION}")),
-        "the fixed fixture must require the version the document names as fixed"
+        read_fixture_file(ecosystem.fixed, ecosystem.manifest())
+            .contains(&ecosystem.pin(ecosystem.fixed_version)),
+        "the fixed fixture must pin the version the document names as fixed"
+    );
+}
+
+#[test]
+fn the_pair_is_pinned_to_the_module_and_versions_the_shared_scanner_document_names() {
+    the_pair_is_pinned_to_what_the_shared_scanner_document_names(&GO);
+}
+
+#[test]
+fn the_python_pair_is_pinned_to_the_distribution_and_versions_the_document_names() {
+    the_pair_is_pinned_to_what_the_shared_scanner_document_names(&PYTHON);
+
+    let arms = std::fs::read_to_string(
+        repo_root().join("crates/fiddle-runtime/tests/wiz_stub/wiz_stub.rs"),
+    )
+    .expect("the scripted scanner is where this suite says it is");
+    assert!(
+        arms.contains(&format!("\"{SCAN_PYTHON}\" =>"))
+            && arms.contains("python_libraries(&DEFAULT_LIBRARY_CVES)"),
+        "the arm this pair scans under has to report the Python table, or the \
+         Python lane is briefed about a module it does not pin: {arms}"
     );
 }
 
@@ -532,7 +654,7 @@ fn the_two_library_fixture_is_pinned_to_what_its_world_publishes() {
 
 #[test]
 fn each_dockerfile_copies_only_files_its_fixture_has() {
-    for name in [VULNERABLE, FIXED] {
+    for name in [VULNERABLE, FIXED, VULNERABLE_PY, FIXED_PY] {
         let dockerfile = read_fixture_file(name, "Dockerfile");
         let mut copied = 0;
         for line in dockerfile.lines() {
@@ -683,6 +805,8 @@ const SCAN_OK: &str = "ok";
 const SCAN_CLEAN: &str = "clean-image";
 
 const SCAN_LIBRARY_ONLY: &str = "library-only";
+
+const SCAN_PYTHON: &str = "python-library-advisory";
 
 const SCAN_ONLY_ADVISORY_HAS_NO_PUBLISHED_FIX: &str = "no-published-fix";
 
@@ -1266,9 +1390,13 @@ fn pushed_commits(sweep: &Sweep, branch: &str) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-#[test]
-fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
-    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
+fn one_labelled_pull_request_on_one_branch_for(ecosystem: &Ecosystem) {
+    let sweep = Sweep::scanning(
+        ecosystem.vulnerable,
+        ecosystem.scan,
+        1,
+        ecosystem.a_repair_moving_the_pin(),
+    );
 
     let run = sweep.run();
     let payload = sweep.payload(&run);
@@ -1279,6 +1407,20 @@ fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
         String::from_utf8_lossy(&run.stderr)
     );
     assert_eq!(payload["outcome"], "completed", "{payload}");
+
+    let briefed = sweep.gateway.request_bodies().join("\n");
+    for shown in [
+        ecosystem.package,
+        ecosystem.vulnerable_version,
+        ecosystem.fixed_version,
+    ] {
+        assert!(
+            briefed.contains(shown),
+            "the run must have scanned the advisory this pair is about and shown \
+             it to the attempt, and {shown} is missing from what it sent: \
+             {briefed}"
+        );
+    }
 
     let pulls = sweep.pull_requests();
     assert_eq!(pulls.len(), 1, "exactly one pull request: {pulls:?}");
@@ -1294,13 +1436,27 @@ fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
     let branch = the_one_new_branch(&sweep);
     assert_eq!(pull["head"]["ref"], branch, "{pull}");
 
-    let landed = pushed_file(&sweep, &branch, "go.mod");
+    let commits = pushed_commits(&sweep, &branch);
+    assert_eq!(
+        commits.len(),
+        1,
+        "one bounded attempt is one commit: {commits:?}"
+    );
+    assert_eq!(
+        commits[0].1,
+        ecosystem.pinned_files(),
+        "the commit carries exactly the files the attempt declared, and a core \
+         that assumed some other ecosystem's file set would carry others: \
+         {commits:?}"
+    );
+
+    let landed = pushed_file(&sweep, &branch, ecosystem.manifest());
     assert!(
-        landed.contains(&format!("{MODULE} {FIXED_VERSION}")),
-        "the branch must carry the requirement at the fixed release: {landed}"
+        landed.contains(&ecosystem.pin(ecosystem.fixed_version)),
+        "the branch must carry the pin at the fixed release: {landed}"
     );
     assert!(
-        !landed.contains(VULNERABLE_VERSION),
+        !landed.contains(ecosystem.vulnerable_version),
         "and must not still carry the vulnerable one: {landed}"
     );
 
@@ -1359,6 +1515,16 @@ fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
         "and the advisory over the bound is on the record with the number that \
          put it there, rather than silently missing: {reached}"
     );
+}
+
+#[test]
+fn a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch() {
+    one_labelled_pull_request_on_one_branch_for(&GO);
+}
+
+#[test]
+fn a_vulnerable_python_fixture_yields_exactly_one_pull_request_and_one_branch() {
+    one_labelled_pull_request_on_one_branch_for(&PYTHON);
 }
 
 #[test]

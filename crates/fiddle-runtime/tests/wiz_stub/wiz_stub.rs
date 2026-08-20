@@ -3,8 +3,8 @@
 mod document;
 
 use document::{
-    libraries, libraries_carrying, libraries_graded, os_packages, report_with, unfixed_libraries,
-    DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, SECOND_LIBRARY_CVE, SECOND_OS_CVE,
+    libraries, libraries_carrying, libraries_graded, os_packages, python_libraries, report_with,
+    unfixed_libraries, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, SECOND_LIBRARY_CVE, SECOND_OS_CVE,
 };
 use std::path::{Path, PathBuf};
 
@@ -54,6 +54,18 @@ fn main() {
                 report_with(libraries(&DEFAULT_LIBRARY_CVES), os_packages(&[]))
                     .raw()
                     .to_string(),
+            );
+        }
+        "python-library-advisory" => {
+            banner(&args);
+            write(
+                &report,
+                report_with(
+                    python_libraries(&DEFAULT_LIBRARY_CVES),
+                    os_packages(&DEFAULT_OS_CVES),
+                )
+                .raw()
+                .to_string(),
             );
         }
         "no-published-fix" => {

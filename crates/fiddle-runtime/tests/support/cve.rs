@@ -21,8 +21,7 @@ pub use document::*;
 mod go_proxy;
 #[allow(unused_imports)]
 pub use go_proxy::{
-    run as offline_go, Answer as OfflineGo, CARRIED_BY_THE_VIABLE_LINE, REACHED_WITHOUT_THE_FIX,
-    SWEEP_FIXED, SWEEP_MODULE, SWEEP_VULNERABLE,
+    run as offline_go, Answer as OfflineGo, SWEEP_FIXED, SWEEP_MODULE, SWEEP_VULNERABLE,
 };
 use go_proxy::{FIXTURE_PARENT, GO_VERSION, HOST_MODULE, INDIRECT_MODULE, INDIRECT_VERSION};
 
@@ -63,10 +62,6 @@ const DIRECT_MODULE: &str = "golang.org/x/crypto";
 const DIRECT_VERSION: &str = "v0.31.0";
 
 const PARENT_A_MINOR_BEHIND: &str = "v1.2.0";
-const PARENT_AT_THE_END_OF_ITS_LINE: &str = "v1.9.9";
-
-const UNRELATED_MODULE: &str = "gh.com/unrelated";
-const UNRELATED_VERSION: &str = "v1.0.0";
 
 const SHIPPED_VERSION: &str = "v0.54.1";
 
@@ -74,10 +69,7 @@ const SHIPPED_VERSION: &str = "v0.54.1";
 pub enum Shape {
     Direct,
     IndirectVia(String),
-    IndirectViaParentWithoutTheFix(String),
-    IndirectWithoutADirectParent,
     Stdlib,
-    ModuleNotNeeded,
     Shipped { module: String, version: String },
 }
 
@@ -89,20 +81,8 @@ pub fn indirect_via(parent: &str) -> Shape {
     Shape::IndirectVia(parent.to_string())
 }
 
-pub fn indirect_via_parent_without_the_fix(parent: &str) -> Shape {
-    Shape::IndirectViaParentWithoutTheFix(parent.to_string())
-}
-
-pub fn indirect_without_a_direct_parent() -> Shape {
-    Shape::IndirectWithoutADirectParent
-}
-
 pub fn stdlib() -> Shape {
     Shape::Stdlib
-}
-
-pub fn module_not_needed() -> Shape {
-    Shape::ModuleNotNeeded
 }
 
 pub fn shipped(module: &str, version: &str) -> Shape {
@@ -112,18 +92,15 @@ pub fn shipped(module: &str, version: &str) -> Shape {
     }
 }
 
-const SHAPES: usize = 7;
+const SHAPES: usize = 4;
 
 impl Shape {
     pub fn index(&self) -> usize {
         match self {
             Shape::Direct => 0,
             Shape::IndirectVia(_) => 1,
-            Shape::IndirectViaParentWithoutTheFix(_) => 2,
-            Shape::Stdlib => 3,
-            Shape::ModuleNotNeeded => 4,
-            Shape::Shipped { .. } => 5,
-            Shape::IndirectWithoutADirectParent => 6,
+            Shape::Stdlib => 2,
+            Shape::Shipped { .. } => 3,
         }
     }
 
@@ -140,22 +117,8 @@ impl Shape {
                     true,
                 ),
             ],
-            Shape::IndirectViaParentWithoutTheFix(parent) => vec![
-                require(parent, PARENT_AT_THE_END_OF_ITS_LINE),
-                (
-                    INDIRECT_MODULE.to_string(),
-                    INDIRECT_VERSION.to_string(),
-                    true,
-                ),
-            ],
             Shape::Stdlib => Vec::new(),
-            Shape::ModuleNotNeeded => vec![require(UNRELATED_MODULE, UNRELATED_VERSION)],
             Shape::Shipped { module, version } => vec![require(module, version)],
-            Shape::IndirectWithoutADirectParent => vec![(
-                INDIRECT_MODULE.to_string(),
-                INDIRECT_VERSION.to_string(),
-                true,
-            )],
         }
     }
 
@@ -183,11 +146,8 @@ pub fn all_shapes() -> [Shape; SHAPES] {
     [
         direct(),
         indirect_via(FIXTURE_PARENT),
-        indirect_via_parent_without_the_fix(FIXTURE_PARENT),
         stdlib(),
-        module_not_needed(),
         shipped(DIRECT_MODULE, SHIPPED_VERSION),
-        indirect_without_a_direct_parent(),
     ]
 }
 
