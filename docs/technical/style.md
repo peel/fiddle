@@ -34,4 +34,4 @@ If a sentence explains why, it belongs in an ADR. Move it there.
 
 ## Slot templates
 
-See `writing-templates.md`.
+See `skills/using-fiddle/references/writing-templates.md`.
