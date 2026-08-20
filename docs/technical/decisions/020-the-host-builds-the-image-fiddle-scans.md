@@ -1,11 +1,11 @@
 # 020 — The host workflow builds the image, and fiddle pairs the digest with the revision
 
 Status: accepted
-Cites: TreeObservation::scanned_image_digest, TreeObservation::base_revision, Capability::tree_observation, ScanReport::image_digest, `[orchestration.cve] image`, crates/fiddle-acceptance/tests/cve_mitigation.rs::an_unusable_scanner_exits_eleven_and_reaches_no_forge, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch
+Cites: TreeObservation::scanned_image_digest, TreeObservation::base_revision, Capability::tree_observation, ScanReport::image_digest, OrchestrationCve::image, crates/fiddle-acceptance/tests/cve_mitigation.rs::an_unusable_scanner_exits_eleven_and_reaches_no_forge, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_vulnerable_fixture_yields_exactly_one_pull_request_and_one_branch
 
 ## Context
 
-Design §2.1's Prepare is a detached worktree at the observed revision, and then a `docker build`. Only the first half is implemented, because the plan's coverage table assigned the build half to no task. So the capability scans the configured image before a worktree exists, reversing the design's order.
+Design §2.1's Prepare is a detached worktree at the observed revision, and then a `docker build`. Only the first half is implemented, because the plan's coverage table assigned the build half to no task. So the capability scans the configured image before a worktree exists, reversing the design's order. `[orchestration.cve] image` names that image.
 
 ## Decision
 

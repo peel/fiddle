@@ -1,7 +1,7 @@
 # 017 — `github.required_checks` is observed and reported, and enforced by nothing
 
 Status: accepted
-Cites: `[github] required_checks`, Executor::observe_checks, fiddle_core::VerificationState, fiddle_core::assess, OBSERVED_NOT_ENFORCED, REQUIRED_CHECKS_DECISION, crates/fiddle-acceptance/tests/config_check.rs
+Cites: GitHub::required_checks, Executor::observe_checks, fiddle_core::VerificationState, fiddle_core::assess, OBSERVED_NOT_ENFORCED, REQUIRED_CHECKS_DECISION, crates/fiddle-acceptance/tests/config_check.rs
 
 `crates/fiddle-cli/src/render.rs` holds this file's stem in `REQUIRED_CHECKS_DECISION`. Renaming the file breaks the `config check` payload.
 

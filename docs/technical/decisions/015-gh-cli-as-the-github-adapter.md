@@ -2,7 +2,7 @@
 
 Date: 2026-08-10
 Status: accepted
-Cites: GhCli::api, GhCli::parse, GhCli::redact, GhError::outcome, GhError::Killed, GhError::Push, GitError::outcome, process::run_bounded, `[github] cli`, ensure_branch_published, crates/fiddle-runtime/src/github/checks.rs, scripts/live-github.sh
+Cites: GhCli::api, GhCli::parse, GhCli::redact, GhError::outcome, GhError::Killed, GhError::Push, GitError::outcome, process::run_bounded, GitHub::cli, ensure_branch_published, crates/fiddle-runtime/src/github/checks.rs, scripts/live-github.sh
 
 ## Context
 

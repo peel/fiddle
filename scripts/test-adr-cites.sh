@@ -200,7 +200,80 @@ assert_exit "file.rs::missing_symbol → exit 1" 1 "$EXIT_CODE"
 assert_contains "reports the symbol, not the file" "deleted_yesterday resolves to nothing" "$OUT"
 
 echo ""
-echo "=== Test 13: the repository's own ADRs pass ==="
+echo "=== Test 13: a symbol outside crates/ resolves ==="
+fresh
+mkdir -p "$WORK/tree/skills/orchestrate"
+printf 'The lead reads RALPH_STATUS once.\n' > "$WORK/tree/skills/orchestrate/resumption.md"
+adr "021-a-decision" "RALPH_STATUS"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a symbol under skills/ → exit 0" 0 "$EXIT_CODE"
+if [ -z "$(grep -rlF 'RALPH_STATUS' "$WORK/tree/crates")" ]; then
+  PASS=$((PASS+1)); echo "  PASS: nothing under crates/ holds the symbol, so a crates-only grep would have failed it"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: the premise is a symbol crates/ does not hold"
+fi
+
+fresh
+mkdir -p "$WORK/tree/target/debug" "$WORK/tree/.beans"
+printf 'pub fn only_in_target() {}\n' > "$WORK/tree/target/debug/generated.rs"
+printf 'only_in_beans\n' > "$WORK/tree/.beans/021.md"
+adr "021-a-decision" "only_in_target"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a symbol only in target/ → exit 1" 1 "$EXIT_CODE"
+adr "021-a-decision" "only_in_beans"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a symbol only in .beans/ → exit 1" 1 "$EXIT_CODE"
+
+echo ""
+echo "=== Test 14: an entry keeps its interior blanks ==="
+fresh
+printf 'git status --porcelain=v1 -z -uno\n' > "$WORK/tree/crates/fiddle-runtime/src/workspace/args.rs"
+adr "021-a-decision" "git status --porcelain=v1 -z -uno, selected"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a multi-word entry that the tree holds → exit 0" 0 "$EXIT_CODE"
+assert_contains "the entry counted once, not once per word" "2 cited symbols" "$OUT"
+
+fresh
+printf 'pub fn gitstatus() {}\n' > "$WORK/tree/crates/fiddle-core/src/squashed.rs"
+adr "021-a-decision" "git status"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "removing the blanks must not manufacture a match → exit 1" 1 "$EXIT_CODE"
+assert_contains "reports the entry as written" "Cites: git status resolves to nothing" "$OUT"
+
+fresh
+adr "021-a-decision" "$(printf '  selected  ,\tSeverities\t')"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "blanks at an entry's ends are trimmed → exit 0" 0 "$EXIT_CODE"
+
+echo ""
+echo "=== Test 15: an ADR cannot satisfy its own citation ==="
+fresh
+adr "021-a-decision" "phantom_symbol"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "the Cites: line is not evidence → exit 1" 1 "$EXIT_CODE"
+if grep -qF 'phantom_symbol' "$WORK/tree/docs/technical/decisions/021-a-decision.md"; then
+  PASS=$((PASS+1)); echo "  PASS: the ADR holds the symbol, so a tree-wide grep would have passed it"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: the premise is a symbol the ADR itself holds"
+fi
+
+fresh
+adr "021-a-decision" "phantom_symbol"
+adr "022-another" "selected"
+printf 'The neighbour names phantom_symbol.\n' >> "$WORK/tree/docs/technical/decisions/022-another.md"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a neighbouring ADR is not evidence → exit 1" 1 "$EXIT_CODE"
+
+echo ""
+echo "=== Test 16: the repository's own ADRs pass ==="
 EXIT_CODE=0
 OUT=$("$SCRIPT_DIR/check-adr-cites.sh" --root "$SCRIPT_DIR/.." 2>&1) || EXIT_CODE=$?
 assert_exit "this tree's decisions/ → exit 0" 0 "$EXIT_CODE"

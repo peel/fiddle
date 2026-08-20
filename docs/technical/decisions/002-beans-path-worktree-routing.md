@@ -2,7 +2,7 @@
 
 Date: 2026-03-14
 Status: accepted
-Cites: MAIN_BEANS_PATH, `beans --beans-path`, skills/orchestrate/resumption.md
+Cites: MAIN_BEANS_PATH, skills/orchestrate/resumption.md
 
 ## Context
 

@@ -2,7 +2,7 @@
 
 Date: 2026-03-15
 Status: accepted
-Cites: hooks/dispatch-provider.sh, skills/develop/provider-context.md, orchestrate.json `providers`, `codex exec`
+Cites: hooks/dispatch-provider.sh, skills/develop/provider-context.md, orchestrate.json
 
 ## Context
 
@@ -10,7 +10,7 @@ Fiddle called Codex as an MCP server and Gemini as a CLI. The MCP route needed a
 
 ## Decision
 
-Drop the Codex MCP route and call `codex exec` instead. Reach every external provider through one dispatch procedure, which reads each provider's command and flags from `orchestrate.json`. Build the prompt from one template and run the call as a background task.
+Drop the Codex MCP route and call `codex exec` instead. Reach every external provider through one dispatch procedure. The procedure reads each provider's command and flags from the `providers` block in `orchestrate.json`. Build the prompt from one template and run the call as a background task.
 
 ## Consequences
 

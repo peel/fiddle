@@ -2,9 +2,9 @@
 
 Date: 2026-03-14
 Status: superseded by 004
-Cites: ralph, RALPH_STATUS, max_total_turns, the `reaction {}` config block
+Cites: none
 
-None of the names above survive in this repository. ADR 004 replaced them.
+This record cites nothing. No name in this record survives in this repository. ADR 004 replaced them all.
 
 ## Context
 
