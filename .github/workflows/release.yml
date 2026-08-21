@@ -1,0 +1,30 @@
+name: release
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.97.1", targets: "x86_64-unknown-linux-gnu" }
+      - name: Build the linux-amd64 binary from the pinned lockfile
+        run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+      - name: Name the asset and record its SHA256 beside it
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-gnu/release/fiddle dist/fiddle-linux-amd64
+          (cd dist && sha256sum fiddle-linux-amd64 > fiddle-linux-amd64.sha256)
+      - name: Publish the binary and its checksum on the tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/fiddle-linux-amd64 \
+            dist/fiddle-linux-amd64.sha256
