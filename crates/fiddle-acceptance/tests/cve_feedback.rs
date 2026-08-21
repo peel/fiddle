@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use support::{
-    accepted, body_of, check_stub_binary, completion, gh_stub_binary, git, git_says, object_of,
-    repo_root, toml_string, walkdir_files, wiz_stub_binary, Reply, Scenario, StubGateway,
-    CREDENTIAL_VARS,
+    accepted, body_of, calls, check_stub_binary, completion, gh_stub_binary, git, git_says,
+    object_of, repo_root, reports, toml_string, walkdir_files, wiz_stub_binary, Reply, Scenario,
+    StubGateway, CREDENTIAL_VARS,
 };
 
 const FEEDBACK_REF: &str = "cve";
@@ -23,15 +23,27 @@ const SCAN_LIBRARY_ONLY: &str = "library-only";
 
 const RESCAN_CLEAN: &str = "library-clean";
 
+const RESCAN_CLEARED: &str = "clean-image";
+
 const LIBRARY_CVE: &str = "CVE-2026-0001";
 
 const DECLINED_NOTE: &str = "no published fix I can apply without a registry";
+
+const FIXED_NOTE: &str = "moved the requirement to the release that carries the fix";
+
+const VULNERABLE_VERSION: &str = "v0.31.0";
+
+const FIXED_VERSION: &str = "v0.35.0";
+
+const MANIFEST: &str = "go.mod";
 
 const SHARED_BRANCH: &str = "security/cve-remediation-2026-01-02";
 
 const SHARED_PR: u64 = 41;
 
 const PRIOR_RUN_MARKER: &str = "EARLIER-RUN.md";
+
+const SEEDED_SUBJECT: &str = "an earlier night's work on the shared branch";
 
 const ATTEMPTS_START: &str = "<!-- fiddle-attempts:start -->";
 
@@ -68,6 +80,10 @@ struct Feedback {
 
 impl Feedback {
     fn bounded_at(bound: usize, script: Vec<Reply>) -> Self {
+        Feedback::rescanning(bound, RESCAN_CLEAN, script)
+    }
+
+    fn rescanning(bound: usize, rescan: &str, script: Vec<Reply>) -> Self {
         let scenario = Scenario::new();
 
         let stub = scenario.dir().join("gh-stub");
@@ -84,12 +100,12 @@ impl Feedback {
             remote,
             gateway: StubGateway::serving(script),
         };
-        let tables = feedback.tables(bound);
+        let tables = feedback.tables(bound, rescan);
         feedback.scenario.append_config(&tables);
         feedback
     }
 
-    fn tables(&self, bound: usize) -> String {
+    fn tables(&self, bound: usize, rescan: &str) -> String {
         format!(
             "[github]\n\
              repo = \"{REPO}\"\n\
@@ -133,7 +149,7 @@ impl Feedback {
              \n\
              [[workspace.checks]]\n\
              program = {wiz}\n\
-             args = [\"{RESCAN_CLEAN}\"]\n\
+             args = [\"{rescan}\"]\n\
              success = \"artefact-written\"\n",
             gh = toml_string(gh_stub_binary()),
             wiz = toml_string(wiz_stub_binary()),
@@ -163,7 +179,7 @@ impl Feedback {
                 "user.name=t",
                 "commit",
                 "-qm",
-                "an earlier night's work on the shared branch",
+                SEEDED_SUBJECT,
             ],
         );
         git(&self.tree, &["push", "-q", "origin", SHARED_BRANCH]);
@@ -296,6 +312,24 @@ impl Feedback {
             .map(str::to_string)
             .collect()
     }
+
+    fn remote_head(&self) -> String {
+        git_says(&self.remote, &["rev-parse", SHARED_BRANCH])
+    }
+
+    fn pushed_subjects(&self) -> Vec<String> {
+        git_says(
+            &self.remote,
+            &["log", "--format=%s", &format!("{BASE}..{SHARED_BRANCH}")],
+        )
+        .lines()
+        .map(str::to_string)
+        .collect()
+    }
+
+    fn briefed(&self) -> String {
+        self.gateway.request_bodies().join("\n")
+    }
 }
 
 fn seed_repository(root: &Path, remote: &Path) -> PathBuf {
@@ -349,6 +383,33 @@ fn an_attempt_declining() -> Vec<Reply> {
         }),
         "stop",
     ))]
+}
+
+fn an_attempt_moving_the_requirement() -> Vec<Reply> {
+    let fixed = std::fs::read_to_string(
+        repo_root()
+            .join("tests/fixtures")
+            .join(FIXTURE)
+            .join(MANIFEST),
+    )
+    .unwrap()
+    .replace(VULNERABLE_VERSION, FIXED_VERSION);
+    vec![
+        accepted(calls(
+            "write_file",
+            serde_json::json!({ "path": MANIFEST, "contents": fixed }),
+        )),
+        accepted(reports(serde_json::json!({
+            "changed_files": [MANIFEST],
+            "summary": FIXED_NOTE,
+            "claimed_complete": true,
+            "findings": [{
+                "cve": LIBRARY_CVE,
+                "attempted": true,
+                "note": FIXED_NOTE,
+            }],
+        }))),
+    ]
 }
 
 #[test]
@@ -434,6 +495,26 @@ fn a_pull_request_below_the_bound_is_attempted() {
         reached["reason"], "attempt_bound_reached",
         "a run that attempted did not stop at the bound: {reached}"
     );
+
+    let shared = feedback.pull_request(SHARED_PR);
+    assert_eq!(
+        shared["body"].as_str(),
+        Some(body_counting(3).as_str()),
+        "the run above left the count at two and this one raised it to three, \
+         and the two runs differ only in the configured bound: {shared}"
+    );
+
+    let briefed = feedback.briefed();
+    assert!(
+        briefed.contains(VERIFY_CHECK),
+        "the one check that blamed the candidate has to reach the prompt by \
+         name: {briefed}"
+    );
+    assert!(
+        !briefed.contains(RESCAN_CHECK),
+        "and no check the forge did not report may reach it, or the prompt \
+         carries a sentence this build wrote and not what CI said: {briefed}"
+    );
 }
 
 #[test]
@@ -497,6 +578,24 @@ fn two_checks_blaming_the_candidate_are_one_fresh_attempt() {
         1,
         "and it worked on the pull request the checks blamed"
     );
+
+    let briefed = feedback.briefed();
+    for named in [VERIFY_CHECK, RESCAN_CHECK] {
+        assert!(
+            briefed.contains(named),
+            "the run seeded two failing checks and the prompt has to name both, \
+             because the run above seeded one and named one: {briefed}"
+        );
+        assert!(
+            briefed.contains(&format!("https://github.com/{REPO}/runs/{named}")),
+            "and carry the link the forge published for {named}, so a person \
+             reading the prompt can read the log CI wrote: {briefed}"
+        );
+    }
+    assert!(
+        briefed.contains(&head_sha),
+        "and name the commit the checks ran against: {briefed}"
+    );
 }
 
 #[test]
@@ -534,5 +633,96 @@ fn two_checks_blaming_nothing_are_no_fresh_attempt() {
         feedback.remote_branches(),
         vec![BASE.to_string(), SHARED_BRANCH.to_string()],
         "and pushed nothing"
+    );
+}
+
+#[test]
+fn an_attempt_that_commits_raises_the_count() {
+    let feedback = Feedback::rescanning(3, RESCAN_CLEARED, an_attempt_moving_the_requirement());
+    let head_sha = feedback.seed_shared_pull_request(&body_counting(2));
+    feedback.seed_checks(&head_sha, &[(VERIFY_CHECK, "failure")]);
+
+    let run = feedback.run();
+    let payload = feedback.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let reached = feedback.disposition(&run);
+    assert_eq!(
+        reached["reason"], "pull_request",
+        "the rescan cleared this attempt, so it committed what it changed: \
+         {reached}"
+    );
+    assert_ne!(
+        feedback.remote_head(),
+        head_sha,
+        "and the commit log carries it"
+    );
+    assert_eq!(
+        feedback.pushed_subjects(),
+        vec![
+            format!("fix: mitigate 1 advisory"),
+            SEEDED_SUBJECT.to_string(),
+        ],
+        "one attempt is one commit, above the one the seed made: {:?}",
+        feedback.pushed_subjects()
+    );
+
+    let shared = feedback.pull_request(SHARED_PR);
+    let body = shared["body"].as_str().unwrap_or_default();
+    assert!(
+        body.contains("Attempts: 3"),
+        "and the body it published counts this attempt: {shared}"
+    );
+    assert!(
+        body.contains("committed what it changed"),
+        "beside the prose for a run that landed work: {shared}"
+    );
+}
+
+#[test]
+fn an_attempt_that_reverts_raises_the_count_the_commit_log_cannot_show() {
+    let feedback = Feedback::rescanning(3, SCAN_LIBRARY_ONLY, an_attempt_moving_the_requirement());
+    let head_sha = feedback.seed_shared_pull_request(&body_counting(2));
+    feedback.seed_checks(&head_sha, &[(VERIFY_CHECK, "failure")]);
+
+    let run = feedback.run();
+    let payload = feedback.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let reached = feedback.disposition(&run);
+    assert_ne!(
+        reached["reason"], "pull_request",
+        "this run and the one above differ only in what the rescan reported. \
+         The rescan still names the advisory here, so the attempt reverted: \
+         {reached}"
+    );
+    assert_eq!(
+        feedback.remote_head(),
+        head_sha,
+        "a reverted attempt pushes nothing, so the commit log cannot show it"
+    );
+    assert_eq!(
+        feedback.pushed_subjects(),
+        vec![SEEDED_SUBJECT.to_string()],
+        "only the commit the seed made is on the branch: {:?}",
+        feedback.pushed_subjects()
+    );
+
+    let shared = feedback.pull_request(SHARED_PR);
+    assert_eq!(
+        shared["body"].as_str(),
+        Some(body_counting(3).as_str()),
+        "and the count still rose, which is the case the bound exists for: \
+         {shared}"
     );
 }

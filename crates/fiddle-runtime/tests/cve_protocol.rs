@@ -217,7 +217,7 @@ async fn run_migration(
     world: &MigrationWorld,
 ) -> Result<MigrationAttempt, fiddle_runtime::capability::CapabilityError> {
     GroupMigration::new(model, world.config())
-        .migrate(&world.workspace(), &world.findings)
+        .migrate(&world.workspace(), &world.findings, None)
         .await
 }
 
@@ -409,7 +409,7 @@ async fn the_attempt_really_edits_the_tree_through_the_tools() {
     let world = migration_world().await;
     let migration = GroupMigration::new(MockCompletionModel::new(migrates()), world.config());
     let attempt = migration
-        .migrate(&world.workspace(), &world.findings)
+        .migrate(&world.workspace(), &world.findings, None)
         .await
         .expect("a scripted migration completes");
 
@@ -890,7 +890,7 @@ async fn what_the_run_changed_before_briefing_is_excused_and_nothing_beside_it_i
         ),
     ];
     let attempt = GroupMigration::new(MockCompletionModel::new(script), world.config())
-        .migrate(&workspace, &world.findings)
+        .migrate(&workspace, &world.findings, None)
         .await
         .expect("a scripted migration completes");
 

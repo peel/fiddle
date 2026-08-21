@@ -1022,6 +1022,7 @@ async fn publish(forge: &Forge, world: &RemoteWorld) -> Published {
             title: SHARED_TITLE.to_string(),
             summary: RUN_SUMMARY.to_string(),
             head_sha: landed,
+            attempts: 1,
         },
     )
     .await
