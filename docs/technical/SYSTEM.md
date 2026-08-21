@@ -129,7 +129,7 @@ alone; gemini was removed after two consecutive authentication failures.
 - What counts as a change comes from the committed ignore rules, snapshotted before the attempt (ADR 030).
 - The workspace supplies a scratch `HOME` beside the worktree, never inside it.
 - The model-visible surface carries no host fact, and the runtime records each tool receipt itself (ADR 034).
-- An attempt runs a program only where the deployment declared it, as a program and an argument list with no shell, bounded by `[workspace] command_timeout` (ADR 043). The declaration's arguments are a prefix; whether the model may append to them is the declaration's own answer, and the default is no.
+- An attempt runs a program only where the deployment declared it, as a program and an argument list with no interpreter, bounded by `[workspace] command_timeout` (ADR 043). The declaration's arguments are a prefix; whether the model may append to them is the declaration's own answer, and the default is no. This is a legibility rule, not isolation: see Known issues.
 - A mitigation attempt's diff touches exactly the files it declared, and Rust reads no meaning into a path (ADR 026). Nothing pre-filters an already-fixed finding.
 - Fiddle scans an image it did not build, and the bundle pairs the digest with the revision (ADR 020).
 - A `workflow_dispatch` lane on a feature branch is inert until its file reaches the default branch. `.github/workflows/github-effects.yml` carries the diagnosis.
@@ -147,7 +147,8 @@ alone; gemini was removed after two consecutive authentication failures.
 - `.github/workflows/github-effects.yml` is inert until it merges to the default branch. One dispatch after the merge closes it.
 - A forbidden test edit is a deployment's check now, not a guarantee this binary makes. A deployment that declares no test check gets no warning (ADR 026).
 - `[[workspace.checks]]` constrains neither the count nor the order nor which programs appear. No lane exercises a real `docker build`.
-- `[[workspace.commands]]` is an allowlist, and a deployment that declares a program taking a script has declared a shell by another name. Nothing in Rust can see that (ADR 043). Network egress from a declared program is as unbounded as it already is from a check.
+- **A declared program is not sandboxed, and `[[workspace.commands]]` is not a security boundary (ADR 043).** It runs as an ordinary process with the invoking user's identity: it can read any file that user can read, write any file that user can write, and open any socket. Declaring one build tool grants arbitrary code execution, because `go test` runs code out of the repository under repair and `go generate` runs whatever the source names. What does hold is four things and no more — a per-attempt worktree as the working directory, no credential in the child, `WorkspacePath` bounding fiddle's own file tools, and a time bound that is cancellable. On a GitHub runner the disposable job supplies the isolation; local attended execution (the PRD's M6) is where the exposure is real. `Isolation` has one variant and the seam for a sandbox is empty; ADR 043 says what a second variant would need.
+- The attempt now has an egress path it directs itself, where before this it had none: a declared dependency tool fetches from a registry (ADR 043). A sandbox cannot answer "no network" without breaking the repair the tool exists for.
 - No check verifies that a document citing a symbol names one that exists. Two lanes pin prose in this file, and both pin enumerations the binary also prints.
 
 ---

@@ -1685,3 +1685,20 @@ What is left open. Nothing bounds what a declared program does once it runs. **2
 
 Origin: implementation (bean `fiddle-56eq`, lane `lane/m4b-56eq`)
 Tags: #debt #evidence
+
+### 2026-08-21 — The declared-program list is not a sandbox, and the entry above understates it
+
+This corrects the closing paragraph of **2026-08-21 — The offered tool set is four names or five, and two entries above say four**, written earlier in the same lane. That paragraph said a deployment declaring a program which interprets a script "has declared a shell". That is true and far too weak, and the weakness was the reasoning error behind it: it treated an interpreter as the special case.
+
+**Any build tool is the general case.** `go test` compiles and runs code out of the repository under repair. `go generate` runs whatever the source names. `make` runs a file in the tree. So a deployment that declares one build tool has granted arbitrary code execution under the invoking user's identity, and the argument rules — a fixed prefix, no absolute path, no `..` — bound what the model may *say* and not what the program may *reach*. Against a hostile or compromised repository `[[workspace.commands]]` buys close to nothing. It is worth having for legibility, for keeping fiddle ecosystem-agnostic, and for turning a guessed program into a refusal rather than a side effect. It is not a security boundary and this file should not be read as suggesting it is.
+
+The exposure is not new and this entry is not about a regression. `[[workspace.checks]]` has started repository code since M1, which **2026-08-09 — What M1's isolation does not claim: egress, injection, hostile processes** records. What is new is a second door, chosen by the model rather than fixed by the operator, and the fact that the honest name for the gap is now "no sandbox" rather than "unbounded egress".
+
+**Where it matters.** On a GitHub-hosted runner the job is a disposable virtual machine, so the deployment supplies the isolation and fiddle's lack of it costs nothing. A long-lived self-hosted runner loses that, and so does local attended execution — the PRD's M6, where the same binary runs against a developer's machine. That is where the work is owed.
+
+**The shape of the work, so a bean does not have to rediscover it.** `config::Isolation` is an enum with one variant, `GitWorktree`, destructured by three `let` bindings in `main.rs`. The seam exists and is empty. `Workspace::run` is the single place every child in the worktree passes through, so `[[workspace.checks]]`, `run_command` and the worktree's own `git` move inside a sandbox together. The load-bearing obstacle is that `.git` in the worktree is a file holding a `gitdir:` pointer into the fixture repository, which is a sibling on the host: a container mounting the worktree alone has no change set and cannot commit, so either the fixture is mounted too or `Workspace::create` stops using a linked worktree. Network cannot simply be denied — a dependency repair fetches from a registry — so a sandbox owes a decision about which hosts and through what proxy. ADR 043 carries the same paragraph.
+
+**One line was crossed here that is never uncrossed.** Before this change the attempt had no network path of its own; its four tools were local. A declared dependency tool fetches, so the attempt now directs egress. No later change takes that back without breaking the repair the tool exists for.
+
+Origin: implementation (bean `fiddle-56eq`, lane `lane/m4b-56eq`), after a user correction to the brief this lane was given
+Tags: #debt #risk

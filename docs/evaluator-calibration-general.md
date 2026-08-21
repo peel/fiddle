@@ -252,6 +252,15 @@ as well. Marking a bean down for the missing outer bound is scoring against a su
 
 The ephemeral workspace, path validation, and environment sanitization.
 
+**Read the name narrowly, and do not score confinement against it.** This criterion measures three
+things about the *worktree and the environment Fiddle builds*. It measures nothing about what a child
+process then does, and no level below should be read as claiming it. A workspace command runs with the
+invoking user's authority and can read, write and reach whatever that user can; `[[workspace.checks]]`
+has been able to since M1 and `[[workspace.commands]]` joined it in M4. `[workspace] isolation` has one
+variant, a host worktree, so an implementation scoring Excellent here is not sandboxed. ADR 043 states
+the four properties that do hold. A submission claiming isolation from an allowlist of program names
+is claiming something no anchor here awards.
+
 **Two statements in this criterion were reconciled a pass late (2026-08-09), and the second one had
 already been corrected for a sibling criterion.** The allowlist was written here as three names and
 is four. And `git status --porcelain` was named here as the whole of the changed-file derivation,

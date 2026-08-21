@@ -241,7 +241,7 @@ The capability controls which tools exist and which effects need judgment. Deplo
 
 From M1 through M5, an agentic capability builds a Rig agent or an explicit `AgentRunner` for one bounded attempt. The capability owns its prompt, its tool set, its turn budget, and its typed result. Rig derives each tool's model-visible schema from its Rust types. `TypedPrompt` or an extractor returns a schema-validated Rust value.[S6](#s6)[S19](#s19) A deterministic or hybrid capability need not build an agent.
 
-A registered tool runs without per-call human confirmation. Rig hooks can audit, instrument, cancel, shape a request, and recover from an invalid tool call. Rig calls a hook guardrail a control, not an authorization boundary.[S6](#s6) Safety comes from the small tool set, workspace isolation, typed inputs, host-only context, and the Fiddle effect executor.
+A registered tool runs without per-call human confirmation. Rig hooks can audit, instrument, cancel, shape a request, and recover from an invalid tool call. Rig calls a hook guardrail a control, not an authorization boundary.[S6](#s6) Safety comes from the small tool set, workspace isolation, typed inputs, host-only context, and the Fiddle effect executor. Read "workspace isolation" narrowly: it is an ephemeral worktree, a sanitized environment, and path containment on Fiddle's own file tools. It is not a sandbox. A tool that starts a program — `run_check` since M1, `run_command` since M4 — starts a process with the invoking user's authority, and a build tool runs code out of the repository under repair. Decision 043 states what holds and what does not.
 
 One Rig agent may use another Rig agent as a tool. That gives manager-worker composition without subagent machinery in Fiddle.[S7](#s7) It stays optional and local to one capability. Static Fiddle orchestration sequences capabilities and bounded fan-out. A model manager does not.
 
@@ -547,21 +547,28 @@ args = ["test"]
 success = "exit-zero"
 
 [[workspace.commands]]
-# The programs an attempt may run, and nothing else runs. A repair that has to
-# regenerate a derived file cannot do it by writing that file, so the
-# deployment names the program that produces it. Fiddle names no ecosystem, so
-# there is no default and a deployment that declares none gets a four-tool
-# attempt. A program and an argument list reach the process directly: there is
-# no shell, nothing is expanded, and one argument cannot become two.
+# The programs `run_command` will start. A repair that has to regenerate a
+# derived file cannot do it by writing that file, so the deployment names the
+# program that produces it. Fiddle names no ecosystem, so there is no default
+# and a deployment that declares none gets a four-tool attempt. A program and
+# an argument list reach the process directly: no interpreter, nothing
+# expanded, and one argument cannot become two.
+#
+# This list is not a sandbox. A declared program runs as the invoking user and
+# can read, write and reach whatever that user can, and declaring a build tool
+# grants arbitrary code execution because that tool runs code out of the
+# repository. On a runner the disposable job is what isolates. Locally nothing
+# does. Decision 043 states what does hold.
 program = "make"
 args = ["tidy"]
 
 [[workspace.commands]]
 # `args` is a prefix the attempt cannot reorder or replace. `extend` decides
 # whether the attempt may append to it, and the default is "none". Fully fixed
-# arguments cannot express a version the attempt chose; free arguments approach
-# a shell. An appended argument is one line of printable text, and it names no
-# path outside the project.
+# arguments cannot express a version the attempt chose, and free arguments are
+# a larger surface for no gain. An appended argument is one line of printable
+# text and names no path outside the project, which bounds what the attempt
+# may say rather than what the program may reach.
 program = "make"
 args = ["relock"]
 extend = "arguments"
@@ -599,7 +606,7 @@ Configuration requirements:
 - a credential reference that names an environment source or a profile, never a secret value;
 - host scheduling, runner provisioning, and workflow definitions outside `fiddle.toml`;
 - capability prompts, bounded tools, minimum human-decision rules, and orchestration graphs in Rust rather than in configuration;
-- two exceptions to that rule, both in M4: the immediate checks moved into the document as `[[workspace.checks]]`, and the programs an attempt may run moved into it as `[[workspace.commands]]`. A capability's tool *set* is still Rust's; what one of those tools may run is the deployment's, because Fiddle names no ecosystem;
+- two exceptions to that rule, both in M4: the immediate checks moved into the document as `[[workspace.checks]]`, and the programs an attempt may run moved into it as `[[workspace.commands]]`. A capability's tool *set* is still Rust's; what one of those tools may run is the deployment's, because Fiddle names no ecosystem. Neither list is an isolation mechanism, and `[workspace] isolation` is where isolation would live;
 - explicit agent-runtime selection only where a capability implementation supports it, and no promise that every capability runs on every runtime;
 - one global default per setting, with an orchestration or capability override only for a genuine deviation;
 - `fiddle config check`, which resolves and validates the effective configuration without starting work.
@@ -1238,6 +1245,7 @@ Rig's experimental eval framework may later help score live output. V1 keeps an 
 | A timeout produces a duplicate write | Stable effect identity, operation markers, inspect-before-retry, postcondition receipts |
 | An agent transcript, a session, or a serialized `AgentRun` becomes a correctness dependency | Recovery tests start a fresh process with no prior agent state |
 | A secret leaks through Bash, a prompt, progress, or telemetry | Opaque handles, sanitized workspace environment, typed tools, redaction tests |
+| A repository under repair executes hostile code on the host | Not mitigated in V1. `[[workspace.checks]]` and `[[workspace.commands]]` both start programs that run code out of that repository, and `[workspace] isolation` has one variant, a host worktree. A disposable runner covers the unattended deployment; local attended work is exposed. Decision 043 |
 | The capability graph becomes hidden and recursive | Orchestration-only composition and static registration |
 | Temporary source context becomes permanent clutter | Curated entry types, mandatory cleanup, decision promotion |
 | Rig API evolution couples Fiddle to it | Keep Rig out of `fiddle-core`, pin its release, use its facade in the runtime crate, keep Fiddle types at the boundary |

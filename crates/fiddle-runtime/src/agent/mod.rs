@@ -29,11 +29,11 @@ const TASK: &str = "Repair this project so that its check passes, then report wh
 
 const DECLARED_COMMANDS: &str = "\
 \n\
-This project also declares programs you may run, and `run_command` runs one of \
-them. You name the program and its arguments. Nothing else runs: a program the \
-project does not declare is refused, and the refusal names the ones it declares \
-and the arguments each one takes. Prefer a declared program over writing a file \
-whose contents another program produces.";
+This project also declares programs you may run, and `run_command` starts one of \
+them. You name the program and its arguments. That tool starts nothing else: a \
+program the project does not declare is refused, and the refusal names the ones \
+it declares and the arguments each one takes. Prefer a declared program over \
+writing a file whose contents another program produces.";
 
 fn briefed(preamble: &str, declares_commands: bool) -> String {
     match declares_commands {

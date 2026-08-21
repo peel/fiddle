@@ -1139,7 +1139,7 @@ pub(crate) mod tests {
                 },
             )
             .await
-            .expect_err("a shell turns one declared program into every program");
+            .expect_err("an interpreter would make the declared list unreadable");
         let text = RunCommand
             .map_error(refused)
             .model_output()
@@ -1153,7 +1153,7 @@ pub(crate) mod tests {
         );
         assert!(
             !root.join("reached.txt").exists(),
-            "the refusal came after the shell ran"
+            "the refusal came after the interpreter ran"
         );
     }
 
