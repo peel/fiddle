@@ -457,11 +457,19 @@ pub fn run_human(bundle: &ReportBundle, published: Option<&Path>) -> String {
     out
 }
 
+fn projected_line(projected: Option<usize>) -> String {
+    match projected {
+        Some(projected) => format!("{projected} projected"),
+        None => "no projection".to_string(),
+    }
+}
+
 fn disposition_line(disposition: &fiddle_core::RunDisposition) -> String {
     let mut line = format!(
-        "{} ({} unfixed, {} already fixed, {} deferred, {} attempted)",
+        "{} ({} unfixed of {}, {} already fixed, {} deferred, {} attempted)",
         disposition.reason,
         disposition.verdicts,
+        projected_line(disposition.projected),
         disposition.already_fixed.len(),
         disposition.deferred.len(),
         disposition.attempts.len(),

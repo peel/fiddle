@@ -89,6 +89,8 @@ pub struct RunDisposition {
 
     pub verdicts: usize,
 
+    pub projected: Option<usize>,
+
     pub already_fixed: Vec<crate::finding::AdvisoryId>,
 
     pub deferred: Vec<DeferredFinding>,
@@ -225,6 +227,7 @@ mod tests {
         let value = serde_json::to_value(RunDisposition {
             reason: "unsafe_without_direction".to_string(),
             verdicts: 2,
+            projected: Some(7),
             already_fixed: vec![crate::finding::AdvisoryId::parse("CVE-2026-0003").unwrap()],
             deferred: vec![DeferredFinding {
                 cve: crate::finding::AdvisoryId::parse("CVE-2026-0004").unwrap(),
@@ -248,6 +251,11 @@ mod tests {
 
         assert_eq!(value["reason"], "unsafe_without_direction");
         assert_eq!(value["verdicts"], 2);
+        assert_eq!(
+            value["projected"], 7,
+            "two unfixed beside seven projected: the count alone would tell a \
+             reader this image holds two problems: {value}"
+        );
         assert_eq!(value["already_fixed"][0], "CVE-2026-0003");
         assert_eq!(value["deferred"][0]["cve"], "CVE-2026-0004");
         assert_eq!(value["deferred"][0]["bound"], 5);
@@ -276,6 +284,7 @@ mod tests {
         let value = serde_json::to_value(RunDisposition {
             reason: "attempt_bound_reached".to_string(),
             verdicts: 0,
+            projected: Some(0),
             already_fixed: Vec::new(),
             deferred: Vec::new(),
             attempts: Vec::new(),
@@ -291,6 +300,40 @@ mod tests {
             value["attempt_bound"],
             serde_json::json!({ "spent": 4, "bound": 4 }),
             "the row name alone cannot tell 4 of 4 from 9 of 9: {value}"
+        );
+    }
+
+    #[test]
+    fn a_run_that_read_no_document_publishes_no_count_of_what_it_holds() {
+        let over = |projected| {
+            serde_json::to_value(RunDisposition {
+                reason: "scan_unusable".to_string(),
+                verdicts: 0,
+                projected,
+                already_fixed: Vec::new(),
+                deferred: Vec::new(),
+                attempts: Vec::new(),
+                branch: None,
+                pull_request: None,
+                attempt_bound: None,
+            })
+            .unwrap()
+        };
+
+        let never_scanned = over(None);
+        let scanned_and_clean = over(Some(0));
+        assert!(
+            never_scanned["projected"].is_null(),
+            "a run that never read a document has no count to publish: {never_scanned}"
+        );
+        assert_eq!(
+            scanned_and_clean["projected"], 0,
+            "and a scan that ran and found nothing publishes zero: {scanned_and_clean}"
+        );
+        assert_ne!(
+            never_scanned["projected"], scanned_and_clean["projected"],
+            "a feed that reads the two as one reports a clean image for a scan \
+             that never ran"
         );
     }
 }

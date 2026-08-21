@@ -63,6 +63,8 @@ records that gap.
 | --- | --- | --- |
 | `orchestrate.json` | repository root | provider participation, evaluator settings, plans, subagent models |
 | report bundle | `<report.dir>/<slug>/<attempt-id>/report.json` | schema `fiddle.report.v0`, build identity, refs, outcome, executions, observations |
+| verdict report | `<report.dir>/verdicts.json` | one row per finding this run could not patch, read by the host's remediation gate |
+| complete findings | `<report.dir>/findings.json` | the whole projection the scan produced, with its count and the two array arms |
 | attempt journal | `<report.dir>/.attempts/` | one intent record per attempt, then one `"effect_step"` line per executor step |
 | bean state | `.beans/`, read by the external `beans` CLI | epics, tasks and tags; the unit of work for develop |
 

@@ -1088,6 +1088,23 @@ impl Sweep {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    fn complete_findings(&self) -> serde_json::Value {
+        let path = self.scenario.report_dir().join("findings.json");
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|e| panic!("no findings report at {} ({e})", path.display()));
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn advisories_published(&self) -> Vec<String> {
+        self.complete_findings()["scanned"]["findings"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|finding| finding["cve"].as_str().map(str::to_string))
+            .collect()
+    }
+
     fn disposition(&self, run: &Output) -> serde_json::Value {
         let bundle = self.bundle(run);
         bundle
@@ -1735,6 +1752,7 @@ fn an_advisory_nothing_can_move_leaves_the_whole_attempt_needing_direction() {
         serde_json::json!({
             "reason": "unsafe_without_direction",
             "verdicts": 2,
+            "projected": 2,
             "already_fixed": [],
             "deferred": [],
             "attempts": [{
@@ -1770,6 +1788,7 @@ fn nothing_to_do_publishes() -> serde_json::Value {
     serde_json::json!({
         "reason": "nothing_to_do",
         "verdicts": 0,
+        "projected": 0,
         "already_fixed": [],
         "deferred": [],
         "attempts": [],
@@ -1782,6 +1801,7 @@ fn already_fixed_publishes() -> serde_json::Value {
     serde_json::json!({
         "reason": "already_fixed",
         "verdicts": 0,
+        "projected": 1,
         "already_fixed": [LIBRARY_CVE],
         "deferred": [],
         "attempts": a_settled_attempt(),
@@ -1794,6 +1814,7 @@ fn already_in_progress_publishes() -> serde_json::Value {
     serde_json::json!({
         "reason": "already_in_progress",
         "verdicts": 0,
+        "projected": 1,
         "already_fixed": [LIBRARY_CVE],
         "deferred": [],
         "attempts": a_settled_attempt(),
@@ -1939,7 +1960,8 @@ fn the_plain_rendering_names_the_row_a_run_reached_and_its_pull_request() {
     assert!(
         stdout.contains(
             "disposition = already_in_progress \
-             (0 unfixed, 1 already fixed, 0 deferred, 1 attempted), \
+             (0 unfixed of 1 projected, 1 already fixed, 0 deferred, \
+             1 attempted), \
              pull request #41"
         ),
         "an operator at a terminal must be told which of the seven rows this run \
@@ -2048,6 +2070,7 @@ fn an_advisory_with_no_published_fix_reaches_the_attempt_and_its_decline_is_the_
         serde_json::json!({
             "reason": "unsafe_without_direction",
             "verdicts": 1,
+            "projected": 1,
             "already_fixed": [],
             "deferred": [],
             "attempts": [{
@@ -2166,15 +2189,31 @@ fn an_unusable_scanner_exits_eleven_and_reaches_no_forge() {
         serde_json::json!({
             "reason": "scan_unusable",
             "verdicts": 0,
+            "projected": serde_json::Value::Null,
             "already_fixed": [],
             "deferred": [],
             "attempts": [],
             "branch": serde_json::Value::Null,
             "pull_request": serde_json::Value::Null,
         }),
-        "every list is empty because nothing was observed, which is what makes \
-         the reason the whole of the claim"
+        "every list is empty because nothing was observed, and the count is \
+         absent rather than zero, because a run that read no document holds no \
+         number a feed could believe"
     );
+    let published = sweep.complete_findings();
+    assert!(
+        published.get("scanned").is_none(),
+        "a run that read no document must publish no list of what the image \
+         holds: {published}"
+    );
+    assert!(
+        published["unusable"]["why"]
+            .as_str()
+            .is_some_and(|why| why.contains("wizcli")),
+        "it says why instead, so a feed reading this file cannot mistake it for \
+         a clean image: {published}"
+    );
+
     let bundle = sweep.bundle(&run);
     assert!(
         bundle["outcome"]["retryable"]["reason"]
@@ -2652,6 +2691,23 @@ fn the_bound_the_document_sets_is_the_bound_the_sweep_applies() {
         reached["reason"], "pull_request",
         "deferring a finding does not change what the run came to: {reached}"
     );
+
+    let published = bounded.complete_findings();
+    assert_eq!(
+        bounded.advisories_published(),
+        vec![LIBRARY_CVE.to_string(), OS_CVE.to_string()],
+        "the bound governs the agent's work, and the host's feed reports what \
+         is still in the build, so both advisories are published: {published}"
+    );
+    assert_eq!(
+        published["scanned"]["projected"], 2,
+        "and the count is stated, because two findings beside no verdict reads \
+         as a clean image otherwise: {published}"
+    );
+    assert_eq!(
+        reached["projected"], 2,
+        "the bundle states the same denominator as the file: {reached}"
+    );
 }
 
 #[test]
@@ -2756,6 +2812,7 @@ fn a_deferred_finding_is_in_neither_the_verdict_set_nor_the_already_fixed_set() 
         serde_json::json!({
             "reason": "unsafe_without_direction",
             "verdicts": 1,
+            "projected": 3,
             "already_fixed": [],
             "deferred": [
                 { "cve": OS_CVE, "bound": 1 },

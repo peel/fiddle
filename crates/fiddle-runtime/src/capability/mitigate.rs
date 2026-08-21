@@ -485,7 +485,7 @@ where
 
         let concluded = disposition(&run);
         self.observed.lock().unwrap().disposition = Some(concluded.published());
-        self.write_report(&concluded)?;
+        self.publish_reports(&concluded)?;
         if let Err(why) = scanned {
             return Err(CapabilityError::Scan(why));
         }
@@ -515,25 +515,40 @@ where
 }
 
 impl<M, S> CveMitigate<'_, M, S> {
-    fn write_report(&self, concluded: &Disposition) -> Result<(), CapabilityError> {
+    fn publish_reports(&self, concluded: &Disposition) -> Result<(), CapabilityError> {
+        self.write_verdicts(concluded)?;
+        self.write_findings(concluded)
+    }
+
+    fn write_verdicts(&self, concluded: &Disposition) -> Result<(), CapabilityError> {
         concluded
             .write_report(&self.config.report_dir)
-            .map_err(|source| CapabilityError::Write {
-                path: self
-                    .config
-                    .report_dir
-                    .join(crate::cve::verdict::REPORT_FILE),
-                source,
-            })?;
+            .map_err(|source| self.refuse(crate::cve::verdict::REPORT_FILE, source))?;
+        self.receipt(crate::cve::verdict::REPORT_FILE);
+        Ok(())
+    }
+
+    fn write_findings(&self, concluded: &Disposition) -> Result<(), CapabilityError> {
+        concluded
+            .write_findings(&self.config.report_dir)
+            .map_err(|source| self.refuse(crate::cve::verdict::FINDINGS_FILE, source))?;
+        self.receipt(crate::cve::verdict::FINDINGS_FILE);
+        Ok(())
+    }
+
+    fn refuse(&self, file: &str, source: std::io::Error) -> CapabilityError {
+        CapabilityError::Write {
+            path: self.config.report_dir.join(file),
+            source,
+        }
+    }
+
+    fn receipt(&self, file: &str) {
         self.observed
             .lock()
             .unwrap()
             .receipts
-            .push(EvidenceRef(format!(
-                "{CVE_ORIGIN}:{}",
-                crate::cve::verdict::REPORT_FILE
-            )));
-        Ok(())
+            .push(EvidenceRef(format!("{CVE_ORIGIN}:{file}")));
     }
 }
 

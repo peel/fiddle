@@ -6,7 +6,7 @@ use fiddle_runtime::capability::{GroupStatus, MigrationAttempt, NeedsWork};
 use fiddle_runtime::cve::project::{project, Projection};
 use fiddle_runtime::cve::verdict::{
     disposition, report_of, Attempted, BoundReached, Budget, InProgress, Judgement, Landed, Row,
-    Run, Verdict, REPORT_FILE,
+    Run, Verdict, FINDINGS_FILE, REPORT_FILE,
 };
 use fiddle_runtime::evaluate::{evaluate, Evaluation, RescanVerdict};
 use fiddle_runtime::scanner::Scanner;
@@ -1317,5 +1317,212 @@ async fn the_sentence_a_ticket_shows_for_a_declined_finding_is_the_agent_s_own()
         carried[0], carried[1],
         "two agents wrote two sentences, so no fixed string in this build can \
          be the source of either"
+    );
+}
+
+fn published_findings(reached: &fiddle_runtime::cve::verdict::Disposition) -> serde_json::Value {
+    serde_json::to_value(reached.findings()).expect("the complete findings serialize")
+}
+
+fn findings_on_the_disk(reached: &fiddle_runtime::cve::verdict::Disposition) -> serde_json::Value {
+    let scratch = tempfile::tempdir().expect("a temporary directory");
+    let path = reached
+        .write_findings(scratch.path())
+        .expect("the findings are written");
+    assert_eq!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(FINDINGS_FILE),
+        "the complete findings sit beside {REPORT_FILE}, not inside it"
+    );
+    serde_json::from_str(&std::fs::read_to_string(&path).expect("the findings are readable"))
+        .expect("the findings parse")
+}
+
+#[tokio::test]
+async fn a_scan_the_bound_cut_down_still_publishes_every_finding_it_projected() {
+    let reached = disposition(&findings_beyond_budget(3, 1).await);
+
+    assert_eq!(
+        reached.deferred().len(),
+        2,
+        "this world's premise is a bound that cut the scan down"
+    );
+    assert_eq!(reached.projected(), Some(3));
+
+    let published = published_findings(&reached);
+    assert_eq!(published["scanned"]["projected"], 3);
+    assert_eq!(
+        published["scanned"]["findings"].as_array().map(Vec::len),
+        Some(3),
+        "the host's feed reports every finding still in the build, so the \
+         bounded set the agent worked on cannot be the whole answer: {published}"
+    );
+    assert_eq!(
+        findings_on_the_disk(&reached),
+        published,
+        "the file a host reads is the document this build published"
+    );
+}
+
+#[tokio::test]
+async fn a_scan_within_the_bound_publishes_the_same_findings_and_defers_none() {
+    let reached = disposition(&findings_beyond_budget(3, 3).await);
+
+    assert_eq!(
+        reached.deferred(),
+        &[],
+        "this world differs from the one above in the bound alone, and this \
+         bound cut nothing"
+    );
+    assert_eq!(reached.projected(), Some(3));
+
+    let published = published_findings(&reached);
+    assert_eq!(published["scanned"]["projected"], 3);
+    assert_eq!(
+        published["scanned"]["findings"].as_array().map(Vec::len),
+        Some(3),
+        "publishing the deferred remainder alone would answer 0 here: {published}"
+    );
+    assert_eq!(findings_on_the_disk(&reached), published);
+}
+
+#[tokio::test]
+async fn the_published_count_is_the_length_of_the_published_list() {
+    for run in [
+        findings_beyond_budget(3, 1).await,
+        findings_beyond_budget(3, 3).await,
+        clean_scan_no_findings(),
+    ] {
+        let published = published_findings(&disposition(&run));
+        assert_eq!(
+            published["scanned"]["projected"],
+            serde_json::json!(published["scanned"]["findings"]
+                .as_array()
+                .map(Vec::len)
+                .expect("a scanned document carries a list")),
+            "a count that disagrees with the list beside it is worse than no \
+             count: {published}"
+        );
+    }
+}
+
+#[test]
+fn a_scan_that_found_nothing_is_not_a_scan_that_did_not_run() {
+    let empty = published_findings(&disposition(&clean_scan_no_findings()));
+
+    assert_eq!(empty["scanned"]["projected"], 0);
+    assert_eq!(empty["scanned"]["findings"], serde_json::json!([]));
+    assert!(
+        empty.get("unusable").is_none(),
+        "a scan that ran and found nothing names no failure: {empty}"
+    );
+    assert_eq!(
+        disposition(&clean_scan_no_findings()).projected(),
+        Some(0),
+        "zero is an answer this run can stand behind"
+    );
+}
+
+#[tokio::test]
+async fn a_scan_that_did_not_run_publishes_no_list_and_no_count() {
+    let reached = disposition(&scanner_unusable().await);
+    let unusable = published_findings(&reached);
+
+    assert_eq!(reached.projected(), None);
+    assert!(
+        unusable.get("scanned").is_none(),
+        "a run that never read a document must not publish a list of what it \
+         holds: {unusable}"
+    );
+    assert!(
+        unusable["unusable"]["why"]
+            .as_str()
+            .is_some_and(|why| why.contains("-which-is-not-installed")),
+        "and it says why the scan produced no answer: {unusable}"
+    );
+    assert_ne!(
+        unusable,
+        published_findings(&disposition(&clean_scan_no_findings())),
+        "an absent list and an empty list are two answers, and a feed that \
+         reads them as one reports a clean image for a scan that never ran"
+    );
+    assert_eq!(findings_on_the_disk(&reached), unusable);
+}
+
+#[test]
+fn the_published_findings_carry_the_array_arms_the_document_used() {
+    let absent = published_findings(&disposition(&Run::scanned(projection_of(document_of(
+        &support::cve::report_with_os_absent(),
+    )))));
+    let empty = published_findings(&disposition(&Run::scanned(projection_of(document_of(
+        &support::cve::report_with_os_empty(),
+    )))));
+
+    assert_eq!(absent["scanned"]["os_packages"], "absent");
+    assert_eq!(empty["scanned"]["os_packages"], "empty");
+    assert_eq!(
+        absent["scanned"]["libraries"], "present",
+        "both documents report libraries, so the arm read is the OS one: {absent}"
+    );
+    assert_eq!(empty["scanned"]["libraries"], "present", "{empty}");
+}
+
+#[tokio::test]
+async fn every_published_finding_reads_back_as_the_finding_the_projection_made() {
+    let run = findings_beyond_budget(3, 1).await;
+    let projected: Vec<ProjectedFinding> = run
+        .projection()
+        .expect("a scan that produced a projection")
+        .all()
+        .cloned()
+        .collect();
+
+    let published = findings_on_the_disk(&disposition(&run));
+    let read: Vec<ProjectedFinding> =
+        serde_json::from_value(published["scanned"]["findings"].clone())
+            .expect("the published findings read back into the type that made them");
+
+    assert_eq!(read, projected);
+}
+
+#[tokio::test]
+async fn the_bundle_states_the_denominator_beside_the_bounded_count() {
+    let over_the_bound = disposition(&findings_beyond_budget(3, 1).await).published();
+    assert_eq!(over_the_bound.verdicts, 0);
+    assert_eq!(
+        over_the_bound.projected,
+        Some(3),
+        "a reader given the verdict count alone concludes the image has that \
+         many problems"
+    );
+
+    let never_scanned = disposition(&scanner_unusable().await).published();
+    assert_eq!(
+        never_scanned.projected, None,
+        "and a run that scanned nothing must not report a count of zero"
+    );
+}
+
+#[test]
+fn the_published_findings_are_the_grades_the_deployment_acts_on() {
+    let acted_on = published_findings(&disposition(&Run::scanned(projection_of(document_of(
+        &report_with(
+            support::cve::libraries_graded(&[FIXABLE_CVE], "HIGH"),
+            os_packages(&[]),
+        ),
+    )))));
+    let below = published_findings(&disposition(&Run::scanned(projection_of(document_of(
+        &report_with(
+            support::cve::libraries_graded(&[FIXABLE_CVE], "MEDIUM"),
+            os_packages(&[]),
+        ),
+    )))));
+
+    assert_eq!(acted_on["scanned"]["projected"], 1);
+    assert_eq!(
+        below["scanned"]["projected"], 0,
+        "this file publishes the projection whole, and the projection is the \
+         grades the document named. A deployment that wants MEDIUM names it in \
+         severities: {below}"
     );
 }

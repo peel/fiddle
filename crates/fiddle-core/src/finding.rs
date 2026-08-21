@@ -97,14 +97,14 @@ impl TryFrom<Vec<Severity>> for Severities {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageType {
     Library,
     Os,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProjectedFinding {
     pub cve: AdvisoryId,
@@ -158,6 +158,52 @@ mod tests {
         assert!(
             refused.to_string().contains("advisoryText"),
             "the refusal must be about the seventh field, got: {refused}"
+        );
+    }
+
+    #[test]
+    fn a_finding_serializes_in_the_spelling_it_reads_back_from() {
+        let finding = ProjectedFinding {
+            cve: AdvisoryId::parse("CVE-2026-12345").unwrap(),
+            package: "golang.org/x/crypto".to_string(),
+            current: "0.53.0".to_string(),
+            fixed_version: Some("0.54.0".to_string()),
+            severity: Severity::High,
+            package_type: PackageType::Library,
+        };
+
+        let written = serde_json::to_value(&finding).expect("a finding serializes");
+        assert_eq!(
+            written,
+            serde_json::json!({
+                "cve": "CVE-2026-12345",
+                "package": "golang.org/x/crypto",
+                "current": "0.53.0",
+                "fixedVersion": "0.54.0",
+                "severity": "HIGH",
+                "packageType": "library",
+            }),
+            "a published finding uses the six keys this type reads, so a host \
+             deserializes the file fiddle wrote"
+        );
+        assert_eq!(
+            serde_json::from_value::<ProjectedFinding>(written).expect("it reads back"),
+            finding
+        );
+
+        let unfixed = ProjectedFinding {
+            fixed_version: None,
+            ..finding
+        };
+        let written = serde_json::to_value(&unfixed).expect("a finding serializes");
+        assert!(
+            written["fixedVersion"].is_null(),
+            "a finding with no known fix writes the key as null, and \
+             deny_unknown_fields still reads it: {written}"
+        );
+        assert_eq!(
+            serde_json::from_value::<ProjectedFinding>(written).expect("it reads back"),
+            unfixed
         );
     }
 
