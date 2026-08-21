@@ -390,6 +390,21 @@ impl EnsurePullRequestBody {
     fn request(&self) -> serde_json::Value {
         serde_json::json!({ "body": self.body })
     }
+
+    async fn held(&self, ctx: &EffectContext) -> Result<String, GhError> {
+        let response = ctx.gh.api("GET", &self.path(), None, &ctx.cancel).await?;
+        self.read(&response.body)
+    }
+}
+
+pub async fn read_pull_request_body(
+    ctx: &EffectContext,
+    repo: &str,
+    pr: u64,
+) -> Result<String, GhError> {
+    EnsurePullRequestBody::new(repo.to_string(), pr, String::new())
+        .held(ctx)
+        .await
 }
 
 #[async_trait::async_trait]
@@ -410,8 +425,7 @@ impl IntegrationOperation for EnsurePullRequestBody {
     }
 
     async fn inspect(&self, ctx: &EffectContext) -> Result<Option<PullRequestBody>, GhError> {
-        let response = ctx.gh.api("GET", &self.path(), None, &ctx.cancel).await?;
-        let held = self.read(&response.body)?;
+        let held = self.held(ctx).await?;
 
         Ok((held == self.body).then_some(PullRequestBody {
             number: self.pr,

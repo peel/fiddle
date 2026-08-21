@@ -162,6 +162,9 @@ pub enum CapabilityError {
     #[error("{0}")]
     Dedup(#[from] crate::cve::dedup::DedupError),
 
+    #[error("{0}")]
+    Attempts(#[from] crate::cve::attempts::AttemptsError),
+
     #[error("this executor is bound to `{bound}` and the run is `{asked}`")]
     Misbound { bound: String, asked: String },
 }
@@ -212,6 +215,8 @@ impl CapabilityError {
                 crate::cve::dedup::DedupError::ShallowHistory { .. } => Recurrence::Permanent,
                 crate::cve::dedup::DedupError::Git { .. } => Recurrence::Correctable,
             },
+
+            CapabilityError::Attempts(_) => Recurrence::Correctable,
         }
     }
 }

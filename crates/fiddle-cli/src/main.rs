@@ -802,6 +802,7 @@ fn build_capability<'a>(
                     },
                     command_timeout: workspace.command_timeout.as_duration(),
                     findings: fiddle_runtime::cve::verdict::Budget::of(sweep.max_findings),
+                    max_attempts: u32::try_from(agent.max_capability_attempts).unwrap_or(u32::MAX),
                     report_dir: config.report.dir.clone(),
                     today: fiddle_runtime::capability::cve::today_utc(),
                     cancel: cancel.clone(),

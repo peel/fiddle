@@ -1,14 +1,17 @@
 use super::cve::{
     check_out, land, plan_shared_pull_request, publish_shared_work, Approved, Checkout, Git,
-    GroupMigration, GroupStatus, InRepository, InWorktree, MigrationConfig, SharedPublication,
+    GroupMigration, GroupStatus, InRepository, InWorktree, MigrationConfig, PlanError,
+    SharedPublication,
 };
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::AgentBudget;
+use crate::cve::attempts;
 use crate::cve::dedup::commit_log_dedup;
 use crate::cve::project::{project, Projection};
 use crate::cve::verdict::{disposition, Attempted, Budget, Disposition, InProgress, Run};
 use crate::effect::{EffectContext, Executor};
 use crate::evaluate::{evaluate, Check, Contract, Evaluation, InWorkspace, Repair, Rescan};
+use crate::github::read_pull_request_body;
 use crate::scanner::{ScanReport, Scanner, WizCredential};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError};
 use fiddle_core::{
@@ -56,6 +59,8 @@ pub struct MitigateConfig {
     pub command_timeout: Duration,
 
     pub findings: Budget,
+
+    pub max_attempts: u32,
 
     pub report_dir: PathBuf,
 
@@ -130,6 +135,12 @@ where
         )
         .await?;
 
+        if let Some(number) = self.bound_reached(&approved).await? {
+            let mut run = Run::scanned(projection);
+            run.bound_reached = Some(number);
+            return Ok(run);
+        }
+
         let checkout = check_out(&InRepository::new(&self.config.tree), &approved).await?;
         self.observed.lock().unwrap().tree = Some(observed_tree(&checkout, report));
 
@@ -203,6 +214,17 @@ where
         run.deferred = deferred;
         run.landed = landed;
         Ok(run)
+    }
+
+    async fn bound_reached(&self, approved: &Approved) -> Result<Option<u64>, CapabilityError> {
+        let Some(number) = approved.reused() else {
+            return Ok(None);
+        };
+        let held = read_pull_request_body(self.context, &self.config.repo, number)
+            .await
+            .map_err(PlanError::Read)?;
+        let spent = attempts::read(&held)?;
+        Ok((spent >= self.config.max_attempts).then_some(number))
     }
 
     async fn judge(
