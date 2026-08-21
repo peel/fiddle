@@ -3,6 +3,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FILE="${1:-$ROOT/.github/workflows/github-effects.yml}"
+GUARD_NAME="${2:-Require FIDDLE_EFFECTS_TOKEN}"
 
 if [[ ! -r "$FILE" ]]; then
   echo "check-github-effects-lane: cannot read $FILE" >&2
@@ -35,8 +36,23 @@ extract_run_block() {
   ' "$FILE"
 }
 
-GUARD_NAME="Require FIDDLE_EFFECTS_TOKEN"
 PREFLIGHT_NAME="Require a Cargo workspace on the dispatched ref"
+
+guard_secrets() {
+  awk -v marker="      - name: $GUARD_NAME" '
+    index($0, marker) == 1 { instep = 1; next }
+    instep && $0 == "        env:" { inenv = 1; next }
+    inenv {
+      if ($0 ~ /^          [A-Za-z_][A-Za-z0-9_]*:[[:space:]]*\$\{\{[[:space:]]*secrets\./) {
+        name = $1
+        sub(/:$/, "", name)
+        print name
+        next
+      }
+      exit
+    }
+  ' "$FILE"
+}
 
 for key in if continue-on-error; do
   hits=$(grep -nE "^[[:space:]]*(-[[:space:]]+)?${key}[[:space:]]*:" "$STRIPPED" || true)
@@ -77,8 +93,17 @@ if [[ -z "$guard_block" ]]; then
 else
   grep -q 'exit 1' <<<"$guard_block" ||
     fail "the credential guard's run: block has no 'exit 1'; it would report success with no credential"
-  grep -q 'FIDDLE_EFFECTS_TOKEN' <<<"$guard_block" ||
-    fail "the credential guard's run: block does not name FIDDLE_EFFECTS_TOKEN"
+
+  tested=$(grep -v '^[[:space:]]*echo' <<<"$guard_block" || true)
+  credentials=$(guard_secrets)
+  if [[ -z "$credentials" ]]; then
+    fail "the credential guard of $FILE maps no secret into its environment, so it tests nothing and the lane runs uncredentialled"
+  else
+    while read -r name; do
+      grep -q -- "$name" <<<"$tested" ||
+        fail "the credential guard receives $name and no line of its run: block outside an echo names it; a guard that only writes the name into its diagnostic tests nothing, and the lane fails deep inside a run or passes over an empty value"
+    done <<<"$credentials"
+  fi
 fi
 
 if [[ -z "$preflight_block" ]]; then
@@ -97,4 +122,4 @@ if [[ "$FAILED" -ne 0 ]]; then
   exit 1
 fi
 
-echo "credentialed lane ok: never skips, guards first, preflight before the build"
+echo "credentialed lane ok ($FILE): never skips, guards first, preflight before the build, guard tests every secret it receives"
