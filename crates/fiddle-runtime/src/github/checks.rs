@@ -30,6 +30,10 @@ impl CheckState {
     pub fn is_pending(self) -> bool {
         matches!(self, CheckState::Queued | CheckState::InProgress)
     }
+
+    pub fn blames_the_change(self) -> bool {
+        matches!(self, CheckState::Failed)
+    }
 }
 
 pub fn classify(status: &str, conclusion: Option<&str>) -> CheckState {
@@ -314,5 +318,80 @@ impl IntegrationOperation for EnsureCheckRequested {
             .api("POST", &self.dispatch_path(), Some(&body), &ctx.cancel)
             .await
             .map(|_response| ())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BlamedCheck {
+    pub name: String,
+    pub details_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenuineFailure {
+    pub head_sha: String,
+    pub blamed: Vec<BlamedCheck>,
+}
+
+fn tests_the_head(run: &serde_json::Value, head_sha: &str) -> bool {
+    run["head_sha"].as_str() == Some(head_sha)
+}
+
+fn blames_the_change(run: &serde_json::Value) -> bool {
+    classify(
+        run["status"].as_str().unwrap_or_default(),
+        run["conclusion"].as_str(),
+    )
+    .blames_the_change()
+}
+
+fn blame(run: &serde_json::Value) -> BlamedCheck {
+    BlamedCheck {
+        name: run["name"].as_str().unwrap_or_default().to_string(),
+        details_url: run["details_url"].as_str().map(str::to_string),
+    }
+}
+
+pub async fn observe_genuine_failure(
+    gh: &GhCli,
+    repo: &str,
+    head_sha: &str,
+    cancel: &CancellationToken,
+) -> Observation<Option<GenuineFailure>> {
+    let path = check_runs_path(repo, head_sha);
+    let source = SourceRef(format!("github:{repo}/commits/{head_sha}/check-runs"));
+    let unavailable = |reason: String| Observation::Unavailable {
+        source: SourceRef(source.0.clone()),
+        reason,
+    };
+
+    let response = match gh.api("GET", &path, None, cancel).await {
+        Ok(response) => response,
+        Err(error) => return unavailable(format!("the check runs could not be read: {error}")),
+    };
+
+    let Some(runs) = response.body["check_runs"].as_array() else {
+        return unavailable(format!(
+            "{path} answered {} with no check_runs array",
+            response.status
+        ));
+    };
+
+    let blamed: Vec<BlamedCheck> = runs
+        .iter()
+        .filter(|run| tests_the_head(run, head_sha) && blames_the_change(run))
+        .map(blame)
+        .collect();
+
+    Observation::Available {
+        value: match blamed.is_empty() {
+            true => None,
+            false => Some(GenuineFailure {
+                head_sha: head_sha.to_string(),
+                blamed,
+            }),
+        },
+        source,
+        revision: Some(head_sha.to_string()),
     }
 }

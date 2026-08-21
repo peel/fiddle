@@ -6,8 +6,8 @@ pub mod ready;
 pub mod refs;
 
 pub use checks::{
-    check_request_target, classify, observe_checks, run_name, CheckState, EnsureCheckRequested,
-    WorkflowRun,
+    check_request_target, classify, observe_checks, observe_genuine_failure, run_name, BlamedCheck,
+    CheckState, EnsureCheckRequested, GenuineFailure, WorkflowRun,
 };
 pub use cli::{GhCli, GhError, GhResponse, RetryAdvice};
 pub use comments::{read_conversation, read_one_comment, HumanResponse};
