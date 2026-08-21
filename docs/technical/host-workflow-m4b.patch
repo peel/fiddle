@@ -116,12 +116,12 @@ tag the `scan` job builds, and `[orchestration.cve] image` names the same tag.
 THE ECOSYSTEM'S OWN TOOLS
 
 The deleted step ran `go` inside a model turn, which is why its allowlist
-carried `Bash(go *)`. fiddle needs an entry of its own, and it is narrower.
-`[[workspace.commands]]` in `fiddle.toml` names each program an attempt may run
-and the arguments it takes. A program the document does not name is refused.
-There is no shell, so `sh -c` is refused for the same reason `curl` is: no
-declaration names it. `[workspace] command_timeout` bounds each run, and the
-child gets `HOME`, `PATH`, `LANG` and one toolchain locator and no credential.
+carried `Bash(go *)`. fiddle needs an entry of its own. `[[workspace.commands]]`
+in `fiddle.toml` names each program an attempt may run and the arguments it
+takes. A program the document does not name is refused. There is no interpreter,
+so `sh -c` is refused for the same reason `curl` is: no declaration names it.
+`[workspace] command_timeout` bounds each run, and the child gets `HOME`,
+`PATH`, `LANG` and one toolchain locator and no credential.
 `docs/technical/decisions/043-a-deployment-declares-the-programs-an-attempt-may-run.md`
 records the decision.
 
@@ -130,6 +130,27 @@ no ecosystem and ships no default, and an attempt against a document that
 declares nothing gets four tools instead of five. The attempt still declares
 every file it changed, `go.sum` included, because knowing that a bump implies a
 checksum file is the agent's knowledge and not fiddle's.
+
+THE ENTRY IS NARROWER IN SURFACE AND NOT IN AUTHORITY, AND THE JOB IS WHAT
+ISOLATES
+
+`Bash(go *)` let the model compose any `go` command line. `[[workspace.commands]]`
+lets it append to a prefix the document fixed. That is a smaller surface and a
+legible one, and it is not a smaller authority: `go build` and `go test` compile
+and run code out of the repository, so either allowlist amounts to arbitrary
+execution under the runner's identity. Nothing in fiddle confines it. Decision
+043 states the four things that do hold.
+
+This is safe here because of where it runs. The `remediate` job is a disposable
+GitHub-hosted virtual machine that is destroyed after the run, and the same was
+true of the step this replaces. That property belongs to the workflow rather than
+to fiddle, which is why it is written down here. An operator who moves this
+capability to a long-lived self-hosted runner, or who runs `fiddle run` on a
+laptop, loses it and gets nothing in its place.
+
+The declared programs also give the attempt a network path it directs itself.
+`go mod tidy` fetches from a module proxy, so the runner needs egress to it. The
+deleted step needed the same egress for the same reason.
 
 THE VERDICT MAPPING
 
