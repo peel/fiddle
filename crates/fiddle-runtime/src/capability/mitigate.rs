@@ -11,7 +11,7 @@ use crate::cve::project::{project, Projection};
 use crate::cve::verdict::{disposition, Attempted, Budget, Disposition, InProgress, Run};
 use crate::effect::{EffectContext, Executor};
 use crate::evaluate::{evaluate, Check, Contract, Evaluation, InWorkspace, Repair, Rescan};
-use crate::github::read_pull_request_body;
+use crate::github::{observe_genuine_failure, read_pull_request_body};
 use crate::scanner::{ScanReport, Scanner, WizCredential};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError};
 use fiddle_core::{
@@ -141,6 +141,8 @@ where
             return Ok(run);
         }
 
+        let afresh = self.attempts_afresh(&approved).await;
+
         let checkout = check_out(&InRepository::new(&self.config.tree), &approved).await?;
         self.observed.lock().unwrap().tree = Some(observed_tree(&checkout, report));
 
@@ -174,7 +176,7 @@ where
 
         let mut settled: Vec<AdvisoryId> = Vec::new();
         let mut attempted: Vec<Attempted> = Vec::new();
-        if !taken.is_empty() {
+        if afresh && !taken.is_empty() {
             let attempt = self.migration.migrate(&workspace, &taken).await?;
             let evaluation = self.judge(&workspace, &taken, &projection, report).await?;
             let status = GroupStatus::of(&evaluation, attempt.undeclared.as_ref());
@@ -225,6 +227,21 @@ where
             .map_err(PlanError::Read)?;
         let spent = attempts::read(&held)?;
         Ok((spent >= self.config.max_attempts).then_some(number))
+    }
+
+    async fn attempts_afresh(&self, approved: &Approved) -> bool {
+        let Some(candidate) = approved.pr_head() else {
+            return true;
+        };
+        observe_genuine_failure(
+            &self.context.gh,
+            &self.config.repo,
+            candidate,
+            &self.config.cancel,
+        )
+        .await
+        .value()
+        .is_some_and(Option::is_some)
     }
 
     async fn judge(

@@ -1894,10 +1894,11 @@ fn an_open_pull_request_covering_the_rest_reaches_already_in_progress() {
         2,
         an_attempt_finding_the_tree_already_at_the_fix(&[LIBRARY_CVE]),
     );
-    sweep.seed_shared_pull_request_saying(
+    let seeded_head = sweep.seed_shared_pull_request_saying(
         STALE_BODY,
         &format!("move the requirement, fixes {LIBRARY_CVE}"),
     );
+    sweep.seed_a_check_blaming(&seeded_head);
 
     let run = sweep.run();
     the_old_surface_says_nothing(&sweep, &run, "an open pull request covers it");
@@ -1920,10 +1921,11 @@ fn the_plain_rendering_names_the_row_a_run_reached_and_its_pull_request() {
         2,
         an_attempt_finding_the_tree_already_at_the_fix(&[LIBRARY_CVE]),
     );
-    sweep.seed_shared_pull_request_saying(
+    let seeded_head = sweep.seed_shared_pull_request_saying(
         STALE_BODY,
         &format!("move the requirement, fixes {LIBRARY_CVE}"),
     );
+    sweep.seed_a_check_blaming(&seeded_head);
 
     let run = sweep.run_plain();
     let stdout = String::from_utf8_lossy(&run.stdout).to_string();
@@ -2880,12 +2882,30 @@ impl Sweep {
             .filter_map(|landed| landed["key"].as_str().map(str::to_string))
             .collect()
     }
+
+    fn seed_a_check_blaming(&self, head_sha: &str) {
+        std::fs::write(
+            self.stub.join("checks_seed"),
+            serde_json::json!([{
+                "name": BLAMING_CHECK,
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": head_sha,
+                "details_url": format!("https://github.com/{SWEEP_REPO}/runs/{BLAMING_CHECK}"),
+            }])
+            .to_string(),
+        )
+        .unwrap();
+    }
 }
+
+const BLAMING_CHECK: &str = "cve-verify";
 
 #[test]
 fn a_second_run_over_a_shared_pull_request_rewrites_its_body_and_works_in_its_tree() {
     let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
     let seeded_head = sweep.seed_shared_pull_request(STALE_BODY);
+    sweep.seed_a_check_blaming(&seeded_head);
 
     let run = sweep.run();
     let payload = sweep.payload(&run);
@@ -2961,7 +2981,8 @@ fn a_second_run_over_a_shared_pull_request_rewrites_its_body_and_works_in_its_tr
 #[test]
 fn a_run_whose_shared_body_is_unchanged_dispatches_no_rewrite() {
     let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
-    sweep.seed_shared_pull_request(RUN_BODY);
+    let seeded_head = sweep.seed_shared_pull_request(RUN_BODY);
+    sweep.seed_a_check_blaming(&seeded_head);
 
     let run = sweep.run();
     assert_eq!(

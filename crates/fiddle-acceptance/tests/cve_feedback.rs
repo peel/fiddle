@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use support::{
-    accepted, body_of, check_stub_binary, completion, gh_stub_binary, git, object_of, repo_root,
-    toml_string, walkdir_files, wiz_stub_binary, Reply, Scenario, StubGateway, CREDENTIAL_VARS,
+    accepted, body_of, check_stub_binary, completion, gh_stub_binary, git, git_says, object_of,
+    repo_root, toml_string, walkdir_files, wiz_stub_binary, Reply, Scenario, StubGateway,
+    CREDENTIAL_VARS,
 };
 
 const FEEDBACK_REF: &str = "cve";
@@ -48,6 +49,10 @@ const WIZ_ID: &str = "WIZ_CLIENT_ID";
 const WIZ_SECRET: &str = "WIZ_CLIENT_SECRET";
 
 const SENTINEL_SECRET: &str = "fiddle-secret-3b8e51d0";
+
+const VERIFY_CHECK: &str = "cve-verify";
+
+const RESCAN_CHECK: &str = "cve-rescan";
 
 fn body_counting(attempts: u32) -> String {
     format!("{SHARED_PROSE}\n\n{ATTEMPTS_START}\nAttempts: {attempts}\n{ATTEMPTS_END}")
@@ -141,7 +146,7 @@ impl Feedback {
         )
     }
 
-    fn seed_shared_pull_request(&self, body: &str) {
+    fn seed_shared_pull_request(&self, body: &str) -> String {
         git(&self.tree, &["checkout", "-q", "-b", SHARED_BRANCH]);
         std::fs::write(
             self.tree.join(PRIOR_RUN_MARKER),
@@ -162,6 +167,7 @@ impl Feedback {
             ],
         );
         git(&self.tree, &["push", "-q", "origin", SHARED_BRANCH]);
+        let head_sha = git_says(&self.tree, &["rev-parse", "HEAD"]);
         git(&self.tree, &["checkout", "-q", BASE]);
 
         let owner = REPO.split('/').next().unwrap();
@@ -177,6 +183,27 @@ impl Feedback {
                 "labels": ["security/cve"],
             }])
             .to_string(),
+        )
+        .unwrap();
+        head_sha
+    }
+
+    fn seed_checks(&self, head_sha: &str, concluding: &[(&str, &str)]) {
+        let runs: Vec<serde_json::Value> = concluding
+            .iter()
+            .map(|(name, conclusion)| {
+                serde_json::json!({
+                    "name": name,
+                    "status": "completed",
+                    "conclusion": conclusion,
+                    "head_sha": head_sha,
+                    "details_url": format!("https://github.com/{REPO}/runs/{name}"),
+                })
+            })
+            .collect();
+        std::fs::write(
+            self.stub.join("checks_seed"),
+            serde_json::Value::Array(runs).to_string(),
         )
         .unwrap();
     }
@@ -327,7 +354,8 @@ fn an_attempt_declining() -> Vec<Reply> {
 #[test]
 fn a_pull_request_at_the_bound_is_left_for_a_human() {
     let feedback = Feedback::bounded_at(2, an_attempt_declining());
-    feedback.seed_shared_pull_request(&body_counting(2));
+    let head_sha = feedback.seed_shared_pull_request(&body_counting(2));
+    feedback.seed_checks(&head_sha, &[(VERIFY_CHECK, "failure")]);
 
     let run = feedback.run();
     let payload = feedback.payload(&run);
@@ -382,7 +410,8 @@ fn a_pull_request_at_the_bound_is_left_for_a_human() {
 #[test]
 fn a_pull_request_below_the_bound_is_attempted() {
     let feedback = Feedback::bounded_at(3, an_attempt_declining());
-    feedback.seed_shared_pull_request(&body_counting(2));
+    let head_sha = feedback.seed_shared_pull_request(&body_counting(2));
+    feedback.seed_checks(&head_sha, &[(VERIFY_CHECK, "failure")]);
 
     let run = feedback.run();
     let payload = feedback.payload(&run);
@@ -411,7 +440,8 @@ fn a_pull_request_below_the_bound_is_attempted() {
 fn a_count_that_cannot_be_read_makes_no_attempt() {
     let feedback = Feedback::bounded_at(2, an_attempt_declining());
     let edited = format!("{SHARED_PROSE}\n\n{ATTEMPTS_START}\nAttempts: two\n{ATTEMPTS_END}");
-    feedback.seed_shared_pull_request(&edited);
+    let head_sha = feedback.seed_shared_pull_request(&edited);
+    feedback.seed_checks(&head_sha, &[(VERIFY_CHECK, "failure")]);
 
     let run = feedback.run();
     assert_ne!(
@@ -435,5 +465,74 @@ fn a_count_that_cannot_be_read_makes_no_attempt() {
     assert!(
         refused.contains("body") && refused.contains("two"),
         "the refusal names the body it could not read: {refused}"
+    );
+}
+
+#[test]
+fn two_checks_blaming_the_candidate_are_one_fresh_attempt() {
+    let feedback = Feedback::bounded_at(3, an_attempt_declining());
+    let head_sha = feedback.seed_shared_pull_request(&body_counting(0));
+    feedback.seed_checks(
+        &head_sha,
+        &[(VERIFY_CHECK, "failure"), (RESCAN_CHECK, "failure")],
+    );
+
+    let run = feedback.run();
+    let payload = feedback.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    assert_eq!(
+        feedback.gateway.served(),
+        1,
+        "CI blamed the candidate twice and a run makes one fresh attempt, not \
+         one per check that failed"
+    );
+    assert_eq!(
+        feedback.open_pull_requests().len(),
+        1,
+        "and it worked on the pull request the checks blamed"
+    );
+}
+
+#[test]
+fn two_checks_blaming_nothing_are_no_fresh_attempt() {
+    let feedback = Feedback::bounded_at(3, an_attempt_declining());
+    let head_sha = feedback.seed_shared_pull_request(&body_counting(0));
+    feedback.seed_checks(
+        &head_sha,
+        &[(VERIFY_CHECK, "success"), (RESCAN_CHECK, "success")],
+    );
+
+    let run = feedback.run();
+    let payload = feedback.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "a pull request nothing blames is a stopping place and not a failure\n\
+         stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    assert_eq!(
+        feedback.gateway.served(),
+        0,
+        "this run and the one above differ only in what the two checks \
+         concluded. Nothing here blames the candidate sha, so this run calls \
+         no model"
+    );
+    assert_eq!(
+        feedback.mutations(),
+        Vec::<String>::new(),
+        "and it left the pull request alone"
+    );
+    assert_eq!(
+        feedback.remote_branches(),
+        vec![BASE.to_string(), SHARED_BRANCH.to_string()],
+        "and pushed nothing"
     );
 }
