@@ -480,11 +480,13 @@ fn scripted_credential() -> WizCredential {
     }
 }
 
-pub const ARMS: [&str; 11] = [
+pub const ARMS: [&str; 13] = [
     "ok",
     "library-clean",
     "no-client-version",
     "blank-client-version",
+    "no-scan-origin",
+    "blank-scan-origin",
     "exit-nonzero-with-file",
     "exit-nonzero-no-file",
     "empty-file",
@@ -588,7 +590,11 @@ pub fn arm_was_exercised(arm: &str, outcome: &Result<ScanReport, ScanError>) -> 
             matches!(outcome, Err(ScanError::Failed { .. }))
         }
         "empty-file" => matches!(outcome, Err(ScanError::NoOutput { .. })),
-        "unparseable-file" | "no-client-version" | "blank-client-version" => {
+        "unparseable-file"
+        | "no-client-version"
+        | "blank-client-version"
+        | "no-scan-origin"
+        | "blank-scan-origin" => {
             matches!(outcome, Err(ScanError::Unparseable { .. }))
         }
         "no-such-image" => matches!(outcome, Err(ScanError::ImageAbsent { .. })),
@@ -603,6 +609,8 @@ pub fn arm_exits_with(arm: &str) -> i32 {
         | "library-clean"
         | "no-client-version"
         | "blank-client-version"
+        | "no-scan-origin"
+        | "blank-scan-origin"
         | "empty-file"
         | "unparseable-file" => 0,
         "exit-nonzero-with-file"
@@ -666,9 +674,6 @@ pub fn contract_with(name: &str, command_line: &str, success: Success) -> Contra
 }
 
 const FIXTURE_SCANNER_VERSION: &str = "1.2.3";
-
-const FIXTURE_DIGEST: &str =
-    "sha256:6f1b0d2c9a4e7385bd1c05fa9e37642c8b0d5713ae629f04c8d17b6a3e59042d";
 
 const REPAIRED_ADVISORY: &str = "CVE-2026-4242";
 
@@ -836,7 +841,7 @@ fn rescan_report(document: Report, version: &str) -> ScanReport {
         document: serde_json::from_str(document.raw())
             .expect("a fixture scanner document is valid JSON"),
         scanner_version: version.to_string(),
-        image_digest: FIXTURE_DIGEST.to_string(),
+        image_digest: FIXTURE_IMAGE_DIGEST.to_string(),
     }
 }
 

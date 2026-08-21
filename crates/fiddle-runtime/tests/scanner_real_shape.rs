@@ -16,6 +16,9 @@ const FIXED: &str = "2.52.14";
 
 const CLIENT_VERSION: &str = "1.66.0-a29c961";
 
+const SCAN_ORIGIN_ID: &str =
+    "sha256:9d41c0b7e5a83f26d1c40b9e73a5628f4b0d1c73ae629f04c8d17b6a3e590421";
+
 const VULNERABILITY_KEYS: usize = 27;
 
 const READ_BY_THE_PROJECTION: [&str; 4] = ["name", "severity", "fixedVersion", "hasExploit"];
@@ -166,7 +169,7 @@ fn the_real_document_reports_no_os_array_at_all() {
 }
 
 #[tokio::test]
-async fn the_scan_reads_its_version_from_the_document_and_not_from_the_output() {
+async fn the_scan_reads_its_version_and_its_digest_from_the_document_and_not_from_the_output() {
     let report = scanner_with(support::wiz_stub("real-shape"))
         .scan(&image())
         .await
@@ -180,8 +183,21 @@ async fn the_scan_reads_its_version_from_the_document_and_not_from_the_output() 
          scan it is filed against"
     );
     assert_eq!(
+        report.image_digest, SCAN_ORIGIN_ID,
+        "a real document carries the resolved image in scanOriginResource.id, \
+         and the arm prints a different digest on its output; the recorded one \
+         is the image the findings belong to"
+    );
+    assert!(
+        real_document()["scanOriginResource"]["digest"].is_null(),
+        "the neighbouring key is null in every real document seen so far, so \
+         reading it and falling back to the id would read the fallback every \
+         time"
+    );
+    assert_eq!(
         report.findings().len(),
         1,
-        "and the document the version came from is the one fiddle projects"
+        "and the document the version and the digest came from is the one \
+         fiddle projects"
     );
 }

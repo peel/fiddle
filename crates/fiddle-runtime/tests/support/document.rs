@@ -111,6 +111,16 @@ pub const FIXTURE_CLIENT_NAME: &str = "WizCLI";
 
 pub const FIXTURE_CLIENT_VERSION: &str = "0.0.0-fiddle-stub";
 
+pub const FIXTURE_IMAGE_DIGEST: &str =
+    "sha256:6f1b0d2c9a4e7385bd1c05fa9e37642c8b0d5713ae629f04c8d17b6a3e59042d";
+
+pub const DIGEST_ON_STDOUT: &str =
+    "sha256:9999999999999999999999999999999999999999999999999999999999999999";
+
+const FIXTURE_ORIGIN_TYPE: &str = "CICDScanOriginContainerImage";
+
+const FIXTURE_ORIGIN_NAME: &str = "widget:fiddle-fixture";
+
 fn vulnerability(cve: &str, fixed: Option<&str>, description: &str) -> serde_json::Value {
     graded(cve, fixed, description, FIXTURE_GRADE)
 }
@@ -252,6 +262,13 @@ impl ReportVariant {
                 "extraInfo": {
                     "clientName": FIXTURE_CLIENT_NAME,
                     "clientVersion": FIXTURE_CLIENT_VERSION,
+                },
+                "scanOriginResource": {
+                    "__typename": FIXTURE_ORIGIN_TYPE,
+                    "name": FIXTURE_ORIGIN_NAME,
+                    "id": FIXTURE_IMAGE_DIGEST,
+                    "digest": serde_json::Value::Null,
+                    "imageLabels": serde_json::Value::Null,
                 },
                 "result": result,
             }))

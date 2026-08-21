@@ -4,12 +4,10 @@ mod document;
 
 use document::{
     libraries, libraries_carrying, libraries_graded, os_packages, python_libraries, report_with,
-    unfixed_libraries, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, FIXTURE_CLIENT_VERSION,
-    SECOND_LIBRARY_CVE, SECOND_OS_CVE,
+    unfixed_libraries, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, DIGEST_ON_STDOUT,
+    FIXTURE_CLIENT_VERSION, SECOND_LIBRARY_CVE, SECOND_OS_CVE,
 };
 use std::path::{Path, PathBuf};
-
-const STUB_DIGEST: &str = "sha256:6f1b0d2c9a4e7385bd1c05fa9e37642c8b0d5713ae629f04c8d17b6a3e59042d";
 
 const REAL_SHAPE: &str = include_str!("../../../../tests/fixtures/wiz-real/wiz.json");
 
@@ -34,7 +32,7 @@ fn main() {
         }
         "real-shape" => {
             println!("Wiz CLI v{VERSION_ON_STDOUT}, commit 0000000");
-            println!("scanning {} at {STUB_DIGEST}", image(&args));
+            println!("scanning {} at {DIGEST_ON_STDOUT}", image(&args));
             write(&report, REAL_SHAPE.to_string());
         }
         "library-clean" => {
@@ -57,6 +55,14 @@ fn main() {
         "blank-client-version" => {
             banner(&args);
             write(&report, with_client_version(&clean_document(), Some("  ")));
+        }
+        "no-scan-origin" => {
+            banner(&args);
+            write(&report, with_scan_origin(&clean_document(), None));
+        }
+        "blank-scan-origin" => {
+            banner(&args);
+            write(&report, with_scan_origin(&clean_document(), Some("  ")));
         }
         "library-only" => {
             banner(&args);
@@ -228,9 +234,24 @@ fn with_client_version(document: &str, version: Option<&str>) -> String {
     document.to_string()
 }
 
+fn with_scan_origin(document: &str, id: Option<&str>) -> String {
+    let mut document: serde_json::Value =
+        serde_json::from_str(document).expect("a fixture document is JSON");
+    match id {
+        Some(id) => document["scanOriginResource"]["id"] = id.into(),
+        None => {
+            document
+                .as_object_mut()
+                .expect("a fixture document is an object")
+                .remove("scanOriginResource");
+        }
+    }
+    document.to_string()
+}
+
 fn banner(args: &[String]) {
     println!("wizcli {FIXTURE_CLIENT_VERSION}");
-    println!("scanning {} at {STUB_DIGEST}", image(args));
+    println!("scanning {} at {DIGEST_ON_STDOUT}", image(args));
 }
 
 fn output_file(args: &[String]) -> Option<PathBuf> {
