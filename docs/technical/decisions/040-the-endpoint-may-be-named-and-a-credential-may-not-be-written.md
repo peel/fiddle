@@ -1,4 +1,4 @@
-# 041 — The endpoint may be named, and a credential still cannot be written
+# 040 — The endpoint may be named, and a credential still cannot be written
 
 Status: accepted
 Cites: WrittenOrNamed, named_variable, EnvRef::visit_str, NamedValueAbsent, resolve_named, model_client, OrchestrationCve::image, crates/fiddle-acceptance/tests/binary_repair.rs::a_named_endpoint_that_resolves_to_nothing_refuses_and_reaches_no_gateway, config_check_reports_the_variable_that_names_the_endpoint

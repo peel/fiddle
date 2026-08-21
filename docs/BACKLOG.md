@@ -1645,7 +1645,7 @@ Tags: #documentation #process #evaluation
 
 ### 2026-08-21 — `[orchestration.cve] image` may need a second form, and only the host's workflow can say
 
-ADR 041 gave `[agent] base_url` a second form, `{ env = "NAME" }`, so a repository can commit its `fiddle.toml` without writing its gateway URL. `image` was examined in the same lane and deliberately left alone: a tag names the publishing repository and is committable, and ADR 020 already owes the field a stronger change than a second form.
+ADR 040 gave `[agent] base_url` a second form, `{ env = "NAME" }`, so a repository can commit its `fiddle.toml` without writing its gateway URL. `image` was examined in the same lane and deliberately left alone: a tag names the publishing repository and is committable, and ADR 020 already owes the field a stronger change than a second form.
 
 The case that reopens it: a host workflow that builds a per-run tag, such as one keyed by the commit. `snowplow-incubator/snowplow-identities` is the first host to commit a document, and its workflow is not written yet. If that workflow tags per run, the committed document cannot carry the tag, and the choice is between `WrittenOrNamed` on `image` and the declared-revision field ADR 020's losing alternative describes. The 2026-08-18 entry "Verifying that the scanned image was built from the remediated tree needs a config field no milestone owns" owns the second half of that choice.
 
