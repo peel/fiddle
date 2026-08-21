@@ -485,6 +485,8 @@ Read the block by one rule. A key is spelled the way this build spells it wherev
 
 Where a shipped table settled a boundary differently from this map, `crates/fiddle-cli/src/config.rs` is the schema of record. The deployment's effect ceiling is `[github.policy]`, keyed by effect kind rather than by the booleans `[policy]` shows. `required_checks` is a key of `[github]` rather than of `[github.actions]`. The approver set is `[github.decision] authorized`, a list of numeric user ids, rather than the roles `[jira.approvals]` shows: the schema refuses an approver named by login. There is no `[agent.rig]` table. `[agent]` is flat, and it requires `model`, `base_url`, and `api_key`. The build talks to an OpenAI-compatible gateway rather than to Anthropic directly.
 
+`max_capability_attempts` is a key of `[agent]` rather than of `[execution]`, and this build consumes it. It bounds the attempts `cve_mitigate` makes against one shared pull request. Fiddle reads the count from that pull request's body, and a fresh process therefore sees what an earlier one spent. `docs/technical/decisions/037-the-attempt-bound-is-per-pull-request.md` records why the body holds the count.
+
 #### The configuration this build loads
 
 This document is complete, and the strict schema admits every key in it. `fiddle config check --config fiddle.toml` exits 0 on it. It shows all eight tables the schema knows, which is the whole of what a deployment can say today. An acceptance lane feeds the compiled binary these exact bytes. This block therefore cannot become as aspirational as the one above it.
