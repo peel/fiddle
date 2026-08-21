@@ -8,7 +8,11 @@ use tokio_util::sync::CancellationToken;
 
 const REPORT_FILE: &str = "scan.json";
 
-const CONFIG_DIR: &str = "wiz-config";
+const DEFAULT_CONFIG_DIR: &str = ".wiz";
+
+const CONFIG_DIR_VARIABLE: &str = "WIZ_CONFIG_DIR";
+
+const HOME_VARIABLE: &str = "HOME";
 
 pub const REDACTED: &str = "[redacted]";
 
@@ -16,8 +20,56 @@ const MINIMUM_PATH: &str = "/usr/bin:/bin";
 
 #[derive(Clone, Debug)]
 pub struct WizCredential {
-    pub client_id: String,
     pub client_secret: String,
+}
+
+#[derive(Clone, Debug)]
+pub enum WizLogin {
+    ConfigDir(PathBuf),
+    Home(PathBuf),
+    Unnamed,
+}
+
+impl WizLogin {
+    pub fn from_env() -> Self {
+        match named_directory(CONFIG_DIR_VARIABLE) {
+            Some(directory) => WizLogin::ConfigDir(directory),
+            None => match named_directory(HOME_VARIABLE) {
+                Some(home) => WizLogin::Home(home),
+                None => WizLogin::Unnamed,
+            },
+        }
+    }
+
+    fn config_dir(&self) -> Option<PathBuf> {
+        match self {
+            WizLogin::ConfigDir(directory) => Some(directory.clone()),
+            WizLogin::Home(home) => Some(home.join(DEFAULT_CONFIG_DIR)),
+            WizLogin::Unnamed => None,
+        }
+    }
+
+    fn name_to(&self, command: &mut Command) {
+        match self {
+            WizLogin::ConfigDir(directory) => {
+                command.env(CONFIG_DIR_VARIABLE, directory);
+            }
+            WizLogin::Home(home) => {
+                command.env(HOME_VARIABLE, home);
+            }
+            WizLogin::Unnamed => {}
+        }
+    }
+}
+
+fn named_directory(variable: &str) -> Option<PathBuf> {
+    std::env::var_os(variable)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn holds_a_login(directory: &Path) -> bool {
+    std::fs::read_dir(directory).is_ok_and(|mut entries| entries.next().is_some())
 }
 
 pub struct Wizcli {
@@ -26,6 +78,7 @@ pub struct Wizcli {
     scratch: PathBuf,
     timeout: Duration,
     cancel: CancellationToken,
+    login: WizLogin,
     credential: WizCredential,
 }
 
@@ -36,6 +89,7 @@ impl Wizcli {
         scratch: PathBuf,
         timeout: Duration,
         cancel: CancellationToken,
+        login: WizLogin,
         credential: WizCredential,
     ) -> Self {
         Self {
@@ -44,6 +98,7 @@ impl Wizcli {
             scratch,
             timeout,
             cancel,
+            login,
             credential,
         }
     }
@@ -52,7 +107,7 @@ impl Wizcli {
         self.scratch.join(REPORT_FILE)
     }
 
-    fn command(&self, image: &str, report: &Path) -> Result<Command, ScanError> {
+    fn command(&self, image: &str, report: &Path) -> Command {
         let mut command = Command::new(&self.program);
 
         command.env_clear();
@@ -63,7 +118,7 @@ impl Wizcli {
                 .unwrap_or_else(|| MINIMUM_PATH.into()),
         );
         command.env("NO_COLOR", "1");
-        self.authenticate(&mut command)?;
+        self.login.name_to(&mut command);
 
         command
             .args(&self.args)
@@ -72,25 +127,23 @@ impl Wizcli {
             .arg(report)
             .arg(image);
 
-        Ok(command)
+        command
     }
 
-    fn authenticate(&self, command: &mut Command) -> Result<(), ScanError> {
-        let config = self.scratch.join(CONFIG_DIR);
-        if let Err(source) = std::fs::create_dir_all(&config) {
-            return Err(ScanError::Failed {
-                status: format!(
-                    "the scanner's configuration directory {} could not be created",
-                    config.display()
+    fn require_login(&self) -> Result<(), ScanError> {
+        let Some(config) = self.login.config_dir() else {
+            return Err(ScanError::Unauthenticated {
+                looked_in: format!(
+                    "neither {CONFIG_DIR_VARIABLE} nor {HOME_VARIABLE} names a directory to read"
                 ),
-                stderr: source.to_string(),
             });
+        };
+        match holds_a_login(&config) {
+            true => Ok(()),
+            false => Err(ScanError::Unauthenticated {
+                looked_in: format!("{} holds no login", config.display()),
+            }),
         }
-
-        command.env("WIZ_CLIENT_ID", &self.credential.client_id);
-        command.env("WIZ_CLIENT_SECRET", &self.credential.client_secret);
-        command.env("WIZ_CONFIG_DIR", &config);
-        Ok(())
     }
 
     fn redact(&self, text: &str) -> String {
@@ -108,6 +161,17 @@ impl Wizcli {
 #[async_trait]
 impl Scanner for Wizcli {
     async fn scan(&self, image: &str) -> Result<ScanReport, ScanError> {
+        self.require_login()?;
+        if let Err(source) = std::fs::create_dir_all(&self.scratch) {
+            return Err(ScanError::Failed {
+                status: format!(
+                    "the scanner's report directory {} could not be created",
+                    self.scratch.display()
+                ),
+                stderr: source.to_string(),
+            });
+        }
+
         let report = self.report_path();
         if let Err(source) = remove_if_present(&report) {
             return Err(ScanError::Failed {
@@ -116,7 +180,7 @@ impl Scanner for Wizcli {
             });
         }
 
-        let mut command = self.command(image, &report)?;
+        let mut command = self.command(image, &report);
 
         let bounded = run_bounded(&mut command, None, self.timeout, &self.cancel).await;
         let output = match bounded {

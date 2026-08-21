@@ -4,7 +4,7 @@ use fiddle_runtime::capability::{CapabilityError, Git, MigrationConfig};
 use fiddle_runtime::cve::dedup::{DedupError, Local, Ran, Spawn};
 use fiddle_runtime::cve::project::project;
 use fiddle_runtime::evaluate::{Answered, Check, Contract, Repair, Success, Tree, Unanswered};
-use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
+use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, WizCredential, WizLogin, Wizcli};
 use fiddle_runtime::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -473,11 +473,47 @@ const SCRIPTED_SCAN_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub const FIXTURE_CLIENT_ID: &str = "fiddle-client-1c93f0a5";
 
+pub const FIXTURE_LOGIN_FILE: &str = "auth.json";
+
+pub const FIXTURE_DEFAULT_CONFIG_DIR: &str = ".wiz";
+
 fn scripted_credential() -> WizCredential {
     WizCredential {
-        client_id: FIXTURE_CLIENT_ID.to_string(),
         client_secret: SENTINEL_SECRET.to_string(),
     }
+}
+
+pub struct Caller(TempDir);
+
+impl Caller {
+    pub fn new() -> Self {
+        Caller(TempDir::new().expect("a temporary home for the caller's wizcli login"))
+    }
+
+    pub fn path(&self) -> &Path {
+        self.0.path()
+    }
+
+    pub fn logs_in(&self) {
+        write_login(self.path());
+    }
+
+    pub fn logs_in_at_the_default_directory(&self) {
+        write_login(&self.path().join(FIXTURE_DEFAULT_CONFIG_DIR));
+    }
+}
+
+pub fn write_login(directory: &Path) {
+    std::fs::create_dir_all(directory).expect("a directory for the caller's login");
+    std::fs::write(
+        directory.join(FIXTURE_LOGIN_FILE),
+        serde_json::json!({
+            "clientId": FIXTURE_CLIENT_ID,
+            "clientSecret": SENTINEL_SECRET,
+        })
+        .to_string(),
+    )
+    .expect("the login `wizcli auth` leaves for a later scan");
 }
 
 pub const ARMS: [&str; 13] = [
@@ -497,6 +533,25 @@ pub const ARMS: [&str; 13] = [
 ];
 
 pub fn scanner_with(program: ProgramRef) -> ScriptedScanner {
+    let caller = Caller::new();
+    caller.logs_in();
+    scanner_of(program, caller)
+}
+
+pub fn scanner_of(program: ProgramRef, caller: Caller) -> ScriptedScanner {
+    let login = WizLogin::ConfigDir(caller.path().to_path_buf());
+    scanner_using(program, login, caller)
+}
+
+pub fn scanner_reading_the_default_directory(
+    program: ProgramRef,
+    caller: Caller,
+) -> ScriptedScanner {
+    let login = WizLogin::Home(caller.path().to_path_buf());
+    scanner_using(program, login, caller)
+}
+
+fn scanner_using(program: ProgramRef, login: WizLogin, caller: Caller) -> ScriptedScanner {
     let scratch = TempDir::new().expect("a temporary directory for a scan's report");
     ScriptedScanner {
         wizcli: Wizcli::new(
@@ -505,9 +560,11 @@ pub fn scanner_with(program: ProgramRef) -> ScriptedScanner {
             scratch.path().to_path_buf(),
             SCRIPTED_SCAN_TIMEOUT,
             CancellationToken::new(),
+            login,
             scripted_credential(),
         ),
         scratch,
+        caller,
     }
 }
 
@@ -518,6 +575,7 @@ pub fn scanner_recording_env() -> ScriptedScanner {
 pub struct ScriptedScanner {
     wizcli: Wizcli,
     scratch: TempDir,
+    caller: Caller,
 }
 
 #[async_trait::async_trait]
@@ -535,6 +593,20 @@ impl ScriptedScanner {
             .path()
             .to_str()
             .expect("a temporary directory whose path is UTF-8")
+    }
+
+    pub fn caller(&self) -> &str {
+        self.caller
+            .path()
+            .to_str()
+            .expect("a temporary directory whose path is UTF-8")
+    }
+
+    pub fn child_login_secret(&self) -> String {
+        self.child()["login"]["client_secret"]
+            .as_str()
+            .expect("the scripted scanner records the credential it read")
+            .to_string()
     }
 
     pub fn child_env(&self) -> BTreeMap<String, String> {
@@ -624,9 +696,12 @@ pub fn arm_exits_with(arm: &str) -> i32 {
 
 pub fn observed_exit(arm: &str) -> i32 {
     let scratch = TempDir::new().expect("a temporary directory for a scan's report");
+    let caller = Caller::new();
+    caller.logs_in();
     let stub = wiz_stub(arm);
     let output = std::process::Command::new(&stub.program)
         .args(&stub.args)
+        .env("WIZ_CONFIG_DIR", caller.path())
         .arg("--json-output-file")
         .arg(scratch.path().join("scan.json"))
         .arg(image())

@@ -16,7 +16,7 @@ use crate::evaluate::{evaluate, Check, Contract, Evaluation, InWorkspace, Repair
 use crate::github::{
     observe_genuine_failure, read_pull_request_body, EnsurePullRequestBody, GenuineFailure,
 };
-use crate::scanner::{ScanReport, Scanner, WizCredential};
+use crate::scanner::{ScanReport, Scanner, WizCredential, WizLogin};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError};
 use fiddle_core::{
     correlation_key, AdvisoryId, AttemptId, CapabilityId, ChangeSetState, EffectKind, EvidenceRef,
@@ -51,6 +51,8 @@ pub struct MitigateConfig {
     pub severities: Severities,
 
     pub scratch: PathBuf,
+
+    pub rescan_login: WizLogin,
 
     pub rescan_credential: WizCredential,
 
@@ -364,6 +366,7 @@ where
             self.config.command_timeout,
             Rescan {
                 scratch: self.config.scratch.clone(),
+                login: self.config.rescan_login.clone(),
                 credential: self.config.rescan_credential.clone(),
                 image: self.config.image.clone(),
             },

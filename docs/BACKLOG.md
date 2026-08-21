@@ -1653,3 +1653,16 @@ Read the host's workflow before deciding. Adding the second form on the guess wo
 
 Origin: implementation (bean `fiddle-4fgu`, lane `lane/m4b-4fgu`)
 Tags: #debt #feature
+
+### 2026-08-21 — Nothing here has measured which directory `wizcli auth` writes, and the refusal reads that directory
+
+ADR 042 stops fiddle from overriding `WIZ_CONFIG_DIR` and makes it read the login the caller left. `require_login` refuses before the scan when that directory holds no entry, so the directory it reads must be the one `wizcli auth` writes.
+
+`DEFAULT_CONFIG_DIR` is `.wiz`, under `HOME`. That is an assumption. Design §2.4 measured the real scanner's arguments, its exit code and its JSON shape, and it measured no path. If wizcli keeps its login somewhere else, fiddle refuses a caller who did log in, and the refusal names a directory that was never the right one.
+
+Two things settle it, and both need the real tool. Run `wizcli auth` on a host and list what appears. Or find the option that names the directory and set `WIZ_CONFIG_DIR` in the host workflow, which removes the assumption instead of confirming it. The second is the cheaper answer for one repository and leaves the default unmeasured for every other caller.
+
+`holds_a_login` counts entries rather than reading a named file, for the same reason: the file name is unmeasured too. A directory holding unrelated wizcli state passes the check, and the scan's own exit then reports the failure, which is where this started.
+
+Origin: implementation (bean `fiddle-j9gv`, lane `lane/m4b-j9gv`)
+Tags: #debt #evidence

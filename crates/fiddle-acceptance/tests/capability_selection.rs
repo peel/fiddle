@@ -687,8 +687,8 @@ fn an_absent_scanner_credential_names_the_scanner_and_not_the_model() {
         .args(["--capability", "cve_mitigate", "--json"])
         .env(CREDENTIAL, SENTINEL)
         .env(FORGE_TOKEN, SENTINEL)
-        .env(SCANNER_SECRET, SENTINEL)
-        .env_remove(SCANNER_ID)
+        .env(SCANNER_ID, SENTINEL)
+        .env_remove(SCANNER_SECRET)
         .output()
         .unwrap();
 
@@ -700,7 +700,7 @@ fn an_absent_scanner_credential_names_the_scanner_and_not_the_model() {
         String::from_utf8_lossy(&out.stdout)
     );
     assert!(
-        stderr.contains(SCANNER_ID),
+        stderr.contains(SCANNER_SECRET),
         "the refusal must be the credential's, and must name the variable to \
          export: {stderr}"
     );

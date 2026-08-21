@@ -734,16 +734,13 @@ fn build_capability<'a>(
             let model = model_client(agent)?;
             let tenant = || -> Result<fiddle_runtime::WizCredential, CredentialAbsent> {
                 Ok(fiddle_runtime::WizCredential {
-                    client_id: resolve_credential(
-                        CredentialPurpose::Scanner,
-                        &scanner.client_id.env,
-                    )?,
                     client_secret: resolve_credential(
                         CredentialPurpose::Scanner,
                         &scanner.client_secret.env,
                     )?,
                 })
             };
+            let login = fiddle_runtime::WizLogin::from_env();
 
             cancel_on_interrupt(cancel);
 
@@ -772,6 +769,7 @@ fn build_capability<'a>(
                     scans,
                     scanner.timeout.as_duration(),
                     cancel.clone(),
+                    login.clone(),
                     tenant()?,
                 ),
                 model,
@@ -791,6 +789,7 @@ fn build_capability<'a>(
                     image: sweep.image.clone(),
                     severities: sweep.severities.clone(),
                     scratch: rescans,
+                    rescan_login: login.clone(),
                     rescan_credential: tenant()?,
                     checks: workspace
                         .checks

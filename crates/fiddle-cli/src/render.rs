@@ -117,7 +117,10 @@ pub fn config_check_json(config: &Config) -> String {
     if let Some(scanner) = &config.scanner {
         body["scanner"] = serde_json::json!({
             "cli": { "program": scanner.cli.program, "args": scanner.cli.args },
-            "client_id": { "env": scanner.client_id.env },
+            "client_id": scanner
+                .client_id
+                .as_ref()
+                .map(|named| serde_json::json!({ "env": named.env })),
             "client_secret": { "env": scanner.client_secret.env },
             "timeout": scanner.timeout.to_string(),
         });
@@ -307,14 +310,15 @@ pub fn config_check_human(config: &Config) -> String {
     if let Some(scanner) = &config.scanner {
         out.push_str(&format!(
             "\n  scanner.cli = {}\
-             \n  scanner.client_id.env = {}\
              \n  scanner.client_secret.env = {}\
              \n  scanner.timeout = {}",
             program_line(&scanner.cli),
-            scanner.client_id.env,
             scanner.client_secret.env,
             scanner.timeout,
         ));
+        if let Some(named) = &scanner.client_id {
+            out.push_str(&format!("\n  scanner.client_id.env = {}", named.env));
+        }
     }
     if let Some(cve) = config
         .orchestration

@@ -795,6 +795,8 @@ const MODEL_KEY: &str = "LITELLM_API_KEY";
 
 const SENTINEL_SECRET: &str = "fiddle-secret-3b8e51d0";
 
+const WIZ_CLIENT_ID_VALUE: &str = "wiz-client-id-for-the-sweep";
+
 const SWEEP_IMAGE: &str = "ghcr.io/acme/icecube:latest";
 
 const SCANNED_DIGEST: &str =
@@ -852,6 +854,7 @@ struct Sweep {
     remote: PathBuf,
     tree: PathBuf,
     gateway: StubGateway,
+    login: tempfile::TempDir,
 }
 
 impl Sweep {
@@ -933,6 +936,7 @@ impl Sweep {
             stub,
             remote,
             gateway: StubGateway::serving(script),
+            login: support::caller_logged_in(WIZ_CLIENT_ID_VALUE, SENTINEL_SECRET),
         };
         let tables = sweep.tables(scan, rescan, findings, check_args, grades);
         sweep.scenario.append_config(&tables);
@@ -1058,8 +1062,9 @@ impl Sweep {
             .args(extra)
             .env(FORGE_TOKEN, "ghp_forge_token_for_the_sweep")
             .env(MODEL_KEY, "sk-model-key-for-the-sweep")
-            .env(WIZ_ID, "wiz-client-id-for-the-sweep")
-            .env(WIZ_SECRET, SENTINEL_SECRET);
+            .env(WIZ_ID, WIZ_CLIENT_ID_VALUE)
+            .env(WIZ_SECRET, SENTINEL_SECRET)
+            .env(support::WIZ_CONFIG_DIR, self.login.path());
         command
     }
 
@@ -2616,8 +2621,8 @@ fn no_credential_reaches_stdout_a_diagnostic_or_a_published_bundle() {
         std::fs::read_to_string(&planted)
             .unwrap_or_default()
             .contains(SENTINEL_SECRET),
-        "the scanner's record does not hold the credential, so its absence \
-         elsewhere is not evidence: {}",
+        "the scanner read no credential from the login the caller left, so its \
+         absence elsewhere is not evidence: {}",
         planted.display()
     );
 

@@ -28,7 +28,8 @@ pub struct Scanner {
     #[serde(default = "default_wizcli")]
     pub cli: ProgramRef,
 
-    pub client_id: EnvRef,
+    #[serde(default)]
+    pub client_id: Option<EnvRef>,
 
     pub client_secret: EnvRef,
 

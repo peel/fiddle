@@ -15,8 +15,12 @@ literal secret does not load.
 | `FIDDLE_GITHUB_TOKEN` | the local live forge lane | opt-in, writes to a disposable repository |
 | `FIDDLE_EFFECTS_TOKEN` | the dispatched forge lane | the same value, as a repository secret |
 | `FIDDLE_CVE_TOKEN` | the host's CVE sweep | the host repository's secret; it needs `Checks: read`, which the two above do not carry |
-| `WIZ_CLIENT_ID` | the host's CVE sweep | the host repository's secret; the Wiz service account the scan runs as |
-| `WIZ_CLIENT_SECRET` | the host's CVE sweep | the host repository's secret; that account's secret |
+| `WIZ_CLIENT_ID` | the host's `setup-wiz` step | the host repository's secret; the Wiz service account the scan runs as; fiddle sends it to no scanner |
+| `WIZ_CLIENT_SECRET` | the host's `setup-wiz` step | the host repository's secret; that account's secret; fiddle reads it only to redact it |
+
+The caller logs the scanner in. `wizcli auth --id --secret` writes the login, and
+fiddle reads the login that command leaves (ADR 042). A caller who skips it gets
+a refusal that names the directory fiddle read.
 
 A local lane reads its variable from `.env` in the worktree you run from.
 `.envrc` is tracked, so `dotenv_if_exists` resolves the `.env` beside it. `.env`

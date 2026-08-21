@@ -2,7 +2,7 @@ mod fixture;
 
 use fiddle_core::AttemptId;
 use fiddle_runtime::evaluate::{evaluate, Check, Contract, InWorkspace, Outcome, Rescan, Success};
-use fiddle_runtime::scanner::WizCredential;
+use fiddle_runtime::scanner::{WizCredential, WizLogin};
 use fiddle_runtime::workspace::Workspace;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -13,6 +13,8 @@ const AMPLE: Duration = Duration::from_secs(60);
 const IMAGE: &str = "ghcr.io/acme/widget:fiddle-fixture";
 
 const CLIENT_ID: &str = "fiddle-client-1c93f0a5";
+
+const CLIENT_SECRET: &str = "fiddle-secret-3b8e51d0";
 
 const CHILD_RECORD: &str = "child.json";
 
@@ -30,6 +32,13 @@ impl World {
             .expect("a worktree of the fixture");
         std::fs::create_dir_all(dir.path().join("records")).expect("somewhere to keep records");
         std::fs::create_dir_all(dir.path().join("scan")).expect("a scratch for the rescan");
+        let login = dir.path().join("wiz-login");
+        std::fs::create_dir_all(&login).expect("a directory for the caller's login");
+        std::fs::write(
+            login.join("auth.json"),
+            serde_json::json!({ "clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET }).to_string(),
+        )
+        .expect("the login the caller left for wizcli");
         World { workspace, dir }
     }
 
@@ -39,9 +48,9 @@ impl World {
             timeout,
             Rescan {
                 scratch: self.dir.path().join("scan"),
+                login: WizLogin::ConfigDir(self.dir.path().join("wiz-login")),
                 credential: WizCredential {
-                    client_id: CLIENT_ID.to_string(),
-                    client_secret: "fiddle-secret-3b8e51d0".to_string(),
+                    client_secret: CLIENT_SECRET.to_string(),
                 },
                 image: IMAGE.to_string(),
             },

@@ -76,6 +76,18 @@ pub fn wiz_stub_binary() -> &'static Path {
     BINARY.get_or_init(|| runtime_fixture("wiz_stub", "wiz-stub"))
 }
 
+pub const WIZ_CONFIG_DIR: &str = "WIZ_CONFIG_DIR";
+
+pub fn caller_logged_in(client_id: &str, client_secret: &str) -> TempDir {
+    let dir = TempDir::new().expect("a temporary home for the caller's wizcli login");
+    std::fs::write(
+        dir.path().join("auth.json"),
+        serde_json::json!({ "clientId": client_id, "clientSecret": client_secret }).to_string(),
+    )
+    .expect("the login `wizcli auth` leaves for a later scan");
+    dir
+}
+
 pub fn check_stub_binary() -> &'static Path {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
     BINARY.get_or_init(|| runtime_fixture("check_stub", "check-stub"))

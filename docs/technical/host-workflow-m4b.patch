@@ -29,10 +29,10 @@ stay: `needs: scan`, the `if` on `has_work` and `on_default_branch`,
 `setup-wiz`. The three permissions the job already held stay, and a fourth joins
 them. The Jira step and the Slack step stay. The `scan` job is untouched.
 
-`setup-wiz` stays because it installs `wizcli`. fiddle does not use the
-authentication that action leaves behind. fiddle gives `WIZ_CLIENT_ID` and
-`WIZ_CLIENT_SECRET` to `wizcli` itself, and it points `wizcli` at a
-`WIZ_CONFIG_DIR` of its own.
+`setup-wiz` stays because it installs `wizcli` and logs it in. fiddle reads the
+login that action leaves behind. fiddle names no configuration directory of its
+own, and it gives the credential to no scanner. A run without that step is
+refused before the scan starts.
 
 The `cve-lists` download stays because the Jira step still reads `to-fix.json`.
 That step links the run's pull request on a ticket for a CVE that left the
