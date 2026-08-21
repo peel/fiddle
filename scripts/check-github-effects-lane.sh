@@ -3,7 +3,6 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FILE="${1:-$ROOT/.github/workflows/github-effects.yml}"
-GUARD_NAME="${2:-Require FIDDLE_EFFECTS_TOKEN}"
 
 if [[ ! -r "$FILE" ]]; then
   echo "check-github-effects-lane: cannot read $FILE" >&2
@@ -36,6 +35,7 @@ extract_run_block() {
   ' "$FILE"
 }
 
+GUARD_NAME="Require FIDDLE_EFFECTS_TOKEN"
 PREFLIGHT_NAME="Require a Cargo workspace on the dispatched ref"
 
 guard_secrets() {
