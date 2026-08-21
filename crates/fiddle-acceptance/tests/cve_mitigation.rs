@@ -2089,6 +2089,13 @@ fn an_advisory_with_no_published_fix_reaches_the_attempt_and_its_decline_is_the_
         serde_json::json!(format!("still reported after the bump: {LIBRARY_CVE}")),
         "while the rationale is the rescan's own account: {verdicts}"
     );
+    assert_eq!(
+        verdicts[0]["legacy_label"],
+        serde_json::json!("upstream-blocked"),
+        "and the label beside the disposition is the one the host's query \
+         closes, because fiddle publishes no upstream-blocked judgement of its \
+         own: {verdicts}"
+    );
 
     assert!(
         sweep.pull_requests().is_empty(),

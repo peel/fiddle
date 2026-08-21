@@ -811,7 +811,7 @@ async fn a_declined_finding_reads_differently_from_one_the_attempt_worked_on() {
 }
 
 #[tokio::test]
-async fn a_verdict_the_attempt_said_nothing_about_carries_five_fields_and_a_verbatim_rationale() {
+async fn a_verdict_the_attempt_said_nothing_about_carries_six_fields_and_a_verbatim_rationale() {
     let reached =
         disposition(&the_attempt_said_nothing_about_a_finding_with_no_published_fix().await);
     let verdict = &reached.verdicts()[0];
@@ -827,14 +827,22 @@ async fn a_verdict_the_attempt_said_nothing_about_carries_five_fields_and_a_verb
             .expect("a verdict is a JSON object")
             .keys()
             .collect::<Vec<_>>(),
-        ["cve", "package", "rationale", "severity", "verdict"],
+        [
+            "cve",
+            "legacy_label",
+            "package",
+            "rationale",
+            "severity",
+            "verdict"
+        ],
         "the attempt reported no disposition for it, so the row is the five \
-         projection fields and nothing invented beside them: {json}"
+         projection fields and the compatibility label, and nothing invented \
+         beside them: {json}"
     );
 }
 
 #[tokio::test]
-async fn each_of_the_five_fields_carries_what_it_names() {
+async fn each_field_of_a_verdict_carries_what_it_names() {
     let reached =
         disposition(&the_attempt_said_nothing_about_a_finding_with_no_published_fix().await);
     let json = serde_json::to_value(&reached.verdicts()[0]).expect("a verdict serializes");
@@ -848,6 +856,7 @@ async fn each_of_the_five_fields_carries_what_it_names() {
     );
     assert_eq!(json["severity"], serde_json::json!("HIGH"));
     assert_eq!(json["verdict"], serde_json::json!("needs_work"));
+    assert_eq!(json["legacy_label"], serde_json::json!("upstream-blocked"));
     assert_eq!(finding.severity, Severity::High, "the fixture's own grade");
 }
 
@@ -1033,4 +1042,149 @@ async fn every_advisory_with_no_published_fix_gets_its_own_verdict() {
              for both: {verdict:?}"
         );
     }
+}
+
+#[test]
+fn every_row_answers_whether_it_carries_a_legacy_label() {
+    let rows: Vec<(Row, Option<&str>)> = vec![
+        (Row::NothingToDo, None),
+        (Row::AlreadyInProgress, None),
+        (Row::AlreadyFixed, None),
+        (Row::PullRequest, Some("needs-work")),
+        (Row::UnsafeWithoutDirection, Some("upstream-blocked")),
+        (Row::ScanUnusable { why: String::new() }, None),
+    ];
+    assert_eq!(rows.len(), 6, "the six rows, and every one of them answers");
+
+    for (row, label) in &rows {
+        assert_eq!(
+            row.legacy_label(),
+            *label,
+            "{} should carry {label:?}, got {:?}",
+            row.row(),
+            row.legacy_label()
+        );
+    }
+
+    let carried: HashSet<&str> = rows.iter().filter_map(|(_, label)| *label).collect();
+    assert_eq!(
+        carried,
+        HashSet::from(["needs-work", "upstream-blocked"]),
+        "the host's query closes these two labels and no other, so a row that \
+         carried a third would file a ticket nothing closes"
+    );
+}
+
+#[tokio::test]
+async fn a_declined_finding_carries_fiddle_s_disposition_and_the_label_beside_it() {
+    let reached = disposition(&the_attempt_declined_a_finding_with_no_published_fix().await);
+    assert_eq!(
+        reached.reason(),
+        &Row::UnsafeWithoutDirection,
+        "this world's premise is the row a finding with no published fix now \
+         travels"
+    );
+
+    let json = serde_json::to_value(&reached.verdicts()[0]).expect("a verdict serializes");
+    assert_eq!(
+        json["verdict"],
+        serde_json::json!("needs_work"),
+        "fiddle has no upstream-blocked judgement, and the disposition is its \
+         own: {json}"
+    );
+    assert_eq!(
+        json["legacy_label"],
+        serde_json::json!("upstream-blocked"),
+        "while the label beside it is the one the host's query closes: {json}"
+    );
+    assert_ne!(
+        json["verdict"], json["legacy_label"],
+        "two fields, so dropping the label when M5 owns Jira removes a field \
+         rather than unpicks a string: {json}"
+    );
+}
+
+#[tokio::test]
+async fn a_group_needing_work_beside_a_landed_one_carries_the_other_label() {
+    let reached = disposition(&one_group_clean().await);
+    assert_eq!(reached.reason(), &Row::PullRequest);
+
+    let json = serde_json::to_value(&reached.verdicts()[0]).expect("a verdict serializes");
+    assert_eq!(
+        json["legacy_label"],
+        serde_json::json!("needs-work"),
+        "the run opened a pull request for the other group, and this finding \
+         still needs work: {json}"
+    );
+    assert_ne!(
+        json["legacy_label"],
+        serde_json::to_value(&disposition(&every_group_needs_work().await).verdicts()[0])
+            .expect("a verdict serializes")["legacy_label"],
+        "the two rows that carry verdicts carry two labels, so the label is \
+         read from the row and not written once"
+    );
+}
+
+#[tokio::test]
+async fn the_label_reaches_the_report_on_the_disk() {
+    let scratch = tempfile::tempdir().expect("a temporary directory");
+    let path = disposition(&the_attempt_declined_a_finding_with_no_published_fix().await)
+        .write_report(scratch.path())
+        .expect("the report is written");
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the report is readable"))
+            .expect("the report parses");
+    assert_eq!(
+        written[0]["legacy_label"],
+        serde_json::json!("upstream-blocked"),
+        "write_report is the only writer, so the label a host reads has to be \
+         in the file it wrote: {written}"
+    );
+}
+
+#[tokio::test]
+async fn the_sentence_a_ticket_shows_for_a_declined_finding_is_the_agent_s_own() {
+    let notes = [
+        "this ecosystem pins the version in a lockfile I will not resolve here",
+        "the maintainer withdrew the release and I will not pin a withdrawn one",
+    ];
+
+    let mut carried = Vec::new();
+    for note in &notes {
+        let mut run = one_finding_with_no_published_fix();
+        let mut group = a_group_declining_an_unfixed_finding(
+            BLOCKED_CVE,
+            still_reported_group(BLOCKED_CVE).await,
+        );
+        group.attempt.report.findings = vec![FindingDisposition {
+            cve: BLOCKED_CVE.to_string(),
+            attempted: false,
+            note: (*note).to_string(),
+        }];
+        run.attempted = vec![group];
+
+        let json =
+            serde_json::to_value(&disposition(&run).verdicts()[0]).expect("a verdict serializes");
+        assert!(
+            !json.to_string().contains("no fixed version"),
+            "the deleted constant must not return as the sentence an operator \
+             reads: {json}"
+        );
+        carried.push(json["note"].clone());
+    }
+
+    assert_eq!(
+        carried,
+        notes
+            .iter()
+            .map(|note| serde_json::json!(note))
+            .collect::<Vec<_>>(),
+        "each note is the agent's, verbatim"
+    );
+    assert_ne!(
+        carried[0], carried[1],
+        "two agents wrote two sentences, so no fixed string in this build can \
+         be the source of either"
+    );
 }

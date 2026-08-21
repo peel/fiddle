@@ -32,6 +32,22 @@ impl Row {
             Row::ScanUnusable { .. } => "scan_unusable",
         }
     }
+
+    pub fn legacy_label(&self) -> Option<&'static str> {
+        match self {
+            Row::NothingToDo => None,
+
+            Row::AlreadyInProgress => None,
+
+            Row::AlreadyFixed => None,
+
+            Row::PullRequest => Some("needs-work"),
+
+            Row::UnsafeWithoutDirection => Some("upstream-blocked"),
+
+            Row::ScanUnusable { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -165,6 +181,8 @@ pub struct Verdict {
     pub severity: Severity,
 
     pub verdict: Judgement,
+
+    pub legacy_label: Option<&'static str>,
 
     #[serde(flatten)]
     pub disposed: Option<Disposed>,
@@ -309,13 +327,13 @@ pub fn disposition(run: &Run) -> Disposition {
     let attempts = attempts_of(run);
     let landed = |reason: Row| Disposition {
         outcome: RunOutcome::Completed,
-        reason,
         deferred: run.deferred.clone(),
-        verdicts: verdicts.clone(),
+        verdicts: labelled(verdicts.clone(), &reason),
         already_fixed: run.already_fixed.clone(),
         attempts: attempts.clone(),
         branch: None,
         pull_request: None,
+        reason,
     };
 
     if run.attempted.iter().any(Attempted::committed) {
@@ -377,8 +395,20 @@ fn verdict(finding: &fiddle_core::ProjectedFinding, rationale: String) -> Verdic
         rationale,
         severity: finding.severity,
         verdict: Judgement::NeedsWork,
+        legacy_label: None,
         disposed: None,
     }
+}
+
+fn labelled(verdicts: Vec<Verdict>, row: &Row) -> Vec<Verdict> {
+    let legacy_label = row.legacy_label();
+    verdicts
+        .into_iter()
+        .map(|verdict| Verdict {
+            legacy_label,
+            ..verdict
+        })
+        .collect()
 }
 
 fn disposed_of(reported: &[FindingDisposition], cve: &AdvisoryId) -> Option<Disposed> {
