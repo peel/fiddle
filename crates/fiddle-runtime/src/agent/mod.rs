@@ -220,7 +220,7 @@ where
         .max_tokens(budget.max_tokens)
         .default_max_turns(budget.max_turns)
         .output_schema::<RepairReport>()
-        .output_mode(OutputMode::Tool)
+        .output_mode(OutputMode::Prompted)
         .tool(ReadFile)
         .tool(WriteFile)
         .tool(ListFiles)
