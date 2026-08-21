@@ -105,6 +105,81 @@ fn config_check_reports_the_agent_table_it_accepted() {
     assert_eq!(agent["tool_timeout"], "15m", "{agent}");
 }
 
+const ENDPOINT: &str = "FIDDLE_MODEL_BASE_URL";
+
+const A_RESOLVED_ENDPOINT: &str = "https://gateway.resolved-from-the-environment.invalid/v1";
+
+fn naming_the_endpoint() -> String {
+    AGENTIC.replace(
+        "base_url = \"https://litellm.firn.snplow.net/v1\"",
+        &format!("base_url = {{ env = \"{ENDPOINT}\" }}"),
+    )
+}
+
+#[test]
+fn config_check_reports_the_variable_that_names_the_endpoint() {
+    let out = check_with_env(
+        &naming_the_endpoint(),
+        &["--json"],
+        &[(ENDPOINT, A_RESOLVED_ENDPOINT)],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let payload: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        payload["agent"]["base_url"]["env"], ENDPOINT,
+        "a named endpoint is reported under the key the document writes it as, \
+         as `agent.api_key.env` already is: {stdout}"
+    );
+    assert!(
+        !stdout.contains(A_RESOLVED_ENDPOINT),
+        "the resolved endpoint must not be reported as though the document \
+         wrote it: {stdout}"
+    );
+}
+
+#[test]
+fn the_plain_rendering_names_the_endpoint_variable_an_operator_goes_and_sets() {
+    let out = check_with_env(
+        &naming_the_endpoint(),
+        &[],
+        &[(ENDPOINT, A_RESOLVED_ENDPOINT)],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        stdout.contains(&format!("agent.base_url.env = {ENDPOINT}")),
+        "an operator at a terminal cannot confirm which variable carries the \
+         endpoint: {stdout}"
+    );
+    assert!(
+        !stdout.contains(A_RESOLVED_ENDPOINT),
+        "the resolved endpoint must not be rendered as a written value: {stdout}"
+    );
+}
+
+#[test]
+fn config_check_accepts_a_named_endpoint_that_nothing_exports() {
+    let out = check(&naming_the_endpoint());
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the schema check reads the document, and the run reads the \
+         environment: stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 #[test]
 fn config_check_reports_the_workspace_table_it_accepted() {
     let workspace = checked(AGENTIC)["workspace"].clone();

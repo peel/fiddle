@@ -78,7 +78,7 @@ pub struct Report {
 pub struct Agent {
     pub model: String,
 
-    pub base_url: String,
+    pub base_url: WrittenOrNamed,
 
     pub api_key: EnvRef,
 
@@ -128,25 +128,64 @@ impl<'de> serde::de::Visitor<'de> for EnvRefVisitor {
         Err(E::custom(CREDENTIAL_MUST_BE_NAMED))
     }
 
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<EnvRef, A::Error> {
-        use serde::de::Error;
-        let mut env: Option<String> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            if key != "env" {
-                return Err(A::Error::unknown_field(&key, &["env"]));
-            }
-            if env.is_some() {
-                return Err(A::Error::duplicate_field("env"));
-            }
-            env = Some(map.next_value()?);
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<EnvRef, A::Error> {
+        Ok(EnvRef {
+            env: named_variable(map)?,
+        })
+    }
+}
+
+fn named_variable<'de, A: serde::de::MapAccess<'de>>(mut map: A) -> Result<String, A::Error> {
+    use serde::de::Error;
+    let mut env: Option<String> = None;
+    while let Some(key) = map.next_key::<String>()? {
+        if key != "env" {
+            return Err(A::Error::unknown_field(&key, &["env"]));
         }
-        let env = env.ok_or_else(|| A::Error::missing_field("env"))?;
-        if env.trim().is_empty() {
-            return Err(A::Error::custom(
-                "the name of an environment variable cannot be empty",
-            ));
+        if env.is_some() {
+            return Err(A::Error::duplicate_field("env"));
         }
-        Ok(EnvRef { env })
+        env = Some(map.next_value()?);
+    }
+    let env = env.ok_or_else(|| A::Error::missing_field("env"))?;
+    if env.trim().is_empty() {
+        return Err(A::Error::custom(
+            "the name of an environment variable cannot be empty",
+        ));
+    }
+    Ok(env)
+}
+
+#[derive(Debug)]
+pub enum WrittenOrNamed {
+    Written(String),
+    Named(String),
+}
+
+impl<'de> Deserialize<'de> for WrittenOrNamed {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(WrittenOrNamedVisitor)
+    }
+}
+
+struct WrittenOrNamedVisitor;
+
+impl<'de> serde::de::Visitor<'de> for WrittenOrNamedVisitor {
+    type Value = WrittenOrNamed;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(
+            "a value written as a string, or a table naming an environment \
+             variable, as `{ env = \"NAME\" }`",
+        )
+    }
+
+    fn visit_str<E: serde::de::Error>(self, written: &str) -> Result<WrittenOrNamed, E> {
+        Ok(WrittenOrNamed::Written(written.to_string()))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<WrittenOrNamed, A::Error> {
+        Ok(WrittenOrNamed::Named(named_variable(map)?))
     }
 }
 
@@ -943,6 +982,58 @@ success = "artefact-written"
             r#"api_key = "sk-literal-secret""#,
         );
         assert!(toml::from_str::<Config>(&bad).is_err());
+    }
+
+    #[test]
+    fn a_written_base_url_is_the_value_the_document_carries() {
+        let agent = toml::from_str::<Config>(VALID).unwrap().agent.unwrap();
+        let WrittenOrNamed::Written(written) = agent.base_url else {
+            panic!("the document writes the endpoint, so it must load as written")
+        };
+        assert_eq!(written, "https://litellm.firn.snplow.net/v1");
+    }
+
+    #[test]
+    fn a_named_base_url_is_the_variable_the_document_names() {
+        let text = VALID.replace(
+            r#"base_url = "https://litellm.firn.snplow.net/v1""#,
+            r#"base_url = { env = "FIDDLE_MODEL_BASE_URL" }"#,
+        );
+        let agent = toml::from_str::<Config>(&text).unwrap().agent.unwrap();
+        let WrittenOrNamed::Named(variable) = agent.base_url else {
+            panic!("the document names the endpoint, so it must load as named")
+        };
+        assert_eq!(variable, "FIDDLE_MODEL_BASE_URL");
+    }
+
+    #[test]
+    fn a_base_url_naming_no_variable_is_refused() {
+        for table in [
+            r#"{ env = "" }"#,
+            r#"{ env = "  " }"#,
+            "{ }",
+            r#"{ name = "V" }"#,
+        ] {
+            let text = VALID.replace(r#""https://litellm.firn.snplow.net/v1""#, table);
+            assert!(
+                toml::from_str::<Config>(&text).is_err(),
+                "`base_url = {table}` names no variable and must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_credential_is_still_refused_in_the_form_base_url_now_accepts() {
+        let bad = VALID.replace(
+            r#"api_key = { env = "LITELLM_API_KEY" }"#,
+            r#"api_key = "sk-literal-secret""#,
+        );
+        let error = toml::from_str::<Config>(&bad).unwrap_err();
+        assert_eq!(
+            error.message(),
+            CREDENTIAL_MUST_BE_NAMED,
+            "a written endpoint must not make a written credential legal"
+        );
     }
 
     #[test]

@@ -65,6 +65,10 @@ enum CliError {
 
     #[error(transparent)]
     #[diagnostic(transparent)]
+    NamedValueAbsent(#[from] NamedValueAbsent),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
     Gateway(#[from] GatewayUnavailable),
 
     #[error(transparent)]
@@ -222,6 +226,20 @@ impl miette::Diagnostic for CredentialAbsent {
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("{key} names {variable}, and {variable} is not set")]
+#[diagnostic(
+    code(fiddle::config::named_value_absent),
+    help(
+        "export {variable} before the run, or write the value into {key} in the \
+         configuration document"
+    )
+)]
+struct NamedValueAbsent {
+    key: &'static str,
+    variable: String,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[error(transparent)]
 #[diagnostic(
     code(fiddle::gateway::unavailable),
@@ -335,6 +353,7 @@ fn exit_code_for(termination: &Termination) -> u8 {
             | CliError::UnknownCapability(_)
             | CliError::Unconfigured(_)
             | CliError::CredentialAbsent(_)
+            | CliError::NamedValueAbsent(_)
             | CliError::Gateway(_)
             | CliError::PathUnusable(_)
             | CliError::UnimplementedForm(_),
@@ -366,6 +385,31 @@ fn resolve_credential(
         purpose,
         variable: variable.to_string(),
     })
+}
+
+const MODEL_ENDPOINT: &str = "agent.base_url";
+
+fn resolve_named(
+    key: &'static str,
+    value: &config::WrittenOrNamed,
+) -> Result<String, NamedValueAbsent> {
+    match value {
+        config::WrittenOrNamed::Written(written) => Ok(written.clone()),
+        config::WrittenOrNamed::Named(variable) => std::env::var(variable)
+            .ok()
+            .filter(|resolved| !resolved.trim().is_empty())
+            .ok_or_else(|| NamedValueAbsent {
+                key,
+                variable: variable.clone(),
+            }),
+    }
+}
+
+fn model_client(agent: &config::Agent) -> Result<fiddle_runtime::GatewayModel, CliError> {
+    let base_url = resolve_named(MODEL_ENDPOINT, &agent.base_url)?;
+    let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
+    fiddle_runtime::completion_model(&base_url, credential, &agent.api_key.env, &agent.model)
+        .map_err(|error| CliError::Gateway(GatewayUnavailable(error)))
 }
 
 fn cancel_on_interrupt(token: &CancellationToken) {
@@ -554,14 +598,7 @@ fn build_capability<'a>(
                 .as_ref()
                 .ok_or_else(|| missing("workspace.check"))?;
 
-            let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
-            let model = fiddle_runtime::completion_model(
-                &agent.base_url,
-                credential,
-                &agent.api_key.env,
-                &agent.model,
-            )
-            .map_err(GatewayUnavailable)?;
+            let model = model_client(agent)?;
 
             cancel_on_interrupt(cancel);
 
@@ -613,14 +650,7 @@ fn build_capability<'a>(
                 .ok_or_else(|| missing("workspace.check"))?;
             let forge = forge.ok_or_else(|| missing("[github]"))?;
 
-            let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
-            let model = fiddle_runtime::completion_model(
-                &agent.base_url,
-                credential,
-                &agent.api_key.env,
-                &agent.model,
-            )
-            .map_err(GatewayUnavailable)?;
+            let model = model_client(agent)?;
 
             cancel_on_interrupt(cancel);
 
@@ -701,14 +731,7 @@ fn build_capability<'a>(
             };
             let forge = forge.ok_or_else(|| missing("[github]"))?;
 
-            let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
-            let model = fiddle_runtime::completion_model(
-                &agent.base_url,
-                credential,
-                &agent.api_key.env,
-                &agent.model,
-            )
-            .map_err(GatewayUnavailable)?;
+            let model = model_client(agent)?;
             let tenant = || -> Result<fiddle_runtime::WizCredential, CredentialAbsent> {
                 Ok(fiddle_runtime::WizCredential {
                     client_id: resolve_credential(
@@ -982,6 +1005,15 @@ mod tests {
             EXIT_INVALID_INPUT
         );
         assert_eq!(
+            exit_code_for(&Termination::Rejected(CliError::NamedValueAbsent(
+                NamedValueAbsent {
+                    key: MODEL_ENDPOINT,
+                    variable: "FIDDLE_MODEL_BASE_URL".into()
+                }
+            ))),
+            EXIT_INVALID_INPUT
+        );
+        assert_eq!(
             exit_code_for(&Termination::Rejected(CliError::Unconfigured(
                 Unconfigured {
                     capability: fiddle_core::FIXTURE_REPAIR,
@@ -1049,6 +1081,69 @@ mod tests {
             rendered.contains("FIDDLE_A_VARIABLE_NOTHING_EXPORTS"),
             "an operator must learn which variable to export: {rendered}"
         );
+    }
+
+    #[test]
+    fn a_written_base_url_resolves_to_the_value_the_document_carries() {
+        let resolved = resolve_named(
+            MODEL_ENDPOINT,
+            &config::WrittenOrNamed::Written("https://gateway.invalid/v1".to_string()),
+        )
+        .expect("a written endpoint needs no variable");
+        assert_eq!(resolved, "https://gateway.invalid/v1");
+    }
+
+    #[test]
+    fn a_named_base_url_that_nothing_exports_refuses_rather_than_defaults() {
+        let error = resolve_named(
+            MODEL_ENDPOINT,
+            &config::WrittenOrNamed::Named("FIDDLE_A_VARIABLE_NOTHING_EXPORTS".to_string()),
+        )
+        .expect_err("an endpoint named by an unset variable is not a value");
+        assert_eq!(error.key, MODEL_ENDPOINT);
+        assert_eq!(error.variable, "FIDDLE_A_VARIABLE_NOTHING_EXPORTS");
+        let rendered = render::diagnostic(&error);
+        assert!(
+            rendered.contains("FIDDLE_A_VARIABLE_NOTHING_EXPORTS")
+                && rendered.contains(MODEL_ENDPOINT),
+            "an operator must learn the variable to export and the key that \
+             names it: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_repair_whose_named_endpoint_is_unset_is_refused_before_the_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiddle.toml");
+        std::fs::write(
+            &path,
+            "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
+             [agent]\nmodel=\"m\"\n\
+             base_url={env=\"FIDDLE_A_VARIABLE_NOTHING_EXPORTS\"}\n\
+             api_key={env=\"FIDDLE_A_VARIABLE_NOTHING_EXPORTS\"}\n\
+             [workspace]\nfixture=\"/nonexistent\"\n\
+             check={program=\"true\",args=[]}\n",
+        )
+        .unwrap();
+        let loaded = config::load(&path).unwrap();
+
+        let Err(error) = build_capability(
+            Selection::Repair,
+            &loaded,
+            &path,
+            &CancellationToken::new(),
+            &a_reference(),
+            None,
+        ) else {
+            panic!("nothing exports that variable, so no endpoint exists")
+        };
+        match error {
+            CliError::NamedValueAbsent(absent) => {
+                assert_eq!(absent.key, MODEL_ENDPOINT);
+                assert_eq!(absent.variable, "FIDDLE_A_VARIABLE_NOTHING_EXPORTS");
+            }
+            other => panic!("expected the endpoint to be named, got {other:?}"),
+        }
     }
 
     #[test]
