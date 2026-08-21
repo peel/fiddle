@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, WrittenOrNamed};
 use fiddle_core::{
     CapabilityAssessment, CapabilityExecution, InvocationRef, NextAction, Observation,
     ProgressEntry, ReportBundle, WorkStateView, CONFIG_CHECK_SCHEMA, INSPECT_SCHEMA, RUN_SCHEMA,
@@ -44,7 +44,7 @@ pub fn config_check_json(config: &Config) -> String {
     if let Some(agent) = &config.agent {
         body["agent"] = serde_json::json!({
             "model": agent.model,
-            "base_url": agent.base_url,
+            "base_url": written_or_named_json(&agent.base_url),
             "api_key": { "env": agent.api_key.env },
             "max_turns": agent.max_turns,
             "max_tokens": agent.max_tokens,
@@ -160,6 +160,20 @@ fn success(success: crate::config::Success) -> &'static str {
     }
 }
 
+fn written_or_named_json(value: &WrittenOrNamed) -> serde_json::Value {
+    match value {
+        WrittenOrNamed::Written(written) => serde_json::json!(written),
+        WrittenOrNamed::Named(variable) => serde_json::json!({ "env": variable }),
+    }
+}
+
+fn written_or_named_line(key: &str, value: &WrittenOrNamed) -> String {
+    match value {
+        WrittenOrNamed::Written(written) => format!("{key} = {written}"),
+        WrittenOrNamed::Named(variable) => format!("{key}.env = {variable}"),
+    }
+}
+
 fn cleanup(cleanup: crate::config::Cleanup) -> &'static str {
     match cleanup {
         crate::config::Cleanup::Always => "always",
@@ -176,7 +190,7 @@ pub fn config_check_human(config: &Config) -> String {
     if let Some(agent) = &config.agent {
         out.push_str(&format!(
             "\n  agent.model = {}\
-             \n  agent.base_url = {}\
+             \n  {}\
              \n  agent.api_key.env = {}\
              \n  agent.max_turns = {}\
              \n  agent.max_tokens = {}\
@@ -187,7 +201,7 @@ pub fn config_check_human(config: &Config) -> String {
              (enforced per pull request; the count lives in that pull \
              request's body — see decision {})",
             agent.model,
-            agent.base_url,
+            written_or_named_line("agent.base_url", &agent.base_url),
             agent.api_key.env,
             agent.max_turns,
             agent.max_tokens,

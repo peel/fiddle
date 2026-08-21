@@ -512,9 +512,11 @@ dir = ".fiddle/reports"
 
 [agent]
 # The model, the endpoint, and the credential variable have no defaults, and a
-# deployment must write each one down. Each names a decision that a guess gets
-# wrong somewhere. The two bounds below have defaults and are written out so
-# the axes stay visible.
+# deployment must declare each one. Each names a decision that a guess gets
+# wrong somewhere. The endpoint takes a written value, or `{ env = "NAME" }`,
+# so a repository that publishes this file can name its gateway rather than
+# write it. A named endpoint that resolves to nothing refuses the run. The two
+# bounds below have defaults and are written out so the axes stay visible.
 model = "claude-sonnet-5"
 base_url = "https://litellm.firn.snplow.net/v1"
 api_key = { env = "LITELLM_API_KEY" }

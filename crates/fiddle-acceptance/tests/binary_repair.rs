@@ -35,13 +35,23 @@ const PASSES_ONCE_REPAIRED: &str =
     "{ program = \"grep\", args = [\"-q\", \"len - 1\", \"src/lib.rs\"] }";
 
 fn scenario_checked(gateway: &StubGateway, max_turns: usize, check: &str) -> Scenario {
+    scenario_endpoint(&format!("\"{}\"", gateway.base_url()), max_turns, check)
+}
+
+const ENDPOINT: &str = "FIDDLE_MODEL_BASE_URL";
+
+fn a_named_endpoint() -> String {
+    format!("{{ env = \"{ENDPOINT}\" }}")
+}
+
+fn scenario_endpoint(base_url: &str, max_turns: usize, check: &str) -> Scenario {
     let s = Scenario::new();
     s.write_work_item(WORK_ID, "open");
     let fixture = s.write_fixture_repo();
     s.append_config(&format!(
         "[agent]\n\
          model = \"a-model\"\n\
-         base_url = \"{}\"\n\
+         base_url = {base_url}\n\
          api_key = {{ env = \"{CREDENTIAL}\" }}\n\
          max_turns = {max_turns}\n\
          max_tokens = 512\n\
@@ -54,7 +64,6 @@ fn scenario_checked(gateway: &StubGateway, max_turns: usize, check: &str) -> Sce
          fixture = {}\n\
          check = {check}\n\
          command_timeout = \"300s\"\n",
-        gateway.base_url(),
         support::toml_string(&s.dir().join("workspaces")),
         support::toml_string(&fixture),
     ));
@@ -145,6 +154,82 @@ fn the_binary_drives_a_repair_that_passes_its_check_and_records_the_marker() {
         support::BROKEN_FIXTURE,
         "the repository under repair is branched from, never written to"
     );
+}
+
+#[test]
+fn a_document_that_names_its_endpoint_drives_the_same_repair_through_the_same_gateway() {
+    let gateway = StubGateway::serving(a_real_repair());
+    let s = scenario_endpoint(&a_named_endpoint(), 4, PASSES_ONCE_REPAIRED);
+
+    let out = s
+        .run_command(INVOCATION_REF)
+        .args(["--capability", "fixture_repair", "--json"])
+        .env(CREDENTIAL, SENTINEL)
+        .env(ENDPOINT, gateway.base_url())
+        .output()
+        .unwrap();
+    let payload = payload(&out);
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a named endpoint reaches the same gateway a written one does, \
+         payload = {payload} stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(payload["outcome"], "completed", "{payload}");
+    assert_eq!(
+        gateway.served(),
+        2,
+        "the binary must have taken both scripted turns through the endpoint \
+         the variable named"
+    );
+    assert_eq!(
+        s.read_change_marker(WORK_ID).as_deref(),
+        Some(s.expected_marker(INVOCATION_REF).as_str()),
+        "a repair that passed its check accounts for the work"
+    );
+}
+
+#[test]
+fn a_named_endpoint_that_resolves_to_nothing_refuses_and_reaches_no_gateway() {
+    for exported in [None, Some(""), Some("   ")] {
+        let gateway = StubGateway::serving(a_real_repair());
+        let s = scenario_endpoint(&a_named_endpoint(), 4, PASSES_ONCE_REPAIRED);
+
+        let mut command = s.run_command(INVOCATION_REF);
+        command
+            .args(["--capability", "fixture_repair", "--json"])
+            .env(CREDENTIAL, SENTINEL);
+        match exported {
+            Some(value) => command.env(ENDPOINT, value),
+            None => command.env_remove(ENDPOINT),
+        };
+        let out = command.output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "`{exported:?}` is not an endpoint, and the run must refuse rather \
+             than reach a default: stderr = {stderr}"
+        );
+        assert!(
+            stderr.contains(ENDPOINT) && stderr.contains("agent.base_url"),
+            "the refusal must name the variable to export and the key that \
+             names it: {stderr}"
+        );
+        assert_eq!(
+            gateway.served(),
+            0,
+            "a document with no endpoint must reach no gateway"
+        );
+        assert_eq!(
+            s.read_change_marker(WORK_ID),
+            None,
+            "a refused run accounts for no work"
+        );
+    }
 }
 
 #[test]
