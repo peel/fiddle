@@ -224,6 +224,10 @@ impl Feedback {
         .unwrap();
     }
 
+    fn refuse_the_check_read(&self, status: u16) {
+        std::fs::write(self.stub.join("checks_unreadable"), status.to_string()).unwrap();
+    }
+
     fn run(&self) -> Output {
         let mut command = std::process::Command::new(support::fiddle_binary());
         for name in CREDENTIAL_VARS
@@ -633,6 +637,70 @@ fn two_checks_blaming_nothing_are_no_fresh_attempt() {
         feedback.remote_branches(),
         vec![BASE.to_string(), SHARED_BRANCH.to_string()],
         "and pushed nothing"
+    );
+    assert_ne!(
+        feedback.disposition(&run)["reason"],
+        "checks_unreadable",
+        "and it read the checks, so it must not report that it could not"
+    );
+}
+
+#[test]
+fn a_refused_check_read_is_reported_rather_than_read_as_no_blame() {
+    let feedback = Feedback::bounded_at(3, an_attempt_declining());
+    let head_sha = feedback.seed_shared_pull_request(&body_counting(0));
+    feedback.seed_checks(
+        &head_sha,
+        &[(VERIFY_CHECK, "success"), (RESCAN_CHECK, "success")],
+    );
+    feedback.refuse_the_check_read(403);
+
+    let run = feedback.run();
+    let payload = feedback.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(11),
+        "this run and the one above differ only in whether the check read was \
+         answered. A run that could not look has not finished cleanly, and an \
+         operator who grants Checks: read and runs it again gets further\n\
+         stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let disposition = feedback.disposition(&run);
+    assert_eq!(
+        disposition["reason"], "checks_unreadable",
+        "and it says which of the two it was, rather than publishing the row a \
+         clean sweep publishes: {disposition}"
+    );
+
+    assert_eq!(
+        feedback.gateway.served(),
+        0,
+        "not attempting is still the safe direction: a run that cannot read \
+         what CI said must not brief a model on a guess"
+    );
+    assert_eq!(
+        feedback.mutations(),
+        Vec::<String>::new(),
+        "and it left the pull request alone"
+    );
+    assert_eq!(
+        feedback.remote_branches(),
+        vec![BASE.to_string(), SHARED_BRANCH.to_string()],
+        "and pushed nothing"
+    );
+
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        said.contains("check-runs") && said.contains(&head_sha),
+        "and it names the read it was refused and the commit it asked about, \
+         because a 403 here is a missing permission and nothing else in the \
+         run says so: {said}"
     );
 }
 

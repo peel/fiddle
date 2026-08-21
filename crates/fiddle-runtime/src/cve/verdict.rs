@@ -21,6 +21,8 @@ pub enum Row {
     AttemptBoundReached,
 
     ScanUnusable { why: String },
+
+    ChecksUnreadable { why: String },
 }
 
 impl Row {
@@ -33,6 +35,7 @@ impl Row {
             Row::UnsafeWithoutDirection => "unsafe_without_direction",
             Row::AttemptBoundReached => "attempt_bound_reached",
             Row::ScanUnusable { .. } => "scan_unusable",
+            Row::ChecksUnreadable { .. } => "checks_unreadable",
         }
     }
 
@@ -51,6 +54,8 @@ impl Row {
             Row::AttemptBoundReached => None,
 
             Row::ScanUnusable { .. } => None,
+
+            Row::ChecksUnreadable { .. } => None,
         }
     }
 }
@@ -70,6 +75,8 @@ pub struct Run {
     pub landed: Option<Landed>,
 
     pub bound_reached: Option<u64>,
+
+    pub checks_unreadable: Option<String>,
 }
 
 impl Run {
@@ -82,6 +89,7 @@ impl Run {
             deferred: Vec::new(),
             landed: None,
             bound_reached: None,
+            checks_unreadable: None,
         }
     }
 
@@ -94,6 +102,7 @@ impl Run {
             deferred: Vec::new(),
             landed: None,
             bound_reached: None,
+            checks_unreadable: None,
         }
     }
 
@@ -342,6 +351,21 @@ pub fn disposition(run: &Run) -> Disposition {
             attempts: Vec::new(),
             branch: None,
             pull_request: Some(pull_request),
+        };
+    }
+
+    if let Some(why) = &run.checks_unreadable {
+        return Disposition {
+            outcome: RunOutcome::Retryable {
+                reason: Published::of(why),
+            },
+            reason: Row::ChecksUnreadable { why: why.clone() },
+            deferred: Vec::new(),
+            verdicts: Vec::new(),
+            already_fixed: Vec::new(),
+            attempts: Vec::new(),
+            branch: None,
+            pull_request: None,
         };
     }
 

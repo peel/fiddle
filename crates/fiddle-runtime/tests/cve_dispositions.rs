@@ -29,6 +29,9 @@ const DECLINED: &str = "no fix I can apply to this project without reading a reg
 
 const SETTLED: &str = "the requirement already resolves to the fixed release";
 
+const CHECKS_REFUSED: &str =
+    "github:acme/r/commits/c0ffee/check-runs: the check runs could not be read: HTTP 403";
+
 fn still_reported(cve: &str) -> String {
     format!("still reported after the bump: {cve}")
 }
@@ -97,6 +100,44 @@ fn open_pr_covers_it() -> Run {
         number: 7,
         covers: vec![advisory(FIXABLE_CVE)],
     });
+    run
+}
+
+fn every_row() -> Vec<Row> {
+    vec![
+        Row::NothingToDo,
+        Row::AlreadyInProgress,
+        Row::AlreadyFixed,
+        Row::PullRequest,
+        Row::UnsafeWithoutDirection,
+        Row::AttemptBoundReached,
+        Row::ScanUnusable { why: String::new() },
+        Row::ChecksUnreadable { why: String::new() },
+    ]
+}
+
+fn label_the_host_closes(row: &Row) -> Option<&'static str> {
+    match row {
+        Row::PullRequest => Some("needs-work"),
+        Row::UnsafeWithoutDirection => Some("upstream-blocked"),
+        Row::NothingToDo
+        | Row::AlreadyInProgress
+        | Row::AlreadyFixed
+        | Row::AttemptBoundReached
+        | Row::ScanUnusable { .. }
+        | Row::ChecksUnreadable { .. } => None,
+    }
+}
+
+fn the_check_read_was_refused() -> Run {
+    let mut run = one_fixable_finding();
+    run.checks_unreadable = Some(CHECKS_REFUSED.to_string());
+    run
+}
+
+fn a_reused_pull_request_at_the_bound() -> Run {
+    let mut run = one_fixable_finding();
+    run.bound_reached = Some(9);
     run
 }
 
@@ -369,7 +410,7 @@ fn document_of(report: &support::cve::Report) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn six_causes_reach_six_distinguishable_results() {
+async fn every_cause_reaches_a_distinguishable_result() {
     let cases: Vec<(&str, Run, RunOutcome, Row)> = vec![
         (
             "nothing projected",
@@ -409,7 +450,26 @@ async fn six_causes_reach_six_distinguishable_results() {
             },
             Row::ScanUnusable { why: String::new() },
         ),
+        (
+            "the reused pull request is at the bound",
+            a_reused_pull_request_at_the_bound(),
+            RunOutcome::Completed,
+            Row::AttemptBoundReached,
+        ),
+        (
+            "the check runs could not be read",
+            the_check_read_was_refused(),
+            RunOutcome::Retryable {
+                reason: fiddle_core::Published::of("ignored: the discriminant is the claim"),
+            },
+            Row::ChecksUnreadable { why: String::new() },
+        ),
     ];
+    assert_eq!(
+        cases.len(),
+        every_row().len(),
+        "every row a run can reach needs a cause here, or a row reaches nothing"
+    );
 
     let mut seen = HashSet::new();
     for (cause, world, outcome, reason) in &cases {
@@ -443,11 +503,11 @@ async fn six_causes_reach_six_distinguishable_results() {
         cases.len(),
         seen.len()
     );
-    assert_eq!(seen.len(), 6);
+    assert_eq!(seen.len(), 8);
 }
 
 #[tokio::test]
-async fn six_causes_reach_six_distinguishable_published_records() {
+async fn every_cause_publishes_a_distinguishable_record() {
     let cases: Vec<(&str, Run, &str)> = vec![
         (
             "nothing projected",
@@ -475,7 +535,22 @@ async fn six_causes_reach_six_distinguishable_published_records() {
             scanner_unusable().await,
             "scan_unusable",
         ),
+        (
+            "the reused pull request is at the bound",
+            a_reused_pull_request_at_the_bound(),
+            "attempt_bound_reached",
+        ),
+        (
+            "the check runs could not be read",
+            the_check_read_was_refused(),
+            "checks_unreadable",
+        ),
     ];
+    assert_eq!(
+        cases.len(),
+        every_row().len(),
+        "every row a run can reach needs a cause here, or a row publishes nothing"
+    );
 
     let mut published = HashSet::new();
     let mut without_reason = HashSet::new();
@@ -492,10 +567,13 @@ async fn six_causes_reach_six_distinguishable_published_records() {
             "two causes must not publish one document: {cause} published one an              earlier cause already had — {document}"
         );
 
-        if matches!(reached.reason(), Row::ScanUnusable { .. }) {
+        if matches!(
+            reached.reason(),
+            Row::ScanUnusable { .. } | Row::ChecksUnreadable { .. }
+        ) {
             assert!(
                 matches!(reached.outcome(), RunOutcome::Retryable { .. }),
-                "and it is the row the exit code separates: {:?}",
+                "and it is a row the exit code separates: {:?}",
                 reached.outcome()
             );
             continue;
@@ -515,8 +593,8 @@ async fn six_causes_reach_six_distinguishable_published_records() {
         cases.len(),
         published.len()
     );
-    assert_eq!(published.len(), 6);
-    assert_eq!(without_reason.len(), 5);
+    assert_eq!(published.len(), 8);
+    assert_eq!(without_reason.len(), 6);
 }
 
 #[tokio::test]
@@ -538,6 +616,57 @@ async fn an_unusable_scan_is_retryable_and_carries_the_scanner_s_own_diagnostic(
         panic!("got {:?}", reached.reason());
     };
     assert!(why.contains("-which-is-not-installed"), "got {why}");
+}
+
+#[test]
+fn a_refused_check_read_is_retryable_and_names_the_endpoint_it_could_not_read() {
+    let reached = disposition(&the_check_read_was_refused());
+
+    let RunOutcome::Retryable { reason } = reached.outcome() else {
+        panic!(
+            "a run that could not look has not completed — got {:?}",
+            reached.outcome()
+        );
+    };
+    assert!(
+        reason.as_str().contains("check-runs"),
+        "the outcome should name the read that was refused, got {reason:?}"
+    );
+
+    let Row::ChecksUnreadable { why } = reached.reason() else {
+        panic!(
+            "a refused read is its own row, not one of the rows a clean sweep \
+             reaches — got {:?}",
+            reached.reason()
+        );
+    };
+    assert!(why.contains("403"), "got {why}");
+}
+
+#[test]
+fn a_run_nothing_blamed_and_a_run_that_could_not_look_are_not_the_same_result() {
+    let looked = disposition(&one_fixable_finding());
+    let could_not = disposition(&the_check_read_was_refused());
+
+    assert_eq!(
+        looked.reason(),
+        &Row::NothingToDo,
+        "these two worlds differ only in whether the check read succeeded, and \
+         this one read it"
+    );
+    assert_eq!(looked.outcome(), &RunOutcome::Completed);
+
+    assert_ne!(
+        discriminant(looked.reason()),
+        discriminant(could_not.reason()),
+        "a refused read must not reach the row a run that looked and found no \
+         blame reaches"
+    );
+    assert_ne!(
+        discriminant(looked.outcome()),
+        discriminant(could_not.outcome()),
+        "and it must not exit as that run exits, or nothing reports the refusal"
+    );
 }
 
 #[tokio::test]
@@ -1046,27 +1175,25 @@ async fn every_advisory_with_no_published_fix_gets_its_own_verdict() {
 
 #[test]
 fn every_row_answers_whether_it_carries_a_legacy_label() {
-    let rows: Vec<(Row, Option<&str>)> = vec![
-        (Row::NothingToDo, None),
-        (Row::AlreadyInProgress, None),
-        (Row::AlreadyFixed, None),
-        (Row::PullRequest, Some("needs-work")),
-        (Row::UnsafeWithoutDirection, Some("upstream-blocked")),
-        (Row::ScanUnusable { why: String::new() }, None),
-    ];
-    assert_eq!(rows.len(), 6, "the six rows, and every one of them answers");
+    let rows = every_row();
+    assert_eq!(
+        rows.len(),
+        8,
+        "the eight rows, and every one of them answers"
+    );
 
-    for (row, label) in &rows {
+    for row in &rows {
+        let label = label_the_host_closes(row);
         assert_eq!(
             row.legacy_label(),
-            *label,
+            label,
             "{} should carry {label:?}, got {:?}",
             row.row(),
             row.legacy_label()
         );
     }
 
-    let carried: HashSet<&str> = rows.iter().filter_map(|(_, label)| *label).collect();
+    let carried: HashSet<&str> = rows.iter().filter_map(Row::legacy_label).collect();
     assert_eq!(
         carried,
         HashSet::from(["needs-work", "upstream-blocked"]),

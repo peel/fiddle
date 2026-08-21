@@ -14,7 +14,7 @@ Write both names into `verdicts.json`. Keep `verdict` for fiddle's own dispositi
 ## Consequences
 
 - Writing `verdict` into the Jira field would file `cve-needs_work`. `Judgement::NeedsWork` serialises under `snake_case`, and no JQL in the host looks for that label. A ticket carrying it would never close.
-- `Row::legacy_label` answers `None` for five of its seven rows. Only `pull_request` and `unsafe_without_direction` carry a Jira meaning. `Row::AttemptBoundReached` is one of the five, and the mapping drops a null rather than file `cve-null`.
+- `Row::legacy_label` answers `None` for six of its eight rows. Only `pull_request` and `unsafe_without_direction` carry a Jira meaning. `Row::AttemptBoundReached` and `Row::ChecksUnreadable` are both among the six, and the mapping drops a null rather than file `cve-null`.
 - The end date is explicit: the label goes when M5 owns Jira. A compatibility field with no named end date becomes permanent by default. Nothing later asks whether it is still needed.
 - Two names for one outcome breaks the rule of one word for one meaning. `docs/technical/style.md` asks that a broken rule is declared, and this is the declaration. The field is named `legacy_label` and not `label` for the same reason.
 - What was given up: `verdicts.json` and `non-patchable.json` disagree about the word for one outcome. One file says `needs_work` and the other says `needs-work`. A reader comparing them must know which contract each file serves.
