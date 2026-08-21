@@ -177,7 +177,13 @@ WHAT THIS PATCH DOES NOT CARRY
 things in it: `[orchestration.cve] image` names `icecube:scan`, `[report] dir`
 names a directory the repository ignores, and the credential tables name
 `FIDDLE_GITHUB_TOKEN`, `LITELLM_API_KEY`, `WIZ_CLIENT_ID` and
-`WIZ_CLIENT_SECRET`. The document also needs `[scanner] cli` to read
+`WIZ_CLIENT_SECRET`.
+
+`[agent] base_url` may be written or named, ADR 040. This step exports
+`FIDDLE_MODEL_BASE_URL` from a repository variable rather than a secret, because
+the endpoint is not a credential. A document that writes the value needs no
+variable, and a document that names one is refused with exit 2 when nothing
+exports it. The document also needs `[scanner] cli` to read
 `{ program = "wizcli", args = ["scan", "container-image"] }`, because fiddle adds
 `--by-policy-hits=DISABLED`, the output path and the image, and nothing else.
 `[workspace]` names what judges a repair. The skill this patch stops using ran
@@ -193,14 +199,10 @@ branch becomes a written value.
 place. Deleting it is out of scope.
 
 diff --git a/.github/workflows/cve-remediation.yml b/.github/workflows/cve-remediation.yml
-index f8d9b8b..af27285 100644
+index f8d9b8b..117c867 100644
 --- a/.github/workflows/cve-remediation.yml
 +++ b/.github/workflows/cve-remediation.yml
-@@ -383,10 +383,11 @@ jobs:
-     needs: scan
-     if: needs.scan.outputs.has_work == 'true' && needs.scan.outputs.on_default_branch == 'true'
-     runs-on: ubuntu-latest
-     permissions:
+@@ -387,6 +387,7 @@
        contents: write
        pull-requests: write
        id-token: write
@@ -208,7 +210,7 @@ index f8d9b8b..af27285 100644
      steps:
        - uses: actions/checkout@v4
          with:
-@@ -401,15 +420,80 @@ jobs:
+@@ -401,15 +402,81 @@
            client-id: ${{ secrets.WIZ_CLIENT_ID }}
            client-secret: ${{ secrets.WIZ_CLIENT_SECRET }}
  
@@ -260,6 +262,7 @@ index f8d9b8b..af27285 100644
 +        id: fiddle
 +        env:
 +          FIDDLE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++          FIDDLE_MODEL_BASE_URL: ${{ vars.FIDDLE_MODEL_BASE_URL }}
 +          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
 +          WIZ_CLIENT_ID: ${{ secrets.WIZ_CLIENT_ID }}
 +          WIZ_CLIENT_SECRET: ${{ secrets.WIZ_CLIENT_SECRET }}
