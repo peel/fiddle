@@ -107,6 +107,10 @@ fn unfixed_packages(cves: &[&str], table: &[(&str, &str, &str)]) -> Vec<Package>
 
 pub const FIXTURE_GRADE: &str = "HIGH";
 
+pub const FIXTURE_CLIENT_NAME: &str = "WizCLI";
+
+pub const FIXTURE_CLIENT_VERSION: &str = "0.0.0-fiddle-stub";
+
 fn vulnerability(cve: &str, fixed: Option<&str>, description: &str) -> serde_json::Value {
     graded(cve, fixed, description, FIXTURE_GRADE)
 }
@@ -244,8 +248,14 @@ impl ReportVariant {
             }
         }
         Report {
-            raw: serde_json::to_string_pretty(&serde_json::json!({ "result": result }))
-                .expect("a document built from json! values serializes"),
+            raw: serde_json::to_string_pretty(&serde_json::json!({
+                "extraInfo": {
+                    "clientName": FIXTURE_CLIENT_NAME,
+                    "clientVersion": FIXTURE_CLIENT_VERSION,
+                },
+                "result": result,
+            }))
+            .expect("a document built from json! values serializes"),
         }
     }
 }

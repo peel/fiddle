@@ -149,7 +149,6 @@ impl Scanner for Wizcli {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let scanner_version = scanner_version(&stdout);
         let image_digest = image_digest(&stdout);
 
         let raw = match std::fs::read_to_string(&report) {
@@ -182,14 +181,15 @@ impl Scanner for Wizcli {
         if raw.trim().is_empty() {
             return Err(ScanError::NoOutput { path: report });
         }
-        let document = serde_json::from_str(&raw).map_err(|source| ScanError::Unparseable {
-            path: report,
-            reason: source.to_string(),
-        })?;
+        let document: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|source| ScanError::Unparseable {
+                path: report,
+                reason: source.to_string(),
+            })?;
 
         Ok(ScanReport {
+            scanner_version: scanner_version(&document),
             document,
-            scanner_version,
             image_digest,
         })
     }
@@ -202,12 +202,10 @@ fn remove_if_present(path: &Path) -> std::io::Result<()> {
     }
 }
 
-fn scanner_version(stdout: &str) -> String {
-    stdout
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("wizcli "))
+fn scanner_version(document: &serde_json::Value) -> String {
+    document["extraInfo"]["clientVersion"]
+        .as_str()
         .unwrap_or_default()
-        .trim()
         .to_string()
 }
 

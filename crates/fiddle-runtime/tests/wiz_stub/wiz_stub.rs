@@ -4,13 +4,16 @@ mod document;
 
 use document::{
     libraries, libraries_carrying, libraries_graded, os_packages, python_libraries, report_with,
-    unfixed_libraries, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, SECOND_LIBRARY_CVE, SECOND_OS_CVE,
+    unfixed_libraries, DEFAULT_LIBRARY_CVES, DEFAULT_OS_CVES, FIXTURE_CLIENT_VERSION,
+    SECOND_LIBRARY_CVE, SECOND_OS_CVE,
 };
 use std::path::{Path, PathBuf};
 
-const STUB_VERSION: &str = "0.0.0-fiddle-stub";
-
 const STUB_DIGEST: &str = "sha256:6f1b0d2c9a4e7385bd1c05fa9e37642c8b0d5713ae629f04c8d17b6a3e59042d";
+
+const REAL_SHAPE: &str = include_str!("../../../../tests/fixtures/wiz-real/wiz.json");
+
+const VERSION_ON_STDOUT: &str = "9.9.9-not-the-one-in-the-document";
 
 const CHILD_RECORD: &str = "child.json";
 
@@ -28,6 +31,11 @@ fn main() {
         "ok" => {
             banner(&args);
             write(&report, document());
+        }
+        "real-shape" => {
+            println!("Wiz CLI v{VERSION_ON_STDOUT}, commit 0000000");
+            println!("scanning {} at {STUB_DIGEST}", image(&args));
+            write(&report, REAL_SHAPE.to_string());
         }
         "library-clean" => {
             banner(&args);
@@ -195,7 +203,7 @@ fn document() -> String {
 }
 
 fn banner(args: &[String]) {
-    println!("wizcli {STUB_VERSION}");
+    println!("wizcli {FIXTURE_CLIENT_VERSION}");
     println!("scanning {} at {STUB_DIGEST}", image(args));
 }
 

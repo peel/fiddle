@@ -1,0 +1,10 @@
+[
+  {
+    "cve": "CVE-2026-45001",
+    "package": "github.com/acme/widget/v2",
+    "current": "2.52.13",
+    "fixedVersion": "2.52.14",
+    "severity": "MEDIUM",
+    "packageType": "library"
+  }
+]

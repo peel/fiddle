@@ -1,0 +1,455 @@
+{
+  "id": "3c1f8a52-6b04-4d17-9e2a-71f5c8d03b41",
+  "projects": [
+    {
+      "id": "0a1b2c3d-1000-4000-8000-000000000001"
+    },
+    {
+      "id": "0a1b2c3d-1000-4000-8000-000000000002"
+    },
+    {
+      "id": "0a1b2c3d-1000-4000-8000-000000000003"
+    },
+    {
+      "id": "0a1b2c3d-1000-4000-8000-000000000004"
+    },
+    {
+      "id": "0a1b2c3d-1000-4000-8000-000000000005"
+    },
+    {
+      "id": "0a1b2c3d-1000-4000-8000-000000000006"
+    },
+    {
+      "id": "0a1b2c3d-1000-4000-8000-000000000007"
+    }
+  ],
+  "createdAt": "2026-08-12T03:50:27.688576403Z",
+  "startedAt": "2026-08-12T03:50:15.826302179Z",
+  "createdBy": {
+    "serviceAccount": {
+      "id": "7fabricatedserviceaccountidfiddlefixture0000000000000"
+    }
+  },
+  "status": {
+    "state": "SUCCESS",
+    "verdict": "PASSED_BY_POLICY"
+  },
+  "policies": [
+    {
+      "id": "9b7d1e40-2c55-4a18-8f31-6d0a4b7c9e01",
+      "name": "Default software license policy",
+      "description": "Default built-in policy for software license scanning",
+      "type": "SOFTWARE_SUPPLY_CHAIN",
+      "builtin": true,
+      "projects": null,
+      "policyLifecycleEnforcements": [
+        {
+          "enforcementMethod": "AUDIT",
+          "deploymentLifecycle": "CLI"
+        },
+        {
+          "enforcementMethod": "AUDIT",
+          "deploymentLifecycle": "CODE"
+        }
+      ],
+      "ignoreRules": null,
+      "lifecycleTargets": [
+        "BUILD",
+        "CODE"
+      ],
+      "Default": false,
+      "params": {
+        "__typename": "cicdscanpolicyparamssoftwaresupplychain",
+        "softwareSupplyChainSeverityThreshold": "HIGH",
+        "countThreshold": 1,
+        "includedRules": null,
+        "includedRuleTypes": [
+          "SOFTWARE_LICENSE"
+        ]
+      }
+    },
+    {
+      "id": "9b7d1e40-2c55-4a18-8f31-6d0a4b7c9e02",
+      "name": "Default malware policy",
+      "description": "Default built-in policy for malware scanning",
+      "type": "MALWARE",
+      "builtin": true,
+      "projects": null,
+      "policyLifecycleEnforcements": [
+        {
+          "enforcementMethod": "AUDIT",
+          "deploymentLifecycle": "CLI"
+        }
+      ],
+      "ignoreRules": null,
+      "lifecycleTargets": [
+        "BUILD"
+      ],
+      "Default": false,
+      "params": {
+        "__typename": "cicdscanpolicyparamsmalware",
+        "malwareFindingSeverityThreshold": "HIGH",
+        "malwareFindingConfidenceLevelThreshold": "HIGH",
+        "countThreshold": 1
+      }
+    },
+    {
+      "id": "9b7d1e40-2c55-4a18-8f31-6d0a4b7c9e03",
+      "name": "Default vulnerabilities policy",
+      "description": "Default built-in policy",
+      "type": "VULNERABILITIES",
+      "builtin": true,
+      "projects": null,
+      "policyLifecycleEnforcements": [
+        {
+          "enforcementMethod": "AUDIT",
+          "deploymentLifecycle": "CLI"
+        },
+        {
+          "enforcementMethod": "AUDIT",
+          "deploymentLifecycle": "CODE"
+        }
+      ],
+      "ignoreRules": null,
+      "lifecycleTargets": [
+        "BUILD",
+        "CODE"
+      ],
+      "Default": false,
+      "params": {
+        "__typename": "cicdscanpolicyparamsvulnerabilities",
+        "vulnerabilityTypes": null,
+        "severity": "CRITICAL",
+        "packageCountThreshold": 1,
+        "ignoreUnfixed": true,
+        "ignoreUnfixedExcludeEOLTechnologies": false,
+        "packageAllowList": null,
+        "detectionMethods": null,
+        "vulnerabilities": null,
+        "fixGracePeriodHours": 0,
+        "publishGracePeriodHours": 0,
+        "eolGracePeriodHours": 0,
+        "ignoreTransitiveVulnerabilities": true
+      }
+    },
+    {
+      "id": "9b7d1e40-2c55-4a18-8f31-6d0a4b7c9e04",
+      "name": "Default secrets policy",
+      "description": "Default built-in policy for secret scanning",
+      "type": "SECRETS",
+      "builtin": true,
+      "projects": null,
+      "policyLifecycleEnforcements": [
+        {
+          "enforcementMethod": "AUDIT",
+          "deploymentLifecycle": "CLI"
+        },
+        {
+          "enforcementMethod": "AUDIT",
+          "deploymentLifecycle": "CODE"
+        }
+      ],
+      "ignoreRules": null,
+      "lifecycleTargets": [
+        "BUILD",
+        "CODE"
+      ],
+      "Default": false,
+      "params": {
+        "__typename": "cicdscanpolicyparamssecrets",
+        "countThreshold": 1,
+        "pathAllowList": null,
+        "secretFindingSeverityThreshold": "HIGH",
+        "disallowedValidationStatus": null
+      }
+    },
+    {
+      "id": "9b7d1e40-2c55-4a18-8f31-6d0a4b7c9e05",
+      "name": "Default sensitive data policy",
+      "description": "Default built-in policy for sensitive data scanning",
+      "type": "SENSITIVE_DATA",
+      "builtin": true,
+      "projects": null,
+      "policyLifecycleEnforcements": [
+        {
+          "enforcementMethod": "AUDIT",
+          "deploymentLifecycle": "CLI"
+        },
+        {
+          "enforcementMethod": "AUDIT",
+          "deploymentLifecycle": "CODE"
+        }
+      ],
+      "ignoreRules": null,
+      "lifecycleTargets": [
+        "BUILD",
+        "CODE"
+      ],
+      "Default": false,
+      "params": {
+        "__typename": "cicdscanpolicyparamssensitivedata",
+        "dataFindingSeverityThreshold": "INFO",
+        "countThreshold": 1
+      }
+    }
+  ],
+  "extraInfo": {
+    "clientName": "WizCLI",
+    "clientVersion": "1.66.0-a29c961",
+    "buildParams": {
+      "platform": "GITHUB_ACTIONS",
+      "branch": "main",
+      "committedBy": "acme-ci",
+      "repository": "github.com/acme/widget",
+      "commitHash": "4c7a1f2e9b0d5638ae21c4f70d9b3a5162e8d4c7",
+      "commitUrl": "https://github.com/acme/widget/commit/4c7a1f2e9b0d5638ae21c4f70d9b3a5162e8d4c7",
+      "jobUrl": "https://github.com/acme/widget/actions/runs/10000000001",
+      "jobName": "scan",
+      "extraDetails": {
+        "__typename": "CICDBuildParamsContainerImage",
+        "dockerfilePath": null,
+        "dockerfileContents": null
+      }
+    }
+  },
+  "tags": null,
+  "outdatedPolicies": null,
+  "taggedResource": null,
+  "associatedBaselineScans": null,
+  "outputMessages": null,
+  "scanOriginResource": {
+    "__typename": "CICDScanOriginContainerImage",
+    "name": "widget:scan",
+    "id": "sha256:9d41c0b7e5a83f26d1c40b9e73a5628f4b0d1c73ae629f04c8d17b6a3e590421",
+    "digest": null,
+    "imageLabels": null
+  },
+  "result": {
+    "__typename": "CICDDiskScanResult",
+    "osPackages": null,
+    "libraries": [
+      {
+        "name": "github.com/acme/widget/v2",
+        "version": "2.52.13",
+        "path": "/app/widget",
+        "startLine": null,
+        "endLine": null,
+        "vulnerabilities": [
+          {
+            "name": "CVE-2026-45001",
+            "severity": "MEDIUM",
+            "fixedVersion": "2.52.14",
+            "fileRemediation": null,
+            "source": "https://github.com/advisories/GHSA-fidd-le00-0001",
+            "description": "The fabricated widget framework forwards a header value that a caller can set. A caller can therefore change what an upstream server logs and rate limits. Version 2.52.14 sets the header instead of adding to it.",
+            "score": 5.3,
+            "exploitabilityScore": 3.9,
+            "cvssV3Metrics": {
+              "attackComplexity": "LOW",
+              "attackVector": "NETWORK",
+              "confidentialityImpact": "NONE",
+              "integrityImpact": "LOW",
+              "privilegesRequired": "NONE",
+              "userInteractionRequired": false
+            },
+            "cvssV2Metrics": {
+              "attackComplexity": null,
+              "attackVector": null,
+              "confidentialityImpact": null,
+              "integrityImpact": null,
+              "privilegesRequired": null,
+              "userInteractionRequired": false
+            },
+            "cvssV3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N",
+            "cvssV4Vector": null,
+            "hasExploit": true,
+            "hasCisaKevExploit": false,
+            "cisaKevReleaseDate": null,
+            "cisaKevDueDate": null,
+            "epssProbability": 0.4,
+            "epssPercentile": 29.2,
+            "epssSeverity": "LOW",
+            "weightedSeverity": "LOW",
+            "publishDate": "2026-07-08T20:16:00Z",
+            "fixPublishDate": "2026-08-05T01:27:27Z",
+            "gracePeriodEnd": null,
+            "gracePeriodRemainingHours": null,
+            "failedPolicyMatches": null,
+            "finding": {
+              "id": "6e0c4a19-8d72-4b53-9f01-2ac7b58e6d34"
+            },
+            "ignoredPolicyMatches": [
+              {
+                "policy": {
+                  "id": "9b7d1e40-2c55-4a18-8f31-6d0a4b7c9e03",
+                  "name": "Default vulnerabilities policy",
+                  "description": "Default built-in policy",
+                  "type": "VULNERABILITIES",
+                  "builtin": true,
+                  "projects": null,
+                  "policyLifecycleEnforcements": [
+                    {
+                      "enforcementMethod": "AUDIT",
+                      "deploymentLifecycle": "CLI",
+                      "enforcementConfig": null
+                    },
+                    {
+                      "enforcementMethod": "AUDIT",
+                      "deploymentLifecycle": "CODE",
+                      "enforcementConfig": null
+                    }
+                  ],
+                  "ignoreRules": null,
+                  "lifecycleTargets": [
+                    "BUILD",
+                    "CODE"
+                  ],
+                  "Default": false
+                },
+                "ignoreReason": "BELOW_THRESHOLD",
+                "matchedIgnoreRules": null
+              }
+            ]
+          }
+        ],
+        "detectionMethod": "LIBRARY",
+        "layerMetadata": null,
+        "failedPolicyMatches": null,
+        "resolvedDependencyTree": null
+      }
+    ],
+    "applications": null,
+    "endOfLifeTechnologies": null,
+    "cpes": null,
+    "secrets": null,
+    "dataFindings": null,
+    "vulnerableSBOMArtifactsByNameVersion": [
+      {
+        "id": "b2d95c31-4f68-4ea1-8c07-53a1d29be745",
+        "type": {
+          "group": "CODE_LIBRARY",
+          "codeLibraryLanguage": "GO",
+          "osPackageManager": null,
+          "hostedTechnology": null,
+          "plugin": null,
+          "custom": null,
+          "ciComponent": null,
+          "ide": null
+        },
+        "name": "github.com/acme/widget/v2",
+        "version": "2.52.13",
+        "filePath": "/app/widget",
+        "layerMetadata": null,
+        "vulnerabilityFindings": {
+          "severities": {
+            "criticalCount": 0,
+            "highCount": 0,
+            "mediumCount": 1,
+            "lowCount": 0,
+            "infoCount": 0
+          },
+          "fixedVersion": "2.52.14",
+          "remediation": "go get -u github.com/acme/widget/v2",
+          "fileRemediation": null,
+          "findings": null
+        }
+      }
+    ],
+    "hostConfiguration": {
+      "hostConfigurationFrameworks": null,
+      "hostConfigurationFindings": null,
+      "analytics": {
+        "severity": {
+          "infoCount": 0,
+          "lowCount": 0,
+          "mediumCount": 0,
+          "highCount": 0,
+          "criticalCount": 0
+        },
+        "status": {
+          "passCount": 0,
+          "failCount": 0,
+          "errorCount": 0,
+          "notAssessedCount": 0,
+          "totalCount": 0
+        }
+      }
+    },
+    "failedPolicyMatches": null,
+    "analytics": {
+      "vulnerabilities": {
+        "infoCount": 0,
+        "lowCount": 0,
+        "mediumCount": 1,
+        "highCount": 0,
+        "criticalCount": 0,
+        "unfixedCount": 0,
+        "totalCount": 1
+      },
+      "secrets": {
+        "privateKeyCount": 0,
+        "publicKeyCount": 0,
+        "passwordCount": 0,
+        "certificateCount": 0,
+        "cloudKeyCount": 0,
+        "sshAuthorizedKeyCount": 0,
+        "dbConnectionStringCount": 0,
+        "gitCredentialCount": 0,
+        "presignedURLCount": 0,
+        "saasAPIKeyCount": 0,
+        "infoCount": 0,
+        "lowCount": 0,
+        "mediumCount": 0,
+        "highCount": 0,
+        "criticalCount": 0,
+        "totalCount": 0
+      },
+      "hostConfiguration": {
+        "infoCount": 0,
+        "lowCount": 0,
+        "mediumCount": 0,
+        "highCount": 0,
+        "criticalCount": 0
+      },
+      "malware": {
+        "infoCount": 0,
+        "lowCount": 0,
+        "mediumCount": 0,
+        "highCount": 0,
+        "criticalCount": 0,
+        "totalCount": 0
+      },
+      "softwareSupplyChain": {
+        "infoCount": 0,
+        "lowCount": 0,
+        "mediumCount": 0,
+        "highCount": 0,
+        "criticalCount": 0,
+        "totalCount": 0
+      },
+      "aiModel": null,
+      "sast": {
+        "infoCount": 0,
+        "lowCount": 0,
+        "mediumCount": 0,
+        "highCount": 0,
+        "criticalCount": 0,
+        "totalCount": 0
+      },
+      "aiSast": null,
+      "filesScannedCount": 963,
+      "directoriesScannedCount": 103
+    },
+    "sbomOutput": "",
+    "malwares": null,
+    "softwareSupplyChain": null,
+    "aiModels": null,
+    "sast": null,
+    "iac": null,
+    "ruleMatches": null,
+    "scanStatistics": null,
+    "fileTypes": null,
+    "discoveredResources": null
+  },
+  "reportUrl": "https://app.wiz.io/findings/cicd-scans#~%2528cicd_scan~%25273c1f8a52-6b04-4d17-9e2a-71f5c8d03b41%252A2c2026-08-12T03%2525%25252A3a50%2525%25252A3a27.68856274Z%2527%2529"
+}
