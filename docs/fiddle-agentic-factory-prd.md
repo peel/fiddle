@@ -546,6 +546,26 @@ program = "make"
 args = ["test"]
 success = "exit-zero"
 
+[[workspace.commands]]
+# The programs an attempt may run, and nothing else runs. A repair that has to
+# regenerate a derived file cannot do it by writing that file, so the
+# deployment names the program that produces it. Fiddle names no ecosystem, so
+# there is no default and a deployment that declares none gets a four-tool
+# attempt. A program and an argument list reach the process directly: there is
+# no shell, nothing is expanded, and one argument cannot become two.
+program = "make"
+args = ["tidy"]
+
+[[workspace.commands]]
+# `args` is a prefix the attempt cannot reorder or replace. `extend` decides
+# whether the attempt may append to it, and the default is "none". Fully fixed
+# arguments cannot express a version the attempt chose; free arguments approach
+# a shell. An appended argument is one line of printable text, and it names no
+# path outside the project.
+program = "make"
+args = ["relock"]
+extend = "arguments"
+
 [github]
 # One integration owns branch publication, pull requests, and check
 # observation. A deployment that never publishes omits it.
@@ -579,7 +599,7 @@ Configuration requirements:
 - a credential reference that names an environment source or a profile, never a secret value;
 - host scheduling, runner provisioning, and workflow definitions outside `fiddle.toml`;
 - capability prompts, bounded tools, minimum human-decision rules, and orchestration graphs in Rust rather than in configuration;
-- one exception to that rule: M4 moved the immediate checks into the document as `[[workspace.checks]]`;
+- two exceptions to that rule, both in M4: the immediate checks moved into the document as `[[workspace.checks]]`, and the programs an attempt may run moved into it as `[[workspace.commands]]`. A capability's tool *set* is still Rust's; what one of those tools may run is the deployment's, because Fiddle names no ecosystem;
 - explicit agent-runtime selection only where a capability implementation supports it, and no promise that every capability runs on every runtime;
 - one global default per setting, with an orchestration or capability override only for a genuine deviation;
 - `fiddle config check`, which resolves and validates the effective configuration without starting work.

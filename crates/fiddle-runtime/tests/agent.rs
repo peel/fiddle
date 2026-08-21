@@ -2,7 +2,7 @@ mod fixture;
 
 use fiddle_runtime::agent::{attempt, AgentBudget, AgentError, Direction, ToolHost, ToolReceipts};
 use fiddle_runtime::core::AttemptId;
-use fiddle_runtime::workspace::{Workspace, WorkspaceCommand};
+use fiddle_runtime::workspace::{DeclaredCommand, Workspace, WorkspaceCommand};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -12,6 +12,10 @@ use tokio_util::sync::CancellationToken;
 const REPAIRED: &str = "pub fn f() -> u8 { 1 }\n";
 
 fn test_host() -> (ToolHost, tempfile::TempDir) {
+    test_host_declaring(Vec::new())
+}
+
+fn test_host_declaring(commands: Vec<DeclaredCommand>) -> (ToolHost, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let repo = fixture::trivial_repo(dir.path());
     let cancel = CancellationToken::new();
@@ -31,6 +35,8 @@ fn test_host() -> (ToolHost, tempfile::TempDir) {
             args: vec!["rev-parse".to_string(), "--is-inside-work-tree".to_string()],
             timeout: Duration::from_secs(30),
         },
+        commands: Arc::new(commands),
+        command_timeout: Duration::from_secs(30),
         receipts: Arc::new(Mutex::new(ToolReceipts::default())),
     };
     (host, dir)

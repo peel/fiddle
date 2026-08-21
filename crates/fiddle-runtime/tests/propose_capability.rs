@@ -440,6 +440,8 @@ fn config(world: &World, check: WorkspaceCommand) -> ProposeConfig {
         workspace_root: world.workspace_root(),
         stub_root: world.stub_root(),
         check,
+        commands: std::sync::Arc::new(Vec::new()),
+        command_timeout: PATIENT,
         budget: AgentBudget {
             max_turns: 8,
             max_tokens: 4096,

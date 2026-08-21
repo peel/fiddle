@@ -168,12 +168,13 @@ outbound request in the strongest available sense.
 
 Two corrections it forced, both measured rather than reasoned:
 
-- **The offered set is four names, not five.** `agent::attempt` asks for `OutputMode::Tool`, whose
-  documented behaviour would advertise a synthetic finalising tool as a fifth. Rig 0.41's
-  `prompt_typed` overrides the mode to `Native`, so no synthetic tool is ever sent and the anchor's
-  "exactly the capability's four tools" is right for a reason nobody had checked. Deleting the
-  `output_mode` line changes nothing on the wire. See BACKLOG, *The `output_mode` line is inert on
-  the typed path*.
+- **No synthetic tool joins the offered set.** `agent::attempt` asks for `OutputMode::Tool`, whose
+  documented behaviour would advertise a synthetic finalising tool. Rig 0.41's `prompt_typed`
+  overrides the mode to `Native`, so no synthetic tool is ever sent, and the anchor's count of the
+  offered set is right for a reason nobody had checked. Deleting the `output_mode` line changes
+  nothing on the wire. The set is four names over a deployment that declares no program and five
+  where it declares one, and `run_command` is the fifth (ADR 043); neither count admits a synthetic
+  one. See BACKLOG, *The `output_mode` line is inert on the typed path*.
 - **The native `response_format` constraint is sent, on the finalising turn only.** A criterion
   scored against "no native constraint is sent" would be scored against a claim the wire refutes.
 
@@ -184,8 +185,9 @@ Two corrections it forced, both measured rather than reasoned:
 - **Acceptable (4–7).** Trusted values reach tools only through Rig's host-only `ToolContext` via
   `context.require::<T>()`; `Args` carry relative paths and bounded values only. A test serializes the
   model-visible request and asserts that the advertised schema contains no absolute path, no host
-  handle, and no credential, and that the offered tool set is exactly the capability's four tools —
-  `read_file`, `write_file`, `list_files`, `run_check`. A call to an unregistered tool name is
+  handle, and no credential, and that the offered tool set is exactly the capability's own tools —
+  `read_file`, `write_file`, `list_files`, `run_check`, and `run_command` where and only where the
+  deployment declared a program for it to run (ADR 043). A call to an unregistered tool name is
   rejected rather than dispatched.
 - **Excellent (8–10).** All of the above, plus the assertion is made against the *serialized outbound
   request* rather than against the builder that produced it, so a future Rig change that starts

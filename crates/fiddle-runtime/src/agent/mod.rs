@@ -3,8 +3,8 @@ pub mod tools;
 
 pub use audit::AuditHook;
 pub use tools::{
-    CheckOutcome, ListFiles, NoArgs, ReadFile, ReadFileArgs, RunCheck, ToolError, ToolHost,
-    WriteFile, WriteFileArgs, WriteReceipt,
+    CheckOutcome, ListFiles, NoArgs, ReadFile, ReadFileArgs, RunCheck, RunCommand, RunCommandArgs,
+    ToolError, ToolHost, WriteFile, WriteFileArgs, WriteReceipt,
 };
 
 use rig_agent::agent::OutputMode;
@@ -26,6 +26,21 @@ cannot finish — reply with the structured report and nothing else. Report what
 you actually changed, whether or not it worked.";
 
 const TASK: &str = "Repair this project so that its check passes, then report what you did.";
+
+const DECLARED_COMMANDS: &str = "\
+\n\
+This project also declares programs you may run, and `run_command` runs one of \
+them. You name the program and its arguments. Nothing else runs: a program the \
+project does not declare is refused, and the refusal names the ones it declares \
+and the arguments each one takes. Prefer a declared program over writing a file \
+whose contents another program produces.";
+
+fn briefed(preamble: &str, declares_commands: bool) -> String {
+    match declares_commands {
+        true => format!("{preamble}\n{DECLARED_COMMANDS}"),
+        false => preamble.to_string(),
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum Direction<'a> {
@@ -215,8 +230,10 @@ pub async fn attempt_briefed<M>(
 where
     M: rig_core::completion::CompletionModel + 'static,
 {
-    let agent = AgentBuilder::new(model)
-        .preamble(brief.preamble)
+    let declares_commands = !host.commands.is_empty();
+    let preamble = briefed(brief.preamble, declares_commands);
+    let mut builder = AgentBuilder::new(model)
+        .preamble(&preamble)
         .max_tokens(budget.max_tokens)
         .default_max_turns(budget.max_turns)
         .output_schema::<RepairReport>()
@@ -224,12 +241,15 @@ where
         .tool(ReadFile)
         .tool(WriteFile)
         .tool(ListFiles)
-        .tool(RunCheck)
-        .add_hook(AuditHook::for_host(&host))
-        .build();
+        .tool(RunCheck);
+    if declares_commands {
+        builder = builder.tool(RunCommand);
+    }
+    let agent = builder.add_hook(AuditHook::for_host(&host)).build();
 
     let mut bounded = host.clone();
     bounded.check.timeout = bounded.check.timeout.min(budget.tool_timeout);
+    bounded.command_timeout = bounded.command_timeout.min(budget.tool_timeout);
     let mut ctx = ToolContext::new();
     ctx.insert(bounded);
 
@@ -367,6 +387,49 @@ mod tests {
         match name {
             "enormous" => seed.repeat(4_000),
             _ => seed.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_brief_says_a_command_exists_only_where_the_deployment_declares_one() {
+        assert_eq!(
+            briefed(PREAMBLE, false),
+            PREAMBLE,
+            "a deployment that declares nothing must not be told about a tool it \
+             does not get"
+        );
+
+        let declared = briefed(PREAMBLE, true);
+        assert!(
+            declared.starts_with(PREAMBLE),
+            "the appendix adds to the brief and replaces none of it: {declared}"
+        );
+        assert!(
+            declared.contains("run_command"),
+            "a tool the model is not told about is a tool it will not use: {declared}"
+        );
+    }
+
+    #[test]
+    fn the_brief_about_declared_programs_names_no_ecosystem_and_no_program() {
+        let declared = briefed(PREAMBLE, true);
+        for word in [
+            "Go",
+            "go.mod",
+            "go.sum",
+            "golang",
+            "module",
+            "cargo",
+            "Cargo.toml",
+            "npm",
+            "pip",
+            "requirements.txt",
+            "lint",
+        ] {
+            assert!(
+                !declared.contains(word),
+                "the brief must name no ecosystem; found {word:?} in:\n{declared}"
+            );
         }
     }
 

@@ -196,6 +196,8 @@ pub struct Workspace {
 
     pub checks: Vec<CheckRef>,
 
+    pub commands: Vec<CommandRef>,
+
     pub isolation: Isolation,
 
     pub command_timeout: HumanDuration,
@@ -214,6 +216,8 @@ struct WorkspaceDocument {
     check: Option<ProgramRef>,
     #[serde(default)]
     checks: Vec<CheckRef>,
+    #[serde(default)]
+    commands: Vec<CommandRef>,
     #[serde(default)]
     isolation: Isolation,
     #[serde(default = "default_command_timeout")]
@@ -238,16 +242,68 @@ impl TryFrom<WorkspaceDocument> for Workspace {
                     .to_string(),
             );
         }
+        if let Some(twice) = declared_twice(&document.commands) {
+            return Err(format!(
+                "`[[workspace.commands]]` declares `{twice}` twice. A declaration \
+                 is what an attempt may run and how much of it the attempt may \
+                 vary, and two entries spelling the same program and the same \
+                 arguments answer that twice. Keep the one that says what this \
+                 deployment means"
+            ));
+        }
         Ok(Self {
             root: document.root,
             fixture: document.fixture,
             check: document.check,
             checks: document.checks,
+            commands: document.commands,
             isolation: document.isolation,
             command_timeout: document.command_timeout,
             cleanup: document.cleanup,
         })
     }
+}
+
+fn declared_twice(commands: &[CommandRef]) -> Option<String> {
+    let mut seen: Vec<(&str, &[String])> = Vec::new();
+    for command in commands {
+        let spelled = (command.program.as_str(), command.args.as_slice());
+        if seen.contains(&spelled) {
+            return Some(spelled_command(command));
+        }
+        seen.push(spelled);
+    }
+    None
+}
+
+fn spelled_command(command: &CommandRef) -> String {
+    let mut spelled = command.program.clone();
+    for argument in &command.args {
+        spelled.push(' ');
+        spelled.push_str(argument);
+    }
+    spelled
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandRef {
+    pub program: String,
+
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    #[serde(default)]
+    pub extend: Extend,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Extend {
+    #[default]
+    None,
+
+    Arguments,
 }
 
 #[derive(Debug, Deserialize)]
@@ -803,6 +859,115 @@ check = { program = "cargo", args = ["test", "--offline"] }
 
     const WORKSPACE_ONLY: &str = "[project]\nname=\"p\"\n[stub]\nroot=\"s\"\n\
                                   [report]\ndir=\"r\"\n[workspace]\n";
+
+    #[test]
+    fn a_deployment_declares_the_programs_an_attempt_may_run() {
+        let workspace = toml::from_str::<Config>(&format!(
+            "{WORKSPACE_ONLY}\
+             [[workspace.commands]]\nprogram = \"go\"\nargs = [\"mod\", \"tidy\"]\n\n\
+             [[workspace.commands]]\nprogram = \"go\"\nargs = [\"mod\", \"edit\"]\n\
+             extend = \"arguments\"\n"
+        ))
+        .expect("a deployment that repairs an ecosystem declares that ecosystem")
+        .workspace
+        .unwrap();
+
+        assert_eq!(workspace.commands.len(), 2);
+        assert_eq!(workspace.commands[0].program, "go");
+        assert_eq!(workspace.commands[0].args, ["mod", "tidy"]);
+        assert_eq!(
+            workspace.commands[0].extend,
+            Extend::None,
+            "a declaration that says nothing about extension takes no argument \
+             from the model"
+        );
+        assert_eq!(workspace.commands[1].extend, Extend::Arguments);
+    }
+
+    #[test]
+    fn a_declaration_needs_no_argument_and_no_extension_key() {
+        let workspace = toml::from_str::<Config>(&format!(
+            "{WORKSPACE_ONLY}[[workspace.commands]]\nprogram = \"tidy\"\n"
+        ))
+        .expect("a program with no argument is a whole declaration")
+        .workspace
+        .unwrap();
+        assert!(workspace.commands[0].args.is_empty());
+        assert_eq!(workspace.commands[0].extend, Extend::None);
+    }
+
+    #[test]
+    fn a_declaration_naming_no_program_is_refused() {
+        let error = toml::from_str::<Config>(&format!(
+            "{WORKSPACE_ONLY}[[workspace.commands]]\nargs = [\"tidy\"]\n"
+        ))
+        .expect_err("arguments without a program name nothing to run");
+        assert!(error.message().contains("program"), "{error}");
+    }
+
+    #[test]
+    fn a_declaration_carries_no_bound_of_its_own() {
+        let error = toml::from_str::<Config>(&format!(
+            "{WORKSPACE_ONLY}[[workspace.commands]]\nprogram = \"tidy\"\n\
+             timeout = \"5m\"\n"
+        ))
+        .expect_err("a declared command is bounded by workspace.command_timeout, not by itself");
+        assert!(error.message().contains("timeout"), "{error}");
+    }
+
+    #[test]
+    fn an_unknown_extension_value_is_refused_rather_than_read_as_permission() {
+        let error = toml::from_str::<Config>(&format!(
+            "{WORKSPACE_ONLY}[[workspace.commands]]\nprogram = \"tidy\"\n\
+             extend = \"anything\"\n"
+        ))
+        .expect_err("a value the schema does not admit must not become the permissive one");
+        assert!(
+            error.message().contains("none") && error.message().contains("arguments"),
+            "the refusal must name the two answers this key takes: {error}"
+        );
+    }
+
+    #[test]
+    fn one_command_declared_twice_is_refused_because_it_answers_one_question_twice() {
+        let error = toml::from_str::<Config>(&format!(
+            "{WORKSPACE_ONLY}\
+             [[workspace.commands]]\nprogram = \"go\"\nargs = [\"mod\", \"edit\"]\n\n\
+             [[workspace.commands]]\nprogram = \"go\"\nargs = [\"mod\", \"edit\"]\n\
+             extend = \"arguments\"\n"
+        ))
+        .expect_err("two entries for one command say two things about what may vary");
+        assert!(
+            error.message().contains("go mod edit"),
+            "the refusal must name the declaration it refused: {error}"
+        );
+    }
+
+    #[test]
+    fn two_declarations_sharing_a_program_and_differing_in_arguments_both_stand() {
+        let workspace = toml::from_str::<Config>(&format!(
+            "{WORKSPACE_ONLY}\
+             [[workspace.commands]]\nprogram = \"go\"\nargs = [\"mod\", \"tidy\"]\n\n\
+             [[workspace.commands]]\nprogram = \"go\"\nargs = [\"mod\", \"edit\"]\n\
+             extend = \"arguments\"\n"
+        ))
+        .expect("one program with two argument lists is two declarations")
+        .workspace
+        .unwrap();
+        assert_eq!(workspace.commands.len(), 2);
+    }
+
+    #[test]
+    fn a_document_declaring_no_command_declares_none_rather_than_a_default() {
+        let workspace = toml::from_str::<Config>(WORKSPACE_ONLY)
+            .unwrap()
+            .workspace
+            .unwrap();
+        assert!(
+            workspace.commands.is_empty(),
+            "a default program name would put an ecosystem back into Rust"
+        );
+    }
 
     const THREE_CHECKS: &str = r#"
 [[workspace.checks]]

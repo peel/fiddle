@@ -1,9 +1,11 @@
 mod changes;
 pub mod command;
+pub mod declared;
 pub mod path;
 
 pub use changes::{Content, FileEdit};
 pub use command::{CommandResult, WorkspaceCommand};
+pub use declared::{DeclaredCommand, Extend, Undeclared};
 pub use path::WorkspacePath;
 
 use fiddle_core::AttemptId;

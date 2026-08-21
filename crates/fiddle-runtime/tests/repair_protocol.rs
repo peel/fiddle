@@ -430,6 +430,8 @@ impl Fixture {
                 args: vec!["test".to_string(), "--offline".to_string()],
                 timeout: Duration::from_secs(180),
             },
+            commands: std::sync::Arc::new(Vec::new()),
+            command_timeout: Duration::from_secs(180),
             budget: AgentBudget {
                 max_turns: 8,
                 max_tokens: 4096,

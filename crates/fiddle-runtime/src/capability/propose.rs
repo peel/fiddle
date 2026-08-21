@@ -15,7 +15,7 @@ use crate::human::validate::{
     IgnoredReply,
 };
 use crate::human::{InteractionRef, PublishDecisionRequest, CONVERSATION_PAGES};
-use crate::workspace::{Workspace, WorkspaceCommand, WorkspacePath};
+use crate::workspace::{DeclaredCommand, Workspace, WorkspaceCommand, WorkspacePath};
 use fiddle_core::{
     correlation_key, decision_request_id, effect_id, payload_hash, AttemptId, CapabilityId,
     ChangeSetState, DecisionBinding, EffectKind, EvidenceRef, HumanDecisionRequest,
@@ -61,6 +61,10 @@ pub struct ProposeConfig {
     pub stub_root: PathBuf,
 
     pub check: WorkspaceCommand,
+
+    pub commands: std::sync::Arc<Vec<DeclaredCommand>>,
+
+    pub command_timeout: std::time::Duration,
 
     pub budget: AgentBudget,
 
@@ -327,6 +331,8 @@ where
             workspace: Arc::clone(&workspace),
             cancel: self.config.cancel.clone(),
             check: self.config.check.clone(),
+            commands: Arc::clone(&self.config.commands),
+            command_timeout: self.config.command_timeout,
             receipts: Arc::clone(&self.tools),
         };
 

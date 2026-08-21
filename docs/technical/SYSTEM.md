@@ -30,7 +30,7 @@ Paths are relative to the repository root. A skill path omits `/SKILL.md`.
 | `fiddle-cli` | `crates/fiddle-cli` | arguments, configuration, rendering, the exit code | `main.rs::exit_code_for` is the single mapping |
 | `fiddle-acceptance` | `crates/fiddle-acceptance` | drives the compiled binary as a subprocess | observes an exit code, a `--json` payload, or a written file |
 | workspace | `fiddle-runtime/src/workspace` | a detached worktree per attempt | a `Drop` guard removes it on every path |
-| agent | `fiddle-runtime/src/agent` | four tools, one bounded Rig attempt | the tool surface carries no host fact (ADR 034) |
+| agent | `fiddle-runtime/src/agent` | four tools, a fifth where a deployment declares a program, one bounded Rig attempt | the tool surface carries no host fact (ADR 034); a program an attempt runs is one the deployment declared (ADR 043) |
 | gateway | `fiddle-runtime/src/gateway.rs` | the one credential-carrying model | an OpenAI-compatible gateway, not Anthropic (ADR 012) |
 | effect executor | `fiddle-runtime/src/effect` | the seven-step authorization order | no mutation without an `AuthorizedEffect` (ADR 033) |
 | forge adapter | `fiddle-runtime/src/{github,git}` | the one `gh` and the one `git push` | `gh api -i`, not a REST client (ADR 015) |
@@ -68,7 +68,7 @@ records that gap.
 | attempt journal | `<report.dir>/.attempts/` | one intent record per attempt, then one `"effect_step"` line per executor step |
 | bean state | `.beans/`, read by the external `beans` CLI | epics, tasks and tags; the unit of work for develop |
 
-**`fiddle.toml`** (TOML, `deny_unknown_fields`) — the deployment document. `[project]`, `[stub]` and `[report]` are required. `[agent]`, `[workspace]`, `[github]` and `[scanner]` are optional, and so is `[orchestration.cve]`. An absent table describes a deployment that does not do that work; it is never a blank filled in silently. `[agent]` and `[workspace]` bound one attempt and name the checks that decide it. `[github]` and `[scanner]` are the second and third credential-carrying tables. `[orchestration.cve]` names the `image`, the `severities` and the `max_findings` a sweep acts on, and those three keys are the whole table. `crates/fiddle-acceptance/tests/config_check.rs` requires this line to name every table the schema admits.
+**`fiddle.toml`** (TOML, `deny_unknown_fields`) — the deployment document. `[project]`, `[stub]` and `[report]` are required. `[agent]`, `[workspace]`, `[github]` and `[scanner]` are optional, and so is `[orchestration.cve]`. An absent table describes a deployment that does not do that work; it is never a blank filled in silently. `[agent]` and `[workspace]` bound one attempt, name the checks that decide it, and name the programs it may run. `[github]` and `[scanner]` are the second and third credential-carrying tables. `[orchestration.cve]` names the `image`, the `severities` and the `max_findings` a sweep acts on, and those three keys are the whole table. `crates/fiddle-acceptance/tests/config_check.rs` requires this line to name every table the schema admits.
 
 `[github.policy]` and `[github.read_retry]` are strict tables of their own, because
 `deny_unknown_fields` on a parent does not reach a child. A mistyped `attempt = 8`
@@ -129,6 +129,7 @@ alone; gemini was removed after two consecutive authentication failures.
 - What counts as a change comes from the committed ignore rules, snapshotted before the attempt (ADR 030).
 - The workspace supplies a scratch `HOME` beside the worktree, never inside it.
 - The model-visible surface carries no host fact, and the runtime records each tool receipt itself (ADR 034).
+- An attempt runs a program only where the deployment declared it, as a program and an argument list with no shell, bounded by `[workspace] command_timeout` (ADR 043). The declaration's arguments are a prefix; whether the model may append to them is the declaration's own answer, and the default is no.
 - A mitigation attempt's diff touches exactly the files it declared, and Rust reads no meaning into a path (ADR 026). Nothing pre-filters an already-fixed finding.
 - Fiddle scans an image it did not build, and the bundle pairs the digest with the revision (ADR 020).
 - A `workflow_dispatch` lane on a feature branch is inert until its file reaches the default branch. `.github/workflows/github-effects.yml` carries the diagnosis.
@@ -146,6 +147,7 @@ alone; gemini was removed after two consecutive authentication failures.
 - `.github/workflows/github-effects.yml` is inert until it merges to the default branch. One dispatch after the merge closes it.
 - A forbidden test edit is a deployment's check now, not a guarantee this binary makes. A deployment that declares no test check gets no warning (ADR 026).
 - `[[workspace.checks]]` constrains neither the count nor the order nor which programs appear. No lane exercises a real `docker build`.
+- `[[workspace.commands]]` is an allowlist, and a deployment that declares a program taking a script has declared a shell by another name. Nothing in Rust can see that (ADR 043). Network egress from a declared program is as unbounded as it already is from a check.
 - No check verifies that a document citing a symbol names one that exists. Two lanes pin prose in this file, and both pin enumerations the binary also prints.
 
 ---

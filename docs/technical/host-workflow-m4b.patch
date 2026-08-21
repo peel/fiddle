@@ -113,6 +113,24 @@ image inside a model turn, which is why its allowlist carried
 `Bash(docker build *)`. The build is a step now. It writes `icecube:scan`, the
 tag the `scan` job builds, and `[orchestration.cve] image` names the same tag.
 
+THE ECOSYSTEM'S OWN TOOLS
+
+The deleted step ran `go` inside a model turn, which is why its allowlist
+carried `Bash(go *)`. fiddle needs an entry of its own, and it is narrower.
+`[[workspace.commands]]` in `fiddle.toml` names each program an attempt may run
+and the arguments it takes. A program the document does not name is refused.
+There is no shell, so `sh -c` is refused for the same reason `curl` is: no
+declaration names it. `[workspace] command_timeout` bounds each run, and the
+child gets `HOME`, `PATH`, `LANG` and one toolchain locator and no credential.
+`docs/technical/decisions/043-a-deployment-declares-the-programs-an-attempt-may-run.md`
+records the decision.
+
+So a repository whose repairs need `go mod tidy` writes that down. fiddle names
+no ecosystem and ships no default, and an attempt against a document that
+declares nothing gets four tools instead of five. The attempt still declares
+every file it changed, `go.sum` included, because knowing that a bump implies a
+checksum file is the agent's knowledge and not fiddle's.
+
 THE VERDICT MAPPING
 
 fiddle writes `verdicts.json` into `[report] dir`, and `write_report` is the only

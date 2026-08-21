@@ -1672,3 +1672,16 @@ carries no `.wiz` assumption to measure. `DEFAULT_CONFIG_DIR` and
 `require_login` never shipped. wizcli resolves its own directory, and a wizcli
 that finds no login reports itself with exit 1 and no report. ADR 042 records
 what replaced this.
+
+### 2026-08-21 — The offered tool set is four names or five, and two entries above say four
+
+`[[workspace.commands]]` gives an attempt a fifth tool, `run_command`, wherever a deployment declares a program for it to run. ADR 043 records the decision. Two entries in this file state a count that is now conditional, and this entry names them rather than rewriting them.
+
+**2026-08-09 — The `output_mode` line is inert on the typed path, and the request shape is right for a reason nobody had checked** says "Turn 0 carries the four capability tools" and "The finalising turn carries the same four tools". Both remain true of the deployment that lane measured, which declares no program. Over a deployment that declares one they read five. Its finding about the synthetic `final_result` tool is unaffected: no synthetic tool is advertised on any turn under either count.
+
+**2026-08-09 — The workspace command allowlist was stated four ways** is unaffected, and the distinction matters because both entries say "four". That one counts environment variable names, not tools. A declared command runs through `Workspace::run`, so it gets the same four names and no credential, and `workspace::a_workspace_command_inherits_no_credential` still pins them.
+
+What is left open. Nothing bounds what a declared program does once it runs. **2026-08-09 — What M1's isolation does not claim: egress, injection, hostile processes** already records that the check command runs with a real `PATH` and that nothing stops it opening a socket. There are two such doors now rather than one, and the second is reachable by a model's own choice of arguments within a declared prefix. A deployment that declares a program which itself interprets a script has declared a shell, and no rule in Rust can see that.
+
+Origin: implementation (bean `fiddle-56eq`, lane `lane/m4b-56eq`)
+Tags: #debt #evidence

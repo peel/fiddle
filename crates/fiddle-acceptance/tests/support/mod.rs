@@ -237,10 +237,21 @@ impl Scenario {
     }
 
     pub fn write_fixture_repo(&self) -> PathBuf {
+        self.write_repo_of(&[
+            ("src/lib.rs", BROKEN_FIXTURE),
+            (".gitignore", "target/\nCargo.lock\n"),
+        ])
+    }
+
+    pub fn write_repo_of(&self, files: &[(&str, &str)]) -> PathBuf {
         let repo = self.dir.path().join("fixture");
-        std::fs::create_dir_all(repo.join("src")).unwrap();
-        std::fs::write(repo.join("src/lib.rs"), BROKEN_FIXTURE).unwrap();
-        std::fs::write(repo.join(".gitignore"), "target/\nCargo.lock\n").unwrap();
+        for (path, contents) in files {
+            let at = repo.join(path);
+            if let Some(parent) = at.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(at, contents).unwrap();
+        }
         git(&repo, &["init", "-q", "."]);
         git(&repo, &["add", "-A"]);
         git(
