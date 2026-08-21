@@ -4,7 +4,8 @@ use serde_json::Value;
 
 use crate::scanner::ScanReport;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Arm {
     Absent,
     Empty,

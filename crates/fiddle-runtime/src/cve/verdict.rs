@@ -1,10 +1,60 @@
 use crate::agent::FindingDisposition;
 use crate::capability::cve::{GroupStatus, MigrationAttempt};
-use crate::cve::project::Projection;
+use crate::cve::project::{Arm, Projection};
 use fiddle_core::{AdvisoryId, Published, RunOutcome, Severity};
 use std::path::{Path, PathBuf};
 
 pub const REPORT_FILE: &str = "verdicts.json";
+
+pub const FINDINGS_FILE: &str = "findings.json";
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompleteFindings {
+    Scanned {
+        projected: usize,
+
+        libraries: Arm,
+
+        os_packages: Arm,
+
+        findings: Vec<fiddle_core::ProjectedFinding>,
+    },
+
+    Unusable {
+        why: String,
+    },
+}
+
+impl CompleteFindings {
+    pub fn of(run: &Run) -> Self {
+        let projection = match &run.scan {
+            Ok(projection) => projection,
+            Err(why) => return CompleteFindings::Unusable { why: why.clone() },
+        };
+        let findings: Vec<fiddle_core::ProjectedFinding> = projection.all().cloned().collect();
+        CompleteFindings::Scanned {
+            projected: findings.len(),
+            libraries: projection.library_arm(),
+            os_packages: projection.os_arm(),
+            findings,
+        }
+    }
+
+    pub fn projected(&self) -> Option<usize> {
+        match self {
+            CompleteFindings::Scanned { projected, .. } => Some(*projected),
+            CompleteFindings::Unusable { .. } => None,
+        }
+    }
+
+    pub fn findings(&self) -> Option<&[fiddle_core::ProjectedFinding]> {
+        match self {
+            CompleteFindings::Scanned { findings, .. } => Some(findings),
+            CompleteFindings::Unusable { .. } => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Row {
@@ -245,6 +295,7 @@ pub struct AttemptRecord {
 pub struct Disposition {
     outcome: RunOutcome,
     reason: Row,
+    findings: CompleteFindings,
     deferred: Vec<Deferred>,
     verdicts: Vec<Verdict>,
     already_fixed: Vec<AdvisoryId>,
@@ -261,6 +312,14 @@ impl Disposition {
 
     pub fn reason(&self) -> &Row {
         &self.reason
+    }
+
+    pub fn findings(&self) -> &CompleteFindings {
+        &self.findings
+    }
+
+    pub fn projected(&self) -> Option<usize> {
+        self.findings.projected()
     }
 
     pub fn deferred(&self) -> &[Deferred] {
@@ -299,6 +358,7 @@ impl Disposition {
         fiddle_core::RunDisposition {
             reason: self.reason.row().to_string(),
             verdicts: self.verdicts.len(),
+            projected: self.projected(),
             already_fixed: self.already_fixed.clone(),
             deferred: self
                 .deferred
@@ -338,15 +398,28 @@ impl Disposition {
         std::fs::write(&path, document)?;
         Ok(path)
     }
+
+    pub fn write_findings(&self, dir: &Path) -> Result<PathBuf, std::io::Error> {
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join(FINDINGS_FILE);
+        let mut document = serde_json::to_vec_pretty(&self.findings)
+            .expect("a projected finding holds no value serde can refuse");
+        document.push(b'\n');
+        std::fs::write(&path, document)?;
+        Ok(path)
+    }
 }
 
 pub fn disposition(run: &Run) -> Disposition {
+    let findings = CompleteFindings::of(run);
+
     if let Err(why) = &run.scan {
         return Disposition {
             outcome: RunOutcome::Retryable {
                 reason: Published::of(why),
             },
             reason: Row::ScanUnusable { why: why.clone() },
+            findings,
             deferred: Vec::new(),
             verdicts: Vec::new(),
             already_fixed: Vec::new(),
@@ -361,6 +434,7 @@ pub fn disposition(run: &Run) -> Disposition {
         return Disposition {
             outcome: RunOutcome::Completed,
             reason: Row::AttemptBoundReached,
+            findings,
             deferred: Vec::new(),
             verdicts: Vec::new(),
             already_fixed: Vec::new(),
@@ -380,6 +454,7 @@ pub fn disposition(run: &Run) -> Disposition {
                 reason: Published::of(why),
             },
             reason: Row::ChecksUnreadable { why: why.clone() },
+            findings,
             deferred: Vec::new(),
             verdicts: Vec::new(),
             already_fixed: Vec::new(),
@@ -394,6 +469,7 @@ pub fn disposition(run: &Run) -> Disposition {
     let attempts = attempts_of(run);
     let landed = |reason: Row| Disposition {
         outcome: RunOutcome::Completed,
+        findings: findings.clone(),
         deferred: run.deferred.clone(),
         verdicts: labelled(verdicts.clone(), &reason),
         already_fixed: run.already_fixed.clone(),
