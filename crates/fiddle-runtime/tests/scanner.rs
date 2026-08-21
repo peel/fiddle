@@ -8,7 +8,7 @@ use std::mem::discriminant;
 use std::path::PathBuf;
 use support::cve::{
     absent_scanner, arm_exits_with, arm_was_exercised, image, observed_exit, scanner_recording_env,
-    scanner_with, ARMS, FIXTURE_CLIENT_ID, SENTINEL_SECRET,
+    scanner_with, ARMS, FIXTURE_CLIENT_ID, FIXTURE_CLIENT_VERSION, SENTINEL_SECRET,
 };
 
 #[tokio::test]
@@ -181,6 +181,46 @@ async fn an_unreachable_docker_daemon_is_retryable_and_names_docker_host() {
         discriminant(&broken),
         "an unreachable daemon is reported as a scanner that ran and gave up, \
          which is the classification this arm exists to leave: {daemon:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_document_that_records_no_scanner_version_is_refused() {
+    let recorded = scanner_with(support::wiz_stub("clean-image"))
+        .scan(&image())
+        .await
+        .expect("a document that records its version is a scan that succeeded");
+    assert_eq!(
+        recorded.scanner_version, FIXTURE_CLIENT_VERSION,
+        "the neighbouring arm writes the same document with the field present"
+    );
+
+    let refused = scanner_with(support::wiz_stub("no-client-version"))
+        .scan(&image())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&refused, ScanError::Unparseable { .. }),
+        "one field decides the two arms, and a document that cannot say what \
+         produced it is one fiddle cannot account for: {refused:?}"
+    );
+    assert!(
+        refused.to_string().contains("clientVersion"),
+        "name the field the document does not carry: {refused}"
+    );
+    assert_eq!(
+        refused.recurrence(),
+        Recurrence::Permanent,
+        "the same document records the same nothing on the next read"
+    );
+
+    let blank = scanner_with(support::wiz_stub("blank-client-version"))
+        .scan(&image())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&blank, ScanError::Unparseable { .. }),
+        "a field that carries no version is a field that records none: {blank:?}"
     );
 }
 

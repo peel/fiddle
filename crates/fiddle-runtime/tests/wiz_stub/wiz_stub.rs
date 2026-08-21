@@ -48,12 +48,15 @@ fn main() {
         }
         "clean-image" => {
             banner(&args);
-            write(
-                &report,
-                report_with(libraries(&[]), os_packages(&[]))
-                    .raw()
-                    .to_string(),
-            );
+            write(&report, clean_document());
+        }
+        "no-client-version" => {
+            banner(&args);
+            write(&report, with_client_version(&clean_document(), None));
+        }
+        "blank-client-version" => {
+            banner(&args);
+            write(&report, with_client_version(&clean_document(), Some("  ")));
         }
         "library-only" => {
             banner(&args);
@@ -200,6 +203,29 @@ fn document() -> String {
     )
     .raw()
     .to_string()
+}
+
+fn clean_document() -> String {
+    report_with(libraries(&[]), os_packages(&[]))
+        .raw()
+        .to_string()
+}
+
+fn with_client_version(document: &str, version: Option<&str>) -> String {
+    let mut document: serde_json::Value =
+        serde_json::from_str(document).expect("a fixture document is JSON");
+    let extra_info = document["extraInfo"]
+        .as_object_mut()
+        .expect("a fixture document records extraInfo as an object");
+    match version {
+        Some(version) => {
+            extra_info.insert("clientVersion".to_string(), version.into());
+        }
+        None => {
+            extra_info.remove("clientVersion");
+        }
+    }
+    document.to_string()
 }
 
 fn banner(args: &[String]) {

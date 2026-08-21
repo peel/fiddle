@@ -263,6 +263,51 @@ async fn a_rescan_at_a_different_scanner_version_is_provisional_not_proof() {
 }
 
 #[tokio::test]
+async fn a_rescan_whose_document_records_its_version_is_proof() {
+    let r = evaluate(
+        &contract_scanned_by(FIXTURE_CLIENT_VERSION),
+        &green_tree().scanned_by("clean-image"),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert_eq!(r.rescan(), &RescanVerdict::Cleared);
+    assert!(r.accepted());
+}
+
+#[tokio::test]
+async fn a_rescan_whose_document_records_no_version_is_not_proof() {
+    let r = evaluate(
+        &contract_scanned_by(""),
+        &green_tree().scanned_by("no-client-version"),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert_ne!(
+        r.rescan(),
+        &RescanVerdict::Cleared,
+        "two versions nobody read are not one version that did not change"
+    );
+    assert!(
+        !r.accepted(),
+        "the same document as the neighbouring arm, without the one field that \
+         says what scanned it, proves nothing about the repair"
+    );
+    let refused = r
+        .checks()
+        .iter()
+        .find(|c| c.name == WIZCLI_RESCAN)
+        .expect("the rescan among the results");
+    assert!(!refused.passed);
+    assert!(
+        matches!(&refused.outcome, Outcome::NoArtefact(why) if why.contains("clientVersion")),
+        "the result names the field that stopped the scan: {:?}",
+        refused.outcome
+    );
+}
+
+#[tokio::test]
 async fn a_repaired_tree_whose_rescan_clears_the_group_is_accepted() {
     let r = evaluate(&contract_scanned_by("1.2.3"), &tree_rescanned_by("1.2.3"))
         .await

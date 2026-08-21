@@ -480,9 +480,11 @@ fn scripted_credential() -> WizCredential {
     }
 }
 
-pub const ARMS: [&str; 9] = [
+pub const ARMS: [&str; 11] = [
     "ok",
     "library-clean",
+    "no-client-version",
+    "blank-client-version",
     "exit-nonzero-with-file",
     "exit-nonzero-no-file",
     "empty-file",
@@ -586,7 +588,9 @@ pub fn arm_was_exercised(arm: &str, outcome: &Result<ScanReport, ScanError>) -> 
             matches!(outcome, Err(ScanError::Failed { .. }))
         }
         "empty-file" => matches!(outcome, Err(ScanError::NoOutput { .. })),
-        "unparseable-file" => matches!(outcome, Err(ScanError::Unparseable { .. })),
+        "unparseable-file" | "no-client-version" | "blank-client-version" => {
+            matches!(outcome, Err(ScanError::Unparseable { .. }))
+        }
         "no-such-image" => matches!(outcome, Err(ScanError::ImageAbsent { .. })),
         "no-daemon" => matches!(outcome, Err(ScanError::DaemonUnreachable { .. })),
         other => panic!("{other} is not an arm the scripted wizcli has; see ARMS"),
@@ -595,7 +599,12 @@ pub fn arm_was_exercised(arm: &str, outcome: &Result<ScanReport, ScanError>) -> 
 
 pub fn arm_exits_with(arm: &str) -> i32 {
     match arm {
-        "ok" | "library-clean" | "empty-file" | "unparseable-file" => 0,
+        "ok"
+        | "library-clean"
+        | "no-client-version"
+        | "blank-client-version"
+        | "empty-file"
+        | "unparseable-file" => 0,
         "exit-nonzero-with-file"
         | "exit-nonzero-no-file"
         | "no-such-image"
