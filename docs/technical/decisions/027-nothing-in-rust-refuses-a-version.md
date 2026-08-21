@@ -17,7 +17,7 @@ Refuse nothing in Rust about versions. Let the agent choose the version, includi
 
 - The property M4a could prove is now model output. M4a could demonstrate that it took the smallest same-minor patch and refused a major bump, and nothing demonstrates that now.
 - The project gave up version arithmetic for a capability that works outside Go. A major bump that clears the finding and passes every declared check lands. A reader who knew the old rule should stop expecting a same-minor diff.
-- A finding that does not clear makes the whole attempt needs-work. The commit is reverted, including edits that did clear their findings.
+- A finding that does not clear makes the whole attempt needs-work, including edits that did clear their findings. M4b stopped reverting that attempt and publishes it as a draft nobody merges; see [043](043-an-unproved-attempt-is-published-as-its-own-draft.md). No finding in it is claimed as fixed, which is what this line was written to say.
 - What a deployment can still say about version choice, it says through `[[workspace.checks]]`. A build, a test suite and a lint are how a repository objects to a bump it cannot absorb.
 - The five `AgentBudget` bounds are now the run's single grant. `max_turns`, `max_tokens`, `deadline`, `max_changed_files` and `tool_timeout` were a per-group allowance while grouping existed.
 

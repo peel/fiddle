@@ -692,10 +692,50 @@ async fn an_attempt_that_declined_everything_touches_no_branch_and_no_pull_reque
     let reached = disposition(&the_attempt_declined_a_finding_with_no_published_fix().await);
 
     assert!(!reached.verdicts().is_empty());
-    assert!(reached.branch().is_none() && reached.pull_request().is_none());
+    assert!(
+        reached.branch().is_none() && reached.pull_request().is_none(),
+        "the attempt changed no file, so there is no change for a person to \
+         judge and nothing to publish it on"
+    );
     assert_ne!(
         disposition(&clean_scan_no_findings()).reason(),
         reached.reason()
+    );
+}
+
+const UNPROVED_BRANCH: &str = "security/cve-unproved-20260817";
+
+#[tokio::test]
+async fn an_unproved_attempt_names_the_draft_a_person_has_to_judge() {
+    let mut run = every_group_needs_work().await;
+    run.judged = Some(Landed {
+        branch: UNPROVED_BRANCH.to_string(),
+        pull_request: 19,
+    });
+
+    let reached = disposition(&run);
+
+    assert_eq!(
+        reached.reason(),
+        &Row::UnsafeWithoutDirection,
+        "publishing the change does not make it a repair fiddle stands behind"
+    );
+    assert_eq!(reached.branch(), Some(UNPROVED_BRANCH));
+    assert_eq!(
+        reached.pull_request(),
+        Some(19),
+        "an operator reads the disposition and has to reach the diff from it"
+    );
+    assert_eq!(
+        reached.verdicts()[0].legacy_label,
+        Some("upstream-blocked"),
+        "and the label the host's query closes is the one it was"
+    );
+    assert_eq!(
+        disposition(&every_group_needs_work().await).pull_request(),
+        None,
+        "the same world that published nothing points at nothing, so the row \
+         reads the publication and does not assume it"
     );
 }
 

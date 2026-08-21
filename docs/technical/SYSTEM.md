@@ -35,7 +35,7 @@ Paths are relative to the repository root. A skill path omits `/SKILL.md`.
 | effect executor | `fiddle-runtime/src/effect` | the seven-step authorization order | no mutation without an `AuthorizedEffect` (ADR 033) |
 | forge adapter | `fiddle-runtime/src/{github,git}` | the one `gh` and the one `git push` | `gh api -i`, not a REST client (ADR 015) |
 | scanner | `fiddle-runtime/src/scanner` | runs `wizcli`, records version and digest | the digest, never the tag it was handed (ADR 020); fiddle passes the scanner no credential (ADR 042) |
-| sweep | `fiddle-runtime/src/{cve,capability/mitigate.rs}` | select findings, one attempt, rescan | all or nothing: one finding left standing reverts the commit |
+| sweep | `fiddle-runtime/src/{cve,capability/mitigate.rs}` | select findings, one attempt, rescan | all or nothing: one finding left standing sends the whole attempt to a draft nobody merges |
 | release | `.github/workflows/release.yml` | builds the `linux-amd64` binary on a `v*` tag | the SHA256 file ships beside the binary |
 
 Five capabilities are registered: `stub_mark`, `fixture_repair`, `publish_change`, `propose_change` and `cve_mitigate`. Each names its own progress stage, so a bundle is labelled in the vocabulary of whatever ran. `crates/fiddle-acceptance/tests/capability_selection.rs` reads the list `--capability` validates against out of the binary's own diagnostic, and requires this line to name every id and to state their number.
