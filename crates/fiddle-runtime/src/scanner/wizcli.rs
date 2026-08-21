@@ -8,69 +8,9 @@ use tokio_util::sync::CancellationToken;
 
 const REPORT_FILE: &str = "scan.json";
 
-const DEFAULT_CONFIG_DIR: &str = ".wiz";
-
-const CONFIG_DIR_VARIABLE: &str = "WIZ_CONFIG_DIR";
-
-const HOME_VARIABLE: &str = "HOME";
-
-pub const REDACTED: &str = "[redacted]";
-
 const MINIMUM_PATH: &str = "/usr/bin:/bin";
 
-#[derive(Clone, Debug)]
-pub struct WizCredential {
-    pub client_secret: String,
-}
-
-#[derive(Clone, Debug)]
-pub enum WizLogin {
-    ConfigDir(PathBuf),
-    Home(PathBuf),
-    Unnamed,
-}
-
-impl WizLogin {
-    pub fn from_env() -> Self {
-        match named_directory(CONFIG_DIR_VARIABLE) {
-            Some(directory) => WizLogin::ConfigDir(directory),
-            None => match named_directory(HOME_VARIABLE) {
-                Some(home) => WizLogin::Home(home),
-                None => WizLogin::Unnamed,
-            },
-        }
-    }
-
-    fn config_dir(&self) -> Option<PathBuf> {
-        match self {
-            WizLogin::ConfigDir(directory) => Some(directory.clone()),
-            WizLogin::Home(home) => Some(home.join(DEFAULT_CONFIG_DIR)),
-            WizLogin::Unnamed => None,
-        }
-    }
-
-    fn name_to(&self, command: &mut Command) {
-        match self {
-            WizLogin::ConfigDir(directory) => {
-                command.env(CONFIG_DIR_VARIABLE, directory);
-            }
-            WizLogin::Home(home) => {
-                command.env(HOME_VARIABLE, home);
-            }
-            WizLogin::Unnamed => {}
-        }
-    }
-}
-
-fn named_directory(variable: &str) -> Option<PathBuf> {
-    std::env::var_os(variable)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
-fn holds_a_login(directory: &Path) -> bool {
-    std::fs::read_dir(directory).is_ok_and(|mut entries| entries.next().is_some())
-}
+const INHERITED: [&str; 2] = ["HOME", "WIZ_CONFIG_DIR"];
 
 pub struct Wizcli {
     program: PathBuf,
@@ -78,8 +18,6 @@ pub struct Wizcli {
     scratch: PathBuf,
     timeout: Duration,
     cancel: CancellationToken,
-    login: WizLogin,
-    credential: WizCredential,
 }
 
 impl Wizcli {
@@ -89,8 +27,6 @@ impl Wizcli {
         scratch: PathBuf,
         timeout: Duration,
         cancel: CancellationToken,
-        login: WizLogin,
-        credential: WizCredential,
     ) -> Self {
         Self {
             program,
@@ -98,8 +34,6 @@ impl Wizcli {
             scratch,
             timeout,
             cancel,
-            login,
-            credential,
         }
     }
 
@@ -118,7 +52,11 @@ impl Wizcli {
                 .unwrap_or_else(|| MINIMUM_PATH.into()),
         );
         command.env("NO_COLOR", "1");
-        self.login.name_to(&mut command);
+        for name in INHERITED {
+            if let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) {
+                command.env(name, value);
+            }
+        }
 
         command
             .args(&self.args)
@@ -130,38 +68,14 @@ impl Wizcli {
         command
     }
 
-    fn require_login(&self) -> Result<(), ScanError> {
-        let Some(config) = self.login.config_dir() else {
-            return Err(ScanError::Unauthenticated {
-                looked_in: format!(
-                    "neither {CONFIG_DIR_VARIABLE} nor {HOME_VARIABLE} names a directory to read"
-                ),
-            });
-        };
-        match holds_a_login(&config) {
-            true => Ok(()),
-            false => Err(ScanError::Unauthenticated {
-                looked_in: format!("{} holds no login", config.display()),
-            }),
-        }
-    }
-
-    fn redact(&self, text: &str) -> String {
-        match self.credential.client_secret.is_empty() {
-            true => text.to_string(),
-            false => text.replace(&self.credential.client_secret, REDACTED),
-        }
-    }
-
     fn diagnostic(&self, stderr: &str) -> String {
-        snippet(&self.redact(stderr))
+        snippet(stderr)
     }
 }
 
 #[async_trait]
 impl Scanner for Wizcli {
     async fn scan(&self, image: &str) -> Result<ScanReport, ScanError> {
-        self.require_login()?;
         if let Err(source) = std::fs::create_dir_all(&self.scratch) {
             return Err(ScanError::Failed {
                 status: format!(

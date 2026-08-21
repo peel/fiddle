@@ -28,11 +28,6 @@ pub struct Scanner {
     #[serde(default = "default_wizcli")]
     pub cli: ProgramRef,
 
-    #[serde(default)]
-    pub client_id: Option<EnvRef>,
-
-    pub client_secret: EnvRef,
-
     #[serde(default = "default_scan_timeout")]
     pub timeout: HumanDuration,
 }

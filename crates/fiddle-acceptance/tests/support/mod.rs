@@ -78,11 +78,13 @@ pub fn wiz_stub_binary() -> &'static Path {
 
 pub const WIZ_CONFIG_DIR: &str = "WIZ_CONFIG_DIR";
 
-pub fn caller_logged_in(client_id: &str, client_secret: &str) -> TempDir {
+pub const WIZ_LOGIN_FILE: &str = "auth.json";
+
+pub fn caller_logged_in() -> TempDir {
     let dir = TempDir::new().expect("a temporary home for the caller's wizcli login");
     std::fs::write(
-        dir.path().join("auth.json"),
-        serde_json::json!({ "clientId": client_id, "clientSecret": client_secret }).to_string(),
+        dir.path().join(WIZ_LOGIN_FILE),
+        "{\"serviceAccount\":\"the-account-wizcli-auth-recorded\"}",
     )
     .expect("the login `wizcli auth` leaves for a later scan");
     dir

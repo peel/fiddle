@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 pub mod wizcli;
 
-pub use wizcli::{WizCredential, WizLogin, Wizcli, REDACTED};
+pub use wizcli::Wizcli;
 
 #[async_trait]
 pub trait Scanner {
@@ -34,13 +34,6 @@ pub enum ScanError {
     #[error("the scanner {} could not be started: {reason}", program.display())]
     Missing { program: PathBuf, reason: String },
 
-    #[error(
-        "the scanner is not authenticated: {looked_in}; the caller runs \
-         `wizcli auth --id <client-id> --secret <client-secret>`, and fiddle \
-         reads the login that command leaves"
-    )]
-    Unauthenticated { looked_in: String },
-
     #[error("the scanner produced no report ({status}): {stderr}")]
     Failed { status: String, stderr: String },
 
@@ -65,8 +58,6 @@ impl ScanError {
         use crate::effect::Recurrence;
         match self {
             ScanError::Missing { .. } => Recurrence::Permanent,
-
-            ScanError::Unauthenticated { .. } => Recurrence::Permanent,
 
             ScanError::Failed { .. } => Recurrence::Correctable,
 

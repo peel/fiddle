@@ -1,16 +1,14 @@
 mod support;
 
 use fiddle_runtime::effect::Recurrence;
-use fiddle_runtime::scanner::{ScanError, REDACTED};
+use fiddle_runtime::scanner::ScanError;
 use fiddle_runtime::Scanner as _;
 use std::collections::{BTreeSet, HashSet};
 use std::mem::discriminant;
 use std::path::PathBuf;
 use support::cve::{
-    absent_scanner, arm_exits_with, arm_was_exercised, image, observed_exit, scanner_of,
-    scanner_reading_the_default_directory, scanner_recording_env, scanner_with, Caller, ARMS,
-    DIGEST_ON_STDOUT, FIXTURE_CLIENT_ID, FIXTURE_CLIENT_VERSION, FIXTURE_IMAGE_DIGEST,
-    FIXTURE_LOGIN_FILE, SENTINEL_SECRET,
+    absent_scanner, arm_exits_with, arm_was_exercised, image, observed_exit, scanner_recording_env,
+    scanner_with, ARMS, DIGEST_ON_STDOUT, FIXTURE_CLIENT_VERSION, FIXTURE_IMAGE_DIGEST,
 };
 
 #[tokio::test]
@@ -304,7 +302,7 @@ async fn the_scan_records_the_version_and_the_digest_from_the_document() {
 }
 
 #[tokio::test]
-async fn the_wizcli_environment_is_exactly_its_allowlist_and_no_credential_reaches_argv() {
+async fn the_wizcli_environment_is_its_allowlist_and_fiddle_names_no_credential() {
     let observed = scanner_recording_env();
     observed
         .scan(&image())
@@ -312,161 +310,33 @@ async fn the_wizcli_environment_is_exactly_its_allowlist_and_no_credential_reach
         .expect("the recording arm is an ordinary successful scan");
 
     let names = observed.child_env_names();
-    assert_eq!(
-        names,
-        ["NO_COLOR", "PATH", "WIZ_CONFIG_DIR"],
-        "a fourth name here is a change to the security boundary"
-    );
-
+    let allowed = ["HOME", "NO_COLOR", "PATH", "WIZ_CONFIG_DIR"];
     assert!(
-        observed.child_login_secret() == SENTINEL_SECRET,
-        "the scanner read no credential, so its absence from argv and from the \
-         environment below would prove nothing: {:?}",
-        observed.child_login_secret()
+        names.iter().all(|name| allowed.contains(&name.as_str())),
+        "a name outside the allowlist is a change to the security boundary: {names:?}"
     );
     assert!(
-        !observed
-            .child_argv()
+        names.iter().any(|name| name == "PATH") && names.iter().any(|name| name == "NO_COLOR"),
+        "the record holds no name the adapter sets, so nothing below is about \
+         the adapter's environment: {names:?}"
+    );
+    assert!(
+        !names
             .iter()
-            .any(|argument| argument.contains(SENTINEL_SECRET)),
-        "the credential is never an argument: {:?}",
-        observed.child_argv()
-    );
-    assert!(
-        !observed
-            .child_env()
-            .values()
-            .any(|value| value.contains(SENTINEL_SECRET)),
-        "the credential is never a variable fiddle exports: {:?}",
-        observed.child_env()
+            .any(|name| name == "WIZ_CLIENT_ID" || name == "WIZ_CLIENT_SECRET"),
+        "fiddle reads no scanner credential, so it exports none: {names:?}"
     );
 
-    assert_eq!(
-        observed.child_env().get("WIZ_CONFIG_DIR").cloned(),
-        Some(observed.caller().to_string()),
-        "the scanner was pointed somewhere other than the directory the caller \
-         logged in to: {:?}",
-        observed.child_env().get("WIZ_CONFIG_DIR")
-    );
-    assert!(
-        !observed
-            .child_env()
-            .get("WIZ_CONFIG_DIR")
-            .is_some_and(|directory| directory.starts_with(observed.scratch())),
-        "the configuration source is fiddle's own scratch, which holds no login: {:?}",
-        observed.child_env().get("WIZ_CONFIG_DIR")
-    );
-}
-
-#[tokio::test]
-async fn a_scan_without_the_callers_login_is_refused_and_names_the_cause() {
-    let logged_in = Caller::new();
-    logged_in.logs_in();
-    let reached = scanner_of(support::wiz_stub("ok"), logged_in)
-        .scan(&image())
-        .await;
-    assert!(
-        reached.is_ok(),
-        "the login is the only input the refusal below turns on, so a scan that \
-         fails with it present proves nothing: {reached:?}"
-    );
-
-    let never_logged_in = Caller::new();
-    let refused = scanner_of(support::wiz_stub("ok"), never_logged_in)
-        .scan(&image())
-        .await
-        .unwrap_err();
-
-    assert!(
-        matches!(&refused, ScanError::Unauthenticated { .. }),
-        "one login decides the two scans, and a scanner nobody logged in to \
-         reads no image: {refused:?}"
-    );
-    assert!(
-        refused.to_string().contains("wizcli auth"),
-        "name the command that authenticates the scanner: {refused}"
-    );
-    assert!(
-        refused.to_string().contains("caller"),
-        "name who runs it: {refused}"
-    );
-    assert_eq!(
-        refused.recurrence(),
-        Recurrence::Permanent,
-        "a retry runs the same scanner against the same absent login, so it \
-         reads the same nothing: {refused}"
-    );
-
-    let banner = scanner_with(support::wiz_stub("exit-nonzero-no-file"))
-        .scan(&image())
-        .await
-        .unwrap_err();
-    assert_ne!(
-        discriminant(&refused),
-        discriminant(&banner),
-        "an unauthenticated scanner is reported as a scanner that ran and gave \
-         up, which is the diagnostic this refusal exists to replace: {refused:?}"
-    );
-    assert_ne!(
-        refused.recurrence(),
-        banner.recurrence(),
-        "the run that found this exited retryable, and no retry writes a login"
-    );
-}
-
-#[tokio::test]
-async fn the_login_fiddle_reads_is_the_one_wizcli_reads_when_no_directory_is_named() {
-    let caller = Caller::new();
-    caller.logs_in_at_the_default_directory();
-    let observed = scanner_reading_the_default_directory(support::wiz_stub("ok"), caller);
-    observed
-        .scan(&image())
-        .await
-        .expect("a caller who logged in at wizcli's own directory reached a scan");
-
-    assert_eq!(
-        observed.child_env_names(),
-        ["HOME", "NO_COLOR", "PATH"],
-        "fiddle names no configuration directory, so wizcli chooses its own"
-    );
-    assert_eq!(
-        observed.child_login_secret(),
-        SENTINEL_SECRET,
-        "the scanner read no credential from the directory it chose"
-    );
-
-    let empty = Caller::new();
-    std::fs::create_dir_all(empty.path().join(".wiz")).expect("an empty default directory");
-    let refused = scanner_reading_the_default_directory(support::wiz_stub("ok"), empty)
-        .scan(&image())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(&refused, ScanError::Unauthenticated { .. }),
-        "the directory exists and holds no {FIXTURE_LOGIN_FILE}: {refused:?}"
-    );
-}
-
-#[tokio::test]
-async fn no_diagnostic_quotes_the_credential_the_scanner_was_given() {
-    let failed = scanner_with(support::wiz_stub("leaks-its-credential"))
-        .scan(&image())
-        .await
-        .unwrap_err();
-    let diagnostic = failed.to_string();
-
-    assert!(
-        diagnostic.contains(FIXTURE_CLIENT_ID),
-        "this is not the diagnostic that arm wrote, so nothing below is about \
-         the credential channel: {diagnostic}"
-    );
-    assert!(
-        !diagnostic.contains(SENTINEL_SECRET),
-        "the credential the scanner was given reached a diagnostic: {diagnostic}"
-    );
-    assert!(
-        diagnostic.contains(REDACTED),
-        "the credential was never in this diagnostic, so its absence proves \
-         nothing: {diagnostic}"
-    );
+    match std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        Some(home) => assert_eq!(
+            observed.child_env().get("HOME").map(String::as_str),
+            home.to_str(),
+            "the caller's HOME did not reach the scanner, so wizcli cannot find \
+             the login the caller left there"
+        ),
+        None => assert!(
+            !names.iter().any(|name| name == "HOME"),
+            "this process has no HOME, so the scanner must not receive one: {names:?}"
+        ),
+    }
 }

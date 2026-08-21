@@ -1666,3 +1666,9 @@ Two things settle it, and both need the real tool. Run `wizcli auth` on a host a
 
 Origin: implementation (bean `fiddle-j9gv`, lane `lane/m4b-j9gv`)
 Tags: #debt #evidence
+Status: 2026-08-21 — not applicable as written. The same lane narrowed to a
+deletion: fiddle resolves no configuration directory and reads no login, so it
+carries no `.wiz` assumption to measure. `DEFAULT_CONFIG_DIR` and
+`require_login` never shipped. wizcli resolves its own directory, and a wizcli
+that finds no login reports itself with exit 1 and no report. ADR 042 records
+what replaced this.

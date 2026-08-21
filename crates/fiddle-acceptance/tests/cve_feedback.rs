@@ -62,8 +62,6 @@ const WIZ_SECRET: &str = "WIZ_CLIENT_SECRET";
 
 const SENTINEL_SECRET: &str = "fiddle-secret-3b8e51d0";
 
-const WIZ_CLIENT_ID_VALUE: &str = "wiz-client-id-for-the-sweep";
-
 const VERIFY_CHECK: &str = "cve-verify";
 
 const RESCAN_CHECK: &str = "cve-rescan";
@@ -102,7 +100,7 @@ impl Feedback {
             stub,
             remote,
             gateway: StubGateway::serving(script),
-            login: support::caller_logged_in(WIZ_CLIENT_ID_VALUE, SENTINEL_SECRET),
+            login: support::caller_logged_in(),
         };
         let tables = feedback.tables(bound, rescan);
         feedback.scenario.append_config(&tables);
@@ -133,8 +131,6 @@ impl Feedback {
              \n\
              [scanner]\n\
              cli = {{ program = {wiz}, args = [\"{SCAN_LIBRARY_ONLY}\"] }}\n\
-             client_id = {{ env = \"{WIZ_ID}\" }}\n\
-             client_secret = {{ env = \"{WIZ_SECRET}\" }}\n\
              timeout = \"300s\"\n\
              \n\
              [orchestration.cve]\n\
@@ -247,7 +243,7 @@ impl Feedback {
             .arg("--json")
             .env(FORGE_TOKEN, "ghp_forge_token_for_the_sweep")
             .env(MODEL_KEY, "sk-model-key-for-the-sweep")
-            .env(WIZ_ID, WIZ_CLIENT_ID_VALUE)
+            .env(WIZ_ID, "wiz-client-id-for-the-sweep")
             .env(WIZ_SECRET, SENTINEL_SECRET)
             .env(support::WIZ_CONFIG_DIR, self.login.path())
             .output()

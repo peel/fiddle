@@ -554,10 +554,9 @@ base = "main"
 token = { env = "FIDDLE_GITHUB_TOKEN" }
 
 [scanner]
-# The container scanner and the tenant it runs as. A deployment that never
-# scans omits it.
-client_id = { env = "WIZ_CLIENT_ID" }
-client_secret = { env = "WIZ_CLIENT_SECRET" }
+# The container scanner. A deployment that never scans omits it. The caller
+# logs `wizcli` in before Fiddle runs, and Fiddle names no credential of its
+# own.
 timeout = "20m"
 
 [orchestration.cve]

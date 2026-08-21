@@ -15,10 +15,6 @@ const VERSION_ON_STDOUT: &str = "9.9.9-not-the-one-in-the-document";
 
 const CHILD_RECORD: &str = "child.json";
 
-const LOGIN_FILE: &str = "auth.json";
-
-const DEFAULT_CONFIG_DIR: &str = ".wiz";
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arm = args
@@ -27,10 +23,9 @@ fn main() {
         .expect("the arm is the first argument, passed through the adapter's `args` seam");
     let report = output_file(&args)
         .expect("--json-output-file <path> must be passed by the adapter under test");
-    let login = login();
-    record(&report, &login);
+    record(&report);
 
-    if !login.authenticated {
+    if a_named_config_dir_holds_no_login() {
         usage();
         std::process::exit(1);
     }
@@ -186,19 +181,11 @@ fn main() {
             );
             std::process::exit(3);
         }
-        "leaks-its-credential" => {
-            banner(&args);
-            eprintln!(
-                "wizcli: client {} rejected the secret {}",
-                login.client_id, login.client_secret
-            );
-            std::process::exit(3);
-        }
         other => panic!("unknown arm {other}"),
     }
 }
 
-fn record(report: &Path, login: &Login) {
+fn record(report: &Path) {
     let record = report.with_file_name(CHILD_RECORD);
     let argv: Vec<String> = std::env::args().collect();
     let env: Vec<String> = std::env::vars()
@@ -206,59 +193,17 @@ fn record(report: &Path, login: &Login) {
         .collect();
     std::fs::write(
         &record,
-        serde_json::json!({
-            "argv": argv,
-            "env": env,
-            "login": {
-                "config_dir": login.config_dir.as_ref().map(|dir| dir.display().to_string()),
-                "client_id": login.client_id,
-                "client_secret": login.client_secret,
-            },
-        })
-        .to_string(),
+        serde_json::json!({ "argv": argv, "env": env }).to_string(),
     )
     .unwrap_or_else(|source| panic!("could not write {}: {source}", record.display()));
 }
 
-struct Login {
-    config_dir: Option<PathBuf>,
-    authenticated: bool,
-    client_id: String,
-    client_secret: String,
-}
-
-fn login() -> Login {
-    let config_dir = named_directory("WIZ_CONFIG_DIR")
-        .or_else(|| named_directory("HOME").map(|home| home.join(DEFAULT_CONFIG_DIR)));
-    let Some(directory) = config_dir else {
-        return Login {
-            config_dir: None,
-            authenticated: false,
-            client_id: String::new(),
-            client_secret: String::new(),
-        };
+fn a_named_config_dir_holds_no_login() -> bool {
+    let Some(directory) = std::env::var_os("WIZ_CONFIG_DIR").filter(|value| !value.is_empty())
+    else {
+        return false;
     };
-    let authenticated =
-        std::fs::read_dir(&directory).is_ok_and(|mut entries| entries.next().is_some());
-    let written: serde_json::Value = std::fs::read_to_string(directory.join(LOGIN_FILE))
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or(serde_json::Value::Null);
-    Login {
-        config_dir: Some(directory),
-        authenticated,
-        client_id: written["clientId"].as_str().unwrap_or_default().to_string(),
-        client_secret: written["clientSecret"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string(),
-    }
-}
-
-fn named_directory(variable: &str) -> Option<PathBuf> {
-    std::env::var_os(variable)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    !std::fs::read_dir(PathBuf::from(directory)).is_ok_and(|mut entries| entries.next().is_some())
 }
 
 fn usage() {
