@@ -1702,3 +1702,15 @@ The exposure is not new and this entry is not about a regression. `[[workspace.c
 
 Origin: implementation (bean `fiddle-56eq`, lane `lane/m4b-56eq`), after a user correction to the brief this lane was given
 Tags: #debt #risk
+
+### 2026-08-21 — A bean must quote what it asks a lane to correct, when the source is untracked
+
+The lead told two lanes to correct a sentence, citing it as the PRD's: "The model's tool allowlist included `Bash(go *)`. fiddle needs no such entry." Both lanes grepped and neither found it. One reported that the claim was not in the repository and declined to edit anything to match a quote it could not locate, which was right.
+
+The sentence is real. It is `docs/specs/agentic-factory-m4b-design.md:32`, and `docs/specs/` is gitignored — `.gitignore:7`, `git ls-files docs/specs` is empty. **A lane worktree created from git does not contain that directory at all**, so no grep any lane could run would ever find it. The instruction was impossible rather than misdirected.
+
+SYSTEM.md's own invariant already says `docs/specs/` stays gitignored and the bean body carries the durable contract. This is that invariant being broken from the other side: a bean asked an implementer to correct a claim whose only copy lives in the ignored tree. The claim and the instruction to fix it cannot both be reachable.
+
+**Rule.** When a bean asks a lane to correct a statement, quote the statement in the bean and name the file. If the source is untracked, the quote in the bean is the only copy the lane will see.
+
+Origin: fiddle-56eq, fiddle-v2pf. #beans #docs #lanes
