@@ -179,11 +179,11 @@ names a directory the repository ignores, and the credential tables name
 `FIDDLE_GITHUB_TOKEN`, `LITELLM_API_KEY`, `WIZ_CLIENT_ID` and
 `WIZ_CLIENT_SECRET`.
 
-`[agent] base_url` may be written or named, ADR 040. This step exports
-`FIDDLE_MODEL_BASE_URL` from a repository variable rather than a secret, because
-the endpoint is not a credential. A document that writes the value needs no
-variable, and a document that names one is refused with exit 2 when nothing
-exports it. The document also needs `[scanner] cli` to read
+`[agent] base_url` writes the gateway URL. The endpoint is not a credential and
+the host repository is private, so the document carries the value and this step
+exports no variable for it. ADR 040 also permits `{ env = "NAME" }`, which a
+deployment whose endpoint is sensitive can use instead; a named variable that
+nothing exports is refused with exit 2. The document also needs `[scanner] cli` to read
 `{ program = "wizcli", args = ["scan", "container-image"] }`, because fiddle adds
 `--by-policy-hits=DISABLED`, the output path and the image, and nothing else.
 `[workspace]` names what judges a repair. The skill this patch stops using ran
@@ -192,14 +192,8 @@ Which of those the host declares is the host's decision. This lane cannot make
 that decision correctly, so it does not write the document.
 
 `[github] base` replaces `CVE_BASE_BRANCH`. The deleted step read the default
-branch from the event payload. A document cannot read an expression, so the base
-branch becomes a written value.
-
-`.claude/skills/cve-fix/SKILL.md` stops being used, and this patch leaves it in
-place. Deleting it is out of scope.
-
 diff --git a/.github/workflows/cve-remediation.yml b/.github/workflows/cve-remediation.yml
-index f8d9b8b..117c867 100644
+index f8d9b8b..4b92f5d 100644
 --- a/.github/workflows/cve-remediation.yml
 +++ b/.github/workflows/cve-remediation.yml
 @@ -387,6 +387,7 @@
@@ -210,7 +204,7 @@ index f8d9b8b..117c867 100644
      steps:
        - uses: actions/checkout@v4
          with:
-@@ -401,15 +402,81 @@
+@@ -401,15 +402,80 @@
            client-id: ${{ secrets.WIZ_CLIENT_ID }}
            client-secret: ${{ secrets.WIZ_CLIENT_SECRET }}
  
@@ -262,7 +256,6 @@ index f8d9b8b..117c867 100644
 +        id: fiddle
 +        env:
 +          FIDDLE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-+          FIDDLE_MODEL_BASE_URL: ${{ vars.FIDDLE_MODEL_BASE_URL }}
 +          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
 +          WIZ_CLIENT_ID: ${{ secrets.WIZ_CLIENT_ID }}
 +          WIZ_CLIENT_SECRET: ${{ secrets.WIZ_CLIENT_SECRET }}
