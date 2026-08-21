@@ -136,13 +136,23 @@ sha256sum -c fiddle-linux-amd64.sha256
 **This repository triggers no CVE sweep.** The sweep runs from
 `.github/workflows/cve-remediation.yml` in
 `snowplow-incubator/snowplow-identities`. Searching here for a workflow that
-sweeps finds nothing by design.
+sweeps finds nothing by design. `docs/technical/host-workflow-m4b.patch` carries
+the host's side of it. `docs/technical/cve-repository.md` describes the
+disposable target and the token grants.
 
-The dispatchable job is not published yet.
-`docs/technical/host-workflow-m4b.patch` carries the scheduled replacement
-alone, so there is no invocation to write down here. What is settled is the
-state a dispatch needs, and these commands establish it.
-`docs/technical/cve-repository.md` describes the target and the token grants.
+That workflow runs on `cron: "0 3 * * *"`, and it also takes a dispatch.
+
+```sh
+gh workflow run cve-remediation.yml \
+  --repo snowplow-incubator/snowplow-identities -f ref=<ref>
+```
+
+**A dispatch against any ref but the host's default branch scans and does not
+remediate.** The `remediate` job's `if` requires `on_default_branch == 'true'`,
+and the `ref` input says the same thing in its own description. Point `ref` at a
+release tag to report on that tag, and expect no pull request from it.
+
+Establish this state before a dispatch that is meant to remediate.
 
 ```sh
 host=snowplow-incubator/snowplow-identities
@@ -152,18 +162,22 @@ target=peel/fiddle-cve-acceptance
 gh secret set FIDDLE_CVE_TOKEN --repo "$host" < token.txt
 gh secret list --repo "$host"
 
-# 2. the target, seeded as cve-repository.md describes
+# 2. the workflow, and that it carries a dispatch
+gh workflow list --repo "$host" | grep cve-remediation
+
+# 3. the target, seeded as cve-repository.md describes
 gh api "repos/$target" --jq '"\(.visibility) \(.default_branch)"'
 gh api "repos/$target/labels/security%2Fcve" --jq .name
 
-# 3. no residue from an earlier run
+# 4. no residue from an earlier run
 gh pr list --repo "$target" --state open
 ```
 
-The job runs `fiddle run cve` twice. The first run scans, repairs and publishes.
-The target's own `pull_request` workflow answers. The second run reads the check
-runs on the candidate commit. `[agent] max_capability_attempts` must be at least
-2, because a bound of 1 stops the second run before it reads anything.
+The patched step runs `fiddle run cve` once. Reading real CI feedback needs two
+runs. The first publishes, the target's own `pull_request` workflow answers, and
+the second reads the check runs on the candidate commit. `[agent]
+max_capability_attempts` must be at least 2, because a bound of 1 stops the
+second run before it reads anything.
 
 ## Common issues
 
