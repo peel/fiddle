@@ -183,12 +183,12 @@ impl Scanner for Wizcli {
         }
         let document: serde_json::Value =
             serde_json::from_str(&raw).map_err(|source| ScanError::Unparseable {
-                path: report,
+                path: report.clone(),
                 reason: source.to_string(),
             })?;
 
         Ok(ScanReport {
-            scanner_version: scanner_version(&document),
+            scanner_version: scanner_version(&document, &report)?,
             document,
             image_digest,
         })
@@ -202,11 +202,16 @@ fn remove_if_present(path: &Path) -> std::io::Result<()> {
     }
 }
 
-fn scanner_version(document: &serde_json::Value) -> String {
+fn scanner_version(document: &serde_json::Value, report: &Path) -> Result<String, ScanError> {
     document["extraInfo"]["clientVersion"]
         .as_str()
-        .unwrap_or_default()
-        .to_string()
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ScanError::Unparseable {
+            path: report.to_path_buf(),
+            reason: "extraInfo.clientVersion records no scanner version".to_string(),
+        })
 }
 
 fn image_digest(stdout: &str) -> String {
