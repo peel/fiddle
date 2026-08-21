@@ -81,17 +81,25 @@ enum Feedback {
     NoCandidate,
     Blaming(GenuineFailure),
     BlamingNothing,
+    Unreadable { why: String },
 }
 
 impl Feedback {
     fn attempts_afresh(&self) -> bool {
-        !matches!(self, Feedback::BlamingNothing)
+        !matches!(self, Feedback::BlamingNothing | Feedback::Unreadable { .. })
     }
 
     fn blamed(&self) -> Option<&GenuineFailure> {
         match self {
             Feedback::Blaming(failure) => Some(failure),
-            Feedback::NoCandidate | Feedback::BlamingNothing => None,
+            Feedback::NoCandidate | Feedback::BlamingNothing | Feedback::Unreadable { .. } => None,
+        }
+    }
+
+    fn unreadable(&self) -> Option<&str> {
+        match self {
+            Feedback::Unreadable { why } => Some(why),
+            Feedback::NoCandidate | Feedback::Blaming(_) | Feedback::BlamingNothing => None,
         }
     }
 }
@@ -171,6 +179,12 @@ where
         }
 
         let feedback = self.feedback(&approved).await;
+
+        if let Some(why) = feedback.unreadable() {
+            let mut run = Run::scanned(projection);
+            run.checks_unreadable = Some(why.to_string());
+            return Ok(run);
+        }
 
         let checkout = check_out(&InRepository::new(&self.config.tree), &approved).await?;
         self.observed.lock().unwrap().tree = Some(observed_tree(&checkout, report));
@@ -311,9 +325,12 @@ where
                 value: Some(failure),
                 ..
             } => Feedback::Blaming(failure),
-            Observation::Available { value: None, .. }
-            | Observation::Unavailable { .. }
-            | Observation::NotApplicable { .. } => Feedback::BlamingNothing,
+            Observation::Unavailable { source, reason } => Feedback::Unreadable {
+                why: format!("{}: {reason}", source.0),
+            },
+            Observation::Available { value: None, .. } | Observation::NotApplicable { .. } => {
+                Feedback::BlamingNothing
+            }
         }
     }
 
@@ -465,6 +482,9 @@ where
         self.write_report(&concluded)?;
         if let Err(why) = scanned {
             return Err(CapabilityError::Scan(why));
+        }
+        if let Some(why) = &run.checks_unreadable {
+            return Err(CapabilityError::ChecksUnreadable(why.clone()));
         }
 
         self.record_change_set(work_id)?;

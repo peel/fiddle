@@ -165,6 +165,11 @@ pub enum CapabilityError {
     #[error("{0}")]
     Attempts(#[from] crate::cve::attempts::AttemptsError),
 
+    #[error(
+        "the check runs on the candidate could not be read, so this run attempted nothing: {0}"
+    )]
+    ChecksUnreadable(String),
+
     #[error("this executor is bound to `{bound}` and the run is `{asked}`")]
     Misbound { bound: String, asked: String },
 }
@@ -217,6 +222,8 @@ impl CapabilityError {
             },
 
             CapabilityError::Attempts(_) => Recurrence::Correctable,
+
+            CapabilityError::ChecksUnreadable(_) => Recurrence::Correctable,
         }
     }
 }

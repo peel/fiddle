@@ -19,12 +19,15 @@ One step goes away: `Run claude-code-action for CVE remediation`, which uses
   3. Run fiddle for CVE remediation
   4. Map fiddle's verdicts to the Jira contract
 
-Every other step in the `remediate` job is byte-identical. The patch is one hunk.
-It removes eight lines, and all eight belong to the deleted step. These stay:
-`needs: scan`, the `if` on `has_work` and `on_default_branch`, the three
-permissions, `actions/checkout@v4` with `fetch-depth: 0`, the `cve-lists`
-download, and `setup-wiz`. The Jira step and the Slack step stay. The `scan` job
-is untouched.
+The `remediate` job's `permissions:` block also gains one line, `checks: read`.
+That is the second hunk, and the section below says why.
+
+Every other step in the `remediate` job is byte-identical. The patch is two
+hunks. It removes eight lines, and all eight belong to the deleted step. These
+stay: `needs: scan`, the `if` on `has_work` and `on_default_branch`,
+`actions/checkout@v4` with `fetch-depth: 0`, the `cve-lists` download, and
+`setup-wiz`. The three permissions the job already held stay, and a fourth joins
+them. The Jira step and the Slack step stay. The `scan` job is untouched.
 
 `setup-wiz` stays because it installs `wizcli`. fiddle does not use the
 authentication that action leaves behind. fiddle gives `WIZ_CLIENT_ID` and
@@ -37,6 +40,37 @@ verdict list. fiddle ignores both lists.
 
 The job needs no `git config` step. fiddle passes its own committer to every
 commit it makes.
+
+THE JOB NEEDS A FOURTH PERMISSION, AND ALL FOUR ARE NAMED
+
+A permission is not a step, so the byte-identical claim above does not cover it.
+This says the change in the one place a reviewer of the pull request will read
+it, and the diff carries the same list as a comment above the block.
+
+  contents: write        push the remediation branch, read refs
+  pull-requests: write   open the shared pull request, read and write its body
+  id-token: write        the job already held this; nothing fiddle does spends it
+  checks: read           read the check runs on the candidate commit
+
+`checks: read` is the added one. `observe_genuine_failure` spends it on
+`GET /repos/{repo}/commits/{sha}/check-runs`, which is how a later night learns
+what CI concluded about the commit an earlier night pushed, and so whether to
+attempt the shared pull request again. Neither `contents` nor `pull-requests`
+implies `checks`, and a `permissions:` block sets every scope it does not name to
+none, so the grant has to be written. `docs/technical/cve-repository.md` records
+the same four for `FIDDLE_CVE_TOKEN` against the disposable target, and names
+`Checks` as the one that is easy to miss.
+
+`id-token: write` is listed for completeness rather than because fiddle asks for
+it. It was already on the job before this patch, no step this patch adds spends
+it, and this patch does not remove it.
+
+Without `checks: read` the read is refused with a 403, and a refused read is not
+a pass. fiddle makes no attempt, publishes the row `checks_unreadable` naming the
+endpoint and the commit it asked about, and exits 11. So the job fails, the
+verdict mapping step below is skipped, `non-patchable.json` stays absent and the
+Jira step exits early — the same shape a failed model step had. It does not
+report a night with nothing to do.
 
 THE CHECKSUM IS VERIFIED BEFORE THE BINARY RUNS
 
@@ -99,9 +133,11 @@ carries its disposition name, which is `needs_work` with an underscore. That
 label closes nothing, and a ticket carrying it would stay open forever.
 
 `select(.legacy_label != null)` drops a row that has no label. `Row` answers
-`legacy_label` with `None` for five of its seven values, and only
+`legacy_label` with `None` for six of its eight values, and only
 `unsafe_without_direction` and `pull_request` answer with a label. A row without
-one has no meaning in Jira, and mapping it would file `cve-null`.
+one has no meaning in Jira, and mapping it would file `cve-null`. `nothing_to_do`
+and `checks_unreadable` are both among the six, which is why the row that says a
+run could not read CI files no ticket.
 
 No package type crosses this step. The Jira contract is five fields and none of
 them is `packageType`, and a `Verdict` carries no package type either. So the
@@ -157,13 +193,40 @@ branch becomes a written value.
 place. Deleting it is out of scope.
 
 diff --git a/.github/workflows/cve-remediation.yml b/.github/workflows/cve-remediation.yml
-index f8d9b8b..4206b22 100644
+index f8d9b8b..af27285 100644
 --- a/.github/workflows/cve-remediation.yml
 +++ b/.github/workflows/cve-remediation.yml
-@@ -398,21 +398,135 @@ jobs:
- 
-       - uses: ./.github/actions/setup-wiz
+@@ -383,10 +383,29 @@ jobs:
+     needs: scan
+     if: needs.scan.outputs.has_work == 'true' && needs.scan.outputs.on_default_branch == 'true'
+     runs-on: ubuntu-latest
++    # This patch adds `checks: read`, and names all four grants rather than
++    # leaving the reader to diff them.
++    #
++    #   contents: write        push the remediation branch, read refs
++    #   pull-requests: write   open the shared pull request, read and write its body
++    #   id-token: write        the job already held this; nothing fiddle does spends it
++    #   checks: read           read the check runs on the candidate commit
++    #
++    # `checks: read` is the one that is easy to miss. Neither `contents` nor
++    # `pull-requests` implies it, and the default GITHUB_TOKEN does not carry it
++    # once a `permissions:` block is present. fiddle asks
++    # GET /repos/{repo}/commits/{sha}/check-runs what CI concluded about the
++    # commit an earlier night pushed, and decides from that whether to attempt
++    # the shared pull request again. Without the grant that read is a 403.
++    #
++    # A refused read is not a pass. fiddle attempts nothing, publishes the row
++    # `checks_unreadable` naming the endpoint and the commit, and exits 11, so
++    # this job fails instead of reporting a night with nothing to do.
+     permissions:
+       contents: write
+       pull-requests: write
+       id-token: write
++      checks: read
+     steps:
+       - uses: actions/checkout@v4
          with:
+@@ -401,15 +420,129 @@ jobs:
            client-id: ${{ secrets.WIZ_CLIENT_ID }}
            client-secret: ${{ secrets.WIZ_CLIENT_SECRET }}
  
@@ -301,6 +364,3 @@ index f8d9b8b..4206b22 100644
  
        # Jira, not GitHub Issues: Issues are disabled on this repository. The model
        # writes non-patchable.json and never sees a Jira credential; this step is the
-       # only thing that talks to Jira, so a malformed request fails loudly here
-       # rather than quietly inside a model turn.
-       - name: File Jira tickets for non-patchable CVEs
