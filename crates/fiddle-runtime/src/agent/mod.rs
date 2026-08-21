@@ -279,8 +279,15 @@ fn classify(error: StructuredOutputError) -> AgentError {
                 reason: format!("the turn budget of {max_turns} was exhausted"),
             },
             PromptError::PromptCancelled { .. } => AgentError::Cancelled,
-            PromptError::UnknownToolCall { .. } => AgentError::Protocol {
-                reason: "the model called a tool that does not exist".to_string(),
+            PromptError::UnknownToolCall {
+                tool_name,
+                available_tools,
+                ..
+            } => AgentError::Protocol {
+                reason: format!(
+                    "the model called the tool {tool_name}, and this run offers {}",
+                    available_tools.join(", ")
+                ),
             },
             other => AgentError::Provider {
                 reason: provider_fault(
@@ -485,6 +492,30 @@ mod tests {
                 );
             }
             other => panic!("a provider failure must classify as Provider, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_tool_call_names_the_tool_and_the_offered_set() {
+        let error = StructuredOutputError::PromptError(Box::new(PromptError::UnknownToolCall {
+            tool_name: "str_replace_editor".to_string(),
+            available_tools: vec!["read_file".to_string(), "write_file".to_string()],
+            allowed_tools: vec!["read_file".to_string()],
+            chat_history: Box::default(),
+        }));
+
+        match classify(error) {
+            AgentError::Protocol { reason } => {
+                assert!(
+                    reason.contains("str_replace_editor"),
+                    "an operator cannot act on a tool the reason does not name: {reason}"
+                );
+                assert!(
+                    reason.contains("read_file") && reason.contains("write_file"),
+                    "the offered set is the denominator that makes the name mean something: {reason}"
+                );
+            }
+            other => panic!("naming a tool outside the set is Protocol, got {other:?}"),
         }
     }
 
