@@ -11,16 +11,19 @@ literal secret does not load.
 
 | variable | used by | note |
 | --- | --- | --- |
-| `LITELLM_API_KEY` | the real-model tiers, the live CVE sweep | opt-in, costs money, never gates |
+| `LITELLM_API_KEY` | the real-model tiers | opt-in, costs money, never gates |
 | `FIDDLE_GITHUB_TOKEN` | the local live forge lane | opt-in, writes to a disposable repository |
 | `FIDDLE_EFFECTS_TOKEN` | the dispatched forge lane | the same value, as a repository secret |
-| `FIDDLE_CVE_TOKEN` | the live CVE sweep | a repository secret; it needs `Checks: read`, which the two above do not carry |
-| `WIZ_CLIENT_ID` | the live CVE sweep | the Wiz service account the real scan runs as |
-| `WIZ_CLIENT_SECRET` | the live CVE sweep | that account's secret |
+| `FIDDLE_CVE_TOKEN` | the host's CVE sweep | the host repository's secret; it needs `Checks: read`, which the two above do not carry |
+| `WIZ_CLIENT_ID` | the host's CVE sweep | the host repository's secret; the Wiz service account the scan runs as |
+| `WIZ_CLIENT_SECRET` | the host's CVE sweep | the host repository's secret; that account's secret |
 
-Each lives in `.env` in the worktree you run from. `.envrc` is tracked, so
-`dotenv_if_exists` resolves the `.env` beside it. `.env` is gitignored;
-`.env.example` is the template.
+A local lane reads its variable from `.env` in the worktree you run from.
+`.envrc` is tracked, so `dotenv_if_exists` resolves the `.env` beside it. `.env`
+is gitignored; `.env.example` is the template.
+
+A repository secret is set with `gh secret set` and never appears in `.env`. The
+note above says which repository holds each one.
 
 ### Mint the GitHub token
 
@@ -128,42 +131,39 @@ gh release download v0.4.0 --repo peel/fiddle --pattern 'fiddle-linux-amd64*'
 sha256sum -c fiddle-linux-amd64.sha256
 ```
 
-## Dispatch the live CVE sweep
+## The CVE sweep, which runs from the host
 
-Do these four things first. The lane fails rather than skips when one is
-missing.
+**This repository triggers no CVE sweep.** The sweep runs from
+`.github/workflows/cve-remediation.yml` in
+`snowplow-incubator/snowplow-identities`. Searching here for a workflow that
+sweeps finds nothing by design.
+
+The dispatchable job is not published yet.
+`docs/technical/host-workflow-m4b.patch` carries the scheduled replacement
+alone, so there is no invocation to write down here. What is settled is the
+state a dispatch needs, and these commands establish it.
+`docs/technical/cve-repository.md` describes the target and the token grants.
 
 ```sh
-# 1. the four secrets; no value enters argv
-gh secret set FIDDLE_CVE_TOKEN  --repo peel/fiddle < token.txt
-gh secret set WIZ_CLIENT_ID     --repo peel/fiddle
-gh secret set WIZ_CLIENT_SECRET --repo peel/fiddle
-gh secret set LITELLM_API_KEY   --repo peel/fiddle
-gh secret list --repo peel/fiddle
+host=snowplow-incubator/snowplow-identities
+target=peel/fiddle-cve-acceptance
 
-# 2. the target repository, seeded as docs/technical/cve-repository.md describes
-gh api repos/peel/fiddle-cve-acceptance --jq '"\(.visibility) \(.default_branch)"'
-gh api repos/peel/fiddle-cve-acceptance/labels/security%2Fcve --jq .name
+# 1. the secrets, on the host; no value enters argv
+gh secret set FIDDLE_CVE_TOKEN --repo "$host" < token.txt
+gh secret list --repo "$host"
+
+# 2. the target, seeded as cve-repository.md describes
+gh api "repos/$target" --jq '"\(.visibility) \(.default_branch)"'
+gh api "repos/$target/labels/security%2Fcve" --jq .name
 
 # 3. no residue from an earlier run
-gh pr list --repo peel/fiddle-cve-acceptance --state open
-
-# 4. the workflow file on the default branch, or the dispatch 404s
-gh workflow list --repo peel/fiddle | grep cve-live
+gh pr list --repo "$target" --state open
 ```
 
-Then dispatch. The ref must carry the Rust workspace. The lane builds the
-binary from that ref rather than downloading a release.
-
-```sh
-gh workflow run cve-live.yml --repo peel/fiddle --ref plan/agentic-factory-m4b
-gh run watch --repo peel/fiddle
-```
-
-The lane runs `fiddle run cve` twice. The first run scans, repairs and
-publishes. The second run reads the check runs the target's own CI wrote. The
-lane waits up to 20 minutes for those check runs, and its job timeout is 90
-minutes. One run happens at a time, so a second dispatch queues.
+The job runs `fiddle run cve` twice. The first run scans, repairs and publishes.
+The target's own `pull_request` workflow answers. The second run reads the check
+runs on the candidate commit. `[agent] max_capability_attempts` must be at least
+2, because a bound of 1 stops the second run before it reads anything.
 
 ## Common issues
 
@@ -182,16 +182,13 @@ tests for emptiness rather than existence.
 **A dispatch 403s.** `Actions: write` is missing. Adding `Workflows` does not fix a
 dispatch.
 
-**cve-live exits 1 naming one of the four secrets.** The secret is unset or
-empty. A reference to a missing secret renders as the empty string, which is why
-the guard tests for emptiness rather than existence.
+**The host's sweep exits 1 naming a secret.** The secret is unset or empty on
+the host. A reference to a missing secret renders as the empty string, so a
+guard must test for emptiness rather than existence.
 
-**cve-live 403s reading check runs.** `FIDDLE_CVE_TOKEN` carries no `Checks`
-permission. `Contents` and `Pull requests` do not imply it.
-
-**cve-live says a download is not the real wizcli.** The `wizcli_url` input
-answered with something other than the binary, and the body reached the version
-check. Pass the default URL.
+**The host's sweep 403s reading check runs.** `FIDDLE_CVE_TOKEN` carries no
+`Checks` permission. `Contents` and `Pull requests` do not imply it, and the
+host's own `GITHUB_TOKEN` cannot read another repository at all.
 
 **Residue at the disposable repository.** Expect branches to be exactly `main` and
 open pull requests `0`. Closed pull requests are permanent, so a non-zero closed
