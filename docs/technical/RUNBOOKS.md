@@ -11,9 +11,12 @@ literal secret does not load.
 
 | variable | used by | note |
 | --- | --- | --- |
-| `LITELLM_API_KEY` | the real-model tiers | opt-in, costs money, never gates |
+| `LITELLM_API_KEY` | the real-model tiers, the live CVE sweep | opt-in, costs money, never gates |
 | `FIDDLE_GITHUB_TOKEN` | the local live forge lane | opt-in, writes to a disposable repository |
 | `FIDDLE_EFFECTS_TOKEN` | the dispatched forge lane | the same value, as a repository secret |
+| `FIDDLE_CVE_TOKEN` | the live CVE sweep | a repository secret; it needs `Checks: read`, which the two above do not carry |
+| `WIZ_CLIENT_ID` | the live CVE sweep | the Wiz service account the real scan runs as |
+| `WIZ_CLIENT_SECRET` | the live CVE sweep | that account's secret |
 
 Each lives in `.env` in the worktree you run from. `.envrc` is tracked, so
 `dotenv_if_exists` resolves the `.env` beside it. `.env` is gitignored;
@@ -107,6 +110,61 @@ Neither forge lane gates. Both write to `peel/fiddle-effects-acceptance`, which
 exists to be dirtied and holds no secret. `docs/technical/effects-repository.md`
 describes it.
 
+## Cut a release
+
+The tag is the trigger. `release.yml` builds `linux-amd64` from the pinned
+lockfile and publishes the binary with its SHA256 beside it.
+
+```sh
+git tag -a v0.4.0 -m v0.4.0 && git push origin v0.4.0
+gh run list --repo peel/fiddle --workflow release.yml --limit 1
+gh release view v0.4.0 --repo peel/fiddle --json assets --jq '.assets[].name'
+```
+
+Verify what a host would download.
+
+```sh
+gh release download v0.4.0 --repo peel/fiddle --pattern 'fiddle-linux-amd64*'
+sha256sum -c fiddle-linux-amd64.sha256
+```
+
+## Dispatch the live CVE sweep
+
+Do these four things first. The lane fails rather than skips when one is
+missing.
+
+```sh
+# 1. the four secrets; no value enters argv
+gh secret set FIDDLE_CVE_TOKEN  --repo peel/fiddle < token.txt
+gh secret set WIZ_CLIENT_ID     --repo peel/fiddle
+gh secret set WIZ_CLIENT_SECRET --repo peel/fiddle
+gh secret set LITELLM_API_KEY   --repo peel/fiddle
+gh secret list --repo peel/fiddle
+
+# 2. the target repository, seeded as docs/technical/cve-repository.md describes
+gh api repos/peel/fiddle-cve-acceptance --jq '"\(.visibility) \(.default_branch)"'
+gh api repos/peel/fiddle-cve-acceptance/labels/security%2Fcve --jq .name
+
+# 3. no residue from an earlier run
+gh pr list --repo peel/fiddle-cve-acceptance --state open
+
+# 4. the workflow file on the default branch, or the dispatch 404s
+gh workflow list --repo peel/fiddle | grep cve-live
+```
+
+Then dispatch. The ref must carry the Rust workspace. The lane builds the
+binary from that ref rather than downloading a release.
+
+```sh
+gh workflow run cve-live.yml --repo peel/fiddle --ref plan/agentic-factory-m4b
+gh run watch --repo peel/fiddle
+```
+
+The lane runs `fiddle run cve` twice. The first run scans, repairs and
+publishes. The second run reads the check runs the target's own CI wrote. The
+lane waits up to 20 minutes for those check runs, and its job timeout is 90
+minutes. One run happens at a time, so a second dispatch queues.
+
 ## Common issues
 
 **`HTTP 404: workflow github-effects.yml not found on the default branch`.**
@@ -123,6 +181,17 @@ tests for emptiness rather than existence.
 
 **A dispatch 403s.** `Actions: write` is missing. Adding `Workflows` does not fix a
 dispatch.
+
+**cve-live exits 1 naming one of the four secrets.** The secret is unset or
+empty. A reference to a missing secret renders as the empty string, which is why
+the guard tests for emptiness rather than existence.
+
+**cve-live 403s reading check runs.** `FIDDLE_CVE_TOKEN` carries no `Checks`
+permission. `Contents` and `Pull requests` do not imply it.
+
+**cve-live says a download is not the real wizcli.** The `wizcli_url` input
+answered with something other than the binary, and the body reached the version
+check. Pass the default URL.
 
 **Residue at the disposable repository.** Expect branches to be exactly `main` and
 open pull requests `0`. Closed pull requests are permanent, so a non-zero closed
@@ -146,4 +215,4 @@ human-decision requirement. Repeating the same invocation does the same thing. F
 what the reason names first.
 
 ---
-Last reviewed: 2026-08-20
+Last reviewed: 2026-08-21
