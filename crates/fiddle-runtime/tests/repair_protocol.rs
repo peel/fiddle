@@ -255,7 +255,8 @@ async fn an_unregistered_tool_name_mutates_nothing() {
         )
         .await;
 
-    assert_retryable_because(&report, "the model called a tool that does not exist");
+    assert_retryable_because(&report, "the model called the tool delete_everything");
+    assert_retryable_because(&report, "run_check");
     assert_earned_nothing(&f, &report);
 }
 
