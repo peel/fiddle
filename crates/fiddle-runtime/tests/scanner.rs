@@ -185,7 +185,7 @@ async fn an_unreachable_docker_daemon_is_retryable_and_names_docker_host() {
 }
 
 #[tokio::test]
-async fn the_scan_records_what_it_scanned_before_parsing_anything() {
+async fn the_scan_records_the_version_from_the_document_and_the_digest_from_the_output() {
     let scanner = scanner_with(support::wiz_stub("ok"));
     let report = scanner.scan(&image()).await.unwrap();
     assert!(
@@ -199,15 +199,17 @@ async fn the_scan_records_what_it_scanned_before_parsing_anything() {
          can move"
     );
 
-    let document = report.document.to_string();
-    assert!(
-        !document.contains(&report.scanner_version),
-        "the version is in the document, so this test cannot tell a scan that \
-         recorded its provenance from one that read it back out of the report"
+    assert_eq!(
+        report.document["extraInfo"]["clientVersion"].as_str(),
+        Some(report.scanner_version.as_str()),
+        "the scanner records its own version in the document it wrote, so the \
+         version fiddle files against a scan is the version that produced it"
     );
     assert!(
-        !document.contains(&report.image_digest),
-        "the digest is in the document; see above"
+        !report.document.to_string().contains(&report.image_digest),
+        "the digest does not come from the document, so this assertion still \
+         tells a scan that recorded what it inspected from one that read the \
+         answer back out of the report"
     );
 }
 
