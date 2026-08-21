@@ -8,7 +8,8 @@ use std::mem::discriminant;
 use std::path::PathBuf;
 use support::cve::{
     absent_scanner, arm_exits_with, arm_was_exercised, image, observed_exit, scanner_recording_env,
-    scanner_with, ARMS, FIXTURE_CLIENT_ID, FIXTURE_CLIENT_VERSION, SENTINEL_SECRET,
+    scanner_with, ARMS, DIGEST_ON_STDOUT, FIXTURE_CLIENT_ID, FIXTURE_CLIENT_VERSION,
+    FIXTURE_IMAGE_DIGEST, SENTINEL_SECRET,
 };
 
 #[tokio::test]
@@ -225,7 +226,47 @@ async fn a_document_that_records_no_scanner_version_is_refused() {
 }
 
 #[tokio::test]
-async fn the_scan_records_the_version_from_the_document_and_the_digest_from_the_output() {
+async fn a_document_that_records_no_image_digest_is_refused() {
+    let recorded = scanner_with(support::wiz_stub("clean-image"))
+        .scan(&image())
+        .await
+        .expect("a document that records the image it read is a scan that succeeded");
+    assert_eq!(
+        recorded.image_digest, FIXTURE_IMAGE_DIGEST,
+        "the neighbouring arm writes the same document with the field present"
+    );
+
+    let refused = scanner_with(support::wiz_stub("no-scan-origin"))
+        .scan(&image())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&refused, ScanError::Unparseable { .. }),
+        "one field decides the two arms, and a document that cannot say which \
+         image it read is one fiddle cannot account for: {refused:?}"
+    );
+    assert!(
+        refused.to_string().contains("scanOriginResource"),
+        "name the field the document does not carry: {refused}"
+    );
+    assert_eq!(
+        refused.recurrence(),
+        Recurrence::Permanent,
+        "the same document records the same nothing on the next read"
+    );
+
+    let blank = scanner_with(support::wiz_stub("blank-scan-origin"))
+        .scan(&image())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&blank, ScanError::Unparseable { .. }),
+        "a field that carries no digest is a field that records none: {blank:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_scan_records_the_version_and_the_digest_from_the_document() {
     let scanner = scanner_with(support::wiz_stub("ok"));
     let report = scanner.scan(&image()).await.unwrap();
     assert!(
@@ -235,8 +276,8 @@ async fn the_scan_records_the_version_from_the_document_and_the_digest_from_the_
     );
     assert!(
         !report.image_digest.is_empty(),
-        "the digest is what makes a rescan comparable: a tag is a name somebody \
-         can move"
+        "the digest is what a bundle names the verdicts against: a tag is a \
+         name somebody can move"
     );
 
     assert_eq!(
@@ -245,11 +286,19 @@ async fn the_scan_records_the_version_from_the_document_and_the_digest_from_the_
         "the scanner records its own version in the document it wrote, so the \
          version fiddle files against a scan is the version that produced it"
     );
-    assert!(
-        !report.document.to_string().contains(&report.image_digest),
-        "the digest does not come from the document, so this assertion still \
-         tells a scan that recorded what it inspected from one that read the \
-         answer back out of the report"
+    assert_eq!(
+        report.document["scanOriginResource"]["id"].as_str(),
+        Some(report.image_digest.as_str()),
+        "the scanner records the image it resolved in the same document, so the \
+         digest fiddle publishes is the digest of the image that produced the \
+         findings"
+    );
+    assert_ne!(
+        report.image_digest, DIGEST_ON_STDOUT,
+        "the arm prints one digest on its output and records another in the \
+         document; the recorded one is the one the findings belong to, and a \
+         digest scraped from console prose can name a layer, a base image, or \
+         nothing at all"
     );
 }
 

@@ -147,9 +147,7 @@ impl Scanner for Wizcli {
             Ok(Bounded::Finished(output)) => output,
         };
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let image_digest = image_digest(&stdout);
 
         let raw = match std::fs::read_to_string(&report) {
             Ok(raw) => raw,
@@ -189,8 +187,8 @@ impl Scanner for Wizcli {
 
         Ok(ScanReport {
             scanner_version: scanner_version(&document, &report)?,
+            image_digest: image_digest(&document, &report)?,
             document,
-            image_digest,
         })
     }
 }
@@ -214,12 +212,16 @@ fn scanner_version(document: &serde_json::Value, report: &Path) -> Result<String
         })
 }
 
-fn image_digest(stdout: &str) -> String {
-    stdout
-        .split_whitespace()
-        .find(|word| word.starts_with("sha256:"))
-        .unwrap_or_default()
-        .to_string()
+fn image_digest(document: &serde_json::Value, report: &Path) -> Result<String, ScanError> {
+    document["scanOriginResource"]["id"]
+        .as_str()
+        .map(str::trim)
+        .filter(|digest| !digest.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ScanError::Unparseable {
+            path: report.to_path_buf(),
+            reason: "scanOriginResource.id records no image digest".to_string(),
+        })
 }
 
 fn names_an_absent_image(stderr: &str) -> bool {
