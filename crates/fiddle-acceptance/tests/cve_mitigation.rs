@@ -3744,14 +3744,25 @@ fn a_derived_file_a_declared_command_wrote_is_a_breach_when_the_attempt_omits_it
         serde_json::json!("needs_work"),
         "{reached}"
     );
+    let judged = the_one_pull_request_labelled(&sweep, UNPROVED_LABEL);
+    assert_eq!(
+        judged["draft"],
+        serde_json::json!(true),
+        "an undeclared edit is published for a person to judge and never as a \
+         repair, whoever wrote the file: {judged}"
+    );
+    let branch = the_one_new_branch_under(&sweep, UNPROVED_STEM);
     assert!(
-        sweep.pull_requests().is_empty(),
-        "an undeclared edit opens nothing, whoever wrote it: {:?}",
-        sweep.pull_requests()
+        !sweep
+            .remote_branches()
+            .iter()
+            .any(|it| it.starts_with("security/cve-remediation-")),
+        "and opens no branch a merge would take: {:?}",
+        sweep.remote_branches()
     );
     assert_eq!(
-        sweep.remote_branches(),
-        vec![SWEEP_BASE.to_string()],
-        "and leaves the remote exactly as it found it"
+        judged["head"]["ref"],
+        serde_json::json!(branch),
+        "the draft a person judges is the branch the attempt pushed: {judged}"
     );
 }
