@@ -47,4 +47,4 @@ pub use orchestration::{
 pub use ports::{ChangePort, WorkItemPort};
 pub use scanner::{ScanError, ScanReport, Scanner, Wizcli};
 pub use stub::{StubChangePort, StubWorkItemPort};
-pub use workspace::{WorkspaceCommand, WorkspaceError, WorkspacePath};
+pub use workspace::{DeclaredCommand, Extend, WorkspaceCommand, WorkspaceError, WorkspacePath};

@@ -1,4 +1,5 @@
 use super::{ToolReceipt, ToolReceipts};
+use crate::workspace::declared::{resolve, DeclaredCommand, Undeclared};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
 use rig_agent::tool::{Tool, ToolContext, ToolExecutionError};
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,8 @@ pub struct ToolHost {
     pub workspace: Arc<Workspace>,
     pub cancel: CancellationToken,
     pub check: WorkspaceCommand,
+    pub commands: Arc<Vec<DeclaredCommand>>,
+    pub command_timeout: std::time::Duration,
     pub receipts: Arc<Mutex<ToolReceipts>>,
 }
 
@@ -58,7 +61,9 @@ impl ToolHost {
 fn outcome_of<T>(result: &Result<T, ToolError>) -> &'static str {
     match result {
         Ok(_) => "ok",
-        Err(ToolError::NoHostContext) | Err(ToolError::Rejected { .. }) => "refused",
+        Err(ToolError::NoHostContext)
+        | Err(ToolError::Rejected { .. })
+        | Err(ToolError::Undeclared { .. }) => "refused",
         Err(ToolError::Cancelled) => "cancelled",
         Err(ToolError::Timeout { .. }) | Err(ToolError::Failed { .. }) => "failed",
     }
@@ -78,6 +83,12 @@ pub enum ToolError {
         reason: String,
         #[source]
         source: WorkspaceError,
+    },
+
+    #[error("{source}")]
+    Undeclared {
+        #[source]
+        source: Undeclared,
     },
 
     #[error("the check did not finish within its time limit")]
@@ -122,7 +133,9 @@ impl ToolError {
         let classified = match &self {
             ToolError::NoHostContext => ToolExecutionError::refused(message),
             ToolError::Cancelled => ToolExecutionError::cancelled(message),
-            ToolError::Rejected { .. } => ToolExecutionError::invalid_args(message),
+            ToolError::Rejected { .. } | ToolError::Undeclared { .. } => {
+                ToolExecutionError::invalid_args(message)
+            }
             ToolError::Timeout { .. } => ToolExecutionError::timeout(message),
             ToolError::Failed { .. } => ToolExecutionError::other(message),
         };
@@ -349,6 +362,89 @@ impl Tool for RunCheck {
     }
 }
 
+pub struct RunCommand;
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct RunCommandArgs {
+    pub program: String,
+
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+impl Tool for RunCommand {
+    const NAME: &'static str = "run_command";
+    type Args = RunCommandArgs;
+    type Output = CheckOutcome;
+    type Error = ToolError;
+
+    fn description(&self) -> String {
+        "Run one of the programs this project declares, in the project, and return \
+         what it printed. Name the program and give its arguments as a list. A \
+         program the project does not declare is refused, and the refusal names \
+         every program it does declare and the arguments each one takes. There is \
+         no interpreter between you and the program: the arguments reach it as you \
+         wrote them, nothing in them is expanded, and one argument cannot become two."
+            .into()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "program": {
+                    "type": "string",
+                    "description": "The program to run, named as the project declares it."
+                },
+                "args": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "The whole argument list, one entry per argument. \
+                                    A declaration's own arguments come first and in order; \
+                                    you may append to them where the declaration permits it."
+                }
+            },
+            "required": ["program", "args"],
+            "additionalProperties": false
+        })
+    }
+
+    async fn call(
+        &self,
+        ctx: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<CheckOutcome, ToolError> {
+        let host = ToolHost::from_context(ctx)?;
+        let started = Instant::now();
+        let result = async {
+            host.guard()?;
+            let command = resolve(
+                &host.commands,
+                &args.program,
+                &args.args,
+                host.command_timeout,
+            )
+            .map_err(|source| ToolError::Undeclared { source })?;
+            let result = host
+                .workspace
+                .run(&command)
+                .await
+                .map_err(|source| ToolError::from_workspace("running the command", source))?;
+            Ok(CheckOutcome {
+                exit_code: result.exit_code,
+                stdout: result.stdout,
+                stderr: result.stderr,
+            })
+        }
+        .await;
+        host.recorded(Self::NAME, started, result)
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        error.into_execution_error()
+    }
+}
+
 fn parse(raw: &str) -> Result<WorkspacePath, ToolError> {
     WorkspacePath::parse(raw)
         .map_err(|source| ToolError::from_workspace("reading the path", source))
@@ -358,6 +454,7 @@ fn parse(raw: &str) -> Result<WorkspacePath, ToolError> {
 pub(crate) mod tests {
     use super::*;
     use crate::agent::ToolReceipts;
+    use crate::workspace::declared::Extend;
     use crate::workspace::{Workspace, WorkspaceCommand};
     use fiddle_core::AttemptId;
     use rig_agent::tool::{Tool, ToolContext};
@@ -366,6 +463,22 @@ pub(crate) mod tests {
     use tokio_util::sync::CancellationToken;
 
     pub(crate) fn test_host() -> (ToolHost, tempfile::TempDir) {
+        test_host_declaring(Vec::new())
+    }
+
+    fn declaration(program: &str, args: &[&str], extend: Extend) -> DeclaredCommand {
+        DeclaredCommand {
+            program: program.to_string(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            extend,
+        }
+    }
+
+    fn owned(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+
+    fn test_host_declaring(commands: Vec<DeclaredCommand>) -> (ToolHost, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let repo = dir.path().join("fixture");
         std::fs::create_dir_all(repo.join("src")).unwrap();
@@ -413,6 +526,8 @@ pub(crate) mod tests {
                 args: vec!["rev-parse".to_string(), "--is-inside-work-tree".to_string()],
                 timeout: Duration::from_secs(30),
             },
+            commands: Arc::new(commands),
+            command_timeout: Duration::from_secs(30),
             receipts: Arc::new(Mutex::new(ToolReceipts::default())),
         };
         (host, dir)
@@ -619,6 +734,10 @@ pub(crate) mod tests {
             (WriteFile.parameters().to_string(), WriteFile.description()),
             (ListFiles.parameters().to_string(), ListFiles.description()),
             (RunCheck.parameters().to_string(), RunCheck.description()),
+            (
+                RunCommand.parameters().to_string(),
+                RunCommand.description(),
+            ),
         ];
         for (schema, description) in surfaces {
             for text in [&schema, &description] {
@@ -955,6 +1074,232 @@ pub(crate) mod tests {
             .await
             .unwrap()
             .contains("pub fn"));
+    }
+
+    #[tokio::test]
+    async fn run_command_runs_a_declared_program_and_refuses_an_undeclared_one() {
+        let (host, _g) =
+            test_host_declaring(vec![declaration("/bin/echo", &["it-ran"], Extend::None)]);
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let declared = RunCommand
+            .call(
+                &mut ctx,
+                RunCommandArgs {
+                    program: "/bin/echo".into(),
+                    args: owned(&["it-ran"]),
+                },
+            )
+            .await
+            .expect("a declared program is the one thing this tool runs");
+        assert_eq!(declared.exit_code, 0);
+        assert!(declared.stdout.contains("it-ran"), "{declared:?}");
+
+        let refused = RunCommand
+            .call(
+                &mut ctx,
+                RunCommandArgs {
+                    program: "curl".into(),
+                    args: owned(&["it-ran"]),
+                },
+            )
+            .await
+            .expect_err("and an undeclared one is the one thing it refuses");
+        let text = RunCommand
+            .map_error(refused)
+            .model_output()
+            .as_text()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            text.contains("curl"),
+            "a refusal that does not name what it refused cannot be acted on: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_command_refuses_a_shell_because_a_shell_is_not_a_declared_program() {
+        let (host, _g) = test_host_declaring(vec![declaration(
+            "/bin/echo",
+            &["it-ran"],
+            Extend::Arguments,
+        )]);
+        let root = host.workspace.root().to_path_buf();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let refused = RunCommand
+            .call(
+                &mut ctx,
+                RunCommandArgs {
+                    program: "/bin/sh".into(),
+                    args: owned(&["-c", "echo reached > reached.txt"]),
+                },
+            )
+            .await
+            .expect_err("a shell turns one declared program into every program");
+        let text = RunCommand
+            .map_error(refused)
+            .model_output()
+            .as_text()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            text.contains("/bin/sh"),
+            "the refusal must name the shell it refused: {text}"
+        );
+        assert!(
+            !root.join("reached.txt").exists(),
+            "the refusal came after the shell ran"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_declared_command_may_be_extended_where_the_declaration_says_so() {
+        let (host, _g) = test_host_declaring(vec![
+            declaration("/bin/echo", &["fixed"], Extend::None),
+            declaration("/usr/bin/touch", &[], Extend::Arguments),
+        ]);
+        let root = host.workspace.root().to_path_buf();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        RunCommand
+            .call(
+                &mut ctx,
+                RunCommandArgs {
+                    program: "/usr/bin/touch".into(),
+                    args: owned(&["derived.txt"]),
+                },
+            )
+            .await
+            .expect("the declaration permits an appended argument");
+        assert!(
+            root.join("derived.txt").exists(),
+            "a command runs in the project, so what it writes is in the project"
+        );
+        assert!(
+            host.workspace
+                .changed_files()
+                .expect("a change set")
+                .iter()
+                .any(|path| path.as_str() == "derived.txt"),
+            "a file a command wrote is in the diff the attempt has to declare"
+        );
+
+        assert!(
+            RunCommand
+                .call(
+                    &mut ctx,
+                    RunCommandArgs {
+                        program: "/bin/echo".into(),
+                        args: owned(&["fixed", "and-more"]),
+                    },
+                )
+                .await
+                .is_err(),
+            "a declaration that permits no append takes no argument from the model"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_declared_command_that_outruns_its_bound_is_a_failure_and_not_a_refusal() {
+        let (mut host, _g) = test_host_declaring(vec![declaration("sleep", &["30"], Extend::None)]);
+        host.command_timeout = Duration::from_millis(50);
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        assert!(RunCommand
+            .call(
+                &mut ctx,
+                RunCommandArgs {
+                    program: "sleep".into(),
+                    args: owned(&["30"]),
+                }
+            )
+            .await
+            .is_err());
+
+        let receipts = host.receipts();
+        assert_eq!(receipts.calls.len(), 1);
+        assert_eq!(receipts.calls[0].tool, "run_command");
+        assert_eq!(receipts.calls[0].outcome, "failed");
+    }
+
+    #[tokio::test]
+    async fn a_refused_command_is_recorded_as_refused_and_names_no_host_path() {
+        let (host, _g) =
+            test_host_declaring(vec![declaration("/bin/echo", &["it-ran"], Extend::None)]);
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        let refused = RunCommand
+            .call(
+                &mut ctx,
+                RunCommandArgs {
+                    program: "curl".into(),
+                    args: Vec::new(),
+                },
+            )
+            .await
+            .expect_err("an undeclared program is refused");
+        let text = RunCommand
+            .map_error(refused)
+            .model_output()
+            .as_text()
+            .unwrap_or_default()
+            .to_string();
+        for root in roots(&host) {
+            assert!(
+                !text.contains(&root),
+                "a host path leaked in a refusal: {text}"
+            );
+        }
+
+        let receipts = host.receipts();
+        assert_eq!(receipts.calls.len(), 1);
+        assert_eq!(receipts.calls[0].tool, "run_command");
+        assert_eq!(
+            receipts.calls[0].outcome, "refused",
+            "a refusal is evidence: {receipts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_attempt_runs_no_declared_command() {
+        let (host, _g) =
+            test_host_declaring(vec![declaration("/usr/bin/touch", &[], Extend::Arguments)]);
+        let root = host.workspace.root().to_path_buf();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+        host.cancel.cancel();
+
+        assert!(RunCommand
+            .call(
+                &mut ctx,
+                RunCommandArgs {
+                    program: "/usr/bin/touch".into(),
+                    args: owned(&["derived.txt"]),
+                }
+            )
+            .await
+            .is_err());
+        assert!(
+            !root.join("derived.txt").exists(),
+            "cancellation must prevent the effect, not merely end the future"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_schema_invites_no_program_so_the_declaration_is_the_only_source() {
+        let schema = RunCommand.parameters().to_string();
+        assert!(schema.contains("program") && schema.contains("args"));
+        assert_eq!(
+            RunCommand.parameters()["additionalProperties"],
+            serde_json::json!(false),
+            "a menu with room for one more field invites the model to fill it"
+        );
     }
 
     fn roots(host: &ToolHost) -> Vec<String> {

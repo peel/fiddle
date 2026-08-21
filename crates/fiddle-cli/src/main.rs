@@ -11,9 +11,10 @@ use fiddle_core::{
 use fiddle_runtime::effect::{EffectContext, Executor};
 use fiddle_runtime::human::interpret::InterpretationBounds;
 use fiddle_runtime::{
-    Addressed, AgentBudget, AttemptContext, AttemptTrace, Capability, FixtureRepair, GatewayError,
-    GhCli, GitCli, ProposeChange, ProposeConfig, PublishChange, PublishConfig, RepairConfig,
-    StubChangePort, StubMark, StubWorkItemPort, WorkspaceCommand, CAPABILITIES,
+    Addressed, AgentBudget, AttemptContext, AttemptTrace, Capability, DeclaredCommand, Extend,
+    FixtureRepair, GatewayError, GhCli, GitCli, ProposeChange, ProposeConfig, PublishChange,
+    PublishConfig, RepairConfig, StubChangePort, StubMark, StubWorkItemPort, WorkspaceCommand,
+    CAPABILITIES,
 };
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -610,6 +611,8 @@ fn build_capability<'a>(
                         args: check.args.clone(),
                         timeout: workspace.command_timeout.as_duration(),
                     },
+                    commands: declared_commands(workspace),
+                    command_timeout: workspace.command_timeout.as_duration(),
                     budget: AgentBudget {
                         max_turns: agent.max_turns,
                         max_tokens: agent.max_tokens,
@@ -689,6 +692,8 @@ fn build_capability<'a>(
                         args: check.args.clone(),
                         timeout: workspace.command_timeout.as_duration(),
                     },
+                    commands: declared_commands(workspace),
+                    command_timeout: workspace.command_timeout.as_duration(),
                     budget: AgentBudget {
                         max_turns: agent.max_turns,
                         max_tokens: agent.max_tokens,
@@ -795,6 +800,7 @@ fn build_capability<'a>(
                         args: check.args.clone(),
                         timeout: workspace.command_timeout.as_duration(),
                     },
+                    commands: declared_commands(workspace),
                     budget: AgentBudget {
                         max_turns: agent.max_turns,
                         max_tokens: agent.max_tokens,
@@ -812,6 +818,23 @@ fn build_capability<'a>(
             )))
         }
     }
+}
+
+fn declared_commands(workspace: &config::Workspace) -> std::sync::Arc<Vec<DeclaredCommand>> {
+    std::sync::Arc::new(
+        workspace
+            .commands
+            .iter()
+            .map(|command| DeclaredCommand {
+                program: command.program.clone(),
+                args: command.args.clone(),
+                extend: match command.extend {
+                    config::Extend::None => Extend::None,
+                    config::Extend::Arguments => Extend::Arguments,
+                },
+            })
+            .collect(),
+    )
 }
 
 fn interpretation_bounds(agent: &config::Agent) -> InterpretationBounds {

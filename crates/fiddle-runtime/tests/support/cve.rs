@@ -1059,6 +1059,8 @@ impl MigrationWorld {
                 args,
                 timeout: MIGRATION_CHECK_TIMEOUT,
             },
+            commands: std::sync::Arc::new(Vec::new()),
+            command_timeout: MIGRATION_CHECK_TIMEOUT,
             budget: AgentBudget {
                 max_turns: 8,
                 max_tokens: 4096,

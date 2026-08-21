@@ -689,6 +689,62 @@ args = ["scan"]
 success = "artefact-written"
 "#;
 
+const COMMAND_LIST: &str = r#"
+[[workspace.commands]]
+program = "go"
+args = ["mod", "tidy"]
+
+[[workspace.commands]]
+program = "go"
+args = ["mod", "edit"]
+extend = "arguments"
+"#;
+
+#[test]
+fn config_check_reports_the_programs_a_deployment_declared_and_what_may_vary() {
+    let commands = checked(&format!("{AGENTIC}{COMMAND_LIST}"))["workspace"]["commands"].clone();
+    assert_eq!(
+        commands,
+        serde_json::json!([
+            { "program": "go", "args": ["mod", "tidy"], "extend": "none" },
+            { "program": "go", "args": ["mod", "edit"], "extend": "arguments" },
+        ]),
+        "an operator reading the effective configuration must see every program \
+         an attempt may run, and which of them the attempt may add to: {commands}"
+    );
+}
+
+#[test]
+fn a_deployment_declaring_no_program_says_so_rather_than_leaving_it_open() {
+    let workspace = checked(AGENTIC)["workspace"].clone();
+    assert_eq!(
+        workspace["commands"],
+        serde_json::json!([]),
+        "an absent declaration is an empty list, never a default program: {workspace}"
+    );
+}
+
+#[test]
+fn the_plain_rendering_discloses_each_declared_program_and_its_extension_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fiddle.toml");
+    std::fs::write(&path, format!("{AGENTIC}{COMMAND_LIST}")).unwrap();
+    let out = support::fiddle_command()
+        .args(["config", "check", "--config", path.to_str().unwrap()])
+        .env_remove(CREDENTIAL)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        stdout.contains("workspace.commands[0] = \"go\" \"mod\" \"tidy\" (extend: none)"),
+        "a declaration an attempt cannot add to must read as one: {stdout}"
+    );
+    assert!(
+        stdout.contains("workspace.commands[1] = \"go\" \"mod\" \"edit\" (extend: arguments)"),
+        "and one it can must read as one: {stdout}"
+    );
+}
+
 #[test]
 fn config_check_reports_each_check_with_the_criterion_it_declared() {
     let checks = checked(&format!("{AGENTIC}{CHECK_LIST}"))["workspace"]["checks"].clone();
@@ -1317,7 +1373,7 @@ fn the_forge_table_the_product_manual_documents_names_the_keys_the_schema_admits
 
 fn every_table() -> String {
     let forge = FORGE.split_once("[github]").expect("FORGE names a forge").1;
-    format!("{AGENTIC}{CHECK_LIST}\n[github]{forge}{SWEEP}")
+    format!("{AGENTIC}{CHECK_LIST}{COMMAND_LIST}\n[github]{forge}{SWEEP}")
 }
 
 fn admitted_tables() -> Vec<String> {

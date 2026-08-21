@@ -72,6 +72,11 @@ pub fn config_check_json(config: &Config) -> String {
                 "args": check.args,
                 "success": success(check.success),
             })).collect::<Vec<_>>(),
+            "commands": workspace.commands.iter().map(|command| serde_json::json!({
+                "program": command.program,
+                "args": command.args,
+                "extend": extend(command.extend),
+            })).collect::<Vec<_>>(),
             "isolation": isolation(workspace.isolation),
             "command_timeout": workspace.command_timeout.to_string(),
             "cleanup": cleanup(workspace.cleanup),
@@ -158,6 +163,13 @@ fn success(success: crate::config::Success) -> &'static str {
     }
 }
 
+fn extend(extend: crate::config::Extend) -> &'static str {
+    match extend {
+        crate::config::Extend::None => "none",
+        crate::config::Extend::Arguments => "arguments",
+    }
+}
+
 fn written_or_named_json(value: &WrittenOrNamed) -> serde_json::Value {
     match value {
         WrittenOrNamed::Written(written) => serde_json::json!(written),
@@ -235,6 +247,13 @@ pub fn config_check_human(config: &Config) -> String {
                 "\n  workspace.checks[{index}] = {} (success: {})",
                 check_line(check),
                 success(check.success),
+            ));
+        }
+        for (index, command) in workspace.commands.iter().enumerate() {
+            out.push_str(&format!(
+                "\n  workspace.commands[{index}] = {} (extend: {})",
+                command_line(command),
+                extend(command.extend),
             ));
         }
     }
@@ -351,6 +370,14 @@ fn program_line(program: &crate::config::ProgramRef) -> String {
 fn check_line(check: &crate::config::CheckRef) -> String {
     std::iter::once(&check.program)
         .chain(check.args.iter())
+        .map(|token| format!("{token:?}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn command_line(command: &crate::config::CommandRef) -> String {
+    std::iter::once(&command.program)
+        .chain(command.args.iter())
         .map(|token| format!("{token:?}"))
         .collect::<Vec<_>>()
         .join(" ")

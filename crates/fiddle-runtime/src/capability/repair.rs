@@ -1,6 +1,6 @@
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts};
-use crate::workspace::{Workspace, WorkspaceCommand};
+use crate::workspace::{DeclaredCommand, Workspace, WorkspaceCommand};
 use fiddle_core::{correlation_key, CapabilityId, ChangeSetState, EvidenceRef};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -8,7 +8,13 @@ use tokio_util::sync::CancellationToken;
 
 const REPAIR_ORIGIN: &str = "repair";
 
-const REGISTERED_TOOLS: [&str; 4] = ["read_file", "write_file", "list_files", "run_check"];
+const REGISTERED_TOOLS: [&str; 5] = [
+    "read_file",
+    "write_file",
+    "list_files",
+    "run_check",
+    "run_command",
+];
 
 const FOREIGN_TOOL: &str = "unregistered";
 
@@ -43,6 +49,10 @@ pub struct RepairConfig {
     pub project: String,
 
     pub check: WorkspaceCommand,
+
+    pub commands: Arc<Vec<DeclaredCommand>>,
+
+    pub command_timeout: std::time::Duration,
 
     pub budget: AgentBudget,
 
@@ -133,6 +143,8 @@ where
             workspace: Arc::clone(&workspace),
             cancel: config.cancel.clone(),
             check: config.check.clone(),
+            commands: Arc::clone(&config.commands),
+            command_timeout: config.command_timeout,
             receipts: Arc::clone(&self.receipts),
         };
 
@@ -260,6 +272,8 @@ mod tests {
                     args: vec!["test".to_string(), "--offline".to_string()],
                     timeout: Duration::from_secs(180),
                 },
+                commands: Arc::new(Vec::new()),
+                command_timeout: Duration::from_secs(180),
                 budget: AgentBudget {
                     max_turns: 8,
                     max_tokens: 4096,

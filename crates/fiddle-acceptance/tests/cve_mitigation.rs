@@ -909,6 +909,19 @@ impl Sweep {
         Sweep::deployment(fixture, scan, rescan, findings, script, check_args, None)
     }
 
+    fn declaring(fixture: &str, scan: &str, findings: usize, script: Vec<Reply>) -> Self {
+        Sweep::built(
+            fixture,
+            scan,
+            RESCAN_CLEAN,
+            findings,
+            script,
+            PASSING_CHECK,
+            None,
+            &a_declared_substitution(),
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn deployment(
         fixture: &str,
@@ -918,6 +931,22 @@ impl Sweep {
         script: Vec<Reply>,
         check_args: &[&str],
         grades: Option<&[&str]>,
+    ) -> Self {
+        Sweep::built(
+            fixture, scan, rescan, findings, script, check_args, grades, "",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn built(
+        fixture: &str,
+        scan: &str,
+        rescan: &str,
+        findings: usize,
+        script: Vec<Reply>,
+        check_args: &[&str],
+        grades: Option<&[&str]>,
+        declarations: &str,
     ) -> Self {
         let scenario = Scenario::new();
 
@@ -936,11 +965,12 @@ impl Sweep {
             gateway: StubGateway::serving(script),
             login: support::caller_logged_in(),
         };
-        let tables = sweep.tables(scan, rescan, findings, check_args, grades);
+        let tables = sweep.tables(scan, rescan, findings, check_args, grades, declarations);
         sweep.scenario.append_config(&tables);
         sweep
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn tables(
         &self,
         scan: &str,
@@ -948,6 +978,7 @@ impl Sweep {
         findings: usize,
         check_args: &[&str],
         grades: Option<&[&str]>,
+        declarations: &str,
     ) -> String {
         format!(
             "[github]\n\
@@ -991,7 +1022,8 @@ impl Sweep {
              [[workspace.checks]]\n\
              program = {wiz}\n\
              args = [\"{rescan}\"]\n\
-             success = \"artefact-written\"\n",
+             success = \"artefact-written\"\n\
+             {declarations}",
             severities = grades
                 .map(|grades| {
                     let named = grades
@@ -1283,6 +1315,45 @@ fn a_script_no_attempt_consumes() -> Vec<Reply> {
         }),
         "stop",
     ))]
+}
+
+fn a_declared_substitution() -> String {
+    format!(
+        "\n[[workspace.commands]]\n\
+         program = {regenerator}\n\
+         args = [\"--substitute\", \"go.sum\", \"--from\", \"{VULNERABLE_VERSION}\"]\n\
+         extend = \"arguments\"\n",
+        regenerator = toml_string(check_stub_binary()),
+    )
+}
+
+fn a_repair_letting_a_declared_command_write_the_derived_file(declared: &[&str]) -> Vec<Reply> {
+    vec![
+        accepted(calls(
+            "write_file",
+            serde_json::json!({ "path": "go.mod", "contents": vulnerable_manifest() }),
+        )),
+        accepted(calls(
+            "run_command",
+            serde_json::json!({
+                "program": check_stub_binary().to_string_lossy(),
+                "args": [
+                    "--substitute",
+                    "go.sum",
+                    "--from",
+                    VULNERABLE_VERSION,
+                    "--to",
+                    FIXED_VERSION,
+                ],
+            }),
+        )),
+        accepted(reports(serde_json::json!({
+            "changed_files": declared,
+            "summary": "moved the requirement and let the declared program derive the rest",
+            "claimed_complete": true,
+            "findings": [{ "cve": LIBRARY_CVE, "attempted": true, "note": FIXED_NOTE }],
+        }))),
+    ]
 }
 
 fn a_repair_moving_the_requirement() -> Vec<Reply> {
@@ -3285,4 +3356,105 @@ fn help_names_the_bare_form_the_grammar_accepts() {
             "{command} --help mentions `cve` without saying it takes no value:\n{help}"
         );
     }
+}
+
+#[test]
+fn a_derived_file_a_declared_command_wrote_reaches_clean_when_the_attempt_declares_it() {
+    let sweep = Sweep::declaring(
+        VULNERABLE,
+        SCAN_OK,
+        1,
+        a_repair_letting_a_declared_command_write_the_derived_file(&["go.mod", "go.sum"]),
+    );
+
+    let run = sweep.run();
+    let payload = sweep.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the attempt wrote one file and a declared program wrote the file that is \
+         derived from it — stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let reached = sweep.disposition(&run);
+    assert_eq!(
+        reached["reason"], "pull_request",
+        "a command-written file the attempt declared is no breach: {reached}"
+    );
+    assert_eq!(
+        reached["attempts"],
+        serde_json::json!([{
+            "cves": [LIBRARY_CVE],
+            "status": "clean",
+            "claimed_complete": true,
+            "dispositions": [disposed(LIBRARY_CVE, true, FIXED_NOTE)],
+        }]),
+        "{reached}"
+    );
+
+    let branch = the_one_new_branch(&sweep);
+    let landed = pushed_file(&sweep, &branch, "go.sum");
+    assert!(
+        landed.contains(FIXED_VERSION) && !landed.contains(VULNERABLE_VERSION),
+        "what landed must be what the declared program wrote, not what the model \
+         transcribed: {landed}"
+    );
+    let checksum = vulnerable_sums()
+        .lines()
+        .find(|line| line.contains(FIXED_VERSION))
+        .expect("the fixed sums carry a line naming the fixed release")
+        .to_string();
+    assert!(
+        sweep
+            .gateway
+            .request_bodies()
+            .iter()
+            .all(|body| !body.contains(&checksum)),
+        "the attempt never wrote this line, so what landed can only have come \
+         from the declared program — and if the attempt did write it this test \
+         proves nothing about the command"
+    );
+    sweep.assert_every_receipt_is_logical(&run);
+}
+
+#[test]
+fn a_derived_file_a_declared_command_wrote_is_a_breach_when_the_attempt_omits_it() {
+    let sweep = Sweep::declaring(
+        VULNERABLE,
+        SCAN_OK,
+        1,
+        a_repair_letting_a_declared_command_write_the_derived_file(&["go.mod"]),
+    );
+
+    let run = sweep.run();
+    let payload = sweep.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "an attempt left for a person is not a failed run — stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let reached = sweep.disposition(&run);
+    assert_eq!(
+        reached["reason"], "unsafe_without_direction",
+        "running a command does not excuse the file it wrote; the attempt still \
+         declares its own diff: {reached}"
+    );
+    assert_eq!(
+        reached["attempts"][0]["status"],
+        serde_json::json!("needs_work"),
+        "{reached}"
+    );
+    assert!(
+        sweep.pull_requests().is_empty(),
+        "an undeclared edit opens nothing, whoever wrote it: {:?}",
+        sweep.pull_requests()
+    );
+    assert_eq!(
+        sweep.remote_branches(),
+        vec![SWEEP_BASE.to_string()],
+        "and leaves the remote exactly as it found it"
+    );
 }

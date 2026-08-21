@@ -56,6 +56,8 @@ pub struct MitigateConfig {
 
     pub check: WorkspaceCommand,
 
+    pub commands: std::sync::Arc<Vec<crate::workspace::DeclaredCommand>>,
+
     pub budget: AgentBudget,
 
     pub command_timeout: Duration,
@@ -136,6 +138,8 @@ where
             model.clone(),
             MigrationConfig {
                 check: config.check.clone(),
+                commands: std::sync::Arc::clone(&config.commands),
+                command_timeout: config.command_timeout,
                 budget: config.budget.clone(),
                 cancel: config.cancel.clone(),
             },

@@ -11,7 +11,9 @@ use crate::github::{
     find_labelled_pull_request, BlamedCheck, EnsureBranchPublished, EnsurePullRequest,
     EnsurePullRequestBody, GenuineFailure, SharedPullRequest,
 };
-use crate::workspace::{FileEdit, Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
+use crate::workspace::{
+    DeclaredCommand, FileEdit, Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath,
+};
 use crate::{GhCli, GhError};
 use async_trait::async_trait;
 use fiddle_core::{AdvisoryId, CapabilityId, EffectKind, ProjectedFinding, ProposedEffect};
@@ -244,6 +246,10 @@ impl GroupStatus {
 pub struct MigrationConfig {
     pub check: WorkspaceCommand,
 
+    pub commands: Arc<Vec<DeclaredCommand>>,
+
+    pub command_timeout: Duration,
+
     pub budget: AgentBudget,
 
     pub cancel: CancellationToken,
@@ -304,6 +310,8 @@ where
             workspace: Arc::clone(workspace),
             cancel: self.config.cancel.clone(),
             check: self.config.check.clone(),
+            commands: Arc::clone(&self.config.commands),
+            command_timeout: self.config.command_timeout,
             receipts: Arc::clone(&self.receipts),
         };
 
