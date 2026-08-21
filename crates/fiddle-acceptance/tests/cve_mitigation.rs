@@ -2812,6 +2812,13 @@ const RUN_BODY: &str = "fiddle attempted 1 advisory for this repository's \
      advisory this run did not fix is in the verdict report published beside this \
      run's bundle, with the sentence that decided it.";
 
+fn counting(prose: &str, attempts: u32) -> String {
+    format!(
+        "{prose}\n\n<!-- fiddle-attempts:start -->\nAttempts: {attempts}\n\
+         <!-- fiddle-attempts:end -->"
+    )
+}
+
 impl Sweep {
     fn seed_shared_pull_request(&self, body: &str) -> String {
         self.seed_shared_pull_request_saying(body, "an earlier night's work on the shared branch")
@@ -2938,8 +2945,9 @@ fn a_second_run_over_a_shared_pull_request_rewrites_its_body_and_works_in_its_tr
     let shared = sweep.pull_request(SHARED_PR);
     assert_eq!(
         shared["body"].as_str(),
-        Some(RUN_BODY),
-        "the shared pull request must describe tonight's run: {shared}"
+        Some(counting(RUN_BODY, 1).as_str()),
+        "the shared pull request must describe tonight's run, and count the \
+         attempt tonight spent: {shared}"
     );
     assert_eq!(
         sweep.mutations(),
@@ -2979,7 +2987,7 @@ fn a_second_run_over_a_shared_pull_request_rewrites_its_body_and_works_in_its_tr
 }
 
 #[test]
-fn a_run_whose_shared_body_is_unchanged_dispatches_no_rewrite() {
+fn a_run_whose_shared_prose_already_holds_rewrites_only_the_count() {
     let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
     let seeded_head = sweep.seed_shared_pull_request(RUN_BODY);
     sweep.seed_a_check_blaming(&seeded_head);
@@ -2994,14 +3002,15 @@ fn a_run_whose_shared_body_is_unchanged_dispatches_no_rewrite() {
 
     assert_eq!(
         sweep.mutations(),
-        Vec::<String>::new(),
-        "a pull request that already says what this run did is a postcondition \
-         that already holds, and an effect the world satisfies is not dispatched"
+        vec![format!("PATCH_repos_acme_r_pulls_{SHARED_PR}")],
+        "one rewrite, and no create, because the pull request on this head and \
+         base already holds"
     );
     assert_eq!(
         sweep.pull_request(SHARED_PR)["body"].as_str(),
-        Some(RUN_BODY),
-        "and the description is left exactly as it was found"
+        Some(counting(RUN_BODY, 1).as_str()),
+        "the prose is the prose this run would have written, so the count is \
+         the only thing the rewrite changed"
     );
 
     assert!(

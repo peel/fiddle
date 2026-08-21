@@ -3,12 +3,13 @@ use super::CapabilityError;
 use crate::agent::{
     attempt_briefed, unaccounted, AgentBudget, Brief, RepairReport, ToolHost, ToolReceipts,
 };
+use crate::cve::attempts;
 use crate::cve::dedup::{Local, Spawn};
 use crate::effect::{Executor, IntegrationOperation};
 use crate::evaluate::{Evaluation, RescanVerdict};
 use crate::github::{
-    find_labelled_pull_request, EnsureBranchPublished, EnsurePullRequest, EnsurePullRequestBody,
-    SharedPullRequest,
+    find_labelled_pull_request, BlamedCheck, EnsureBranchPublished, EnsurePullRequest,
+    EnsurePullRequestBody, GenuineFailure, SharedPullRequest,
 };
 use crate::workspace::{FileEdit, Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
 use crate::{GhCli, GhError};
@@ -57,6 +58,13 @@ bump already did, and what else has to change if it did not. Make those changes,
 run the check, and then report — the files you changed, and one entry for every \
 advisory you were shown.";
 
+const FEEDBACK_FRAME: &str = "\
+An earlier attempt on this project is already open, and the forge reports that \
+its checks failed on the commit named below. Here is what the forge reports, \
+check by check, with the log each one published. Those are its words, not ours. \
+Read them before you change anything, because the change you make has to \
+answer them.";
+
 fn render(finding: &ProjectedFinding) -> String {
     let ProjectedFinding {
         cve,
@@ -76,12 +84,31 @@ fn render(finding: &ProjectedFinding) -> String {
     )
 }
 
-fn migration_task(findings: &[&ProjectedFinding]) -> String {
-    let rendered: Vec<String> = findings.iter().map(|finding| render(finding)).collect();
+fn render_blame(check: &BlamedCheck) -> String {
+    match &check.details_url {
+        Some(url) => format!("- `{}` failed. Its log is at {url}", check.name),
+        None => format!("- `{}` failed, and the forge published no log", check.name),
+    }
+}
+
+fn feedback_task(failure: &GenuineFailure) -> String {
+    let blamed: Vec<String> = failure.blamed.iter().map(render_blame).collect();
     format!(
-        "{FINDINGS_FRAME}\n\n{}\n\n{SCOPE_RULES}\n\n{TASK}",
-        rendered.join("\n")
+        "{FEEDBACK_FRAME}\n\nThe checks ran against commit {}.\n\n{}",
+        failure.head_sha,
+        blamed.join("\n")
     )
+}
+
+fn migration_task(findings: &[&ProjectedFinding], failure: Option<&GenuineFailure>) -> String {
+    let rendered: Vec<String> = findings.iter().map(|finding| render(finding)).collect();
+    let mut sections = vec![FINDINGS_FRAME.to_string(), rendered.join("\n")];
+    if let Some(failure) = failure {
+        sections.push(feedback_task(failure));
+    }
+    sections.push(SCOPE_RULES.to_string());
+    sections.push(TASK.to_string());
+    sections.join("\n\n")
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -262,9 +289,10 @@ where
         &self,
         workspace: &Arc<Workspace>,
         findings: &[ProjectedFinding],
+        failure: Option<&GenuineFailure>,
     ) -> Result<MigrationAttempt, CapabilityError> {
         let findings: Vec<&ProjectedFinding> = findings.iter().collect();
-        let task = migration_task(&findings);
+        let task = migration_task(&findings, failure);
 
         let bumped: Vec<String> = workspace
             .changed_files()?
@@ -800,6 +828,7 @@ pub struct SharedPublication {
     pub title: String,
     pub summary: String,
     pub head_sha: String,
+    pub attempts: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -832,7 +861,7 @@ pub async fn publish_shared_work(
         )
         .await?;
 
-    let body = shared_body(&config.summary, approved);
+    let body = attempts::write(&shared_body(&config.summary, approved), config.attempts)?;
 
     let open = EnsurePullRequest::new(
         config.repo.clone(),
@@ -925,7 +954,7 @@ mod tests {
 
     #[test]
     fn the_rendering_carries_all_six_fields_of_a_finding() {
-        let task = migration_task(&[&finding()]);
+        let task = migration_task(&[&finding()], None);
         for expected in [
             "CVE-2026-4242",
             "golang.org/x/text",
@@ -949,7 +978,7 @@ mod tests {
         blank.fixed_version = Some("  ".to_string());
 
         for finding in [unfixed, blank] {
-            let task = migration_task(&[&finding]);
+            let task = migration_task(&[&finding], None);
             assert!(
                 task.contains("no published fix"),
                 "an unfixed finding must not render an empty version: {task}"
@@ -971,7 +1000,7 @@ mod tests {
 
     #[test]
     fn the_composition_carries_the_scope_rules_and_no_mechanical_rule() {
-        let task = migration_task(&[&finding()]);
+        let task = migration_task(&[&finding()], None);
         for rule in ["refuses the whole attempt", "report it as not attempted"] {
             assert!(task.contains(rule), "`{rule}` is a scope rule: {task}");
         }
@@ -994,7 +1023,10 @@ mod tests {
             severity: Severity::High,
             package_type: PackageType::Library,
         };
-        let prompt = format!("{MIGRATION_PREAMBLE}\n\n{}", migration_task(&[&elsewhere]));
+        let prompt = format!(
+            "{MIGRATION_PREAMBLE}\n\n{}",
+            migration_task(&[&elsewhere], None)
+        );
 
         for word in [
             "Go",

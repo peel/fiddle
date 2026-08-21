@@ -9,14 +9,16 @@ use crate::cve::attempts;
 use crate::cve::dedup::commit_log_dedup;
 use crate::cve::project::{project, Projection};
 use crate::cve::verdict::{disposition, Attempted, Budget, Disposition, InProgress, Run};
-use crate::effect::{EffectContext, Executor};
+use crate::effect::{EffectContext, Executor, IntegrationOperation};
 use crate::evaluate::{evaluate, Check, Contract, Evaluation, InWorkspace, Repair, Rescan};
-use crate::github::{observe_genuine_failure, read_pull_request_body};
+use crate::github::{
+    observe_genuine_failure, read_pull_request_body, EnsurePullRequestBody, GenuineFailure,
+};
 use crate::scanner::{ScanReport, Scanner, WizCredential};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError};
 use fiddle_core::{
-    correlation_key, AdvisoryId, AttemptId, CapabilityId, ChangeSetState, EvidenceRef,
-    ProjectedFinding, RunDisposition, Severities, TreeObservation,
+    correlation_key, AdvisoryId, AttemptId, CapabilityId, ChangeSetState, EffectKind, EvidenceRef,
+    Observation, ProjectedFinding, ProposedEffect, RunDisposition, Severities, TreeObservation,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -67,6 +69,31 @@ pub struct MitigateConfig {
     pub today: String,
 
     pub cancel: CancellationToken,
+}
+
+struct Counted {
+    number: u64,
+    held: String,
+    spent: u32,
+}
+
+enum Feedback {
+    NoCandidate,
+    Blaming(GenuineFailure),
+    BlamingNothing,
+}
+
+impl Feedback {
+    fn attempts_afresh(&self) -> bool {
+        !matches!(self, Feedback::BlamingNothing)
+    }
+
+    fn blamed(&self) -> Option<&GenuineFailure> {
+        match self {
+            Feedback::Blaming(failure) => Some(failure),
+            Feedback::NoCandidate | Feedback::BlamingNothing => None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -135,13 +162,15 @@ where
         )
         .await?;
 
-        if let Some(number) = self.bound_reached(&approved).await? {
+        let counted = self.counted(&approved).await?;
+
+        if let Some(number) = self.bound_reached(counted.as_ref()) {
             let mut run = Run::scanned(projection);
             run.bound_reached = Some(number);
             return Ok(run);
         }
 
-        let afresh = self.attempts_afresh(&approved).await;
+        let feedback = self.feedback(&approved).await;
 
         let checkout = check_out(&InRepository::new(&self.config.tree), &approved).await?;
         self.observed.lock().unwrap().tree = Some(observed_tree(&checkout, report));
@@ -176,8 +205,11 @@ where
 
         let mut settled: Vec<AdvisoryId> = Vec::new();
         let mut attempted: Vec<Attempted> = Vec::new();
-        if afresh && !taken.is_empty() {
-            let attempt = self.migration.migrate(&workspace, &taken).await?;
+        if feedback.attempts_afresh() && !taken.is_empty() {
+            let attempt = self
+                .migration
+                .migrate(&workspace, &taken, feedback.blamed())
+                .await?;
             let evaluation = self.judge(&workspace, &taken, &projection, report).await?;
             let status = GroupStatus::of(&evaluation, attempt.undeclared.as_ref());
             let advisories = advisories_of(&taken);
@@ -195,10 +227,14 @@ where
             attempted.push(group);
         }
 
+        let spent = counted.as_ref().map_or(0, |it| it.spent);
         let landed = match attempted.iter().any(Attempted::committed) {
             false => None,
-            true => Some(self.publish(&git, &approved, &attempted).await?),
+            true => Some(self.publish(&git, &approved, &attempted, spent + 1).await?),
         };
+        if landed.is_none() && !attempted.is_empty() {
+            self.record_attempt(counted.as_ref()).await?;
+        }
 
         let in_progress = approved.reused().map(|number| InProgress {
             number,
@@ -218,7 +254,7 @@ where
         Ok(run)
     }
 
-    async fn bound_reached(&self, approved: &Approved) -> Result<Option<u64>, CapabilityError> {
+    async fn counted(&self, approved: &Approved) -> Result<Option<Counted>, CapabilityError> {
         let Some(number) = approved.reused() else {
             return Ok(None);
         };
@@ -226,22 +262,59 @@ where
             .await
             .map_err(PlanError::Read)?;
         let spent = attempts::read(&held)?;
-        Ok((spent >= self.config.max_attempts).then_some(number))
+        Ok(Some(Counted {
+            number,
+            held,
+            spent,
+        }))
     }
 
-    async fn attempts_afresh(&self, approved: &Approved) -> bool {
-        let Some(candidate) = approved.pr_head() else {
-            return true;
+    fn bound_reached(&self, counted: Option<&Counted>) -> Option<u64> {
+        counted
+            .filter(|it| it.spent >= self.config.max_attempts)
+            .map(|it| it.number)
+    }
+
+    async fn record_attempt(&self, counted: Option<&Counted>) -> Result<(), CapabilityError> {
+        let Some(counted) = counted else {
+            return Ok(());
         };
-        observe_genuine_failure(
+        let body = attempts::write(&counted.held, counted.spent + 1)?;
+        let describe = EnsurePullRequestBody::new(self.config.repo.clone(), counted.number, body);
+        self.executor
+            .execute(
+                ProposedEffect {
+                    capability: self.id(),
+                    kind: EffectKind::EnsurePullRequestBody,
+                    target: describe.target(),
+                    payload: describe.payload(),
+                },
+                describe,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn feedback(&self, approved: &Approved) -> Feedback {
+        let Some(candidate) = approved.pr_head() else {
+            return Feedback::NoCandidate;
+        };
+        let observed = observe_genuine_failure(
             &self.context.gh,
             &self.config.repo,
             candidate,
             &self.config.cancel,
         )
-        .await
-        .value()
-        .is_some_and(Option::is_some)
+        .await;
+        match observed {
+            Observation::Available {
+                value: Some(failure),
+                ..
+            } => Feedback::Blaming(failure),
+            Observation::Available { value: None, .. }
+            | Observation::Unavailable { .. }
+            | Observation::NotApplicable { .. } => Feedback::BlamingNothing,
+        }
     }
 
     async fn judge(
@@ -282,6 +355,7 @@ where
         git: &InWorktree<'_>,
         approved: &Approved,
         attempted: &[Attempted],
+        attempts: u32,
     ) -> Result<crate::cve::verdict::Landed, CapabilityError> {
         let head_sha = git.run(&["rev-parse", "HEAD"]).await?.trim().to_string();
         let shared = publish_shared_work(
@@ -294,6 +368,7 @@ where
                 title: self.config.title.clone(),
                 summary: summary_of(attempted),
                 head_sha,
+                attempts,
             },
         )
         .await?;
