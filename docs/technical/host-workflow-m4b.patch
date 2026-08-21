@@ -176,7 +176,7 @@ WHAT THIS PATCH DOES NOT CARRY
 `fiddle.toml` at the root of the host repository. The workflow depends on three
 things in it: `[orchestration.cve] image` names `icecube:scan`, `[report] dir`
 names a directory the repository ignores, and the credential tables name
-`FIDDLE_GITHUB_TOKEN`, `ANTHROPIC_API_KEY`, `WIZ_CLIENT_ID` and
+`FIDDLE_GITHUB_TOKEN`, `LITELLM_API_KEY`, `WIZ_CLIENT_ID` and
 `WIZ_CLIENT_SECRET`. The document also needs `[scanner] cli` to read
 `{ program = "wizcli", args = ["scan", "container-image"] }`, because fiddle adds
 `--by-policy-hits=DISABLED`, the output path and the image, and nothing else.
@@ -196,28 +196,10 @@ diff --git a/.github/workflows/cve-remediation.yml b/.github/workflows/cve-remed
 index f8d9b8b..af27285 100644
 --- a/.github/workflows/cve-remediation.yml
 +++ b/.github/workflows/cve-remediation.yml
-@@ -383,10 +383,29 @@ jobs:
+@@ -383,10 +383,11 @@ jobs:
      needs: scan
      if: needs.scan.outputs.has_work == 'true' && needs.scan.outputs.on_default_branch == 'true'
      runs-on: ubuntu-latest
-+    # This patch adds `checks: read`, and names all four grants rather than
-+    # leaving the reader to diff them.
-+    #
-+    #   contents: write        push the remediation branch, read refs
-+    #   pull-requests: write   open the shared pull request, read and write its body
-+    #   id-token: write        the job already held this; nothing fiddle does spends it
-+    #   checks: read           read the check runs on the candidate commit
-+    #
-+    # `checks: read` is the one that is easy to miss. Neither `contents` nor
-+    # `pull-requests` implies it, and the default GITHUB_TOKEN does not carry it
-+    # once a `permissions:` block is present. fiddle asks
-+    # GET /repos/{repo}/commits/{sha}/check-runs what CI concluded about the
-+    # commit an earlier night pushed, and decides from that whether to attempt
-+    # the shared pull request again. Without the grant that read is a 403.
-+    #
-+    # A refused read is not a pass. fiddle attempts nothing, publishes the row
-+    # `checks_unreadable` naming the endpoint and the commit, and exits 11, so
-+    # this job fails instead of reporting a night with nothing to do.
      permissions:
        contents: write
        pull-requests: write
@@ -226,21 +208,12 @@ index f8d9b8b..af27285 100644
      steps:
        - uses: actions/checkout@v4
          with:
-@@ -401,15 +420,129 @@ jobs:
+@@ -401,15 +420,80 @@ jobs:
            client-id: ${{ secrets.WIZ_CLIENT_ID }}
            client-secret: ${{ secrets.WIZ_CLIENT_SECRET }}
  
 -      - name: Run claude-code-action for CVE remediation
 -        uses: anthropics/claude-code-action@v1
-+      # fiddle is a binary, not an action, so this job pins a tag and a digest
-+      # instead of a floating major version.
-+      #
-+      # FIDDLE_TAG and FIDDLE_SHA256 move together. A tag alone is not a
-+      # version. A re-cut tag republishes both assets, so a binary checked only
-+      # against the checksum published beside it still passes. The pinned digest
-+      # is what makes a re-cut tag stop this job instead of running silently.
-+      #
-+      # peel/fiddle is public, so the download needs no credential.
 +      - name: Download fiddle and verify it before it runs
          env:
 -          CVE_BASE_BRANCH: ${{ github.event.repository.default_branch }}
@@ -280,43 +253,20 @@ index f8d9b8b..af27285 100644
 +          chmod +x fiddle-linux-amd64
 +          echo "Verified ${FIDDLE_TAG} ${measured}"
 +
-+      # fiddle scans an image tag. It does not build one. The step fiddle
-+      # replaces built the image inside a model turn, which is why its allowlist
-+      # carried `Bash(docker build *)`. The tag is the tag the scan job builds,
-+      # and `[orchestration.cve] image` in fiddle.toml names it.
 +      - name: Build the docker image fiddle scans
 +        run: docker build -t icecube:scan .
 +
-+      # One command. fiddle finds its own work, so it reads neither
-+      # to-fix.json nor upstream-blocked.json. It runs its own scan of the image
-+      # above and decides from that scan.
-+      #
-+      # The two runs report different counts for one image, and both are right.
-+      # The scan job keeps a finding in to-fix.json only when fixedVersion is
-+      # not null, and sends the rest to upstream-blocked.json, away from
-+      # remediation. fiddle has no such filter. It sends a finding with no
-+      # published fix to the agent as well, and the agent declines that finding
-+      # with its own reason. So this job can report a verdict for a CVE the scan
-+      # job already counted as upstream-blocked. Do not report the difference as
-+      # a defect.
-+      #
-+      # setup-wiz above stays because it installs wizcli. fiddle supplies the
-+      # Wiz credential itself and points wizcli at its own WIZ_CONFIG_DIR.
 +      - name: Run fiddle for CVE remediation
 +        id: fiddle
 +        env:
 +          FIDDLE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
++          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
 +          WIZ_CLIENT_ID: ${{ secrets.WIZ_CLIENT_ID }}
 +          WIZ_CLIENT_SECRET: ${{ secrets.WIZ_CLIENT_SECRET }}
 +        run: |
 +          set -euo pipefail
 +          fiddle="${RUNNER_TEMP}/fiddle-linux-amd64"
 +
-+          # The schema is strict, so a bad document fails here with a named
-+          # field rather than part way through a run. The report directory comes
-+          # from the same document, so the mapping step below holds no second
-+          # copy of the path.
 +          document=$("$fiddle" config check --json)
 +          report_dir=$(printf '%s' "$document" | jq -r '.report.dir')
 +          echo "report_dir=${report_dir}" >> "$GITHUB_OUTPUT"
@@ -324,23 +274,6 @@ index f8d9b8b..af27285 100644
 +
 +          "$fiddle" run cve
 +
-+      # fiddle writes verdicts.json on its own contract. This step is the only
-+      # thing that turns that file into the non-patchable.json the Jira step
-+      # reads, and it dies when fiddle files the ticket itself.
-+      #
-+      # `verdict` reads legacy_label. It does not read fiddle's own `verdict`
-+      # field. The Jira step builds the label as cve-<verdict>, and the JQL in
-+      # the scan job closes cve-upstream-blocked and cve-needs-work. fiddle's
-+      # verdict field carries its disposition name, `needs_work` with an
-+      # underscore, and no JQL here looks for that. A row with no legacy_label
-+      # has no Jira meaning, so this step drops it rather than file cve-null.
-+      #
-+      # No package type crosses this step. The Jira contract is five fields and
-+      # none of them is packageType, so the scan job's `OS` and fiddle's `os`
-+      # never meet. A sixth field would need a case map, not a straight copy.
-+      #
-+      # unique_by(.cve) matches to-fix.json and upstream-blocked.json above. One
-+      # CVE in two packages is one ticket.
 +      - name: Map fiddle's verdicts to the Jira contract
 +        env:
 +          REPORT_DIR: ${{ steps.fiddle.outputs.report_dir }}
