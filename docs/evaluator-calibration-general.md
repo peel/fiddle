@@ -130,10 +130,11 @@ unchanged, because they appear verbatim in the `eval` blocks of epic `fiddle-y1w
 `m1-canary-evidence` as *the real-model lanes*.
 
 The fourth was found a pass later than the other three, in this document rather than by it, and it
-is the reason this paragraph now counts. `agent.max_capability_attempts` parses and defaults to 3
-and is read by nothing; M1 ships one bound, and the decision, with what taking up the second would
-cost, is `decisions/013-one-attempt-bound-not-two.md`. `m1-bounded-behavior` below asks for the
-bounds that fire.
+is the reason this paragraph now counts. `agent.max_capability_attempts` parsed, defaulted to 3
+and was read by nothing; M1 shipped one bound, and the decision, with what taking up the second
+would cost, is `decisions/013-one-attempt-bound-not-two.md`. M4b enforced the bound without paying
+that cost, and `decisions/037-the-attempt-bound-is-per-pull-request.md` records how.
+`m1-bounded-behavior` below asks for the bounds that fire.
 
 **That sweep reached three criteria of five, and this completes it (2026-08-09).**
 `m1-tool-protocol-correctness` named a test that had never been written, so its Excellent level
@@ -216,15 +217,16 @@ Structured output, and the standing of what the model claims.
 
 Turn, time, tool, and mutation limits, and cancellation.
 
-**There is no outer per-capability attempt bound, and its absence is a decision, not a gap.**
-`agent.max_capability_attempts` parses, defaults to 3, and is consumed by nothing:
-`fiddle_runtime::attempt` runs one attempt and reports `RunOutcome::Retryable` for a caller to
-repeat. `decisions/013-one-attempt-bound-not-two.md` records the decision and prices the change —
-`Retryable` has four producers of which only one is "the capability tried and lost", so the loop
-needs a taxonomy the outcome type does not carry, and both placements for it move something M0
-asserts. Score against the bounds that fire. An evaluator that marks this criterion down for the
-missing outer bound is scoring against a superseded plan; one that marks a bean down for *not
-having noticed* the key is unconsumed is scoring correctly only if the bean touched that path.
+**M1 shipped no outer per-capability attempt bound, and M4b enforces one.**
+`agent.max_capability_attempts` was consumed by nothing through M1: `fiddle_runtime::attempt` ran
+one attempt and reported `RunOutcome::Retryable` for a caller to repeat.
+`decisions/013-one-attempt-bound-not-two.md` recorded that and priced the retry loop. The loop was
+never built. `decisions/037-the-attempt-bound-is-per-pull-request.md` bounds the rework of one pull
+request instead, counting attempts in that pull request's body, so a fresh process reads what an
+earlier one spent. `CveMitigate::bound_reached` compares the count against the configured number,
+and a run at the bound reaches `attempt_bound_reached` and calls no model. Score an M1-era bean
+against the four bounds that fired then, and anything touching the CVE capability against this one
+as well. Marking a bean down for the missing outer bound is scoring against a superseded plan.
 
 - **Poor (1–3).** No bound is enforced at all, or the inner turn limit is enforced by a hand-rolled
   counter rather than by the runtime. Cancellation is assumed to follow from dropping a future. A

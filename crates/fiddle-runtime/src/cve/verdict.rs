@@ -74,7 +74,7 @@ pub struct Run {
 
     pub landed: Option<Landed>,
 
-    pub bound_reached: Option<u64>,
+    pub bound_reached: Option<BoundReached>,
 
     pub checks_unreadable: Option<String>,
 }
@@ -109,6 +109,15 @@ impl Run {
     pub fn projection(&self) -> Option<&Projection> {
         self.scan.as_ref().ok()
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BoundReached {
+    pub number: u64,
+
+    pub spent: u32,
+
+    pub bound: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -242,6 +251,7 @@ pub struct Disposition {
     attempts: Vec<AttemptRecord>,
     branch: Option<String>,
     pull_request: Option<u64>,
+    attempt_bound: Option<fiddle_core::AttemptBound>,
 }
 
 impl Disposition {
@@ -275,6 +285,10 @@ impl Disposition {
 
     pub fn pull_request(&self) -> Option<u64> {
         self.pull_request
+    }
+
+    pub fn attempt_bound(&self) -> Option<fiddle_core::AttemptBound> {
+        self.attempt_bound
     }
 
     pub fn report(&self) -> serde_json::Value {
@@ -311,6 +325,7 @@ impl Disposition {
                 .collect(),
             branch: self.branch.clone(),
             pull_request: self.pull_request,
+            attempt_bound: self.attempt_bound,
         }
     }
 
@@ -338,10 +353,11 @@ pub fn disposition(run: &Run) -> Disposition {
             attempts: Vec::new(),
             branch: None,
             pull_request: None,
+            attempt_bound: None,
         };
     }
 
-    if let Some(pull_request) = run.bound_reached {
+    if let Some(reached) = run.bound_reached {
         return Disposition {
             outcome: RunOutcome::Completed,
             reason: Row::AttemptBoundReached,
@@ -350,7 +366,11 @@ pub fn disposition(run: &Run) -> Disposition {
             already_fixed: Vec::new(),
             attempts: Vec::new(),
             branch: None,
-            pull_request: Some(pull_request),
+            pull_request: Some(reached.number),
+            attempt_bound: Some(fiddle_core::AttemptBound {
+                spent: reached.spent,
+                bound: reached.bound,
+            }),
         };
     }
 
@@ -366,6 +386,7 @@ pub fn disposition(run: &Run) -> Disposition {
             attempts: Vec::new(),
             branch: None,
             pull_request: None,
+            attempt_bound: None,
         };
     }
 
@@ -379,6 +400,7 @@ pub fn disposition(run: &Run) -> Disposition {
         attempts: attempts.clone(),
         branch: None,
         pull_request: None,
+        attempt_bound: None,
         reason,
     };
 

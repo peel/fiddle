@@ -5,8 +5,8 @@ use fiddle_runtime::agent::{FindingDisposition, RepairReport};
 use fiddle_runtime::capability::{GroupStatus, MigrationAttempt, NeedsWork};
 use fiddle_runtime::cve::project::{project, Projection};
 use fiddle_runtime::cve::verdict::{
-    disposition, report_of, Attempted, Budget, InProgress, Judgement, Landed, Row, Run, Verdict,
-    REPORT_FILE,
+    disposition, report_of, Attempted, BoundReached, Budget, InProgress, Judgement, Landed, Row,
+    Run, Verdict, REPORT_FILE,
 };
 use fiddle_runtime::evaluate::{evaluate, Evaluation, RescanVerdict};
 use fiddle_runtime::scanner::Scanner;
@@ -137,7 +137,11 @@ fn the_check_read_was_refused() -> Run {
 
 fn a_reused_pull_request_at_the_bound() -> Run {
     let mut run = one_fixable_finding();
-    run.bound_reached = Some(9);
+    run.bound_reached = Some(BoundReached {
+        number: 9,
+        spent: 4,
+        bound: 4,
+    });
     run
 }
 

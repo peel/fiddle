@@ -76,6 +76,13 @@ pub struct DisposedFinding {
     pub note: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct AttemptBound {
+    pub spent: u32,
+
+    pub bound: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct RunDisposition {
     pub reason: String,
@@ -91,6 +98,9 @@ pub struct RunDisposition {
     pub branch: Option<String>,
 
     pub pull_request: Option<u64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt_bound: Option<AttemptBound>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -232,6 +242,7 @@ mod tests {
             }],
             branch: None,
             pull_request: Some(7),
+            attempt_bound: None,
         })
         .unwrap();
 
@@ -254,5 +265,32 @@ mod tests {
         );
         assert!(value["branch"].is_null());
         assert_eq!(value["pull_request"], 7);
+        assert!(
+            value.get("attempt_bound").is_none(),
+            "a run that did not stop at the bound must publish no bound: {value}"
+        );
+    }
+
+    #[test]
+    fn a_run_stopped_by_the_bound_publishes_the_count_and_the_bound() {
+        let value = serde_json::to_value(RunDisposition {
+            reason: "attempt_bound_reached".to_string(),
+            verdicts: 0,
+            already_fixed: Vec::new(),
+            deferred: Vec::new(),
+            attempts: Vec::new(),
+            branch: None,
+            pull_request: Some(9),
+            attempt_bound: Some(AttemptBound { spent: 4, bound: 4 }),
+        })
+        .unwrap();
+
+        assert_eq!(value["reason"], "attempt_bound_reached");
+        assert_eq!(value["pull_request"], 9);
+        assert_eq!(
+            value["attempt_bound"],
+            serde_json::json!({ "spent": 4, "bound": 4 }),
+            "the row name alone cannot tell 4 of 4 from 9 of 9: {value}"
+        );
     }
 }

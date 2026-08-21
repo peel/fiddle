@@ -134,28 +134,50 @@ fn config_check_reports_the_fixture_under_repair_and_the_check_that_judges_it() 
 }
 
 #[test]
-fn config_check_marks_the_attempt_bound_it_accepts_and_does_not_enforce() {
-    let agent = checked(&AGENTIC.replace(
+fn config_check_reports_the_attempt_bound_it_enforces_and_where_the_count_lives() {
+    let document = AGENTIC.replace(
         "max_turns = 12",
         "max_turns = 12\nmax_capability_attempts = 5",
-    ))["agent"]
-        .clone();
+    );
+    let agent = checked(&document)["agent"].clone();
     let bound = &agent["max_capability_attempts"];
     assert_eq!(bound["configured"], 5, "{agent}");
-    assert_eq!(
-        bound["enforced"], 1,
-        "a document writing 5 gets one attempt, and this is where it finds \
-         that out: {agent}"
+    assert!(
+        bound.get("enforced").is_none(),
+        "a document writing 5 gets 5, so no key may name a number it does not \
+         get: {agent}"
     );
-    assert_eq!(bound["status"], "accepted-not-enforced", "{agent}");
+    assert_eq!(bound["status"], "enforced-per-pull-request", "{agent}");
     assert_eq!(
-        bound["decision"], "013-one-attempt-bound-not-two",
+        bound["counted_in"], "pull-request-body",
+        "the bound is spent across processes, so the surface has to say where \
+         the count a person can edit is held: {agent}"
+    );
+    assert_eq!(
+        bound["decision"], "037-the-attempt-bound-is-per-pull-request",
         "the surface must lead a reader to the decision: {agent}"
     );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fiddle.toml");
+    std::fs::write(&path, &document).unwrap();
+    let out = support::fiddle_command()
+        .args(["config", "check", "--config", path.to_str().unwrap()])
+        .env_remove(CREDENTIAL)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(out.status.code(), Some(0), "stdout: {stdout}");
     assert!(
-        agent["max_turns"].is_number() && agent["max_changed_files"].is_number(),
-        "a bound that fires is a plain scalar, so the shape alone tells the two \
-         kinds apart: {agent}"
+        stdout.contains("agent.max_capability_attempts = 5")
+            && stdout.contains("enforced per pull request")
+            && stdout.contains("037-the-attempt-bound-is-per-pull-request"),
+        "the plain rendering must say the same as the payload beside it: {stdout}"
+    );
+    assert!(
+        !stdout.contains("not enforced"),
+        "this document names no unenforced key, so the phrase must appear \
+         nowhere in its rendering: {stdout}"
     );
 }
 

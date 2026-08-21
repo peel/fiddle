@@ -18,9 +18,11 @@ fn payload(schema: &'static str, body: serde_json::Value) -> String {
         .expect("a payload of an object body is always serializable")
 }
 
-const ENFORCED_CAPABILITY_ATTEMPTS: usize = 1;
+const ATTEMPT_BOUND_DECISION: &str = "037-the-attempt-bound-is-per-pull-request";
 
-const ATTEMPT_BOUND_DECISION: &str = "013-one-attempt-bound-not-two";
+const ATTEMPT_BOUND_STATUS: &str = "enforced-per-pull-request";
+
+const ATTEMPT_BOUND_COUNTED_IN: &str = "pull-request-body";
 
 const ACCEPTED_NOT_ENFORCED: &str = "accepted-not-enforced";
 
@@ -51,8 +53,8 @@ pub fn config_check_json(config: &Config) -> String {
             "tool_timeout": agent.tool_timeout.to_string(),
             "max_capability_attempts": {
                 "configured": agent.max_capability_attempts,
-                "enforced": ENFORCED_CAPABILITY_ATTEMPTS,
-                "status": ACCEPTED_NOT_ENFORCED,
+                "status": ATTEMPT_BOUND_STATUS,
+                "counted_in": ATTEMPT_BOUND_COUNTED_IN,
                 "decision": ATTEMPT_BOUND_DECISION,
             },
         });
@@ -182,7 +184,8 @@ pub fn config_check_human(config: &Config) -> String {
              \n  agent.deadline = {}\
              \n  agent.tool_timeout = {}\
              \n  agent.max_capability_attempts = {} \
-             (accepted, not enforced: {} attempt is made — see decision {})",
+             (enforced per pull request; the count lives in that pull \
+             request's body — see decision {})",
             agent.model,
             agent.base_url,
             agent.api_key.env,
@@ -192,7 +195,6 @@ pub fn config_check_human(config: &Config) -> String {
             agent.deadline,
             agent.tool_timeout,
             agent.max_capability_attempts,
-            ENFORCED_CAPABILITY_ATTEMPTS,
             ATTEMPT_BOUND_DECISION,
         ));
     }
@@ -455,6 +457,12 @@ fn disposition_line(disposition: &fiddle_core::RunDisposition) -> String {
     }
     if let Some(pull_request) = disposition.pull_request {
         line.push_str(&format!(", pull request #{pull_request}"));
+    }
+    if let Some(bound) = disposition.attempt_bound {
+        line.push_str(&format!(
+            ", {} attempts of {} spent",
+            bound.spent, bound.bound
+        ));
     }
     line
 }

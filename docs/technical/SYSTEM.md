@@ -72,7 +72,8 @@ records that gap.
 `deny_unknown_fields` on a parent does not reach a child. A mistyped `attempt = 8`
 would otherwise be a bound an operator believes they set.
 
-`agent.max_capability_attempts` parses and is consumed by nothing (ADR 013).
+`agent.max_capability_attempts` bounds one pull request's rework, counted in its
+body (ADR 037).
 `github.required_checks` is observed and enforced by nothing (ADR 017).
 `[orchestration.cve] go` was deleted in M4c and is now refused at load; see
 `RUNBOOKS.md`.

@@ -8,7 +8,9 @@ use crate::agent::AgentBudget;
 use crate::cve::attempts;
 use crate::cve::dedup::commit_log_dedup;
 use crate::cve::project::{project, Projection};
-use crate::cve::verdict::{disposition, Attempted, Budget, Disposition, InProgress, Run};
+use crate::cve::verdict::{
+    disposition, Attempted, BoundReached, Budget, Disposition, InProgress, Run,
+};
 use crate::effect::{EffectContext, Executor, IntegrationOperation};
 use crate::evaluate::{evaluate, Check, Contract, Evaluation, InWorkspace, Repair, Rescan};
 use crate::github::{
@@ -172,9 +174,9 @@ where
 
         let counted = self.counted(&approved).await?;
 
-        if let Some(number) = self.bound_reached(counted.as_ref()) {
+        if let Some(reached) = self.bound_reached(counted.as_ref()) {
             let mut run = Run::scanned(projection);
-            run.bound_reached = Some(number);
+            run.bound_reached = Some(reached);
             return Ok(run);
         }
 
@@ -283,10 +285,14 @@ where
         }))
     }
 
-    fn bound_reached(&self, counted: Option<&Counted>) -> Option<u64> {
+    fn bound_reached(&self, counted: Option<&Counted>) -> Option<BoundReached> {
         counted
             .filter(|it| it.spent >= self.config.max_attempts)
-            .map(|it| it.number)
+            .map(|it| BoundReached {
+                number: it.number,
+                spent: it.spent,
+                bound: self.config.max_attempts,
+            })
     }
 
     async fn record_attempt(&self, counted: Option<&Counted>) -> Result<(), CapabilityError> {
