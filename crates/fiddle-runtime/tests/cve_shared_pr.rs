@@ -4,8 +4,8 @@ use fiddle_core::{
     content_digest, effect_id, AttemptId, EffectId, EffectKind, ProposedEffect, FIXTURE_REPAIR,
 };
 use fiddle_runtime::capability::cve::{
-    check_out, plan, plan_shared_pull_request, publish_shared_work, Approved, Checkout, PlanError,
-    Refusal, SharedPublication, SharedWork, BRANCH_STEM, CVE_LABEL, PUSHABLE_PREFIX,
+    check_out, plan, plan_shared_pull_request, publish_work, Approved, Checkout, PlanError,
+    Publication, Refusal, SharedWork, BRANCH_STEM, CVE_LABEL, PUSHABLE_PREFIX,
 };
 use fiddle_runtime::capability::{land, GroupStatus, InWorktree};
 use fiddle_runtime::effect::{
@@ -859,7 +859,7 @@ async fn several_open_pull_requests_take_the_lowest_and_note_the_rest() {
     );
 
     let note = approved
-        .note()
+        .note(CVE_LABEL)
         .expect("an anomaly a person made is an anomaly a person is told about");
     assert!(
         note.contains("57") && note.contains("63"),
@@ -877,7 +877,7 @@ async fn one_open_pull_request_is_not_an_anomaly_and_is_not_noted() {
     let forge = Forge::empty();
     forge.seed_pull_request(41, SHARED_HEAD, &[CVE_LABEL]);
 
-    assert_eq!(decide(&forge).await.unwrap().note(), None);
+    assert_eq!(decide(&forge).await.unwrap().note(CVE_LABEL), None);
 }
 
 #[tokio::test]
@@ -994,6 +994,7 @@ async fn publish(forge: &Forge, world: &RemoteWorld) -> Published {
         &advisories_of(&world.findings),
         &GroupStatus::Clean,
         &changed,
+        None,
     )
     .await
     .expect("a clean group over a tree that really changed");
@@ -1012,17 +1013,19 @@ async fn publish(forge: &Forge, world: &RemoteWorld) -> Published {
         forge,
         ReadRetry::none(),
     );
-    let work = publish_shared_work(
+    let work = publish_work(
         &executor,
         FIXTURE_REPAIR,
         &approved,
-        &SharedPublication {
+        &Publication {
             repo: REPO.to_string(),
             head_owner: OWNER.to_string(),
             title: SHARED_TITLE.to_string(),
             summary: RUN_SUMMARY.to_string(),
             head_sha: landed,
             attempts: 1,
+            label: CVE_LABEL,
+            draft: false,
         },
     )
     .await
@@ -1289,6 +1292,7 @@ async fn discover_then_land(forge: &Forge, world: &LandingWorld) -> Result<Appro
         &advisories_of(&world.findings),
         &fiddle_runtime::capability::GroupStatus::Clean,
         &world.changed,
+        None,
     )
     .await
     .expect("a clean group over a tree that really changed");

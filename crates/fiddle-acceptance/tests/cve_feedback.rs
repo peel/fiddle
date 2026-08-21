@@ -760,7 +760,7 @@ fn an_attempt_that_commits_raises_the_count() {
 }
 
 #[test]
-fn an_attempt_that_reverts_raises_the_count_the_commit_log_cannot_show() {
+fn an_attempt_that_lands_no_fix_raises_the_count_the_commit_log_cannot_show() {
     let feedback = Feedback::rescanning(3, SCAN_LIBRARY_ONLY, an_attempt_moving_the_requirement());
     let head_sha = feedback.seed_shared_pull_request(&body_counting(2));
     feedback.seed_checks(&head_sha, &[(VERIFY_CHECK, "failure")]);
@@ -778,13 +778,14 @@ fn an_attempt_that_reverts_raises_the_count_the_commit_log_cannot_show() {
     assert_ne!(
         reached["reason"], "pull_request",
         "this run and the one above differ only in what the rescan reported. \
-         The rescan still names the advisory here, so the attempt reverted: \
-         {reached}"
+         The rescan still names the advisory here, so the attempt landed no \
+         fix: {reached}"
     );
     assert_eq!(
         feedback.remote_head(),
         head_sha,
-        "a reverted attempt pushes nothing, so the commit log cannot show it"
+        "an attempt that landed no fix pushes nothing here, so this commit log \
+         cannot show it"
     );
     assert_eq!(
         feedback.pushed_subjects(),

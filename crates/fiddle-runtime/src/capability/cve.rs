@@ -1,7 +1,8 @@
 use super::propose::COMMITTER;
 use super::CapabilityError;
 use crate::agent::{
-    attempt_briefed, unaccounted, AgentBudget, Brief, RepairReport, ToolHost, ToolReceipts,
+    attempt_briefed, unaccounted, AgentBudget, Brief, FindingDisposition, RepairReport, ToolHost,
+    ToolReceipts,
 };
 use crate::cve::attempts;
 use crate::cve::dedup::{Local, Spawn};
@@ -419,7 +420,9 @@ impl Git for InRepository {
 pub enum Landed {
     Committed,
 
-    Reverted,
+    CommittedForJudgement,
+
+    NothingToLand,
 }
 
 pub async fn land<G>(
@@ -427,88 +430,87 @@ pub async fn land<G>(
     advisories: &[AdvisoryId],
     status: &GroupStatus,
     changed: &[WorkspacePath],
+    onto: Option<&str>,
 ) -> Result<Landed, CapabilityError>
 where
     G: Git + ?Sized,
 {
-    match lands_as(status) {
-        Landed::Committed => {
-            stage_and_commit(git, advisories, changed).await?;
+    match status {
+        GroupStatus::Clean if changed.is_empty() => Err(CapabilityError::NothingProposed),
+        GroupStatus::Clean => {
+            stage(git, changed).await?;
+            let subject = commit_subject(advisories);
+            let body = commit_body(advisories);
+            commit(git, &["commit", "-q", "-m", &subject, "-m", &body]).await?;
             Ok(Landed::Committed)
         }
-        Landed::Reverted => {
-            revert(git, changed).await?;
-            Ok(Landed::Reverted)
+        GroupStatus::NeedsWork { .. } if changed.is_empty() => Ok(Landed::NothingToLand),
+        GroupStatus::NeedsWork { .. } => {
+            if let Some(branch) = onto {
+                extend(git, branch).await?;
+            }
+            stage(git, changed).await?;
+            let subject = judgement_subject(advisories);
+            commit(
+                git,
+                &[
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    &subject,
+                    "-m",
+                    JUDGEMENT_BODY,
+                ],
+            )
+            .await?;
+            Ok(Landed::CommittedForJudgement)
         }
     }
 }
 
-fn lands_as(status: &GroupStatus) -> Landed {
-    match status {
-        GroupStatus::Clean => Landed::Committed,
-        GroupStatus::NeedsWork { .. } => Landed::Reverted,
-    }
-}
-
-async fn stage_and_commit<G>(
-    git: &G,
-    advisories: &[AdvisoryId],
-    changed: &[WorkspacePath],
-) -> Result<(), CapabilityError>
+async fn stage<G>(git: &G, changed: &[WorkspacePath]) -> Result<(), CapabilityError>
 where
     G: Git + ?Sized,
 {
-    if changed.is_empty() {
-        return Err(CapabilityError::NothingProposed);
-    }
-
     let paths: Vec<&str> = changed.iter().map(|path| path.as_str()).collect();
     let mut add = vec!["add", "-f", "--"];
     add.extend_from_slice(&paths);
-    git.run(&add).await?;
-
-    let subject = commit_subject(advisories);
-    let body = commit_body(advisories);
-    let mut commit: Vec<&str> = COMMITTER
-        .iter()
-        .flat_map(|setting| ["-c", setting])
-        .collect();
-    commit.extend(["commit", "-q", "-m", subject.as_str(), "-m", body.as_str()]);
-    git.run(&commit).await?;
-    Ok(())
+    git.run(&add).await.map(|_output| ())
 }
 
-async fn revert<G>(git: &G, changed: &[WorkspacePath]) -> Result<(), CapabilityError>
+async fn commit<G>(git: &G, arguments: &[&str]) -> Result<(), CapabilityError>
 where
     G: Git + ?Sized,
 {
-    if changed.is_empty() {
-        return Ok(());
-    }
-    let paths: Vec<&str> = changed.iter().map(|path| path.as_str()).collect();
-
-    let mut probe = vec!["ls-tree", "-r", "--name-only", "-z", "HEAD", "--"];
-    probe.extend_from_slice(&paths);
-    let listed = git.run(&probe).await?;
-    let committed: BTreeSet<&str> = listed.split('\0').filter(|it| !it.is_empty()).collect();
-
-    let (edited, created): (Vec<&str>, Vec<&str>) = paths
+    let mut spelled: Vec<&str> = COMMITTER
         .iter()
-        .copied()
-        .partition(|path| committed.contains(path));
-
-    if !edited.is_empty() {
-        let mut checkout = vec!["checkout", "HEAD", "--"];
-        checkout.extend_from_slice(&edited);
-        git.run(&checkout).await?;
-    }
-    if !created.is_empty() {
-        let mut clean = vec!["clean", "-f", "-q", "--"];
-        clean.extend_from_slice(&created);
-        git.run(&clean).await?;
-    }
-    Ok(())
+        .flat_map(|setting| ["-c", setting])
+        .collect();
+    spelled.extend_from_slice(arguments);
+    git.run(&spelled).await.map(|_output| ())
 }
+
+async fn extend<G>(git: &G, branch: &str) -> Result<(), CapabilityError>
+where
+    G: Git + ?Sized,
+{
+    fetch(git, branch).await?;
+    let head = resolve(git, &origin_ref(branch)).await?;
+    git.run(&["reset", "--soft", &head]).await.map(|_output| ())
+}
+
+fn judgement_subject(advisories: &[AdvisoryId]) -> String {
+    match advisories.len() {
+        1 => "attempt: 1 advisory, unproved".to_string(),
+        many => format!("attempt: {many} advisories, unproved"),
+    }
+}
+
+const JUDGEMENT_BODY: &str = "\
+fiddle wrote this tree and did not prove it. No line of it is a fix. The pull \
+request that carries it names what refused it. This message names no advisory, \
+because a named advisory in a reachable commit reads as a fix to the next run.";
 
 fn commit_subject(advisories: &[AdvisoryId]) -> String {
     match advisories.len() {
@@ -527,9 +529,13 @@ fn commit_body(advisories: &[AdvisoryId]) -> String {
 
 pub const CVE_LABEL: &str = "security/cve";
 
+pub const UNPROVED_LABEL: &str = "security/cve-unproved";
+
 pub const PUSHABLE_PREFIX: &str = "security/";
 
 pub const BRANCH_STEM: &str = "security/cve-remediation-";
+
+pub const UNPROVED_BRANCH_STEM: &str = "security/cve-unproved-";
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Refusal {
@@ -611,18 +617,25 @@ impl Approved {
         }
     }
 
-    pub fn note(&self) -> Option<String> {
-        duplicate_note(self.duplicates())
+    pub fn reused_branch(&self) -> Option<&str> {
+        match self {
+            Approved::Reuse { branch, .. } => Some(branch),
+            Approved::Fresh { .. } => None,
+        }
+    }
+
+    pub fn note(&self, label: &str) -> Option<String> {
+        duplicate_note(label, self.duplicates())
     }
 }
 
-fn duplicate_note(duplicates: &[u64]) -> Option<String> {
+fn duplicate_note(label: &str, duplicates: &[u64]) -> Option<String> {
     if duplicates.is_empty() {
         return None;
     }
     let listed: Vec<String> = duplicates.iter().map(|it| format!("#{it}")).collect();
     Some(format!(
-        "More than one open pull request carries `{CVE_LABEL}`. This run added to \
+        "More than one open pull request carries `{label}`. This run added to \
          the lowest-numbered one and opened nothing new; {} {} still open and \
          should be closed by hand.",
         listed.join(", "),
@@ -635,6 +648,10 @@ fn duplicate_note(duplicates: &[u64]) -> Option<String> {
 
 fn dated_branch(today: &str) -> String {
     format!("{BRANCH_STEM}{today}")
+}
+
+fn dated_unproved_branch(today: &str) -> String {
+    format!("{UNPROVED_BRANCH_STEM}{today}")
 }
 
 pub fn today_utc() -> String {
@@ -668,6 +685,22 @@ pub fn plan(
     base: &str,
     today: &str,
 ) -> Result<Approved, Refusal> {
+    approve(found, base, dated_branch(today))
+}
+
+pub fn plan_unproved(
+    found: Option<SharedPullRequest>,
+    base: &str,
+    today: &str,
+) -> Result<Approved, Refusal> {
+    approve(found, base, dated_unproved_branch(today))
+}
+
+fn approve(
+    found: Option<SharedPullRequest>,
+    base: &str,
+    fresh: String,
+) -> Result<Approved, Refusal> {
     let approved = match found {
         Some(shared) => Approved::Reuse {
             number: shared.number,
@@ -677,7 +710,7 @@ pub fn plan(
             duplicates: shared.duplicates,
         },
         None => Approved::Fresh {
-            branch: dated_branch(today),
+            branch: fresh,
             base: base.to_string(),
         },
     };
@@ -701,6 +734,17 @@ pub async fn plan_shared_pull_request(
 ) -> Result<Approved, PlanError> {
     let found = find_labelled_pull_request(gh, repo, CVE_LABEL, cancel).await?;
     Ok(plan(found, base, today)?)
+}
+
+pub async fn plan_unproved_pull_request(
+    gh: &GhCli,
+    repo: &str,
+    base: &str,
+    today: &str,
+    cancel: &CancellationToken,
+) -> Result<Approved, PlanError> {
+    let found = find_labelled_pull_request(gh, repo, UNPROVED_LABEL, cancel).await?;
+    Ok(plan_unproved(found, base, today)?)
 }
 
 const REMOTE: &str = "origin";
@@ -822,13 +866,15 @@ where
     Ok(printed.trim().to_string())
 }
 
-pub struct SharedPublication {
+pub struct Publication {
     pub repo: String,
     pub head_owner: String,
     pub title: String,
     pub summary: String,
     pub head_sha: String,
     pub attempts: u32,
+    pub label: &'static str,
+    pub draft: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -838,11 +884,11 @@ pub struct SharedWork {
     pub pull_request: u64,
 }
 
-pub async fn publish_shared_work(
+pub async fn publish_work(
     executor: &Executor<'_>,
     capability: CapabilityId,
     approved: &Approved,
-    config: &SharedPublication,
+    config: &Publication,
 ) -> Result<SharedWork, CapabilityError> {
     let publish_branch = EnsureBranchPublished::new(
         config.repo.clone(),
@@ -861,7 +907,10 @@ pub async fn publish_shared_work(
         )
         .await?;
 
-    let body = attempts::write(&shared_body(&config.summary, approved), config.attempts)?;
+    let body = attempts::write(
+        &noted_body(&config.summary, approved, config.label),
+        config.attempts,
+    )?;
 
     let open = EnsurePullRequest::new(
         config.repo.clone(),
@@ -870,9 +919,9 @@ pub async fn publish_shared_work(
         approved.base().to_string(),
         config.title.clone(),
         body.clone(),
-        false,
+        config.draft,
     )
-    .labelled(vec![CVE_LABEL.to_string()]);
+    .labelled(vec![config.label.to_string()]);
     let opened = executor
         .execute(
             ProposedEffect {
@@ -905,11 +954,119 @@ pub async fn publish_shared_work(
     })
 }
 
-pub fn shared_body(summary: &str, approved: &Approved) -> String {
-    match approved.note() {
+pub fn noted_body(summary: &str, approved: &Approved, label: &str) -> String {
+    match approved.note(label) {
         Some(note) => format!("{summary}\n\n{note}"),
         None => summary.to_string(),
     }
+}
+
+pub struct FailedCheck {
+    pub name: String,
+
+    pub exit_code: Option<i32>,
+
+    pub log: String,
+}
+
+pub struct Unproved<'a> {
+    pub advisories: &'a [AdvisoryId],
+
+    pub rationale: &'a str,
+
+    pub check: Option<&'a FailedCheck>,
+
+    pub declared: &'a [String],
+
+    pub notes: &'a [FindingDisposition],
+}
+
+const JUDGEMENT_PREAMBLE: &str = "\
+fiddle changed this project and did not prove the change. Do not merge this \
+pull request. Read the change, and say what fiddle should do next. This is a \
+draft, and no part of it is a fix fiddle stands behind.";
+
+pub fn unproved_summary(unproved: &Unproved) -> String {
+    let mut sections = vec![
+        JUDGEMENT_PREAMBLE.to_string(),
+        format!("What fiddle refused it for: {}", unproved.rationale),
+        format!(
+            "The advisories it was shown:\n{}",
+            unproved
+                .advisories
+                .iter()
+                .map(|cve| format!("- {}", cve.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    ];
+
+    if let Some(check) = unproved.check {
+        sections.push(check_section(check));
+    }
+
+    if !unproved.declared.is_empty() {
+        sections.push(format!(
+            "The files the attempt declared:\n{}",
+            unproved
+                .declared
+                .iter()
+                .map(|path| format!("- `{path}`"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
+    if !unproved.notes.is_empty() {
+        sections.push(format!(
+            "What the attempt said about each advisory:\n{}",
+            unproved
+                .notes
+                .iter()
+                .map(|note| format!(
+                    "- {}: {}, and it says {:?}",
+                    note.cve,
+                    match note.attempted {
+                        true => "attempted",
+                        false => "declined",
+                    },
+                    note.note
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
+    sections.join("\n\n")
+}
+
+const LOG_TAIL: usize = 4_000;
+
+fn check_section(check: &FailedCheck) -> String {
+    let opened = match check.exit_code {
+        Some(code) => format!("The check `{}` exited {code}.", check.name),
+        None => format!("The check `{}` did not answer.", check.name),
+    };
+    match tail(&check.log) {
+        None => format!("{opened} It printed nothing."),
+        Some(tail) => format!("{opened} Its last lines:\n\n```\n{tail}\n```"),
+    }
+}
+
+fn tail(log: &str) -> Option<String> {
+    let trimmed = log.trim_end();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let counted = trimmed.chars().count();
+    if counted <= LOG_TAIL {
+        return Some(trimmed.to_string());
+    }
+    let cut: String = trimmed.chars().skip(counted - LOG_TAIL).collect();
+    Some(match cut.split_once('\n') {
+        Some((_partial, whole)) => whole.to_string(),
+        None => cut,
+    })
 }
 
 #[cfg(test)]
@@ -984,6 +1141,111 @@ mod tests {
                 "an unfixed finding must not render an empty version: {task}"
             );
         }
+    }
+
+    fn refused_check(log: &str) -> FailedCheck {
+        FailedCheck {
+            name: "go build ./...".to_string(),
+            exit_code: Some(2),
+            log: log.to_string(),
+        }
+    }
+
+    fn note(cve: &str, attempted: bool) -> FindingDisposition {
+        FindingDisposition {
+            cve: cve.to_string(),
+            attempted,
+            note: "the registry names no release I can reach".to_string(),
+        }
+    }
+
+    #[test]
+    fn the_body_a_person_judges_by_carries_the_refusal_and_the_evidence() {
+        let advisories = vec![finding().cve];
+        let refused = refused_check("one line\nthe line that names the error\n");
+        let declared = vec!["go.mod".to_string()];
+        let notes = vec![note("CVE-2026-4242", true)];
+
+        let body = unproved_summary(&Unproved {
+            advisories: &advisories,
+            rationale: "`go build ./...` did not pass over the tree the attempt left",
+            check: Some(&refused),
+            declared: &declared,
+            notes: &notes,
+        });
+
+        for expected in [
+            "Do not merge",
+            "did not pass over the tree",
+            "CVE-2026-4242",
+            "exited 2",
+            "the line that names the error",
+            "`go.mod`",
+            "the registry names no release I can reach",
+        ] {
+            assert!(
+                body.contains(expected),
+                "a person directs this change from this body alone, and \
+                 `{expected}` is not in it: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_check_that_printed_nothing_says_so_rather_than_showing_an_empty_block() {
+        let advisories = vec![finding().cve];
+        let silent = refused_check("   \n\n");
+
+        let body = unproved_summary(&Unproved {
+            advisories: &advisories,
+            rationale: "the rescan still reports it",
+            check: Some(&silent),
+            declared: &[],
+            notes: &[],
+        });
+
+        assert!(body.contains("It printed nothing."), "{body}");
+        assert!(
+            !body.contains("```"),
+            "an empty fenced block reads as output nobody can see: {body}"
+        );
+    }
+
+    #[test]
+    fn a_long_log_keeps_its_last_lines_and_drops_no_line_by_half() {
+        let noise: String = (0..LOG_TAIL).map(|at| format!("line {at}\n")).collect();
+        let kept = tail(&format!("{noise}the last line")).expect("a log with lines");
+
+        assert!(
+            kept.len() <= LOG_TAIL,
+            "the tail is bounded: {}",
+            kept.len()
+        );
+        assert!(
+            kept.ends_with("the last line"),
+            "and it is the tail, not the head"
+        );
+        assert!(
+            kept.lines()
+                .all(|line| line.starts_with("line ") || line == "the last line"),
+            "a half line reads as a different message: {kept}"
+        );
+    }
+
+    #[test]
+    fn a_judgement_commit_names_no_advisory() {
+        let advisories = vec![finding().cve];
+        let subject = judgement_subject(&advisories);
+
+        for spelled in [subject.as_str(), JUDGEMENT_BODY] {
+            assert!(
+                !spelled.contains("CVE-"),
+                "the next run reads every word of every reachable commit body, \
+                 and a named advisory there reads as a fix: {spelled}"
+            );
+        }
+        assert!(subject.contains("unproved"), "{subject}");
+        assert_ne!(subject, commit_subject(&advisories));
     }
 
     #[test]

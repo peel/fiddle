@@ -1,7 +1,8 @@
 use super::cve::{
-    check_out, land, plan_shared_pull_request, publish_shared_work, Approved, Checkout, Git,
-    GroupMigration, GroupStatus, InRepository, InWorktree, MigrationConfig, PlanError,
-    SharedPublication,
+    check_out, land, plan_shared_pull_request, plan_unproved_pull_request, publish_work,
+    unproved_summary, Approved, Checkout, FailedCheck, Git, GroupMigration, GroupStatus,
+    InRepository, InWorktree, Landed, MigrationConfig, PlanError, Publication, SharedWork,
+    Unproved, CVE_LABEL, UNPROVED_LABEL,
 };
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::AgentBudget;
@@ -12,7 +13,9 @@ use crate::cve::verdict::{
     disposition, Attempted, BoundReached, Budget, Disposition, InProgress, Run,
 };
 use crate::effect::{EffectContext, Executor, IntegrationOperation};
-use crate::evaluate::{evaluate, Check, Contract, Evaluation, InWorkspace, Repair, Rescan};
+use crate::evaluate::{
+    evaluate, Check, Contract, Evaluation, InWorkspace, Outcome, Repair, Rescan,
+};
 use crate::github::{
     observe_genuine_failure, read_pull_request_body, EnsurePullRequestBody, GenuineFailure,
 };
@@ -170,7 +173,16 @@ where
         )
         .await?;
 
-        let counted = self.counted(&approved).await?;
+        let unproved = plan_unproved_pull_request(
+            &self.context.gh,
+            &self.config.repo,
+            &self.config.base,
+            &self.config.today,
+            &self.config.cancel,
+        )
+        .await?;
+
+        let counted = self.counted(&approved, &unproved).await?;
 
         if let Some(reached) = self.bound_reached(counted.as_ref()) {
             let mut run = Run::scanned(projection);
@@ -217,8 +229,10 @@ where
             .findings
             .apply(projection.all().cloned().collect());
 
+        let spent = counted.as_ref().map_or(0, |it| it.spent);
         let mut settled: Vec<AdvisoryId> = Vec::new();
         let mut attempted: Vec<Attempted> = Vec::new();
+        let mut judged = None;
         if feedback.attempts_afresh() && !taken.is_empty() {
             let attempt = self
                 .migration
@@ -233,20 +247,44 @@ where
                 attempt,
             };
             match group.settled() {
-                true => settled = advisories,
+                true => settled = advisories.clone(),
                 false => {
-                    land(&git, &advisories, &group.status, &group.attempt.changed).await?;
+                    let onto = unproved.reused_branch();
+                    let landing = land(
+                        &git,
+                        &advisories,
+                        &group.status,
+                        &group.attempt.changed,
+                        onto,
+                    )
+                    .await?;
+                    if landing == Landed::CommittedForJudgement {
+                        let summary = unproved_summary(&Unproved {
+                            advisories: &advisories,
+                            rationale: &refusal(&group.status).unwrap_or_default(),
+                            check: failed_check(&evaluation).as_ref(),
+                            declared: &group.attempt.report.changed_files,
+                            notes: &group.attempt.report.findings,
+                        });
+                        judged = Some(
+                            self.publish_for_judgement(&git, &unproved, summary, spent + 1)
+                                .await?,
+                        );
+                    }
                 }
             }
             attempted.push(group);
         }
 
-        let spent = counted.as_ref().map_or(0, |it| it.spent);
         let landed = match attempted.iter().any(Attempted::committed) {
             false => None,
             true => Some(self.publish(&git, &approved, &attempted, spent + 1).await?),
         };
-        if landed.is_none() && !attempted.is_empty() {
+        let counted_number = counted.as_ref().map(|held| held.number);
+        let count_is_written = judged
+            .as_ref()
+            .is_some_and(|it| Some(it.pull_request) == counted_number);
+        if landed.is_none() && !count_is_written && !attempted.is_empty() {
             self.record_attempt(counted.as_ref()).await?;
         }
 
@@ -265,11 +303,16 @@ where
         run.attempted = attempted;
         run.deferred = deferred;
         run.landed = landed;
+        run.judged = judged;
         Ok(run)
     }
 
-    async fn counted(&self, approved: &Approved) -> Result<Option<Counted>, CapabilityError> {
-        let Some(number) = approved.reused() else {
+    async fn counted(
+        &self,
+        approved: &Approved,
+        unproved: &Approved,
+    ) -> Result<Option<Counted>, CapabilityError> {
+        let Some(number) = approved.reused().or_else(|| unproved.reused()) else {
             return Ok(None);
         };
         let held = read_pull_request_body(self.context, &self.config.repo, number)
@@ -378,34 +421,66 @@ where
         attempts: u32,
     ) -> Result<crate::cve::verdict::Landed, CapabilityError> {
         let head_sha = git.run(&["rev-parse", "HEAD"]).await?.trim().to_string();
-        let shared = publish_shared_work(
+        let shared = publish_work(
             &self.executor,
             self.id(),
             approved,
-            &SharedPublication {
+            &Publication {
                 repo: self.config.repo.clone(),
                 head_owner: self.config.head_owner.clone(),
                 title: self.config.title.clone(),
                 summary: summary_of(attempted),
                 head_sha,
                 attempts,
+                label: CVE_LABEL,
+                draft: false,
             },
         )
         .await?;
+        Ok(self.receipted(shared))
+    }
 
+    async fn publish_for_judgement(
+        &self,
+        git: &InWorktree<'_>,
+        unproved: &Approved,
+        summary: String,
+        attempts: u32,
+    ) -> Result<crate::cve::verdict::Landed, CapabilityError> {
+        let head_sha = git.run(&["rev-parse", "HEAD"]).await?.trim().to_string();
+        let published = publish_work(
+            &self.executor,
+            self.id(),
+            unproved,
+            &Publication {
+                repo: self.config.repo.clone(),
+                head_owner: self.config.head_owner.clone(),
+                title: format!("{}, unproved", self.config.title),
+                summary,
+                head_sha,
+                attempts,
+                label: UNPROVED_LABEL,
+                draft: true,
+            },
+        )
+        .await?;
+        Ok(self.receipted(published))
+    }
+
+    fn receipted(&self, published: SharedWork) -> crate::cve::verdict::Landed {
         let mut observed = self.observed.lock().unwrap();
         observed.receipts.push(EvidenceRef(format!(
             "{CVE_ORIGIN}:{}/tree/{}",
-            self.config.repo, shared.branch
+            self.config.repo, published.branch
         )));
         observed.receipts.push(EvidenceRef(format!(
             "{CVE_ORIGIN}:{}/pull/{}",
-            self.config.repo, shared.pull_request
+            self.config.repo, published.pull_request
         )));
-        Ok(crate::cve::verdict::Landed {
-            branch: shared.branch,
-            pull_request: shared.pull_request,
-        })
+        crate::cve::verdict::Landed {
+            branch: published.branch,
+            pull_request: published.pull_request,
+        }
     }
 
     fn record_change_set(&self, work_id: &str) -> Result<(), CapabilityError> {
@@ -556,6 +631,34 @@ fn observed_tree(checkout: &Checkout, report: &ScanReport) -> TreeObservation {
         attempt_tree: checkout.attempt_tree().as_str().to_string(),
         scanned_image_digest: report.image_digest.clone(),
     }
+}
+
+fn refusal(status: &GroupStatus) -> Option<String> {
+    match status {
+        GroupStatus::Clean => None,
+        GroupStatus::NeedsWork { reason } => Some(reason.to_string()),
+    }
+}
+
+fn failed_check(evaluation: &Evaluation) -> Option<FailedCheck> {
+    let refused = evaluation.first_failure()?;
+    let (exit_code, log) = match &refused.outcome {
+        Outcome::Finished(answered) => (
+            Some(answered.exit_code),
+            [answered.stdout.as_str(), answered.stderr.as_str()]
+                .into_iter()
+                .filter(|part| !part.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        Outcome::Scanned(_) => (None, String::new()),
+        Outcome::NoArtefact(why) | Outcome::NotRun(why) => (None, why.clone()),
+    };
+    Some(FailedCheck {
+        name: refused.name.clone(),
+        exit_code,
+        log,
+    })
 }
 
 fn advisories_of(findings: &[ProjectedFinding]) -> Vec<AdvisoryId> {

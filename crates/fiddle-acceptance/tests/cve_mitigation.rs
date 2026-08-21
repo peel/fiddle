@@ -825,7 +825,19 @@ const RESCAN_CLEAN: &str = "library-clean";
 const RESCAN_SECOND_LIBRARY_OPEN: &str = "second-library-still-open";
 
 const PASSING_CHECK: &[&str] = &[];
-const FAILING_CHECK: &[&str] = &["--exit", "1"];
+
+const REFUSED_STDOUT: &str = "the build cannot resolve the bumped module";
+
+const REFUSED_STDERR: &str = "compile: one error, and this is it";
+
+const REFUSING_CHECK: &[&str] = &[
+    "--say",
+    REFUSED_STDOUT,
+    "--warn",
+    REFUSED_STDERR,
+    "--exit",
+    "1",
+];
 
 const LIBRARY_CVE: &str = "CVE-2026-0001";
 const OS_CVE: &str = "CVE-2026-0002";
@@ -887,15 +899,6 @@ impl Sweep {
         script: Vec<Reply>,
     ) -> Self {
         Sweep::world(fixture, scan, rescan, findings, script, PASSING_CHECK)
-    }
-
-    fn scanning_with_a_failing_check(
-        fixture: &str,
-        scan: &str,
-        findings: usize,
-        script: Vec<Reply>,
-    ) -> Self {
-        Sweep::world(fixture, scan, RESCAN_CLEAN, findings, script, FAILING_CHECK)
     }
 
     fn world(
@@ -1296,6 +1299,20 @@ fn a_repair_moving_the_requirement() -> Vec<Reply> {
     )
 }
 
+const ATTEMPT_NOTE: &str = "ATTEMPT.md";
+
+fn a_repair_leaving_a_note(note: &str) -> Vec<Reply> {
+    an_attempt(
+        &[
+            ("go.mod", vulnerable_manifest()),
+            ("go.sum", vulnerable_sums()),
+            (ATTEMPT_NOTE, format!("{note}\n")),
+        ],
+        &[LIBRARY_CVE],
+        &[],
+    )
+}
+
 fn an_attempt_finding_the_tree_already_at_the_fix(shown: &[&str]) -> Vec<Reply> {
     vec![accepted(completion(
         serde_json::json!({
@@ -1392,6 +1409,44 @@ fn a_repair_moving_only_the_first_of_two_requirements() -> Vec<(&'static str, St
             read_fixture_file(TWO_LIBRARIES, "go.sum").replace(VULNERABLE_VERSION, FIXED_VERSION),
         ),
     ]
+}
+
+const CVE_LABEL: &str = "security/cve";
+
+const UNPROVED_LABEL: &str = "security/cve-unproved";
+
+const UNPROVED_STEM: &str = "security/cve-unproved-";
+
+fn carries(pull_request: &serde_json::Value, label: &str) -> bool {
+    pull_request["labels"]
+        .as_array()
+        .is_some_and(|held| held.iter().any(|it| it["name"] == label))
+}
+
+fn the_one_pull_request_labelled(sweep: &Sweep, label: &str) -> serde_json::Value {
+    let open = sweep.pull_requests();
+    let found: Vec<&serde_json::Value> = open.iter().filter(|it| carries(it, label)).collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "exactly one open pull request carries `{label}`: {open:?}"
+    );
+    found[0].clone()
+}
+
+fn the_one_new_branch_under(sweep: &Sweep, stem: &str) -> String {
+    let branches = sweep.remote_branches();
+    assert!(
+        branches.contains(&SWEEP_BASE.to_string()),
+        "the base branch must survive the run: {branches:?}"
+    );
+    let new: Vec<&String> = branches.iter().filter(|it| it.starts_with(stem)).collect();
+    assert_eq!(
+        new.len(),
+        1,
+        "the run opens exactly one branch under `{stem}`: {branches:?}"
+    );
+    new[0].clone()
 }
 
 fn the_one_new_branch(sweep: &Sweep) -> String {
@@ -2235,7 +2290,7 @@ fn an_unusable_scanner_exits_eleven_and_reaches_no_forge() {
 }
 
 #[test]
-fn an_unprovable_repair_is_reverted_and_filed_as_needing_direction() {
+fn an_unprovable_repair_is_published_as_a_draft_and_filed_as_needing_direction() {
     let sweep = Sweep::scanning_rescanning(
         VULNERABLE,
         SCAN_OK,
@@ -2259,15 +2314,18 @@ fn an_unprovable_repair_is_reverted_and_filed_as_needing_direction() {
         String::from_utf8_lossy(&run.stderr)
     );
 
-    assert!(
-        sweep.pull_requests().is_empty(),
-        "an unproved repair opens nothing: {:?}",
-        sweep.pull_requests()
+    let judged = the_one_pull_request_labelled(&sweep, UNPROVED_LABEL);
+    assert_eq!(
+        judged["draft"],
+        serde_json::json!(true),
+        "an unproved repair is published as a draft, because a person cannot \
+         direct a change they cannot read: {judged}"
     );
+    let branch = the_one_new_branch_under(&sweep, UNPROVED_STEM);
     assert_eq!(
         sweep.remote_branches(),
-        vec![SWEEP_BASE.to_string()],
-        "and leaves the remote exactly as it found it"
+        vec![SWEEP_BASE.to_string(), branch.clone()],
+        "and the run opens no branch a merge would take"
     );
 
     let reached = sweep.disposition(&run);
@@ -2287,10 +2345,12 @@ fn an_unprovable_repair_is_reverted_and_filed_as_needing_direction() {
          claim beside the judgement that overruled it — one row for the one \
          attempt, naming every advisory it was shown: {reached}"
     );
-    assert!(
-        reached["branch"].is_null() && reached["pull_request"].is_null(),
-        "nothing landed, so there is nothing to point at: {reached}"
+    assert_eq!(
+        reached["pull_request"], judged["number"],
+        "the row points at the draft, which is the only thing a person can \
+         judge: {reached}"
     );
+    assert_eq!(reached["branch"], serde_json::json!(branch), "{reached}");
     sweep.assert_every_receipt_is_logical(&run);
 
     let verdicts = sweep.verdicts();
@@ -2300,14 +2360,58 @@ fn an_unprovable_repair_is_reverted_and_filed_as_needing_direction() {
     );
 }
 
-#[test]
-fn a_check_that_says_no_reverts_the_attempt_and_publishes_nothing() {
-    let sweep = Sweep::scanning_with_a_failing_check(
+fn a_repair_the_check_judges(check: &[&str]) -> Sweep {
+    Sweep::world(
         VULNERABLE,
         SCAN_OK,
+        RESCAN_CLEAN,
         1,
         a_repair_moving_the_requirement(),
+        check,
+    )
+}
+
+#[test]
+fn a_repair_whose_check_passes_publishes_a_pull_request_a_person_can_merge() {
+    let sweep = a_repair_the_check_judges(PASSING_CHECK);
+
+    let run = sweep.run();
+    let payload = sweep.payload(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}\npayload: {payload}",
+        String::from_utf8_lossy(&run.stderr)
     );
+
+    let reached = sweep.disposition(&run);
+    assert_eq!(reached["reason"], "pull_request", "{reached}");
+
+    let opened = the_one_pull_request_labelled(&sweep, CVE_LABEL);
+    assert_eq!(
+        opened["draft"],
+        serde_json::json!(false),
+        "fiddle stands behind this change, so a reader sees a pull request that \
+         is ready: {opened}"
+    );
+    assert!(
+        !carries(&opened, UNPROVED_LABEL),
+        "and no label calls it unproved: {opened}"
+    );
+
+    let branch = the_one_new_branch_under(&sweep, "security/cve-remediation-");
+    let commits = pushed_commits(&sweep, &branch);
+    assert_eq!(commits.len(), 1, "one attempt, one commit: {commits:?}");
+    assert!(
+        commits[0].0.contains(LIBRARY_CVE),
+        "a fix names what it fixes, which is how the next run reads it as done: \
+         {commits:?}"
+    );
+}
+
+#[test]
+fn a_repair_whose_check_fails_publishes_a_draft_a_person_has_to_judge() {
+    let sweep = a_repair_the_check_judges(REFUSING_CHECK);
 
     let run = sweep.run();
     let payload = sweep.payload(&run);
@@ -2318,19 +2422,12 @@ fn a_check_that_says_no_reverts_the_attempt_and_publishes_nothing() {
         String::from_utf8_lossy(&run.stderr)
     );
 
-    assert!(
-        sweep.pull_requests().is_empty(),
-        "a repair a check refused opens nothing: {:?}",
-        sweep.pull_requests()
-    );
-    assert_eq!(
-        sweep.remote_branches(),
-        vec![SWEEP_BASE.to_string()],
-        "and leaves the remote exactly as it found it"
-    );
-
     let reached = sweep.disposition(&run);
-    assert_eq!(reached["reason"], "unsafe_without_direction", "{reached}");
+    assert_eq!(
+        reached["reason"], "unsafe_without_direction",
+        "publishing the change does not make it a repair fiddle stands behind: \
+         {reached}"
+    );
     assert_eq!(
         reached["attempts"],
         serde_json::json!([{
@@ -2342,9 +2439,57 @@ fn a_check_that_says_no_reverts_the_attempt_and_publishes_nothing() {
         "one attempt, refused — and `claimed_complete` is the model's own claim \
          beside the check that overruled it: {reached}"
     );
+
+    let judged = the_one_pull_request_labelled(&sweep, UNPROVED_LABEL);
+    assert_eq!(
+        judged["draft"],
+        serde_json::json!(true),
+        "a reader scanning a list of pull requests must not read this one as \
+         mergeable: {judged}"
+    );
     assert!(
-        reached["branch"].is_null() && reached["pull_request"].is_null(),
-        "nothing landed, so there is nothing to point at: {reached}"
+        !carries(&judged, CVE_LABEL),
+        "the shared label selects the pull request the next run reworks, and \
+         this is not it: {judged}"
+    );
+
+    let number = judged["number"].as_u64().expect("a published number");
+    assert_eq!(
+        reached["pull_request"],
+        serde_json::json!(number),
+        "the operator reads the disposition and has to reach the diff from it: \
+         {reached}"
+    );
+    let branch = the_one_new_branch_under(&sweep, UNPROVED_STEM);
+    assert_eq!(reached["branch"], serde_json::json!(branch), "{reached}");
+
+    let body = judged["body"].as_str().unwrap_or_default();
+    for expected in [
+        LIBRARY_CVE,
+        "exited 1",
+        REFUSED_STDOUT,
+        REFUSED_STDERR,
+        "Attempts: 1",
+    ] {
+        assert!(
+            body.contains(expected),
+            "the body is the one place fiddle owns, so the evidence a person \
+             judges by is in it, and `{expected}` is not: {body}"
+        );
+    }
+
+    let commits = pushed_commits(&sweep, &branch);
+    assert_eq!(commits.len(), 1, "one attempt, one commit: {commits:?}");
+    assert!(
+        !commits[0].0.contains(LIBRARY_CVE),
+        "an advisory named in a reachable commit reads as fixed to the next \
+         run's log scan, and this attempt fixed nothing: {commits:?}"
+    );
+    assert_eq!(
+        commits[0].1,
+        vec!["go.mod".to_string(), "go.sum".to_string()],
+        "and the commit carries the files the attempt edited, or there is \
+         nothing to judge: {commits:?}"
     );
 
     let verdicts = sweep.verdicts();
@@ -2354,6 +2499,150 @@ fn a_check_that_says_no_reverts_the_attempt_and_publishes_nothing() {
          {verdicts}"
     );
     sweep.assert_every_receipt_is_logical(&run);
+}
+
+#[test]
+fn an_unproved_draft_grows_one_commit_a_night_until_the_bound_stops_it() {
+    let sweep = Sweep::world(
+        VULNERABLE,
+        SCAN_OK,
+        RESCAN_CLEAN,
+        1,
+        two_nights(
+            two_nights(
+                a_repair_leaving_a_note("the first attempt"),
+                a_repair_leaving_a_note("the second attempt"),
+            ),
+            a_repair_leaving_a_note("the third attempt"),
+        ),
+        REFUSING_CHECK,
+    );
+
+    let mut number = 0;
+    let mut branch = String::new();
+    for night in 1..=3u32 {
+        let run = sweep.run();
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "night {night} — stderr: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+
+        let judged = the_one_pull_request_labelled(&sweep, UNPROVED_LABEL);
+        let opened = judged["number"].as_u64().expect("a published number");
+        let head = the_one_new_branch_under(&sweep, UNPROVED_STEM);
+        if night == 1 {
+            number = opened;
+            branch = head.clone();
+        }
+        assert_eq!(
+            opened, number,
+            "every night writes to the one draft, or a person reads a new pull \
+             request a night: {judged}"
+        );
+        assert_eq!(head, branch, "and to the one branch");
+
+        let commits = pushed_commits(&sweep, &branch);
+        assert_eq!(
+            commits.len(),
+            night as usize,
+            "the branch grows by the attempt of the night, and the push is \
+             never forced: {commits:?}"
+        );
+        assert_eq!(
+            pushed_file(&sweep, &branch, ATTEMPT_NOTE).trim(),
+            format!(
+                "the {} attempt",
+                ["first", "second", "third"][night as usize - 1]
+            ),
+            "and its tip is the tree of the newest attempt, which is the one a \
+             person judges"
+        );
+
+        let body = sweep.pull_request(number)["body"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            body.contains(&format!("Attempts: {night}")),
+            "night {night} counts against the draft it wrote, because nothing \
+             else holds a number a bound can read: {body}"
+        );
+    }
+
+    let stopped = sweep.run();
+    assert_eq!(
+        stopped.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    let reached = sweep.disposition(&stopped);
+    assert_eq!(
+        reached["reason"], "attempt_bound_reached",
+        "the fourth night is the bound, or a sweep rewrites an unproved draft \
+         for as long as nobody reads it: {reached}"
+    );
+    assert_eq!(
+        reached["pull_request"],
+        serde_json::json!(number),
+        "{reached}"
+    );
+    assert_eq!(
+        reached["attempt_bound"],
+        serde_json::json!({ "spent": 3, "bound": 3 }),
+        "and it publishes both numbers, because the row cannot tell 3 of 3 from \
+         5 of 5: {reached}"
+    );
+    assert_eq!(
+        pushed_commits(&sweep, &branch).len(),
+        3,
+        "the stopped night attempts nothing, so it adds no commit"
+    );
+}
+
+#[test]
+fn the_check_decides_whether_a_reader_sees_a_repair_or_a_draft() {
+    let passing = a_repair_the_check_judges(PASSING_CHECK);
+    let passed = passing.run();
+    let failing = a_repair_the_check_judges(REFUSING_CHECK);
+    let failed = failing.run();
+
+    for (world, run) in [(&passing, &passed), (&failing, &failed)] {
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "stderr: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(
+            world.pull_requests().len(),
+            1,
+            "one world, one pull request, so the two rows below are the same \
+             pull request seen twice: {:?}",
+            world.pull_requests()
+        );
+    }
+
+    let ready = passing.pull_requests()[0].clone();
+    let judged = failing.pull_requests()[0].clone();
+    assert_ne!(
+        ready["draft"], judged["draft"],
+        "these two runs differ in one input, and a reader tells them apart by \
+         the draft state: {ready} against {judged}"
+    );
+    assert_ne!(
+        ready["labels"], judged["labels"],
+        "and by the label, so a reader who filters a list still tells them \
+         apart: {ready} against {judged}"
+    );
+    assert_ne!(
+        passing.disposition(&passed)["reason"],
+        failing.disposition(&failed)["reason"],
+        "and the typed row still separates a repair from a change nobody \
+         stands behind"
+    );
 }
 
 #[test]
@@ -2448,7 +2737,7 @@ fn two_findings_in_different_files_are_one_attempt_and_one_commit() {
 }
 
 #[test]
-fn a_finding_that_does_not_clear_reverts_the_whole_commit() {
+fn a_finding_that_does_not_clear_takes_the_whole_group_out_of_the_fix() {
     let sweep = Sweep::scanning_rescanning(
         TWO_LIBRARIES,
         SCAN_TWO_LIBRARIES,
@@ -2470,17 +2759,24 @@ fn a_finding_that_does_not_clear_reverts_the_whole_commit() {
         String::from_utf8_lossy(&run.stderr)
     );
 
+    let branch = the_one_new_branch_under(&sweep, UNPROVED_STEM);
     assert_eq!(
         sweep.remote_branches(),
-        vec![SWEEP_BASE.to_string()],
-        "one finding the rescan still reports takes the whole commit back, so \
-         there is no branch to publish"
+        vec![SWEEP_BASE.to_string(), branch.clone()],
+        "one finding the rescan still reports takes the whole group out of the \
+         fix, so the only branch is the one a person judges"
     );
-    assert!(
-        sweep.pull_requests().is_empty(),
-        "and nothing to open: {:?}",
-        sweep.pull_requests()
-    );
+    let judged = the_one_pull_request_labelled(&sweep, UNPROVED_LABEL);
+    assert_eq!(judged["draft"], serde_json::json!(true), "{judged}");
+
+    let commits = pushed_commits(&sweep, &branch);
+    for cve in [LIBRARY_CVE, SECOND_LIBRARY_CVE] {
+        assert!(
+            !commits.iter().any(|(body, _)| body.contains(cve)),
+            "no commit claims {cve} was fixed, because the group cleared \
+             neither: {commits:?}"
+        );
+    }
 
     let reached = sweep.disposition(&run);
     assert_eq!(reached["reason"], "unsafe_without_direction", "{reached}");
@@ -2498,16 +2794,16 @@ fn a_finding_that_does_not_clear_reverts_the_whole_commit() {
         "one row for the one attempt, needing work although the rescan cleared \
          one of the two findings it was shown: {reached}"
     );
-    assert!(
-        reached["branch"].is_null() && reached["pull_request"].is_null(),
-        "nothing landed, so there is nothing to point at: {reached}"
+    assert_eq!(
+        reached["pull_request"], judged["number"],
+        "the row points at the draft: {reached}"
     );
 
     let verdicts = sweep.verdicts();
     assert!(
         sweep.has_verdict(LIBRARY_CVE),
         "the finding the rescan no longer reports is still unfixed, because the \
-         edit that cleared it went back with everything else: {verdicts}"
+         edit that cleared it is in a change nobody stands behind: {verdicts}"
     );
     assert!(
         sweep.has_verdict(SECOND_LIBRARY_CVE),
@@ -2517,7 +2813,7 @@ fn a_finding_that_does_not_clear_reverts_the_whole_commit() {
     assert_eq!(
         walkdir_files(sweep.workspace_root()),
         Vec::<PathBuf>::new(),
-        "the reverted attempt leaves no worktree behind"
+        "the judged attempt leaves no worktree behind"
     );
     assert_eq!(
         git_says(&sweep.tree, &["status", "--porcelain"]),
@@ -2559,13 +2855,14 @@ fn a_declined_finding_reads_differently_from_one_that_was_attempted_and_failed()
     let reached = sweep.disposition(&run);
     assert_eq!(
         reached["reason"], "unsafe_without_direction",
-        "and it still leaves the finding unfixed, so the commit goes back: \
-         {reached}"
+        "and it still leaves the finding unfixed, so fiddle stands behind \
+         nothing: {reached}"
     );
-    assert!(
-        sweep.pull_requests().is_empty(),
-        "opening nothing: {:?}",
-        sweep.pull_requests()
+    let judged = the_one_pull_request_labelled(&sweep, UNPROVED_LABEL);
+    assert_eq!(
+        judged["draft"],
+        serde_json::json!(true),
+        "opening a draft and nothing else: {judged}"
     );
 
     let verdicts = sweep.verdicts();

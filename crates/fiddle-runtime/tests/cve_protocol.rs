@@ -939,6 +939,7 @@ async fn run_group_clean(cves: &[&str]) -> (LandingWorld, Landed) {
         &advisories_of(&world.findings),
         &GroupStatus::Clean,
         &world.changed,
+        None,
     )
     .await
     .expect("a clean group lands");
@@ -952,9 +953,10 @@ async fn run_group_needs_work(cves: &[&str]) -> (LandingWorld, Landed) {
         &advisories_of(&world.findings),
         &refused(),
         &world.changed,
+        None,
     )
     .await
-    .expect("a needs-work group reverts");
+    .expect("a needs-work group is committed for a person to judge");
     (world, landed)
 }
 
@@ -1076,23 +1078,25 @@ async fn a_clean_group_commits_only_the_files_it_edited_and_names_every_cve() {
 }
 
 #[tokio::test]
-async fn a_needs_work_group_reverts_and_leaves_no_id_in_any_commit_body() {
+async fn a_needs_work_group_is_committed_and_names_no_id_in_any_commit_body() {
     let (world, landed) = run_group_needs_work(&[NOT_LANDED]).await;
 
-    assert_eq!(landed, Landed::Reverted);
-    assert!(
-        world.tree.is_clean_at(&["go.mod", "go.sum"]),
-        "the group's own files are back the way HEAD has them"
+    assert_eq!(landed, Landed::CommittedForJudgement);
+    assert_eq!(
+        world.tree.staged_paths(),
+        ["go.mod", "go.sum"],
+        "the commit carries the group's own files, because a person judges the \
+         change and not the tree around it"
     );
     assert!(
         !world.tree.is_clean_at(&[LANDING_UNRELATED]),
-        "and a revert by name left the file it was not given alone"
+        "and a commit by name left the file it was not given alone"
     );
 
     let bodies = world.tree.all_commit_bodies();
-    assert_eq!(
+    assert_ne!(
         bodies, world.history_before,
-        "a needs-work group makes no commit at all, so the history is what it was"
+        "the change a person has to judge is a commit, so the history grew"
     );
     let fixed = FixedInCommits::read(&bodies);
     assert!(
@@ -1110,7 +1114,7 @@ async fn a_needs_work_group_reverts_and_leaves_no_id_in_any_commit_body() {
 }
 
 #[tokio::test]
-async fn an_undeclared_edit_over_green_checks_reverts_rather_than_committing() {
+async fn an_undeclared_edit_over_green_checks_is_judged_rather_than_landed_as_a_fix() {
     let (_migrated, attempt) = attempted(migrates_and_understates_it()).await;
     let evaluation = a_proved_tree().await;
     let status = GroupStatus::of(&evaluation, attempt.undeclared.as_ref());
@@ -1136,19 +1140,15 @@ async fn an_undeclared_edit_over_green_checks_reverts_rather_than_committing() {
         &advisories_of(&world.findings),
         &status,
         &world.changed,
+        None,
     )
     .await
-    .expect("a refused group reverts");
+    .expect("a refused group is committed for a person to judge");
 
     assert_eq!(
         landed,
-        Landed::Reverted,
-        "GroupStatus is the commit gate, not Evaluation::accepted"
-    );
-    assert_eq!(
-        world.tree.all_commit_bodies(),
-        world.history_before,
-        "nothing was committed, so nothing on this branch claims a fix"
+        Landed::CommittedForJudgement,
+        "GroupStatus is the fix gate, not Evaluation::accepted"
     );
     let fixed = FixedInCommits::read(&world.tree.all_commit_bodies());
     for cve in LANDED {
@@ -1159,13 +1159,14 @@ async fn an_undeclared_edit_over_green_checks_reverts_rather_than_committing() {
         );
     }
     assert!(
-        world.tree.is_clean_at(&["go.mod", "go.sum"]),
-        "and the edit is off the tree"
+        world.tree.head_commit_body().contains("unproved"),
+        "the subject says what the commit is: {}",
+        world.tree.head_commit_body()
     );
 }
 
 #[tokio::test]
-async fn a_file_the_attempt_created_does_not_survive_the_revert() {
+async fn a_file_the_attempt_created_reaches_the_commit_a_person_judges() {
     let world = landing_world(&[NOT_LANDED]).and_a_created_file();
     assert!(
         !world.tree.is_clean_at(&[LANDING_CREATED]),
@@ -1177,22 +1178,24 @@ async fn a_file_the_attempt_created_does_not_survive_the_revert() {
         &advisories_of(&world.findings),
         &refused(),
         &world.changed,
+        None,
     )
     .await
-    .expect("a needs-work group reverts");
+    .expect("a needs-work group is committed for a person to judge");
 
-    assert_eq!(landed, Landed::Reverted);
+    assert_eq!(landed, Landed::CommittedForJudgement);
     assert!(
         world
             .tree
-            .is_clean_at(&["go.mod", "go.sum", LANDING_CREATED]),
-        "every path the group changed is back the way HEAD has it, creations \
-         included: {:?}",
-        world.tree.git_calls()
+            .staged_paths()
+            .contains(&LANDING_CREATED.to_string()),
+        "a person cannot judge a change that lost the file the attempt added: \
+         {:?}",
+        world.tree.staged_paths()
     );
     assert!(
         !world.tree.is_clean_at(&[LANDING_UNRELATED]),
-        "and still by name — the file the revert was not given is untouched"
+        "and still by name — the file the commit was not given is untouched"
     );
     nothing_rewrites_history(&world.tree.git_calls());
 }
@@ -1206,6 +1209,7 @@ async fn a_clean_group_that_changed_nothing_commits_nothing_and_says_so() {
         &advisories_of(&world.findings),
         &GroupStatus::Clean,
         &[],
+        None,
     )
     .await
     .expect_err("a clean group with an empty change set is refused");
@@ -1228,9 +1232,9 @@ async fn a_clean_group_that_changed_nothing_commits_nothing_and_says_so() {
 #[tokio::test]
 async fn history_is_never_rewritten() {
     let (committed, _) = run_group_clean(&LANDED).await;
-    let (reverted, _) = run_group_needs_work(&[NOT_LANDED]).await;
+    let (judged, _) = run_group_needs_work(&[NOT_LANDED]).await;
 
-    for (name, tree) in [("clean", &committed.tree), ("needs-work", &reverted.tree)] {
+    for (name, tree) in [("clean", &committed.tree), ("needs-work", &judged.tree)] {
         let calls = tree.git_calls();
         assert!(
             !calls.is_empty(),
@@ -1252,6 +1256,7 @@ async fn the_production_seam_lands_a_group_in_a_real_worktree() {
         &advisories_of(&world.findings),
         &GroupStatus::Clean,
         &attempt.changed,
+        None,
     )
     .await
     .expect("a clean group lands in a real worktree");

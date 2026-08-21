@@ -124,6 +124,8 @@ pub struct Run {
 
     pub landed: Option<Landed>,
 
+    pub judged: Option<Landed>,
+
     pub bound_reached: Option<BoundReached>,
 
     pub checks_unreadable: Option<String>,
@@ -138,6 +140,7 @@ impl Run {
             attempted: Vec::new(),
             deferred: Vec::new(),
             landed: None,
+            judged: None,
             bound_reached: None,
             checks_unreadable: None,
         }
@@ -151,6 +154,7 @@ impl Run {
             attempted: Vec::new(),
             deferred: Vec::new(),
             landed: None,
+            judged: None,
             bound_reached: None,
             checks_unreadable: None,
         }
@@ -489,7 +493,11 @@ pub fn disposition(run: &Run) -> Disposition {
     }
 
     if run.attempted.iter().any(|group| !group.settled()) {
-        return landed(Row::UnsafeWithoutDirection);
+        return Disposition {
+            branch: run.judged.as_ref().map(|it| it.branch.clone()),
+            pull_request: run.judged.as_ref().map(|it| it.pull_request),
+            ..landed(Row::UnsafeWithoutDirection)
+        };
     }
 
     if let Some(in_progress) = &run.in_progress {
