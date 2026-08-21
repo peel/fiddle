@@ -45,6 +45,6 @@ pub use orchestration::{
     attempt, observe, run, Addressed, AttemptContext, AttemptRecord, RunContext, RunReport,
 };
 pub use ports::{ChangePort, WorkItemPort};
-pub use scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
+pub use scanner::{ScanError, ScanReport, Scanner, Wizcli};
 pub use stub::{StubChangePort, StubWorkItemPort};
 pub use workspace::{WorkspaceCommand, WorkspaceError, WorkspacePath};

@@ -1,5 +1,5 @@
 use super::{Answered, Check, Tree, Unanswered};
-use crate::scanner::{ScanError, ScanReport, Scanner, WizCredential, Wizcli};
+use crate::scanner::{ScanError, ScanReport, Scanner, Wizcli};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError};
 use async_trait::async_trait;
 use std::path::PathBuf;
@@ -7,8 +7,6 @@ use std::time::Duration;
 
 pub struct Rescan {
     pub scratch: PathBuf,
-
-    pub credential: WizCredential,
 
     pub image: String,
 }
@@ -76,7 +74,6 @@ impl Tree for InWorkspace<'_> {
             self.rescan.scratch.clone(),
             self.timeout,
             self.workspace.cancel().clone(),
-            self.rescan.credential.clone(),
         )
         .scan(&self.rescan.image)
         .await

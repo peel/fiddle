@@ -625,9 +625,6 @@ fn the_system_document_names_every_capability_this_build_registers() {
 
 const FORGE_TOKEN: &str = "FIDDLE_GITHUB_TOKEN";
 
-const SCANNER_ID: &str = "WIZ_CLIENT_ID";
-const SCANNER_SECRET: &str = "WIZ_CLIENT_SECRET";
-
 fn mitigating_tables(scenario: &Scenario) -> String {
     let fixture = scenario.write_fixture_repo();
     format!(
@@ -649,8 +646,6 @@ fn mitigating_tables(scenario: &Scenario) -> String {
          \n\
          [scanner]\n\
          cli = {{ program = \"wizcli\", args = [\"scan\"] }}\n\
-         client_id = {{ env = \"{SCANNER_ID}\" }}\n\
-         client_secret = {{ env = \"{SCANNER_SECRET}\" }}\n\
          timeout = \"30s\"\n\
          \n\
          [orchestration.cve]\n\
@@ -679,52 +674,6 @@ fn mitigating() -> Scenario {
 }
 
 #[test]
-fn an_absent_scanner_credential_names_the_scanner_and_not_the_model() {
-    let s = mitigating();
-
-    let out = s
-        .run_command("cve")
-        .args(["--capability", "cve_mitigate", "--json"])
-        .env(CREDENTIAL, SENTINEL)
-        .env(FORGE_TOKEN, SENTINEL)
-        .env(SCANNER_SECRET, SENTINEL)
-        .env_remove(SCANNER_ID)
-        .output()
-        .unwrap();
-
-    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "an absent credential is invalid configuration; stdout = {}, stderr = {stderr}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    assert!(
-        stderr.contains(SCANNER_ID),
-        "the refusal must be the credential's, and must name the variable to \
-         export: {stderr}"
-    );
-    assert!(
-        stderr.contains("scanner credential"),
-        "the credential belongs to the scanner and must be described as the \
-         scanner's: {stderr}"
-    );
-    assert!(
-        stderr.contains("[scanner]"),
-        "and the operator must be sent to the table that names it: {stderr}"
-    );
-    assert!(
-        !stderr.contains("model"),
-        "a scanner credential borrowing the model's noun sends an operator to \
-         `[agent]`, which is not where this is written: {stderr}"
-    );
-    assert!(
-        !stderr.contains(SENTINEL),
-        "no credential value may be rendered: {stderr}"
-    );
-}
-
-#[test]
 fn an_absent_forge_credential_names_the_forge_and_not_the_model() {
     let s = mitigating();
 
@@ -732,8 +681,6 @@ fn an_absent_forge_credential_names_the_forge_and_not_the_model() {
         .run_command("cve")
         .args(["--capability", "cve_mitigate", "--json"])
         .env(CREDENTIAL, SENTINEL)
-        .env(SCANNER_ID, SENTINEL)
-        .env(SCANNER_SECRET, SENTINEL)
         .env_remove(FORGE_TOKEN)
         .output()
         .unwrap();

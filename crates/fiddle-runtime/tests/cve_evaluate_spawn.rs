@@ -2,7 +2,6 @@ mod fixture;
 
 use fiddle_core::AttemptId;
 use fiddle_runtime::evaluate::{evaluate, Check, Contract, InWorkspace, Outcome, Rescan, Success};
-use fiddle_runtime::scanner::WizCredential;
 use fiddle_runtime::workspace::Workspace;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,8 +10,6 @@ use tokio_util::sync::CancellationToken;
 const AMPLE: Duration = Duration::from_secs(60);
 
 const IMAGE: &str = "ghcr.io/acme/widget:fiddle-fixture";
-
-const CLIENT_ID: &str = "fiddle-client-1c93f0a5";
 
 const CHILD_RECORD: &str = "child.json";
 
@@ -39,10 +36,6 @@ impl World {
             timeout,
             Rescan {
                 scratch: self.dir.path().join("scan"),
-                credential: WizCredential {
-                    client_id: CLIENT_ID.to_string(),
-                    client_secret: "fiddle-secret-3b8e51d0".to_string(),
-                },
                 image: IMAGE.to_string(),
             },
         )

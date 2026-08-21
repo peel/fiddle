@@ -852,6 +852,7 @@ struct Sweep {
     remote: PathBuf,
     tree: PathBuf,
     gateway: StubGateway,
+    login: tempfile::TempDir,
 }
 
 impl Sweep {
@@ -933,6 +934,7 @@ impl Sweep {
             stub,
             remote,
             gateway: StubGateway::serving(script),
+            login: support::caller_logged_in(),
         };
         let tables = sweep.tables(scan, rescan, findings, check_args, grades);
         sweep.scenario.append_config(&tables);
@@ -969,8 +971,6 @@ impl Sweep {
              \n\
              [scanner]\n\
              cli = {{ program = {wiz}, args = [\"{scan}\"] }}\n\
-             client_id = {{ env = \"{WIZ_ID}\" }}\n\
-             client_secret = {{ env = \"{WIZ_SECRET}\" }}\n\
              timeout = \"300s\"\n\
              \n\
              [orchestration.cve]\n\
@@ -1059,7 +1059,8 @@ impl Sweep {
             .env(FORGE_TOKEN, "ghp_forge_token_for_the_sweep")
             .env(MODEL_KEY, "sk-model-key-for-the-sweep")
             .env(WIZ_ID, "wiz-client-id-for-the-sweep")
-            .env(WIZ_SECRET, SENTINEL_SECRET);
+            .env(WIZ_SECRET, SENTINEL_SECRET)
+            .env(support::WIZ_CONFIG_DIR, self.login.path());
         command
     }
 
@@ -1190,6 +1191,12 @@ impl Sweep {
             .collect()
     }
 
+    fn the_caller_never_logged_in(&self) {
+        let login = self.login.path().join(support::WIZ_LOGIN_FILE);
+        std::fs::remove_file(&login)
+            .unwrap_or_else(|source| panic!("no login to remove at {}: {source}", login.display()));
+    }
+
     fn workspace_root(&self) -> PathBuf {
         self.scenario.dir().join("workspaces")
     }
@@ -1206,8 +1213,6 @@ impl Sweep {
 
 fn is_fixture_recording(path: &str) -> bool {
     path.starts_with("gh-stub/requests/")
-        || path == "reports/scan/child.json"
-        || path == "reports/rescan/child.json"
 }
 
 fn seed_repository(root: &Path, remote: &Path, name: &str) -> PathBuf {
@@ -2600,7 +2605,7 @@ fn a_declined_finding_reads_differently_from_one_that_was_attempted_and_failed()
 }
 
 #[test]
-fn no_credential_reaches_stdout_a_diagnostic_or_a_published_bundle() {
+fn a_credential_in_fiddles_environment_reaches_no_scanner_and_no_published_file() {
     let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
 
     let run = sweep.run();
@@ -2611,14 +2616,23 @@ fn no_credential_reaches_stdout_a_diagnostic_or_a_published_bundle() {
         String::from_utf8_lossy(&run.stderr)
     );
 
-    let planted = sweep.scenario.report_dir().join("scan").join("child.json");
+    let recorded = sweep.scenario.report_dir().join("scan").join("child.json");
+    let child = std::fs::read_to_string(&recorded).unwrap_or_else(|source| {
+        panic!(
+            "the scanner recorded nothing at {}, so nothing below is about what \
+             it received: {source}",
+            recorded.display()
+        )
+    });
     assert!(
-        std::fs::read_to_string(&planted)
-            .unwrap_or_default()
-            .contains(SENTINEL_SECRET),
-        "the scanner's record does not hold the credential, so its absence \
-         elsewhere is not evidence: {}",
-        planted.display()
+        child.contains("NO_COLOR"),
+        "the record holds no variable the adapter sets, so the absence of a \
+         credential from it is not evidence: {child}"
+    );
+    assert!(
+        !child.contains(SENTINEL_SECRET),
+        "{WIZ_SECRET} is set for this run, and fiddle handed it to the scanner: \
+         {child}"
     );
 
     assert!(
@@ -2644,8 +2658,65 @@ fn no_credential_reaches_stdout_a_diagnostic_or_a_published_bundle() {
     assert_eq!(
         leaked,
         Vec::<String>::new(),
-        "the credential reached a file that is not a fixture's record of its own \
-         environment"
+        "the credential reached a file in the project tree"
+    );
+}
+
+#[test]
+fn a_sweep_whose_caller_logged_the_scanner_in_reaches_a_usable_scan() {
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
+
+    let run = sweep.run();
+
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the login is the one input the refusal below turns on, so a sweep that \
+         fails with it present proves nothing — stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_ne!(
+        sweep.disposition(&run)["reason"],
+        "scan_unusable",
+        "the scan read a document: {}",
+        sweep.disposition(&run)
+    );
+}
+
+#[test]
+fn a_sweep_whose_caller_never_logged_the_scanner_in_stops_on_the_scan() {
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
+    sweep.the_caller_never_logged_in();
+
+    let run = sweep.run();
+
+    assert_eq!(
+        run.status.code(),
+        Some(11),
+        "a scanner that wrote no document is retryable, and the neighbouring \
+         sweep exits 0 on the same arm — stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        sweep.disposition(&run)["reason"],
+        "scan_unusable",
+        "{}",
+        sweep.disposition(&run)
+    );
+    assert!(
+        sweep.payload(&run)["outcome"]["retryable"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("the scanner produced no report (exit 1)")),
+        "the existing path reports the scanner's own exit, and nothing new was \
+         added to name the login: {}",
+        sweep.payload(&run)["outcome"]
+    );
+    assert!(
+        sweep.pull_requests().is_empty(),
+        "and the run reaches no forge: {:?}",
+        sweep.pull_requests()
     );
 }
 

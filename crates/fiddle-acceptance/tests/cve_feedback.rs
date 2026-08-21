@@ -76,6 +76,7 @@ struct Feedback {
     remote: PathBuf,
     tree: PathBuf,
     gateway: StubGateway,
+    login: tempfile::TempDir,
 }
 
 impl Feedback {
@@ -99,6 +100,7 @@ impl Feedback {
             stub,
             remote,
             gateway: StubGateway::serving(script),
+            login: support::caller_logged_in(),
         };
         let tables = feedback.tables(bound, rescan);
         feedback.scenario.append_config(&tables);
@@ -129,8 +131,6 @@ impl Feedback {
              \n\
              [scanner]\n\
              cli = {{ program = {wiz}, args = [\"{SCAN_LIBRARY_ONLY}\"] }}\n\
-             client_id = {{ env = \"{WIZ_ID}\" }}\n\
-             client_secret = {{ env = \"{WIZ_SECRET}\" }}\n\
              timeout = \"300s\"\n\
              \n\
              [orchestration.cve]\n\
@@ -245,6 +245,7 @@ impl Feedback {
             .env(MODEL_KEY, "sk-model-key-for-the-sweep")
             .env(WIZ_ID, "wiz-client-id-for-the-sweep")
             .env(WIZ_SECRET, SENTINEL_SECRET)
+            .env(support::WIZ_CONFIG_DIR, self.login.path())
             .output()
             .unwrap()
     }

@@ -34,7 +34,7 @@ Paths are relative to the repository root. A skill path omits `/SKILL.md`.
 | gateway | `fiddle-runtime/src/gateway.rs` | the one credential-carrying model | an OpenAI-compatible gateway, not Anthropic (ADR 012) |
 | effect executor | `fiddle-runtime/src/effect` | the seven-step authorization order | no mutation without an `AuthorizedEffect` (ADR 033) |
 | forge adapter | `fiddle-runtime/src/{github,git}` | the one `gh` and the one `git push` | `gh api -i`, not a REST client (ADR 015) |
-| scanner | `fiddle-runtime/src/scanner` | runs `wizcli`, records version and digest | the digest, never the tag it was handed (ADR 020) |
+| scanner | `fiddle-runtime/src/scanner` | runs `wizcli`, records version and digest | the digest, never the tag it was handed (ADR 020); fiddle passes the scanner no credential (ADR 042) |
 | sweep | `fiddle-runtime/src/{cve,capability/mitigate.rs}` | select findings, one attempt, rescan | all or nothing: one finding left standing reverts the commit |
 | release | `.github/workflows/release.yml` | builds the `linux-amd64` binary on a `v*` tag | the SHA256 file ships beside the binary |
 

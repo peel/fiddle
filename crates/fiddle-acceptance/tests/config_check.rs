@@ -818,8 +818,6 @@ fn config_check_refuses_a_document_naming_both_check_shapes() {
 const SWEEP: &str = r#"
 [scanner]
 cli = { program = "wizcli", args = ["scan"] }
-client_id = { env = "WIZ_CLIENT_ID" }
-client_secret = { env = "WIZ_CLIENT_SECRET" }
 timeout = "20m"
 
 [orchestration.cve]
@@ -854,8 +852,6 @@ fn the_sweep_table_the_product_manual_documents_is_one_the_schema_accepts() {
     let out = check(&format!(
         "{AGENTIC}[scanner]\n\
          cli = {{ program = \"wizcli\", args = [\"scan\"] }}\n\
-         client_id = {{ env = \"WIZ_CLIENT_ID\" }}\n\
-         client_secret = {{ env = \"WIZ_CLIENT_SECRET\" }}\n\
          timeout = \"20m\"\n\
          \n{documented}"
     ));
@@ -918,44 +914,35 @@ fn a_sweep_that_names_no_grade_is_refused() {
 }
 
 #[test]
-fn the_scanner_table_names_its_credentials_and_prints_neither() {
-    let out = check_with_env(
-        &format!("{AGENTIC}{SWEEP}"),
-        &["--json"],
-        &[
-            ("WIZ_CLIENT_ID", "wiz-client-id-sentinel-9f21"),
-            ("WIZ_CLIENT_SECRET", "wiz-client-secret-sentinel-9f21"),
-        ],
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+fn a_scanner_table_that_names_a_credential_is_refused() {
+    for field in ["client_id", "client_secret"] {
+        let document = format!(
+            "{AGENTIC}{}{field} = {{ env = \"WIZ_A_VARIABLE\" }}\n",
+            SWEEP.replace("timeout = \"20m\"", "")
+        );
+        let out = check(&document);
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "fiddle reads no scanner credential, so a document that names one \
+             must say so at load rather than at the scan. stdout: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            stderr.contains(field),
+            "the refusal must name the key to delete: {stderr}"
+        );
+    }
+
+    let out = check(&format!("{AGENTIC}{SWEEP}"));
     assert_eq!(
         out.status.code(),
         Some(0),
-        "stderr: {}",
+        "the same table without those keys loads, so the refusals above are the \
+         keys and not the table. stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(
-        payload["scanner"]["client_id"]["env"], "WIZ_CLIENT_ID",
-        "{payload}"
-    );
-    assert_eq!(
-        payload["scanner"]["client_secret"]["env"], "WIZ_CLIENT_SECRET",
-        "{payload}"
-    );
-    for sentinel in [
-        "wiz-client-id-sentinel-9f21",
-        "wiz-client-secret-sentinel-9f21",
-    ] {
-        assert!(
-            !stdout.contains(sentinel),
-            "a credential reached stdout: {stdout}"
-        );
-        assert!(
-            !String::from_utf8_lossy(&out.stderr).contains(sentinel),
-            "a credential reached a diagnostic"
-        );
-    }
 }
 
 #[test]
@@ -1443,45 +1430,6 @@ fn the_plain_rendering_names_the_image_grades_and_bound_a_sweep_will_act_on() {
         assert!(
             stdout.contains(line),
             "an operator at a terminal cannot confirm `{line}`: {stdout}"
-        );
-    }
-}
-
-#[test]
-fn the_plain_rendering_names_the_scanner_credentials_and_never_their_values() {
-    let sentinels = [
-        ("WIZ_CLIENT_ID", "wiz-client-id-sentinel-9f21"),
-        ("WIZ_CLIENT_SECRET", "wiz-client-secret-sentinel-9f21"),
-    ];
-    let out = check_with_env(&format!("{AGENTIC}{SWEEP}"), &[], &sentinels);
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
-
-    for (variable, _) in sentinels {
-        assert!(
-            stdout.contains(variable),
-            "the plain rendering must name `{variable}`, which is the thing an \
-             operator goes and sets: {stdout}"
-        );
-    }
-    assert!(
-        stdout.contains("scanner.client_id.env = WIZ_CLIENT_ID"),
-        "named under the key the document writes it as, as `agent.api_key.env` \
-         and `github.token.env` already are: {stdout}"
-    );
-    assert!(
-        stdout.contains("scanner.client_secret.env = WIZ_CLIENT_SECRET"),
-        "{stdout}"
-    );
-    for (_, value) in sentinels {
-        assert!(
-            !stdout.contains(value),
-            "a credential value reached stdout: {stdout}"
-        );
-        assert!(
-            !stderr.contains(value),
-            "a credential value reached a diagnostic: {stderr}"
         );
     }
 }

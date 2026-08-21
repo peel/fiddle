@@ -25,6 +25,11 @@ fn main() {
         .expect("--json-output-file <path> must be passed by the adapter under test");
     record(&report);
 
+    if a_named_config_dir_holds_no_login() {
+        usage();
+        std::process::exit(1);
+    }
+
     match arm.as_str() {
         "ok" => {
             banner(&args);
@@ -176,15 +181,6 @@ fn main() {
             );
             std::process::exit(3);
         }
-        "leaks-its-credential" => {
-            banner(&args);
-            eprintln!(
-                "wizcli: client {} rejected the secret {}",
-                std::env::var("WIZ_CLIENT_ID").unwrap_or_default(),
-                std::env::var("WIZ_CLIENT_SECRET").unwrap_or_default()
-            );
-            std::process::exit(3);
-        }
         other => panic!("unknown arm {other}"),
     }
 }
@@ -200,6 +196,25 @@ fn record(report: &Path) {
         serde_json::json!({ "argv": argv, "env": env }).to_string(),
     )
     .unwrap_or_else(|source| panic!("could not write {}: {source}", record.display()));
+}
+
+fn a_named_config_dir_holds_no_login() -> bool {
+    let Some(directory) = std::env::var_os("WIZ_CONFIG_DIR").filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    !std::fs::read_dir(PathBuf::from(directory)).is_ok_and(|mut entries| entries.next().is_some())
+}
+
+fn usage() {
+    println!("               _ _   ");
+    println!("__      __(_)___| (_) ");
+    println!("\\ \\ /\\ / /| |_  /| | ");
+    println!(" \\ V  V / | |/ / | | ");
+    println!("  \\_/\\_/  |_/___||_| ");
+    println!();
+    println!("Usage:");
+    println!("  wizcli [command]");
 }
 
 fn document() -> String {

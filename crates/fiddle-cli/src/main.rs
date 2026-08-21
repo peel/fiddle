@@ -171,22 +171,16 @@ struct Unconfigured {
 enum CredentialPurpose {
     Model,
     Forge,
-    Scanner,
 }
 
 impl CredentialPurpose {
     #[cfg(test)]
-    const ALL: [CredentialPurpose; 3] = [
-        CredentialPurpose::Model,
-        CredentialPurpose::Forge,
-        CredentialPurpose::Scanner,
-    ];
+    const ALL: [CredentialPurpose; 2] = [CredentialPurpose::Model, CredentialPurpose::Forge];
 
     fn table(self) -> &'static str {
         match self {
             CredentialPurpose::Model => "[agent]",
             CredentialPurpose::Forge => "[github]",
-            CredentialPurpose::Scanner => "[scanner]",
         }
     }
 }
@@ -196,7 +190,6 @@ impl std::fmt::Display for CredentialPurpose {
         f.write_str(match self {
             CredentialPurpose::Model => "model",
             CredentialPurpose::Forge => "forge",
-            CredentialPurpose::Scanner => "scanner",
         })
     }
 }
@@ -732,18 +725,6 @@ fn build_capability<'a>(
             let forge = forge.ok_or_else(|| missing("[github]"))?;
 
             let model = model_client(agent)?;
-            let tenant = || -> Result<fiddle_runtime::WizCredential, CredentialAbsent> {
-                Ok(fiddle_runtime::WizCredential {
-                    client_id: resolve_credential(
-                        CredentialPurpose::Scanner,
-                        &scanner.client_id.env,
-                    )?,
-                    client_secret: resolve_credential(
-                        CredentialPurpose::Scanner,
-                        &scanner.client_secret.env,
-                    )?,
-                })
-            };
 
             cancel_on_interrupt(cancel);
 
@@ -772,7 +753,6 @@ fn build_capability<'a>(
                     scans,
                     scanner.timeout.as_duration(),
                     cancel.clone(),
-                    tenant()?,
                 ),
                 model,
                 fiddle_runtime::MitigateConfig {
@@ -791,7 +771,6 @@ fn build_capability<'a>(
                     image: sweep.image.clone(),
                     severities: sweep.severities.clone(),
                     scratch: rescans,
-                    rescan_credential: tenant()?,
                     checks: workspace
                         .checks
                         .iter()
@@ -1210,7 +1189,7 @@ mod tests {
         let sweep = "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
              [github]\nrepo=\"peel/fiddle\"\nbase=\"main\"\n\
              token={env=\"FIDDLE_A_VARIABLE_NOTHING_EXPORTS\"}\n\
-             [scanner]\nclient_id={env=\"WIZ_ID\"}\nclient_secret={env=\"WIZ_SECRET\"}\n\
+             [scanner]\n\
              [orchestration.cve]\nimage=\"ghcr.io/acme/icecube:latest\"\n\
              [agent]\nmodel=\"m\"\nbase_url=\"http://127.0.0.1:9/v1\"\n\
              api_key={env=\"FIDDLE_A_VARIABLE_NOTHING_EXPORTS\"}\n\

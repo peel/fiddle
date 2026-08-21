@@ -1,15 +1,14 @@
 mod support;
 
 use fiddle_runtime::effect::Recurrence;
-use fiddle_runtime::scanner::{ScanError, REDACTED};
+use fiddle_runtime::scanner::ScanError;
 use fiddle_runtime::Scanner as _;
 use std::collections::{BTreeSet, HashSet};
 use std::mem::discriminant;
 use std::path::PathBuf;
 use support::cve::{
     absent_scanner, arm_exits_with, arm_was_exercised, image, observed_exit, scanner_recording_env,
-    scanner_with, ARMS, DIGEST_ON_STDOUT, FIXTURE_CLIENT_ID, FIXTURE_CLIENT_VERSION,
-    FIXTURE_IMAGE_DIGEST, SENTINEL_SECRET,
+    scanner_with, ARMS, DIGEST_ON_STDOUT, FIXTURE_CLIENT_VERSION, FIXTURE_IMAGE_DIGEST,
 };
 
 #[tokio::test]
@@ -303,7 +302,7 @@ async fn the_scan_records_the_version_and_the_digest_from_the_document() {
 }
 
 #[tokio::test]
-async fn the_wizcli_environment_is_exactly_its_allowlist_and_no_credential_reaches_argv() {
+async fn the_wizcli_environment_is_its_allowlist_and_fiddle_names_no_credential() {
     let observed = scanner_recording_env();
     observed
         .scan(&image())
@@ -311,67 +310,33 @@ async fn the_wizcli_environment_is_exactly_its_allowlist_and_no_credential_reach
         .expect("the recording arm is an ordinary successful scan");
 
     let names = observed.child_env_names();
-    assert_eq!(
-        names,
-        [
-            "NO_COLOR",
-            "PATH",
-            "WIZ_CLIENT_ID",
-            "WIZ_CLIENT_SECRET",
-            "WIZ_CONFIG_DIR"
-        ],
-        "a sixth name here is a change to the security boundary"
-    );
-
-    assert_eq!(
-        observed.child_env().get("WIZ_CLIENT_SECRET").cloned(),
-        Some(SENTINEL_SECRET.to_string()),
-        "the credential did not arrive by the channel it is supposed to travel \
-         on, so its absence from argv below would prove nothing"
+    let allowed = ["HOME", "NO_COLOR", "PATH", "WIZ_CONFIG_DIR"];
+    assert!(
+        names.iter().all(|name| allowed.contains(&name.as_str())),
+        "a name outside the allowlist is a change to the security boundary: {names:?}"
     );
     assert!(
-        !observed
-            .child_argv()
+        names.iter().any(|name| name == "PATH") && names.iter().any(|name| name == "NO_COLOR"),
+        "the record holds no name the adapter sets, so nothing below is about \
+         the adapter's environment: {names:?}"
+    );
+    assert!(
+        !names
             .iter()
-            .any(|argument| argument.contains(SENTINEL_SECRET)),
-        "the credential is never an argument: {:?}",
-        observed.child_argv()
+            .any(|name| name == "WIZ_CLIENT_ID" || name == "WIZ_CLIENT_SECRET"),
+        "fiddle reads no scanner credential, so it exports none: {names:?}"
     );
 
-    assert!(
-        !names.iter().any(|name| name == "HOME"),
-        "no ambient configuration source: {names:?}"
-    );
-    assert!(
-        observed
-            .child_env()
-            .get("WIZ_CONFIG_DIR")
-            .is_some_and(|directory| directory.starts_with(observed.scratch())),
-        "the configuration source is not pinned to this scan's scratch: {:?}",
-        observed.child_env().get("WIZ_CONFIG_DIR")
-    );
-}
-
-#[tokio::test]
-async fn no_diagnostic_quotes_the_credential_the_scanner_was_given() {
-    let failed = scanner_with(support::wiz_stub("leaks-its-credential"))
-        .scan(&image())
-        .await
-        .unwrap_err();
-    let diagnostic = failed.to_string();
-
-    assert!(
-        diagnostic.contains(FIXTURE_CLIENT_ID),
-        "this is not the diagnostic that arm wrote, so nothing below is about \
-         the credential channel: {diagnostic}"
-    );
-    assert!(
-        !diagnostic.contains(SENTINEL_SECRET),
-        "the credential the scanner was given reached a diagnostic: {diagnostic}"
-    );
-    assert!(
-        diagnostic.contains(REDACTED),
-        "the credential was never in this diagnostic, so its absence proves \
-         nothing: {diagnostic}"
-    );
+    match std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        Some(home) => assert_eq!(
+            observed.child_env().get("HOME").map(String::as_str),
+            home.to_str(),
+            "the caller's HOME did not reach the scanner, so wizcli cannot find \
+             the login the caller left there"
+        ),
+        None => assert!(
+            !names.iter().any(|name| name == "HOME"),
+            "this process has no HOME, so the scanner must not receive one: {names:?}"
+        ),
+    }
 }

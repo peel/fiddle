@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 pub mod wizcli;
 
-pub use wizcli::{WizCredential, Wizcli, REDACTED};
+pub use wizcli::Wizcli;
 
 #[async_trait]
 pub trait Scanner {
