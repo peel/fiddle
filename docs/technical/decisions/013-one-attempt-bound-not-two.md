@@ -1,10 +1,10 @@
 # 013 — M1 ships one bound, and reports the one it does not enforce
 
 Date: 2026-08-09
-Status: accepted
-Cites: agent.max_capability_attempts, ENFORCED_CAPABILITY_ATTEMPTS, ATTEMPT_BOUND_DECISION, crates/fiddle-acceptance/tests/config_check.rs::config_check_marks_the_attempt_bound_it_accepts_and_does_not_enforce, fiddle_runtime::attempt, RunOutcome::Retryable, AgentBudget
+Status: accepted; amended in M4b by the note below, which records that the deferral is over and names the decision that ended it
+Cites: agent.max_capability_attempts, MitigateConfig::max_attempts, CveMitigate::bound_reached, crates/fiddle-acceptance/tests/config_check.rs::config_check_reports_the_attempt_bound_it_enforces_and_where_the_count_lives, fiddle_runtime::attempt, RunOutcome::Retryable, AgentBudget
 
-`crates/fiddle-cli/src/render.rs` holds this file's stem in `ATTEMPT_BOUND_DECISION`. Renaming the file breaks the `config check` payload.
+`crates/fiddle-cli/src/render.rs` no longer holds this file's stem. It holds 037's; see the amendment.
 
 ## Context
 
@@ -22,7 +22,7 @@ Ship one bound and say so. Keep `max_capability_attempts` in the schema, because
 - What M1 lacks is a second layer above them. `docs/BACKLOG.md`'s 2026-08-09 entry stays open, and this decision is what it resolves to.
 - The calibration anchor `m1-bounded-behavior` required two independent bounds. It now requires the four that exist, each with a test.
 
-## What `config check` reports
+## What `config check` reported in M1
 
 ```json
 "max_capability_attempts": {
@@ -56,3 +56,26 @@ The two bounds are independent because Rig stops a looping conversation and the 
 Closing the gap means taking points 1 to 4 in order, and the taxonomy first, because the placement question cannot be answered before it.
 
 This supersedes no earlier ADR. It records a deviation from design §6.4, so the deviation survives in a committed document rather than in a gitignored spec and a dead-code allowance.
+
+## Amendment (M4b) — the bound is enforced, and it cost none of the five things priced above
+
+The deferral is over. `crates/fiddle-cli/src/main.rs` passes `agent.max_capability_attempts` into `MitigateConfig::max_attempts`, and `CveMitigate::bound_reached` compares it against the count `attempts::read` pulls from the pull request body. A run at the bound reaches `Row::AttemptBoundReached`, calls no model, and leaves the pull request for a person. [037](037-the-attempt-bound-is-per-pull-request.md) records how, and it is the decision the payload now names.
+
+**None of the five costs above was paid, because no loop was built.** Each of them priced a retry loop inside one process. M4b counts attempts across processes instead. One invocation still makes one attempt, and the number already spent lives in the pull request's body, so a fresh process reads what an earlier one wrote. `RunOutcome::Retryable` therefore keeps its four producers and needs no taxonomy, `attempt` still mints one id per process, and the M0 sequences are exactly what they were. Point 4 is untouched: nobody has decided what a fixture repair retries, and this bound does not ask, because it bounds the rework of a pull request rather than of a worktree. Point 5 stands: the key is still under `[agent]`, and the PRD says so.
+
+The expensive thing was the loop, and this record was right about that. What it did not foresee was that the bound could fire without one.
+
+**What `config check` says now.** The object is kept, and every key in it is true.
+
+```json
+"max_capability_attempts": {
+  "configured": 5,
+  "status": "enforced-per-pull-request",
+  "counted_in": "pull-request-body",
+  "decision": "037-the-attempt-bound-is-per-pull-request"
+}
+```
+
+`enforced` is gone. A document writing 5 gets 5, so there is no second number to report, and `ENFORCED_CAPABILITY_ATTEMPTS` is deleted with it. The object survives the scalar rule above for a reason the rule did not anticipate: this bound is spent across processes, so it has a place its count is held, and a plain scalar cannot name that place. `counted_in` names it, because an operator raising a bound has to know the body is what to edit. `config_check_reports_the_attempt_bound_it_enforces_and_where_the_count_lives` asserts the payload and the prose beside it.
+
+A run stopped by the bound also publishes both numbers. `RunDisposition` carries `attempt_bound` as `{spent, bound}`, because `attempt_bound_reached` and a pull request number cannot tell 2 of 2 from 5 of 5, and the person reading them decides whether to raise the bound.

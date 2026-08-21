@@ -447,6 +447,12 @@ fn a_pull_request_at_the_bound_is_left_for_a_human() {
         reached["pull_request"], SHARED_PR,
         "and which pull request a person should look at: {reached}"
     );
+    assert_eq!(
+        reached["attempt_bound"],
+        serde_json::json!({ "spent": 2, "bound": 2 }),
+        "the row name alone cannot tell 2 of 2 from 5 of 5, so the two numbers \
+         a person needs to raise the bound are published: {reached}"
+    );
 
     assert_eq!(
         feedback.mutations(),
