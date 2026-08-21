@@ -173,7 +173,7 @@ Two corrections it forced, both measured rather than reasoned:
   overrides the mode to `Native`, so no synthetic tool is ever sent, and the anchor's count of the
   offered set is right for a reason nobody had checked. Deleting the `output_mode` line changes
   nothing on the wire. The set is four names over a deployment that declares no program and five
-  where it declares one, and `run_command` is the fifth (ADR 043); neither count admits a synthetic
+  where it declares one, and `run_command` is the fifth (ADR 044); neither count admits a synthetic
   one. See BACKLOG, *The `output_mode` line is inert on the typed path*.
 - **The native `response_format` constraint is sent, on the finalising turn only.** A criterion
   scored against "no native constraint is sent" would be scored against a claim the wire refutes.
@@ -187,7 +187,7 @@ Two corrections it forced, both measured rather than reasoned:
   model-visible request and asserts that the advertised schema contains no absolute path, no host
   handle, and no credential, and that the offered tool set is exactly the capability's own tools —
   `read_file`, `write_file`, `list_files`, `run_check`, and `run_command` where and only where the
-  deployment declared a program for it to run (ADR 043). A call to an unregistered tool name is
+  deployment declared a program for it to run (ADR 044). A call to an unregistered tool name is
   rejected rather than dispatched.
 - **Excellent (8–10).** All of the above, plus the assertion is made against the *serialized outbound
   request* rather than against the builder that produced it, so a future Rig change that starts
@@ -257,7 +257,7 @@ things about the *worktree and the environment Fiddle builds*. It measures nothi
 process then does, and no level below should be read as claiming it. A workspace command runs with the
 invoking user's authority and can read, write and reach whatever that user can; `[[workspace.checks]]`
 has been able to since M1 and `[[workspace.commands]]` joined it in M4. `[workspace] isolation` has one
-variant, a host worktree, so an implementation scoring Excellent here is not sandboxed. ADR 043 states
+variant, a host worktree, so an implementation scoring Excellent here is not sandboxed. ADR 044 states
 the four properties that do hold. A submission claiming isolation from an allowlist of program names
 is claiming something no anchor here awards.
 

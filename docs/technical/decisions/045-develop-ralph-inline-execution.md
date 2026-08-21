@@ -1,4 +1,4 @@
-# 002 — Run ralph inline, not as a nested subagent
+# 045 — Run ralph inline, not as a nested subagent
 
 Date: 2026-03-26
 Status: superseded by 004

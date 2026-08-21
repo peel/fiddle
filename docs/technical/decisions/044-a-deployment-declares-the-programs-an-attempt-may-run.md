@@ -1,4 +1,4 @@
-# 043 — A deployment declares the programs an attempt may run, and that declaration is not a sandbox
+# 044 — A deployment declares the programs an attempt may run, and that declaration is not a sandbox
 
 Status: accepted
 Cites: fiddle_runtime::workspace::declared::resolve, DeclaredCommand, Extend, Undeclared, RunCommand, ToolHost, WorkspacePath, Isolation, a_workspace_command_inherits_no_credential, `[[workspace.commands]]`, a_derived_file_a_declared_command_wrote_reaches_clean_when_the_attempt_declares_it, a_model_asking_for_a_shell_is_refused_because_no_deployment_declared_one

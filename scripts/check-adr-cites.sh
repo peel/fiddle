@@ -16,6 +16,13 @@ DECISIONS="$ROOT/docs/technical/decisions"
 [ -d "$DECISIONS" ] || { printf '{"error":"no decisions directory at %s"}\n' "$DECISIONS" >&2; exit 2; }
 [ -d "$ROOT/crates" ] || { printf '{"error":"no crates directory at %s"}\n' "$ROOT/crates" >&2; exit 2; }
 
+DUPES=$(ls "$DECISIONS" | grep -E '^[0-9]{3}-' | cut -c1-3 | sort | uniq -d)
+if [ -n "$DUPES" ]; then
+  printf '{"error":"two records share a number","numbers":"%s"}\n' "$(echo $DUPES)" >&2
+  for n in $DUPES; do ls "$DECISIONS/$n"-* >&2; done
+  exit 2
+fi
+
 LEAVES=$(mktemp "${TMPDIR:-/tmp}/adr-cites-XXXXXX") || exit 2
 trap 'rm -f "$LEAVES"' EXIT INT TERM
 
