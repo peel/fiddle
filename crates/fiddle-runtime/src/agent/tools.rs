@@ -1113,8 +1113,9 @@ pub(crate) mod tests {
             .unwrap_or_default()
             .to_string();
         assert!(
-            text.contains("curl"),
-            "a refusal that does not name what it refused cannot be acted on: {text}"
+            text.contains("`curl` is not a program"),
+            "a refusal has to say that the program is undeclared, and name it; a \
+             refusal about its arguments would be a different answer: {text}"
         );
     }
 
@@ -1146,8 +1147,9 @@ pub(crate) mod tests {
             .unwrap_or_default()
             .to_string();
         assert!(
-            text.contains("/bin/sh"),
-            "the refusal must name the shell it refused: {text}"
+            text.contains("`/bin/sh` is not a program"),
+            "a shell is refused for one reason — no declaration names it — and \
+             the refusal must say that rather than complain about `-c`: {text}"
         );
         assert!(
             !root.join("reached.txt").exists(),
