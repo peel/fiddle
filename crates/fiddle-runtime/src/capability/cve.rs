@@ -8,6 +8,7 @@ use crate::cve::attempts;
 use crate::cve::dedup::{Local, Spawn};
 use crate::effect::{Executor, IntegrationOperation};
 use crate::evaluate::{Evaluation, RescanVerdict};
+use crate::gateway::Redaction;
 use crate::git::{GitCli, GitError};
 use crate::github::{
     find_labelled_pull_request, BlamedCheck, EnsureBranchPublished, EnsurePullRequest,
@@ -253,6 +254,8 @@ pub struct MigrationConfig {
 
     pub budget: AgentBudget,
 
+    pub redaction: Redaction,
+
     pub cancel: CancellationToken,
 }
 
@@ -318,6 +321,7 @@ where
 
         let report = attempt_briefed(
             self.model.clone(),
+            &self.config.redaction,
             host,
             self.config.budget.clone(),
             Brief {

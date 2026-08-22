@@ -3,6 +3,7 @@ mod fixture;
 use fiddle_runtime::agent::{attempt, AgentBudget, AgentError, Direction, ToolHost, ToolReceipts};
 use fiddle_runtime::core::AttemptId;
 use fiddle_runtime::workspace::{DeclaredCommand, Workspace, WorkspaceCommand};
+use fiddle_runtime::Redaction;
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -42,6 +43,10 @@ fn test_host_declaring(commands: Vec<DeclaredCommand>) -> (ToolHost, tempfile::T
     (host, dir)
 }
 
+fn redaction() -> Redaction {
+    Redaction::of("sk-mock-must-not-appear-0d1e")
+}
+
 fn budget() -> AgentBudget {
     AgentBudget {
         max_turns: 8,
@@ -73,9 +78,15 @@ async fn a_scripted_model_drives_the_real_tools() {
         ),
     ]);
 
-    let report = attempt(model, host.clone(), budget(), Direction::Fresh)
-        .await
-        .expect("the attempt completes");
+    let report = attempt(
+        model,
+        &redaction(),
+        host.clone(),
+        budget(),
+        Direction::Fresh,
+    )
+    .await
+    .expect("the attempt completes");
 
     assert!(report.claimed_complete);
     assert_eq!(
@@ -100,6 +111,7 @@ async fn the_turn_budget_is_enforced_by_the_runtime() {
 
     let outcome = attempt(
         model,
+        &redaction(),
         host,
         AgentBudget {
             max_turns: 2,
@@ -129,6 +141,7 @@ async fn exceeding_the_changed_file_cap_fails_the_attempt() {
 
     let outcome = attempt(
         model,
+        &redaction(),
         host,
         AgentBudget {
             max_changed_files: 1,
@@ -164,6 +177,7 @@ async fn an_ignore_rule_the_model_wrote_cannot_lift_the_changed_file_cap() {
 
     let outcome = attempt(
         model,
+        &redaction(),
         host.clone(),
         AgentBudget {
             max_changed_files: 2,
@@ -192,7 +206,7 @@ async fn malformed_structured_output_is_a_protocol_error_not_a_default() {
     let (host, _g) = test_host();
     let model = MockCompletionModel::new([MockTurn::text("this is not the schema")]);
 
-    let outcome = attempt(model, host, budget(), Direction::Fresh).await;
+    let outcome = attempt(model, &redaction(), host, budget(), Direction::Fresh).await;
 
     assert!(
         matches!(outcome, Err(AgentError::Protocol { .. })),
@@ -209,9 +223,15 @@ async fn a_tool_error_is_returned_to_the_model_which_can_recover() {
         report_turn("recovered", false),
     ]);
 
-    let report = attempt(model, host.clone(), budget(), Direction::Fresh)
-        .await
-        .expect("a refused tool call does not end the run");
+    let report = attempt(
+        model,
+        &redaction(),
+        host.clone(),
+        budget(),
+        Direction::Fresh,
+    )
+    .await
+    .expect("a refused tool call does not end the run");
 
     assert_eq!(report.summary, "recovered");
     assert!(!report.claimed_complete);
@@ -233,7 +253,7 @@ async fn a_provider_fault_is_told_apart_from_a_misbehaving_model() {
     let (host, _g) = test_host();
     let model = MockCompletionModel::new([MockTurn::tool_call("c1", "list_files", json!({}))]);
 
-    let outcome = attempt(model, host, budget(), Direction::Fresh).await;
+    let outcome = attempt(model, &redaction(), host, budget(), Direction::Fresh).await;
 
     assert!(
         matches!(outcome, Err(AgentError::Provider { .. })),
@@ -261,7 +281,7 @@ async fn cancelling_mid_attempt_stops_the_attempt_rather_than_waiting_for_it() {
     });
 
     let started = Instant::now();
-    let outcome = attempt(model, host, budget(), Direction::Fresh).await;
+    let outcome = attempt(model, &redaction(), host, budget(), Direction::Fresh).await;
     let elapsed = started.elapsed();
 
     assert!(
@@ -294,6 +314,7 @@ async fn the_deadline_bounds_an_attempt_that_would_otherwise_run_on() {
     let started = Instant::now();
     let outcome = attempt(
         model,
+        &redaction(),
         host,
         AgentBudget {
             deadline: Duration::from_millis(200),
@@ -333,6 +354,7 @@ async fn the_budgets_tool_timeout_bounds_a_single_tool_without_ending_the_run() 
     let started = Instant::now();
     let report = attempt(
         model,
+        &redaction(),
         host.clone(),
         AgentBudget {
             tool_timeout: Duration::from_millis(100),

@@ -9,14 +9,18 @@ const CREDENTIAL: &str = "LITELLM_API_KEY";
 
 const SENTINEL: &str = "sk-sentinel-must-never-be-printed-9f3a1c";
 
-fn a_refusal_quoting_the_credential() -> Vec<Reply> {
+const ANOTHER_KEY: &str = "sk-a-key-this-run-does-not-hold-71bd";
+
+const REDACTED: &str = "[redacted]";
+
+fn a_refusal_quoting(key: &str) -> Vec<Reply> {
     vec![refused(
         401,
         "Unauthorized",
         serde_json::json!({
             "error": {
                 "message": format!(
-                    "Incorrect API key provided: {SENTINEL}. \
+                    "Incorrect API key provided: {key}. \
                      You can find your API key at https://example.invalid/keys."
                 ),
                 "type": "invalid_request_error",
@@ -305,9 +309,15 @@ fn a_turn_budget_of_one_stops_the_same_repair_before_it_earns_anything() {
     );
 }
 
-#[test]
-fn a_gateway_refusal_never_reaches_what_the_run_publishes() {
-    let gateway = StubGateway::serving(a_refusal_quoting_the_credential());
+struct Refused {
+    reason: String,
+    stdout: String,
+    stderr: String,
+    leaked: Vec<String>,
+}
+
+fn refused_by(key: &str) -> Refused {
+    let gateway = StubGateway::serving(a_refusal_quoting(key));
     let s = scenario(&gateway, 4);
 
     let out = repair(&s);
@@ -328,37 +338,92 @@ fn a_gateway_refusal_never_reaches_what_the_run_publishes() {
          succeed: payload = {payload} stderr = {stderr}"
     );
 
+    let reason = payload["outcome"]["retryable"]["reason"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a refused provider call concludes retryably: {payload}"))
+        .to_string();
     assert!(
-        !stdout.contains(SENTINEL),
-        "the payload republished the gateway's copy of the credential: {stdout}"
+        reason.contains("401"),
+        "the run must still name what the gateway did, so an operator knows \
+         whether to fix a key or wait out a rate limit: {reason}"
     );
-    assert!(
-        !stderr.contains(SENTINEL),
-        "the diagnostic republished the gateway's copy of the credential: {stderr}"
-    );
+
     let leaked: Vec<String> = s
         .project_tree()
         .into_iter()
         .filter(|(_, bytes)| String::from_utf8_lossy(bytes).contains(SENTINEL))
         .map(|(path, _)| path)
         .collect();
-    assert!(
-        leaked.is_empty(),
-        "the gateway's copy of the credential was written to {leaked:?}"
-    );
 
-    let reason = payload["outcome"]["retryable"]["reason"]
-        .as_str()
-        .unwrap_or_else(|| panic!("a refused provider call concludes retryably: {payload}"));
+    Refused {
+        reason,
+        stdout,
+        stderr,
+        leaked,
+    }
+}
+
+#[test]
+fn a_gateway_that_echoes_the_credential_is_quoted_with_the_credential_replaced() {
+    let refused = refused_by(SENTINEL);
+
     assert!(
-        reason.contains("401"),
-        "the run must still name what the gateway did, so an operator knows \
-         whether to fix a key or wait out a rate limit: {reason}"
+        !refused.stdout.contains(SENTINEL),
+        "the payload republished the gateway's copy of the credential: {}",
+        refused.stdout
     );
     assert!(
-        !reason.contains("Incorrect API key provided"),
-        "the response body is authored outside this process and must not be \
-         quoted at all: {reason}"
+        !refused.stderr.contains(SENTINEL),
+        "the diagnostic republished the gateway's copy of the credential: {}",
+        refused.stderr
+    );
+    assert!(
+        refused.leaked.is_empty(),
+        "the gateway's copy of the credential was written to {:?}",
+        refused.leaked
+    );
+    assert!(
+        refused.reason.contains(REDACTED),
+        "the reason must mark where the credential was: {}",
+        refused.reason
+    );
+    assert!(
+        refused.reason.contains("Incorrect API key provided"),
+        "the sentence the gateway wrote is the only evidence of why it \
+         refused: {}",
+        refused.reason
+    );
+}
+
+#[test]
+fn a_gateway_that_echoes_no_credential_is_quoted_whole() {
+    let refused = refused_by(ANOTHER_KEY);
+
+    assert!(
+        !refused.stdout.contains(SENTINEL),
+        "the payload printed the credential this run holds: {}",
+        refused.stdout
+    );
+    assert!(
+        !refused.stderr.contains(SENTINEL),
+        "the diagnostic printed the credential this run holds: {}",
+        refused.stderr
+    );
+    assert!(
+        refused.leaked.is_empty(),
+        "the credential this run holds was written to {:?}",
+        refused.leaked
+    );
+    assert!(
+        refused.reason.contains(ANOTHER_KEY),
+        "fiddle replaces the credential it resolved, and no other text that \
+         looks like one: {}",
+        refused.reason
+    );
+    assert!(
+        !refused.reason.contains(REDACTED),
+        "nothing was replaced, so nothing may claim it was: {}",
+        refused.reason
     );
 }
 

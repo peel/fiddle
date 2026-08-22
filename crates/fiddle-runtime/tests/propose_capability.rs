@@ -20,6 +20,7 @@ use fiddle_runtime::human::validate::{resolve, DecisionStep, DecisionTrace, Deci
 use fiddle_runtime::human::InteractionRef;
 use fiddle_runtime::workspace::WorkspaceCommand;
 use fiddle_runtime::GhCli;
+use fiddle_runtime::Redaction;
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -449,6 +450,7 @@ fn config(world: &World, check: WorkspaceCommand) -> ProposeConfig {
             max_changed_files: 16,
             tool_timeout: PATIENT,
         },
+        redaction: Redaction::unknown(),
         deciders: vec![APPROVER],
         interpretation: patient_interpretation(),
         cancel: CancellationToken::new(),

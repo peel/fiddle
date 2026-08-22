@@ -16,6 +16,7 @@ use crate::effect::{EffectContext, Executor, IntegrationOperation};
 use crate::evaluate::{
     evaluate, Check, Contract, Evaluation, InWorkspace, Outcome, Repair, Rescan,
 };
+use crate::gateway::Redaction;
 use crate::github::{
     observe_genuine_failure, read_pull_request_body, EnsurePullRequestBody, GenuineFailure,
 };
@@ -62,6 +63,8 @@ pub struct MitigateConfig {
     pub commands: std::sync::Arc<Vec<crate::workspace::DeclaredCommand>>,
 
     pub budget: AgentBudget,
+
+    pub redaction: Redaction,
 
     pub command_timeout: Duration,
 
@@ -144,6 +147,7 @@ where
                 commands: std::sync::Arc::clone(&config.commands),
                 command_timeout: config.command_timeout,
                 budget: config.budget.clone(),
+                redaction: config.redaction.clone(),
                 cancel: config.cancel.clone(),
             },
         );

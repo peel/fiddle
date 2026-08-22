@@ -399,7 +399,7 @@ fn resolve_named(
     }
 }
 
-fn model_client(agent: &config::Agent) -> Result<fiddle_runtime::GatewayModel, CliError> {
+fn model_client(agent: &config::Agent) -> Result<fiddle_runtime::Gateway, CliError> {
     let base_url = resolve_named(MODEL_ENDPOINT, &agent.base_url)?;
     let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
     fiddle_runtime::completion_model(&base_url, credential, &agent.api_key.env, &agent.model)
@@ -592,7 +592,7 @@ fn build_capability<'a>(
                 .as_ref()
                 .ok_or_else(|| missing("workspace.check"))?;
 
-            let model = model_client(agent)?;
+            let gateway = model_client(agent)?;
 
             cancel_on_interrupt(cancel);
 
@@ -600,7 +600,7 @@ fn build_capability<'a>(
             let config::Cleanup::Always = workspace.cleanup;
 
             Ok(Box::new(FixtureRepair::new(
-                model,
+                gateway.model,
                 RepairConfig {
                     fixture: fixture.clone(),
                     workspace_root: workspace.root.clone(),
@@ -620,6 +620,7 @@ fn build_capability<'a>(
                         max_changed_files: agent.max_changed_files,
                         tool_timeout: agent.tool_timeout.as_duration(),
                     },
+                    redaction: gateway.redaction,
                     cancel: cancel.clone(),
                 },
             )))
@@ -646,7 +647,7 @@ fn build_capability<'a>(
                 .ok_or_else(|| missing("workspace.check"))?;
             let forge = forge.ok_or_else(|| missing("[github]"))?;
 
-            let model = model_client(agent)?;
+            let gateway = model_client(agent)?;
 
             cancel_on_interrupt(cancel);
 
@@ -667,7 +668,7 @@ fn build_capability<'a>(
                 executor,
                 &forge.ctx,
                 &forge.trace,
-                model,
+                gateway.model,
                 ProposeConfig {
                     repo: github.repo.to_string(),
                     head_owner: github.repo.owner.clone(),
@@ -701,6 +702,7 @@ fn build_capability<'a>(
                         max_changed_files: agent.max_changed_files,
                         tool_timeout: agent.tool_timeout.as_duration(),
                     },
+                    redaction: gateway.redaction,
                     deciders: decision.authorized.clone(),
                     interpretation: interpretation_bounds(agent),
                     cancel: cancel.clone(),
@@ -729,7 +731,7 @@ fn build_capability<'a>(
             };
             let forge = forge.ok_or_else(|| missing("[github]"))?;
 
-            let model = model_client(agent)?;
+            let gateway = model_client(agent)?;
 
             cancel_on_interrupt(cancel);
 
@@ -759,7 +761,7 @@ fn build_capability<'a>(
                     scanner.timeout.as_duration(),
                     cancel.clone(),
                 ),
-                model,
+                gateway.model,
                 fiddle_runtime::MitigateConfig {
                     repo: github.repo.to_string(),
                     head_owner: github.repo.owner.clone(),
@@ -808,6 +810,7 @@ fn build_capability<'a>(
                         max_changed_files: agent.max_changed_files,
                         tool_timeout: agent.tool_timeout.as_duration(),
                     },
+                    redaction: gateway.redaction,
                     command_timeout: workspace.command_timeout.as_duration(),
                     findings: fiddle_runtime::cve::verdict::Budget::of(sweep.max_findings),
                     max_attempts: u32::try_from(agent.max_capability_attempts).unwrap_or(u32::MAX),
