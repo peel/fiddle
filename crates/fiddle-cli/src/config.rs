@@ -1206,6 +1206,29 @@ success = "artefact-written"
     }
 
     #[test]
+    fn forty_turns_of_the_largest_tool_result_stay_inside_the_measured_context() {
+        const CONTEXT_TOKENS: usize = 262_144;
+        const BYTES_PER_TOKEN: usize = 4;
+        const REFUSED_REQUEST_BYTES: usize = 1_527_171;
+
+        let per_turn =
+            fiddle_runtime::agent::RESULT_CAP_BYTES + fiddle_runtime::agent::NOTE_CAP_BYTES;
+        let worst = default_max_turns() * per_turn;
+
+        assert!(
+            worst < CONTEXT_TOKENS * BYTES_PER_TOKEN,
+            "{} turns of {per_turn} bytes reach {worst} bytes, and the context holds {} bytes",
+            default_max_turns(),
+            CONTEXT_TOKENS * BYTES_PER_TOKEN
+        );
+        assert!(
+            worst < REFUSED_REQUEST_BYTES,
+            "the gateway refused a request of {REFUSED_REQUEST_BYTES} bytes, and this bound \
+             permits {worst}"
+        );
+    }
+
+    #[test]
     fn the_defaults_are_the_ones_documented() {
         let cfg: Config = toml::from_str(
             "[project]\nname=\"p\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\

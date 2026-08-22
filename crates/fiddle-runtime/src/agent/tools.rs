@@ -64,6 +64,8 @@ fn outcome_of<T>(result: &Result<T, ToolError>) -> &'static str {
         Err(ToolError::NoHostContext)
         | Err(ToolError::Rejected { .. })
         | Err(ToolError::EditRefused { .. })
+        | Err(ToolError::ReadRefused { .. })
+        | Err(ToolError::ListingRefused { .. })
         | Err(ToolError::Undeclared { .. }) => "refused",
         Err(ToolError::Cancelled) => "cancelled",
         Err(ToolError::Timeout { .. }) | Err(ToolError::Failed { .. }) => "failed",
@@ -88,6 +90,12 @@ pub enum ToolError {
 
     #[error("the edit to `{path}` was refused: {reason}")]
     EditRefused { path: String, reason: String },
+
+    #[error("the read of `{path}` was refused: {reason}")]
+    ReadRefused { path: String, reason: String },
+
+    #[error("the listing was refused: {reason}")]
+    ListingRefused { reason: String },
 
     #[error("{source}")]
     Undeclared {
@@ -139,6 +147,8 @@ impl ToolError {
             ToolError::Cancelled => ToolExecutionError::cancelled(message),
             ToolError::Rejected { .. }
             | ToolError::EditRefused { .. }
+            | ToolError::ReadRefused { .. }
+            | ToolError::ListingRefused { .. }
             | ToolError::Undeclared { .. } => ToolExecutionError::invalid_args(message),
             ToolError::Timeout { .. } => ToolExecutionError::timeout(message),
             ToolError::Failed { .. } => ToolExecutionError::other(message),
@@ -158,11 +168,23 @@ fn no_parameters() -> serde_json::Value {
     })
 }
 
+pub const RESULT_CAP_BYTES: usize = 16 * 1024;
+
+pub const STREAM_CAP_BYTES: usize = RESULT_CAP_BYTES / 2;
+
+pub const NOTE_CAP_BYTES: usize = 512;
+
 pub struct ReadFile;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct ReadFileArgs {
     pub path: String,
+
+    #[serde(default)]
+    pub offset: Option<usize>,
+
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 impl Tool for ReadFile {
@@ -172,7 +194,14 @@ impl Tool for ReadFile {
     type Error = ToolError;
 
     fn description(&self) -> String {
-        "Read one file from the project you are repairing, by its relative path.".into()
+        format!(
+            "Read one file from the project you are repairing, by its relative path. \
+             One read gives you at most {RESULT_CAP_BYTES} bytes of it. Give `offset` to \
+             start at a later line, and `limit` to take fewer lines. A read that gives \
+             you part of a file opens with a note in square brackets. The note counts \
+             the lines it withheld and names the offset to read on from. The note is \
+             not part of the file."
+        )
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -182,6 +211,18 @@ impl Tool for ReadFile {
                 "path": {
                     "type": "string",
                     "description": "Relative path of the file, for example src/lib.rs."
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "The first line to read. The first line of a file is 1. \
+                                    Leave it out to start at the first line."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "How many lines to read. Leave it out to read to the end \
+                                    of the file, or to the byte limit, whichever comes first."
                 }
             },
             "required": ["path"],
@@ -195,9 +236,20 @@ impl Tool for ReadFile {
         let result = async {
             host.guard()?;
             let path = parse(&args.path)?;
-            host.workspace
+            let held = host
+                .workspace
                 .read(&path)
-                .map_err(|source| ToolError::from_workspace("reading the file", source))
+                .map_err(|source| ToolError::from_workspace("reading the file", source))?;
+            page_of_lines(
+                &held,
+                args.offset.unwrap_or(1),
+                args.limit,
+                RESULT_CAP_BYTES,
+            )
+            .map_err(|reason| ToolError::ReadRefused {
+                path: path.as_str().to_string(),
+                reason,
+            })
         }
         .await;
         host.recorded(Self::NAME, started, result)
@@ -382,21 +434,62 @@ impl Tool for EditFile {
 
 pub struct ListFiles;
 
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ListFilesArgs {
+    #[serde(default)]
+    pub offset: Option<usize>,
+
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Listing {
+    pub paths: Vec<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub withheld: Option<String>,
+}
+
 impl Tool for ListFiles {
     const NAME: &'static str = "list_files";
-    type Args = NoArgs;
-    type Output = Vec<String>;
+    type Args = ListFilesArgs;
+    type Output = Listing;
     type Error = ToolError;
 
     fn description(&self) -> String {
-        "List the files of the project you are repairing, as relative paths.".into()
+        format!(
+            "List the files of the project you are repairing, as relative paths. One \
+             listing gives you at most {RESULT_CAP_BYTES} bytes of paths. Give `offset` \
+             to start at a later path, and `limit` to take fewer paths. A listing that \
+             gives you part of the project carries a `withheld` sentence. That sentence \
+             counts the paths it withheld and names the offset to list on from."
+        )
     }
 
     fn parameters(&self) -> serde_json::Value {
-        no_parameters()
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "offset": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "The first path to list. The first path is 1. Leave it \
+                                    out to start at the first path."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "How many paths to list. Leave it out to list to the end, \
+                                    or to the byte limit, whichever comes first."
+                }
+            },
+            "required": [],
+            "additionalProperties": false
+        })
     }
 
-    async fn call(&self, ctx: &mut ToolContext, _args: NoArgs) -> Result<Vec<String>, ToolError> {
+    async fn call(&self, ctx: &mut ToolContext, args: ListFilesArgs) -> Result<Listing, ToolError> {
         let host = ToolHost::from_context(ctx)?;
         let started = Instant::now();
         let result = async {
@@ -405,10 +498,17 @@ impl Tool for ListFiles {
                 .workspace
                 .list()
                 .map_err(|source| ToolError::from_workspace("listing the files", source))?;
-            Ok(listed
+            let paths: Vec<String> = listed
                 .into_iter()
                 .map(|path| path.as_str().to_string())
-                .collect())
+                .collect();
+            page_of_paths(
+                paths,
+                args.offset.unwrap_or(1),
+                args.limit,
+                RESULT_CAP_BYTES,
+            )
+            .map_err(|reason| ToolError::ListingRefused { reason })
         }
         .await;
         host.recorded(Self::NAME, started, result)
@@ -454,8 +554,8 @@ impl Tool for RunCheck {
                 .map_err(|source| ToolError::from_workspace("running the check", source))?;
             Ok(CheckOutcome {
                 exit_code: result.exit_code,
-                stdout: result.stdout,
-                stderr: result.stderr,
+                stdout: head_and_tail(&result.stdout, STREAM_CAP_BYTES),
+                stderr: head_and_tail(&result.stderr, STREAM_CAP_BYTES),
             })
         }
         .await;
@@ -537,8 +637,8 @@ impl Tool for RunCommand {
                 .map_err(|source| ToolError::from_workspace("running the command", source))?;
             Ok(CheckOutcome {
                 exit_code: result.exit_code,
-                stdout: result.stdout,
-                stderr: result.stderr,
+                stdout: head_and_tail(&result.stdout, STREAM_CAP_BYTES),
+                stderr: head_and_tail(&result.stderr, STREAM_CAP_BYTES),
             })
         }
         .await;
@@ -553,6 +653,178 @@ impl Tool for RunCommand {
 fn parse(raw: &str) -> Result<WorkspacePath, ToolError> {
     WorkspacePath::parse(raw)
         .map_err(|source| ToolError::from_workspace("reading the path", source))
+}
+
+fn cut_to_char_boundary(text: &str, cap: usize) -> &str {
+    let mut end = cap.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+fn page_of_lines(
+    held: &str,
+    offset: usize,
+    limit: Option<usize>,
+    cap: usize,
+) -> Result<String, String> {
+    if offset == 0 {
+        return Err("the lines of a file are numbered from 1, so there is no line 0".to_string());
+    }
+    if limit == Some(0) {
+        return Err("a limit of 0 lines returns no line; ask for 1 line or more".to_string());
+    }
+    if held.is_empty() {
+        if offset == 1 {
+            return Ok(String::new());
+        }
+        return Err(format!("the file is empty, so it has no line {offset}"));
+    }
+
+    let lines: Vec<&str> = held.split_inclusive('\n').collect();
+    let total = lines.len();
+    if offset > total {
+        return Err(format!(
+            "the file has {total} lines, so it has no line {offset}"
+        ));
+    }
+    let start = offset - 1;
+    let end = match limit {
+        Some(limit) => start.saturating_add(limit).min(total),
+        None => total,
+    };
+    let wanted = &lines[start..end];
+
+    let mut taken = 0;
+    let mut bytes = 0;
+    for line in wanted {
+        if bytes + line.len() > cap {
+            break;
+        }
+        bytes += line.len();
+        taken += 1;
+    }
+
+    if taken == 0 {
+        let part = cut_to_char_boundary(wanted[0], cap);
+        let withheld = wanted[0].len() - part.len();
+        return Ok(format!(
+            "[read_file gave you the first {} bytes of line {offset}, in a file of {total} \
+             lines. It withheld {withheld} bytes of that one line. A line longer than \
+             {cap} bytes does not fit in one read, and read_file reaches no further into \
+             it. This note is not part of the file.]\n{part}",
+            part.len()
+        ));
+    }
+
+    let part: String = wanted[..taken].concat();
+    if offset == 1 && taken == total {
+        return Ok(part);
+    }
+    let last = offset + taken - 1;
+    let withheld = total - taken;
+    let mut note = format!(
+        "[read_file gave you lines {offset} to {last} of {total}. It withheld {withheld} \
+         lines. This note is not part of the file."
+    );
+    if last < total {
+        let next = last + 1;
+        note.push_str(&format!(" Call read_file with offset {next} to read on."));
+    }
+    note.push_str("]\n");
+    Ok(format!("{note}{part}"))
+}
+
+fn page_of_paths(
+    paths: Vec<String>,
+    offset: usize,
+    limit: Option<usize>,
+    cap: usize,
+) -> Result<Listing, String> {
+    if offset == 0 {
+        return Err(
+            "the paths of a project are numbered from 1, so there is no path 0".to_string(),
+        );
+    }
+    if limit == Some(0) {
+        return Err("a limit of 0 paths returns no path; ask for 1 path or more".to_string());
+    }
+    let total = paths.len();
+    if total == 0 {
+        return Ok(Listing {
+            paths,
+            withheld: None,
+        });
+    }
+    if offset > total {
+        return Err(format!(
+            "the project holds {total} files, so it has no path {offset}"
+        ));
+    }
+    let start = offset - 1;
+    let end = match limit {
+        Some(limit) => start.saturating_add(limit).min(total),
+        None => total,
+    };
+
+    let mut taken: Vec<String> = Vec::new();
+    let mut bytes = 0;
+    for path in &paths[start..end] {
+        if !taken.is_empty() && bytes + path.len() > cap {
+            break;
+        }
+        bytes += path.len();
+        taken.push(path.clone());
+    }
+
+    if offset == 1 && taken.len() == total {
+        return Ok(Listing {
+            paths: taken,
+            withheld: None,
+        });
+    }
+    let last = offset + taken.len() - 1;
+    let withheld = total - taken.len();
+    let mut sentence = format!(
+        "list_files gave you paths {offset} to {last} of {total}. It withheld {withheld} paths."
+    );
+    if last < total {
+        let next = last + 1;
+        sentence.push_str(&format!(" Call list_files with offset {next} to list on."));
+    }
+    Ok(Listing {
+        paths: taken,
+        withheld: Some(sentence),
+    })
+}
+
+fn head_and_tail(text: &str, cap: usize) -> String {
+    if text.len() <= cap {
+        return text.to_string();
+    }
+    let half = cap / 2;
+    let head = cut_to_char_boundary(text, half);
+    let head = match head.rfind('\n') {
+        Some(at) => &head[..at + 1],
+        None => head,
+    };
+    let mut from = text.len() - half;
+    while from < text.len() && !text.is_char_boundary(from) {
+        from += 1;
+    }
+    let tail = &text[from..];
+    let tail = match tail.find('\n') {
+        Some(at) => &tail[at + 1..],
+        None => tail,
+    };
+    let dropped = text[head.len()..text.len() - tail.len()].lines().count();
+    let bytes = text.len();
+    format!(
+        "{head}[this tool dropped {dropped} lines here. The program printed {bytes} bytes \
+         and this tool gives you {cap} of them. The lines above are the start of what it \
+         printed. The lines below are the end.]\n{tail}"
+    )
 }
 
 #[cfg(test)]
@@ -576,6 +848,13 @@ pub(crate) mod tests {
             program: program.to_string(),
             args: args.iter().map(|a| a.to_string()).collect(),
             extend,
+        }
+    }
+
+    pub(crate) fn whole(path: &str) -> ReadFileArgs {
+        ReadFileArgs {
+            path: path.to_string(),
+            ..ReadFileArgs::default()
         }
     }
 
@@ -644,12 +923,7 @@ pub(crate) mod tests {
         let mut ctx = ToolContext::new();
         ctx.insert(host);
         assert!(ReadFile
-            .call(
-                &mut ctx,
-                ReadFileArgs {
-                    path: "src/lib.rs".into()
-                }
-            )
+            .call(&mut ctx, whole("src/lib.rs"))
             .await
             .unwrap()
             .contains("pub fn"));
@@ -666,15 +940,7 @@ pub(crate) mod tests {
     async fn a_tool_without_host_context_fails_rather_than_defaulting() {
         let mut ctx = ToolContext::new();
         assert!(
-            ReadFile
-                .call(
-                    &mut ctx,
-                    ReadFileArgs {
-                        path: "src/lib.rs".into()
-                    }
-                )
-                .await
-                .is_err(),
+            ReadFile.call(&mut ctx, whole("src/lib.rs")).await.is_err(),
             "a missing host context must fail closed, never fall back to the process cwd"
         );
     }
@@ -952,15 +1218,7 @@ pub(crate) mod tests {
         let mut ctx = ToolContext::new();
         ctx.insert(host.clone());
 
-        ReadFile
-            .call(
-                &mut ctx,
-                ReadFileArgs {
-                    path: "src/lib.rs".into(),
-                },
-            )
-            .await
-            .unwrap();
+        ReadFile.call(&mut ctx, whole("src/lib.rs")).await.unwrap();
         let before = std::fs::read_to_string(host.workspace.root().join("src/lib.rs")).unwrap();
         host.cancel.cancel();
 
@@ -1035,11 +1293,318 @@ pub(crate) mod tests {
         let mut ctx = ToolContext::new();
         ctx.insert(host);
 
-        let listed = ListFiles.call(&mut ctx, NoArgs::default()).await.unwrap();
-        assert!(listed.contains(&"src/lib.rs".to_string()), "{listed:?}");
+        let listed = ListFiles
+            .call(&mut ctx, ListFilesArgs::default())
+            .await
+            .unwrap();
         assert!(
-            !listed.iter().any(|p| p.starts_with("target/")),
+            listed.paths.contains(&"src/lib.rs".to_string()),
+            "{listed:?}"
+        );
+        assert!(
+            !listed.paths.iter().any(|p| p.starts_with("target/")),
             "an ignored build tree would drown the model's context: {listed:?}"
+        );
+        assert!(
+            listed.withheld.is_none(),
+            "this project fits in one listing, so nothing was withheld: {listed:?}"
+        );
+    }
+
+    fn numbered(line: usize) -> String {
+        format!("{line:0>39}\n")
+    }
+
+    fn lines_of(count: usize) -> String {
+        (1..=count).map(numbered).collect()
+    }
+
+    const LINE_BYTES: usize = 40;
+
+    #[tokio::test]
+    async fn a_read_inside_the_limit_gives_the_whole_file_and_withholds_nothing() {
+        let (host, _g) = test_host();
+        let held = lines_of(100);
+        assert!(held.len() < RESULT_CAP_BYTES);
+        std::fs::write(host.workspace.root().join("short.txt"), &held).unwrap();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let got = ReadFile.call(&mut ctx, whole("short.txt")).await.unwrap();
+
+        assert_eq!(got, held, "a file under the limit reaches the model whole");
+        assert!(
+            !got.contains("withheld"),
+            "a whole read must claim no withholding"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_read_beyond_the_limit_gives_part_and_counts_the_lines_it_withheld() {
+        let (host, _g) = test_host();
+        let total = 2_000;
+        let held = lines_of(total);
+        assert!(
+            held.len() > RESULT_CAP_BYTES,
+            "the fixture must exceed the limit, or this test asserts nothing: {}",
+            held.len()
+        );
+        std::fs::write(host.workspace.root().join("long.txt"), &held).unwrap();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let got = ReadFile.call(&mut ctx, whole("long.txt")).await.unwrap();
+
+        let given = RESULT_CAP_BYTES / LINE_BYTES;
+        let note = got
+            .lines()
+            .next()
+            .expect("a partial read opens with a note");
+        assert!(
+            note.contains(&format!("gave you lines 1 to {given} of {total}")),
+            "the note must say which lines the model holds: {note}"
+        );
+        assert!(
+            note.contains(&format!("It withheld {} lines", total - given)),
+            "the note must count what the model does not hold: {note}"
+        );
+        assert!(
+            note.contains(&format!("offset {}", given + 1)),
+            "the note must name the offset that reads on: {note}"
+        );
+        assert!(
+            got.contains(&numbered(given)) && !got.contains(&numbered(given + 1)),
+            "the returned text must stop where the note says it stops"
+        );
+        assert!(
+            got.len() <= RESULT_CAP_BYTES + NOTE_CAP_BYTES,
+            "the read returned {} bytes",
+            got.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_offset_reaches_the_last_line_of_a_file_no_one_read_can_hold() {
+        let (host, _g) = test_host();
+        let total = 2_000;
+        std::fs::write(host.workspace.root().join("long.txt"), lines_of(total)).unwrap();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let got = ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "long.txt".to_string(),
+                    offset: Some(1_992),
+                    limit: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            got.contains(&numbered(total)),
+            "a limit without an offset would put the last line out of reach"
+        );
+        let note = got
+            .lines()
+            .next()
+            .expect("a partial read opens with a note");
+        assert!(
+            note.contains(&format!("gave you lines 1992 to {total} of {total}")),
+            "{note}"
+        );
+        assert!(note.contains("It withheld 1991 lines"), "{note}");
+        assert!(
+            !note.contains("offset"),
+            "nothing follows the last line, so the note must name no next offset: {note}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_line_longer_than_the_limit_is_cut_and_the_note_counts_the_bytes() {
+        let (host, _g) = test_host();
+        let over = 5_000;
+        let held = format!("{}\n", "x".repeat(RESULT_CAP_BYTES + over));
+        std::fs::write(host.workspace.root().join("one.txt"), &held).unwrap();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let got = ReadFile.call(&mut ctx, whole("one.txt")).await.unwrap();
+
+        let note = got.lines().next().expect("a cut read opens with a note");
+        assert!(
+            note.contains(&format!("the first {RESULT_CAP_BYTES} bytes of line 1")),
+            "a line the tool cut must be counted in bytes, because a line count \
+             cannot describe part of one line: {note}"
+        );
+        assert!(
+            note.contains(&format!("It withheld {} bytes of that one line", over + 1)),
+            "{note}"
+        );
+        assert!(
+            got.len() <= RESULT_CAP_BYTES + NOTE_CAP_BYTES,
+            "the read returned {} bytes",
+            got.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_refuses_an_offset_past_the_end_and_names_the_line_count() {
+        let (host, _g) = test_host();
+        std::fs::write(host.workspace.root().join("short.txt"), lines_of(100)).unwrap();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        let refused = ReadFile
+            .call(
+                &mut ctx,
+                ReadFileArgs {
+                    path: "short.txt".to_string(),
+                    offset: Some(101),
+                    limit: None,
+                },
+            )
+            .await
+            .unwrap_err();
+
+        let text = refused.to_string();
+        assert!(
+            text.contains("the file has 100 lines, so it has no line 101"),
+            "a read that cannot answer must refuse and say why: {text}"
+        );
+        let receipts = host.receipts();
+        assert_eq!(receipts.calls[0].outcome, "refused", "{receipts:?}");
+    }
+
+    #[tokio::test]
+    async fn a_read_result_stays_inside_one_bound_however_large_the_file_grows() {
+        let (host, _g) = test_host();
+        let grown = [1_000usize, 8_000, 40_000];
+        for count in grown {
+            std::fs::write(
+                host.workspace.root().join(format!("grown-{count}.txt")),
+                lines_of(count),
+            )
+            .unwrap();
+        }
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        for count in grown {
+            let got = ReadFile
+                .call(&mut ctx, whole(&format!("grown-{count}.txt")))
+                .await
+                .unwrap();
+            assert!(
+                got.len() <= RESULT_CAP_BYTES + NOTE_CAP_BYTES,
+                "a file of {} bytes put {} bytes into the conversation",
+                count * LINE_BYTES,
+                got.len()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_listing_beyond_the_limit_gives_part_and_counts_the_paths_it_withheld() {
+        let (host, _g) = test_host();
+        let added = 1_000;
+        for n in 0..added {
+            std::fs::write(host.workspace.root().join(format!("f{n:0>30}.txt")), "x").unwrap();
+        }
+        let total = added + 2;
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let listed = ListFiles
+            .call(&mut ctx, ListFilesArgs::default())
+            .await
+            .unwrap();
+
+        let withheld = listed
+            .withheld
+            .as_deref()
+            .expect("a listing that holds part of the project must say so");
+        assert!(
+            withheld.contains(&format!("of {total}")),
+            "the sentence must name the count the project holds: {withheld}"
+        );
+        assert!(
+            withheld.contains(&format!("It withheld {} paths", total - listed.paths.len())),
+            "{withheld}"
+        );
+        let bytes: usize = listed.paths.iter().map(String::len).sum();
+        assert!(
+            bytes <= RESULT_CAP_BYTES,
+            "the listing put {bytes} bytes into the conversation"
+        );
+
+        let next = listed.paths.len() + 1;
+        let rest = ListFiles
+            .call(
+                &mut ctx,
+                ListFilesArgs {
+                    offset: Some(next),
+                    limit: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            !rest.paths.is_empty() && !listed.paths.contains(&rest.paths[0]),
+            "the offset the sentence named must reach the paths it withheld"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_check_that_prints_past_the_limit_keeps_its_start_and_its_end() {
+        let (mut host, _g) = test_host();
+        let printed = 4_000;
+        host.check = WorkspaceCommand {
+            program: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!("i=1; while [ $i -le {printed} ]; do echo \"line $i\"; i=$((i+1)); done"),
+            ],
+            timeout: Duration::from_secs(60),
+        };
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let outcome = RunCheck.call(&mut ctx, NoArgs::default()).await.unwrap();
+
+        assert!(
+            outcome.stdout.len() <= STREAM_CAP_BYTES + NOTE_CAP_BYTES,
+            "the check put {} bytes into the conversation",
+            outcome.stdout.len()
+        );
+        assert!(
+            outcome.stdout.starts_with("line 1\n"),
+            "the first error a check prints must survive the cut"
+        );
+        assert!(
+            outcome
+                .stdout
+                .trim_end()
+                .ends_with(&format!("line {printed}")),
+            "the summary a check prints last must survive the cut"
+        );
+        let note = outcome
+            .stdout
+            .lines()
+            .find(|line| line.starts_with("[this tool dropped"))
+            .expect("a cut stream must say it was cut");
+        let dropped: usize = note
+            .split_whitespace()
+            .nth(3)
+            .and_then(|count| count.parse().ok())
+            .unwrap_or_else(|| panic!("the note must count the lines it dropped: {note}"));
+        let kept = outcome.stdout.lines().count() - 1;
+        assert_eq!(
+            kept + dropped,
+            printed,
+            "the note must account for every line the program printed: {note}"
         );
     }
 
@@ -1116,12 +1681,7 @@ pub(crate) mod tests {
         ctx.insert(host.clone());
 
         let failed = ReadFile
-            .call(
-                &mut ctx,
-                ReadFileArgs {
-                    path: "src/absent.rs".into(),
-                },
-            )
+            .call(&mut ctx, whole("src/absent.rs"))
             .await
             .unwrap_err();
         for text in [
@@ -1148,15 +1708,7 @@ pub(crate) mod tests {
         let mut ctx = ToolContext::new();
         ctx.insert(host.clone());
 
-        ReadFile
-            .call(
-                &mut ctx,
-                ReadFileArgs {
-                    path: "src/lib.rs".into(),
-                },
-            )
-            .await
-            .unwrap();
+        ReadFile.call(&mut ctx, whole("src/lib.rs")).await.unwrap();
         let _ = WriteFile
             .call(
                 &mut ctx,
@@ -1209,15 +1761,7 @@ pub(crate) mod tests {
         ctx.insert(host.clone());
         host.cancel.cancel();
 
-        assert!(ReadFile
-            .call(
-                &mut ctx,
-                ReadFileArgs {
-                    path: "src/lib.rs".into()
-                }
-            )
-            .await
-            .is_err());
+        assert!(ReadFile.call(&mut ctx, whole("src/lib.rs")).await.is_err());
 
         let receipts = host.receipts();
         assert_eq!(
@@ -1269,15 +1813,7 @@ pub(crate) mod tests {
                     let mut ctx = ToolContext::new();
                     ctx.insert(host);
                     for _ in 0..10 {
-                        ReadFile
-                            .call(
-                                &mut ctx,
-                                ReadFileArgs {
-                                    path: "src/lib.rs".into(),
-                                },
-                            )
-                            .await
-                            .unwrap();
+                        ReadFile.call(&mut ctx, whole("src/lib.rs")).await.unwrap();
                     }
                 })
             })
@@ -1302,23 +1838,8 @@ pub(crate) mod tests {
         let mut ctx = ToolContext::new();
         ctx.insert(host.clone());
 
-        ReadFile
-            .call(
-                &mut ctx,
-                ReadFileArgs {
-                    path: "src/lib.rs".into(),
-                },
-            )
-            .await
-            .unwrap();
-        let _ = ReadFile
-            .call(
-                &mut ctx,
-                ReadFileArgs {
-                    path: "src/absent.rs".into(),
-                },
-            )
-            .await;
+        ReadFile.call(&mut ctx, whole("src/lib.rs")).await.unwrap();
+        let _ = ReadFile.call(&mut ctx, whole("src/absent.rs")).await;
 
         let published = serde_json::to_string(&host.receipts()).expect("receipts serialize");
         for root in roots(&host) {
@@ -1357,14 +1878,7 @@ pub(crate) mod tests {
         let mut ctx = ToolContext::new();
         ctx.insert(host.clone());
         for path in [".git", ".git/config", "target/debug/fixture.d"] {
-            let result = ReadFile
-                .call(
-                    &mut ctx,
-                    ReadFileArgs {
-                        path: path.to_string(),
-                    },
-                )
-                .await;
+            let result = ReadFile.call(&mut ctx, whole(path)).await;
             let refusal = match result {
                 Ok(contents) => panic!("`{path}` was served to the model: {contents}"),
                 Err(refusal) => refusal,
@@ -1384,12 +1898,7 @@ pub(crate) mod tests {
         }
 
         assert!(ReadFile
-            .call(
-                &mut ctx,
-                ReadFileArgs {
-                    path: "src/lib.rs".into()
-                }
-            )
+            .call(&mut ctx, whole("src/lib.rs"))
             .await
             .unwrap()
             .contains("pub fn"));
