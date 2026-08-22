@@ -465,7 +465,7 @@ fn the_serialized_request_offers_four_tools_and_carries_no_host_fact() {
             .unwrap_or_else(|e| panic!("turn {turn} is not JSON ({e}): {body}"));
 
         assert!(
-            body.contains("You are repairing one small Rust project"),
+            body.contains("You are repairing one project"),
             "turn {turn} carries no preamble, so this is not the request the \
              agent sends: {body}"
         );

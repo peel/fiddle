@@ -2307,7 +2307,7 @@ fn an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent() 
 
 const INSTRUCTION_LABEL: &str = "AN INSTRUCTION FROM THE PERSON REVIEWING THIS CHANGE:";
 
-const ATTEMPT_PREAMBLE: &str = "You are repairing one small Rust project.";
+const ATTEMPT_PREAMBLE: &str = "You are repairing one project.";
 
 const INTERPRETATION_PREAMBLE: &str = "You are reading one reply that a person wrote";
 
