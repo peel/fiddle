@@ -130,6 +130,7 @@ alone; gemini was removed after two consecutive authentication failures.
 - The workspace supplies a scratch `HOME` beside the worktree, never inside it.
 - The model-visible surface carries no host fact, and the runtime records each tool receipt itself (ADR 034).
 - An attempt runs a program only where the deployment declared it, as a program and an argument list with no interpreter, bounded by `[workspace] command_timeout` (ADR 044). The declaration's arguments are a prefix; whether the model may append to them is the declaration's own answer, and the default is no. This is a legibility rule, not isolation: see Known issues.
+- The brief names each declaration the model could have written itself, and withholds one whose program or argument is a host path (ADR 047). A withheld declaration still runs, and the refusal still names it.
 - A mitigation attempt's diff touches exactly the files it declared, and Rust reads no meaning into a path (ADR 026). Nothing pre-filters an already-fixed finding.
 - Fiddle scans an image it did not build, and the bundle pairs the digest with the revision (ADR 020).
 - A `workflow_dispatch` lane on a feature branch is inert until its file reaches the default branch. `.github/workflows/github-effects.yml` carries the diagnosis.

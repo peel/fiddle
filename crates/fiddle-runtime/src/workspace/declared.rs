@@ -147,6 +147,19 @@ fn spelled_program(declared: &[DeclaredCommand], program: &str) -> String {
         .join(", ")
 }
 
+pub fn nameable(declared: &[DeclaredCommand]) -> Vec<String> {
+    declared
+        .iter()
+        .filter(|entry| the_model_could_write_it(entry))
+        .map(spell)
+        .collect()
+}
+
+fn the_model_could_write_it(entry: &DeclaredCommand) -> bool {
+    let program_is_a_bare_name = appendable(&entry.program).is_ok() && !entry.program.contains('/');
+    program_is_a_bare_name && entry.args.iter().all(|arg| appendable(arg).is_ok())
+}
+
 fn spell(entry: &DeclaredCommand) -> String {
     let mut spelled = format!("`{}", entry.program);
     for argument in &entry.args {
@@ -342,6 +355,73 @@ mod tests {
                 program: "tidy".to_string(),
                 declared: "none".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn the_brief_may_name_a_declaration_the_model_could_have_written_itself() {
+        let declared = vec![
+            declaration("tidy", &["--all"], Extend::None),
+            declaration("build", &["module", "edit"], Extend::Arguments),
+        ];
+
+        assert_eq!(
+            nameable(&declared),
+            vec![
+                "`tidy --all`".to_string(),
+                "`build module edit` (you may append arguments)".to_string(),
+            ],
+            "the brief spells a declaration the way the refusal spells it"
+        );
+    }
+
+    #[test]
+    fn the_brief_names_no_declaration_that_carries_a_host_fact() {
+        let hidden = vec![
+            declaration("/usr/local/bin/tidy", &["--all"], Extend::None),
+            declaration("../outside/tidy", &["--all"], Extend::None),
+            declaration("tidy", &["--config", "/etc/tidy.conf"], Extend::None),
+            declaration("tidy", &["--config", "../../etc/tidy.conf"], Extend::None),
+            declaration("tidy", &["--label", "a\nb"], Extend::None),
+        ];
+
+        for entry in &hidden {
+            assert!(
+                nameable(std::slice::from_ref(entry)).is_empty(),
+                "{entry:?} reaches the brief, and the deployment wrote a host \
+                 fact into it"
+            );
+        }
+
+        let mixed = vec![hidden[0].clone(), declaration("tidy", &[], Extend::None)];
+        assert_eq!(
+            nameable(&mixed),
+            vec!["`tidy`".to_string()],
+            "one declaration carrying a path must not withhold its neighbour"
+        );
+    }
+
+    #[test]
+    fn the_rule_the_brief_applies_is_the_rule_the_tool_applies() {
+        let entry = declaration("tidy", &["/etc/passwd"], Extend::Arguments);
+        assert!(
+            nameable(std::slice::from_ref(&entry)).is_empty(),
+            "the brief withholds what the model may not write"
+        );
+        assert!(
+            resolved(std::slice::from_ref(&entry), "tidy", &["/etc/passwd", "x"]).is_ok(),
+            "the declaration's own arguments stay unbounded, per ADR 044"
+        );
+        assert!(
+            matches!(
+                resolved(
+                    &[declaration("tidy", &[], Extend::Arguments)],
+                    "tidy",
+                    &["/etc/passwd"]
+                ),
+                Err(Undeclared::Argument { .. })
+            ),
+            "and the same words from the model are refused"
         );
     }
 

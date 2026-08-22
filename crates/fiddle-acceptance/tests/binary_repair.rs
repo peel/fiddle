@@ -870,6 +870,98 @@ fn a_declared_command_observes_neither_the_model_credential_nor_the_forge_token(
     }
 }
 
+const NAMEABLE: &str = "tidy";
+
+const NAMEABLE_ARGUMENT: &str = "--all";
+
+fn a_nameable_declaration_beside_one_carrying_a_host_path(config: &std::path::Path) -> String {
+    format!(
+        "{regenerator}\n[[workspace.commands]]\n\
+         program = \"{NAMEABLE}\"\n\
+         args = [\"{NAMEABLE_ARGUMENT}\"]\n\
+         extend = \"arguments\"\n\
+         \n[[workspace.commands]]\n\
+         program = \"{NAMEABLE}\"\n\
+         args = [\"--config\", {config}]\n",
+        regenerator = one_declared_regenerator(),
+        config = support::toml_string(config),
+    )
+}
+
+#[test]
+fn the_serialized_request_names_a_declared_program_and_no_declarations_host_path() {
+    let mut script = bumps_the_manifest();
+    script.push(regenerates_the_lock());
+    script.push(support::accepted(support::calls(
+        "run_check",
+        serde_json::json!({}),
+    )));
+    script.push(reports_both_files());
+
+    let gateway = StubGateway::serving(script);
+    let s = Scenario::new();
+    s.write_work_item(WORK_ID, "open");
+    let config = s.dir().join("tidy.conf");
+    a_deployment_declaring_a_regenerator(
+        &s,
+        &gateway,
+        &a_nameable_declaration_beside_one_carrying_a_host_path(&config),
+    );
+
+    let out = repair(&s);
+    let payload = payload(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the run must complete, or the requests below are not the requests a \
+         working attempt sends: payload = {payload} stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let bodies = gateway.request_bodies();
+    assert!(!bodies.is_empty(), "nothing reached the socket");
+
+    let mut roots = vec![s.dir().display().to_string()];
+    if let Ok(canonical) = s.dir().canonicalize() {
+        let canonical = canonical.display().to_string();
+        if !roots.contains(&canonical) {
+            roots.push(canonical);
+        }
+    }
+    let declared_program = support::check_stub_binary().to_string_lossy().to_string();
+
+    for (turn, body) in bodies.iter().enumerate() {
+        let request: serde_json::Value = serde_json::from_str(body)
+            .unwrap_or_else(|e| panic!("turn {turn} is not JSON ({e}): {body}"));
+        let brief = request["messages"][0].to_string();
+
+        assert!(
+            brief.contains(&format!(
+                "`{NAMEABLE} {NAMEABLE_ARGUMENT}` (you may append arguments)"
+            )),
+            "turn {turn} does not name the program the deployment declared, so \
+             the model can reach `run_command` only by guessing: {brief}"
+        );
+        for root in &roots {
+            assert!(
+                !body.contains(root.as_str()),
+                "turn {turn} shows the model the host path {root}. A deployment \
+                 may write an absolute path into a declaration, and the brief \
+                 must withhold that declaration rather than read it back: {body}"
+            );
+        }
+        assert!(
+            !brief.contains(&declared_program),
+            "turn {turn} reads back a declaration whose program is an absolute \
+             path: {brief}"
+        );
+        assert!(
+            !brief.contains("--config"),
+            "the withheld declaration reached the brief without its path: {brief}"
+        );
+    }
+}
+
 #[test]
 fn the_serialized_request_offers_a_fifth_tool_only_where_the_deployment_declares_a_program() {
     let mut script = bumps_the_manifest();
@@ -921,8 +1013,9 @@ fn the_serialized_request_offers_a_fifth_tool_only_where_the_deployment_declares
         assert!(
             !advertised.contains(&support::check_stub_binary().to_string_lossy().to_string()),
             "turn {turn} advertises the program the deployment declared. The \
-             schema and the preamble name none, and a program appears in a later \
-             turn only because the model itself wrote it: {advertised}"
+             schema names none, and this declaration's program is an absolute \
+             path, so the brief withholds it too (ADR 047). It appears in a \
+             later turn only because the model itself wrote it: {advertised}"
         );
     }
 }
