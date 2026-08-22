@@ -346,23 +346,25 @@ async fn the_fetch_offers_the_credential_the_push_offers() {
     let (push, _) = push_against_recording_git("tok").await;
 
     assert_eq!(
-        fetch.env.keys().collect::<Vec<_>>(),
-        push.env.keys().collect::<Vec<_>>(),
-        "a fetch and a push that differ in one name cannot both be satisfied by \
-         one host configuration, which is the defect this pins"
+        fetch.env, push.env,
+        "every name and every value, not the names alone. A fetch and a push \
+         that differ in one of either cannot both be satisfied by one host \
+         configuration, which is the defect this pins. A header keyed to \
+         another host would pass a comparison of names."
     );
+
+    let header = fetch
+        .env
+        .get("GIT_CONFIG_VALUE_0")
+        .expect("it must have reached git somehow — through the environment");
+    let encoded = header
+        .strip_prefix("Authorization: Basic ")
+        .expect("the header is HTTP basic auth");
     assert_eq!(
-        fetch.env["GIT_CONFIG_VALUE_0"],
-        push.env["GIT_CONFIG_VALUE_0"]
-    );
-    assert!(fetch.env["GIT_CONFIG_VALUE_0"].starts_with("Authorization: Basic "));
-    assert_eq!(
-        fetch.env.get("GIT_CONFIG_KEY_1").map(String::as_str),
-        Some("credential.helper")
-    );
-    assert_eq!(
-        fetch.env.get("GIT_CONFIG_VALUE_1").map(String::as_str),
-        Some("")
+        String::from_utf8(base64_decode(encoded)).unwrap(),
+        "x-access-token:tok",
+        "equality above passes if both sides are equally wrong, so the fetch's \
+         header is decoded here and not only compared"
     );
 }
 

@@ -44,6 +44,6 @@ The local runners refuse a subcommand that reaches a remote. `local_only` reads 
 
 The acceptance harness pushes to a private bare repository on the filesystem. A path remote needs no credential, so neither row of the table above exists in any offline world. The suite cannot express a remote that refuses an unauthenticated read. This is the eighth failure in M4b whose cause the stubs cannot state.
 
-`the_fetch_offers_the_credential_the_push_offers` compares the two environments name by name. `the_repository_adapter_offers_the_credential_when_it_fetches` reads the header out of a recording git. `the_local_runner_refuses_every_subcommand_that_reaches_a_remote` shows that no local call reaches the credentialed adapter.
+`the_fetch_offers_the_credential_the_push_offers` compares the two environments by name and by value, and it decodes the fetch's header. Names alone are not enough: a header keyed to another host carries the same five names and reaches nothing. `the_repository_adapter_offers_the_credential_when_it_fetches` reads the header out of a recording git. `the_local_runner_refuses_every_subcommand_that_reaches_a_remote` shows that no local call reaches the credentialed adapter.
 
 The three tests prove that the credential is offered. They do not prove that authentication succeeds. Only a live run against `github.com` proves that.
