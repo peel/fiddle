@@ -7,6 +7,7 @@ pub use tools::{
     RunCommand, RunCommandArgs, ToolError, ToolHost, WriteFile, WriteFileArgs, WriteReceipt,
 };
 
+use crate::gateway::Redaction;
 use crate::workspace::{declared, DeclaredCommand};
 use rig_agent::agent::OutputMode;
 use rig_agent::completion::{PromptError, StructuredOutputError, TypedPrompt};
@@ -243,6 +244,7 @@ pub enum AgentError {
 
 pub async fn attempt<M>(
     model: M,
+    redaction: &Redaction,
     host: ToolHost,
     budget: AgentBudget,
     direction: Direction<'_>,
@@ -253,6 +255,7 @@ where
     let task = task_for(direction);
     attempt_briefed(
         model,
+        redaction,
         host,
         budget,
         Brief {
@@ -265,6 +268,7 @@ where
 
 pub async fn attempt_briefed<M>(
     model: M,
+    redaction: &Redaction,
     host: ToolHost,
     budget: AgentBudget,
     brief: Brief<'_>,
@@ -309,7 +313,7 @@ where
         _ = tokio::time::sleep(budget.deadline) => return Err(AgentError::Bounded {
             reason: format!("the deadline of {:?} elapsed", budget.deadline),
         }),
-        result = run => result.map_err(classify)?,
+        result = run => result.map_err(|error| classify(error, redaction))?,
     };
 
     let changed = host
@@ -330,7 +334,7 @@ where
     Ok(report)
 }
 
-fn classify(error: StructuredOutputError) -> AgentError {
+fn classify(error: StructuredOutputError, redaction: &Redaction) -> AgentError {
     match error {
         StructuredOutputError::DeserializationError(source) => AgentError::Protocol {
             reason: format!("the report did not match the schema: {source}"),
@@ -358,6 +362,7 @@ fn classify(error: StructuredOutputError) -> AgentError {
                     other.provider_response_status(),
                     other.provider_response_body(),
                     &other,
+                    redaction,
                 ),
             },
         },
@@ -366,19 +371,32 @@ fn classify(error: StructuredOutputError) -> AgentError {
                 other.provider_response_status(),
                 other.provider_response_body(),
                 &other,
+                redaction,
             ),
         },
     }
 }
 
+const WITHHELD: &str = "fiddle holds no credential to redact, so it withholds the body";
+
 fn provider_fault(
     status: Option<impl std::fmt::Display>,
     body: Option<&str>,
     error: &dyn std::fmt::Display,
+    redaction: &Redaction,
 ) -> String {
     match (status, body) {
-        (Some(status), _) => format!("the gateway answered {status}"),
-        (None, Some(_)) => "the gateway answered with an error payload and no status".to_string(),
+        (Some(status), None) => format!("the gateway answered {status}"),
+        (Some(status), Some(body)) => match redaction.excerpt(body) {
+            Some(excerpt) => format!("the gateway answered {status}: {excerpt}"),
+            None => format!("the gateway answered {status}, and {WITHHELD}"),
+        },
+        (None, Some(body)) => match redaction.excerpt(body) {
+            Some(excerpt) => format!("the gateway answered with no status: {excerpt}"),
+            None => {
+                format!("the gateway answered with an error payload and no status, and {WITHHELD}")
+            }
+        },
         (None, None) => error.to_string(),
     }
 }
@@ -687,33 +705,118 @@ mod tests {
         );
     }
 
-    const ECHOED: &str =
-        r#"{"error":{"message":"Incorrect API key provided: sk-unit-must-not-appear-4c2f"}}"#;
+    const CREDENTIAL: &str = "sk-unit-must-not-appear-4c2f";
 
-    #[test]
-    fn a_preserved_provider_body_is_never_rendered_into_a_reason() {
+    const NO_CREDENTIAL: &str = "tool_choice required is not supported for this model";
+
+    fn a_refusal_quoting(text: &str) -> String {
+        format!(r#"{{"error":{{"message":"the gateway refused: {text}"}}}}"#)
+    }
+
+    fn provider_reason(body: &str, redaction: &Redaction) -> String {
         let error = StructuredOutputError::PromptError(Box::new(PromptError::CompletionError(
-            CompletionError::from_provider_body(ECHOED),
+            CompletionError::from_provider_body(body),
         )));
         assert!(
-            error.to_string().contains("sk-unit-must-not-appear-4c2f"),
+            error.to_string().contains(body),
             "rig no longer renders a preserved body, so this test is not \
              testing anything: {error}"
         );
 
-        match classify(error) {
+        match classify(error, redaction) {
+            AgentError::Provider { reason } => reason,
+            other => panic!("a provider failure must classify as Provider, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_preserved_body_that_echoes_the_credential_is_quoted_with_it_replaced() {
+        let reason = provider_reason(&a_refusal_quoting(CREDENTIAL), &Redaction::of(CREDENTIAL));
+
+        assert!(
+            !reason.contains(CREDENTIAL),
+            "the gateway's copy of the credential reached the reason: {reason}"
+        );
+        assert!(
+            reason.contains(crate::gateway::REDACTED),
+            "the reason must mark where the credential was: {reason}"
+        );
+        assert!(
+            reason.contains("the gateway refused"),
+            "the sentence the provider wrote is the whole evidence: {reason}"
+        );
+    }
+
+    #[test]
+    fn a_preserved_body_that_echoes_no_credential_is_quoted_whole() {
+        let reason = provider_reason(
+            &a_refusal_quoting(NO_CREDENTIAL),
+            &Redaction::of(CREDENTIAL),
+        );
+
+        assert!(
+            reason.contains(NO_CREDENTIAL),
+            "a body with no credential in it has nothing to withhold: {reason}"
+        );
+        assert!(
+            !reason.contains(crate::gateway::REDACTED),
+            "nothing was replaced, so nothing may claim it was: {reason}"
+        );
+    }
+
+    #[test]
+    fn a_preserved_body_is_withheld_when_the_credential_is_unknown() {
+        let reason = provider_reason(&a_refusal_quoting(CREDENTIAL), &Redaction::unknown());
+
+        assert!(
+            !reason.contains(CREDENTIAL),
+            "a path that cannot redact must quote nothing: {reason}"
+        );
+        assert!(
+            !reason.contains("the gateway refused"),
+            "the body may hold the credential, so no part of it may be quoted: {reason}"
+        );
+        assert!(
+            reason.contains("holds no credential to redact"),
+            "an operator must learn why the evidence is missing: {reason}"
+        );
+    }
+
+    #[test]
+    fn a_status_and_a_body_are_reported_together() {
+        let refused = rig_core::http_client::Response::builder()
+            .status(400)
+            .body(())
+            .expect("400 is a status");
+        let error = StructuredOutputError::PromptError(Box::new(PromptError::CompletionError(
+            CompletionError::from_http_response(refused.status(), a_refusal_quoting(NO_CREDENTIAL)),
+        )));
+
+        match classify(error, &Redaction::of(CREDENTIAL)) {
             AgentError::Provider { reason } => {
                 assert!(
-                    !reason.contains("sk-unit-must-not-appear-4c2f"),
-                    "the response body reached the reason: {reason}"
+                    reason.contains("400 Bad Request"),
+                    "the status is useful on its own and must stay: {reason}"
                 );
                 assert!(
-                    reason.contains("gateway"),
-                    "an operator must still learn who failed: {reason}"
+                    reason.contains(NO_CREDENTIAL),
+                    "the status alone is what run 32595349852 reported: {reason}"
                 );
             }
             other => panic!("a provider failure must classify as Provider, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_quoted_body_is_bounded() {
+        let long = "e".repeat(4096);
+        let reason = provider_reason(&long, &Redaction::of(CREDENTIAL));
+
+        assert!(
+            reason.len() < 400,
+            "an unbounded body would push the useful text out of a report: {}",
+            reason.len()
+        );
     }
 
     #[test]
@@ -725,7 +828,7 @@ mod tests {
             chat_history: Box::default(),
         }));
 
-        match classify(error) {
+        match classify(error, &Redaction::unknown()) {
             AgentError::Protocol { reason } => {
                 assert!(
                     reason.contains("str_replace_editor"),
@@ -746,7 +849,7 @@ mod tests {
             CompletionError::ProviderError("connection refused".to_string()),
         )));
 
-        match classify(error) {
+        match classify(error, &Redaction::of(CREDENTIAL)) {
             AgentError::Provider { reason } => assert!(
                 reason.contains("connection refused"),
                 "a failure with no provider body has nothing to withhold: {reason}"

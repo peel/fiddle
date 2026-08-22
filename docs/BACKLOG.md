@@ -262,8 +262,8 @@ Both halves are closed. Relativisation moved into `Workspace::run`, the one plac
 **2026-08-09 — Tool-output relativisation is a prefix rewrite, not a redactor** is right about the function. It understates who reads it. "Before the model sees them" names one of two consumers. The published bundle is the other, and its readers are not sandboxed. That entry's residue is unchanged. Nothing rewrites a Nix store path, a `~/.cargo` checkout, or a path in a panic message. That is now true of the bundle as well.
 
 Three things stay open:
-- `Published` bounds size and nothing else. It is deliberately not a redactor, because a denylist over content an adversary chooses is not a guarantee. Two channels could carry a secret and both are handled where text enters. `agent::provider_fault` never quotes a provider response body. A workspace command's output is relativised at construction. A third such channel added later gets the bound and not the analysis.
-- **A gateway that echoes a fragment of the credential is covered by nothing.** `provider_fault` withholds the whole body. Any future path quoting provider text selectively is uncovered. The general fix is a scrubber registered with the resolved credential at the one place it is read. That is a process-wide mutable registry, and therefore an ADR.
+- `Published` bounds size and nothing else. It is deliberately not a redactor, because a denylist over content an adversary chooses is not a guarantee. Two channels could carry a secret and both are handled where text enters. `agent::provider_fault` quoted no provider response body when this was written; ADR 050 changed that, and the quote now carries an exact replacement of the resolved credential. A workspace command's output is relativised at construction. A third such channel added later gets the bound and not the analysis.
+- **A gateway that echoes a fragment of the credential is covered by nothing.** Closed by ADR 050. A fragment is still uncovered, because a replacement matches the whole credential and nothing else. The registry this entry proposed was rejected; see 050's rejected option.
 - **`NextAction::Blocked.reason` is still a bare `String`** and is published. `fiddle-core` derives its content from an observation, so it is host-authored and short today. The argument for that is a property of the current deriver rather than of the type.
 Origin: implementation (epic fiddle-y1w6, holistic remediation iteration 1 — bean fiddle-joen)
 Tags: #debt #risk #security
@@ -312,7 +312,7 @@ Iteration 4 scored integration 6/7, coherence 6/7, holistic_spec_fidelity 8/8 (p
 1. **`Workspace::write` and `Workspace::read` disagree about what the project is.** `read` gates on `list()` and refuses anything outside it as `NotProject`. `write` consults neither `list()` nor the baseline ignore rules. So `write_file("target/x")` succeeds and is invisible to `changed_files()`, which makes `max_changed_files` evadable. Nothing is earned. The check decides the verdict, and the `.gitignore` channel is closed and tested. The fix gives `write` the same `list()` test. No test covers this.
 2. **`run_check`'s leak test uses the narrow root set.** `agent/tools.rs` defines `layout()` as everything about where this attempt runs that the model must never be told. That is the workspace, the fixture repository, the containing directory, and the attempt id. It applies `layout()` to `read_file`'s test and the narrower `roots()` to `run_check`'s. `relativised` strips only the workspace root, and the fixture repository is a sibling. A check that shells out to git can therefore print the fixture path to the model, as can a `build.rs` that reads VCS info. SYSTEM.md's invariant states the rule absolutely.
 3. **A git failure masks the milestone's central error.** `capability/repair.rs` derives `changed` with `?` before the exit-code gate. A failure asking git what changed therefore turns what should be `CheckFailed` into `CapabilityError::Workspace`. Moving the line below the gate costs nothing.
-4. **ADR 012 predates the work that refuted it.** It still states `OutputMode::Tool` as the operative mechanism. The wire shows rig overwrites it with `Native`, and the line is inert. Iteration 3 corrected the code doc, this file, and the calibration. Nobody corrected the ADR. Its budget consequence rests on `tier2.sh`'s 300-character reason excerpt letting a human spot a spend cap. After the `provider_fault` fix that excerpt reads only `the gateway answered <status>`. Commit `e993f4a` changed `DEFAULT_MODEL` in the same commit that added the inert line, so what made the tool loop work is unattributed. SYSTEM.md routes a cold reader to ADR 012.
+4. **ADR 012 predates the work that refuted it.** It still states `OutputMode::Tool` as the operative mechanism. The wire shows rig overwrites it with `Native`, and the line is inert. Iteration 3 corrected the code doc, this file, and the calibration. Nobody corrected the ADR. Its budget consequence rests on `tier2.sh`'s 300-character reason excerpt letting a human spot a spend cap. After the `provider_fault` fix that excerpt reads only `the gateway answered <status>`. ADR 050 reversed that half: the excerpt now carries the gateway's own sentence, and `tier2.sh` prints 2048 characters. Commit `e993f4a` changed `DEFAULT_MODEL` in the same commit that added the inert line, so what made the tool loop work is unattributed. SYSTEM.md routes a cold reader to ADR 012.
 
 **Recorded, lower value:**
 
@@ -1739,4 +1739,17 @@ ADR 047 made the brief name each declaration the model could have written itself
 **The shape of the work.** `spelled` and `spelled_program` in `crates/fiddle-runtime/src/workspace/declared.rs` build the refusal's list, and `nameable` already carries the predicate. The test that would fail is a sibling of `binary_repair::the_serialized_request_names_a_declared_program_and_no_declarations_host_path`, driven by a script that names an undeclared program.
 
 Origin: implementation (bean `fiddle-4r30`, lane `lane/m4b-4r30`)
+Tags: #debt #security
+
+### 2026-08-22 — A fragment of the credential is still uncovered, and one arm of the redaction has no acceptance test
+
+ADR 050 made `agent::provider_fault` quote the provider's body with the resolved credential replaced exactly. Three gaps stay open. The first two are properties of an exact replacement.
+
+**A fragment is not replaced.** `Redaction::excerpt` replaces the whole credential. A gateway that echoes the first twelve characters of a key, or a hash of it, passes through untouched. Nothing here has seen a gateway do either. The remedy is not a pattern: a pattern over adversary-chosen text fails open while claiming coverage, which is what 050's rejected option argued.
+
+**An encoding is not replaced.** `GitCli::redact` replaces its token and the base64 form of the header that carries it. `Redaction` replaces the raw string alone, because an OpenAI-compatible gateway sends `Authorization: Bearer <key>` and echoes the raw key. A gateway that echoes a header it decoded differently is uncovered.
+
+**The unknown-credential arm has no acceptance test.** `a_preserved_body_is_withheld_when_the_credential_is_unknown` is a unit test. No production path reaches that arm, because `model_client` resolves the credential before it builds the client. So the acceptance suite cannot express the arm without a stub model, and it does not.
+
+Origin: implementation (bean `fiddle-zjea`, lane `lane/m4b-zjea`)
 Tags: #debt #security

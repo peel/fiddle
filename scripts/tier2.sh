@@ -218,7 +218,7 @@ print(f"  repair landed  = {record['repair_landed']}")
 print(f"  exit code      = {record['exit_code']}")
 print(f"  elapsed        = {record['elapsed_seconds']}s")
 if reason:
-    print(f"  reason         = {reason[:300]}")
+    print(f"  reason         = {reason[:2048]}")
 PY
 }
 

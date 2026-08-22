@@ -6,6 +6,7 @@ use fiddle_runtime::cve::project::project;
 use fiddle_runtime::evaluate::{Answered, Check, Contract, Repair, Success, Tree, Unanswered};
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner, Wizcli};
 use fiddle_runtime::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
+use fiddle_runtime::Redaction;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -1068,6 +1069,7 @@ impl MigrationWorld {
                 max_changed_files: 16,
                 tool_timeout: MIGRATION_CHECK_TIMEOUT,
             },
+            redaction: Redaction::unknown(),
             cancel: CancellationToken::new(),
         }
     }

@@ -1,6 +1,6 @@
 # 012 — M1 talks to an OpenAI-compatible gateway, not to Anthropic
 
-Status: accepted
+Status: accepted; amended in M4b by 050, which replaces "Suppressing the body was right and stays"
 Cites: crates/fiddle-runtime/src/gateway.rs, GatewayModel, completion_model, completions_api, AgentError, agent::classify, agent::provider_fault, OutputMode::Tool, crates/fiddle-cli/tests/smoke.rs, scripts/tier2.sh, crates/fiddle-acceptance/tests/binary_repair.rs
 
 ## Context
@@ -50,9 +50,9 @@ The mechanism this ADR first gave for the fix does not. It said `OutputMode::Aut
 
 Recorded as open rather than asserted as satisfied, because an accepted ADR claiming a requirement it does not meet is worse than one that admits the gap.
 
-`AgentError` carries four variants, `Bounded`, `Cancelled`, `Protocol` and `Provider`, and `agent::classify` matches Rig's typed variants rather than its message text, deliberately. A spend-cap refusal is an HTTP error with no typed variant, so it falls to the wildcard arm as `Provider { reason }`. Commit `4b2333b` reduced `agent::provider_fault` to "the gateway answered <status>" for any error carrying a status, because an error body is where a credential echo surfaces. So a human reading a Tier 2 artifact can separate an exhausted budget from a broken capability only if the gateway answers a spend cap with a status it uses for nothing else, which this project has never seen. Read the earlier claim, that the reason text told them apart, as withdrawn.
+`AgentError` carries four variants, `Bounded`, `Cancelled`, `Protocol` and `Provider`, and `agent::classify` matches Rig's typed variants rather than its message text, deliberately. A spend-cap refusal is an HTTP error with no typed variant, so it falls to the wildcard arm as `Provider { reason }`. Commit `4b2333b` reduced `agent::provider_fault` to "the gateway answered <status>" for any error carrying a status, because an error body is where a credential echo surfaces. ADR 050 narrowed that in M4b: the reason now quotes the body with the resolved credential replaced exactly. A human reading a Tier 2 artifact now sees the sentence the gateway wrote, so a spend cap that names itself is readable. This project has never captured that response, so the sentence it carries is unknown. No code separates the two, because no variant and no field types the difference. Read the earlier claim, that the reason text told them apart in code, as withdrawn.
 
-Suppressing the body was right and stays. What is missing is a typed signal beside it, which is the opposite of parsing prose. Closing the gap needs one observation first: a key minted with a token `max_budget`, spent, and the response captured. Then either a fifth `AgentError` variant, or a typed field on `Provider` that `tier2.sh` can key on. Writing a classifier against a guessed string would be worse than the gap, because it fails open while claiming the coverage and no test can pin it. `docs/BACKLOG.md` records it as deferred debt under 2026-08-09.
+Suppressing the body was right for as long as fiddle could not redact it, and ADR 050 records what changed. What is still missing is a typed signal beside the status, which is the opposite of parsing prose. Closing the gap needs one observation first: a key minted with a token `max_budget`, spent, and the response captured. Then either a fifth `AgentError` variant, or a typed field on `Provider` that `tier2.sh` can key on. Writing a classifier against a guessed string would be worse than the gap, because it fails open while claiming the coverage and no test can pin it. `docs/BACKLOG.md` records it as deferred debt under 2026-08-09.
 
 ## Model names come from the gateway
 

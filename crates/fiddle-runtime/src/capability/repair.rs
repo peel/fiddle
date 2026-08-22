@@ -1,5 +1,6 @@
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts};
+use crate::gateway::Redaction;
 use crate::workspace::{DeclaredCommand, Workspace, WorkspaceCommand};
 use fiddle_core::{correlation_key, CapabilityId, ChangeSetState, EvidenceRef};
 use std::path::PathBuf;
@@ -56,6 +57,8 @@ pub struct RepairConfig {
     pub command_timeout: std::time::Duration,
 
     pub budget: AgentBudget,
+
+    pub redaction: Redaction,
 
     pub cancel: CancellationToken,
 }
@@ -151,6 +154,7 @@ where
 
         let report = attempt(
             self.model.clone(),
+            &config.redaction,
             host,
             config.budget.clone(),
             Direction::Fresh,
@@ -282,6 +286,7 @@ mod tests {
                     max_changed_files: 16,
                     tool_timeout: Duration::from_secs(180),
                 },
+                redaction: Redaction::unknown(),
                 cancel: CancellationToken::new(),
             }
         }

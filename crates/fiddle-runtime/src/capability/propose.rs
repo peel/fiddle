@@ -5,6 +5,7 @@ use crate::effect::{
     EffectContext, EffectOutcome, EffectReceipt, Executor, IntegrationOperation, ObservedState,
     ResolvedDecision,
 };
+use crate::gateway::Redaction;
 use crate::github::{
     branch_name, EnsureBranchPublished, EnsurePullRequest, EnsurePullRequestReady, GhError,
     PullRequest,
@@ -73,6 +74,8 @@ pub struct ProposeConfig {
     pub command_timeout: std::time::Duration,
 
     pub budget: AgentBudget,
+
+    pub redaction: Redaction,
 
     pub deciders: Vec<u64>,
 
@@ -344,6 +347,7 @@ where
 
         let report = attempt(
             self.model.clone(),
+            &self.config.redaction,
             host,
             self.config.budget.clone(),
             direction,

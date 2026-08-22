@@ -6,6 +6,7 @@ use fiddle_runtime::core::{correlation_key, AttemptId, NextAction, RunOutcome, F
 use fiddle_runtime::journal::FileJournal;
 use fiddle_runtime::orchestration::{self, Addressed, RunContext, RunReport};
 use fiddle_runtime::workspace::WorkspaceCommand;
+use fiddle_runtime::Redaction;
 use fiddle_runtime::{StubChangePort, StubWorkItemPort};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
@@ -439,6 +440,7 @@ impl Fixture {
                 max_changed_files: 16,
                 tool_timeout: Duration::from_secs(180),
             },
+            redaction: Redaction::unknown(),
             cancel: tokio_util::sync::CancellationToken::new(),
         }
     }
