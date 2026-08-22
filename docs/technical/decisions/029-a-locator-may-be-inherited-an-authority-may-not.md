@@ -5,7 +5,7 @@ Cites: fiddle_runtime::process::run_bounded, workspace/command.rs, github/cli.rs
 
 ## Context
 
-Fiddle spawns a child process from three places: a workspace check, the `gh` adapter, and `git push`. Each needs a different environment, and an inherited environment leaks whatever the operator's shell holds. Four documents once stated the workspace set four different ways, each true of the fragment its author was arguing about.
+Fiddle spawns a child process from three places: a workspace check, the `gh` adapter, and the network git. ADR 046 gives the fetch the same set as the push. Each needs a different environment, and an inherited environment leaks whatever the operator's shell holds. Four documents once stated the workspace set four different ways, each true of the fragment its author was arguing about.
 
 ## Decision
 
@@ -27,7 +27,7 @@ Each set is stated once, in the test that pins it.
 | --- | --- | --- |
 | workspace command | `HOME`, `LANG`, `PATH`, `RUSTUP_HOME` | a scratch directory beside the worktree |
 | `gh` | `PATH`, `GH_TOKEN`, `GH_CONFIG_DIR`, `GH_PROMPT_DISABLED`, `NO_COLOR` | absent |
-| `git push` | `PATH`, `GIT_TERMINAL_PROMPT`, and five names carrying one header and an emptied `credential.helper` | absent |
+| `git push` and `git fetch` | `PATH`, `GIT_TERMINAL_PROMPT`, and five names carrying one header and an emptied `credential.helper` | absent |
 
 What all three share is the bound. The process group, the deadline and the cancellation are written once, in `run_bounded`.
 

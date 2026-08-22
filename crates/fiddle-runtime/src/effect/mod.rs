@@ -264,6 +264,10 @@ impl<'a> Executor<'a> {
         &self.invocation_ref
     }
 
+    pub fn git(&self) -> &GitCli {
+        &self.ctx.git
+    }
+
     pub async fn observe_checks(
         &self,
         repo: &str,

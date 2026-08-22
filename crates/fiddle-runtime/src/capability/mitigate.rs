@@ -202,7 +202,15 @@ where
             return Ok(run);
         }
 
-        let checkout = check_out(&InRepository::new(&self.config.tree), &approved).await?;
+        let checkout = check_out(
+            &InRepository::new(
+                &self.config.tree,
+                self.executor.git(),
+                self.config.cancel.clone(),
+            ),
+            &approved,
+        )
+        .await?;
         self.observed.lock().unwrap().tree = Some(observed_tree(&checkout, report));
 
         let worktree = self.worktree();
@@ -224,7 +232,11 @@ where
             checkout.revision(),
             self.config.cancel.clone(),
         )?);
-        let git = InWorktree::new(&workspace, self.config.budget.tool_timeout);
+        let git = InWorktree::new(
+            &workspace,
+            self.config.budget.tool_timeout,
+            self.executor.git(),
+        );
 
         let fixed = commit_log_dedup(workspace.root(), &self.config.base)?;
 

@@ -22,12 +22,35 @@ One step goes away: `Run claude-code-action for CVE remediation`, which uses
 The `remediate` job's `permissions:` block also gains one line, `checks: read`.
 That is the second hunk, and the section below says why.
 
+The checkout step gains one line, `persist-credentials: false`. The section
+"THE CHECKOUT MUST PERSIST NO CREDENTIAL" says why, and that line is not a hunk
+here for the reason stated there.
+
 Every other step in the `remediate` job is byte-identical. The patch is two
 hunks. It removes eight lines, and all eight belong to the deleted step. These
 stay: `needs: scan`, the `if` on `has_work` and `on_default_branch`,
 `actions/checkout@v4` with `fetch-depth: 0`, the `cve-lists` download, and
 `setup-wiz`. The three permissions the job already held stay, and a fourth joins
 them. The Jira step and the Slack step stay. The `scan` job is untouched.
+
+THE CHECKOUT MUST PERSIST NO CREDENTIAL
+
+Add `persist-credentials: false` beside `fetch-depth: 0` in the checkout step.
+
+fiddle authenticates every git operation that reaches a remote. It offers one
+`http.https://github.com/.extraHeader` to the fetch and to the push (ADR 046).
+`actions/checkout` persists a header of its own by default. Both headers then
+apply to the same request, and the remote answers
+`remote: Duplicate header: "Authorization"`. Run 32533261303 failed that way.
+
+Removing fiddle's header is not the alternative. With `persist-credentials:
+false` and no header of its own, the fetch fails with
+`could not read Username for 'https://github.com'`. Run 32578049819 failed that
+way.
+
+This line is prose and not a diff hunk. A hunk needs three lines of trailing
+context, and this record does not hold the three lines that follow the checkout
+block. A fabricated context would produce a patch that does not apply.
 
 `setup-wiz` stays because it installs `wizcli` and logs it in. fiddle uses the
 login that action leaves behind. fiddle names no configuration directory of its

@@ -56,6 +56,14 @@ async fn push_against_recording_git(token: &str) -> (Recorded, Result<(), GitErr
     (recorded(dir.path(), "push"), outcome.map(|_| ()))
 }
 
+async fn fetch_against_recording_git(token: &str) -> (Recorded, Result<(), GitError>) {
+    let dir = TempDir::new().unwrap();
+    let outcome = recording_git(dir.path(), token, "accepted")
+        .fetch(dir.path(), "main", &CancellationToken::new())
+        .await;
+    (recorded(dir.path(), "fetch"), outcome)
+}
+
 fn base64_decode(text: &str) -> Vec<u8> {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut bits = 0u32;
@@ -140,6 +148,21 @@ fn remote_sha(remote: &Path, branch: &str) -> String {
         .current_dir(remote)
         .output()
         .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn rev_parse(dir: &Path, revision: &str) -> String {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", revision])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git rev-parse {revision} in {} failed: {}",
+        dir.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
@@ -313,6 +336,107 @@ async fn the_push_environment_is_exactly_seven_names_and_no_home() {
         ],
         "an eighth name here is a change to the security boundary, and HOME \
          is the one that would undo the whole of it"
+    );
+}
+
+#[tokio::test]
+async fn the_fetch_offers_the_credential_the_push_offers() {
+    let (fetch, outcome) = fetch_against_recording_git("tok").await;
+    outcome.expect("an accepted fetch reports nothing and fails at nothing");
+    let (push, _) = push_against_recording_git("tok").await;
+
+    assert_eq!(
+        fetch.env.keys().collect::<Vec<_>>(),
+        push.env.keys().collect::<Vec<_>>(),
+        "a fetch and a push that differ in one name cannot both be satisfied by \
+         one host configuration, which is the defect this pins"
+    );
+    assert_eq!(
+        fetch.env["GIT_CONFIG_VALUE_0"],
+        push.env["GIT_CONFIG_VALUE_0"]
+    );
+    assert!(fetch.env["GIT_CONFIG_VALUE_0"].starts_with("Authorization: Basic "));
+    assert_eq!(
+        fetch.env.get("GIT_CONFIG_KEY_1").map(String::as_str),
+        Some("credential.helper")
+    );
+    assert_eq!(
+        fetch.env.get("GIT_CONFIG_VALUE_1").map(String::as_str),
+        Some("")
+    );
+}
+
+#[tokio::test]
+async fn the_fetch_command_line_names_one_branch_and_takes_no_tags() {
+    let (fetch, _) = fetch_against_recording_git("tok").await;
+    assert_eq!(
+        fetch.argv,
+        [
+            "fetch",
+            "--no-tags",
+            "--quiet",
+            "origin",
+            "+refs/heads/main:refs/remotes/origin/main"
+        ],
+        "a wider refspec would move refs this run did not name"
+    );
+}
+
+#[tokio::test]
+async fn the_token_never_appears_in_the_fetched_command_line() {
+    const SENTINEL: &str = "ghp_fetch_argv_sentinel";
+    let (fetch, _) = fetch_against_recording_git(SENTINEL).await;
+    assert!(
+        !fetch.argv.iter().any(|arg| arg.contains(SENTINEL)),
+        "a credential in argv is readable by every process on the host: {:?}",
+        fetch.argv
+    );
+}
+
+#[tokio::test]
+async fn a_fetch_that_offers_the_credential_still_reads_a_path_remote() {
+    let dir = TempDir::new().unwrap();
+    let remote = bare_repository(dir.path());
+    let author = worktree_with_one_commit(dir.path(), "author", &remote, "one");
+    real_git()
+        .publish(&author, "main", &CancellationToken::new())
+        .await
+        .expect("a path remote accepts the push");
+
+    let reader = dir.path().join("reader");
+    std::fs::create_dir_all(&reader).unwrap();
+    git_setup(&reader, &["init", "-q", "."]);
+    git_setup(
+        &reader,
+        &["remote", "add", "origin", &remote.display().to_string()],
+    );
+
+    real_git()
+        .fetch(&reader, "main", &CancellationToken::new())
+        .await
+        .expect("the header names github.com, so a path remote ignores it");
+
+    assert_eq!(
+        rev_parse(&reader, "refs/remotes/origin/main"),
+        remote_sha(&remote, "main"),
+        "the acceptance harness fetches from a path remote, and the credential \
+         must not change what it reads"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_branch_name_never_reaches_a_fetch() {
+    let dir = TempDir::new().unwrap();
+    let refusal = recording_git(dir.path(), "tok", "accepted")
+        .fetch(dir.path(), "--upload-pack=touch", &CancellationToken::new())
+        .await;
+    assert!(
+        matches!(refusal, Err(GitError::InvalidBranch { .. })),
+        "{refusal:?}"
+    );
+    assert!(
+        !dir.path().join("fetch.json").exists(),
+        "the refusal has to happen before git is spawned"
     );
 }
 

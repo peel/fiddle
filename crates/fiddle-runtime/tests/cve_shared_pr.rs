@@ -990,7 +990,7 @@ async fn publish(forge: &Forge, world: &RemoteWorld) -> Published {
     let changed = world.bump_into(workspace.root());
     let before = journal.records().len();
     land(
-        &InWorktree::new(&workspace, PATIENT),
+        &InWorktree::new(&workspace, PATIENT, &unreachable_git()),
         &advisories_of(&world.findings),
         &GroupStatus::Clean,
         &changed,
