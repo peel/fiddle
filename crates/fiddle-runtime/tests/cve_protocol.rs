@@ -316,7 +316,7 @@ async fn the_prompt_names_no_ecosystem_and_no_chosen_version() {
     let briefing = briefing(&model, &cves);
 
     assert!(
-        briefing.whole.contains("read its files"),
+        briefing.whole.contains("Use the tools this run offers you"),
         "the system text has to be in the briefing this lane reads: {}",
         briefing.whole
     );

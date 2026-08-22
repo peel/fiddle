@@ -1,6 +1,6 @@
 # 047 — The brief names the declarations the model could have written itself
 
-Status: accepted
+Status: accepted; extended in M4b by [048](048-the-brief-enumerates-no-tool-and-closes-no-list.md), which removed the sentence denying the tool this record names.
 Cites: fiddle_runtime::agent::briefed, NAMED_DECLARATIONS, HOW_TO_WRITE_A_DECLARATION, DECLARED_COMMANDS, fiddle_runtime::workspace::declared::nameable, the_model_could_write_it, appendable, spell, Undeclared, the_brief_names_the_program_the_deployment_declared, the_brief_withholds_a_declaration_that_carries_a_host_path, the_brief_names_no_ecosystem_that_the_deployment_did_not_declare, the_rule_the_brief_applies_is_the_rule_the_tool_applies, binary_repair::the_serialized_request_names_a_declared_program_and_no_declarations_host_path
 
 ## Context

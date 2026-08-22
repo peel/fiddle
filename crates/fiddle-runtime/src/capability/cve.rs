@@ -26,14 +26,13 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const MIGRATION_PREAMBLE: &str = "\
-You are making one change to one project. You can read its files, list them, \
-replace a file's contents, and run the project's check. You cannot do anything \
-else, and there is nothing outside the project you can reach.\n\
+You are making one change to one project. Use the tools this run offers you, \
+and name only paths inside the project.\n\
 \n\
 Work in small steps: read before you write, and run the check after you write. \
 Change as few files as you can. When you are done — or when you are certain you \
-cannot finish — reply with the structured report and nothing else. Report what \
-you actually changed, whether or not it worked.";
+cannot finish — reply with only the structured report. Report what you actually \
+changed, whether or not it worked.";
 
 const FINDINGS_FRAME: &str = "\
 A dependency bump has already been applied to this project to clear the \
@@ -1345,6 +1344,15 @@ mod tests {
                 "`{mechanical}` is decided in Rust and must not be in the prompt: {task}"
             );
         }
+    }
+
+    #[test]
+    fn the_migration_brief_denies_no_ability_the_tool_set_gives() {
+        assert_eq!(
+            crate::agent::denies_an_ability(MIGRATION_PREAMBLE),
+            Vec::<String>::new(),
+            "this brief runs against the same tool set: {MIGRATION_PREAMBLE}"
+        );
     }
 
     #[test]

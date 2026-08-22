@@ -17,14 +17,13 @@ use std::future::IntoFuture;
 use std::time::Duration;
 
 const PREAMBLE: &str = "\
-You are repairing one small Rust project. You can read its files, list them, \
-replace a file's contents, and run the project's check. You cannot do anything \
-else, and there is nothing outside the project you can reach.\n\
+You are repairing one project. Use the tools this run offers you, and name only \
+paths inside the project.\n\
 \n\
 Work in small steps: read before you write, and run the check after you write. \
 Change as few files as you can. When you are done — or when you are certain you \
-cannot finish — reply with the structured report and nothing else. Report what \
-you actually changed, whether or not it worked.";
+cannot finish — reply with only the structured report. Report what you actually \
+changed, whether or not it worked.";
 
 const TASK: &str = "Repair this project so that its check passes, then report what you did.";
 
@@ -41,6 +40,27 @@ fixes:";
 const HOW_TO_WRITE_A_DECLARATION: &str = "\
 Write the whole of a line, and add your own arguments after it only where the \
 line says you may.";
+
+#[cfg(test)]
+pub(crate) fn denies_an_ability(brief: &str) -> Vec<String> {
+    const DENIED: [&str; 5] = ["cannot", "can not", "may not", "must not", "unable to"];
+    const EVERY_ACTION: [&str; 5] = [
+        "anything",
+        "everything",
+        "nothing else",
+        "no other",
+        "any other",
+    ];
+
+    brief
+        .split(['.', '!', '?'])
+        .map(str::to_lowercase)
+        .filter(|sentence| {
+            DENIED.iter().any(|denial| sentence.contains(denial))
+                && EVERY_ACTION.iter().any(|action| sentence.contains(action))
+        })
+        .collect()
+}
 
 fn briefed(preamble: &str, commands: &[DeclaredCommand]) -> String {
     if commands.is_empty() {
@@ -455,6 +475,60 @@ mod tests {
             "one input separates these two briefs, and this one declares \
              nothing: {silent}"
         );
+    }
+
+    const CLOSED: &str = "You can read its files, list them, replace a file's \
+                          contents, and run the project's check. You cannot do \
+                          anything else, and there is nothing outside the \
+                          project you can reach.";
+
+    #[test]
+    fn no_brief_denies_an_ability_the_tool_set_gives() {
+        assert_eq!(
+            denies_an_ability(CLOSED).len(),
+            1,
+            "the sentence this test exists to keep out is the one it has to \
+             catch, and it caught {:?}",
+            denies_an_ability(CLOSED)
+        );
+        assert!(
+            denies_an_ability("You are certain you cannot finish.").is_empty(),
+            "a check that flags every denial flags the brief's own second \
+             paragraph, and then it proves nothing"
+        );
+
+        for (deployment, brief) in [
+            ("declares no program", briefed(PREAMBLE, &[])),
+            ("declares one program", briefed(PREAMBLE, &a_fetch())),
+        ] {
+            assert_eq!(
+                denies_an_ability(&brief),
+                Vec::<String>::new(),
+                "the deployment {deployment}, and its brief denies an ability \
+                 that a registered tool gives: {brief}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_brief_claims_no_ecosystem_and_no_size_for_the_project() {
+        for claim in [
+            "Rust",
+            "Go ",
+            "go.mod",
+            "cargo",
+            "Cargo.toml",
+            "npm",
+            "small project",
+            "large project",
+            "big project",
+            "tiny project",
+        ] {
+            assert!(
+                !PREAMBLE.contains(claim),
+                "fiddle does not know this, and the brief claims it: {claim:?}"
+            );
+        }
     }
 
     #[test]
