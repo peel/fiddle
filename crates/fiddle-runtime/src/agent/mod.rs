@@ -5,7 +5,7 @@ pub use audit::AuditHook;
 pub use tools::{
     CheckOutcome, EditFile, EditFileArgs, ListFiles, ListFilesArgs, Listing, NoArgs, ReadFile,
     ReadFileArgs, RunCheck, RunCommand, RunCommandArgs, ToolError, ToolHost, WriteFile,
-    WriteFileArgs, WriteReceipt, NOTE_CAP_BYTES, RESULT_CAP_BYTES, STREAM_CAP_BYTES,
+    WriteFileArgs, WriteReceipt, NOTE_ALLOWANCE_BYTES, RESULT_CAP_BYTES, STREAM_CAP_BYTES,
 };
 
 use crate::gateway::Redaction;

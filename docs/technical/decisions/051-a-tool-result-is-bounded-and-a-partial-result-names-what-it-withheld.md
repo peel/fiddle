@@ -1,7 +1,7 @@
 # 051 — A tool result is bounded, and a partial result names what it withheld
 
 Status: accepted
-Cites: fiddle_runtime::agent::tools::RESULT_CAP_BYTES, STREAM_CAP_BYTES, NOTE_CAP_BYTES, ReadFileArgs, ListFilesArgs, Listing, page_of_lines, page_of_paths, head_and_tail, ToolError::ReadRefused, ToolError::ListingRefused, a_read_inside_the_limit_gives_the_whole_file_and_withholds_nothing, the_same_read_beyond_the_limit_gives_part_and_counts_the_lines_it_withheld, an_offset_reaches_the_last_line_of_a_file_no_one_read_can_hold, a_line_longer_than_the_limit_is_cut_and_the_note_counts_the_bytes, a_read_refuses_an_offset_past_the_end_and_names_the_line_count, a_read_result_stays_inside_one_bound_however_large_the_file_grows, a_listing_beyond_the_limit_gives_part_and_counts_the_paths_it_withheld, a_check_that_prints_past_the_limit_keeps_its_start_and_its_end, forty_turns_of_the_largest_tool_result_stay_inside_the_measured_context
+Cites: fiddle_runtime::agent::tools::RESULT_CAP_BYTES, STREAM_CAP_BYTES, NOTE_ALLOWANCE_BYTES, ReadFileArgs, ListFilesArgs, Listing, page_of_lines, page_of_paths, head_and_tail, ToolError::ReadRefused, ToolError::ListingRefused, a_read_inside_the_limit_gives_the_whole_file_and_withholds_nothing, the_same_read_beyond_the_limit_gives_part_and_counts_the_lines_it_withheld, an_offset_reaches_the_last_line_of_a_file_no_one_read_can_hold, a_line_longer_than_the_limit_is_cut_and_the_note_counts_the_bytes, a_read_refuses_an_offset_past_the_end_and_names_the_line_count, a_read_result_stays_inside_one_bound_however_large_the_file_grows, a_listing_beyond_the_limit_gives_part_and_counts_the_paths_it_withheld, a_check_that_prints_past_the_limit_keeps_its_start_and_its_end, forty_turns_of_the_largest_tool_result_stay_inside_the_measured_context
 
 ## Context
 
@@ -15,7 +15,7 @@ The repository under repair holds a `go.sum` of 94,050 bytes and a `cmd/serve_te
 
 ## Decision
 
-**One tool result holds at most `RESULT_CAP_BYTES`, which is 16384 bytes.** A stream a program printed holds at most `STREAM_CAP_BYTES`, which is half of that. So a result carrying two streams stays inside the same bound. A note that reports a cut holds at most `NOTE_CAP_BYTES`, which is 512 bytes.
+**One tool result holds at most `RESULT_CAP_BYTES`, which is 16384 bytes.** A stream a program printed holds at most `STREAM_CAP_BYTES`, which is half of that. So a result carrying two streams stays inside the same bound. A note that reports a cut holds at most `NOTE_ALLOWANCE_BYTES`, which is 512 bytes.
 
 **`read_file` takes an `offset` and a `limit`, and addresses in lines.** `offset` names the first line and starts at 1. `limit` counts lines. The cap stops a page that the limit did not.
 

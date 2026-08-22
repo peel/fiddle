@@ -172,7 +172,7 @@ pub const RESULT_CAP_BYTES: usize = 16 * 1024;
 
 pub const STREAM_CAP_BYTES: usize = RESULT_CAP_BYTES / 2;
 
-pub const NOTE_CAP_BYTES: usize = 512;
+pub const NOTE_ALLOWANCE_BYTES: usize = 512;
 
 pub struct ReadFile;
 
@@ -1377,7 +1377,7 @@ pub(crate) mod tests {
             "the returned text must stop where the note says it stops"
         );
         assert!(
-            got.len() <= RESULT_CAP_BYTES + NOTE_CAP_BYTES,
+            got.len() <= RESULT_CAP_BYTES + NOTE_ALLOWANCE_BYTES,
             "the read returned {} bytes",
             got.len()
         );
@@ -1444,7 +1444,7 @@ pub(crate) mod tests {
             "{note}"
         );
         assert!(
-            got.len() <= RESULT_CAP_BYTES + NOTE_CAP_BYTES,
+            got.len() <= RESULT_CAP_BYTES + NOTE_ALLOWANCE_BYTES,
             "the read returned {} bytes",
             got.len()
         );
@@ -1498,7 +1498,7 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
             assert!(
-                got.len() <= RESULT_CAP_BYTES + NOTE_CAP_BYTES,
+                got.len() <= RESULT_CAP_BYTES + NOTE_ALLOWANCE_BYTES,
                 "a file of {} bytes put {} bytes into the conversation",
                 count * LINE_BYTES,
                 got.len()
@@ -1575,7 +1575,7 @@ pub(crate) mod tests {
         let outcome = RunCheck.call(&mut ctx, NoArgs::default()).await.unwrap();
 
         assert!(
-            outcome.stdout.len() <= STREAM_CAP_BYTES + NOTE_CAP_BYTES,
+            outcome.stdout.len() <= STREAM_CAP_BYTES + NOTE_ALLOWANCE_BYTES,
             "the check put {} bytes into the conversation",
             outcome.stdout.len()
         );

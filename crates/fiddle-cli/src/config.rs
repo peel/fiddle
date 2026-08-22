@@ -1212,7 +1212,7 @@ success = "artefact-written"
         const REFUSED_REQUEST_BYTES: usize = 1_527_171;
 
         let per_turn =
-            fiddle_runtime::agent::RESULT_CAP_BYTES + fiddle_runtime::agent::NOTE_CAP_BYTES;
+            fiddle_runtime::agent::RESULT_CAP_BYTES + fiddle_runtime::agent::NOTE_ALLOWANCE_BYTES;
         let worst = default_max_turns() * per_turn;
 
         assert!(
