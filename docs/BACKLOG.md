@@ -1714,3 +1714,16 @@ SYSTEM.md's own invariant already says `docs/specs/` stays gitignored and the be
 **Rule.** When a bean asks a lane to correct a statement, quote the statement in the bean and name the file. If the source is untracked, the quote in the bean is the only copy the lane will see.
 
 Origin: fiddle-56eq, fiddle-v2pf. #beans #docs #lanes
+
+### 2026-08-22 — The repository runner inherits the operator's environment, and only a guard keeps it local
+
+`InRepository::run` reaches git through `dedup::Local`, which builds a `std::process::Command` and clears nothing. ADR 029 states three cleared spawn sets, and this is a fourth site that is in none of them. A run therefore hands git whatever the invoking shell holds, including a `GIT_CONFIG_*` channel or a `GITHUB_TOKEN`.
+
+Nothing observable is broken today. ADR 046 made the network unreachable from that runner: `local_only` refuses `clone`, `fetch`, `ls-remote`, `pull` and `push`, so an inherited credential has no request to attach itself to. `git_credential_path::the_local_runner_refuses_every_subcommand_that_reaches_a_remote` pins that.
+
+**Why it is still owed.** The guard names five subcommands. A sixth that reaches a remote — `git remote update`, or a future `git bundle` over a transport — would pass the guard and inherit the environment. The set is a list, and the environment is the boundary. `dedup::Local` should clear and pass a named set, the way `Workspace::run` and `GitCli::common_environment` do.
+
+**The shape of the work.** `Spawn::run` has one production implementation and two call sites. `Local::run` gains an `env_clear` and the four names a local git read needs. The test that would fail today is a sibling of `workspace::a_workspace_command_inherits_no_credential`, spelled against `Local`.
+
+Origin: implementation (bean `fiddle-u1bb`, lane `lane/m4b-u1bb`)
+Tags: #debt #security

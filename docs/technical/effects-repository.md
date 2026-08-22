@@ -422,7 +422,7 @@ rather than merely not pointed at it — the difference between a rule and a hab
 [acceptance-repository.md](acceptance-repository.md) records the same episode from
 the other side.
 
-The credential never reaches an `argv`. `git push` carries it in
+The credential never reaches an `argv`. `git push` and `git fetch` carry it in
 `http.https://github.com/.extraHeader` through `GIT_CONFIG_*`, `gh` carries it in
 `GH_TOKEN`, and the lane's own `gh` does the same — with `GH_CONFIG_DIR` pointed
 at an empty scratch directory, so the credential it uses is provably the one it

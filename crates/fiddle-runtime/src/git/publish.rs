@@ -30,6 +30,12 @@ pub enum GitError {
     #[error("git push failed: {stderr}")]
     Push { stderr: String },
 
+    #[error("git fetch failed: {stderr}")]
+    Fetch { stderr: String },
+
+    #[error("the fetch was cancelled")]
+    CancelledFetch,
+
     #[error("git rev-parse HEAD failed: {stderr}")]
     Head { stderr: String },
 
@@ -59,6 +65,7 @@ impl GitError {
                 EffectOutcome::Unknown
             }
             GitError::Push { .. } => EffectOutcome::Unknown,
+            GitError::Fetch { .. } | GitError::CancelledFetch => EffectOutcome::NotCommitted,
         }
     }
 }
@@ -106,11 +113,7 @@ impl GitCli {
         let mut command = tokio::process::Command::new(&self.program);
         command.current_dir(worktree);
         self.common_environment(&mut command);
-        command.env("GIT_CONFIG_COUNT", "2");
-        command.env("GIT_CONFIG_KEY_0", CREDENTIAL_HOST);
-        command.env("GIT_CONFIG_VALUE_0", self.authorization());
-        command.env("GIT_CONFIG_KEY_1", "credential.helper");
-        command.env("GIT_CONFIG_VALUE_1", "");
+        self.offer_credential(&mut command);
         command.args([
             "push",
             "--porcelain",
@@ -157,6 +160,52 @@ impl GitCli {
         })
     }
 
+    pub async fn fetch(
+        &self,
+        repository: &Path,
+        branch: &str,
+        cancel: &CancellationToken,
+    ) -> Result<(), GitError> {
+        validate_branch(branch)?;
+        if cancel.is_cancelled() {
+            return Err(GitError::CancelledFetch);
+        }
+
+        let mut command = tokio::process::Command::new(&self.program);
+        command.current_dir(repository);
+        self.common_environment(&mut command);
+        self.offer_credential(&mut command);
+        command.args([
+            "fetch",
+            "--no-tags",
+            "--quiet",
+            REMOTE,
+            &format!("+refs/heads/{branch}:refs/remotes/{REMOTE}/{branch}"),
+        ]);
+
+        let output = match run_bounded(&mut command, None, self.timeout, cancel)
+            .await
+            .map_err(|source| GitError::Fetch {
+                stderr: self.redact(&format!(
+                    "{} could not be run: {source}",
+                    self.program.display()
+                )),
+            })? {
+            Bounded::CancelledAfterSpawn => return Err(GitError::CancelledFetch),
+            Bounded::TimedOut => return Err(GitError::Timeout(self.timeout)),
+            Bounded::Finished(output) => output,
+        };
+        if output.status.code().is_none() {
+            return Err(GitError::Killed);
+        }
+        match output.status.success() {
+            true => Ok(()),
+            false => Err(GitError::Fetch {
+                stderr: self.redact(&String::from_utf8_lossy(&output.stderr)),
+            }),
+        }
+    }
+
     pub async fn head_sha(
         &self,
         worktree: &Path,
@@ -201,6 +250,14 @@ impl GitCli {
                 .unwrap_or_else(|| MINIMUM_PATH.into()),
         );
         command.env("GIT_TERMINAL_PROMPT", "0");
+    }
+
+    fn offer_credential(&self, command: &mut tokio::process::Command) {
+        command.env("GIT_CONFIG_COUNT", "2");
+        command.env("GIT_CONFIG_KEY_0", CREDENTIAL_HOST);
+        command.env("GIT_CONFIG_VALUE_0", self.authorization());
+        command.env("GIT_CONFIG_KEY_1", "credential.helper");
+        command.env("GIT_CONFIG_VALUE_1", "");
     }
 
     fn authorization(&self) -> String {
@@ -446,6 +503,13 @@ mod tests {
                 },
                 EffectOutcome::Unknown,
             ),
+            (
+                GitError::Fetch {
+                    stderr: "s".to_string(),
+                },
+                EffectOutcome::NotCommitted,
+            ),
+            (GitError::CancelledFetch, EffectOutcome::NotCommitted),
         ] {
             assert_eq!(error.outcome(), expected, "{error:?}");
             assert_eq!(

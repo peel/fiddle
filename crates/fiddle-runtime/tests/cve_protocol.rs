@@ -1252,7 +1252,11 @@ async fn the_production_seam_lands_a_group_in_a_real_worktree() {
     let root = attempt.workspace.root();
 
     let landed = land(
-        &InWorktree::new(&attempt.workspace, Duration::from_secs(60)),
+        &InWorktree::new(
+            &attempt.workspace,
+            Duration::from_secs(60),
+            &support::unreachable_git(),
+        ),
         &advisories_of(&world.findings),
         &GroupStatus::Clean,
         &attempt.changed,

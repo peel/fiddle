@@ -8,6 +8,7 @@ use crate::cve::attempts;
 use crate::cve::dedup::{Local, Spawn};
 use crate::effect::{Executor, IntegrationOperation};
 use crate::evaluate::{Evaluation, RescanVerdict};
+use crate::git::{GitCli, GitError};
 use crate::github::{
     find_labelled_pull_request, BlamedCheck, EnsureBranchPublished, EnsurePullRequest,
     EnsurePullRequestBody, GenuineFailure, SharedPullRequest,
@@ -19,7 +20,7 @@ use crate::{GhCli, GhError};
 use async_trait::async_trait;
 use fiddle_core::{AdvisoryId, CapabilityId, EffectKind, ProjectedFinding, ProposedEffect};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -352,22 +353,88 @@ where
 #[async_trait]
 pub trait Git: Sync {
     async fn run(&self, args: &[&str]) -> Result<String, CapabilityError>;
+
+    async fn fetch(&self, branch: &str) -> Result<(), CapabilityError>;
+}
+
+const REACHES_A_REMOTE: [&str; 5] = ["clone", "fetch", "ls-remote", "pull", "push"];
+
+fn subcommand<'a>(args: &'a [&'a str]) -> Option<&'a str> {
+    let mut rest = args.iter();
+    while let Some(argument) = rest.next() {
+        match *argument {
+            "-c" | "-C" | "--git-dir" | "--work-tree" | "--namespace" | "--exec-path" => {
+                rest.next();
+            }
+            flag if flag.starts_with('-') => {}
+            name => return Some(name),
+        }
+    }
+    None
+}
+
+fn local_only(args: &[&str]) -> Result<(), CapabilityError> {
+    match subcommand(args) {
+        Some(name) if REACHES_A_REMOTE.contains(&name) => {
+            Err(CapabilityError::Workspace(WorkspaceError::Git {
+                command: args.join(" "),
+                stderr: format!(
+                    "git {name} reaches a remote, and this runner carries no credential. \
+                     Every network operation goes through Git::fetch or GitCli::publish."
+                ),
+            }))
+        }
+        _ => Ok(()),
+    }
+}
+
+async fn over_the_network(
+    network: &GitCli,
+    repository: &Path,
+    branch: &str,
+    cancel: &CancellationToken,
+) -> Result<(), CapabilityError> {
+    network
+        .fetch(repository, branch, cancel)
+        .await
+        .map_err(|why: GitError| {
+            CapabilityError::Workspace(WorkspaceError::Git {
+                command: format!("fetch {branch}"),
+                stderr: why.to_string(),
+            })
+        })
 }
 
 pub struct InWorktree<'a> {
     workspace: &'a Workspace,
     timeout: Duration,
+    network: &'a GitCli,
 }
 
 impl<'a> InWorktree<'a> {
-    pub fn new(workspace: &'a Workspace, timeout: Duration) -> Self {
-        InWorktree { workspace, timeout }
+    pub fn new(workspace: &'a Workspace, timeout: Duration, network: &'a GitCli) -> Self {
+        InWorktree {
+            workspace,
+            timeout,
+            network,
+        }
     }
 }
 
 #[async_trait]
 impl Git for InWorktree<'_> {
+    async fn fetch(&self, branch: &str) -> Result<(), CapabilityError> {
+        over_the_network(
+            self.network,
+            self.workspace.root(),
+            branch,
+            self.workspace.cancel(),
+        )
+        .await
+    }
+
     async fn run(&self, args: &[&str]) -> Result<String, CapabilityError> {
+        local_only(args)?;
         let command = WorkspaceCommand {
             program: "git".to_string(),
             args: args.iter().map(|argument| argument.to_string()).collect(),
@@ -384,21 +451,34 @@ impl Git for InWorktree<'_> {
     }
 }
 
-pub struct InRepository {
+pub struct InRepository<'a> {
     repository: PathBuf,
+    network: &'a GitCli,
+    cancel: CancellationToken,
 }
 
-impl InRepository {
-    pub fn new(repository: impl Into<PathBuf>) -> Self {
+impl<'a> InRepository<'a> {
+    pub fn new(
+        repository: impl Into<PathBuf>,
+        network: &'a GitCli,
+        cancel: CancellationToken,
+    ) -> Self {
         InRepository {
             repository: repository.into(),
+            network,
+            cancel,
         }
     }
 }
 
 #[async_trait]
-impl Git for InRepository {
+impl Git for InRepository<'_> {
+    async fn fetch(&self, branch: &str) -> Result<(), CapabilityError> {
+        over_the_network(self.network, &self.repository, branch, &self.cancel).await
+    }
+
     async fn run(&self, args: &[&str]) -> Result<String, CapabilityError> {
+        local_only(args)?;
         let repository = self.repository.clone();
         let owned: Vec<String> = args.iter().map(|argument| argument.to_string()).collect();
         let spelled = owned.join(" ");
@@ -503,7 +583,7 @@ async fn extend<G>(git: &G, branch: &str) -> Result<(), CapabilityError>
 where
     G: Git + ?Sized,
 {
-    fetch(git, branch).await?;
+    git.fetch(branch).await?;
     let head = resolve(git, &origin_ref(branch)).await?;
     git.run(&["reset", "--soft", &head]).await.map(|_output| ())
 }
@@ -826,7 +906,7 @@ pub async fn check_out<G>(git: &G, approved: &Approved) -> Result<Checkout, Capa
 where
     G: Git + ?Sized,
 {
-    fetch(git, approved.base()).await?;
+    git.fetch(approved.base()).await?;
 
     let Some(pr_head) = approved.pr_head() else {
         return Ok(Checkout::AtBaseRevision {
@@ -836,7 +916,7 @@ where
 
     let base_revision = resolve(git, &origin_ref(approved.base())).await?;
 
-    fetch(git, approved.branch()).await?;
+    git.fetch(approved.branch()).await?;
     let pr_head = resolve(git, &format!("{pr_head}^{{commit}}")).await?;
 
     Ok(Checkout::AtPullRequestHead {
@@ -847,21 +927,6 @@ where
 
 fn origin_ref(branch: &str) -> String {
     format!("{REMOTE}/{branch}")
-}
-
-async fn fetch<G>(git: &G, branch: &str) -> Result<(), CapabilityError>
-where
-    G: Git + ?Sized,
-{
-    git.run(&[
-        "fetch",
-        "--no-tags",
-        "--quiet",
-        REMOTE,
-        &format!("+refs/heads/{branch}:refs/remotes/{REMOTE}/{branch}"),
-    ])
-    .await
-    .map(|_output| ())
 }
 
 async fn resolve<G>(git: &G, revision: &str) -> Result<String, CapabilityError>

@@ -1242,6 +1242,13 @@ impl Git for GoWorkspace {
             })
         })
     }
+
+    async fn fetch(&self, branch: &str) -> Result<(), CapabilityError> {
+        let refspec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
+        self.run(&["fetch", "--no-tags", "--quiet", "origin", &refspec])
+            .await
+            .map(|_output| ())
+    }
 }
 
 pub const ON_THE_SHARED_BRANCH: &str = "shared_branch_marker.txt";
