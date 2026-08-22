@@ -30,11 +30,8 @@ const TASK: &str = "Repair this project so that its check passes, then report wh
 
 const DECLARED_COMMANDS: &str = "\
 \n\
-This project also declares programs you may run, and `run_command` starts one of \
-them. You name the program and its arguments. That tool starts nothing else: a \
-program the project does not declare is refused, and the refusal names the ones \
-it declares and the arguments each one takes. Prefer a declared program over \
-writing a file whose contents another program produces.";
+`run_command` runs a program this project declares. Prefer it over writing a file \
+another program generates.";
 
 const NAMED_DECLARATIONS: &str = "\
 \n\
@@ -256,7 +253,7 @@ where
         .max_tokens(budget.max_tokens)
         .default_max_turns(budget.max_turns)
         .output_schema::<RepairReport>()
-        .output_mode(OutputMode::Tool)
+        .output_mode(OutputMode::Native)
         .tool(ReadFile)
         .tool(WriteFile)
         .tool(ListFiles)
