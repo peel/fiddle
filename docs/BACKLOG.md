@@ -1727,3 +1727,16 @@ Nothing observable is broken today. ADR 046 made the network unreachable from th
 
 Origin: implementation (bean `fiddle-u1bb`, lane `lane/m4b-u1bb`)
 Tags: #debt #security
+
+### 2026-08-22 — A refusal reads a declaration back verbatim, and the brief no longer does
+
+ADR 047 made the brief name each declaration the model could have written itself. It withholds one whose program or argument is a host path, because ADR 044 leaves a declaration's own arguments unbounded and a deployment may write `/usr/local/bin/go`.
+
+`Undeclared::Program` still spells every declaration the project carries. So a model that names an undeclared program reads back the absolute path the brief withheld, in the tool's error text, and that text reaches the next outbound request.
+
+**Why it is not fixed here.** ADR 044 made the refusal the teaching channel for the whole declared set. Narrowing the refusal to the nameable declarations makes a withheld declaration unreachable by any route, and that is a decision about whether such a declaration should exist. The alternative is to refuse the declaration when the deployment loads it, which ADR 044's stated asymmetry permits today.
+
+**The shape of the work.** `spelled` and `spelled_program` in `crates/fiddle-runtime/src/workspace/declared.rs` build the refusal's list, and `nameable` already carries the predicate. The test that would fail is a sibling of `binary_repair::the_serialized_request_names_a_declared_program_and_no_declarations_host_path`, driven by a script that names an undeclared program.
+
+Origin: implementation (bean `fiddle-4r30`, lane `lane/m4b-4r30`)
+Tags: #debt #security

@@ -7,6 +7,7 @@ pub use tools::{
     ToolError, ToolHost, WriteFile, WriteFileArgs, WriteReceipt,
 };
 
+use crate::workspace::{declared, DeclaredCommand};
 use rig_agent::agent::OutputMode;
 use rig_agent::completion::{PromptError, StructuredOutputError, TypedPrompt};
 use rig_agent::tool::ToolContext;
@@ -35,11 +36,29 @@ program the project does not declare is refused, and the refusal names the ones 
 it declares and the arguments each one takes. Prefer a declared program over \
 writing a file whose contents another program produces.";
 
-fn briefed(preamble: &str, declares_commands: bool) -> String {
-    match declares_commands {
-        true => format!("{preamble}\n{DECLARED_COMMANDS}"),
-        false => preamble.to_string(),
+const NAMED_DECLARATIONS: &str = "\
+\n\
+This project declares these, and each line is a program with the arguments it \
+fixes:";
+
+const HOW_TO_WRITE_A_DECLARATION: &str = "\
+Write the whole of a line, and add your own arguments after it only where the \
+line says you may.";
+
+fn briefed(preamble: &str, commands: &[DeclaredCommand]) -> String {
+    if commands.is_empty() {
+        return preamble.to_string();
     }
+    let mut brief = format!("{preamble}\n{DECLARED_COMMANDS}");
+    let named = declared::nameable(commands);
+    if !named.is_empty() {
+        brief.push_str(&format!("\n{NAMED_DECLARATIONS}\n"));
+        for line in &named {
+            brief.push_str(&format!("\n- {line}"));
+        }
+        brief.push_str(&format!("\n\n{HOW_TO_WRITE_A_DECLARATION}"));
+    }
+    brief
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -231,7 +250,7 @@ where
     M: rig_core::completion::CompletionModel + 'static,
 {
     let declares_commands = !host.commands.is_empty();
-    let preamble = briefed(brief.preamble, declares_commands);
+    let preamble = briefed(brief.preamble, &host.commands);
     let mut builder = AgentBuilder::new(model)
         .preamble(&preamble)
         .max_tokens(budget.max_tokens)
@@ -390,16 +409,30 @@ mod tests {
         }
     }
 
+    use declared::Extend;
+
+    fn declaration(program: &str, args: &[&str], extend: Extend) -> DeclaredCommand {
+        DeclaredCommand {
+            program: program.to_string(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            extend,
+        }
+    }
+
+    fn a_fetch() -> Vec<DeclaredCommand> {
+        vec![declaration("go", &["get"], Extend::Arguments)]
+    }
+
     #[test]
     fn the_brief_says_a_command_exists_only_where_the_deployment_declares_one() {
         assert_eq!(
-            briefed(PREAMBLE, false),
+            briefed(PREAMBLE, &[]),
             PREAMBLE,
             "a deployment that declares nothing must not be told about a tool it \
              does not get"
         );
 
-        let declared = briefed(PREAMBLE, true);
+        let declared = briefed(PREAMBLE, &a_fetch());
         assert!(
             declared.starts_with(PREAMBLE),
             "the appendix adds to the brief and replaces none of it: {declared}"
@@ -411,8 +444,24 @@ mod tests {
     }
 
     #[test]
-    fn the_brief_about_declared_programs_names_no_ecosystem_and_no_program() {
-        let declared = briefed(PREAMBLE, true);
+    fn the_brief_names_the_program_the_deployment_declared() {
+        let declared = briefed(PREAMBLE, &a_fetch());
+        assert!(
+            declared.contains("`go get` (you may append arguments)"),
+            "the model cannot call a program it cannot name, and a run that \
+             never guessed never learned this one: {declared}"
+        );
+
+        let silent = briefed(PREAMBLE, &[]);
+        assert!(
+            !silent.contains("go") && !silent.contains("run_command"),
+            "one input separates these two briefs, and this one declares \
+             nothing: {silent}"
+        );
+    }
+
+    #[test]
+    fn the_brief_names_no_ecosystem_that_the_deployment_did_not_declare() {
         for word in [
             "Go",
             "go.mod",
@@ -427,10 +476,40 @@ mod tests {
             "lint",
         ] {
             assert!(
-                !declared.contains(word),
-                "the brief must name no ecosystem; found {word:?} in:\n{declared}"
+                !DECLARED_COMMANDS.contains(word)
+                    && !NAMED_DECLARATIONS.contains(word)
+                    && !HOW_TO_WRITE_A_DECLARATION.contains(word),
+                "fiddle's own words name an ecosystem: {word:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_brief_withholds_a_declaration_that_carries_a_host_path() {
+        let host_path = "/opt/toolchain/bin/go";
+        let declared = briefed(
+            PREAMBLE,
+            &[
+                declaration(host_path, &["get"], Extend::Arguments),
+                declaration("go", &["mod", "tidy"], Extend::None),
+            ],
+        );
+        assert!(
+            !declared.contains(host_path),
+            "a deployment may declare an absolute path, and the brief must not \
+             read it back to the model: {declared}"
+        );
+        assert!(
+            declared.contains("`go mod tidy`"),
+            "the withheld declaration must not withhold its neighbour: {declared}"
+        );
+
+        let withheld = briefed(PREAMBLE, &[declaration(host_path, &["get"], Extend::None)]);
+        assert!(
+            withheld.contains("run_command") && !withheld.contains(NAMED_DECLARATIONS),
+            "where every declaration carries a path, the tool is still offered \
+             and no line is written: {withheld}"
+        );
     }
 
     #[test]
