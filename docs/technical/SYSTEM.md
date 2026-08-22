@@ -30,7 +30,7 @@ Paths are relative to the repository root. A skill path omits `/SKILL.md`.
 | `fiddle-cli` | `crates/fiddle-cli` | arguments, configuration, rendering, the exit code | `main.rs::exit_code_for` is the single mapping |
 | `fiddle-acceptance` | `crates/fiddle-acceptance` | drives the compiled binary as a subprocess | observes an exit code, a `--json` payload, or a written file |
 | workspace | `fiddle-runtime/src/workspace` | a detached worktree per attempt | a `Drop` guard removes it on every path |
-| agent | `fiddle-runtime/src/agent` | four tools, a fifth where a deployment declares a program, one bounded Rig attempt | the tool surface carries no host fact (ADR 034); a program an attempt runs is one the deployment declared (ADR 044) |
+| agent | `fiddle-runtime/src/agent` | five tools, a sixth where a deployment declares a program, one bounded Rig attempt | the tool surface carries no host fact (ADR 034); an edit changes part of a file and is unique or refused (ADR 048); a program an attempt runs is one the deployment declared (ADR 044) |
 | gateway | `fiddle-runtime/src/gateway.rs` | the one credential-carrying model | an OpenAI-compatible gateway, not Anthropic (ADR 012) |
 | effect executor | `fiddle-runtime/src/effect` | the seven-step authorization order | no mutation without an `AuthorizedEffect` (ADR 033) |
 | forge adapter | `fiddle-runtime/src/{github,git}` | the one `gh`, the one `git fetch` and the one `git push` (ADR 046) | `gh api -i`, not a REST client (ADR 015) |

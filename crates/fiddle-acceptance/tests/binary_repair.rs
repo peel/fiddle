@@ -429,7 +429,7 @@ fn a_failing_checks_output_is_bounded_and_names_no_workspace_path() {
 }
 
 #[test]
-fn the_serialized_request_offers_four_tools_and_carries_no_host_fact() {
+fn the_serialized_request_offers_five_tools_and_carries_no_host_fact() {
     let gateway = StubGateway::serving(a_real_repair());
     let s = scenario(&gateway, 4);
 
@@ -484,8 +484,14 @@ fn the_serialized_request_offers_four_tools_and_carries_no_host_fact() {
         offered.sort_unstable();
         assert_eq!(
             offered,
-            ["list_files", "read_file", "run_check", "write_file"],
-            "turn {turn} must offer the capability's four tools and nothing \
+            [
+                "edit_file",
+                "list_files",
+                "read_file",
+                "run_check",
+                "write_file"
+            ],
+            "turn {turn} must offer the capability's five tools and nothing \
              else. This document declares no program, so `run_command` is not \
              among them — see this test's note on the synthetic output tool that \
              is not here: {request}"
@@ -963,7 +969,7 @@ fn the_serialized_request_names_a_declared_program_and_no_declarations_host_path
 }
 
 #[test]
-fn the_serialized_request_offers_a_fifth_tool_only_where_the_deployment_declares_a_program() {
+fn the_serialized_request_offers_a_sixth_tool_only_where_the_deployment_declares_a_program() {
     let mut script = bumps_the_manifest();
     script.push(regenerates_the_lock());
     script.push(support::accepted(support::calls(
@@ -1000,13 +1006,14 @@ fn the_serialized_request_offers_a_fifth_tool_only_where_the_deployment_declares
         assert_eq!(
             offered,
             [
+                "edit_file",
                 "list_files",
                 "read_file",
                 "run_check",
                 "run_command",
                 "write_file"
             ],
-            "turn {turn} must offer the fifth tool, and the neighbouring lane \
+            "turn {turn} must offer the sixth tool, and the neighbouring lane \
              that declares no program must not: {request}"
         );
         let advertised = format!("{}{}", request["tools"], request["messages"][0]);
@@ -1018,4 +1025,130 @@ fn the_serialized_request_offers_a_fifth_tool_only_where_the_deployment_declares
              later turn only because the model itself wrote it: {advertised}"
         );
     }
+}
+
+const LONG_LOCK: &str = "long.lock";
+
+const LOCK_LINES: usize = 400;
+
+const STALE_ENTRY: &str = "dep-137 v1.0.0";
+
+const FRESH_ENTRY: &str = "dep-137 v1.2.3";
+
+fn a_lock_of(lines: usize) -> String {
+    (0..lines)
+        .map(|n| format!("dep-{n:03} v1.0.0 h{n:03}\n"))
+        .collect()
+}
+
+fn a_deployment_whose_repair_is_one_line_of_a_long_lock(
+    s: &Scenario,
+    gateway: &StubGateway,
+    copied: &std::path::Path,
+) -> String {
+    let lock = a_lock_of(LOCK_LINES);
+    let fixture = s.write_repo_of(&[(LONG_LOCK, lock.as_str()), (".gitignore", "target/\n")]);
+    s.append_config(&format!(
+        "[agent]\n\
+         model = \"a-model\"\n\
+         base_url = \"{base_url}\"\n\
+         api_key = {{ env = \"{CREDENTIAL}\" }}\n\
+         max_turns = 6\n\
+         max_tokens = 512\n\
+         max_changed_files = 4\n\
+         deadline = \"300s\"\n\
+         tool_timeout = \"300s\"\n\
+         \n\
+         [workspace]\n\
+         root = {root}\n\
+         fixture = {tree}\n\
+         check = {{ program = \"cp\", args = [\"{LONG_LOCK}\", {copied}] }}\n\
+         command_timeout = \"300s\"\n",
+        base_url = gateway.base_url(),
+        root = support::toml_string(&s.dir().join("workspaces")),
+        tree = support::toml_string(&fixture),
+        copied = support::toml_string(copied),
+    ));
+    lock
+}
+
+#[test]
+fn a_one_line_repair_of_a_long_file_leaves_every_other_line_where_it_was() {
+    let gateway = StubGateway::serving(vec![
+        support::accepted(support::calls(
+            "read_file",
+            serde_json::json!({ "path": LONG_LOCK }),
+        )),
+        support::accepted(support::calls(
+            "edit_file",
+            serde_json::json!({
+                "path": LONG_LOCK,
+                "find": STALE_ENTRY,
+                "replace": FRESH_ENTRY,
+            }),
+        )),
+        support::accepted(support::calls("run_check", serde_json::json!({}))),
+        support::accepted(support::reports(serde_json::json!({
+            "changed_files": [LONG_LOCK],
+            "summary": "moved one entry and left the rest of the lock alone",
+            "claimed_complete": true,
+        }))),
+    ]);
+    let s = Scenario::new();
+    s.write_work_item(WORK_ID, "open");
+    let copied = s.dir().join("the-lock-the-attempt-left-behind");
+    let started_as = a_deployment_whose_repair_is_one_line_of_a_long_lock(&s, &gateway, &copied);
+    assert_eq!(
+        started_as.lines().count(),
+        LOCK_LINES,
+        "the premise of this test is a file longer than the repair"
+    );
+
+    let out = repair(&s);
+    let payload = payload(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "payload = {payload} stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let left_behind = std::fs::read_to_string(&copied).unwrap_or_else(|e| {
+        panic!(
+            "the check copied no file out of the attempt, so this test counted \
+             nothing ({e}): payload = {payload}"
+        )
+    });
+    assert_eq!(
+        left_behind.lines().count(),
+        LOCK_LINES,
+        "the repair was one line of {LOCK_LINES}, and the file came back with \
+         {} lines. A file the model rewrote from memory carries the new entry \
+         too, so the count is what separates a repair from a truncation.",
+        left_behind.lines().count()
+    );
+    assert_eq!(
+        left_behind,
+        started_as.replace(STALE_ENTRY, FRESH_ENTRY),
+        "one entry moved and nothing else did"
+    );
+
+    let bundle = s.read_bundle(&payload);
+    let evidence: Vec<String> = bundle["capability_executions"][0]["evidence"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a completed repair earns evidence: {bundle}"))
+        .iter()
+        .map(|entry| entry.as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(
+        evidence.contains(&"tool:edit_file:ok:1".to_string()),
+        "the partial edit is what changed the file, and the evidence has to say \
+         so: {evidence:?}"
+    );
+    assert!(
+        !evidence
+            .iter()
+            .any(|ref_| ref_.starts_with("tool:write_file")),
+        "no whole-file write took part in this repair: {evidence:?}"
+    );
 }

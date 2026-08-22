@@ -8,8 +8,9 @@ use tokio_util::sync::CancellationToken;
 
 const REPAIR_ORIGIN: &str = "repair";
 
-const REGISTERED_TOOLS: [&str; 5] = [
+const REGISTERED_TOOLS: [&str; 6] = [
     "read_file",
+    "edit_file",
     "write_file",
     "list_files",
     "run_check",
