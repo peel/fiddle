@@ -3,8 +3,8 @@ pub mod tools;
 
 pub use audit::AuditHook;
 pub use tools::{
-    CheckOutcome, ListFiles, NoArgs, ReadFile, ReadFileArgs, RunCheck, RunCommand, RunCommandArgs,
-    ToolError, ToolHost, WriteFile, WriteFileArgs, WriteReceipt,
+    CheckOutcome, EditFile, EditFileArgs, ListFiles, NoArgs, ReadFile, ReadFileArgs, RunCheck,
+    RunCommand, RunCommandArgs, ToolError, ToolHost, WriteFile, WriteFileArgs, WriteReceipt,
 };
 
 use crate::workspace::{declared, DeclaredCommand};
@@ -21,6 +21,12 @@ You are repairing one project. Use the tools this run offers you, and name only 
 paths inside the project.\n\
 \n\
 Work in small steps: read before you write, and run the check after you write. \
+To change a file that already exists, use `edit_file`: give the text to find \
+and the text to put in its place, and the rest of the file stays as it is. Use \
+`write_file` to create a file, and to replace a short file whole. Never write a \
+long file again to change part of it, because the lines you leave out are \
+lost.\n\
+\n\
 Change as few files as you can. When you are done — or when you are certain you \
 cannot finish — reply with only the structured report. Report what you actually \
 changed, whether or not it worked.";
@@ -275,6 +281,7 @@ where
         .output_schema::<RepairReport>()
         .output_mode(OutputMode::Native)
         .tool(ReadFile)
+        .tool(EditFile)
         .tool(WriteFile)
         .tool(ListFiles)
         .tool(RunCheck);

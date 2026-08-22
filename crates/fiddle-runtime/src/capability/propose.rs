@@ -33,7 +33,13 @@ const OPEN: &str = "open";
 
 pub(super) const COMMITTER: [&str; 2] = ["user.name=fiddle", "user.email=fiddle@invalid"];
 
-const REGISTERED_TOOLS: [&str; 4] = ["read_file", "write_file", "list_files", "run_check"];
+const REGISTERED_TOOLS: [&str; 5] = [
+    "read_file",
+    "edit_file",
+    "write_file",
+    "list_files",
+    "run_check",
+];
 
 const FOREIGN_TOOL: &str = "unregistered";
 

@@ -63,6 +63,7 @@ fn outcome_of<T>(result: &Result<T, ToolError>) -> &'static str {
         Ok(_) => "ok",
         Err(ToolError::NoHostContext)
         | Err(ToolError::Rejected { .. })
+        | Err(ToolError::EditRefused { .. })
         | Err(ToolError::Undeclared { .. }) => "refused",
         Err(ToolError::Cancelled) => "cancelled",
         Err(ToolError::Timeout { .. }) | Err(ToolError::Failed { .. }) => "failed",
@@ -84,6 +85,9 @@ pub enum ToolError {
         #[source]
         source: WorkspaceError,
     },
+
+    #[error("the edit to `{path}` was refused: {reason}")]
+    EditRefused { path: String, reason: String },
 
     #[error("{source}")]
     Undeclared {
@@ -133,9 +137,9 @@ impl ToolError {
         let classified = match &self {
             ToolError::NoHostContext => ToolExecutionError::refused(message),
             ToolError::Cancelled => ToolExecutionError::cancelled(message),
-            ToolError::Rejected { .. } | ToolError::Undeclared { .. } => {
-                ToolExecutionError::invalid_args(message)
-            }
+            ToolError::Rejected { .. }
+            | ToolError::EditRefused { .. }
+            | ToolError::Undeclared { .. } => ToolExecutionError::invalid_args(message),
             ToolError::Timeout { .. } => ToolExecutionError::timeout(message),
             ToolError::Failed { .. } => ToolExecutionError::other(message),
         };
@@ -264,6 +268,107 @@ impl Tool for WriteFile {
             Ok(WriteReceipt {
                 path: path.as_str().to_string(),
                 bytes: args.contents.len(),
+            })
+        }
+        .await;
+        host.recorded(Self::NAME, started, result)
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        error.into_execution_error()
+    }
+}
+
+pub struct EditFile;
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct EditFileArgs {
+    pub path: String,
+    pub find: String,
+    pub replace: String,
+}
+
+impl Tool for EditFile {
+    const NAME: &'static str = "edit_file";
+    type Args = EditFileArgs;
+    type Output = WriteReceipt;
+    type Error = ToolError;
+
+    fn description(&self) -> String {
+        "Change part of one file in the project you are repairing. Give the text \
+         to find and the text to put in its place. Every other line of the file \
+         stays as it is. The text to find must occur one time in the file. If it \
+         is absent, or if it occurs more than one time, this tool changes nothing \
+         and tells you which of the two happened; add the lines above and below \
+         it until it occurs one time. Use this tool to change a file that already \
+         exists. Use `write_file` to create a file, and to replace a short file \
+         whole."
+            .into()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative path of the file, for example src/lib.rs."
+                },
+                "find": {
+                    "type": "string",
+                    "description": "The text to find, copied from the file exactly as it reads there."
+                },
+                "replace": {
+                    "type": "string",
+                    "description": "The text to put in its place. An empty string deletes the text you found."
+                }
+            },
+            "required": ["path", "find", "replace"],
+            "additionalProperties": false
+        })
+    }
+
+    async fn call(
+        &self,
+        ctx: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<WriteReceipt, ToolError> {
+        let host = ToolHost::from_context(ctx)?;
+        let started = Instant::now();
+        let result = async {
+            host.guard()?;
+            let path = parse(&args.path)?;
+            let refuse = |reason: String| ToolError::EditRefused {
+                path: path.as_str().to_string(),
+                reason,
+            };
+            if args.find.is_empty() {
+                return Err(refuse("the text to find is empty".to_string()));
+            }
+            let held = host
+                .workspace
+                .read(&path)
+                .map_err(|source| ToolError::from_workspace("reading the file", source))?;
+            match held.matches(args.find.as_str()).count() {
+                1 => {}
+                0 => {
+                    return Err(refuse(
+                        "the text to find does not occur in the file".to_string(),
+                    ))
+                }
+                occurrences => {
+                    return Err(refuse(format!(
+                        "the text to find is not unique: it occurs {occurrences} times"
+                    )))
+                }
+            }
+            let edited = held.replacen(args.find.as_str(), &args.replace, 1);
+            host.workspace
+                .write(&path, &edited)
+                .map_err(|source| ToolError::from_workspace("writing the file", source))?;
+            Ok(WriteReceipt {
+                path: path.as_str().to_string(),
+                bytes: edited.len(),
             })
         }
         .await;
@@ -628,6 +733,219 @@ pub(crate) mod tests {
         );
     }
 
+    const A_LOCK: &str = "a v1.0.0\nb v1.2.2\nc v3.0.0\n";
+
+    const THE_SAME_LOCK_TWICE_OVER: &str = "a v1.0.0\nb v1.2.2\nc v3.0.0\nb v1.2.2\n";
+
+    const TARGET: &str = "b v1.2.2";
+
+    const REPLACEMENT: &str = "b v1.2.3";
+
+    fn seeded(host: &ToolHost, path: &str, contents: &str) {
+        let at = host.workspace.root().join(path);
+        std::fs::create_dir_all(at.parent().expect("a file has a parent")).unwrap();
+        std::fs::write(at, contents).unwrap();
+    }
+
+    fn an_edit(path: &str) -> EditFileArgs {
+        EditFileArgs {
+            path: path.to_string(),
+            find: TARGET.to_string(),
+            replace: REPLACEMENT.to_string(),
+        }
+    }
+
+    async fn refusal_of(args: EditFileArgs, host: &ToolHost) -> String {
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+        let refused = EditFile
+            .call(&mut ctx, args)
+            .await
+            .expect_err("this edit must be refused");
+        EditFile
+            .map_error(refused)
+            .model_output()
+            .as_text()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn edit_file_changes_the_one_place_the_text_occurs_and_keeps_the_rest() {
+        let (host, _g) = test_host();
+        seeded(&host, "deps.lock", A_LOCK);
+        let root = host.workspace.root().to_path_buf();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let receipt = EditFile
+            .call(&mut ctx, an_edit("deps.lock"))
+            .await
+            .expect("the text occurs once, so the change it describes is unambiguous");
+
+        assert_eq!(receipt.path, "deps.lock");
+        assert_eq!(
+            std::fs::read_to_string(root.join("deps.lock")).unwrap(),
+            "a v1.0.0\nb v1.2.3\nc v3.0.0\n",
+            "an edit changes the text it names, and every other line survives it"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_refuses_the_same_edit_where_the_text_occurs_twice() {
+        let (host, _g) = test_host();
+        seeded(&host, "deps.lock", THE_SAME_LOCK_TWICE_OVER);
+        let root = host.workspace.root().to_path_buf();
+
+        let text = refusal_of(an_edit("deps.lock"), &host).await;
+        assert!(
+            text.contains("deps.lock"),
+            "the model cannot act on a refusal that does not name the file: {text}"
+        );
+        assert!(
+            text.contains("not unique") && text.contains("2 times"),
+            "one input separates this from the test above, and the refusal has to \
+             say which input it was: {text}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("deps.lock")).unwrap(),
+            THE_SAME_LOCK_TWICE_OVER,
+            "a refused edit changes nothing, so neither place is rewritten"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_refuses_text_that_is_absent_rather_than_appending_it() {
+        let (host, _g) = test_host();
+        seeded(&host, "deps.lock", A_LOCK);
+        let root = host.workspace.root().to_path_buf();
+
+        let text = refusal_of(
+            EditFileArgs {
+                path: "deps.lock".into(),
+                find: "d v9.9.9".into(),
+                replace: REPLACEMENT.into(),
+            },
+            &host,
+        )
+        .await;
+        assert!(
+            text.contains("does not occur"),
+            "a model that guessed the text must learn that it guessed: {text}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("deps.lock")).unwrap(),
+            A_LOCK,
+            "text that is absent is not text to add somewhere"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_refuses_an_empty_search_because_it_matches_no_one_place() {
+        let (host, _g) = test_host();
+        seeded(&host, "deps.lock", A_LOCK);
+        let root = host.workspace.root().to_path_buf();
+
+        let text = refusal_of(
+            EditFileArgs {
+                path: "deps.lock".into(),
+                find: String::new(),
+                replace: REPLACEMENT.into(),
+            },
+            &host,
+        )
+        .await;
+        assert!(
+            text.contains("empty"),
+            "an empty search names every position in the file and none of them: {text}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("deps.lock")).unwrap(),
+            A_LOCK,
+            "the refusal came before the write"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_is_bounded_by_the_same_path_rules_as_read_file_and_write_file() {
+        let (host, _g) = test_host();
+        let outside = host
+            .workspace
+            .root()
+            .parent()
+            .expect("the fixture has a parent to escape into")
+            .join("escape.txt");
+        std::fs::write(&outside, A_LOCK).unwrap();
+        seeded(&host, "src/deps.lock", A_LOCK);
+
+        for path in ["../escape.txt", ".git/config", "src/../../escape.txt"] {
+            let text = refusal_of(an_edit(path), &host).await;
+            assert!(
+                text.contains(path),
+                "a refusal has to name the path the model wrote: {text}"
+            );
+            for root in roots(&host) {
+                assert!(
+                    !text.contains(&root),
+                    "a host path leaked in a refusal: {text}"
+                );
+            }
+        }
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            A_LOCK,
+            "a path outside the project stayed as it was: {}",
+            outside.display()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_attempt_edits_nothing_and_the_call_is_still_recorded() {
+        let (host, _g) = test_host();
+        seeded(&host, "deps.lock", A_LOCK);
+        let root = host.workspace.root().to_path_buf();
+        host.cancel.cancel();
+
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+        assert!(EditFile.call(&mut ctx, an_edit("deps.lock")).await.is_err());
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("deps.lock")).unwrap(),
+            A_LOCK,
+            "cancellation must prevent the effect, not merely end the future"
+        );
+        let receipts = host.receipts();
+        assert_eq!(receipts.calls.len(), 1);
+        assert_eq!(receipts.calls[0].tool, "edit_file");
+        assert_eq!(receipts.calls[0].outcome, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn an_edit_and_a_refused_edit_are_both_recorded_under_the_tools_name() {
+        let (host, _g) = test_host();
+        seeded(&host, "deps.lock", A_LOCK);
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        EditFile
+            .call(&mut ctx, an_edit("deps.lock"))
+            .await
+            .expect("the first edit succeeds");
+        let _ = EditFile.call(&mut ctx, an_edit("deps.lock")).await;
+
+        let receipts = host.receipts();
+        assert_eq!(
+            receipts.calls.len(),
+            2,
+            "the second call found nothing to change, and a refusal is evidence: {receipts:?}"
+        );
+        assert_eq!(receipts.calls[0].tool, "edit_file");
+        assert_eq!(receipts.calls[0].outcome, "ok");
+        assert_eq!(receipts.calls[1].tool, "edit_file");
+        assert_eq!(receipts.calls[1].outcome, "refused");
+    }
+
     #[tokio::test]
     async fn cancellation_between_inspection_and_mutation_prevents_the_write() {
         let (host, _g) = test_host();
@@ -731,6 +1049,7 @@ pub(crate) mod tests {
         let root = host.workspace.root().display().to_string();
         let surfaces = [
             (ReadFile.parameters().to_string(), ReadFile.description()),
+            (EditFile.parameters().to_string(), EditFile.description()),
             (WriteFile.parameters().to_string(), WriteFile.description()),
             (ListFiles.parameters().to_string(), ListFiles.description()),
             (RunCheck.parameters().to_string(), RunCheck.description()),
