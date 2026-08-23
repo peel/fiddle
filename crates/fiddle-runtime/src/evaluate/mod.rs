@@ -272,7 +272,7 @@ fn judge(repair: &Repair, report: &ScanReport, acted_on: &Severities) -> RescanV
         ("libraries", projection.library_arm()),
         ("osPackages", projection.os_arm()),
     ] {
-        if arm == Arm::Absent {
+        if arm == Arm::Absent && !projection.succeeded() {
             return RescanVerdict::NotObserved { array };
         }
     }

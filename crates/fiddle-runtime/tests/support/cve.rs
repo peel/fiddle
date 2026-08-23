@@ -826,6 +826,37 @@ pub fn tree_whose_rescan_is_unreadable() -> ScriptedTree {
     }
 }
 
+pub fn tree_whose_successful_rescan_omits_both_arrays() -> ScriptedTree {
+    tree_with_both_arrays_absent(Some("SUCCESS"))
+}
+
+pub fn tree_whose_unfinished_rescan_omits_both_arrays() -> ScriptedTree {
+    tree_with_both_arrays_absent(Some("FAILED"))
+}
+
+fn tree_with_both_arrays_absent(state: Option<&str>) -> ScriptedTree {
+    let mut report = rescan_report(report_with_libraries_absent(), FIXTURE_SCANNER_VERSION);
+    let document = report
+        .document
+        .as_object_mut()
+        .expect("a fixture scanner document is an object");
+    if let Some(state) = state {
+        document.insert(
+            "status".to_string(),
+            serde_json::json!({ "state": state, "verdict": "PASSED_BY_POLICY" }),
+        );
+    }
+    report.document["result"]
+        .as_object_mut()
+        .expect("a fixture scanner document's result is an object")
+        .remove("osPackages");
+    ScriptedTree {
+        scripted: BTreeMap::new(),
+        scanner: Scanned::AsReport(report),
+        ran: Mutex::new(Vec::new()),
+    }
+}
+
 fn tree_reporting(document: Report, version: &str) -> ScriptedTree {
     ScriptedTree {
         scripted: BTreeMap::new(),

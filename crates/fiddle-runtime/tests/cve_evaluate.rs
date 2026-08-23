@@ -370,6 +370,46 @@ async fn a_rescan_reporting_no_os_packages_is_still_proof() {
 }
 
 #[tokio::test]
+async fn a_successful_rescan_that_reports_no_arrays_at_all_is_proof() {
+    let r = evaluate(
+        &contract_for_a_partially_reported_rescan(),
+        &tree_whose_successful_rescan_omits_both_arrays(),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert!(
+        r.accepted(),
+        "the scanner said it succeeded, so an arm it did not write is an arm with nothing in it"
+    );
+    assert_eq!(
+        r.rescan(),
+        &RescanVerdict::Cleared,
+        "a real distroless image reports no osPackages on every scan, including the first, \
+         so requiring the array would make a proved repair impossible"
+    );
+}
+
+#[tokio::test]
+async fn a_rescan_that_did_not_succeed_proves_nothing_from_a_missing_array() {
+    let r = evaluate(
+        &contract_for_a_partially_reported_rescan(),
+        &tree_whose_unfinished_rescan_omits_both_arrays(),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert!(
+        !r.accepted(),
+        "the scanner did not say it succeeded, so a missing array is not an observation"
+    );
+    assert_eq!(
+        r.rescan(),
+        &RescanVerdict::NotObserved { array: "libraries" }
+    );
+}
+
+#[tokio::test]
 async fn an_absent_library_array_in_a_rescan_is_not_proof_either() {
     let r = evaluate(
         &contract_for_a_partially_reported_rescan(),

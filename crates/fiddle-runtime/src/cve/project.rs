@@ -17,6 +17,7 @@ pub struct Projection {
     findings: Vec<ProjectedFinding>,
     library_arm: Arm,
     os_arm: Arm,
+    succeeded: bool,
 }
 
 impl Projection {
@@ -30,6 +31,10 @@ impl Projection {
 
     pub fn library_arm(&self) -> Arm {
         self.library_arm
+    }
+
+    pub fn succeeded(&self) -> bool {
+        self.succeeded
     }
 }
 
@@ -61,9 +66,14 @@ pub fn project(report: &ScanReport, acted_on: &Severities) -> Result<Projection,
 
     Ok(Projection {
         findings,
+        succeeded: succeeded(&report.document),
         library_arm,
         os_arm,
     })
+}
+
+fn succeeded(document: &Value) -> bool {
+    document["status"]["state"].as_str() == Some("SUCCESS")
 }
 
 fn packages<'a>(
