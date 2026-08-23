@@ -6,7 +6,7 @@ pub mod transcript;
 
 pub use audit::AuditHook;
 pub use retry::{RetryingModel, RETRIES};
-pub use returns::{Declarations, Held, ReturnHook, RETURNS};
+pub use returns::{Declarations, Held, LastReturn, ReturnHook, Spent, RETURNS};
 pub use tools::{
     CheckOutcome, EditFile, EditFileArgs, ListFiles, ListFilesArgs, Listing, NoArgs, ReadFile,
     ReadFileArgs, RunCheck, RunCommand, RunCommandArgs, ToolError, ToolHost, WriteFile,
@@ -347,9 +347,8 @@ where
     if let Some(hook) = hook {
         builder = builder.add_hook(hook);
     }
-    let agent = builder
-        .add_hook(ReturnHook::holding(&held, RETURNS, redaction, transcripts))
-        .build();
+    let returns = ReturnHook::holding(&held, RETURNS, redaction, transcripts);
+    let agent = builder.add_hook(returns.clone()).build();
 
     let mut bounded = host.clone();
     bounded.check.timeout = bounded.check.timeout.min(budget.tool_timeout);
@@ -369,7 +368,7 @@ where
         _ = tokio::time::sleep(budget.deadline) => return Err(AgentError::Bounded {
             reason: format!("the deadline of {:?} elapsed", budget.deadline),
         }),
-        result = run => result.map_err(|error| classify(error, redaction))?,
+        result = run => result.map_err(|error| classify(error, redaction, &returns.spent()))?,
     };
 
     let changed = host
@@ -390,7 +389,7 @@ where
     Ok(report)
 }
 
-fn classify(error: StructuredOutputError, redaction: &Redaction) -> AgentError {
+fn classify(error: StructuredOutputError, redaction: &Redaction, spent: &Spent) -> AgentError {
     match error {
         StructuredOutputError::DeserializationError(source) => AgentError::Protocol {
             reason: format!("the report did not match the schema: {source}"),
@@ -400,7 +399,7 @@ fn classify(error: StructuredOutputError, redaction: &Redaction) -> AgentError {
         },
         StructuredOutputError::PromptError(prompt) => match *prompt {
             PromptError::MaxTurnsError { max_turns, .. } => AgentError::Bounded {
-                reason: format!("the turn budget of {max_turns} was exhausted"),
+                reason: returns::exhausted(max_turns, spent),
             },
             PromptError::PromptCancelled { .. } => AgentError::Cancelled,
             PromptError::UnknownToolCall {
@@ -779,7 +778,7 @@ mod tests {
              testing anything: {error}"
         );
 
-        match classify(error, redaction) {
+        match classify(error, redaction, &Spent::default()) {
             AgentError::Provider { reason } => reason,
             other => panic!("a provider failure must classify as Provider, got {other:?}"),
         }
@@ -848,7 +847,7 @@ mod tests {
             CompletionError::from_http_response(refused.status(), a_refusal_quoting(NO_CREDENTIAL)),
         )));
 
-        match classify(error, &Redaction::of(CREDENTIAL)) {
+        match classify(error, &Redaction::of(CREDENTIAL), &Spent::default()) {
             AgentError::Provider { reason } => {
                 assert!(
                     reason.contains("400 Bad Request"),
@@ -884,7 +883,7 @@ mod tests {
             chat_history: Box::default(),
         }));
 
-        match classify(error, &Redaction::unknown()) {
+        match classify(error, &Redaction::unknown(), &Spent::default()) {
             AgentError::Protocol { reason } => {
                 assert!(
                     reason.contains("str_replace_editor"),
@@ -905,7 +904,7 @@ mod tests {
             CompletionError::ProviderError("connection refused".to_string()),
         )));
 
-        match classify(error, &Redaction::of(CREDENTIAL)) {
+        match classify(error, &Redaction::of(CREDENTIAL), &Spent::default()) {
             AgentError::Provider { reason } => assert!(
                 reason.contains("connection refused"),
                 "a failure with no provider body has nothing to withhold: {reason}"
