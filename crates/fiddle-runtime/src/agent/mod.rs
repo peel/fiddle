@@ -1,10 +1,12 @@
 pub mod accounting;
 pub mod audit;
+pub mod retry;
 pub mod tools;
 pub mod transcript;
 
 pub use accounting::{AccountingHook, RETURNS};
 pub use audit::AuditHook;
+pub use retry::{RetryingModel, RETRIES};
 pub use tools::{
     CheckOutcome, EditFile, EditFileArgs, ListFiles, ListFilesArgs, Listing, NoArgs, ReadFile,
     ReadFileArgs, RunCheck, RunCommand, RunCommandArgs, ToolError, ToolHost, WriteFile,
@@ -313,6 +315,7 @@ where
                 .number("max_turns", budget.max_turns as u64)
                 .number("max_tokens", budget.max_tokens)
                 .number("deadline_ms", budget.deadline.as_millis() as u64)
+                .number("max_retries", RETRIES as u64)
                 .text("preamble", &preamble)
                 .text("task", brief.task)
                 .text("tools", &offered(declares_commands).join(", "))
@@ -321,7 +324,8 @@ where
     }
     let hook = transcripts
         .map(|transcripts| TranscriptHook::recording(transcripts.clone(), redaction.clone()));
-    let mut builder = AgentBuilder::new(TranscriptModel::wrapping(model, hook.clone()))
+    let retrying = RetryingModel::bounded(model, RETRIES, redaction, transcripts);
+    let mut builder = AgentBuilder::new(TranscriptModel::wrapping(retrying, hook.clone()))
         .preamble(&preamble)
         .max_tokens(budget.max_tokens)
         .default_max_turns(budget.max_turns)

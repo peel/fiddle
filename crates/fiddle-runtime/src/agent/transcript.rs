@@ -236,6 +236,10 @@ pub const SPENT: &str = "spent";
 
 pub const FINISH: &str = "finish";
 
+pub const RETRY: &str = "retry";
+
+pub const UNANSWERED: &str = "unanswered";
+
 #[derive(Clone)]
 pub struct TranscriptHook {
     transcripts: Transcripts,
