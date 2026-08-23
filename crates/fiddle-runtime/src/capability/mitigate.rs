@@ -172,14 +172,14 @@ where
         )
     }
 
-    async fn sweep(&self, report: &ScanReport) -> Result<Run, CapabilityError> {
+    async fn sweep(&self, report: &ScanReport, work_id: &str) -> Result<Run, CapabilityError> {
         let projection = project(report, &self.config.severities)?;
 
         let approved = plan_shared_pull_request(
             &self.context.gh,
             &self.config.repo,
             &self.config.base,
-            &self.config.today,
+            &stamped(&self.config.today, work_id),
             &self.config.cancel,
         )
         .await?;
@@ -188,7 +188,7 @@ where
             &self.context.gh,
             &self.config.repo,
             &self.config.base,
-            &self.config.today,
+            &stamped(&self.config.today, work_id),
             &self.config.cancel,
         )
         .await?;
@@ -588,7 +588,7 @@ where
 
         let scanned = self.scanner.scan(&self.config.image).await;
         let run = match &scanned {
-            Ok(report) => self.sweep(report).await?,
+            Ok(report) => self.sweep(report, work_id).await?,
             Err(why) => Run::unusable(why.to_string()),
         };
 
@@ -706,6 +706,22 @@ fn advisories_of(findings: &[ProjectedFinding]) -> Vec<AdvisoryId> {
         }
     }
     advisories
+}
+
+fn stamped(today: &str, work_id: &str) -> String {
+    let tail: String = work_id
+        .chars()
+        .filter(|it| it.is_ascii_alphanumeric())
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    match tail.is_empty() {
+        true => today.to_string(),
+        false => format!("{today}-{}", tail.to_ascii_lowercase()),
+    }
 }
 
 fn rendered_title(template: &str, project: &str, advisories: usize) -> String {
@@ -860,6 +876,37 @@ mod body {
                 undeclared: None,
             },
         }
+    }
+
+    #[test]
+    fn a_fresh_branch_carries_the_runs_own_stamp_so_a_closed_pull_request_cannot_block_it() {
+        let first = stamped("2026-08-23", "cve:0:01M0QNX18RQ0F18J842SF047JM");
+        let second = stamped("2026-08-23", "cve:0:01M0QKZY061D2G9J7QGT4V07HB");
+
+        assert_ne!(
+            first, second,
+            "two runs on one day must not choose one branch name, or the second \
+             cannot push where a closed pull request left the first"
+        );
+        assert!(
+            first.starts_with("2026-08-23-"),
+            "the date still reads first, so a human scanning branches sees the day: {first}"
+        );
+        assert!(
+            first
+                .chars()
+                .all(|it| it.is_ascii_lowercase() || it.is_ascii_digit() || it == '-'),
+            "a branch name carries no character git or the forge would refuse: {first}"
+        );
+    }
+
+    #[test]
+    fn a_run_with_no_usable_work_id_still_names_a_branch() {
+        assert_eq!(
+            stamped("2026-08-23", "::"),
+            "2026-08-23",
+            "an id with nothing to take falls back to the date rather than a trailing dash"
+        );
     }
 
     #[test]
