@@ -490,6 +490,126 @@ async fn run_recorded(
         .await
 }
 
+async fn run_with_turns(
+    model: MockCompletionModel,
+    world: &MigrationWorld,
+    max_turns: usize,
+) -> Result<MigrationAttempt, CapabilityError> {
+    let mut config = world.config();
+    config.budget.max_turns = max_turns;
+    GroupMigration::new(model, config)
+        .migrate(&world.workspace(), &world.findings, None)
+        .await
+}
+
+#[tokio::test]
+async fn a_budget_that_affords_the_returns_ends_on_the_rule_and_not_on_the_budget() {
+    let world = migration_world().await;
+    let script = insisting(ACCOUNTS_FOR_NOTHING);
+    let turns = script.len();
+    let model = MockCompletionModel::new(script);
+
+    let failure = run_with_turns(model, &world, turns)
+        .await
+        .expect_err("the third report accounts for nothing either");
+
+    match failure {
+        CapabilityError::Agent(AgentError::Protocol { reason }) => {
+            assert!(
+                reason.contains(SHOWN),
+                "the attempt ends on the accounting rule: {reason}"
+            );
+            assert!(
+                !reason.contains("turn budget"),
+                "the budget had a turn to spare, so it is not part of this \
+                 answer: {reason}"
+            );
+        }
+        other => panic!("a budget that affords the returns ends on the rule: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_budget_one_turn_smaller_names_the_rule_and_the_budget() {
+    let world = migration_world().await;
+    let script = insisting(ACCOUNTS_FOR_NOTHING);
+    let turns = script.len() - 1;
+    let model = MockCompletionModel::new(script);
+
+    let failure = run_with_turns(model, &world, turns)
+        .await
+        .expect_err("the turns ran out before a report fiddle would take");
+
+    match failure {
+        CapabilityError::Agent(AgentError::Bounded { reason }) => {
+            assert!(
+                reason.contains(&format!("turn budget of {turns}")),
+                "a run that ran out of turns has to say so, or the reader looks \
+                 for a bug in the rule: {reason}"
+            );
+            assert!(
+                reason.contains(SHOWN) && reason.contains("shown and not reported"),
+                "and it has to say why the turns went: {reason}"
+            );
+            assert!(
+                reason.contains("accounting"),
+                "naming the rule tells the reader which check to read: {reason}"
+            );
+            assert!(
+                reason.contains(&format!("{RETURNS} of its turns")),
+                "the count is what says the returns spent the budget: {reason}"
+            );
+        }
+        other => panic!("the budget is what stopped this attempt: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_budget_spent_on_declaration_returns_names_the_declaration_rule() {
+    let world = migration_world().await;
+    let script = insisting(DECLARES_A_FILE_IT_DID_NOT_TOUCH);
+    let turns = script.len() - 1;
+    let model = MockCompletionModel::new(script);
+
+    let failure = run_with_turns(model, &world, turns)
+        .await
+        .expect_err("the turns ran out before a report matching the diff");
+
+    match failure {
+        CapabilityError::Agent(AgentError::Bounded { reason }) => {
+            assert!(
+                reason.contains("declaration")
+                    && reason.contains("declared without changing: go.mod"),
+                "the sentence names whichever rule spent the turns, and the file \
+                 that rule named: {reason}"
+            );
+            assert!(
+                reason.contains(&format!("turn budget of {turns}")),
+                "and still says the budget ended it: {reason}"
+            );
+        }
+        other => panic!("the budget is what stopped this attempt: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_budget_exhausted_with_no_return_names_only_the_budget() {
+    let world = migration_world().await;
+    let model = MockCompletionModel::new(migrates_uniformly());
+
+    let failure = run_with_turns(model, &world, 2)
+        .await
+        .expect_err("two turns cannot reach a report");
+
+    match failure {
+        CapabilityError::Agent(AgentError::Bounded { reason }) => assert_eq!(
+            reason, "the turn budget of 2 was exhausted",
+            "a run that returned nothing must not name a rule it never applied"
+        ),
+        other => panic!("the budget is what stopped this attempt: {other:?}"),
+    }
+}
+
 fn returns_in(transcripts: &transcript::Transcripts) -> Vec<serde_json::Value> {
     std::fs::read_to_string(transcripts.path())
         .expect("the transcript is on disk")

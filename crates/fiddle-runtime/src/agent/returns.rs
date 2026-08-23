@@ -92,10 +92,35 @@ pub struct Held<'a> {
     pub declarations: Declarations,
 }
 
-struct Returned {
+struct Refusal {
     rule: &'static str,
     reason: String,
     sentence: String,
+}
+
+#[derive(Clone)]
+pub struct LastReturn {
+    pub rule: &'static str,
+
+    pub reason: String,
+}
+
+#[derive(Clone, Default)]
+pub struct Spent {
+    pub count: usize,
+
+    pub last: Option<LastReturn>,
+}
+
+pub fn exhausted(max_turns: usize, spent: &Spent) -> String {
+    let budget = format!("the turn budget of {max_turns} was exhausted");
+    let Some(last) = &spent.last else {
+        return budget;
+    };
+    format!(
+        "{budget}, and {} of its turns were returns; the last report failed the {} rule: {}",
+        spent.count, last.rule, last.reason
+    )
 }
 
 #[derive(Clone)]
@@ -103,7 +128,7 @@ pub struct ReturnHook {
     shown: Arc<Vec<String>>,
     declarations: Declarations,
     bound: usize,
-    returns: Arc<Mutex<usize>>,
+    spent: Arc<Mutex<Spent>>,
     transcripts: Option<Transcripts>,
     redaction: Redaction,
 }
@@ -119,18 +144,18 @@ impl ReturnHook {
             shown: Arc::new(held.shown.iter().map(|cve| cve.to_string()).collect()),
             declarations: held.declarations.clone(),
             bound,
-            returns: Arc::new(Mutex::new(0)),
+            spent: Arc::new(Mutex::new(Spent::default())),
             transcripts: transcripts.cloned(),
             redaction: redaction.clone(),
         }
     }
 
-    pub fn returned(&self) -> usize {
-        *self.locked()
+    pub fn spent(&self) -> Spent {
+        self.locked().clone()
     }
 
-    fn locked(&self) -> std::sync::MutexGuard<'_, usize> {
-        self.returns
+    fn locked(&self) -> std::sync::MutexGuard<'_, Spent> {
+        self.spent
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -167,18 +192,18 @@ impl ReturnHook {
         declaration(excused, report, &touched)
     }
 
-    fn failure(&self, content: &OneOrMany<AssistantContent>) -> Option<Returned> {
+    fn failure(&self, content: &OneOrMany<AssistantContent>) -> Option<Refusal> {
         let report = report_in(content)?;
         if let Some(reason) = self.accounting_failure(&report) {
             let sentence = returned_to_the_model(&reason);
-            return Some(Returned {
+            return Some(Refusal {
                 rule: ACCOUNTING,
                 reason,
                 sentence,
             });
         }
         let breach = self.declaration_failure(&report)?;
-        Some(Returned {
+        Some(Refusal {
             rule: DECLARATION,
             reason: breach.to_string(),
             sentence: declaration_returned(&breach),
@@ -198,12 +223,21 @@ impl AgentHook for ReturnHook {
         let Some(failure) = self.failure(event.content) else {
             return ModelTurnAction::Continue;
         };
-        let mut returns = self.locked();
-        if *returns >= self.bound {
+        let mut spent = self.locked();
+        if spent.count >= self.bound {
             return ModelTurnAction::Continue;
         }
-        *returns += 1;
-        self.record(ctx.turn() as u64, *returns, failure.rule, &failure.reason);
+        spent.count += 1;
+        spent.last = Some(LastReturn {
+            rule: failure.rule,
+            reason: failure.reason.clone(),
+        });
+        self.record(
+            ctx.turn() as u64,
+            spent.count,
+            failure.rule,
+            &failure.reason,
+        );
         ModelTurnAction::retry_with_feedback(failure.sentence)
     }
 }
@@ -430,6 +464,71 @@ mod tests {
                 .is_none(),
             "the repair path has no post-run declaration check, so a return \
              there would invent a rule nothing enforces"
+        );
+    }
+
+    fn spent(count: usize, rule: &'static str, reason: &str) -> Spent {
+        Spent {
+            count,
+            last: Some(LastReturn {
+                rule,
+                reason: reason.to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_budget_exhausted_after_no_return_names_the_budget_and_nothing_else() {
+        assert_eq!(
+            exhausted(4, &Spent::default()),
+            "the turn budget of 4 was exhausted",
+            "a run that returned nothing has no rule to name, and inventing one \
+             sends the reader to a check that never ran"
+        );
+    }
+
+    #[test]
+    fn a_budget_a_return_spent_names_the_rule_the_count_and_the_budget() {
+        let reason = exhausted(
+            4,
+            &spent(2, DECLARATION, "declared without changing: go.mod"),
+        );
+
+        assert!(
+            reason.contains("turn budget of 4 was exhausted"),
+            "the budget ended the attempt, and a reader who is not told looks \
+             for a bug in the rule: {reason}"
+        );
+        assert!(
+            reason.contains("declared without changing: go.mod"),
+            "the rule is why the turns went, and the file is what an operator \
+             acts on: {reason}"
+        );
+        assert!(
+            reason.contains("2 of its turns were returns"),
+            "the count is what says the returns spent the budget: {reason}"
+        );
+        assert!(
+            reason.contains(DECLARATION),
+            "the rule name says which check to read: {reason}"
+        );
+    }
+
+    #[test]
+    fn the_rule_the_sentence_names_is_the_rule_that_spent_the_last_turn() {
+        let accounted = exhausted(
+            4,
+            &spent(1, ACCOUNTING, "shown and not reported: CVE-2025-30204"),
+        );
+
+        assert!(
+            accounted.contains(ACCOUNTING) && !accounted.contains(DECLARATION),
+            "one hook holds two rules, and a sentence naming the wrong one is \
+             worse than a sentence naming neither: {accounted}"
+        );
+        assert!(
+            accounted.contains("1 of its turns"),
+            "the count is the hook's own, not the bound: {accounted}"
         );
     }
 
