@@ -37,9 +37,24 @@ impl Redaction {
     }
 
     pub fn excerpt(&self, text: &str) -> Option<String> {
-        let credential = self.credential.as_deref()?;
-        Some(bounded(&text.replace(credential, REDACTED)))
+        let held = self.redacted(text, EXCERPT_LIMIT)?;
+        Some(match held.cut {
+            true => format!("{:?}\u{2026}", held.text),
+            false => format!("{:?}", held.text),
+        })
     }
+
+    pub fn redacted(&self, text: &str, limit: usize) -> Option<Redacted> {
+        let credential = self.credential.as_deref()?;
+        let replaced = text.replace(credential, REDACTED);
+        Some(cut(replaced.trim(), limit))
+    }
+}
+
+pub struct Redacted {
+    pub text: String,
+
+    pub cut: bool,
 }
 
 impl std::fmt::Debug for Redaction {
@@ -52,11 +67,16 @@ impl std::fmt::Debug for Redaction {
     }
 }
 
-fn bounded(text: &str) -> String {
-    let text = text.trim();
-    match text.char_indices().nth(EXCERPT_LIMIT) {
-        Some((end, _)) => format!("{:?}…", &text[..end]),
-        None => format!("{text:?}"),
+fn cut(text: &str, limit: usize) -> Redacted {
+    match text.char_indices().nth(limit) {
+        Some((end, _)) => Redacted {
+            text: text[..end].to_string(),
+            cut: true,
+        },
+        None => Redacted {
+            text: text.to_string(),
+            cut: false,
+        },
     }
 }
 

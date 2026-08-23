@@ -3,7 +3,8 @@ use fiddle_core::{
     CapabilityAssessment, CapabilityExecution, InvocationRef, NextAction, Observation,
     ProgressEntry, ReportBundle, WorkStateView, CONFIG_CHECK_SCHEMA, INSPECT_SCHEMA, RUN_SCHEMA,
 };
-use fiddle_runtime::EvidenceError;
+use fiddle_runtime::agent::transcript;
+use fiddle_runtime::{EvidenceError, Transcripts};
 use std::path::Path;
 
 #[derive(serde::Serialize)]
@@ -508,6 +509,33 @@ fn disposition_line(disposition: &fiddle_core::RunDisposition) -> String {
         ));
     }
     line
+}
+
+pub fn transcript_note(transcripts: &Transcripts) -> Option<String> {
+    let wrote = transcripts.wrote();
+    if !wrote.began() {
+        return None;
+    }
+    let path = transcripts.path().display();
+    let mut note = match &wrote.failure {
+        Some(cause) => format!(
+            "error: could not write the model transcript\n  transcript  = {path}\n  \
+             cause       = {cause}"
+        ),
+        None => format!(
+            "fiddle wrote the model transcript to {path}, as {} records\n\
+             the transcript carries the project's content and the model's replies",
+            wrote.records,
+        ),
+    };
+    if wrote.dropped > 0 {
+        note.push_str(&format!(
+            "\nthe transcript reached its bound of {} bytes and dropped {} records",
+            transcript::FILE_LIMIT_BYTES,
+            wrote.dropped,
+        ));
+    }
+    Some(note)
 }
 
 pub fn evidence_failure(report_dir: &Path, error: &EvidenceError) -> String {

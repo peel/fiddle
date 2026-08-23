@@ -441,6 +441,7 @@ impl Fixture {
                 tool_timeout: Duration::from_secs(180),
             },
             redaction: Redaction::unknown(),
+            transcripts: None,
             cancel: tokio_util::sync::CancellationToken::new(),
         }
     }

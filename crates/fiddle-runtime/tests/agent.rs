@@ -84,6 +84,7 @@ async fn a_scripted_model_drives_the_real_tools() {
         host.clone(),
         budget(),
         Direction::Fresh,
+        None,
     )
     .await
     .expect("the attempt completes");
@@ -118,6 +119,7 @@ async fn the_turn_budget_is_enforced_by_the_runtime() {
             ..budget()
         },
         Direction::Fresh,
+        None,
     )
     .await;
 
@@ -148,6 +150,7 @@ async fn exceeding_the_changed_file_cap_fails_the_attempt() {
             ..budget()
         },
         Direction::Fresh,
+        None,
     )
     .await;
 
@@ -184,6 +187,7 @@ async fn an_ignore_rule_the_model_wrote_cannot_lift_the_changed_file_cap() {
             ..budget()
         },
         Direction::Fresh,
+        None,
     )
     .await;
 
@@ -206,7 +210,7 @@ async fn malformed_structured_output_is_a_protocol_error_not_a_default() {
     let (host, _g) = test_host();
     let model = MockCompletionModel::new([MockTurn::text("this is not the schema")]);
 
-    let outcome = attempt(model, &redaction(), host, budget(), Direction::Fresh).await;
+    let outcome = attempt(model, &redaction(), host, budget(), Direction::Fresh, None).await;
 
     assert!(
         matches!(outcome, Err(AgentError::Protocol { .. })),
@@ -229,6 +233,7 @@ async fn a_tool_error_is_returned_to_the_model_which_can_recover() {
         host.clone(),
         budget(),
         Direction::Fresh,
+        None,
     )
     .await
     .expect("a refused tool call does not end the run");
@@ -253,7 +258,7 @@ async fn a_provider_fault_is_told_apart_from_a_misbehaving_model() {
     let (host, _g) = test_host();
     let model = MockCompletionModel::new([MockTurn::tool_call("c1", "list_files", json!({}))]);
 
-    let outcome = attempt(model, &redaction(), host, budget(), Direction::Fresh).await;
+    let outcome = attempt(model, &redaction(), host, budget(), Direction::Fresh, None).await;
 
     assert!(
         matches!(outcome, Err(AgentError::Provider { .. })),
@@ -281,7 +286,7 @@ async fn cancelling_mid_attempt_stops_the_attempt_rather_than_waiting_for_it() {
     });
 
     let started = Instant::now();
-    let outcome = attempt(model, &redaction(), host, budget(), Direction::Fresh).await;
+    let outcome = attempt(model, &redaction(), host, budget(), Direction::Fresh, None).await;
     let elapsed = started.elapsed();
 
     assert!(
@@ -321,6 +326,7 @@ async fn the_deadline_bounds_an_attempt_that_would_otherwise_run_on() {
             ..budget()
         },
         Direction::Fresh,
+        None,
     )
     .await;
 
@@ -361,6 +367,7 @@ async fn the_budgets_tool_timeout_bounds_a_single_tool_without_ending_the_run() 
             ..budget()
         },
         Direction::Fresh,
+        None,
     )
     .await
     .expect("one tool outrunning its bound is not the whole attempt failing");

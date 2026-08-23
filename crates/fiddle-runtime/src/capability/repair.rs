@@ -1,5 +1,5 @@
 use super::{Capability, CapabilityError, ExecutionGrant};
-use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts};
+use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts, Transcripts};
 use crate::gateway::Redaction;
 use crate::workspace::{DeclaredCommand, Workspace, WorkspaceCommand};
 use fiddle_core::{correlation_key, CapabilityId, ChangeSetState, EvidenceRef};
@@ -59,6 +59,8 @@ pub struct RepairConfig {
     pub budget: AgentBudget,
 
     pub redaction: Redaction,
+
+    pub transcripts: Option<Transcripts>,
 
     pub cancel: CancellationToken,
 }
@@ -158,6 +160,7 @@ where
             host,
             config.budget.clone(),
             Direction::Fresh,
+            config.transcripts.as_ref(),
         )
         .await?;
 
@@ -287,6 +290,7 @@ mod tests {
                     tool_timeout: Duration::from_secs(180),
                 },
                 redaction: Redaction::unknown(),
+                transcripts: None,
                 cancel: CancellationToken::new(),
             }
         }

@@ -16,7 +16,9 @@ pub mod scanner;
 pub mod stub;
 pub mod workspace;
 
-pub use agent::{AgentBudget, Direction, ToolHost, ToolReceipt, ToolReceipts};
+pub use agent::{
+    AgentBudget, Direction, ToolHost, ToolReceipt, ToolReceipts, TranscriptHook, Transcripts,
+};
 pub use capability::{
     attempt_worktree, Capability, CapabilityError, CveMitigate, ExecutionGrant, FixtureRepair,
     MitigateConfig, ProposeChange, ProposeConfig, PublishChange, PublishConfig, RepairConfig,

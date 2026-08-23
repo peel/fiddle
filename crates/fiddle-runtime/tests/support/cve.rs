@@ -1070,6 +1070,7 @@ impl MigrationWorld {
                 tool_timeout: MIGRATION_CHECK_TIMEOUT,
             },
             redaction: Redaction::unknown(),
+            transcripts: None,
             cancel: CancellationToken::new(),
         }
     }

@@ -5,7 +5,7 @@ use super::cve::{
     Unproved, CVE_LABEL, UNPROVED_LABEL,
 };
 use super::{Capability, CapabilityError, ExecutionGrant};
-use crate::agent::AgentBudget;
+use crate::agent::{AgentBudget, Transcripts};
 use crate::cve::attempts;
 use crate::cve::dedup::commit_log_dedup;
 use crate::cve::project::{project, Projection};
@@ -65,6 +65,8 @@ pub struct MitigateConfig {
     pub budget: AgentBudget,
 
     pub redaction: Redaction,
+
+    pub transcripts: Option<Transcripts>,
 
     pub command_timeout: Duration,
 
@@ -148,6 +150,7 @@ where
                 command_timeout: config.command_timeout,
                 budget: config.budget.clone(),
                 redaction: config.redaction.clone(),
+                transcripts: config.transcripts.clone(),
                 cancel: config.cancel.clone(),
             },
         );

@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod tools;
+pub mod transcript;
 
 pub use audit::AuditHook;
 pub use tools::{
@@ -7,12 +8,13 @@ pub use tools::{
     ReadFileArgs, RunCheck, RunCommand, RunCommandArgs, ToolError, ToolHost, WriteFile,
     WriteFileArgs, WriteReceipt, NOTE_ALLOWANCE_BYTES, RESULT_CAP_BYTES, STREAM_CAP_BYTES,
 };
+pub use transcript::{TranscriptHook, Transcripts};
 
 use crate::gateway::Redaction;
 use crate::workspace::{declared, DeclaredCommand};
 use rig_agent::agent::OutputMode;
 use rig_agent::completion::{PromptError, StructuredOutputError, TypedPrompt};
-use rig_agent::tool::ToolContext;
+use rig_agent::tool::{Tool, ToolContext};
 use rig_agent::AgentBuilder;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::IntoFuture;
@@ -249,6 +251,7 @@ pub async fn attempt<M>(
     host: ToolHost,
     budget: AgentBudget,
     direction: Direction<'_>,
+    transcripts: Option<&Transcripts>,
 ) -> Result<RepairReport, AgentError>
 where
     M: rig_core::completion::CompletionModel + 'static,
@@ -263,8 +266,25 @@ where
             preamble: PREAMBLE,
             task: &task,
         },
+        transcripts,
     )
     .await
+}
+
+const TOOL_CHOICE: &str = "required";
+
+fn offered(declares_commands: bool) -> Vec<&'static str> {
+    let mut tools = vec![
+        ReadFile::NAME,
+        EditFile::NAME,
+        WriteFile::NAME,
+        ListFiles::NAME,
+        RunCheck::NAME,
+    ];
+    if declares_commands {
+        tools.push(RunCommand::NAME);
+    }
+    tools
 }
 
 pub async fn attempt_briefed<M>(
@@ -273,12 +293,26 @@ pub async fn attempt_briefed<M>(
     host: ToolHost,
     budget: AgentBudget,
     brief: Brief<'_>,
+    transcripts: Option<&Transcripts>,
 ) -> Result<RepairReport, AgentError>
 where
     M: rig_core::completion::CompletionModel + 'static,
 {
     let declares_commands = !host.commands.is_empty();
     let preamble = briefed(brief.preamble, &host.commands);
+    if let Some(transcripts) = transcripts {
+        transcripts.append(
+            redaction,
+            transcript::Record::of(transcript::BRIEF)
+                .number("max_turns", budget.max_turns as u64)
+                .number("max_tokens", budget.max_tokens)
+                .number("deadline_ms", budget.deadline.as_millis() as u64)
+                .text("preamble", &preamble)
+                .text("task", brief.task)
+                .text("tools", &offered(declares_commands).join(", "))
+                .text("tool_choice", TOOL_CHOICE),
+        );
+    }
     let mut builder = AgentBuilder::new(model)
         .preamble(&preamble)
         .max_tokens(budget.max_tokens)
@@ -294,7 +328,14 @@ where
     if declares_commands {
         builder = builder.tool(RunCommand);
     }
-    let agent = builder.add_hook(AuditHook::for_host(&host)).build();
+    let mut builder = builder.add_hook(AuditHook::for_host(&host));
+    if let Some(transcripts) = transcripts {
+        builder = builder.add_hook(TranscriptHook::recording(
+            transcripts.clone(),
+            redaction.clone(),
+        ));
+    }
+    let agent = builder.build();
 
     let mut bounded = host.clone();
     bounded.check.timeout = bounded.check.timeout.min(budget.tool_timeout);

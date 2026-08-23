@@ -184,6 +184,25 @@ the second reads the check runs on the candidate commit. `[agent]
 max_capability_attempts` must be at least 2, because a bound of 1 stops the
 second run before it reads anything.
 
+## Record what the model was sent and what it returned
+
+Off by default. One run, one variable.
+
+```sh
+FIDDLE_TRANSCRIPT=1 fiddle run beans:fiddle-m1-demo --capability fixture_repair
+```
+
+The run writes `<report.dir>/transcript/<slug>-<token>.jsonl` and names the file
+on stderr. One JSON object per line. The first line is the brief, the offered
+tools and the bounds. Read it with `jq -c` or `jq 'select(.record=="received")'`.
+
+`[report] dir` is uploaded as a workflow artifact, so a transcript from CI needs
+no further plumbing. Set the variable on the step that runs fiddle.
+
+The file carries the repository's content and the model's replies. The resolved
+credential is replaced with `[redacted]`. Do not attach the artifact where the
+repository's content may not go.
+
 ## Common issues
 
 **`HTTP 404: workflow github-effects.yml not found on the default branch`.**
@@ -224,6 +243,9 @@ gh api repos/peel/fiddle-effects-acceptance/branches --jq '.[].name' | grep '^fi
 `[orchestration.cve]`.** M4c deleted that key and the table is strict, so a
 document that loaded yesterday fails today. Delete the key. The table admits
 `image`, `severities` and `max_findings` and nothing else.
+
+**A run exits 2 naming `FIDDLE_TRANSCRIPT`.** The variable accepts only `1`.
+Unset it to record nothing.
 
 **A run exits 20 rather than 11.** That is a permanent refusal: a `[github.policy]`
 deny, a duplicate remote state, a diverged payload, or an unanswerable

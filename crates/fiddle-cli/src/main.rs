@@ -8,13 +8,14 @@ use fiddle_core::{
     CapabilityId, FiddleBuild, InvocationRef, InvocationRefError, InvocationScheme, RunOutcome,
     WorkStateView,
 };
+use fiddle_runtime::agent::transcript;
 use fiddle_runtime::effect::{EffectContext, Executor};
 use fiddle_runtime::human::interpret::InterpretationBounds;
 use fiddle_runtime::{
     Addressed, AgentBudget, AttemptContext, AttemptTrace, Capability, DeclaredCommand, Extend,
     FixtureRepair, GatewayError, GhCli, GitCli, ProposeChange, ProposeConfig, PublishChange,
-    PublishConfig, RepairConfig, StubChangePort, StubMark, StubWorkItemPort, WorkspaceCommand,
-    CAPABILITIES,
+    PublishConfig, RepairConfig, StubChangePort, StubMark, StubWorkItemPort, Transcripts,
+    WorkspaceCommand, CAPABILITIES,
 };
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -79,6 +80,10 @@ enum CliError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     UnimplementedForm(#[from] UnimplementedForm),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    TranscriptSwitch(#[from] TranscriptSwitchUnknown),
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
@@ -242,6 +247,14 @@ struct NamedValueAbsent {
 struct GatewayUnavailable(GatewayError);
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error(transparent)]
+#[diagnostic(
+    code(fiddle::transcript::switch_unknown),
+    help("export FIDDLE_TRANSCRIPT=1 to record the transcript, or unset it")
+)]
+struct TranscriptSwitchUnknown(transcript::SwitchUnknown);
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[error("{key} names {path}, which could not be used: {reason}")]
 #[diagnostic(
     code(fiddle::config::path_unusable),
@@ -350,7 +363,8 @@ fn exit_code_for(termination: &Termination) -> u8 {
             | CliError::NamedValueAbsent(_)
             | CliError::Gateway(_)
             | CliError::PathUnusable(_)
-            | CliError::UnimplementedForm(_),
+            | CliError::UnimplementedForm(_)
+            | CliError::TranscriptSwitch(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -397,6 +411,22 @@ fn resolve_named(
                 variable: variable.clone(),
             }),
     }
+}
+
+fn transcripts(
+    report_dir: &Path,
+    reference: &InvocationRef,
+) -> Result<Option<Transcripts>, CliError> {
+    let asked = std::env::var(transcript::SWITCH).ok();
+    if !transcript::requested(asked.as_deref()).map_err(TranscriptSwitchUnknown)? {
+        return Ok(None);
+    }
+    let name = format!(
+        "{}-{}",
+        reference.slug(),
+        fiddle_runtime::evidence::mint_attempt_id().0
+    );
+    Ok(Some(Transcripts::under(report_dir, &name)))
 }
 
 fn model_client(agent: &config::Agent) -> Result<fiddle_runtime::Gateway, CliError> {
@@ -521,6 +551,7 @@ fn build_capability<'a>(
     cancel: &CancellationToken,
     reference: &InvocationRef,
     forge: Option<&'a Forge>,
+    transcripts: Option<&Transcripts>,
 ) -> Result<Box<dyn Capability + 'a>, CliError> {
     let missing = |missing: &'static str| Unconfigured {
         capability: selection.id(),
@@ -621,6 +652,7 @@ fn build_capability<'a>(
                         tool_timeout: agent.tool_timeout.as_duration(),
                     },
                     redaction: gateway.redaction,
+                    transcripts: transcripts.cloned(),
                     cancel: cancel.clone(),
                 },
             )))
@@ -703,6 +735,7 @@ fn build_capability<'a>(
                         tool_timeout: agent.tool_timeout.as_duration(),
                     },
                     redaction: gateway.redaction,
+                    transcripts: transcripts.cloned(),
                     deciders: decision.authorized.clone(),
                     interpretation: interpretation_bounds(agent),
                     cancel: cancel.clone(),
@@ -811,6 +844,7 @@ fn build_capability<'a>(
                         tool_timeout: agent.tool_timeout.as_duration(),
                     },
                     redaction: gateway.redaction,
+                    transcripts: transcripts.cloned(),
                     command_timeout: workspace.command_timeout.as_duration(),
                     findings: fiddle_runtime::cve::verdict::Budget::of(sweep.max_findings),
                     max_attempts: u32::try_from(agent.max_capability_attempts).unwrap_or(u32::MAX),
@@ -898,6 +932,8 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
 
+            let recording = transcripts(&config.report.dir, &reference)?;
+
             let (work_items, changes) = ports(&config);
             let cancel = CancellationToken::new();
             let forge = match selection {
@@ -913,6 +949,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 &cancel,
                 &reference,
                 forge.as_ref(),
+                recording.as_ref(),
             )?;
             let record = fiddle_runtime::attempt(&AttemptContext {
                 project: &config.project.name,
@@ -927,6 +964,9 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             })
             .await;
 
+            if let Some(note) = recording.as_ref().and_then(render::transcript_note) {
+                eprintln!("{note}");
+            }
             if let Some(failure) = &record.evidence_failure {
                 eprintln!("{}", render::evidence_failure(&config.report.dir, failure));
             }
@@ -1139,6 +1179,7 @@ mod tests {
             &CancellationToken::new(),
             &a_reference(),
             None,
+            None,
         ) else {
             panic!("nothing exports that variable, so no endpoint exists")
         };
@@ -1200,6 +1241,7 @@ mod tests {
             &CancellationToken::new(),
             &a_reference(),
             None,
+            None,
         ) else {
             panic!("the deterministic capability needs nothing but the document")
         };
@@ -1232,6 +1274,7 @@ mod tests {
             &path,
             &CancellationToken::new(),
             &a_reference(),
+            None,
             None,
         ) else {
             panic!("no forge was supplied, so nothing can be built")
@@ -1275,6 +1318,7 @@ mod tests {
             &path,
             &CancellationToken::new(),
             &a_reference(),
+            None,
             None,
         ) else {
             panic!("a publication needs a forge to publish to")
@@ -1434,6 +1478,7 @@ mod tests {
             &path,
             &CancellationToken::new(),
             &a_reference(),
+            None,
             None,
         ) else {
             panic!("a repair needs a model and somewhere to work")
