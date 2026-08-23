@@ -230,6 +230,8 @@ pub const TOOL: &str = "tool";
 
 pub const INVALID: &str = "invalid";
 
+pub const RETURNED: &str = "returned";
+
 pub const SPENT: &str = "spent";
 
 pub const FINISH: &str = "finish";

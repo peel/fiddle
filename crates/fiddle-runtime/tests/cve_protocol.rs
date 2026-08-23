@@ -1,6 +1,6 @@
 mod support;
 
-use fiddle_runtime::agent::AgentError;
+use fiddle_runtime::agent::{transcript, AgentError, RETURNS};
 use fiddle_runtime::capability::{
     land, undeclared, CapabilityError, GroupMigration, GroupStatus, InWorktree, Landed,
     MigrationAttempt, NeedsWork,
@@ -8,6 +8,7 @@ use fiddle_runtime::capability::{
 use fiddle_runtime::cve::dedup::FixedInCommits;
 use fiddle_runtime::evaluate::{evaluate, Evaluation, RescanVerdict};
 use fiddle_runtime::workspace::{Content, FileEdit, WorkspacePath};
+use fiddle_runtime::Redaction;
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
 use std::time::Duration;
@@ -91,6 +92,24 @@ fn reporting(report: &str) -> Vec<MockTurn> {
     script
 }
 
+fn insisting(report: &str) -> Vec<MockTurn> {
+    let mut script = reporting(report);
+    for _ in 0..RETURNS {
+        script.push(MockTurn::text(report));
+    }
+    script
+}
+
+fn one_report(report: &str) -> usize {
+    reporting(report).len()
+}
+
+fn correcting(first: &str, second: &str) -> Vec<MockTurn> {
+    let mut script = reporting(first);
+    script.push(MockTurn::text(second));
+    script
+}
+
 fn migrates_and_understates_it() -> Vec<MockTurn> {
     reporting(
         r#"{"changed_files":["main.go"],"summary":"applied the rename","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"the bump, and the call sites it moved"}]}"#,
@@ -98,13 +117,13 @@ fn migrates_and_understates_it() -> Vec<MockTurn> {
 }
 
 fn accounts_for_it_twice() -> Vec<MockTurn> {
-    reporting(
+    insisting(
         r#"{"changed_files":["main.go","main_test.go"],"summary":"applied the rename","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"pinned it"},{"cve":"CVE-2026-0001","attempted":false,"note":"actually I left it alone"}]}"#,
     )
 }
 
 fn names_an_advisory_nobody_showed_it() -> Vec<MockTurn> {
-    reporting(
+    insisting(
         r#"{"changed_files":["main.go","main_test.go"],"summary":"applied the rename","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"pinned it"},{"cve":"CVE-2026-9999","attempted":true,"note":"and this one too"}]}"#,
     )
 }
@@ -456,6 +475,152 @@ async fn the_attempt_really_edits_the_tree_through_the_tools() {
     );
 }
 
+async fn run_recorded(
+    model: MockCompletionModel,
+    world: &MigrationWorld,
+    transcripts: &transcript::Transcripts,
+) -> Result<MigrationAttempt, CapabilityError> {
+    let mut config = world.config();
+    config.redaction = Redaction::of("sk-cve-must-not-appear-9f13");
+    config.transcripts = Some(transcripts.clone());
+    GroupMigration::new(model, config)
+        .migrate(&world.workspace(), &world.findings, None)
+        .await
+}
+
+fn returns_in(transcripts: &transcript::Transcripts) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(transcripts.path())
+        .expect("the transcript is on disk")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("one JSON object"))
+        .filter(|record| record["record"] == transcript::RETURNED)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_report_that_accounts_for_everything_ends_the_attempt_in_one_report() {
+    let world = migration_world().await;
+    let model = MockCompletionModel::new(reporting(CLAIMS_DONE));
+
+    let attempt = run_migration(model.clone(), &world)
+        .await
+        .expect("a report that accounts for what it was shown is an answer");
+
+    assert_eq!(
+        attempt.report.findings.len(),
+        1,
+        "the premise: one advisory was shown and one disposition came back"
+    );
+    assert_eq!(
+        model.request_count(),
+        one_report(CLAIMS_DONE),
+        "the scripted turns are the whole run, and nothing was returned"
+    );
+}
+
+#[tokio::test]
+async fn a_report_that_accounts_for_nothing_is_returned_and_the_run_continues() {
+    let world = migration_world().await;
+    let model = MockCompletionModel::new(correcting(ACCOUNTS_FOR_NOTHING, CLAIMS_DONE));
+
+    let attempt = run_migration(model.clone(), &world)
+        .await
+        .expect("the second report accounts for the advisory, so the attempt succeeds");
+
+    assert_eq!(
+        attempt
+            .report
+            .findings
+            .iter()
+            .map(|disposition| disposition.cve.clone())
+            .collect::<Vec<String>>(),
+        vec![SHOWN.to_string()],
+        "the report that ends the attempt is the corrected one"
+    );
+    assert_eq!(
+        model.request_count(),
+        one_report(CLAIMS_DONE) + 1,
+        "the refused report cost one more turn, and the run spent it"
+    );
+
+    let requests = model.requests();
+    let last = serde_json::to_string(requests.last().expect("a fifth request was made"))
+        .expect("a CompletionRequest serializes");
+    assert!(
+        last.contains(SHOWN) && last.contains("shown and not reported"),
+        "the model is told which advisory it left out, and not to try again: {last}"
+    );
+}
+
+#[tokio::test]
+async fn a_model_that_never_accounts_for_the_advisory_ends_after_the_stated_returns() {
+    let world = migration_world().await;
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let transcripts = transcript::Transcripts::under(dir.path(), "insisting");
+    let model = MockCompletionModel::new(insisting(ACCOUNTS_FOR_NOTHING));
+
+    let failure = run_recorded(model.clone(), &world, &transcripts)
+        .await
+        .expect_err("a report that never accounts for the advisory is refused");
+
+    match failure {
+        CapabilityError::Agent(AgentError::Protocol { reason }) => assert!(
+            reason.contains(SHOWN),
+            "the attempt ends on the accounting rule, unchanged: {reason}"
+        ),
+        other => panic!("the bound must not change the failure, and this is {other:?}"),
+    }
+    assert_eq!(
+        model.request_count(),
+        one_report(ACCOUNTS_FOR_NOTHING) + RETURNS,
+        "the run spends one turn per return and no more"
+    );
+
+    let returns = returns_in(&transcripts);
+    assert_eq!(
+        returns.len(),
+        RETURNS,
+        "the transcript has to show each return: {returns:?}"
+    );
+    for (n, record) in returns.iter().enumerate() {
+        assert_eq!(record["returns"], n as u64 + 1, "{record}");
+        assert_eq!(record["bound"], RETURNS as u64, "{record}");
+        assert!(
+            record["reason"].as_str().expect("a reason").contains(SHOWN),
+            "a return records the accounting failure it carried: {record}"
+        );
+    }
+    let turns: Vec<u64> = returns
+        .iter()
+        .map(|record| record["turn"].as_u64().expect("a turn"))
+        .collect();
+    assert!(
+        turns.windows(2).all(|pair| pair[0] < pair[1]),
+        "a returned turn is refused, and the next turn number is the model's          next attempt at it: {turns:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_unfinished_claim_that_accounts_for_everything_ends_the_attempt() {
+    let world = migration_world().await;
+    let model = MockCompletionModel::new(declines_it());
+
+    let attempt = run_migration(model.clone(), &world)
+        .await
+        .expect("a report that accounts for what it was shown is an answer");
+
+    assert_eq!(
+        attempt.report.findings.len(),
+        1,
+        "the premise: the model declined the advisory and said why"
+    );
+    assert_eq!(
+        model.request_count(),
+        one_report(CLAIMS_DONE),
+        "fiddle returns an accounting failure and never the model's own claim          that it has not finished"
+    );
+}
+
 async fn refusal_reason(script: Vec<MockTurn>, world: &MigrationWorld) -> String {
     let failure = run_migration(MockCompletionModel::new(script), world)
         .await
@@ -470,7 +635,7 @@ async fn refusal_reason(script: Vec<MockTurn>, world: &MigrationWorld) -> String
 #[tokio::test]
 async fn a_report_that_leaves_an_advisory_out_is_refused() {
     let world = migration_world().await;
-    let reason = refusal_reason(reporting(ACCOUNTS_FOR_NOTHING), &world).await;
+    let reason = refusal_reason(insisting(ACCOUNTS_FOR_NOTHING), &world).await;
 
     assert!(
         reason.contains(SHOWN),

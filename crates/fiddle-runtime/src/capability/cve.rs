@@ -321,6 +321,11 @@ where
             receipts: Arc::clone(&self.receipts),
         };
 
+        let shown: Vec<&str> = findings
+            .iter()
+            .map(|finding| finding.cve.as_str())
+            .collect();
+
         let report = attempt_briefed(
             self.model.clone(),
             &self.config.redaction,
@@ -330,14 +335,11 @@ where
                 preamble: MIGRATION_PREAMBLE,
                 task: &task,
             },
+            &shown,
             self.config.transcripts.as_ref(),
         )
         .await?;
 
-        let shown: Vec<&str> = findings
-            .iter()
-            .map(|finding| finding.cve.as_str())
-            .collect();
         if let Some(failure) = unaccounted(&shown, &report.findings) {
             return Err(failure.into());
         }
