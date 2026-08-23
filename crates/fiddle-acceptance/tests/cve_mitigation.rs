@@ -997,7 +997,7 @@ impl Sweep {
              model = \"a-model\"\n\
              base_url = \"{base_url}\"\n\
              api_key = {{ env = \"{MODEL_KEY}\" }}\n\
-             max_turns = 4\n\
+             max_turns = 6\n\
              max_tokens = 512\n\
              max_changed_files = 4\n\
              deadline = \"300s\"\n\
@@ -1330,8 +1330,10 @@ fn a_declared_substitution() -> String {
     )
 }
 
+const REPORTS_PAST_THE_RETURN_BOUND: usize = 3;
+
 fn a_repair_letting_a_declared_command_write_the_derived_file(declared: &[&str]) -> Vec<Reply> {
-    vec![
+    let mut script = vec![
         accepted(calls(
             "write_file",
             serde_json::json!({ "path": "go.mod", "contents": vulnerable_manifest() }),
@@ -1350,13 +1352,17 @@ fn a_repair_letting_a_declared_command_write_the_derived_file(declared: &[&str])
                 ],
             }),
         )),
-        accepted(reports(serde_json::json!({
-            "changed_files": declared,
-            "summary": "moved the requirement and let the declared program derive the rest",
-            "claimed_complete": true,
-            "findings": [{ "cve": LIBRARY_CVE, "attempted": true, "note": FIXED_NOTE }],
-        }))),
-    ]
+    ];
+    let report = serde_json::json!({
+        "changed_files": declared,
+        "summary": "moved the requirement and let the declared program derive the rest",
+        "claimed_complete": true,
+        "findings": [{ "cve": LIBRARY_CVE, "attempted": true, "note": FIXED_NOTE }],
+    });
+    for _ in 0..REPORTS_PAST_THE_RETURN_BOUND {
+        script.push(accepted(reports(report.clone())));
+    }
+    script
 }
 
 fn a_repair_moving_the_requirement() -> Vec<Reply> {

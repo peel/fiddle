@@ -1,8 +1,8 @@
 use super::propose::COMMITTER;
 use super::CapabilityError;
 use crate::agent::{
-    attempt_briefed, unaccounted, AgentBudget, Brief, FindingDisposition, RepairReport, ToolHost,
-    ToolReceipts, Transcripts,
+    attempt_briefed, unaccounted, AgentBudget, Brief, Declarations, FindingDisposition, Held,
+    RepairReport, ToolHost, ToolReceipts, Transcripts,
 };
 use crate::cve::attempts;
 use crate::cve::dedup::{Local, Spawn};
@@ -141,16 +141,16 @@ impl std::fmt::Display for DeclarationBreach {
     }
 }
 
-pub fn undeclared(declared: &[String], touched: &[FileEdit]) -> Option<DeclarationBreach> {
+pub fn breached(declared: &[String], touched: &[&str]) -> Option<DeclarationBreach> {
     let declared: BTreeSet<&str> = declared.iter().map(String::as_str).collect();
-    let touched_paths: BTreeSet<&str> = touched.iter().map(|edit| edit.path.as_str()).collect();
+    let touched: BTreeSet<&str> = touched.iter().copied().collect();
 
-    let unannounced: Vec<String> = touched_paths
+    let unannounced: Vec<String> = touched
         .difference(&declared)
         .map(|path| path.to_string())
         .collect();
     let unmet: Vec<String> = declared
-        .difference(&touched_paths)
+        .difference(&touched)
         .map(|path| path.to_string())
         .collect();
 
@@ -159,6 +159,11 @@ pub fn undeclared(declared: &[String], touched: &[FileEdit]) -> Option<Declarati
     } else {
         Some(DeclarationBreach { unannounced, unmet })
     }
+}
+
+pub fn undeclared(declared: &[String], touched: &[FileEdit]) -> Option<DeclarationBreach> {
+    let paths: Vec<&str> = touched.iter().map(|edit| edit.path.as_str()).collect();
+    breached(declared, &paths)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -335,7 +340,10 @@ where
                 preamble: MIGRATION_PREAMBLE,
                 task: &task,
             },
-            &shown,
+            Held {
+                shown: &shown,
+                declarations: Declarations::held(workspace, &bumped),
+            },
             self.config.transcripts.as_ref(),
         )
         .await?;

@@ -1,12 +1,12 @@
-pub mod accounting;
 pub mod audit;
 pub mod retry;
+pub mod returns;
 pub mod tools;
 pub mod transcript;
 
-pub use accounting::{AccountingHook, RETURNS};
 pub use audit::AuditHook;
 pub use retry::{RetryingModel, RETRIES};
+pub use returns::{Declarations, Held, ReturnHook, RETURNS};
 pub use tools::{
     CheckOutcome, EditFile, EditFileArgs, ListFiles, ListFilesArgs, Listing, NoArgs, ReadFile,
     ReadFileArgs, RunCheck, RunCommand, RunCommandArgs, ToolError, ToolHost, WriteFile,
@@ -272,7 +272,10 @@ where
             preamble: PREAMBLE,
             task: &task,
         },
-        &[],
+        Held {
+            shown: &[],
+            declarations: Declarations::Unchecked,
+        },
         transcripts,
     )
     .await
@@ -300,7 +303,7 @@ pub async fn attempt_briefed<M>(
     host: ToolHost,
     budget: AgentBudget,
     brief: Brief<'_>,
-    shown: &[&str],
+    held: Held<'_>,
     transcripts: Option<&Transcripts>,
 ) -> Result<RepairReport, AgentError>
 where
@@ -345,12 +348,7 @@ where
         builder = builder.add_hook(hook);
     }
     let agent = builder
-        .add_hook(AccountingHook::holding(
-            shown,
-            RETURNS,
-            redaction,
-            transcripts,
-        ))
+        .add_hook(ReturnHook::holding(&held, RETURNS, redaction, transcripts))
         .build();
 
     let mut bounded = host.clone();

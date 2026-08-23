@@ -1,7 +1,7 @@
 # 053 — An unaccounted report is returned to the model twice, and then the attempt ends
 
 Status: accepted
-Cites: crates/fiddle-runtime/src/agent/accounting.rs, AccountingHook, AccountingHook::holding, AccountingHook::failure, accounting::RETURNS, accounting::returned_to_the_model, accounting::report_in, agent::accounting, agent::unaccounted, agent::attempt_briefed, transcript::RETURNED, crates/fiddle-runtime/tests/cve_protocol.rs, a_report_that_accounts_for_everything_ends_the_attempt_in_one_report, a_report_that_accounts_for_nothing_is_returned_and_the_run_continues, a_model_that_never_accounts_for_the_advisory_ends_after_the_stated_returns, an_unfinished_claim_that_accounts_for_everything_ends_the_attempt, the_sentence_the_model_receives_names_the_advisory_it_left_out, the_plan_that_ended_run_32634427291_carries_an_accounting_failure, a_run_shown_no_advisory_has_no_accounting_rule_to_fail, a_turn_calling_a_tool_is_never_returned, nothing_in_this_workspace_decides_on_claimed_complete
+Cites: crates/fiddle-runtime/src/agent/returns.rs, ReturnHook, ReturnHook::holding, ReturnHook::failure, returns::RETURNS, returns::returned_to_the_model, returns::report_in, agent::accounting, agent::unaccounted, agent::attempt_briefed, transcript::RETURNED, crates/fiddle-runtime/tests/cve_protocol.rs, a_report_that_accounts_for_everything_ends_the_attempt_in_one_report, a_report_that_accounts_for_nothing_is_returned_and_the_run_continues, a_model_that_never_accounts_for_the_advisory_ends_after_the_stated_returns, an_unfinished_claim_that_accounts_for_everything_ends_the_attempt, the_sentence_the_model_receives_names_the_advisory_it_left_out, the_plan_that_ended_run_32634427291_carries_an_accounting_failure, a_run_shown_no_advisory_has_no_accounting_rule_to_fail, a_turn_calling_a_tool_is_never_returned, a_report_failing_both_rules_is_returned_on_the_accounting_rule_first, nothing_in_this_workspace_decides_on_claimed_complete
 
 ## Context
 
@@ -23,9 +23,11 @@ The response is what is wrong. fiddle knew the report was incomplete. The model 
 
 ## Decision
 
-**An unaccounted report is returned to the model as a turn.** `AccountingHook` runs the accounting rule inside the agent loop, on `on_model_turn_finished`. A turn whose report fails the rule is rejected, and the model is sent the failure and asked to continue.
+**An unaccounted report is returned to the model as a turn.** `ReturnHook` runs the accounting rule inside the agent loop, on `on_model_turn_finished`. A turn whose report fails the rule is rejected, and the model is sent the failure and asked to continue.
 
 **The bound is two returns.** `RETURNS` is 2. After two returns fiddle accepts the third unaccounted report into the run. The post-run check in `GroupMigration::migrate` then refuses it, exactly as it does today.
+
+ADR 055 adds the declaration rule to the same hook and the same bound, and renames `AccountingHook` to `ReturnHook`. Nothing this record decides changes. Read the two together: the bound below is two returns over the attempt, and not two per rule.
 
 **The accounting rule does not change.** `agent::unaccounted` still refuses a report that leaves an advisory out, invents one, disposes of one twice, or declines one without a reason. The hook calls the same `agent::accounting` function that builds the refusal, so a return and a refusal can never disagree about what is wrong.
 
@@ -61,7 +63,7 @@ What ended run 32634427291 was not the claim. It was a report that disposed of n
 
 ## What is returned, and what cannot be
 
-`retry_model_turn` refuses a turn that carries a tool call, so that provider-visible history never holds an unanswered call. `AccountingHook` returns only a tool-free turn.
+`retry_model_turn` refuses a turn that carries a tool call, so that provider-visible history never holds an unanswered call. `ReturnHook` returns only a tool-free turn.
 
 The run uses `OutputMode::Tool`, so a report can arrive by two channels. Run 32634427291 used the text channel: the gateway answered `finish: stop` with content, and rig accepted the text because it parses and carries every required field. That channel is the one this decision fixes.
 
@@ -80,6 +82,6 @@ Nothing in ADR 052 changes. `Redaction` is the one path to the file, and the rea
 - `attempt_briefed` takes one more argument: the advisories the run was shown. `attempt` passes an empty slice, because the repair path shows none.
 - A run shown no advisory has no accounting rule to fail, so it installs a hook that returns nothing. The repair path is unchanged.
 - `agent::accounting` is public and returns the reason. `agent::unaccounted` wraps it in `AgentError::Protocol` and keeps its signature, so every caller and every existing test is unchanged.
-- `AccountingHook` is registered after `TranscriptHook`. A `Retry` stops the hooks after it on that event. The transcript writes its own records on `on_completion_response`, and that event fires first. So a refused turn is recorded whole before it is refused.
+- `ReturnHook` is registered after `TranscriptHook`. A `Retry` stops the hooks after it on that event. The transcript writes its own records on `on_completion_response`, and that event fires first. So a refused turn is recorded whole before it is refused.
 - Three scripted models in `cve_protocol.rs` now repeat their bad report `RETURNS + 1` times. A script that ends on one bad report no longer ends the run, and `MockCompletionModel` answers a turn it has no script for with a provider error.
 - The bound and the accounting rule are proved by different tests. `a_model_that_never_accounts_for_the_advisory_ends_after_the_stated_returns` asserts the failure is still `AgentError::Protocol` naming the advisory, so reaching the bound changes when the attempt ends and not how.
