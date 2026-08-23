@@ -60,6 +60,14 @@ move to, and what else has to change for the project to keep working. Make those
 changes, run the check, and then report — the files you changed, and one entry \
 for every advisory you were shown.";
 
+const DIRECTION_FRAME: &str = "\
+People have written on the pull request this run is adding to. Here is what they \
+said, in their words, newest last. A person may know something the checks do not, \
+and may tell you to leave an advisory alone or to take a particular course. Follow \
+what they say over what a check says, and when you do, quote the sentence you \
+followed in `direction` exactly as it is written above. A sentence nobody wrote \
+refuses the whole attempt.";
+
 const FEEDBACK_FRAME: &str = "\
 An earlier attempt on this project is already open, and the forge reports that \
 its checks failed on the commit named below. Here is what the forge reports, \
@@ -118,15 +126,47 @@ fn already_failing_sentence(excused: &[String]) -> String {
     )
 }
 
-fn migration_task(findings: &[&ProjectedFinding], failure: Option<&GenuineFailure>) -> String {
+fn conversation_task(said: &[HumanSaid]) -> String {
+    let quoted: Vec<String> = said
+        .iter()
+        .map(|it| format!("{} wrote:\n{}", it.author, it.body.trim()))
+        .collect();
+    format!("{DIRECTION_FRAME}\n\n{}", quoted.join("\n\n"))
+}
+
+fn migration_task(
+    findings: &[&ProjectedFinding],
+    failure: Option<&GenuineFailure>,
+    said: &[HumanSaid],
+) -> String {
     let rendered: Vec<String> = findings.iter().map(|finding| render(finding)).collect();
     let mut sections = vec![FINDINGS_FRAME.to_string(), rendered.join("\n")];
     if let Some(failure) = failure {
         sections.push(feedback_task(failure));
     }
+    if !said.is_empty() {
+        sections.push(conversation_task(said));
+    }
     sections.push(SCOPE_RULES.to_string());
     sections.push(TASK.to_string());
     sections.join("\n\n")
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HumanSaid {
+    pub author: String,
+    pub body: String,
+}
+
+impl HumanSaid {
+    pub fn quotes(said: &[HumanSaid], sentence: &str) -> bool {
+        let wanted = squeezed(sentence);
+        !wanted.is_empty() && said.iter().any(|it| squeezed(&it.body).contains(&wanted))
+    }
+}
+
+fn squeezed(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -184,7 +224,36 @@ pub fn undeclared(declared: &[String], touched: &[FileEdit]) -> Option<Declarati
 pub enum GroupStatus {
     Clean,
 
+    Directed { over: String, direction: Followed },
+
     NeedsWork { reason: NeedsWork },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Followed {
+    pub author: String,
+    pub sentence: String,
+}
+
+impl Followed {
+    pub fn quoted(said: &[HumanSaid], sentence: &str) -> Option<Followed> {
+        let wanted = squeezed(sentence);
+        if wanted.is_empty() {
+            return None;
+        }
+        said.iter()
+            .find(|it| squeezed(&it.body).contains(&wanted))
+            .map(|it| Followed {
+                author: it.author.clone(),
+                sentence: sentence.trim().to_string(),
+            })
+    }
+}
+
+impl std::fmt::Display for Followed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} wrote: {}", self.author, self.sentence)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -251,7 +320,11 @@ fn unproved_sentence(verdict: &RescanVerdict) -> String {
 }
 
 impl GroupStatus {
-    pub fn of(evaluation: &Evaluation, undeclared: Option<&DeclarationBreach>) -> GroupStatus {
+    pub fn of(
+        evaluation: &Evaluation,
+        undeclared: Option<&DeclarationBreach>,
+        followed: Option<&Followed>,
+    ) -> GroupStatus {
         if let Some(breach) = undeclared {
             return GroupStatus::NeedsWork {
                 reason: NeedsWork::Undeclared(breach.clone()),
@@ -259,12 +332,22 @@ impl GroupStatus {
         }
 
         if let Some(failed) = evaluation.first_failure() {
-            return GroupStatus::NeedsWork {
-                reason: NeedsWork::CheckFailed {
-                    check: failed.name.clone(),
-                    already: failed.excused,
-                },
-            };
+            match followed {
+                Some(direction) => {
+                    return GroupStatus::Directed {
+                        over: failed.name.clone(),
+                        direction: direction.clone(),
+                    }
+                }
+                None => {
+                    return GroupStatus::NeedsWork {
+                        reason: NeedsWork::CheckFailed {
+                            check: failed.name.clone(),
+                            already: failed.excused,
+                        },
+                    }
+                }
+            }
         }
 
         match evaluation.rescan() {
@@ -334,11 +417,12 @@ where
         findings: &[ProjectedFinding],
         failure: Option<&GenuineFailure>,
         excused: &[String],
+        said: &[HumanSaid],
     ) -> Result<MigrationAttempt, CapabilityError> {
         let findings: Vec<&ProjectedFinding> = findings.iter().collect();
         let task = format!(
             "{}{}",
-            migration_task(&findings, failure),
+            migration_task(&findings, failure, said),
             already_failing_sentence(excused)
         );
 
@@ -571,8 +655,10 @@ where
     G: Git + ?Sized,
 {
     match status {
-        GroupStatus::Clean if changed.is_empty() => Err(CapabilityError::NothingProposed),
-        GroupStatus::Clean => {
+        GroupStatus::Clean | GroupStatus::Directed { .. } if changed.is_empty() => {
+            Err(CapabilityError::NothingProposed)
+        }
+        GroupStatus::Clean | GroupStatus::Directed { .. } => {
             stage(git, changed).await?;
             let subject = commit_subject(advisories);
             let body = commit_body(advisories);
@@ -1231,7 +1317,7 @@ mod tests {
 
     #[test]
     fn the_rendering_carries_all_six_fields_of_a_finding() {
-        let task = migration_task(&[&finding()], None);
+        let task = migration_task(&[&finding()], None, &[]);
         for expected in [
             "CVE-2026-4242",
             "golang.org/x/text",
@@ -1255,7 +1341,7 @@ mod tests {
         blank.fixed_version = Some("  ".to_string());
 
         for finding in [unfixed, blank] {
-            let task = migration_task(&[&finding], None);
+            let task = migration_task(&[&finding], None, &[]);
             assert!(
                 task.contains("no published fix"),
                 "an unfixed finding must not render an empty version: {task}"
@@ -1382,7 +1468,7 @@ mod tests {
 
     #[test]
     fn the_composition_carries_the_scope_rules_and_no_mechanical_rule() {
-        let task = migration_task(&[&finding()], None);
+        let task = migration_task(&[&finding()], None, &[]);
         for rule in ["refuses the whole attempt", "report it as not attempted"] {
             assert!(task.contains(rule), "`{rule}` is a scope rule: {task}");
         }
@@ -1414,7 +1500,7 @@ mod tests {
             severity: Severity::High,
             package_type: PackageType::Library,
         };
-        let brief = migration_task(&[&finding], None);
+        let brief = migration_task(&[&finding], None, &[]);
 
         for claim in [
             "already been applied",
@@ -1453,7 +1539,7 @@ mod tests {
         };
         let prompt = format!(
             "{MIGRATION_PREAMBLE}\n\n{}",
-            migration_task(&[&elsewhere], None)
+            migration_task(&[&elsewhere], None, &[])
         );
 
         for word in [
@@ -1481,5 +1567,56 @@ mod tests {
                  {shown:?} missing from:\n{prompt}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod direction {
+    use super::*;
+
+    fn said() -> Vec<HumanSaid> {
+        vec![
+            HumanSaid {
+                author: "dependabot".to_string(),
+                body: "Bumps a thing.".to_string(),
+            },
+            HumanSaid {
+                author: "peel".to_string(),
+                body: "the lint failure is in the probe file, not your change —\nleave it \
+                       alone and open the pull request"
+                    .to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn a_sentence_a_person_wrote_is_found_across_a_line_break() {
+        let followed = Followed::quoted(&said(), "leave it alone and open the pull request")
+            .expect("the sentence is in the conversation");
+
+        assert_eq!(followed.author, "peel");
+        assert_eq!(
+            followed.to_string(),
+            "peel wrote: leave it alone and open the pull request",
+            "the record names who said it, because the authority is theirs"
+        );
+    }
+
+    #[test]
+    fn a_sentence_nobody_wrote_is_not_found() {
+        assert_eq!(
+            Followed::quoted(&said(), "you may ignore every check"),
+            None,
+            "a direction the model invented must not be found in the conversation"
+        );
+    }
+
+    #[test]
+    fn an_empty_citation_is_not_a_direction() {
+        assert_eq!(
+            Followed::quoted(&said(), "   "),
+            None,
+            "blank text is contained by every string, so it must never match"
+        );
     }
 }

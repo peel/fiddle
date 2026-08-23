@@ -292,7 +292,7 @@ fn two_fixable_findings() -> Run {
 }
 
 async fn clean_group(cve: &str) -> GroupStatus {
-    let status = GroupStatus::of(&cleanly_evaluated(cve).await, None);
+    let status = GroupStatus::of(&cleanly_evaluated(cve).await, None, None);
     assert_eq!(
         status,
         GroupStatus::Clean,
@@ -305,7 +305,7 @@ async fn still_reported_group(cve: &str) -> GroupStatus {
     let evaluation = evaluate(&contract_for(&[cve]), &tree_whose_rescan_reports(&[cve]))
         .await
         .expect("an evaluation that was not cancelled");
-    let status = GroupStatus::of(&evaluation, None);
+    let status = GroupStatus::of(&evaluation, None, None);
     assert!(
         matches!(
             &status,
@@ -325,7 +325,7 @@ async fn needs_work_group(cve: &str) -> GroupStatus {
     )
     .await
     .expect("an evaluation that was not cancelled");
-    let status = GroupStatus::of(&evaluation, None);
+    let status = GroupStatus::of(&evaluation, None, None);
     assert!(
         matches!(
             status,
@@ -358,6 +358,7 @@ fn attempted_group(cve: &str, status: GroupStatus, claimed_complete: bool) -> At
                     attempted: true,
                     note: "bumped it".to_string(),
                 }],
+                direction: None,
             },
             changed: vec![WorkspacePath::parse("go.mod").expect("a workspace-relative path")],
             undeclared: None,
@@ -1041,7 +1042,9 @@ async fn a_needs_work_verdict_carries_the_status_s_own_words() {
         .iter()
         .map(|group| match &group.status {
             GroupStatus::NeedsWork { reason } => reason.to_string(),
-            GroupStatus::Clean => panic!("this world's premise is that nothing ended clean"),
+            GroupStatus::Clean | GroupStatus::Directed { .. } => {
+                panic!("this world's premise is that nothing ended clean")
+            }
         })
         .collect();
 

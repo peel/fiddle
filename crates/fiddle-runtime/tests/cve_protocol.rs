@@ -238,7 +238,7 @@ async fn run_migration(
     world: &MigrationWorld,
 ) -> Result<MigrationAttempt, fiddle_runtime::capability::CapabilityError> {
     GroupMigration::new(model, world.config())
-        .migrate(&world.workspace(), &world.findings, None, &[])
+        .migrate(&world.workspace(), &world.findings, None, &[], &[])
         .await
 }
 
@@ -430,7 +430,7 @@ async fn the_attempt_really_edits_the_tree_through_the_tools() {
     let world = migration_world().await;
     let migration = GroupMigration::new(MockCompletionModel::new(migrates()), world.config());
     let attempt = migration
-        .migrate(&world.workspace(), &world.findings, None, &[])
+        .migrate(&world.workspace(), &world.findings, None, &[], &[])
         .await
         .expect("a scripted migration completes");
 
@@ -486,7 +486,7 @@ async fn run_recorded(
     config.redaction = Redaction::of("sk-cve-must-not-appear-9f13");
     config.transcripts = Some(transcripts.clone());
     GroupMigration::new(model, config)
-        .migrate(&world.workspace(), &world.findings, None, &[])
+        .migrate(&world.workspace(), &world.findings, None, &[], &[])
         .await
 }
 
@@ -498,7 +498,7 @@ async fn run_with_turns(
     let mut config = world.config();
     config.budget.max_turns = max_turns;
     GroupMigration::new(model, config)
-        .migrate(&world.workspace(), &world.findings, None, &[])
+        .migrate(&world.workspace(), &world.findings, None, &[], &[])
         .await
 }
 
@@ -883,6 +883,7 @@ async fn the_model_cannot_return_a_verdict() {
     let refused = GroupStatus::of(
         &a_tree_that_will_not_build().await,
         attempt.undeclared.as_ref(),
+        None,
     );
     assert!(
         matches!(
@@ -895,7 +896,7 @@ async fn the_model_cannot_return_a_verdict() {
          build clean, and the refusal names the check that decided: {refused:?}"
     );
 
-    let accepted = GroupStatus::of(&a_proved_tree().await, attempt.undeclared.as_ref());
+    let accepted = GroupStatus::of(&a_proved_tree().await, attempt.undeclared.as_ref(), None);
     assert_eq!(
         accepted,
         GroupStatus::Clean,
@@ -913,7 +914,7 @@ async fn a_disowned_edit_the_checks_prove_is_still_clean() {
         "the premise: the model said it had not finished"
     );
     assert_eq!(
-        GroupStatus::of(&a_proved_tree().await, attempt.undeclared.as_ref()),
+        GroupStatus::of(&a_proved_tree().await, attempt.undeclared.as_ref(), None),
         GroupStatus::Clean,
         "the checks decide, and they proved this tree"
     );
@@ -1019,7 +1020,7 @@ async fn a_declared_edit_reaching_the_test_file_is_permitted_and_the_checks_prov
          test file"
     );
     assert_eq!(
-        GroupStatus::of(&a_proved_tree().await, attempt.undeclared.as_ref()),
+        GroupStatus::of(&a_proved_tree().await, attempt.undeclared.as_ref(), None),
         GroupStatus::Clean,
         "nothing here refuses an edit for what the file is: the declaration \
          matched the diff and the checks passed, so the attempt is clean even \
@@ -1036,7 +1037,7 @@ async fn a_clean_group_is_exactly_an_accepted_one() {
         ("nothing proved", a_tree_nothing_was_proved_about().await),
     ] {
         assert_eq!(
-            GroupStatus::of(&evaluation, None) == GroupStatus::Clean,
+            GroupStatus::of(&evaluation, None, None) == GroupStatus::Clean,
             evaluation.accepted(),
             "`{name}`: clean and accepted must be the same question"
         );
@@ -1045,7 +1046,7 @@ async fn a_clean_group_is_exactly_an_accepted_one() {
     let unproved = a_tree_nothing_was_proved_about().await;
     assert!(unproved.first_failure().is_none(), "every check passed");
     assert_eq!(
-        GroupStatus::of(&unproved, None),
+        GroupStatus::of(&unproved, None, None),
         GroupStatus::NeedsWork {
             reason: NeedsWork::Unproved(RescanVerdict::NotCompared)
         }
@@ -1122,7 +1123,7 @@ async fn an_attempt_that_understated_its_diff_is_needs_work_over_green_checks() 
         "and the premise's other half: the attempt declared one of them"
     );
 
-    let status = GroupStatus::of(&a_proved_tree().await, attempt.undeclared.as_ref());
+    let status = GroupStatus::of(&a_proved_tree().await, attempt.undeclared.as_ref(), None);
     let GroupStatus::NeedsWork {
         reason: NeedsWork::Undeclared(breach),
     } = &status
@@ -1324,7 +1325,7 @@ async fn what_the_run_changed_before_briefing_is_excused_and_nothing_beside_it_i
         script.push(MockTurn::text(DISOWNS_ITS_EDIT));
     }
     let attempt = GroupMigration::new(MockCompletionModel::new(script), world.config())
-        .migrate(&workspace, &world.findings, None, &[])
+        .migrate(&workspace, &world.findings, None, &[], &[])
         .await
         .expect("a scripted migration completes");
 
@@ -1552,7 +1553,7 @@ async fn a_needs_work_group_is_committed_and_names_no_id_in_any_commit_body() {
 async fn an_undeclared_edit_over_green_checks_is_judged_rather_than_landed_as_a_fix() {
     let (_migrated, attempt) = attempted(migrates_and_understates_it()).await;
     let evaluation = a_proved_tree().await;
-    let status = GroupStatus::of(&evaluation, attempt.undeclared.as_ref());
+    let status = GroupStatus::of(&evaluation, attempt.undeclared.as_ref(), None);
 
     assert!(
         attempt.undeclared.is_some(),

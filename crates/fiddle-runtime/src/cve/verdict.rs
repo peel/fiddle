@@ -388,6 +388,7 @@ impl Disposition {
                     status: match (attempt.settled, &attempt.status) {
                         (true, _) => "settled",
                         (false, GroupStatus::Clean) => "clean",
+                        (false, GroupStatus::Directed { .. }) => "directed",
                         (false, GroupStatus::NeedsWork { .. }) => "needs_work",
                     }
                     .to_string(),
@@ -532,11 +533,13 @@ fn verdicts_of(run: &Run) -> Vec<Verdict> {
     let mut verdicts = Vec::new();
 
     for group in &run.attempted {
-        let reason = match &group.status {
+        let rationale = match &group.status {
             GroupStatus::Clean => continue,
-            GroupStatus::NeedsWork { reason } => reason,
+            GroupStatus::Directed { over, direction } => {
+                format!("published over the failing check `{over}` because {direction}")
+            }
+            GroupStatus::NeedsWork { reason } => reason.to_string(),
         };
-        let rationale = reason.to_string();
         for finding in &group.findings {
             verdicts.push(Verdict {
                 disposed: disposed_of(&group.attempt.report.findings, &finding.cve),

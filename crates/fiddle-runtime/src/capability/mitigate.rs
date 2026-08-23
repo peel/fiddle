@@ -1,8 +1,8 @@
 use super::cve::{
     check_out, land, plan_shared_pull_request, plan_unproved_pull_request, publish_work,
-    unproved_summary, Approved, Checkout, FailedCheck, Git, GroupMigration, GroupStatus,
-    InRepository, InWorktree, Landed, MigrationConfig, PlanError, Publication, SharedWork,
-    Unproved, CVE_LABEL, UNPROVED_LABEL,
+    unproved_summary, Approved, Checkout, FailedCheck, Followed, Git, GroupMigration, GroupStatus,
+    HumanSaid, InRepository, InWorktree, Landed, MigrationConfig, PlanError, Publication,
+    SharedWork, Unproved, CVE_LABEL, UNPROVED_LABEL,
 };
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::{AgentBudget, Transcripts};
@@ -279,6 +279,7 @@ where
             .apply(projection.all().cloned().collect());
 
         let excused = self.already_failing(&workspace).await?;
+        let said = self.conversation(&approved).await;
 
         let spent = counted.as_ref().map_or(0, |it| it.spent);
         let mut settled: Vec<AdvisoryId> = Vec::new();
@@ -287,12 +288,25 @@ where
         if feedback.attempts_afresh() && !taken.is_empty() {
             let attempt = self
                 .migration
-                .migrate(&workspace, &taken, feedback.blamed(), &excused)
+                .migrate(&workspace, &taken, feedback.blamed(), &excused, &said)
                 .await?;
             let evaluation = self
                 .judge(&workspace, &taken, &projection, report, &excused)
                 .await?;
-            let status = GroupStatus::of(&evaluation, attempt.undeclared.as_ref());
+            let followed = attempt
+                .report
+                .direction
+                .as_deref()
+                .and_then(|sentence| Followed::quoted(&said, sentence));
+            if let Some(claimed) = attempt.report.direction.as_deref() {
+                if followed.is_none() {
+                    return Err(CapabilityError::Agent(crate::agent::AgentError::Protocol {
+                        reason: format!("the report followed direction nobody wrote: {claimed:?}"),
+                    }));
+                }
+            }
+            let status =
+                GroupStatus::of(&evaluation, attempt.undeclared.as_ref(), followed.as_ref());
             let advisories = advisories_of(&taken);
             let group = Attempted {
                 findings: taken,
@@ -461,6 +475,31 @@ where
                 _ = self.config.cancel.cancelled() => return feedback,
                 _ = tokio::time::sleep(SETTLE_POLL) => {}
             }
+        }
+    }
+
+    async fn conversation(&self, approved: &Approved) -> Vec<HumanSaid> {
+        let Some(number) = approved.reused() else {
+            return Vec::new();
+        };
+        let read = crate::github::read_conversation(
+            &self.context.gh,
+            &self.config.repo,
+            number,
+            crate::human::CONVERSATION_PAGES,
+            &self.config.cancel,
+        )
+        .await;
+        match read {
+            Ok(conversation) => conversation
+                .into_iter()
+                .filter(|it| !it.is_bot)
+                .map(|it| HumanSaid {
+                    author: it.author.login,
+                    body: it.body,
+                })
+                .collect(),
+            Err(_) => Vec::new(),
         }
     }
 
@@ -748,7 +787,7 @@ fn observed_tree(checkout: &Checkout, report: &ScanReport) -> TreeObservation {
 
 fn refusal(status: &GroupStatus) -> Option<String> {
     match status {
-        GroupStatus::Clean => None,
+        GroupStatus::Clean | GroupStatus::Directed { .. } => None,
         GroupStatus::NeedsWork { reason } => Some(reason.to_string()),
     }
 }
@@ -865,6 +904,9 @@ fn outcome_of(group: &Attempted) -> String {
             true => "already clear, nothing changed".to_string(),
             false => "cleared by this change".to_string(),
         },
+        GroupStatus::Directed { over, direction } => {
+            format!("changed, and published over the failing check `{over}` because {direction}")
+        }
         GroupStatus::NeedsWork { reason } => reason.to_string(),
     }
 }
@@ -944,6 +986,7 @@ mod body {
                         attempted: true,
                         note: "Upgraded jwt/v4 from v4.5.0 to v4.5.2.".to_string(),
                     }],
+                    direction: None,
                 },
                 changed: changed
                     .iter()

@@ -168,6 +168,9 @@ pub struct RepairReport {
 
     #[serde(default)]
     pub findings: Vec<FindingDisposition>,
+
+    #[serde(default)]
+    pub direction: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
