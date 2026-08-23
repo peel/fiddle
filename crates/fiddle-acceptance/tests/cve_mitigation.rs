@@ -3310,9 +3310,13 @@ const STALE_BODY: &str = "fiddle attempted 1 advisory for this repository's \
      run's bundle, with the sentence that decided it.";
 
 const RUN_BODY: &str = "fiddle attempted 1 advisory for this repository's \
-     container image in one bounded attempt and committed what it changed.\n\nEvery \
-     advisory this run did not fix is in the verdict report published beside this \
-     run's bundle, with the sentence that decided it.";
+     container image in one bounded attempt and committed what it changed.\n\n\
+     | advisory | package | in the project | the fix is in | severity | outcome |\n\
+     | --- | --- | --- | --- | --- | --- |\n\
+     | CVE-2026-0001 | `golang.org/x/crypto` | v0.31.0 | v0.35.0 | HIGH | cleared by \
+     this change |\n\n### What the agent reported\n\n**CVE-2026-0001** — moved the \
+     requirement to the release that carries the fix\n\n### Files changed\n\n\
+     - `go.mod`\n- `go.sum`";
 
 fn counting(prose: &str, attempts: u32) -> String {
     format!(

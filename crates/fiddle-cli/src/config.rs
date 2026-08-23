@@ -49,6 +49,9 @@ pub struct OrchestrationCve {
 
     #[serde(default = "default_max_findings")]
     pub max_findings: usize,
+
+    #[serde(default = "default_cve_title")]
+    pub title: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -685,6 +688,12 @@ fn default_scan_timeout() -> HumanDuration {
 fn default_max_findings() -> usize {
     5
 }
+
+fn default_cve_title() -> String {
+    DEFAULT_CVE_TITLE.to_string()
+}
+
+pub const DEFAULT_CVE_TITLE: &str = "{project}: dependency advisories";
 
 fn default_gh() -> ProgramRef {
     ProgramRef {

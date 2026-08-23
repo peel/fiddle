@@ -831,20 +831,21 @@ pub fn tree_whose_successful_rescan_omits_both_arrays() -> ScriptedTree {
 }
 
 pub fn tree_whose_unfinished_rescan_omits_both_arrays() -> ScriptedTree {
-    tree_with_both_arrays_absent(Some("FAILED"))
+    tree_with_both_arrays_absent(Some(FIXTURE_UNFINISHED_SCAN_STATE))
+}
+
+pub fn tree_whose_unfinished_rescan_omits_the_os_array() -> ScriptedTree {
+    unfinished(report_with_os_absent())
+}
+
+pub fn tree_whose_unfinished_rescan_omits_the_library_array() -> ScriptedTree {
+    unfinished(report_with_libraries_absent())
 }
 
 fn tree_with_both_arrays_absent(state: Option<&str>) -> ScriptedTree {
     let mut report = rescan_report(report_with_libraries_absent(), FIXTURE_SCANNER_VERSION);
-    let document = report
-        .document
-        .as_object_mut()
-        .expect("a fixture scanner document is an object");
     if let Some(state) = state {
-        document.insert(
-            "status".to_string(),
-            serde_json::json!({ "state": state, "verdict": "PASSED_BY_POLICY" }),
-        );
+        set_state(&mut report, state);
     }
     report.document["result"]
         .as_object_mut()
@@ -855,6 +856,27 @@ fn tree_with_both_arrays_absent(state: Option<&str>) -> ScriptedTree {
         scanner: Scanned::AsReport(report),
         ran: Mutex::new(Vec::new()),
     }
+}
+
+fn unfinished(document: Report) -> ScriptedTree {
+    let mut report = rescan_report(document, FIXTURE_SCANNER_VERSION);
+    set_state(&mut report, FIXTURE_UNFINISHED_SCAN_STATE);
+    ScriptedTree {
+        scripted: BTreeMap::new(),
+        scanner: Scanned::AsReport(report),
+        ran: Mutex::new(Vec::new()),
+    }
+}
+
+fn set_state(report: &mut ScanReport, state: &str) {
+    report
+        .document
+        .as_object_mut()
+        .expect("a fixture scanner document is an object")
+        .insert(
+            "status".to_string(),
+            serde_json::json!({ "state": state, "verdict": "PASSED_BY_POLICY" }),
+        );
 }
 
 fn tree_reporting(document: Report, version: &str) -> ScriptedTree {

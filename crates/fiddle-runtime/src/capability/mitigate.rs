@@ -290,8 +290,14 @@ where
                             notes: &group.attempt.report.findings,
                         });
                         judged = Some(
-                            self.publish_for_judgement(&git, &unproved, summary, spent + 1)
-                                .await?,
+                            self.publish_for_judgement(
+                                &git,
+                                &unproved,
+                                summary,
+                                spent + 1,
+                                advisories.len(),
+                            )
+                            .await?,
                         );
                     }
                 }
@@ -451,7 +457,11 @@ where
             &Publication {
                 repo: self.config.repo.clone(),
                 head_owner: self.config.head_owner.clone(),
-                title: self.config.title.clone(),
+                title: rendered_title(
+                    &self.config.title,
+                    &self.config.project,
+                    counted_advisories(attempted),
+                ),
                 summary: summary_of(attempted),
                 head_sha,
                 attempts,
@@ -469,6 +479,7 @@ where
         unproved: &Approved,
         summary: String,
         attempts: u32,
+        advisories: usize,
     ) -> Result<crate::cve::verdict::Landed, CapabilityError> {
         let head_sha = git.run(&["rev-parse", "HEAD"]).await?.trim().to_string();
         let published = publish_work(
@@ -478,7 +489,10 @@ where
             &Publication {
                 repo: self.config.repo.clone(),
                 head_owner: self.config.head_owner.clone(),
-                title: format!("{}, unproved", self.config.title),
+                title: format!(
+                    "{}, unproved",
+                    rendered_title(&self.config.title, &self.config.project, advisories)
+                ),
                 summary,
                 head_sha,
                 attempts,
@@ -694,20 +708,223 @@ fn advisories_of(findings: &[ProjectedFinding]) -> Vec<AdvisoryId> {
     advisories
 }
 
+fn rendered_title(template: &str, project: &str, advisories: usize) -> String {
+    template
+        .replace("{project}", project)
+        .replace("{advisories}", &advisories.to_string())
+}
+
+fn counted_advisories(attempted: &[Attempted]) -> usize {
+    attempted.iter().map(|it| it.findings.len()).sum()
+}
+
 fn summary_of(attempted: &[Attempted]) -> String {
     let advisories: usize = attempted.iter().map(|it| it.findings.len()).sum();
     let committed = match attempted.iter().any(Attempted::committed) {
         true => "committed what it changed",
         false => "committed nothing",
     };
-    format!(
+    let mut body = format!(
         "fiddle attempted {advisories} {} for this repository's container image in \
-         one bounded attempt and {committed}.\n\nEvery advisory this run did not \
-         fix is in the verdict report published beside this run's bundle, with the \
-         sentence that decided it.",
+         one bounded attempt and {committed}.",
         match advisories {
             1 => "advisory",
             _ => "advisories",
         },
-    )
+    );
+
+    body.push_str(&advisory_table(attempted));
+    body.push_str(&agent_notes(attempted));
+    body.push_str(&changed_files(attempted));
+    body
+}
+
+fn advisory_table(attempted: &[Attempted]) -> String {
+    if attempted.iter().all(|group| group.findings.is_empty()) {
+        return String::new();
+    }
+    let mut table = String::from(
+        "\n\n| advisory | package | in the project | the fix is in | severity | outcome |\n\
+         | --- | --- | --- | --- | --- | --- |",
+    );
+    for group in attempted {
+        let outcome = outcome_of(group);
+        for finding in &group.findings {
+            table.push_str(&format!(
+                "\n| {} | `{}` | {} | {} | {} | {} |",
+                finding.cve.as_str(),
+                finding.package,
+                finding.current,
+                finding
+                    .fixed_version
+                    .as_deref()
+                    .unwrap_or("no fix published"),
+                finding.severity.as_str(),
+                outcome,
+            ));
+        }
+    }
+    table
+}
+
+fn outcome_of(group: &Attempted) -> String {
+    match &group.status {
+        GroupStatus::Clean => match group.attempt.changed.is_empty() {
+            true => "already clear, nothing changed".to_string(),
+            false => "cleared by this change".to_string(),
+        },
+        GroupStatus::NeedsWork { reason } => reason.to_string(),
+    }
+}
+
+fn agent_notes(attempted: &[Attempted]) -> String {
+    let mut notes = String::new();
+    for group in attempted {
+        for disposition in &group.attempt.report.findings {
+            if disposition.note.trim().is_empty() {
+                continue;
+            }
+            notes.push_str(&format!(
+                "\n\n**{}** — {}",
+                disposition.cve,
+                disposition.note.trim()
+            ));
+        }
+    }
+    match notes.is_empty() {
+        true => String::new(),
+        false => format!("\n\n### What the agent reported{notes}"),
+    }
+}
+
+fn changed_files(attempted: &[Attempted]) -> String {
+    let mut files: Vec<String> = Vec::new();
+    for group in attempted {
+        for path in &group.attempt.changed {
+            let named = path.as_str().to_string();
+            if !files.contains(&named) {
+                files.push(named);
+            }
+        }
+    }
+    match files.is_empty() {
+        true => String::new(),
+        false => format!(
+            "\n\n### Files changed\n\n{}",
+            files
+                .iter()
+                .map(|it| format!("- `{it}`"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    }
+}
+
+#[cfg(test)]
+mod body {
+    use super::*;
+    use crate::agent::{FindingDisposition, RepairReport};
+    use crate::capability::cve::{GroupStatus, MigrationAttempt, NeedsWork};
+    use fiddle_core::{AdvisoryId, PackageType, ProjectedFinding, Severity};
+
+    fn finding() -> ProjectedFinding {
+        ProjectedFinding {
+            cve: AdvisoryId::parse("CVE-2025-30204").expect("a canonical advisory id"),
+            package: "github.com/golang-jwt/jwt/v4".to_string(),
+            current: "4.5.0".to_string(),
+            fixed_version: Some("4.5.2".to_string()),
+            severity: Severity::High,
+            package_type: PackageType::Library,
+        }
+    }
+
+    fn attempted(status: GroupStatus, changed: &[&str]) -> Attempted {
+        Attempted {
+            findings: vec![finding()],
+            status,
+            attempt: MigrationAttempt {
+                report: RepairReport {
+                    changed_files: changed.iter().map(|it| it.to_string()).collect(),
+                    summary: "a summary the body does not quote".to_string(),
+                    claimed_complete: true,
+                    findings: vec![FindingDisposition {
+                        cve: "CVE-2025-30204".to_string(),
+                        attempted: true,
+                        note: "Upgraded jwt/v4 from v4.5.0 to v4.5.2.".to_string(),
+                    }],
+                },
+                changed: changed
+                    .iter()
+                    .map(|it| crate::workspace::WorkspacePath::parse(it).expect("a workspace path"))
+                    .collect(),
+                undeclared: None,
+            },
+        }
+    }
+
+    #[test]
+    fn the_default_template_keeps_the_title_every_deployment_already_has() {
+        assert_eq!(
+            rendered_title("{project}: dependency advisories", "icecube", 1),
+            "icecube: dependency advisories",
+            "a deployment that configures nothing must not see its titles change"
+        );
+    }
+
+    #[test]
+    fn a_configured_template_reaches_the_title_with_the_counts_substituted() {
+        assert_eq!(
+            rendered_title(
+                "fix(security): remediate {advisories} advisory in {project}",
+                "icecube",
+                3,
+            ),
+            "fix(security): remediate 3 advisory in icecube",
+            "a repository that writes conventional commits says so once"
+        );
+    }
+
+    #[test]
+    fn a_repaired_advisory_is_named_with_both_versions_and_what_the_agent_said() {
+        let body = summary_of(&[attempted(GroupStatus::Clean, &["go.mod", "go.sum"])]);
+
+        for expected in [
+            "CVE-2025-30204",
+            "github.com/golang-jwt/jwt/v4",
+            "4.5.0",
+            "4.5.2",
+            "HIGH",
+            "cleared by this change",
+            "Upgraded jwt/v4 from v4.5.0 to v4.5.2.",
+            "`go.mod`",
+            "`go.sum`",
+        ] {
+            assert!(
+                body.contains(expected),
+                "a reader judges the change from the body alone, and {expected} is missing: \
+                 {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_advisory_left_unproved_says_so_in_the_same_row() {
+        let body = summary_of(&[attempted(
+            GroupStatus::NeedsWork {
+                reason: NeedsWork::CheckFailed {
+                    check: "golangci-lint run".to_string(),
+                },
+            },
+            &["go.mod"],
+        )]);
+
+        assert!(
+            body.contains("CVE-2025-30204"),
+            "the advisory is named whatever the outcome: {body}"
+        );
+        assert!(
+            body.contains("golangci-lint run"),
+            "the check that stopped it is the whole news: {body}"
+        );
+    }
 }

@@ -117,6 +117,12 @@ pub const FIXTURE_IMAGE_DIGEST: &str =
 pub const DIGEST_ON_STDOUT: &str =
     "sha256:9999999999999999999999999999999999999999999999999999999999999999";
 
+pub const FIXTURE_SCAN_STATE: &str = "SUCCESS";
+
+pub const FIXTURE_UNFINISHED_SCAN_STATE: &str = "FAILED";
+
+const FIXTURE_SCAN_POLICY_VERDICT: &str = "PASSED_BY_POLICY";
+
 const FIXTURE_ORIGIN_TYPE: &str = "CICDScanOriginContainerImage";
 
 const FIXTURE_ORIGIN_NAME: &str = "widget:fiddle-fixture";
@@ -269,6 +275,10 @@ impl ReportVariant {
                     "id": FIXTURE_IMAGE_DIGEST,
                     "digest": serde_json::Value::Null,
                     "imageLabels": serde_json::Value::Null,
+                },
+                "status": {
+                    "state": FIXTURE_SCAN_STATE,
+                    "verdict": FIXTURE_SCAN_POLICY_VERDICT,
                 },
                 "result": result,
             }))

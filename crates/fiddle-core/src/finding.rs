@@ -39,6 +39,16 @@ pub enum Severity {
 }
 
 impl Severity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Severity::Critical => "CRITICAL",
+            Severity::High => "HIGH",
+            Severity::Medium => "MEDIUM",
+            Severity::Low => "LOW",
+            Severity::Informational => "INFORMATIONAL",
+        }
+    }
+
     fn rank(self) -> u8 {
         match self {
             Severity::Critical => 0,

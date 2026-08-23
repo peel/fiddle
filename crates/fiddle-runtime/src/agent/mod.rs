@@ -249,6 +249,9 @@ pub enum AgentError {
 
     #[error("the provider did not hold up its end: {reason}")]
     Provider { reason: String },
+
+    #[error("the model gave no answer ({arrived}): {reason}")]
+    Unanswered { arrived: String, reason: String },
 }
 
 pub async fn attempt<M>(
@@ -368,7 +371,8 @@ where
         _ = tokio::time::sleep(budget.deadline) => return Err(AgentError::Bounded {
             reason: format!("the deadline of {:?} elapsed", budget.deadline),
         }),
-        result = run => result.map_err(|error| classify(error, redaction, &returns.spent()))?,
+        result = run => result
+            .map_err(|error| classify(error, redaction, &returns.spent(), budget.max_tokens))?,
     };
 
     let changed = host
@@ -389,7 +393,20 @@ where
     Ok(report)
 }
 
-fn classify(error: StructuredOutputError, redaction: &Redaction, spent: &Spent) -> AgentError {
+fn unanswered(max_tokens: u64) -> String {
+    format!(
+        "no text and no tool call arrived. the response ceiling for this run is {max_tokens} \
+         tokens, and fiddle cannot see whether the provider sent nothing or the answer stopped \
+         at that ceiling"
+    )
+}
+
+fn classify(
+    error: StructuredOutputError,
+    redaction: &Redaction,
+    spent: &Spent,
+    max_tokens: u64,
+) -> AgentError {
     match error {
         StructuredOutputError::DeserializationError(source) => AgentError::Protocol {
             reason: format!("the report did not match the schema: {source}"),
@@ -412,6 +429,16 @@ fn classify(error: StructuredOutputError, redaction: &Redaction, spent: &Spent) 
                     available_tools.join(", ")
                 ),
             },
+            PromptError::CompletionError(completion)
+                if crate::agent::retry::empty_response(&completion).is_some() =>
+            {
+                AgentError::Unanswered {
+                    arrived: crate::agent::retry::empty_response(&completion)
+                        .expect("the guard just matched this error")
+                        .to_string(),
+                    reason: unanswered(max_tokens),
+                }
+            }
             other => AgentError::Provider {
                 reason: provider_fault(
                     other.provider_response_status(),
@@ -760,6 +787,8 @@ mod tests {
         );
     }
 
+    const FIXTURE_MAX_TOKENS: u64 = 8192;
+
     const CREDENTIAL: &str = "sk-unit-must-not-appear-4c2f";
 
     const NO_CREDENTIAL: &str = "tool_choice required is not supported for this model";
@@ -778,10 +807,51 @@ mod tests {
              testing anything: {error}"
         );
 
-        match classify(error, redaction, &Spent::default()) {
+        match classify(error, redaction, &Spent::default(), FIXTURE_MAX_TOKENS) {
             AgentError::Provider { reason } => reason,
             other => panic!("a provider failure must classify as Provider, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_empty_answer_names_the_ceiling_fiddle_set_and_claims_no_fault() {
+        let error = StructuredOutputError::PromptError(Box::new(PromptError::CompletionError(
+            CompletionError::ResponseError(
+                "Response contained no message or tool call (empty)".to_string(),
+            ),
+        )));
+
+        let whole = classify(error, &Redaction::unknown(), &Spent::default(), 8192);
+        let reason = match &whole {
+            AgentError::Unanswered { reason, .. } => reason.clone(),
+            other => panic!("an empty answer is its own outcome, got {other:?}"),
+        };
+
+        assert!(
+            !whole.to_string().contains("did not hold up"),
+            "the whole sentence must not blame the provider either: {whole}"
+        );
+        assert!(
+            whole.to_string().contains("no message or tool call"),
+            "the sentence keeps what the gateway actually said: {whole}"
+        );
+        assert!(
+            reason.contains("8192"),
+            "the ceiling is fiddle's own setting and the reader can change it: {reason}"
+        );
+        assert!(
+            reason.contains("no text and no tool call arrived"),
+            "the reason says what arrived: {reason}"
+        );
+        assert!(
+            reason.contains("cannot see"),
+            "rig discards the finish reason, so fiddle must not claim which cause applied: \
+             {reason}"
+        );
+        assert!(
+            !reason.contains("did not hold up"),
+            "fiddle cannot tell a misbehaving provider from its own ceiling: {reason}"
+        );
     }
 
     #[test]
@@ -847,7 +917,12 @@ mod tests {
             CompletionError::from_http_response(refused.status(), a_refusal_quoting(NO_CREDENTIAL)),
         )));
 
-        match classify(error, &Redaction::of(CREDENTIAL), &Spent::default()) {
+        match classify(
+            error,
+            &Redaction::of(CREDENTIAL),
+            &Spent::default(),
+            FIXTURE_MAX_TOKENS,
+        ) {
             AgentError::Provider { reason } => {
                 assert!(
                     reason.contains("400 Bad Request"),
@@ -883,7 +958,12 @@ mod tests {
             chat_history: Box::default(),
         }));
 
-        match classify(error, &Redaction::unknown(), &Spent::default()) {
+        match classify(
+            error,
+            &Redaction::unknown(),
+            &Spent::default(),
+            FIXTURE_MAX_TOKENS,
+        ) {
             AgentError::Protocol { reason } => {
                 assert!(
                     reason.contains("str_replace_editor"),
@@ -904,7 +984,12 @@ mod tests {
             CompletionError::ProviderError("connection refused".to_string()),
         )));
 
-        match classify(error, &Redaction::of(CREDENTIAL), &Spent::default()) {
+        match classify(
+            error,
+            &Redaction::of(CREDENTIAL),
+            &Spent::default(),
+            FIXTURE_MAX_TOKENS,
+        ) {
             AgentError::Provider { reason } => assert!(
                 reason.contains("connection refused"),
                 "a failure with no provider body has nothing to withhold: {reason}"

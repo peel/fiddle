@@ -799,7 +799,7 @@ fn build_capability<'a>(
                     repo: github.repo.to_string(),
                     head_owner: github.repo.owner.clone(),
                     base: github.base.clone(),
-                    title: format!("{}: dependency advisories", config.project.name),
+                    title: sweep.title.clone(),
                     project: config.project.name.clone(),
                     stub_root: config.stub.root.clone(),
                     tree: workspace

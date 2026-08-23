@@ -324,10 +324,10 @@ async fn a_repaired_tree_whose_rescan_clears_the_group_is_accepted() {
 }
 
 #[tokio::test]
-async fn an_absent_os_array_in_a_rescan_is_not_proof() {
+async fn an_absent_os_array_in_an_unfinished_rescan_is_not_proof() {
     let r = evaluate(
         &contract_for_a_partially_reported_rescan(),
-        &tree_whose_rescan_omits_the_os_array(),
+        &tree_whose_unfinished_rescan_omits_the_os_array(),
     )
     .await
     .expect("an evaluation that was not cancelled");
@@ -338,7 +338,7 @@ async fn an_absent_os_array_in_a_rescan_is_not_proof() {
     );
     assert!(
         !r.accepted(),
-        "half the image was not looked at, so nothing about it was proved"
+        "the scan did not finish, so half the image was not looked at"
     );
     assert!(
         !r.rejected(),
@@ -351,6 +351,22 @@ async fn an_absent_os_array_in_a_rescan_is_not_proof() {
         },
         "and the record says which half of the image went unreported"
     );
+}
+
+#[tokio::test]
+async fn an_absent_os_array_in_a_finished_rescan_is_proof() {
+    let r = evaluate(
+        &contract_for_a_partially_reported_rescan(),
+        &tree_whose_rescan_omits_the_os_array(),
+    )
+    .await
+    .expect("an evaluation that was not cancelled");
+
+    assert!(
+        r.accepted(),
+        "the scanner said it finished, so an array it did not write holds nothing"
+    );
+    assert_eq!(r.rescan(), &RescanVerdict::Cleared);
 }
 
 #[tokio::test]
@@ -410,10 +426,10 @@ async fn a_rescan_that_did_not_succeed_proves_nothing_from_a_missing_array() {
 }
 
 #[tokio::test]
-async fn an_absent_library_array_in_a_rescan_is_not_proof_either() {
+async fn an_absent_library_array_in_an_unfinished_rescan_is_not_proof_either() {
     let r = evaluate(
         &contract_for_a_partially_reported_rescan(),
-        &tree_whose_rescan_omits_the_library_array(),
+        &tree_whose_unfinished_rescan_omits_the_library_array(),
     )
     .await
     .expect("an evaluation that was not cancelled");
