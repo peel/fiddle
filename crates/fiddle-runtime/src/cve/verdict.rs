@@ -19,6 +19,9 @@ pub enum CompleteFindings {
         os_packages: Arm,
 
         findings: Vec<fiddle_core::ProjectedFinding>,
+
+        #[serde(skip_serializing_if = "Option::is_none")]
+        checks_unsettled: Option<String>,
     },
 
     Unusable {
@@ -38,6 +41,7 @@ impl CompleteFindings {
             libraries: projection.library_arm(),
             os_packages: projection.os_arm(),
             findings,
+            checks_unsettled: run.checks_unsettled.clone(),
         }
     }
 
@@ -129,6 +133,8 @@ pub struct Run {
     pub bound_reached: Option<BoundReached>,
 
     pub checks_unreadable: Option<String>,
+
+    pub checks_unsettled: Option<String>,
 }
 
 impl Run {
@@ -143,6 +149,7 @@ impl Run {
             judged: None,
             bound_reached: None,
             checks_unreadable: None,
+            checks_unsettled: None,
         }
     }
 
@@ -157,6 +164,7 @@ impl Run {
             judged: None,
             bound_reached: None,
             checks_unreadable: None,
+            checks_unsettled: None,
         }
     }
 

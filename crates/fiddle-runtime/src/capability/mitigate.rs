@@ -78,6 +78,8 @@ pub struct MitigateConfig {
 
     pub today: String,
 
+    pub settle: Duration,
+
     pub cancel: CancellationToken,
 }
 
@@ -87,29 +89,51 @@ struct Counted {
     spent: u32,
 }
 
+const SETTLE_POLL: Duration = Duration::from_secs(20);
+
 enum Feedback {
     NoCandidate,
     Blaming(GenuineFailure),
     BlamingNothing,
+    Unsettled { pending: usize, read: usize },
     Unreadable { why: String },
 }
 
 impl Feedback {
     fn attempts_afresh(&self) -> bool {
-        !matches!(self, Feedback::BlamingNothing | Feedback::Unreadable { .. })
+        !matches!(
+            self,
+            Feedback::BlamingNothing | Feedback::Unsettled { .. } | Feedback::Unreadable { .. }
+        )
     }
 
     fn blamed(&self) -> Option<&GenuineFailure> {
         match self {
             Feedback::Blaming(failure) => Some(failure),
-            Feedback::NoCandidate | Feedback::BlamingNothing | Feedback::Unreadable { .. } => None,
+            Feedback::NoCandidate
+            | Feedback::BlamingNothing
+            | Feedback::Unsettled { .. }
+            | Feedback::Unreadable { .. } => None,
         }
     }
 
     fn unreadable(&self) -> Option<&str> {
         match self {
             Feedback::Unreadable { why } => Some(why),
-            Feedback::NoCandidate | Feedback::Blaming(_) | Feedback::BlamingNothing => None,
+            Feedback::NoCandidate
+            | Feedback::Blaming(_)
+            | Feedback::BlamingNothing
+            | Feedback::Unsettled { .. } => None,
+        }
+    }
+
+    fn unsettled(&self) -> Option<String> {
+        match self {
+            Feedback::Unsettled { pending, read } => Some(format!(
+                "{pending} of {read} checks on the open pull request had not settled, so \
+                 this run did not read them as passing and made no fresh attempt from them"
+            )),
+            _ => None,
         }
     }
 }
@@ -201,13 +225,15 @@ where
             return Ok(run);
         }
 
-        let feedback = self.feedback(&approved).await;
+        let feedback = self.settled_feedback(&approved).await;
 
         if let Some(why) = feedback.unreadable() {
             let mut run = Run::scanned(projection);
             run.checks_unreadable = Some(why.to_string());
             return Ok(run);
         }
+
+        let unsettled = feedback.unsettled();
 
         let checkout = check_out(
             &InRepository::new(
@@ -337,6 +363,7 @@ where
         run.deferred = deferred;
         run.landed = landed;
         run.judged = judged;
+        run.checks_unsettled = unsettled;
         Ok(run)
     }
 
@@ -401,15 +428,38 @@ where
         )
         .await;
         match observed {
-            Observation::Available {
-                value: Some(failure),
-                ..
-            } => Feedback::Blaming(failure),
+            Observation::Available { value, .. } => match value.failure {
+                Some(failure) => Feedback::Blaming(failure),
+                None if value.has_settled() => Feedback::BlamingNothing,
+                None => Feedback::Unsettled {
+                    pending: value.pending(),
+                    read: value.read,
+                },
+            },
             Observation::Unavailable { source, reason } => Feedback::Unreadable {
                 why: format!("{}: {reason}", source.0),
             },
-            Observation::Available { value: None, .. } | Observation::NotApplicable { .. } => {
-                Feedback::BlamingNothing
+            Observation::NotApplicable { .. } => Feedback::BlamingNothing,
+        }
+    }
+
+    async fn settled_feedback(&self, approved: &Approved) -> Feedback {
+        let deadline = self.config.settle;
+        if deadline.is_zero() {
+            return self.feedback(approved).await;
+        }
+        let started = std::time::Instant::now();
+        loop {
+            let feedback = self.feedback(approved).await;
+            if !matches!(feedback, Feedback::Unsettled { .. }) {
+                return feedback;
+            }
+            if started.elapsed() >= deadline {
+                return feedback;
+            }
+            tokio::select! {
+                _ = self.config.cancel.cancelled() => return feedback,
+                _ = tokio::time::sleep(SETTLE_POLL) => {}
             }
         }
     }

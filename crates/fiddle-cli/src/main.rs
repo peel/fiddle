@@ -800,6 +800,7 @@ fn build_capability<'a>(
                     head_owner: github.repo.owner.clone(),
                     base: github.base.clone(),
                     title: sweep.title.clone(),
+                    settle: sweep.settle.as_duration(),
                     project: config.project.name.clone(),
                     stub_root: config.stub.root.clone(),
                     tree: workspace

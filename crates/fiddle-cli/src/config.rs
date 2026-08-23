@@ -52,6 +52,9 @@ pub struct OrchestrationCve {
 
     #[serde(default = "default_cve_title")]
     pub title: String,
+
+    #[serde(default)]
+    pub settle: HumanDuration,
 }
 
 #[derive(Debug, Deserialize)]
@@ -577,7 +580,7 @@ pub enum Cleanup {
     Always,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct HumanDuration(Duration);
 
 impl HumanDuration {

@@ -1,4 +1,4 @@
-use fiddle_runtime::github::{observe_genuine_failure, GenuineFailure};
+use fiddle_runtime::github::{observe_genuine_failure, GenuineFailure, Settlement};
 use fiddle_runtime::GhCli;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -62,13 +62,17 @@ fn details_url(name: &str) -> String {
     format!("https://github.com/{REPO}/runs/{name}")
 }
 
-async fn ask(forge: &Forge, head_sha: &str) -> Option<GenuineFailure> {
+async fn settlement(forge: &Forge, head_sha: &str) -> Settlement {
     let cancel = CancellationToken::new();
     observe_genuine_failure(&forge.gh(), REPO, head_sha, &cancel)
         .await
         .value()
         .expect("the check runs were read")
         .clone()
+}
+
+async fn ask(forge: &Forge, head_sha: &str) -> Option<GenuineFailure> {
+    settlement(forge, head_sha).await.failure
 }
 
 fn blamed_names(genuine: &GenuineFailure) -> Vec<&str> {
@@ -120,6 +124,56 @@ async fn a_pending_check_has_not_answered_yet_and_blames_nothing() {
     forge.check("cve-rescan", "in_progress", None, HEAD);
 
     assert_eq!(ask(&forge, HEAD).await, None);
+}
+
+#[tokio::test]
+async fn a_pending_check_is_not_the_same_answer_as_a_passing_one() {
+    let pending = Forge::empty();
+    pending.check("cve-verify", "queued", None, HEAD);
+    pending.check("cve-rescan", "in_progress", None, HEAD);
+
+    let green = Forge::empty();
+    green.check("cve-verify", "completed", Some("success"), HEAD);
+    green.check("cve-rescan", "completed", Some("success"), HEAD);
+
+    let waiting = settlement(&pending, HEAD).await;
+    let settled = settlement(&green, HEAD).await;
+
+    assert_eq!(waiting.failure, None, "nothing has failed in either world");
+    assert_eq!(settled.failure, None);
+
+    assert!(
+        !waiting.has_settled(),
+        "two checks are still running, so this run knows nothing about them yet"
+    );
+    assert!(
+        settled.has_settled(),
+        "every check finished, so the absence of a failure is an answer"
+    );
+    assert_eq!(
+        (waiting.read, waiting.pending()),
+        (2, 2),
+        "the denominator is reported, so a reader is not given a bare no"
+    );
+}
+
+#[tokio::test]
+async fn a_half_settled_forge_still_blames_the_check_that_failed() {
+    let forge = Forge::empty();
+    forge.check("build", "completed", Some("failure"), HEAD);
+    forge.check("test-full", "in_progress", None, HEAD);
+
+    let observed = settlement(&forge, HEAD).await;
+
+    assert_eq!(
+        observed.failure.as_ref().map(|it| blamed_names(it)),
+        Some(vec!["build"]),
+        "a failure that has already landed does not wait for its neighbours"
+    );
+    assert!(
+        !observed.has_settled(),
+        "and the run still knows that one check has not answered"
+    );
 }
 
 #[tokio::test]

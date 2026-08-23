@@ -333,6 +333,33 @@ pub struct GenuineFailure {
     pub blamed: Vec<BlamedCheck>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Settlement {
+    pub read: usize,
+    pub settled: usize,
+    pub failure: Option<GenuineFailure>,
+}
+
+impl Settlement {
+    pub fn has_settled(&self) -> bool {
+        self.read == self.settled
+    }
+
+    pub fn pending(&self) -> usize {
+        self.read.saturating_sub(self.settled)
+    }
+}
+
+fn has_settled(run: &serde_json::Value) -> bool {
+    !matches!(
+        classify(
+            run["status"].as_str().unwrap_or_default(),
+            run["conclusion"].as_str(),
+        ),
+        CheckState::Queued | CheckState::InProgress
+    )
+}
+
 fn tests_the_head(run: &serde_json::Value, head_sha: &str) -> bool {
     run["head_sha"].as_str() == Some(head_sha)
 }
@@ -357,7 +384,7 @@ pub async fn observe_genuine_failure(
     repo: &str,
     head_sha: &str,
     cancel: &CancellationToken,
-) -> Observation<Option<GenuineFailure>> {
+) -> Observation<Settlement> {
     let path = check_runs_path(repo, head_sha);
     let source = SourceRef(format!("github:{repo}/commits/{head_sha}/check-runs"));
     let unavailable = |reason: String| Observation::Unavailable {
@@ -384,12 +411,16 @@ pub async fn observe_genuine_failure(
         .collect();
 
     Observation::Available {
-        value: match blamed.is_empty() {
-            true => None,
-            false => Some(GenuineFailure {
-                head_sha: head_sha.to_string(),
-                blamed,
-            }),
+        value: Settlement {
+            read: runs.len(),
+            settled: runs.iter().filter(|run| has_settled(run)).count(),
+            failure: match blamed.is_empty() {
+                true => None,
+                false => Some(GenuineFailure {
+                    head_sha: head_sha.to_string(),
+                    blamed,
+                }),
+            },
         },
         source,
         revision: Some(head_sha.to_string()),

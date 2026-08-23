@@ -339,7 +339,8 @@ pub fn config_check_human(config: &Config) -> String {
             "\n  orchestration.cve.image = {}\
              \n  orchestration.cve.severities = {}\
              \n  orchestration.cve.max_findings = {}\
-             \n  orchestration.cve.title = {}",
+             \n  orchestration.cve.title = {}\
+             \n  orchestration.cve.settle = {}",
             cve.image,
             cve.severities
                 .grades()
@@ -348,6 +349,10 @@ pub fn config_check_human(config: &Config) -> String {
                 .join(" "),
             cve.max_findings,
             cve.title,
+            match cve.settle.as_duration().is_zero() {
+                true => "0s (a run reports unsettled checks and does not wait)".to_string(),
+                false => format!("{:?}", cve.settle.as_duration()),
+            },
         ));
     }
     out
