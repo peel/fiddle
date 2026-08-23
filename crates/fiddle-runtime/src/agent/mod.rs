@@ -8,7 +8,7 @@ pub use tools::{
     ReadFileArgs, RunCheck, RunCommand, RunCommandArgs, ToolError, ToolHost, WriteFile,
     WriteFileArgs, WriteReceipt, NOTE_ALLOWANCE_BYTES, RESULT_CAP_BYTES, STREAM_CAP_BYTES,
 };
-pub use transcript::{TranscriptHook, Transcripts};
+pub use transcript::{TranscriptHook, TranscriptModel, Transcripts};
 
 use crate::gateway::Redaction;
 use crate::workspace::{declared, DeclaredCommand};
@@ -313,7 +313,9 @@ where
                 .text("tool_choice", TOOL_CHOICE),
         );
     }
-    let mut builder = AgentBuilder::new(model)
+    let hook = transcripts
+        .map(|transcripts| TranscriptHook::recording(transcripts.clone(), redaction.clone()));
+    let mut builder = AgentBuilder::new(TranscriptModel::wrapping(model, hook.clone()))
         .preamble(&preamble)
         .max_tokens(budget.max_tokens)
         .default_max_turns(budget.max_turns)
@@ -329,11 +331,8 @@ where
         builder = builder.tool(RunCommand);
     }
     let mut builder = builder.add_hook(AuditHook::for_host(&host));
-    if let Some(transcripts) = transcripts {
-        builder = builder.add_hook(TranscriptHook::recording(
-            transcripts.clone(),
-            redaction.clone(),
-        ));
+    if let Some(hook) = hook {
+        builder = builder.add_hook(hook);
     }
     let agent = builder.build();
 

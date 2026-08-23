@@ -17,6 +17,10 @@ const ON: &str = "1";
 
 const TRANSCRIPT_DIR: &str = "transcript";
 
+const ELAPSED: &str = "elapsed_ms";
+
+const TOOK: &str = "duration_ms";
+
 const PASSES_ONCE_REPAIRED: &str =
     "{ program = \"grep\", args = [\"-q\", \"len - 1\", \"src/lib.rs\"] }";
 
@@ -239,6 +243,99 @@ fn the_transcript_carries_the_model_response_and_not_the_credential() {
     assert!(
         answered["args"].as_str().unwrap().contains("src/lib.rs"),
         "a tool record must carry the arguments the model chose: {answered}"
+    );
+}
+
+#[test]
+fn every_record_carries_an_elapsed_value_that_never_decreases() {
+    let gateway = StubGateway::serving(a_repair_that_quotes(SENTINEL));
+    let s = scenario(&gateway);
+
+    let ran = repair(&s, Some(ON));
+    assert_eq!(ran.status, Some(0), "stderr = {}", ran.stderr);
+
+    let records = records(&only_transcript(&s));
+    assert!(
+        records.len() > 4,
+        "one repair writes a brief, both sides of two turns, and one tool call: \
+         {records:?}"
+    );
+    let elapsed: Vec<u64> = records
+        .iter()
+        .map(|record| {
+            record[ELAPSED]
+                .as_u64()
+                .unwrap_or_else(|| panic!("every record carries its elapsed time: {record}"))
+        })
+        .collect();
+    assert_eq!(
+        elapsed[0], 0,
+        "the brief is the origin every later record is measured from: {elapsed:?}"
+    );
+    assert!(
+        elapsed.windows(2).all(|pair| pair[0] <= pair[1]),
+        "a time that falls down the file is worse than none, because a reader \
+         will trust it: {elapsed:?}"
+    );
+    assert!(
+        elapsed[elapsed.len() - 1] > 0,
+        "two round trips to the gateway and one write take longer than a \
+         millisecond, so a file of zeroes is a clock that never started: \
+         {elapsed:?}"
+    );
+
+    let answered = records
+        .iter()
+        .find(|record| record["record"] == "tool")
+        .expect("the run made one tool call");
+    assert!(
+        answered[TOOK].is_u64(),
+        "a four-minute check and a four-millisecond read must not read alike: \
+         {answered}"
+    );
+}
+
+#[test]
+fn the_finish_reason_of_every_response_reaches_the_transcript() {
+    let gateway = StubGateway::serving(a_repair_that_quotes(SENTINEL));
+    let s = scenario(&gateway);
+
+    let ran = repair(&s, Some(ON));
+    assert_eq!(ran.status, Some(0), "stderr = {}", ran.stderr);
+
+    let records = records(&only_transcript(&s));
+    let finished: Vec<&serde_json::Value> = records
+        .iter()
+        .filter(|record| record["record"] == "finish")
+        .collect();
+    let reasons: Vec<&str> = finished
+        .iter()
+        .map(|record| {
+            record["reason"]
+                .as_str()
+                .unwrap_or_else(|| panic!("a finish record names the reason: {record}"))
+        })
+        .collect();
+    assert_eq!(
+        reasons,
+        vec!["tool_calls", "stop"],
+        "this run asked the gateway twice, and the transcript must carry the \
+         reason each response ended with: {records:?}"
+    );
+
+    let spent: Vec<u64> = records
+        .iter()
+        .filter(|record| record["record"] == "spent")
+        .map(|record| record["turn"].as_u64().unwrap())
+        .collect();
+    let turns: Vec<u64> = finished
+        .iter()
+        .map(|record| record["turn"].as_u64().unwrap())
+        .collect();
+    assert_eq!(
+        turns, spent,
+        "a finish reason must name the turn whose response it ended: \
+         {records:?}"
     );
 }
 

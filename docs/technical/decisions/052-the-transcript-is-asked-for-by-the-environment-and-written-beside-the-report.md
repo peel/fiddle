@@ -1,7 +1,7 @@
 # 052 — The transcript is asked for by the environment, and written beside the report
 
 Status: accepted
-Cites: crates/fiddle-runtime/src/agent/transcript.rs, Transcripts, TranscriptHook, Record, Wrote, transcript::SWITCH, transcript::requested, transcript::FIELD_LIMIT, transcript::FILE_LIMIT_BYTES, Redaction::redacted, Redacted, agent::attempt_briefed, agent::offered, render::transcript_note, crates/fiddle-acceptance/tests/model_transcript.rs, the_switch_off_writes_no_transcript_and_says_nothing, the_switch_on_writes_the_transcript_and_says_it_did, the_transcript_carries_the_model_response_and_not_the_credential, no_host_fact_reaches_the_transcript, a_switch_value_the_run_cannot_read_is_refused_before_any_work
+Cites: crates/fiddle-runtime/src/agent/transcript.rs, Transcripts, TranscriptHook, Record, Wrote, transcript::SWITCH, transcript::requested, transcript::FIELD_LIMIT, transcript::FILE_LIMIT_BYTES, Redaction::redacted, Redacted, agent::attempt_briefed, agent::offered, render::transcript_note, crates/fiddle-acceptance/tests/model_transcript.rs, the_switch_off_writes_no_transcript_and_says_nothing, the_switch_on_writes_the_transcript_and_says_it_did, the_transcript_carries_the_model_response_and_not_the_credential, no_host_fact_reaches_the_transcript, a_switch_value_the_run_cannot_read_is_refused_before_any_work, transcript::ELAPSED, transcript::TOOK, transcript::FINISH, transcript::finish_reason, TranscriptModel, TranscriptHook::took, State::elapsed, every_record_carries_an_elapsed_value_that_never_decreases, the_finish_reason_of_every_response_reaches_the_transcript, a_tool_record_says_how_long_the_tool_took, a_finish_reason_is_read_from_the_response_the_provider_returned
 
 ## Context
 
@@ -94,3 +94,23 @@ The note is printed after the run, from what the file recorded. A run that opene
 - A rejected and recovered turn suppresses `on_completion_response`, so that turn has no `received` record. Its `invalid` record is written by `on_invalid_tool_call`.
 - The pair of acceptance tests differs by one input. `the_switch_off_writes_no_transcript_and_says_nothing` removes the variable from the child's environment, and the other sets it to `1`. Both assert the same exit code.
 - `the_transcript_carries_the_model_response_and_not_the_credential` reads the file on disk. Its stub gateway echoes the exported credential in the model's own reply, and the test asserts the reply survives, the marker is present once, and the credential is absent.
+
+## Amendment (M4b) — the transcript records when, and the reason a response ended
+
+The file as first written records what happened and not when. So it cannot tell the two causes of run 32621918902 apart: one response that took 45 minutes, or hundreds of fast responses of which none was a tool call. The first needs a per-request timeout, the second needs whatever is looping stopped, and the file that exists to end the guessing could not end this one.
+
+**Every record carries `elapsed_ms`.** The first record is the origin, so `brief` reads 0 and every later record is measured from it. The value is stamped inside the lock that writes the line, so the order of the values is the order of the file. A stamp taken before the lock can be written after a later one, and a time that falls down the file is worse than none, because a reader will trust it.
+
+Elapsed, and not a wall clock. It needs no clock source in a test, it sorts, and it states what a reader wants without arithmetic. There is one time field, because two invite a reader to reconcile them.
+
+**A `finish` record names the reason a response ended.** `finish: "length"` with no tool call is an exhausted ceiling, and `finish: "stop"` with empty content is a model answering nothing. The two need different fixes and both were invisible.
+
+The hook events carry canonical content, usage and a message id, and no finish reason; rig-agent says so and points at the direct completion API for the provider's typed response. So `TranscriptModel` wraps the model the attempt runs, reads `choices[0].finish_reason` from the raw response it already holds, and appends one record before that turn's `spent`. The reason is read and never invented: a provider that reports none writes no record, which is what the mock model in the unit tests does.
+
+`TranscriptModel` counts its own calls to the provider, and that count is the record's turn. It is a second counter beside rig's, so `the_finish_reason_of_every_response_reaches_the_transcript` asserts the two agree.
+
+**A `tool` record carries `duration_ms`.** A `run_check` of four minutes and a `read_file` of four milliseconds were the same record. `on_tool_call` and `on_tool_result` both carry rig's `internal_call_id`, so the hook holds the start against that id and measures at the result. A result with no recorded start carries no duration.
+
+**Rig exposes no retry, and none is invented.** `AgentRun` increments `current_turn` before every model call, so a `ModelTurnAction::Retry` is sent under the next turn number and two `sent` records cannot share one. `HookContext` carries a run id, a turn, a streaming flag, an agent name and a scratchpad; `CompletionCall` carries the prompt, the history length and the turn. Nothing in either says that a request is a second attempt at an earlier turn. fiddle installs no hook that retries a turn, so no run it makes retries one today. An invented field is worse than a missing one, so the field is not added.
+
+**The bound and the redaction are unchanged.** Time and a reason add tens of bytes to a line and repeat nothing. `elapsed_ms` and `duration_ms` are numbers, so no new text reaches the file and `Record::rendered` is still the one redaction path. `TranscriptModel` reads one field of the raw response and records no other part of it.
