@@ -36,19 +36,17 @@ cannot finish — reply with only the structured report. Report what you actuall
 changed, whether or not it worked.";
 
 const FINDINGS_FRAME: &str = "\
-A dependency bump has already been applied to this project to clear the \
-advisories below. It may have broken the build, and it may not have been enough. \
-Here they are as the scanner reported them — what it found, the version that was \
-in the project, and the version it says the fix is in. Those are its words, not \
-ours.";
+Here are the advisories the scanner reported against this project — what it \
+found, the version that was in the project, and the version it says the fix is \
+in. Those are its words, not ours. Nothing has been changed for them yet.";
 
 const SCOPE_RULES: &str = "\
 Name every file you change, spelling each path the way the project spells \
 it, and change every file you name. A file changed without being named, or \
 named without being changed, refuses the whole attempt — so work in as few \
-files as you can and keep the list exact. The bump above is already in the \
-tree and is not yours to declare: if it needs no follow-up, change nothing \
-and name no files.\n\
+files as you can and keep the list exact. If the tree already carries the \
+fix for an advisory, change nothing for it and report it as already clear, \
+saying what you read that shows it.\n\
 \n\
 You are not asked to fix everything. If you cannot see what would clear an \
 advisory, or clearing it would take a change you are not confident in, \
@@ -57,10 +55,10 @@ you. That is an answer this run can use. A change made on a guess is not, \
 and neither is a report that claims more than you did.";
 
 const TASK: &str = "\
-Read the project and work out what would clear each advisory above: whether the \
-bump already did, and what else has to change if it did not. Make those changes, \
-run the check, and then report — the files you changed, and one entry for every \
-advisory you were shown.";
+Read the project and work out what clears each advisory above: which version to \
+move to, and what else has to change for the project to keep working. Make those \
+changes, run the check, and then report — the files you changed, and one entry \
+for every advisory you were shown.";
 
 const FEEDBACK_FRAME: &str = "\
 An earlier attempt on this project is already open, and the forge reports that \
@@ -1369,6 +1367,43 @@ mod tests {
             crate::agent::denies_an_ability(MIGRATION_PREAMBLE),
             Vec::<String>::new(),
             "this brief runs against the same tool set: {MIGRATION_PREAMBLE}"
+        );
+    }
+
+    #[test]
+    fn the_brief_claims_no_change_was_already_made() {
+        let finding = ProjectedFinding {
+            cve: serde_json::from_value::<AdvisoryId>(serde_json::json!("CVE-2026-1234"))
+                .expect("a canonical advisory id"),
+            package: "urllib3".to_string(),
+            current: "2.0.0".to_string(),
+            fixed_version: Some("2.2.2".to_string()),
+            severity: Severity::High,
+            package_type: PackageType::Library,
+        };
+        let brief = migration_task(&[&finding], None);
+
+        for claim in [
+            "already been applied",
+            "already applied",
+            "is already in the tree",
+            "not yours to declare",
+            "whether the bump",
+        ] {
+            assert!(
+                !brief.contains(claim),
+                "nothing applies a change before the agent runs, so the brief must not say \
+                 one was made: `{claim}` in {brief}"
+            );
+        }
+
+        assert!(
+            brief.contains("Nothing has been changed for them yet"),
+            "the brief states the premise the agent works from: {brief}"
+        );
+        assert!(
+            brief.contains("which version to move to"),
+            "the agent chooses the version, so the brief asks for it: {brief}"
         );
     }
 
