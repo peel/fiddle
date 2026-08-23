@@ -6,7 +6,7 @@ pub mod repair;
 pub mod stub;
 
 pub use cve::{
-    land, undeclared, DeclarationBreach, FailedCheck, Git, GroupMigration, GroupStatus,
+    breached, land, undeclared, DeclarationBreach, FailedCheck, Git, GroupMigration, GroupStatus,
     InRepository, InWorktree, Landed, MigrationAttempt, MigrationConfig, NeedsWork, Unproved,
 };
 pub use mitigate::{CveMitigate, MitigateConfig};

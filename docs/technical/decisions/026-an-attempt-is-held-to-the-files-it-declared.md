@@ -24,4 +24,6 @@ A breach sends the attempt to needs-work. `undeclared` reports `unannounced` for
 
 **One exclusion, and the rule refuses every run without it.** A sweep bumps a dependency before the model is briefed. So the worktree is already dirty when the attempt begins. The call site chains the bumped paths onto the report's `changed_files`, which is the whole of the excusing. The honest report of a bump needing no further work is therefore an empty `changed_files`. The lane holding this puts both kinds of path in one diff. An exclusion widened later to cover the whole diff fails it.
 
+ADR 055 returns a breach to the model as a turn, twice, before this check ends the attempt. The rule below is unchanged, and the check below is still what ends it.
+
 A pre-declaration handshake needs a new tool round-trip and is out of scope. If the post-hoc form proves insufficient, that is a later milestone's change and not a defect in this one. The rescan is what judges the change, which ADR 027 records. A reader who expected the declared-files rule to be a safety check should expect only bookkeeping.

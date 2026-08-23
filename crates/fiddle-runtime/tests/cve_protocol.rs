@@ -110,10 +110,12 @@ fn correcting(first: &str, second: &str) -> Vec<MockTurn> {
     script
 }
 
+const UNDERSTATES_THE_DIFF: &str = r#"{"changed_files":["main.go"],"summary":"applied the rename","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"the bump, and the call sites it moved"}]}"#;
+
+const DECLARES_A_FILE_IT_DID_NOT_TOUCH: &str = r#"{"changed_files":["main.go","main_test.go","go.mod"],"summary":"I need to update the version to 4.5.2","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"the bump, and the call sites it moved"}]}"#;
+
 fn migrates_and_understates_it() -> Vec<MockTurn> {
-    reporting(
-        r#"{"changed_files":["main.go"],"summary":"applied the rename","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"the bump, and the call sites it moved"}]}"#,
-    )
+    insisting(UNDERSTATES_THE_DIFF)
 }
 
 fn accounts_for_it_twice() -> Vec<MockTurn> {
@@ -1034,6 +1036,152 @@ async fn an_attempt_whose_declaration_matches_its_diff_has_no_breach() {
 }
 
 #[tokio::test]
+async fn a_report_whose_declaration_matches_the_diff_ends_the_attempt_in_one_report() {
+    let world = migration_world().await;
+    let model = MockCompletionModel::new(reporting(CLAIMS_DONE));
+
+    let attempt = run_migration(model.clone(), &world)
+        .await
+        .expect("a report that names the files it changed is an answer");
+
+    assert_eq!(
+        attempt.undeclared, None,
+        "the premise: the declaration and the diff are the same set"
+    );
+    assert_eq!(
+        model.request_count(),
+        one_report(CLAIMS_DONE),
+        "the scripted turns are the whole run, and nothing was returned"
+    );
+}
+
+#[tokio::test]
+async fn a_report_declaring_a_file_it_did_not_change_is_returned_and_asked_for_the_work() {
+    let world = migration_world().await;
+    let model = MockCompletionModel::new(correcting(DECLARES_A_FILE_IT_DID_NOT_TOUCH, CLAIMS_DONE));
+
+    let attempt = run_migration(model.clone(), &world)
+        .await
+        .expect("the second report names the files it changed, so the attempt succeeds");
+
+    assert_eq!(
+        attempt.undeclared, None,
+        "the report that ends the attempt is the corrected one: {:?}",
+        attempt.undeclared
+    );
+    assert_eq!(
+        attempt.report.changed_files,
+        vec![SOURCE.to_string(), TEST_SOURCE.to_string()],
+        "and it declares the diff and nothing beside it"
+    );
+    assert_eq!(
+        model.request_count(),
+        one_report(CLAIMS_DONE) + 1,
+        "the refused report cost one more turn, and the run spent it"
+    );
+
+    let requests = model.requests();
+    let last = serde_json::to_string(requests.last().expect("a sixth request was made"))
+        .expect("a CompletionRequest serializes");
+    assert!(
+        last.contains("declared without changing: go.mod"),
+        "the model is told which file it claimed and did not touch: {last}"
+    );
+    assert!(
+        last.contains("Change every file you declared"),
+        "it reported work it did not do, so the return asks for the work: {last}"
+    );
+}
+
+#[tokio::test]
+async fn a_report_omitting_a_file_it_changed_is_returned_and_asked_for_a_corrected_report() {
+    let world = migration_world().await;
+    let model = MockCompletionModel::new(correcting(UNDERSTATES_THE_DIFF, CLAIMS_DONE));
+
+    let attempt = run_migration(model.clone(), &world)
+        .await
+        .expect("the second report names both files, so the attempt succeeds");
+
+    assert_eq!(
+        attempt.undeclared, None,
+        "the corrected report matches the diff: {:?}",
+        attempt.undeclared
+    );
+    assert_eq!(
+        model.request_count(),
+        one_report(CLAIMS_DONE) + 1,
+        "one return, one turn"
+    );
+
+    let requests = model.requests();
+    let last = serde_json::to_string(requests.last().expect("a sixth request was made"))
+        .expect("a CompletionRequest serializes");
+    assert!(
+        last.contains("changed without declaring") && last.contains(TEST_SOURCE),
+        "the model is told which file it changed and did not mention: {last}"
+    );
+    assert!(
+        !last.contains("Change every file you declared"),
+        "it did the work and understated it, so the return asks for a report and \
+         never for more edits: {last}"
+    );
+}
+
+fn alternating() -> Vec<MockTurn> {
+    let mut script = reporting(ACCOUNTS_FOR_NOTHING);
+    script.push(MockTurn::text(DECLARES_A_FILE_IT_DID_NOT_TOUCH));
+    script.push(MockTurn::text(DECLARES_A_FILE_IT_DID_NOT_TOUCH));
+    script
+}
+
+#[tokio::test]
+async fn a_model_alternating_between_the_two_rules_is_returned_the_stated_total_and_no_more() {
+    let world = migration_world().await;
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let transcripts = transcript::Transcripts::under(dir.path(), "alternating");
+    let model = MockCompletionModel::new(alternating());
+
+    let attempt = run_recorded(model.clone(), &world, &transcripts)
+        .await
+        .expect("the third report accounts for the advisory, so the run completes");
+
+    let breach = attempt
+        .undeclared
+        .as_ref()
+        .expect("the third report still declares a file it never touched");
+    assert_eq!(
+        breach.unmet,
+        vec!["go.mod".to_string()],
+        "the bound is spent, so the post-run check is what refuses it: {breach:?}"
+    );
+    assert_eq!(
+        model.request_count(),
+        one_report(CLAIMS_DONE) + RETURNS,
+        "two rules share one bound, so alternating between them earns RETURNS \
+         returns and not RETURNS each"
+    );
+
+    let returns = returns_in(&transcripts);
+    assert_eq!(
+        returns.len(),
+        RETURNS,
+        "the transcript has to show each return: {returns:?}"
+    );
+    assert_eq!(
+        returns
+            .iter()
+            .map(|record| record["rule"].as_str().expect("a rule").to_string())
+            .collect::<Vec<String>>(),
+        vec!["accounting".to_string(), "declaration".to_string()],
+        "the premise: the two returns came from different rules: {returns:?}"
+    );
+    for (n, record) in returns.iter().enumerate() {
+        assert_eq!(record["returns"], n as u64 + 1, "{record}");
+        assert_eq!(record["bound"], RETURNS as u64, "{record}");
+    }
+}
+
+#[tokio::test]
 async fn what_the_run_changed_before_briefing_is_excused_and_nothing_beside_it_is() {
     let world = migration_world().await;
     let workspace = world.workspace();
@@ -1043,17 +1191,18 @@ async fn what_the_run_changed_before_briefing_is_excused_and_nothing_beside_it_i
         + "\n// moved by the run, before the attempt began\n";
     std::fs::write(&manifest, bumped).expect("the worktree is writable");
 
-    let script = vec![
+    const DISOWNS_ITS_EDIT: &str = r#"{"changed_files":[],"summary":"the bump was enough","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"the bump was enough"}]}"#;
+    let mut script = vec![
         MockTurn::tool_call("r", "read_file", json!({ "path": TEST_SOURCE })),
         MockTurn::tool_call(
             "w",
             "write_file",
             json!({ "path": TEST_SOURCE, "contents": RENAMED_TEST }),
         ),
-        MockTurn::text(
-            r#"{"changed_files":[],"summary":"the bump was enough","claimed_complete":true,"findings":[{"cve":"CVE-2026-0001","attempted":true,"note":"the bump was enough"}]}"#,
-        ),
     ];
+    for _ in 0..=RETURNS {
+        script.push(MockTurn::text(DISOWNS_ITS_EDIT));
+    }
     let attempt = GroupMigration::new(MockCompletionModel::new(script), world.config())
         .migrate(&workspace, &world.findings, None)
         .await
