@@ -1,13 +1,16 @@
 use crate::gateway::Redaction;
 use rig_agent::agent::hook::{
     AgentHook, CompletionCall, CompletionCallAction, CompletionResponse, HookContext,
-    InvalidToolCallAction, InvalidToolCallContext, ObservationAction, ToolResultAction,
-    ToolResultEvent,
+    InvalidToolCallAction, InvalidToolCallContext, ObservationAction, ToolCall, ToolCallAction,
+    ToolResultAction, ToolResultEvent,
 };
 use rig_core::completion::message::AssistantContent;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub const SWITCH: &str = "FIDDLE_TRANSCRIPT";
 
@@ -20,6 +23,10 @@ pub const FIELD_LIMIT: usize = 16_384;
 pub const FILE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 
 const WITHHELD: &str = "fiddle holds no credential to redact, so it withholds this text";
+
+pub const ELAPSED: &str = "elapsed_ms";
+
+pub const TOOK: &str = "duration_ms";
 
 pub fn cut_note() -> String {
     format!("\n[fiddle cut this text at {FIELD_LIMIT} characters]")
@@ -69,11 +76,15 @@ impl Record {
         self
     }
 
-    fn rendered(self, redaction: &Redaction) -> serde_json::Value {
+    fn rendered(self, redaction: &Redaction, elapsed: Duration) -> serde_json::Value {
         let mut fields = serde_json::Map::new();
         fields.insert(
             "record".to_string(),
             serde_json::Value::String(self.kind.to_string()),
+        );
+        fields.insert(
+            ELAPSED.to_string(),
+            serde_json::Value::from(elapsed.as_millis() as u64),
         );
         for (name, value) in self.numbers {
             fields.insert(name.to_string(), serde_json::Value::from(value));
@@ -112,7 +123,20 @@ impl Wrote {
 #[derive(Default)]
 struct State {
     file: Option<std::fs::File>,
+    began: Option<Instant>,
     wrote: Wrote,
+}
+
+impl State {
+    fn elapsed(&mut self) -> Duration {
+        match self.began {
+            Some(began) => began.elapsed(),
+            None => {
+                self.began = Some(Instant::now());
+                Duration::ZERO
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -148,15 +172,18 @@ impl Transcripts {
     }
 
     pub fn append(&self, redaction: &Redaction, record: Record) {
-        let line = match serde_json::to_string(&record.rendered(redaction)) {
-            Ok(rendered) => format!("{rendered}\n"),
-            Err(source) => return self.failed(source.to_string()),
-        };
-
         let mut state = self.locked();
         if state.wrote.failure.is_some() {
             return;
         }
+        let elapsed = state.elapsed();
+        let line = match serde_json::to_string(&record.rendered(redaction, elapsed)) {
+            Ok(rendered) => format!("{rendered}\n"),
+            Err(source) => {
+                state.wrote.failure = Some(source.to_string());
+                return;
+            }
+        };
         if state.wrote.bytes + line.len() > FILE_LIMIT_BYTES {
             state.wrote.dropped += 1;
             return;
@@ -177,13 +204,6 @@ impl Transcripts {
         }
         state.wrote.bytes += line.len();
         state.wrote.records += 1;
-    }
-
-    fn failed(&self, reason: String) {
-        let mut state = self.locked();
-        if state.wrote.failure.is_none() {
-            state.wrote.failure = Some(reason);
-        }
     }
 
     fn locked(&self) -> std::sync::MutexGuard<'_, State> {
@@ -212,10 +232,13 @@ pub const INVALID: &str = "invalid";
 
 pub const SPENT: &str = "spent";
 
+pub const FINISH: &str = "finish";
+
 #[derive(Clone)]
 pub struct TranscriptHook {
     transcripts: Transcripts,
     redaction: Redaction,
+    starts: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl TranscriptHook {
@@ -223,11 +246,25 @@ impl TranscriptHook {
         TranscriptHook {
             transcripts,
             redaction,
+            starts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     fn append(&self, record: Record) {
         self.transcripts.append(&self.redaction, record);
+    }
+
+    fn started(&self) -> std::sync::MutexGuard<'_, HashMap<String, Instant>> {
+        self.starts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn took(&self, record: Record, call: &str) -> Record {
+        match self.started().remove(call) {
+            Some(began) => record.number(TOOK, began.elapsed().as_millis() as u64),
+            None => record,
+        }
     }
 }
 
@@ -282,14 +319,23 @@ impl AgentHook for TranscriptHook {
         ObservationAction::Continue
     }
 
+    async fn on_tool_call(&self, _ctx: &HookContext, event: ToolCall<'_>) -> ToolCallAction {
+        self.started()
+            .insert(event.internal_call_id.to_string(), Instant::now());
+        ToolCallAction::Run
+    }
+
     async fn on_tool_result(
         &self,
         ctx: &HookContext,
         event: ToolResultEvent<'_>,
     ) -> ToolResultAction {
+        let record = self.took(
+            Record::of(TOOL).number("turn", ctx.turn() as u64),
+            event.internal_call_id,
+        );
         self.append(
-            Record::of(TOOL)
-                .number("turn", ctx.turn() as u64)
+            record
                 .text("tool", event.tool_name)
                 .text("args", event.args)
                 .text("result", &event.presentation.render()),
@@ -310,6 +356,78 @@ impl AgentHook for TranscriptHook {
                 .text("offered", &event.available_tools.join(", ")),
         );
         None
+    }
+}
+
+fn finish_reason<T: serde::Serialize>(raw: &T) -> Option<String> {
+    let rendered = serde_json::to_value(raw).ok()?;
+    rendered["choices"][0]["finish_reason"]
+        .as_str()
+        .map(str::to_string)
+}
+
+#[derive(Clone)]
+pub struct TranscriptModel<M> {
+    model: M,
+    hook: Option<TranscriptHook>,
+    calls: Arc<AtomicU64>,
+}
+
+impl<M> TranscriptModel<M> {
+    pub fn wrapping(model: M, hook: Option<TranscriptHook>) -> Self {
+        TranscriptModel {
+            model,
+            hook,
+            calls: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl<M> rig_core::completion::CompletionModel for TranscriptModel<M>
+where
+    M: rig_core::completion::CompletionModel,
+{
+    type Response = M::Response;
+    type StreamingResponse = M::StreamingResponse;
+    type Client = M::Client;
+
+    fn make(client: &Self::Client, model: impl Into<String>) -> Self {
+        TranscriptModel::wrapping(M::make(client, model), None)
+    }
+
+    async fn completion(
+        &self,
+        request: rig_core::completion::CompletionRequest,
+    ) -> Result<
+        rig_core::completion::CompletionResponse<Self::Response>,
+        rig_core::completion::CompletionError,
+    > {
+        let turn = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+        let answered = self.model.completion(request).await;
+        if let (Some(hook), Ok(response)) = (&self.hook, &answered) {
+            if let Some(reason) = finish_reason(&response.raw_response) {
+                hook.append(
+                    Record::of(FINISH)
+                        .number("turn", turn)
+                        .text("reason", &reason),
+                );
+            }
+        }
+        answered
+    }
+
+    async fn stream(
+        &self,
+        request: rig_core::completion::CompletionRequest,
+    ) -> Result<
+        rig_core::streaming::StreamingCompletionResponse<Self::StreamingResponse>,
+        rig_core::completion::CompletionError,
+    > {
+        self.model.stream(request).await
+    }
+
+    fn composes_native_output_with_tools(&self) -> bool {
+        self.model.composes_native_output_with_tools()
     }
 }
 
@@ -391,6 +509,58 @@ mod tests {
         assert!(
             content.contains(crate::gateway::REDACTED) && content.contains("was refused"),
             "the text must survive with the credential marked: {content}"
+        );
+    }
+
+    #[test]
+    fn every_record_carries_an_elapsed_value_that_never_decreases() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcripts = Transcripts::under(dir.path(), "a-run");
+        let redaction = Redaction::of(SECRET);
+
+        transcripts.append(&redaction, Record::of(BRIEF).text("task", "repair it"));
+        for turn in 1..=3 {
+            std::thread::sleep(Duration::from_millis(2));
+            transcripts.append(&redaction, Record::of(SENT).number("turn", turn));
+        }
+
+        let records = lines(transcripts.path());
+        assert_eq!(records.len(), 4);
+        let elapsed: Vec<u64> = records
+            .iter()
+            .map(|record| {
+                record[ELAPSED]
+                    .as_u64()
+                    .unwrap_or_else(|| panic!("every record carries its elapsed time: {record}"))
+            })
+            .collect();
+        assert_eq!(elapsed[0], 0, "the first record is the origin: {elapsed:?}");
+        assert!(
+            elapsed.windows(2).all(|pair| pair[0] <= pair[1]),
+            "a time that falls down the file is worse than none: {elapsed:?}"
+        );
+        assert!(
+            elapsed[3] > 0,
+            "the elapsed value must advance with the run: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn a_finish_reason_is_read_from_the_response_the_provider_returned() {
+        assert_eq!(
+            finish_reason(&serde_json::json!({"choices": [{"finish_reason": "length"}]}))
+                .as_deref(),
+            Some("length")
+        );
+        assert_eq!(
+            finish_reason(&serde_json::json!({"choices": []})),
+            None,
+            "a response holding no choice names no reason"
+        );
+        assert_eq!(
+            finish_reason(&serde_json::json!({"usage": {"input_tokens": 1}})),
+            None,
+            "a provider that reports no reason must not have one invented for it"
         );
     }
 
@@ -551,6 +721,46 @@ mod hook_tests {
         assert!(
             whole.contains(crate::gateway::REDACTED) && whole.contains("was refused"),
             "the model's own reply must survive with the credential marked: {whole}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tool_record_says_how_long_the_tool_took() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcripts = Transcripts::under(dir.path(), "a-run");
+        let (host, _g) = test_host();
+        let model = MockCompletionModel::new([
+            MockTurn::tool_call(
+                "call_1",
+                "read_file",
+                serde_json::json!({"path":"src/lib.rs"}),
+            ),
+            MockTurn::text("read it"),
+        ]);
+        let agent = AgentBuilder::new(model)
+            .tool(ReadFile)
+            .add_hook(TranscriptHook::recording(
+                transcripts.clone(),
+                Redaction::of(SECRET),
+            ))
+            .build();
+
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+        agent
+            .prompt("repair it")
+            .tool_context(ctx)
+            .max_turns(3)
+            .await
+            .expect("the run completes");
+
+        let answered = lines(transcripts.path())
+            .into_iter()
+            .find(|record| record["record"] == TOOL)
+            .expect("a tool call was made");
+        assert!(
+            answered[TOOK].is_u64(),
+            "a four-minute check and a four-millisecond read must not read alike: {answered}"
         );
     }
 
