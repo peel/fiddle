@@ -1,7 +1,7 @@
 mod support;
 
 use fiddle_core::Severity;
-use fiddle_runtime::evaluate::{evaluate, Outcome, Reason, RescanVerdict, Success};
+use fiddle_runtime::evaluate::{baseline, evaluate, Outcome, Reason, RescanVerdict, Success};
 use support::cve::*;
 
 #[tokio::test]
@@ -487,4 +487,73 @@ async fn a_contract_with_no_repair_premise_is_never_accepted() {
     assert!(!r.rejected());
     assert!(!r.accepted(), "there was no premise to prove");
     assert_eq!(r.rescan(), &RescanVerdict::NotCompared);
+}
+
+#[tokio::test]
+async fn a_check_the_tree_already_failed_is_marked_and_still_counts() {
+    let tree = tree_where(GO_VET, exit(1), stdout("probe.go:5: var is unused"));
+    let mut contract = contract_for(&["CVE-2026-4242"]);
+
+    let already = baseline(&contract, &tree)
+        .await
+        .expect("a baseline that was not cancelled");
+    assert_eq!(
+        already,
+        vec![GO_VET.to_string()],
+        "the baseline names the check the tree failed before any change"
+    );
+
+    contract.excused = already;
+    let r = evaluate(&contract, &tree)
+        .await
+        .expect("an evaluation that was not cancelled");
+
+    assert_eq!(
+        r.first_failure().map(|it| it.name.as_str()),
+        Some(GO_VET),
+        "a tree whose check fails is not proved, whoever broke it"
+    );
+    assert_eq!(
+        r.excused().map(|it| it.name.as_str()).collect::<Vec<_>>(),
+        vec![GO_VET],
+        "and the record says the change did not break it, so the agent is not blamed \
+         and the reason can say so"
+    );
+}
+
+#[tokio::test]
+async fn naming_one_check_as_already_failing_does_not_mark_another() {
+    let tree = tree_where(GO_VET, exit(1), stdout("probe.go:5: var is unused"));
+    let mut contract = contract_for(&["CVE-2026-4242"]);
+    contract.excused = vec![GO_BUILD.to_string()];
+
+    let r = evaluate(&contract, &tree)
+        .await
+        .expect("an evaluation that was not cancelled");
+
+    assert_eq!(
+        r.first_failure().map(|it| it.name.as_str()),
+        Some(GO_VET),
+        "a check named as already failing does not mark another one"
+    );
+    assert!(
+        r.excused().next().is_none(),
+        "GO_BUILD passed, so nothing is marked as already failing"
+    );
+}
+
+#[tokio::test]
+async fn the_baseline_never_scans_the_unrepaired_image() {
+    let tree = green_tree();
+    let contract = contract_for(&["CVE-2026-4242"]);
+
+    baseline(&contract, &tree)
+        .await
+        .expect("a baseline that was not cancelled");
+
+    assert!(
+        !tree.ran().iter().any(|it| it.contains("wizcli")),
+        "a rescan of the tree before the repair proves nothing and costs minutes: {:?}",
+        tree.ran()
+    );
 }

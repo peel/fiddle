@@ -252,6 +252,8 @@ where
             .findings
             .apply(projection.all().cloned().collect());
 
+        let excused = self.already_failing(&workspace).await?;
+
         let spent = counted.as_ref().map_or(0, |it| it.spent);
         let mut settled: Vec<AdvisoryId> = Vec::new();
         let mut attempted: Vec<Attempted> = Vec::new();
@@ -259,9 +261,11 @@ where
         if feedback.attempts_afresh() && !taken.is_empty() {
             let attempt = self
                 .migration
-                .migrate(&workspace, &taken, feedback.blamed())
+                .migrate(&workspace, &taken, feedback.blamed(), &excused)
                 .await?;
-            let evaluation = self.judge(&workspace, &taken, &projection, report).await?;
+            let evaluation = self
+                .judge(&workspace, &taken, &projection, report, &excused)
+                .await?;
             let status = GroupStatus::of(&evaluation, attempt.undeclared.as_ref());
             let advisories = advisories_of(&taken);
             let group = Attempted {
@@ -410,16 +414,38 @@ where
         }
     }
 
+    async fn already_failing(&self, workspace: &Workspace) -> Result<Vec<String>, CapabilityError> {
+        let contract = Contract {
+            checks: self.config.checks.clone(),
+            severities: self.config.severities.clone(),
+            repair: None,
+            excused: Vec::new(),
+        };
+        let tree = InWorkspace::new(
+            workspace,
+            self.config.command_timeout,
+            Rescan {
+                scratch: self.config.scratch.clone(),
+                image: self.config.image.clone(),
+            },
+        );
+        crate::evaluate::baseline(&contract, &tree)
+            .await
+            .map_err(|_cancelled| CapabilityError::Workspace(WorkspaceError::Cancelled))
+    }
+
     async fn judge(
         &self,
         workspace: &Workspace,
         shown: &[ProjectedFinding],
         projection: &Projection,
         report: &ScanReport,
+        excused: &[String],
     ) -> Result<Evaluation, CapabilityError> {
         let contract = Contract {
             checks: self.config.checks.clone(),
             severities: self.config.severities.clone(),
+            excused: excused.to_vec(),
             repair: Some(Repair {
                 must_clear: advisories_of(shown),
                 input: projection
@@ -960,6 +986,7 @@ mod body {
             GroupStatus::NeedsWork {
                 reason: NeedsWork::CheckFailed {
                     check: "golangci-lint run".to_string(),
+                    already: false,
                 },
             },
             &["go.mod"],

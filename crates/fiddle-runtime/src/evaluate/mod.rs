@@ -41,6 +41,8 @@ pub struct Contract {
     pub severities: Severities,
 
     pub repair: Option<Repair>,
+
+    pub excused: Vec<String>,
 }
 
 impl Contract {
@@ -49,6 +51,7 @@ impl Contract {
             checks,
             severities: Severities::default(),
             repair: None,
+            excused: Vec::new(),
         }
     }
 }
@@ -139,6 +142,8 @@ pub struct CheckResult {
     pub passed: bool,
 
     pub outcome: Outcome,
+
+    pub excused: bool,
 }
 
 #[derive(Debug)]
@@ -154,6 +159,10 @@ impl Evaluation {
 
     pub fn first_failure(&self) -> Option<&CheckResult> {
         self.checks.iter().find(|check| !check.passed)
+    }
+
+    pub fn excused(&self) -> impl Iterator<Item = &CheckResult> + '_ {
+        self.checks.iter().filter(|check| check.excused)
     }
 
     pub fn rescan(&self) -> &RescanVerdict {
@@ -190,6 +199,28 @@ impl Evaluation {
 #[error("the evaluation was cancelled, so this tree was neither accepted nor rejected")]
 pub struct Cancelled;
 
+pub async fn baseline(contract: &Contract, tree: &impl Tree) -> Result<Vec<String>, Cancelled> {
+    let mut already = Vec::new();
+    for check in &contract.checks {
+        if check.success == Success::ArtefactWritten {
+            continue;
+        }
+        match tree.run(check).await {
+            Ok(ran) => {
+                let quiet = ran.stdout.is_empty() && ran.stderr.is_empty();
+                let passed =
+                    ran.exit_code == 0 && (check.success != Success::ExitZeroAndNoOutput || quiet);
+                if !passed {
+                    already.push(check.name());
+                }
+            }
+            Err(Unanswered::Cancelled) => return Err(Cancelled),
+            Err(_) => already.push(check.name()),
+        }
+    }
+    Ok(already)
+}
+
 pub async fn evaluate(contract: &Contract, tree: &impl Tree) -> Result<Evaluation, Cancelled> {
     let mut checks = Vec::with_capacity(contract.checks.len());
     for check in &contract.checks {
@@ -222,8 +253,10 @@ pub async fn evaluate(contract: &Contract, tree: &impl Tree) -> Result<Evaluatio
             },
         };
 
+        let name = check.name();
         checks.push(CheckResult {
-            name: check.name(),
+            excused: !passed && contract.excused.contains(&name),
+            name,
             passed,
             outcome,
         });

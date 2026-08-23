@@ -102,6 +102,22 @@ fn feedback_task(failure: &GenuineFailure) -> String {
     )
 }
 
+fn already_failing_sentence(excused: &[String]) -> String {
+    if excused.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\nThese checks already failed on this project before you changed anything: {}. \
+         They are not yours to fix, and this run does not hold them against you. Leave them \
+         alone and do not report them.",
+        excused
+            .iter()
+            .map(|it| format!("`{it}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 fn migration_task(findings: &[&ProjectedFinding], failure: Option<&GenuineFailure>) -> String {
     let rendered: Vec<String> = findings.iter().map(|finding| render(finding)).collect();
     let mut sections = vec![FINDINGS_FRAME.to_string(), rendered.join("\n")];
@@ -175,7 +191,7 @@ pub enum GroupStatus {
 pub enum NeedsWork {
     Undeclared(DeclarationBreach),
 
-    CheckFailed { check: String },
+    CheckFailed { check: String, already: bool },
 
     Unproved(RescanVerdict),
 }
@@ -184,9 +200,20 @@ impl std::fmt::Display for NeedsWork {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NeedsWork::Undeclared(breach) => write!(f, "{breach}"),
-            NeedsWork::CheckFailed { check } => {
+            NeedsWork::CheckFailed {
+                check,
+                already: false,
+            } => {
                 write!(f, "`{check}` did not pass over the tree the attempt left")
             }
+            NeedsWork::CheckFailed {
+                check,
+                already: true,
+            } => write!(
+                f,
+                "`{check}` did not pass, and it did not pass before this attempt either, \
+                 so the tree is not proved and this attempt did not break it"
+            ),
             NeedsWork::Unproved(verdict) => write!(f, "{}", unproved_sentence(verdict)),
         }
     }
@@ -235,6 +262,7 @@ impl GroupStatus {
             return GroupStatus::NeedsWork {
                 reason: NeedsWork::CheckFailed {
                     check: failed.name.clone(),
+                    already: failed.excused,
                 },
             };
         }
@@ -305,9 +333,14 @@ where
         workspace: &Arc<Workspace>,
         findings: &[ProjectedFinding],
         failure: Option<&GenuineFailure>,
+        excused: &[String],
     ) -> Result<MigrationAttempt, CapabilityError> {
         let findings: Vec<&ProjectedFinding> = findings.iter().collect();
-        let task = migration_task(&findings, failure);
+        let task = format!(
+            "{}{}",
+            migration_task(&findings, failure),
+            already_failing_sentence(excused)
+        );
 
         let bumped: Vec<String> = workspace
             .changed_files()?

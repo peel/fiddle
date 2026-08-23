@@ -673,7 +673,7 @@ pub fn contract_with(name: &str, command_line: &str, success: Success) -> Contra
 
 const FIXTURE_SCANNER_VERSION: &str = "1.2.3";
 
-const REPAIRED_ADVISORY: &str = "CVE-2026-4242";
+pub const REPAIRED_ADVISORY: &str = "CVE-2026-4242";
 
 pub fn contract_for(cves: &[&str]) -> Contract {
     let mut contract = contract();
