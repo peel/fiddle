@@ -1,7 +1,9 @@
+pub mod accounting;
 pub mod audit;
 pub mod tools;
 pub mod transcript;
 
+pub use accounting::{AccountingHook, RETURNS};
 pub use audit::AuditHook;
 pub use tools::{
     CheckOutcome, EditFile, EditFileArgs, ListFiles, ListFilesArgs, Listing, NoArgs, ReadFile,
@@ -174,6 +176,10 @@ pub struct FindingDisposition {
 }
 
 pub fn unaccounted(shown: &[&str], reported: &[FindingDisposition]) -> Option<AgentError> {
+    accounting(shown, reported).map(|reason| AgentError::Protocol { reason })
+}
+
+pub fn accounting(shown: &[&str], reported: &[FindingDisposition]) -> Option<String> {
     let shown: BTreeSet<&str> = shown.iter().copied().collect();
 
     let mut disposed: BTreeMap<&str, usize> = BTreeMap::new();
@@ -210,10 +216,10 @@ pub fn unaccounted(shown: &[&str], reported: &[FindingDisposition]) -> Option<Ag
     if !twice.is_empty() {
         reason.push_str(&format!("; reported more than once: {}", twice.join(", ")));
     }
-    Some(AgentError::Protocol { reason })
+    Some(reason)
 }
 
-fn unexplained_decline(reported: &[FindingDisposition]) -> Option<AgentError> {
+fn unexplained_decline(reported: &[FindingDisposition]) -> Option<String> {
     let silent: Vec<&str> = reported
         .iter()
         .filter(|disposition| !disposition.attempted && disposition.note.trim().is_empty())
@@ -221,12 +227,10 @@ fn unexplained_decline(reported: &[FindingDisposition]) -> Option<AgentError> {
         .collect();
     match silent.is_empty() {
         true => None,
-        false => Some(AgentError::Protocol {
-            reason: format!(
-                "declining is an answer, but it has to say why; no reason given for: {}",
-                silent.join(", ")
-            ),
-        }),
+        false => Some(format!(
+            "declining is an answer, but it has to say why; no reason given for: {}",
+            silent.join(", ")
+        )),
     }
 }
 
@@ -266,6 +270,7 @@ where
             preamble: PREAMBLE,
             task: &task,
         },
+        &[],
         transcripts,
     )
     .await
@@ -293,6 +298,7 @@ pub async fn attempt_briefed<M>(
     host: ToolHost,
     budget: AgentBudget,
     brief: Brief<'_>,
+    shown: &[&str],
     transcripts: Option<&Transcripts>,
 ) -> Result<RepairReport, AgentError>
 where
@@ -334,7 +340,14 @@ where
     if let Some(hook) = hook {
         builder = builder.add_hook(hook);
     }
-    let agent = builder.build();
+    let agent = builder
+        .add_hook(AccountingHook::holding(
+            shown,
+            RETURNS,
+            redaction,
+            transcripts,
+        ))
+        .build();
 
     let mut bounded = host.clone();
     bounded.check.timeout = bounded.check.timeout.min(budget.tool_timeout);
