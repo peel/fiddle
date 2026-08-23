@@ -2,7 +2,7 @@ use super::propose::COMMITTER;
 use super::CapabilityError;
 use crate::agent::{
     attempt_briefed, unaccounted, AgentBudget, Brief, FindingDisposition, RepairReport, ToolHost,
-    ToolReceipts,
+    ToolReceipts, Transcripts,
 };
 use crate::cve::attempts;
 use crate::cve::dedup::{Local, Spawn};
@@ -256,6 +256,8 @@ pub struct MigrationConfig {
 
     pub redaction: Redaction,
 
+    pub transcripts: Option<Transcripts>,
+
     pub cancel: CancellationToken,
 }
 
@@ -328,6 +330,7 @@ where
                 preamble: MIGRATION_PREAMBLE,
                 task: &task,
             },
+            self.config.transcripts.as_ref(),
         )
         .await?;
 

@@ -451,6 +451,7 @@ fn config(world: &World, check: WorkspaceCommand) -> ProposeConfig {
             tool_timeout: PATIENT,
         },
         redaction: Redaction::unknown(),
+        transcripts: None,
         deciders: vec![APPROVER],
         interpretation: patient_interpretation(),
         cancel: CancellationToken::new(),

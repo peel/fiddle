@@ -1,6 +1,6 @@
 use super::stub::write_atomically;
 use super::{Capability, CapabilityError, ExecutionGrant};
-use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts};
+use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts, Transcripts};
 use crate::effect::{
     EffectContext, EffectOutcome, EffectReceipt, Executor, IntegrationOperation, ObservedState,
     ResolvedDecision,
@@ -76,6 +76,8 @@ pub struct ProposeConfig {
     pub budget: AgentBudget,
 
     pub redaction: Redaction,
+
+    pub transcripts: Option<Transcripts>,
 
     pub deciders: Vec<u64>,
 
@@ -351,6 +353,7 @@ where
             host,
             self.config.budget.clone(),
             direction,
+            self.config.transcripts.as_ref(),
         )
         .await?;
 
