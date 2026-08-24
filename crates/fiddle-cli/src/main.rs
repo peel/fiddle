@@ -117,6 +117,10 @@ impl Selection {
         }
     }
 
+    fn sweeps(self) -> bool {
+        matches!(self, Selection::Mitigate)
+    }
+
     fn parse(requested: &str) -> Result<Self, UnknownCapability> {
         if requested == fiddle_core::STUB_MARK.0 {
             Ok(Selection::Mark)
@@ -883,11 +887,49 @@ fn interpretation_bounds(agent: &config::Agent) -> InterpretationBounds {
     }
 }
 
+fn unrunnable_cve(config: &config::Config) -> Option<&'static str> {
+    config.orchestration.as_ref()?.cve.as_ref()?;
+
+    if config.github.is_none() {
+        return Some("[github]");
+    }
+    if config.scanner.is_none() {
+        return Some("[scanner]");
+    }
+    if config.agent.is_none() {
+        return Some("[agent]");
+    }
+    let workspace = config.workspace.as_ref()?;
+    if workspace.checks.is_empty() {
+        return Some("[[workspace.checks]]");
+    }
+    if workspace.fixture.is_none() {
+        return Some("workspace.fixture");
+    }
+    None
+}
+
 async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
     match &cli.command {
         cli::Command::Config { action } => match action {
-            cli::ConfigCommand::Check { json } => {
+            cli::ConfigCommand::Check { json, capability } => {
                 let config = config::load(&cli.config)?;
+                let asked = match capability.as_deref() {
+                    Some(requested) => Some(Selection::parse(requested)?),
+                    None => None,
+                };
+                if let Some(absent) = asked
+                    .is_some_and(Selection::sweeps)
+                    .then(|| unrunnable_cve(&config))
+                    .flatten()
+                {
+                    return Err(Unconfigured {
+                        capability: fiddle_core::CVE_MITIGATE,
+                        missing: absent,
+                        path: cli.config.display().to_string(),
+                    }
+                    .into());
+                }
                 if *json {
                     println!("{}", render::config_check_json(&config));
                 } else {

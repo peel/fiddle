@@ -128,5 +128,13 @@ pub enum ConfigCommand {
             help = "Emit the machine-readable payload instead of the human summary."
         )]
         json: bool,
+
+        #[arg(
+            long,
+            help = "Also refuse a document the named capability could not run. Without it \
+                    this command answers about the schema alone, which is a weaker question \
+                    than whether a run would start."
+        )]
+        capability: Option<String>,
     },
 }

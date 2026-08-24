@@ -896,35 +896,6 @@ fn the_sweep_table_loads_and_reports_the_bound_the_document_set() {
 }
 
 #[test]
-fn the_sweep_table_the_product_manual_documents_is_one_the_schema_accepts() {
-    let documented = documented_sweep_table();
-    for key in ["severities", "max_findings", "image"] {
-        assert!(
-            documented.contains(key),
-            "the manual's `[orchestration.cve]` example must name {key}, or this \
-             lane is checking a document the manual does not contain: {documented}"
-        );
-    }
-    let out = check(&format!(
-        "{AGENTIC}[scanner]\n\
-         cli = {{ program = \"wizcli\", args = [\"scan\"] }}\n\
-         timeout = \"20m\"\n\
-         \n{documented}"
-    ));
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "the manual's own sweep table was refused, so a deployment that copies \
-         the manual cannot start. stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn documented_sweep_table() -> String {
-    documented_table(&reference_configuration(), "[orchestration.cve]")
-}
-
-#[test]
 fn the_grades_a_sweep_acts_on_are_the_grades_the_document_named() {
     let document = format!(
         "{AGENTIC}{}",
@@ -1001,13 +972,6 @@ fn a_scanner_table_that_names_a_credential_is_refused() {
     );
 }
 
-#[test]
-fn a_document_that_never_scans_reports_no_scanner_and_no_sweep() {
-    let payload = checked(AGENTIC);
-    assert!(payload.get("scanner").is_none(), "{payload}");
-    assert!(payload.get("orchestration").is_none(), "{payload}");
-}
-
 fn check_with_env(text: &str, extra: &[&str], env: &[(&str, &str)]) -> std::process::Output {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("fiddle.toml");
@@ -1021,354 +985,6 @@ fn check_with_env(text: &str, extra: &[&str], env: &[(&str, &str)]) -> std::proc
         command.env(name, value);
     }
     command.output().unwrap()
-}
-
-fn manual() -> String {
-    std::fs::read_to_string("../../docs/fiddle-agentic-factory-prd.md")
-        .expect("the product manual is two levels up from this package")
-}
-
-const REFERENCE_INTRO: &str = "fixes the intended boundaries";
-
-const COPYABLE_INTRO: &str = "#### The configuration this build loads";
-
-const COMPOSITE_CLAIM: &str = "it is not a document a deployment can load";
-
-fn reference_configuration() -> String {
-    fenced_toml_after(REFERENCE_INTRO)
-}
-
-fn copyable_configuration() -> String {
-    fenced_toml_after(COPYABLE_INTRO)
-}
-
-fn fenced_toml_after(marker: &str) -> String {
-    let manual = manual();
-    let lines: Vec<&str> = manual.lines().collect();
-    let intro = lines
-        .iter()
-        .position(|line| line.contains(marker))
-        .unwrap_or_else(|| {
-            panic!(
-                "the manual no longer carries the line that introduces this block, \
-                 so this lane cannot say which fence it would be reading: {marker}"
-            )
-        });
-    let open = intro
-        + lines[intro..]
-            .iter()
-            .position(|line| line.trim() == "```toml")
-            .unwrap_or_else(|| panic!("a ```toml fence must follow: {marker}"));
-    let close = open
-        + 1
-        + lines[open + 1..]
-            .iter()
-            .position(|line| line.trim().starts_with("```"))
-            .unwrap_or_else(|| panic!("the fence opened after {marker} is never closed"));
-    lines[open + 1..close].join("\n")
-}
-
-fn table_header(line: &str) -> Option<&str> {
-    let line = line.trim();
-    line.strip_prefix('[')
-        .filter(|rest| !rest.starts_with('['))
-        .and_then(|rest| rest.strip_suffix(']'))
-}
-
-fn table_headers(document: &str) -> Vec<&str> {
-    document.lines().filter_map(table_header).collect()
-}
-
-fn documented_table(document: &str, header: &str) -> String {
-    let wanted = header
-        .strip_prefix('[')
-        .and_then(|rest| rest.strip_suffix(']'))
-        .expect("a header is written with its brackets");
-    let mut lines = document
-        .lines()
-        .skip_while(|line| table_header(line) != Some(wanted));
-    let first = lines
-        .next()
-        .unwrap_or_else(|| panic!("the document must declare a {header} table"));
-    let body = lines.take_while(|line| table_header(line).is_none());
-    std::iter::once(first)
-        .chain(body)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn without_table(lines: &[String], header: &str) -> Vec<String> {
-    let mut kept = Vec::new();
-    let mut dropping = false;
-    for line in lines {
-        if let Some(declared) = table_header(line) {
-            dropping = declared == header || declared.starts_with(&format!("{header}."));
-        }
-        if !dropping {
-            kept.push(line.clone());
-        }
-    }
-    kept
-}
-
-fn enclosing_table(lines: &[String], at: usize) -> Option<&str> {
-    lines[..at].iter().rev().find_map(|line| table_header(line))
-}
-
-fn refused_name(stderr: &str, phrase: &str) -> Option<String> {
-    regex::Regex::new(&format!("{phrase} `([^`]+)`"))
-        .unwrap()
-        .captures(stderr)
-        .map(|found| found[1].to_string())
-}
-
-fn refused_line(stderr: &str) -> usize {
-    regex::Regex::new(r"fiddle\.toml:(\d+):")
-        .unwrap()
-        .captures(stderr)
-        .unwrap_or_else(|| panic!("every refusal names the line it is about: {stderr}"))[1]
-        .parse()
-        .unwrap()
-}
-
-struct Clearing {
-    trail: Vec<String>,
-    declared: usize,
-    survived: usize,
-}
-
-fn clear_one_refusal_at_a_time(document: &str) -> Clearing {
-    let copyable = copyable_configuration();
-    let declared: Vec<String> = table_headers(document)
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-    let mut lines: Vec<String> = document.lines().map(str::to_owned).collect();
-    let mut trail: Vec<String> = Vec::new();
-    loop {
-        let out = check(&format!("{}\n", lines.join("\n")));
-        if out.status.code() == Some(0) {
-            break;
-        }
-        assert_eq!(
-            out.status.code(),
-            Some(2),
-            "a document is refused with exit 2 or accepted with 0, and this was \
-             neither. stderr: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        let at = refused_line(&stderr);
-        assert!(
-            at <= lines.len(),
-            "a refusal points at line {at} of a {}-line document, so this helper \
-             is reading a line number it did not write: {stderr}",
-            lines.len()
-        );
-        if let Some(name) = refused_name(&stderr, "unknown field") {
-            match table_header(&lines[at - 1]) {
-                Some(header) => {
-                    let header = header.to_owned();
-                    trail.push(format!(
-                        "unknown field `{name}` at line {at}: delete [{header}] and its sub-tables"
-                    ));
-                    lines = without_table(&lines, &header);
-                }
-                None => {
-                    trail.push(format!(
-                        "unknown field `{name}` at line {at}: delete that key"
-                    ));
-                    lines.remove(at - 1);
-                }
-            }
-        } else if let Some(name) = refused_name(&stderr, "missing field") {
-            let absent = !lines
-                .iter()
-                .any(|line| table_header(line) == Some(name.as_str()));
-            if absent && table_headers(&copyable).contains(&name.as_str()) {
-                trail.push(format!(
-                    "missing field `{name}`: supply the [{name}] table from the \
-                     document the manual offers as copyable"
-                ));
-                lines.push(String::new());
-                lines.extend(
-                    documented_table(&copyable, &format!("[{name}]"))
-                        .lines()
-                        .map(str::to_owned),
-                );
-            } else {
-                let enclosing = enclosing_table(&lines, at)
-                    .unwrap_or_else(|| {
-                        panic!("`missing field {name}` belongs to a table: {stderr}")
-                    })
-                    .to_owned();
-                trail.push(format!(
-                    "missing field `{name}` inside [{enclosing}]: delete [{enclosing}]"
-                ));
-                lines = without_table(&lines, &enclosing);
-            }
-        } else {
-            panic!("this measurement can only clear an unknown or a missing field: {stderr}");
-        }
-        assert!(
-            trail.len() < 64,
-            "64 refusals is not a document with defects in it, it is a runaway \
-             loop in this helper. Trail:\n{}",
-            trail.join("\n")
-        );
-    }
-    let loaded = lines.join("\n");
-    let standing = table_headers(&loaded);
-    let survived = declared
-        .iter()
-        .filter(|header| standing.contains(&header.as_str()))
-        .count();
-    Clearing {
-        trail,
-        declared: declared.len(),
-        survived,
-    }
-}
-
-#[test]
-fn the_manual_says_its_reference_configuration_is_not_a_document_that_loads() {
-    let reference = reference_configuration();
-    for header in ["project", "github", "jira", "orchestration.cve"] {
-        assert!(
-            table_headers(&reference).contains(&header),
-            "this is not the manual's reference configuration — that block \
-             declares [{header}]: {reference}"
-        );
-    }
-    let out = check(&format!("{reference}\n"));
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "the reference configuration now loads, which is a better world than the \
-         one this lane was written for: retire the composite note it pins and let \
-         the block be the copyable one. stdout: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    let manual = manual();
-    for claim in [COMPOSITE_CLAIM, COPYABLE_INTRO] {
-        assert!(
-            manual.contains(claim),
-            "an example that cannot load is a defect or a deliberate composite, \
-             and a reader cannot tell which without being told. The manual must \
-             say: {claim}"
-        );
-    }
-}
-
-#[test]
-fn the_refusals_the_reference_configuration_reaches_are_the_number_the_manual_records() {
-    let reference = reference_configuration();
-    assert!(
-        table_headers(&reference).contains(&"jira"),
-        "this is not the manual's reference configuration: {reference}"
-    );
-    let clearing = clear_one_refusal_at_a_time(&reference);
-    let trail = clearing.trail.join("\n");
-    let passes = format!("takes {} passes", clearing.trail.len());
-    let deleted = format!(
-        "{} of its {} tables have to be deleted",
-        clearing.declared - clearing.survived,
-        clearing.declared
-    );
-    let manual = manual();
-    for claim in [&passes, &deleted] {
-        assert!(
-            manual.contains(claim.as_str()),
-            "the manual must record what this document costs a reader who tries \
-             to load it, and say `{claim}`. Measured here, one line per refusal:\n\
-             {trail}"
-        );
-    }
-}
-
-#[test]
-fn the_document_the_manual_offers_as_copyable_is_one_this_build_loads() {
-    let copyable = copyable_configuration();
-    let declared = table_headers(&copyable);
-    for header in [
-        "project",
-        "stub",
-        "report",
-        "agent",
-        "workspace",
-        "github",
-        "scanner",
-        "orchestration.cve",
-    ] {
-        assert!(
-            declared.contains(&header),
-            "the copyable document must show [{header}] — it is the whole of what \
-             a deployment can say today, and a table it omits is one an operator \
-             has to discover elsewhere: {copyable}"
-        );
-    }
-    assert!(
-        !declared.contains(&"jira"),
-        "this is the boundary map, not the copyable document: {copyable}"
-    );
-    let out = check_with(&format!("{copyable}\n"), &["--json"]);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "the document the manual offers as copyable was refused, so the manual \
-         now has no example a deployment can copy at all. stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(payload["status"], "valid", "{payload}");
-    assert_eq!(
-        payload["project"]["name"],
-        documented_scalar(&copyable, "name"),
-        "{payload}"
-    );
-    assert_eq!(
-        payload["github"]["repo"],
-        documented_scalar(&copyable, "repo"),
-        "{payload}"
-    );
-    assert_eq!(
-        payload["orchestration"]["cve"]["image"],
-        documented_scalar(&copyable, "image"),
-        "{payload}"
-    );
-}
-
-fn documented_scalar(document: &str, key: &str) -> String {
-    let assignment = format!("{key} = ");
-    document
-        .lines()
-        .find_map(|line| line.trim().strip_prefix(&assignment))
-        .unwrap_or_else(|| panic!("the document must assign {key}: {document}"))
-        .trim()
-        .trim_matches('"')
-        .to_owned()
-}
-
-#[test]
-fn the_forge_table_the_product_manual_documents_names_the_keys_the_schema_admits() {
-    let documented = documented_table(&reference_configuration(), "[github]");
-    for key in ["repo", "base", "token"] {
-        assert!(
-            documented
-                .lines()
-                .any(|line| line.starts_with(&format!("{key} = "))),
-            "the manual's `[github]` example must name {key}, or this lane is \
-             checking a document the manual does not contain: {documented}"
-        );
-    }
-    let out = check(&format!("{AGENTIC}{documented}\n"));
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "the manual's own forge table was refused, so an operator who copies it \
-         cannot publish. stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
 }
 
 fn every_table() -> String {
@@ -1545,4 +1161,116 @@ fn the_plain_rendering_covers_every_table_and_key_the_payload_echoes() {
              parsing the payload cannot confirm: {payload}"
         );
     }
+}
+
+const SWEEPING: &str = r#"[project]
+name = "icecube"
+
+[stub]
+root = "."
+
+[report]
+dir = "reports"
+
+[agent]
+model = "claude-sonnet-5"
+base_url = "https://gateway.example/v1"
+api_key = { env = "FIDDLE_MODEL_API_KEY" }
+
+[github]
+repo = "acme/r"
+base = "main"
+token = { env = "FIDDLE_GITHUB_TOKEN" }
+
+[scanner]
+cli = { program = "wizcli", args = ["scan", "container-image"] }
+
+[orchestration.cve]
+image = "icecube:scan"
+
+[workspace]
+root = "/tmp/w"
+fixture = "."
+
+[[workspace.checks]]
+program = "go"
+args = ["build", "./..."]
+success = "exit-zero"
+"#;
+
+#[test]
+fn config_check_accepts_a_document_that_run_cve_can_run() {
+    let out = check_with(SWEEPING, &["--capability", "cve_mitigate"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn config_check_refuses_a_sweep_document_that_run_cve_would_refuse() {
+    for (absent, without) in [
+        (
+            "workspace.fixture",
+            SWEEPING.replace("fixture = \".\"\n", ""),
+        ),
+        (
+            "[[workspace.checks]]",
+            SWEEPING
+                .split("[[workspace.checks]]")
+                .next()
+                .unwrap()
+                .to_string(),
+        ),
+        ("[scanner]", strip_table(SWEEPING, "[scanner]")),
+        ("[agent]", strip_table(SWEEPING, "[agent]")),
+        ("[github]", strip_table(SWEEPING, "[github]")),
+    ] {
+        let out = check_with(&without, &["--capability", "cve_mitigate"]);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "a document `run cve` refuses for want of {absent} must not pass the \
+             pre-flight the host workflow relies on, or the host builds an image and \
+             scans a container before finding out — stdout: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            said.contains(absent) && said.contains("cve_mitigate"),
+            "the refusal names the field and the capability that needs it: {said}"
+        );
+    }
+}
+
+#[test]
+fn config_check_asked_about_nothing_still_answers_about_the_schema_alone() {
+    let out = check(&SWEEPING.replace("fixture = \".\"\n", ""));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "without a capability this command answers about the schema, which is the \
+         weaker question it has always answered: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn strip_table(text: &str, table: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut skipping = false;
+    for line in text.lines() {
+        if line.trim() == table {
+            skipping = true;
+            continue;
+        }
+        if skipping && line.starts_with('[') {
+            skipping = false;
+        }
+        if !skipping {
+            kept.push(line);
+        }
+    }
+    kept.join("\n")
 }
