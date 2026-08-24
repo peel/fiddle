@@ -131,7 +131,10 @@ fn already_failing_sentence(excused: &[String]) -> String {
     format!(
         "\n\nThese checks already failed on this project before you changed anything: {}. \
          They are not yours to fix, and this run does not hold them against you. Leave them \
-         alone and do not report them.",
+         alone and do not report them.\n\nOne of them failing still stops this work being \
+         published. If a person above has told this run to go ahead in spite of a failing \
+         check, copy their sentence into `quoted_from_a_comment`. That is the only way \
+         their decision reaches the part of this run that publishes.",
         listed(excused)
     )
 }
@@ -1545,6 +1548,27 @@ mod tests {
             crate::agent::denies_an_ability(MIGRATION_PREAMBLE),
             Vec::<String>::new(),
             "this brief runs against the same tool set: {MIGRATION_PREAMBLE}"
+        );
+    }
+
+    #[test]
+    fn a_check_the_agent_must_ignore_still_says_how_direction_reaches_the_run() {
+        let named = already_failing_sentence(&["./policy.sh".to_string()]);
+
+        assert!(
+            named.contains("not yours to fix"),
+            "the agent is still told to leave it alone: {named}"
+        );
+        assert!(
+            named.contains("`quoted_from_a_comment`"),
+            "and told how a person's decision about it reaches the part of the run that \
+             publishes, because the agent does not publish and has no other reason to \
+             connect the two: {named}"
+        );
+        assert_eq!(
+            already_failing_sentence(&[]),
+            "",
+            "a project with nothing failing is told nothing about it"
         );
     }
 
