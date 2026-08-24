@@ -1753,3 +1753,50 @@ ADR 050 made `agent::provider_fault` quote the provider's body with the resolved
 
 Origin: implementation (bean `fiddle-zjea`, lane `lane/m4b-zjea`)
 Tags: #debt #security
+
+### 2026-08-25 — A guard written for the repair path fires on a path it was not written for
+
+Three times in one day a rule that protects the repair path destroyed good work on a
+path that rule had never seen.
+
+- The declaration rule ended the attempt on a report that declared without changing.
+  Now the report is returned to the model, bounded (ADR 053, ADR 055).
+- The citation rule refused the whole attempt when the model wrote its own summary
+  into the field meant for a person's sentence. Now an unmatched citation is dropped
+  and reported (`fiddle-5xse`).
+- The accounting rule refused an attempt that named an advisory it had not been shown,
+  which is what a review asking it to name the advisory produces. Now nothing shown
+  means nothing to account for.
+
+The shape is the same each time: the rule is right about the path it was written for,
+the new path satisfies its precondition by accident, and the penalty is the whole
+attempt. A rule that can end an attempt should name the path it judges.
+
+Origin: implementation (`peel/fiddle-test` runs 32751540363, 32776054662)
+Tags: #debt #agent
+
+### 2026-08-25 — The brief and the code disagreed three times, and the prose won
+
+ADR 057 (a brief claiming the fix was applied), ADR 064 (a brief teaching an argv
+shape the tool refused) and `fiddle-3c2f` (a brief naming a report field that had been
+renamed) are one defect three times. The model reads the prose, so the prose decides.
+
+`the_brief_names_the_report_field_the_schema_carries` derives the field name from
+`RepairReport`'s own schema rather than repeating it, which is the only one of the
+three that cannot drift again. The other two are still prose asserted by prose.
+
+Origin: implementation (`peel/fiddle-test` run 32760895519)
+Tags: #debt #agent
+
+### 2026-08-25 — A testbed that is easier to run is easier to pass
+
+`peel/fiddle-test` found defects `snowplow-identities` could not: the review path, the
+citation rule, the review-only brief. It could not find the one that mattered most to
+the real deployment — no search tool — because its `go.sum` is a few lines while the
+real one is 985 (ADR 071).
+
+Neither repository is sufficient. The small one exercises the loop; the large one
+exercises the scale. A defect that needs both is invisible to each.
+
+Origin: implementation (`snowplow-identities` run 32765904429)
+Tags: #testing
