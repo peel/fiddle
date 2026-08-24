@@ -511,6 +511,7 @@ where
                 .filter(|it| !it.is_bot)
                 .map(|it| HumanSaid {
                     author: it.author.login,
+                    entitled: crate::capability::entitled(&it.author_association),
                     body: it.body,
                 })
                 .collect(),
