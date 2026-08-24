@@ -296,8 +296,11 @@ where
 
         let mut said = self.conversation(&approved).await;
         said.extend(self.conversation(&unproved).await);
-        let mut asked = self.reviews(&approved).await;
-        asked.extend(self.reviews(&unproved).await);
+        let (mut asked, reviewed) = self.reviews(&approved).await;
+        said.extend(reviewed);
+        let (also_asked, also_reviewed) = self.reviews(&unproved).await;
+        asked.extend(also_asked);
+        said.extend(also_reviewed);
 
         let spent = counted.as_ref().map_or(0, |it| it.spent);
         let mut ignored_citation: Option<String> = None;
@@ -501,9 +504,9 @@ where
         }
     }
 
-    async fn reviews(&self, approved: &Approved) -> Vec<ChangesRequested> {
+    async fn reviews(&self, approved: &Approved) -> (Vec<ChangesRequested>, Vec<HumanSaid>) {
         let Some(number) = approved.reused() else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let read = crate::github::read_reviews(
             &self.context.gh,
@@ -513,22 +516,35 @@ where
             &self.config.cancel,
         )
         .await;
-        match read {
-            Ok(reviews) => reviews
-                .into_iter()
-                .filter(|it| {
-                    it.state
-                        .eq_ignore_ascii_case(crate::github::CHANGES_REQUESTED)
-                        && crate::capability::entitled(&it.author_association)
-                        && !it.body.trim().is_empty()
-                })
-                .map(|it| ChangesRequested {
-                    author: it.author.login,
-                    body: it.body,
-                })
-                .collect(),
-            Err(_) => Vec::new(),
-        }
+        let Ok(reviews) = read else {
+            return (Vec::new(), Vec::new());
+        };
+        let spoken: Vec<_> = reviews
+            .into_iter()
+            .filter(|it| !it.body.trim().is_empty())
+            .collect();
+        let asks = |it: &crate::github::Reviewed| {
+            it.state
+                .eq_ignore_ascii_case(crate::github::CHANGES_REQUESTED)
+        };
+        let asked = spoken
+            .iter()
+            .filter(|it| asks(it) && crate::capability::entitled(&it.author_association))
+            .map(|it| ChangesRequested {
+                author: it.author.login.clone(),
+                body: it.body.clone(),
+            })
+            .collect();
+        let said = spoken
+            .iter()
+            .filter(|it| !asks(it))
+            .map(|it| HumanSaid {
+                author: it.author.login.clone(),
+                body: it.body.clone(),
+                entitled: crate::capability::entitled(&it.author_association),
+            })
+            .collect();
+        (asked, said)
     }
 
     async fn conversation(&self, approved: &Approved) -> Vec<HumanSaid> {

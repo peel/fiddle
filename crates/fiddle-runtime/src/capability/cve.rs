@@ -1743,6 +1743,28 @@ mod direction {
     }
 
     #[test]
+    fn an_approval_carries_direction_through_its_words_and_not_its_state() {
+        let sentence = "the policy sign-off is recorded, publish this";
+
+        let wrote_it = vec![HumanSaid {
+            author: "peel".to_string(),
+            body: sentence.to_string(),
+            entitled: true,
+        }];
+        assert!(
+            Followed::quoted(&wrote_it, sentence).is_some(),
+            "an approving review that says why is the sign-off a policy gate asks for"
+        );
+
+        let said_nothing: Vec<HumanSaid> = Vec::new();
+        assert_eq!(
+            Followed::quoted(&said_nothing, sentence),
+            None,
+            "a bare approval waives nothing, because there is no sentence to quote"
+        );
+    }
+
+    #[test]
     fn a_project_with_no_review_gets_no_review_section() {
         let brief = migration_task(&[&a_finding()], None, &[], &[]);
 
