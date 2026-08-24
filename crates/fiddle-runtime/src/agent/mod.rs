@@ -169,8 +169,11 @@ pub struct RepairReport {
     #[serde(default)]
     pub findings: Vec<FindingDisposition>,
 
+    /// Leave this out unless a person on the pull request told you to do
+    /// something a check disagrees with. Then copy the sentence they wrote,
+    /// word for word. This is not a summary of your own work.
     #[serde(default)]
-    pub direction: Option<String>,
+    pub quoted_from_a_comment: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]

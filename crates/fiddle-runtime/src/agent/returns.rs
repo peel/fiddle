@@ -266,7 +266,7 @@ mod tests {
                     note: "bumped it".to_string(),
                 })
                 .collect(),
-            direction: None,
+            quoted_from_a_comment: None,
         }
     }
 

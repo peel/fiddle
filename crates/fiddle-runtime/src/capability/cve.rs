@@ -1674,6 +1674,27 @@ mod direction {
     }
 
     #[test]
+    fn a_citation_nobody_wrote_costs_the_citation_and_not_the_repair() {
+        let said = vec![HumanSaid {
+            author: "peel".to_string(),
+            body: "looks fine".to_string(),
+            entitled: true,
+        }];
+
+        assert_eq!(
+            Followed::quoted(&said, "Bumped jwt/v4 from 4.5.0 to 4.5.2 to clear the CVE."),
+            None,
+            "a model that writes its own summary here has cited nothing, and the run has \
+             to be able to carry on without it"
+        );
+        assert_eq!(
+            Followed::quoted(&said, "looks fine").map(|it| it.author),
+            Some("peel".to_string()),
+            "and a real citation still carries its author"
+        );
+    }
+
+    #[test]
     fn the_associations_that_speak_for_a_project_are_named() {
         for association in ["OWNER", "MEMBER", "COLLABORATOR", "collaborator"] {
             assert!(

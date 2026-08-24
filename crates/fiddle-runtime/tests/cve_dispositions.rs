@@ -358,7 +358,7 @@ fn attempted_group(cve: &str, status: GroupStatus, claimed_complete: bool) -> At
                     attempted: true,
                     note: "bumped it".to_string(),
                 }],
-                direction: None,
+                quoted_from_a_comment: None,
             },
             changed: vec![WorkspacePath::parse("go.mod").expect("a workspace-relative path")],
             undeclared: None,

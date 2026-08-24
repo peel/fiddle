@@ -22,6 +22,9 @@ pub enum CompleteFindings {
 
         #[serde(skip_serializing_if = "Option::is_none")]
         checks_unsettled: Option<String>,
+
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ignored_citation: Option<String>,
     },
 
     Unusable {
@@ -42,6 +45,7 @@ impl CompleteFindings {
             os_packages: projection.os_arm(),
             findings,
             checks_unsettled: run.checks_unsettled.clone(),
+            ignored_citation: run.ignored_citation.clone(),
         }
     }
 
@@ -135,6 +139,8 @@ pub struct Run {
     pub checks_unreadable: Option<String>,
 
     pub checks_unsettled: Option<String>,
+
+    pub ignored_citation: Option<String>,
 }
 
 impl Run {
@@ -150,6 +156,7 @@ impl Run {
             bound_reached: None,
             checks_unreadable: None,
             checks_unsettled: None,
+            ignored_citation: None,
         }
     }
 
@@ -165,6 +172,7 @@ impl Run {
             bound_reached: None,
             checks_unreadable: None,
             checks_unsettled: None,
+            ignored_citation: None,
         }
     }
 

@@ -297,6 +297,7 @@ where
         let said = self.conversation(&approved).await;
 
         let spent = counted.as_ref().map_or(0, |it| it.spent);
+        let mut ignored_citation: Option<String> = None;
         let mut settled: Vec<AdvisoryId> = Vec::new();
         let mut attempted: Vec<Attempted> = Vec::new();
         let mut judged = None;
@@ -308,17 +309,13 @@ where
             let evaluation = self
                 .judge(&workspace, &taken, &projection, &report, &baseline.failed)
                 .await?;
-            let followed = attempt
-                .report
-                .direction
-                .as_deref()
-                .and_then(|sentence| Followed::quoted(&said, sentence));
-            if let Some(claimed) = attempt.report.direction.as_deref() {
-                if followed.is_none() {
-                    return Err(CapabilityError::Agent(crate::agent::AgentError::Protocol {
-                        reason: format!("the report followed direction nobody wrote: {claimed:?}"),
-                    }));
-                }
+            let cited = attempt.report.quoted_from_a_comment.as_deref();
+            let followed = cited.and_then(|sentence| Followed::quoted(&said, sentence));
+            if let (Some(claimed), None) = (cited, followed.as_ref()) {
+                ignored_citation = Some(format!(
+                    "the report cited direction that nobody who speaks for this project \
+                     wrote, so it was ignored and the attempt stands on its own: {claimed:?}"
+                ));
             }
             let status =
                 GroupStatus::of(&evaluation, attempt.undeclared.as_ref(), followed.as_ref());
@@ -393,6 +390,7 @@ where
         run.landed = landed;
         run.judged = judged;
         run.checks_unsettled = unsettled;
+        run.ignored_citation = ignored_citation;
         Ok((run, None))
     }
 
@@ -1001,7 +999,7 @@ mod body {
                         attempted: true,
                         note: "Upgraded jwt/v4 from v4.5.0 to v4.5.2.".to_string(),
                     }],
-                    direction: None,
+                    quoted_from_a_comment: None,
                 },
                 changed: changed
                     .iter()
