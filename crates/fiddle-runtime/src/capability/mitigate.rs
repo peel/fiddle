@@ -405,6 +405,8 @@ where
         run.judged = judged;
         run.checks_unsettled = unsettled;
         run.ignored_citation = ignored_citation;
+        run.checks_already_failing = baseline.failed.clone();
+        run.checks_already_passing = baseline.passed.clone();
         Ok((run, None))
     }
 

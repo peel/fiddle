@@ -25,6 +25,12 @@ pub enum CompleteFindings {
 
         #[serde(skip_serializing_if = "Option::is_none")]
         ignored_citation: Option<String>,
+
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        checks_already_failing: Vec<String>,
+
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        checks_already_passing: Vec<String>,
     },
 
     Unusable {
@@ -46,6 +52,8 @@ impl CompleteFindings {
             findings,
             checks_unsettled: run.checks_unsettled.clone(),
             ignored_citation: run.ignored_citation.clone(),
+            checks_already_failing: run.checks_already_failing.clone(),
+            checks_already_passing: run.checks_already_passing.clone(),
         }
     }
 
@@ -141,6 +149,10 @@ pub struct Run {
     pub checks_unsettled: Option<String>,
 
     pub ignored_citation: Option<String>,
+
+    pub checks_already_failing: Vec<String>,
+
+    pub checks_already_passing: Vec<String>,
 }
 
 impl Run {
@@ -157,6 +169,8 @@ impl Run {
             checks_unreadable: None,
             checks_unsettled: None,
             ignored_citation: None,
+            checks_already_failing: Vec::new(),
+            checks_already_passing: Vec::new(),
         }
     }
 
@@ -173,6 +187,8 @@ impl Run {
             checks_unreadable: None,
             checks_unsettled: None,
             ignored_citation: None,
+            checks_already_failing: Vec::new(),
+            checks_already_passing: Vec::new(),
         }
     }
 

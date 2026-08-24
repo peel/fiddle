@@ -3780,3 +3780,36 @@ fn a_derived_file_a_declared_command_wrote_is_a_breach_when_the_attempt_omits_it
         "the draft a person judges is the branch the attempt pushed: {judged}"
     );
 }
+
+#[test]
+fn the_findings_report_names_the_checks_the_tree_already_passed() {
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
+
+    let run = sweep.run();
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let scanned = sweep.complete_findings()["scanned"].clone();
+    let passing = scanned["checks_already_passing"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    assert!(
+        !passing.is_empty(),
+        "the report has to say which checks were passing before the attempt, or a check \
+         that is merely flaky reads as a check the attempt broke: {scanned}"
+    );
+    assert!(
+        scanned["checks_already_failing"].is_null()
+            || scanned["checks_already_failing"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+        "this world's tree passes every check, so nothing is reported as already \
+         failing: {scanned}"
+    );
+}
