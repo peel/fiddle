@@ -10,7 +10,10 @@ pub use checks::{
     CheckState, EnsureCheckRequested, GenuineFailure, Settlement, WorkflowRun,
 };
 pub use cli::{GhCli, GhError, GhResponse, RetryAdvice};
-pub use comments::{read_conversation, read_one_comment, HumanResponse};
+pub use comments::{
+    read_conversation, read_line_comments, read_one_comment, read_reviews, Annotated,
+    HumanResponse, Reviewed, CHANGES_REQUESTED,
+};
 pub use pulls::{
     find_labelled_pull_request, pull_request_body_target, pull_request_target,
     read_pull_request_body, EnsurePullRequest, EnsurePullRequestBody, PullRequest, PullRequestBody,

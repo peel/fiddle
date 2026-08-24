@@ -68,6 +68,12 @@ what they say over what a check says, and when you do, quote the sentence you \
 followed in `direction` exactly as it is written above. A sentence nobody wrote \
 refuses the whole attempt.";
 
+const REVIEW_FRAME: &str = "\
+A person reviewed this pull request and asked for changes, which stops it being \
+merged until it is answered. Here is what they asked, in their words. This is \
+work to do, not permission to leave a check failing. Answer it in the change you \
+make.";
+
 const FEEDBACK_FRAME: &str = "\
 An earlier attempt on this project is already open, and the forge reports that \
 its checks failed on the commit named below. Here is what the forge reports, \
@@ -142,6 +148,20 @@ fn already_passing_sentence(passing: &[String]) -> String {
     )
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChangesRequested {
+    pub author: String,
+    pub body: String,
+}
+
+fn review_task(asked: &[ChangesRequested]) -> String {
+    let quoted: Vec<String> = asked
+        .iter()
+        .map(|it| format!("{} asked for changes:\n{}", it.author, it.body.trim()))
+        .collect();
+    format!("{REVIEW_FRAME}\n\n{}", quoted.join("\n\n"))
+}
+
 fn conversation_task(said: &[HumanSaid]) -> String {
     let quoted: Vec<String> = said
         .iter()
@@ -163,11 +183,15 @@ fn migration_task(
     findings: &[&ProjectedFinding],
     failure: Option<&GenuineFailure>,
     said: &[HumanSaid],
+    asked: &[ChangesRequested],
 ) -> String {
     let rendered: Vec<String> = findings.iter().map(|finding| render(finding)).collect();
     let mut sections = vec![FINDINGS_FRAME.to_string(), rendered.join("\n")];
     if let Some(failure) = failure {
         sections.push(feedback_task(failure));
+    }
+    if !asked.is_empty() {
+        sections.push(review_task(asked));
     }
     if !said.is_empty() {
         sections.push(conversation_task(said));
@@ -451,11 +475,12 @@ where
         failure: Option<&GenuineFailure>,
         baseline: &crate::evaluate::Baseline,
         said: &[HumanSaid],
+        asked: &[ChangesRequested],
     ) -> Result<MigrationAttempt, CapabilityError> {
         let findings: Vec<&ProjectedFinding> = findings.iter().collect();
         let task = format!(
             "{}{}{}",
-            migration_task(&findings, failure, said),
+            migration_task(&findings, failure, said, asked),
             already_failing_sentence(&baseline.failed),
             already_passing_sentence(&baseline.passed)
         );
@@ -1351,7 +1376,7 @@ mod tests {
 
     #[test]
     fn the_rendering_carries_all_six_fields_of_a_finding() {
-        let task = migration_task(&[&finding()], None, &[]);
+        let task = migration_task(&[&finding()], None, &[], &[]);
         for expected in [
             "CVE-2026-4242",
             "golang.org/x/text",
@@ -1375,7 +1400,7 @@ mod tests {
         blank.fixed_version = Some("  ".to_string());
 
         for finding in [unfixed, blank] {
-            let task = migration_task(&[&finding], None, &[]);
+            let task = migration_task(&[&finding], None, &[], &[]);
             assert!(
                 task.contains("no published fix"),
                 "an unfixed finding must not render an empty version: {task}"
@@ -1502,7 +1527,7 @@ mod tests {
 
     #[test]
     fn the_composition_carries_the_scope_rules_and_no_mechanical_rule() {
-        let task = migration_task(&[&finding()], None, &[]);
+        let task = migration_task(&[&finding()], None, &[], &[]);
         for rule in ["refuses the whole attempt", "report it as not attempted"] {
             assert!(task.contains(rule), "`{rule}` is a scope rule: {task}");
         }
@@ -1555,7 +1580,7 @@ mod tests {
             severity: Severity::High,
             package_type: PackageType::Library,
         };
-        let brief = migration_task(&[&finding], None, &[]);
+        let brief = migration_task(&[&finding], None, &[], &[]);
 
         for claim in [
             "already been applied",
@@ -1594,7 +1619,7 @@ mod tests {
         };
         let prompt = format!(
             "{MIGRATION_PREAMBLE}\n\n{}",
-            migration_task(&[&elsewhere], None, &[])
+            migration_task(&[&elsewhere], None, &[], &[])
         );
 
         for word in [
@@ -1628,6 +1653,18 @@ mod tests {
 #[cfg(test)]
 mod direction {
     use super::*;
+    use fiddle_core::{PackageType, Severity};
+
+    fn a_finding() -> ProjectedFinding {
+        ProjectedFinding {
+            cve: AdvisoryId::parse("CVE-2026-4242").expect("a canonical advisory id"),
+            package: "example.com/m".to_string(),
+            current: "1.0.0".to_string(),
+            fixed_version: Some("1.0.1".to_string()),
+            severity: Severity::High,
+            package_type: PackageType::Library,
+        }
+    }
 
     fn said() -> Vec<HumanSaid> {
         vec![
@@ -1670,6 +1707,48 @@ mod direction {
             Followed::quoted(&owner, sentence).map(|it| it.author),
             Some("peel".to_string()),
             "and somebody who speaks for the project is followed"
+        );
+    }
+
+    #[test]
+    fn a_review_asking_for_changes_is_work_and_not_permission() {
+        let asked = vec![ChangesRequested {
+            author: "peel".to_string(),
+            body: "pin the transitive dependency too, or this lands half done".to_string(),
+        }];
+        let brief = migration_task(&[&a_finding()], None, &[], &asked);
+
+        assert!(
+            brief.contains("pin the transitive dependency too"),
+            "the reviewer's words reach the agent: {brief}"
+        );
+        assert!(
+            brief.contains("work to do, not permission to leave a check failing"),
+            "and they are framed as work, because a person asking for changes is not \
+             waiving a check: {brief}"
+        );
+        assert!(
+            Followed::quoted(
+                &[HumanSaid {
+                    author: "peel".to_string(),
+                    body: asked[0].body.clone(),
+                    entitled: true,
+                }],
+                "pin the transitive dependency too"
+            )
+            .is_some(),
+            "a sentence in the conversation is still quotable, so the two surfaces stay \
+             separate rather than one becoming the other"
+        );
+    }
+
+    #[test]
+    fn a_project_with_no_review_gets_no_review_section() {
+        let brief = migration_task(&[&a_finding()], None, &[], &[]);
+
+        assert!(
+            !brief.contains("asked for changes"),
+            "nothing invents a reviewer: {brief}"
         );
     }
 

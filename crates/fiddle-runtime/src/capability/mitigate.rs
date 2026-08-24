@@ -1,8 +1,8 @@
 use super::cve::{
     check_out, land, plan_shared_pull_request, plan_unproved_pull_request, publish_work,
-    unproved_summary, Approved, Checkout, FailedCheck, Followed, Git, GroupMigration, GroupStatus,
-    HumanSaid, InRepository, InWorktree, Landed, MigrationConfig, PlanError, Publication,
-    SharedWork, Unproved, CVE_LABEL, UNPROVED_LABEL,
+    unproved_summary, Approved, ChangesRequested, Checkout, FailedCheck, Followed, Git,
+    GroupMigration, GroupStatus, HumanSaid, InRepository, InWorktree, Landed, MigrationConfig,
+    PlanError, Publication, SharedWork, Unproved, CVE_LABEL, UNPROVED_LABEL,
 };
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::{AgentBudget, Transcripts};
@@ -296,6 +296,8 @@ where
 
         let mut said = self.conversation(&approved).await;
         said.extend(self.conversation(&unproved).await);
+        let mut asked = self.reviews(&approved).await;
+        asked.extend(self.reviews(&unproved).await);
 
         let spent = counted.as_ref().map_or(0, |it| it.spent);
         let mut ignored_citation: Option<String> = None;
@@ -305,7 +307,14 @@ where
         if feedback.attempts_afresh() && !taken.is_empty() {
             let attempt = self
                 .migration
-                .migrate(&workspace, &taken, feedback.blamed(), &baseline, &said)
+                .migrate(
+                    &workspace,
+                    &taken,
+                    feedback.blamed(),
+                    &baseline,
+                    &said,
+                    &asked,
+                )
                 .await?;
             let evaluation = self
                 .judge(&workspace, &taken, &projection, &report, &baseline.failed)
@@ -489,6 +498,36 @@ where
                 _ = self.config.cancel.cancelled() => return feedback,
                 _ = tokio::time::sleep(SETTLE_POLL) => {}
             }
+        }
+    }
+
+    async fn reviews(&self, approved: &Approved) -> Vec<ChangesRequested> {
+        let Some(number) = approved.reused() else {
+            return Vec::new();
+        };
+        let read = crate::github::read_reviews(
+            &self.context.gh,
+            &self.config.repo,
+            number,
+            crate::human::CONVERSATION_PAGES,
+            &self.config.cancel,
+        )
+        .await;
+        match read {
+            Ok(reviews) => reviews
+                .into_iter()
+                .filter(|it| {
+                    it.state
+                        .eq_ignore_ascii_case(crate::github::CHANGES_REQUESTED)
+                        && crate::capability::entitled(&it.author_association)
+                        && !it.body.trim().is_empty()
+                })
+                .map(|it| ChangesRequested {
+                    author: it.author.login,
+                    body: it.body,
+                })
+                .collect(),
+            Err(_) => Vec::new(),
         }
     }
 

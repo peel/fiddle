@@ -52,6 +52,111 @@ impl From<ListedComment> for HumanResponse {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Reviewed {
+    pub author: ActorRef,
+    pub author_association: String,
+    pub state: String,
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListedReview {
+    body: Option<String>,
+    state: String,
+    author_association: String,
+    user: ListedUser,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Annotated {
+    pub author: ActorRef,
+    pub author_association: String,
+    pub path: String,
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListedAnnotation {
+    body: String,
+    path: String,
+    author_association: String,
+    user: ListedUser,
+}
+
+pub const CHANGES_REQUESTED: &str = "CHANGES_REQUESTED";
+
+pub async fn read_reviews(
+    gh: &GhCli,
+    repo: &str,
+    pr: u64,
+    max_pages: u32,
+    cancel: &CancellationToken,
+) -> Result<Vec<Reviewed>, GhError> {
+    let mut reviews = Vec::new();
+    for page in 1..=max_pages {
+        let path = format!("/repos/{repo}/pulls/{pr}/reviews?per_page={PER_PAGE}&page={page}");
+        let response = gh.api("GET", &path, None, cancel).await?;
+        let more = has_a_next_page(response.link.as_deref());
+        let listed: Vec<ListedReview> = serde_json::from_value(response.body).map_err(|error| {
+            GhError::Malformed(format!(
+                "{path} answered something that is not a list of reviews: {error}"
+            ))
+        })?;
+        reviews.extend(listed.into_iter().map(|it| Reviewed {
+            author: ActorRef {
+                login: it.user.login,
+                id: it.user.id,
+            },
+            author_association: it.author_association,
+            state: it.state,
+            body: it.body.unwrap_or_default(),
+        }));
+        if !more {
+            return Ok(reviews);
+        }
+    }
+    Err(GhError::Malformed(format!(
+        "the reviews of {repo}#{pr} run to more than {max_pages} pages and were not read"
+    )))
+}
+
+pub async fn read_line_comments(
+    gh: &GhCli,
+    repo: &str,
+    pr: u64,
+    max_pages: u32,
+    cancel: &CancellationToken,
+) -> Result<Vec<Annotated>, GhError> {
+    let mut annotations = Vec::new();
+    for page in 1..=max_pages {
+        let path = format!("/repos/{repo}/pulls/{pr}/comments?per_page={PER_PAGE}&page={page}");
+        let response = gh.api("GET", &path, None, cancel).await?;
+        let more = has_a_next_page(response.link.as_deref());
+        let listed: Vec<ListedAnnotation> =
+            serde_json::from_value(response.body).map_err(|error| {
+                GhError::Malformed(format!(
+                    "{path} answered something that is not a list of line comments: {error}"
+                ))
+            })?;
+        annotations.extend(listed.into_iter().map(|it| Annotated {
+            author: ActorRef {
+                login: it.user.login,
+                id: it.user.id,
+            },
+            author_association: it.author_association,
+            path: it.path,
+            body: it.body,
+        }));
+        if !more {
+            return Ok(annotations);
+        }
+    }
+    Err(GhError::Malformed(format!(
+        "the line comments of {repo}#{pr} run to more than {max_pages} pages and were not read"
+    )))
+}
+
 pub async fn read_conversation(
     gh: &GhCli,
     repo: &str,

@@ -244,6 +244,7 @@ async fn run_migration(
             None,
             &Default::default(),
             &[],
+            &[],
         )
         .await
 }
@@ -442,6 +443,7 @@ async fn the_attempt_really_edits_the_tree_through_the_tools() {
             None,
             &Default::default(),
             &[],
+            &[],
         )
         .await
         .expect("a scripted migration completes");
@@ -504,6 +506,7 @@ async fn run_recorded(
             None,
             &Default::default(),
             &[],
+            &[],
         )
         .await
 }
@@ -521,6 +524,7 @@ async fn run_with_turns(
             &world.findings,
             None,
             &Default::default(),
+            &[],
             &[],
         )
         .await
@@ -1349,7 +1353,14 @@ async fn what_the_run_changed_before_briefing_is_excused_and_nothing_beside_it_i
         script.push(MockTurn::text(DISOWNS_ITS_EDIT));
     }
     let attempt = GroupMigration::new(MockCompletionModel::new(script), world.config())
-        .migrate(&workspace, &world.findings, None, &Default::default(), &[])
+        .migrate(
+            &workspace,
+            &world.findings,
+            None,
+            &Default::default(),
+            &[],
+            &[],
+        )
         .await
         .expect("a scripted migration completes");
 
