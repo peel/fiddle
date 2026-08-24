@@ -58,6 +58,7 @@ pub struct Reviewed {
     pub author_association: String,
     pub state: String,
     pub body: String,
+    pub commit_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +67,8 @@ struct ListedReview {
     state: String,
     author_association: String,
     user: ListedUser,
+    #[serde(default)]
+    commit_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -111,6 +114,7 @@ pub async fn read_reviews(
             author_association: it.author_association,
             state: it.state,
             body: it.body.unwrap_or_default(),
+            commit_id: it.commit_id.unwrap_or_default(),
         }));
         if !more {
             return Ok(reviews);

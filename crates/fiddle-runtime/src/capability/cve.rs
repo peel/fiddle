@@ -1735,6 +1735,36 @@ mod direction {
     }
 
     #[test]
+    fn a_review_is_outstanding_only_against_the_head_it_was_written_on() {
+        use crate::github::Reviewed;
+        use fiddle_core::ActorRef;
+
+        let review = |commit: &str| Reviewed {
+            author: ActorRef {
+                login: "peel".to_string(),
+                id: 1,
+            },
+            author_association: "OWNER".to_string(),
+            state: crate::github::CHANGES_REQUESTED.to_string(),
+            body: "bump the transitive one too".to_string(),
+            commit_id: commit.to_string(),
+        };
+
+        let head = "abc123";
+        assert_eq!(
+            review(head).commit_id,
+            head,
+            "a review written on the head is unanswered, so it is a reason to attempt"
+        );
+        assert_ne!(
+            review("older").commit_id,
+            head,
+            "and one written on an older commit has been answered by the push since, so \
+             it must not start a run every night for ever"
+        );
+    }
+
+    #[test]
     fn a_review_asking_for_changes_is_work_and_not_permission() {
         let asked = vec![ChangesRequested {
             author: "peel".to_string(),

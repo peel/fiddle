@@ -307,7 +307,8 @@ where
         let mut settled: Vec<AdvisoryId> = Vec::new();
         let mut attempted: Vec<Attempted> = Vec::new();
         let mut judged = None;
-        if feedback.attempts_afresh() && !taken.is_empty() {
+        let answering = !asked.is_empty();
+        if (feedback.attempts_afresh() && !taken.is_empty()) || answering {
             let attempt = self
                 .migration
                 .migrate(
@@ -508,6 +509,7 @@ where
         let Some(number) = approved.reused() else {
             return (Vec::new(), Vec::new());
         };
+        let head = approved.pr_head().unwrap_or_default().to_string();
         let read = crate::github::read_reviews(
             &self.context.gh,
             &self.config.repo,
@@ -529,7 +531,11 @@ where
         };
         let asked = spoken
             .iter()
-            .filter(|it| asks(it) && crate::capability::entitled(&it.author_association))
+            .filter(|it| {
+                asks(it)
+                    && crate::capability::entitled(&it.author_association)
+                    && it.commit_id == head
+            })
             .map(|it| ChangesRequested {
                 author: it.author.login.clone(),
                 body: it.body.clone(),
