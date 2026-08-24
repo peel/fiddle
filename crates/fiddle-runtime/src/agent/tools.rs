@@ -519,6 +519,158 @@ impl Tool for ListFiles {
     }
 }
 
+pub const MATCH_CAP: usize = 200;
+
+pub struct SearchFiles;
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SearchFilesArgs {
+    pub text: String,
+
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Found {
+    pub matches: Vec<Match>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub withheld: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Match {
+    pub path: String,
+    pub line: usize,
+    pub text: String,
+}
+
+impl Tool for SearchFiles {
+    const NAME: &'static str = "search_files";
+    type Args = SearchFilesArgs;
+    type Output = Found;
+    type Error = ToolError;
+
+    fn description(&self) -> String {
+        format!(
+            "Find where text appears in the project you are repairing. Give the text to \
+             look for, and it answers with the path, the line number and the line, for \
+             every line that holds it. The text is matched as it is written, not as a \
+             pattern. Give `path` to search one file or one directory. At most \
+             {MATCH_CAP} matches and {RESULT_CAP_BYTES} bytes come back, and a search \
+             that found more carries a `withheld` sentence saying so. Use this before \
+             reading a long file: reading a file to find a line in it costs a turn for \
+             every page."
+        )
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "The text to look for, matched as written."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "A file or directory to search, relative to the project. \
+                                    Leave it out to search the whole project."
+                }
+            },
+            "required": ["text"],
+            "additionalProperties": false
+        })
+    }
+
+    async fn call(&self, ctx: &mut ToolContext, args: SearchFilesArgs) -> Result<Found, ToolError> {
+        let host = ToolHost::from_context(ctx)?;
+        let started = Instant::now();
+        let result = async {
+            host.guard()?;
+            if args.text.is_empty() {
+                return Err(ToolError::ListingRefused {
+                    reason: "an empty text is held by every line, so it names nothing".to_string(),
+                });
+            }
+            let under = match &args.path {
+                Some(path) => Some(parse(path)?),
+                None => None,
+            };
+            let listed = host
+                .workspace
+                .list()
+                .map_err(|source| ToolError::from_workspace("listing the files", source))?;
+
+            let mut matches: Vec<Match> = Vec::new();
+            let mut bytes = 0usize;
+            let mut more = 0usize;
+            for path in listed {
+                if let Some(under) = &under {
+                    let wanted = under.as_str();
+                    if path.as_str() != wanted && !path.as_str().starts_with(&format!("{wanted}/"))
+                    {
+                        continue;
+                    }
+                }
+                let Ok(held) = host.workspace.read(&path) else {
+                    continue;
+                };
+                for (at, line) in held.lines().enumerate() {
+                    if !line.contains(&args.text) {
+                        continue;
+                    }
+                    if matches.len() >= MATCH_CAP || bytes >= RESULT_CAP_BYTES {
+                        more += 1;
+                        continue;
+                    }
+                    let text = bounded_line(line);
+                    bytes += text.len() + path.as_str().len();
+                    matches.push(Match {
+                        path: path.as_str().to_string(),
+                        line: at + 1,
+                        text,
+                    });
+                }
+            }
+
+            let withheld = match (matches.is_empty(), more) {
+                (true, _) => Some(format!(
+                    "no line in the project holds {:?}, so nothing matched it",
+                    args.text
+                )),
+                (false, 0) => None,
+                (false, more) => Some(format!(
+                    "{more} more lines hold this text and were withheld. Search a `path` to \
+                     narrow it."
+                )),
+            };
+            Ok(Found { matches, withheld })
+        }
+        .await;
+        host.recorded(Self::NAME, started, result)
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        error.into_execution_error()
+    }
+}
+
+fn bounded_line(line: &str) -> String {
+    const LINE_CAP: usize = 400;
+    match line.len() > LINE_CAP {
+        false => line.to_string(),
+        true => {
+            let mut cut = LINE_CAP;
+            while cut > 0 && !line.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            format!("{}…", &line[..cut])
+        }
+    }
+}
+
 pub struct RunCheck;
 
 #[derive(Clone, Debug, Serialize)]
@@ -2151,5 +2303,121 @@ pub(crate) mod tests {
         }
         secrets.push("01JQZX0000000000000000000".to_string());
         secrets
+    }
+}
+
+#[cfg(test)]
+mod searching {
+    use super::tests::test_host;
+    use super::*;
+    use rig_agent::tool::{Tool, ToolContext};
+
+    fn looking_for(text: &str, path: Option<&str>) -> SearchFilesArgs {
+        SearchFilesArgs {
+            text: text.to_string(),
+            path: path.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_match_says_which_file_and_which_line() {
+        let (host, _dir) = test_host();
+        host.workspace
+            .write(
+                &crate::workspace::WorkspacePath::parse("go.sum").unwrap(),
+                "a v1\nb v1\ngithub.com/golang-jwt/jwt/v4 v4.5.0 h1:x=\nc v1\n",
+            )
+            .unwrap();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        let found = SearchFiles
+            .call(&mut ctx, looking_for("golang-jwt/jwt/v4", None))
+            .await
+            .expect("a search over a readable project answers");
+
+        assert_eq!(found.matches.len(), 1, "{:?}", found.matches);
+        assert_eq!(found.matches[0].path, "go.sum");
+        assert_eq!(
+            found.matches[0].line, 3,
+            "the line number is what makes this cheaper than reading the file"
+        );
+        assert!(found.matches[0].text.contains("v4.5.0"));
+        assert_eq!(found.withheld, None);
+    }
+
+    #[tokio::test]
+    async fn a_search_that_finds_nothing_says_so_rather_than_answering_with_silence() {
+        let (host, _dir) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        let found = SearchFiles
+            .call(&mut ctx, looking_for("no-such-text-anywhere", None))
+            .await
+            .expect("a search that matches nothing is not a failure");
+
+        assert!(found.matches.is_empty());
+        assert!(
+            found
+                .withheld
+                .as_deref()
+                .is_some_and(|it| it.contains("nothing matched")),
+            "an empty answer and a no-match answer must not look alike: {found:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_text_is_refused_because_every_line_holds_it() {
+        let (host, _dir) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        SearchFiles
+            .call(&mut ctx, looking_for("", None))
+            .await
+            .expect_err("an empty text would match every line of the project");
+    }
+
+    #[tokio::test]
+    async fn more_matches_than_the_cap_are_counted_rather_than_dropped_in_silence() {
+        let (host, _dir) = test_host();
+        let many: String = (0..MATCH_CAP + 25).map(|_| "needle\n").collect();
+        host.workspace
+            .write(
+                &crate::workspace::WorkspacePath::parse("many.txt").unwrap(),
+                &many,
+            )
+            .unwrap();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        let found = SearchFiles
+            .call(&mut ctx, looking_for("needle", Some("many.txt")))
+            .await
+            .expect("a search over one file answers");
+
+        assert_eq!(found.matches.len(), MATCH_CAP);
+        assert!(
+            found
+                .withheld
+                .as_deref()
+                .is_some_and(|it| it.contains("25 more")),
+            "the denominator is reported, so a reader is not shown a partial answer as a \
+             whole one: {:?}",
+            found.withheld
+        );
+    }
+
+    #[tokio::test]
+    async fn a_path_outside_the_project_is_refused() {
+        let (host, _dir) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        SearchFiles
+            .call(&mut ctx, looking_for("anything", Some("../outside")))
+            .await
+            .expect_err("a search must not reach outside the project");
     }
 }

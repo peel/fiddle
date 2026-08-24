@@ -1,7 +1,7 @@
 # 034 — The runtime owns the tool surface, and no host fact leaves it
 
 Status: accepted
-Cites: fiddle_runtime::agent::tools, ToolContext, ToolReceipt, ReadFile::NAME, WriteFile::NAME, ListFiles::NAME, RunCheck::NAME, binary_repair::the_serialized_request_offers_five_tools_and_carries_no_host_fact
+Cites: fiddle_runtime::agent::tools, ToolContext, ToolReceipt, ReadFile::NAME, WriteFile::NAME, ListFiles::NAME, RunCheck::NAME, binary_repair::the_serialized_request_offers_six_tools_and_carries_no_host_fact
 
 ## Context
 

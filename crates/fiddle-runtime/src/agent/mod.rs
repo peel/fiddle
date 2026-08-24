@@ -9,8 +9,9 @@ pub use retry::{RetryingModel, RETRIES};
 pub use returns::{Declarations, Held, LastReturn, ReturnHook, Spent, RETURNS};
 pub use tools::{
     CheckOutcome, EditFile, EditFileArgs, ListFiles, ListFilesArgs, Listing, NoArgs, ReadFile,
-    ReadFileArgs, RunCheck, RunCommand, RunCommandArgs, ToolError, ToolHost, WriteFile,
-    WriteFileArgs, WriteReceipt, NOTE_ALLOWANCE_BYTES, RESULT_CAP_BYTES, STREAM_CAP_BYTES,
+    ReadFileArgs, RunCheck, RunCommand, RunCommandArgs, SearchFiles, ToolError, ToolHost,
+    WriteFile, WriteFileArgs, WriteReceipt, NOTE_ALLOWANCE_BYTES, RESULT_CAP_BYTES,
+    STREAM_CAP_BYTES,
 };
 pub use transcript::{TranscriptHook, TranscriptModel, Transcripts};
 
@@ -348,6 +349,7 @@ where
         .tool(EditFile)
         .tool(WriteFile)
         .tool(ListFiles)
+        .tool(SearchFiles)
         .tool(RunCheck);
     if declares_commands {
         builder = builder.tool(RunCommand);

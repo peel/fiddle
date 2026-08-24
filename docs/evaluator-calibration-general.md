@@ -162,7 +162,7 @@ When this section was first reconciled, no test in the workspace had ever read a
 `MockCompletionModel::requests()` and `request_count()` had zero call sites, and the whole of the
 protocol evidence was `ReadFile.parameters()` and its siblings inspected on the builder — which
 made the Excellent level below unreachable and the Acceptable level a description of nothing. The
-test is `binary_repair::the_serialized_request_offers_five_tools_and_carries_no_host_fact`, and it
+test is `binary_repair::the_serialized_request_offers_six_tools_and_carries_no_host_fact`, and it
 reads the chat-completions bodies the **compiled binary** put on a loopback socket, which is the
 outbound request in the strongest available sense.
 
@@ -993,7 +993,7 @@ What crosses from the scanner into the model, and what must not.
   the contract. A test proves the model-visible payload contains none of the scanner's prose.
 - **Excellent (8–10).** The property is asserted against the **serialized outbound request**, not
   against the builder that produced it, in the same shape as
-  `binary_repair::the_serialized_request_offers_five_tools_and_carries_no_host_fact`: a sentinel string
+  `binary_repair::the_serialized_request_offers_six_tools_and_carries_no_host_fact`: a sentinel string
   planted in an advisory description is searched for in every request body and found in none. The bean
   states that this boundary was previously a `jq` expression in a workflow step and is now typed and
   tested, because that is the milestone's central safety improvement rather than an incidental one.

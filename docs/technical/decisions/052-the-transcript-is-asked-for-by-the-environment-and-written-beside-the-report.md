@@ -65,7 +65,7 @@ The redaction runs on raw text and not on serialized JSON. An assistant text blo
 
 ADR 034 requires every host fact to come from `ToolContext`, and never from a tool's arguments, schema, error text or output. The transcript records tool arguments and tool results, so it records the same bytes that already cross the wire to the provider. It opens no new surface.
 
-`no_host_fact_reaches_the_transcript` asserts it rather than arguing it. It searches the written file for the scenario's own root, the way `the_serialized_request_offers_five_tools_and_carries_no_host_fact` searches the request bodies.
+`no_host_fact_reaches_the_transcript` asserts it rather than arguing it. It searches the written file for the scenario's own root, the way `the_serialized_request_offers_six_tools_and_carries_no_host_fact` searches the request bodies.
 
 The transcript's own path is a host fact, and fiddle prints it in its own output. `report.dir` already appears there, in `config check` and in an evidence failure.
 

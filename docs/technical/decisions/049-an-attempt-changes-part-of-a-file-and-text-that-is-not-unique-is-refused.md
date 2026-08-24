@@ -1,7 +1,7 @@
 # 049 — An attempt changes part of a file, and text that is not unique is refused
 
 Status: accepted
-Cites: fiddle_runtime::agent::tools::EditFile, EditFileArgs, edit_file, ToolError::EditRefused, WriteFile, PREAMBLE, REGISTERED_TOOLS, fiddle_runtime::workspace::WorkspacePath, edit_file_changes_the_one_place_the_text_occurs_and_keeps_the_rest, edit_file_refuses_the_same_edit_where_the_text_occurs_twice, edit_file_is_bounded_by_the_same_path_rules_as_read_file_and_write_file, binary_repair::a_one_line_repair_of_a_long_file_leaves_every_other_line_where_it_was, binary_repair::the_serialized_request_offers_five_tools_and_carries_no_host_fact, binary_repair::the_serialized_request_offers_a_sixth_tool_only_where_the_deployment_declares_a_program
+Cites: fiddle_runtime::agent::tools::EditFile, EditFileArgs, edit_file, ToolError::EditRefused, WriteFile, PREAMBLE, REGISTERED_TOOLS, fiddle_runtime::workspace::WorkspacePath, edit_file_changes_the_one_place_the_text_occurs_and_keeps_the_rest, edit_file_refuses_the_same_edit_where_the_text_occurs_twice, edit_file_is_bounded_by_the_same_path_rules_as_read_file_and_write_file, binary_repair::a_one_line_repair_of_a_long_file_leaves_every_other_line_where_it_was, binary_repair::the_serialized_request_offers_six_tools_and_carries_no_host_fact, binary_repair::the_serialized_request_offers_a_seventh_tool_only_where_the_deployment_declares_a_program
 
 ## Context
 
@@ -33,7 +33,7 @@ The alternative was to narrow `write_file` to creation. It costs more than it sa
 
 ## Consequences
 
-- **The offered set is five tools, and six where a deployment declares a program.** `the_serialized_request_offers_five_tools_and_carries_no_host_fact` and `the_serialized_request_offers_a_sixth_tool_only_where_the_deployment_declares_a_program` read the serialized outbound request. Each name carries its count, so the next tool renames them both again.
+- **The offered set is five tools, and six where a deployment declares a program.** `the_serialized_request_offers_six_tools_and_carries_no_host_fact` and `the_serialized_request_offers_a_seventh_tool_only_where_the_deployment_declares_a_program` read the serialized outbound request. Each name carries its count, so the next tool renames them both again.
 - **ADR 034 holds unchanged.** `edit_file` takes its host facts from `ToolContext`. It records its own receipt. Its refusals name the path the model wrote and no host path.
 - **`WorkspacePath` bounds `edit_file` as it bounds `read_file`.** `edit_file` reads through `Workspace::read`, so a path that leaves the project, and `.git` at any depth, are refused before any byte moves.
 - **The line count is the assertion, and the new content is not.** A file the model rewrote from memory carries the new entry too. A test that greps for the repair passes for a truncated file, which is how #251 got through. `a_one_line_repair_of_a_long_file_leaves_every_other_line_where_it_was` counts the lines of a 400-line lock after the attempt.

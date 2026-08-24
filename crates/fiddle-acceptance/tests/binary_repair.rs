@@ -494,7 +494,7 @@ fn a_failing_checks_output_is_bounded_and_names_no_workspace_path() {
 }
 
 #[test]
-fn the_serialized_request_offers_five_tools_and_carries_no_host_fact() {
+fn the_serialized_request_offers_six_tools_and_carries_no_host_fact() {
     let gateway = StubGateway::serving(a_real_repair());
     let s = scenario(&gateway, 4);
 
@@ -554,9 +554,10 @@ fn the_serialized_request_offers_five_tools_and_carries_no_host_fact() {
                 "list_files",
                 "read_file",
                 "run_check",
+                "search_files",
                 "write_file"
             ],
-            "turn {turn} must offer the capability's five tools and nothing \
+            "turn {turn} must offer the capability's six tools and nothing \
              else. This document declares no program, so `run_command` is not \
              among them — see this test's note on the synthetic output tool that \
              is not here: {request}"
@@ -1034,7 +1035,7 @@ fn the_serialized_request_names_a_declared_program_and_no_declarations_host_path
 }
 
 #[test]
-fn the_serialized_request_offers_a_sixth_tool_only_where_the_deployment_declares_a_program() {
+fn the_serialized_request_offers_a_seventh_tool_only_where_the_deployment_declares_a_program() {
     let mut script = bumps_the_manifest();
     script.push(regenerates_the_lock());
     script.push(support::accepted(support::calls(
@@ -1076,9 +1077,10 @@ fn the_serialized_request_offers_a_sixth_tool_only_where_the_deployment_declares
                 "read_file",
                 "run_check",
                 "run_command",
+                "search_files",
                 "write_file"
             ],
-            "turn {turn} must offer the sixth tool, and the neighbouring lane \
+            "turn {turn} must offer the seventh tool, and the neighbouring lane \
              that declares no program must not: {request}"
         );
         let advertised = format!("{}{}", request["tools"], request["messages"][0]);
