@@ -278,7 +278,7 @@ where
             .findings
             .apply(projection.all().cloned().collect());
 
-        let excused = self.already_failing(&workspace).await?;
+        let baseline = self.baseline_of(&workspace).await?;
         let said = self.conversation(&approved).await;
 
         let spent = counted.as_ref().map_or(0, |it| it.spent);
@@ -288,10 +288,10 @@ where
         if feedback.attempts_afresh() && !taken.is_empty() {
             let attempt = self
                 .migration
-                .migrate(&workspace, &taken, feedback.blamed(), &excused, &said)
+                .migrate(&workspace, &taken, feedback.blamed(), &baseline, &said)
                 .await?;
             let evaluation = self
-                .judge(&workspace, &taken, &projection, report, &excused)
+                .judge(&workspace, &taken, &projection, report, &baseline.failed)
                 .await?;
             let followed = attempt
                 .report
@@ -503,7 +503,10 @@ where
         }
     }
 
-    async fn already_failing(&self, workspace: &Workspace) -> Result<Vec<String>, CapabilityError> {
+    async fn baseline_of(
+        &self,
+        workspace: &Workspace,
+    ) -> Result<crate::evaluate::Baseline, CapabilityError> {
         let contract = Contract {
             checks: self.config.checks.clone(),
             severities: self.config.severities.clone(),

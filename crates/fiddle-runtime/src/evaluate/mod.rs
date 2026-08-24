@@ -199,8 +199,14 @@ impl Evaluation {
 #[error("the evaluation was cancelled, so this tree was neither accepted nor rejected")]
 pub struct Cancelled;
 
-pub async fn baseline(contract: &Contract, tree: &impl Tree) -> Result<Vec<String>, Cancelled> {
-    let mut already = Vec::new();
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Baseline {
+    pub failed: Vec<String>,
+    pub passed: Vec<String>,
+}
+
+pub async fn baseline(contract: &Contract, tree: &impl Tree) -> Result<Baseline, Cancelled> {
+    let mut measured = Baseline::default();
     for check in &contract.checks {
         if check.success == Success::ArtefactWritten {
             continue;
@@ -210,15 +216,16 @@ pub async fn baseline(contract: &Contract, tree: &impl Tree) -> Result<Vec<Strin
                 let quiet = ran.stdout.is_empty() && ran.stderr.is_empty();
                 let passed =
                     ran.exit_code == 0 && (check.success != Success::ExitZeroAndNoOutput || quiet);
-                if !passed {
-                    already.push(check.name());
+                match passed {
+                    true => measured.passed.push(check.name()),
+                    false => measured.failed.push(check.name()),
                 }
             }
             Err(Unanswered::Cancelled) => return Err(Cancelled),
-            Err(_) => already.push(check.name()),
+            Err(_) => measured.failed.push(check.name()),
         }
     }
-    Ok(already)
+    Ok(measured)
 }
 
 pub async fn evaluate(contract: &Contract, tree: &impl Tree) -> Result<Evaluation, Cancelled> {

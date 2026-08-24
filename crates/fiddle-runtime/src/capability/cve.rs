@@ -110,6 +110,14 @@ fn feedback_task(failure: &GenuineFailure) -> String {
     )
 }
 
+fn listed(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|it| format!("`{it}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn already_failing_sentence(excused: &[String]) -> String {
     if excused.is_empty() {
         return String::new();
@@ -118,11 +126,19 @@ fn already_failing_sentence(excused: &[String]) -> String {
         "\n\nThese checks already failed on this project before you changed anything: {}. \
          They are not yours to fix, and this run does not hold them against you. Leave them \
          alone and do not report them.",
-        excused
-            .iter()
-            .map(|it| format!("`{it}`"))
-            .collect::<Vec<_>>()
-            .join(", ")
+        listed(excused)
+    )
+}
+
+fn already_passing_sentence(passing: &[String]) -> String {
+    if passing.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\nThese checks passed on this project before you changed anything: {}. A check \
+         that passed before your change and fails after it means the change is wrong. Undo \
+         that change rather than making another one on top of it.",
+        listed(passing)
     )
 }
 
@@ -416,14 +432,15 @@ where
         workspace: &Arc<Workspace>,
         findings: &[ProjectedFinding],
         failure: Option<&GenuineFailure>,
-        excused: &[String],
+        baseline: &crate::evaluate::Baseline,
         said: &[HumanSaid],
     ) -> Result<MigrationAttempt, CapabilityError> {
         let findings: Vec<&ProjectedFinding> = findings.iter().collect();
         let task = format!(
-            "{}{}",
+            "{}{}{}",
             migration_task(&findings, failure, said),
-            already_failing_sentence(excused)
+            already_failing_sentence(&baseline.failed),
+            already_passing_sentence(&baseline.passed)
         );
 
         let bumped: Vec<String> = workspace
@@ -1486,6 +1503,27 @@ mod tests {
             crate::agent::denies_an_ability(MIGRATION_PREAMBLE),
             Vec::<String>::new(),
             "this brief runs against the same tool set: {MIGRATION_PREAMBLE}"
+        );
+    }
+
+    #[test]
+    fn the_brief_says_what_a_broken_green_check_means() {
+        let sentence =
+            already_passing_sentence(&["go build ./...".to_string(), "go vet ./...".to_string()]);
+
+        assert!(
+            sentence.contains("`go build ./...`") && sentence.contains("`go vet ./...`"),
+            "the agent is told which checks it must not break: {sentence}"
+        );
+        assert!(
+            sentence.contains("Undo that change"),
+            "a run that broke a green check spent 33 turns adding more changes, so the \
+             instruction has to name the remedy: {sentence}"
+        );
+        assert_eq!(
+            already_passing_sentence(&[]),
+            "",
+            "a project with nothing passing gets no sentence about it"
         );
     }
 

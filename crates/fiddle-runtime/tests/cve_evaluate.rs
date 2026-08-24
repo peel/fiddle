@@ -498,12 +498,17 @@ async fn a_check_the_tree_already_failed_is_marked_and_still_counts() {
         .await
         .expect("a baseline that was not cancelled");
     assert_eq!(
-        already,
+        already.failed,
         vec![GO_VET.to_string()],
         "the baseline names the check the tree failed before any change"
     );
+    assert!(
+        already.passed.contains(&GO_BUILD.to_string()),
+        "and the checks that passed, so the agent knows what not to break: {:?}",
+        already.passed
+    );
 
-    contract.excused = already;
+    contract.excused = already.failed;
     let r = evaluate(&contract, &tree)
         .await
         .expect("an evaluation that was not cancelled");
