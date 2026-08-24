@@ -196,9 +196,10 @@ where
         )
     }
 
-    async fn sweep(&self, report: &ScanReport, work_id: &str) -> Result<Run, CapabilityError> {
-        let projection = project(report, &self.config.severities)?;
-
+    async fn sweep(
+        &self,
+        work_id: &str,
+    ) -> Result<(Run, Option<crate::scanner::ScanError>), CapabilityError> {
         let approved = plan_shared_pull_request(
             &self.context.gh,
             &self.config.repo,
@@ -220,17 +221,22 @@ where
         let counted = self.counted(&approved, &unproved).await?;
 
         if let Some(reached) = self.bound_reached(counted.as_ref()) {
-            let mut run = Run::scanned(projection);
+            let mut run = Run::unusable(
+                "the attempt bound was reached before anything was built or scanned".to_string(),
+            );
             run.bound_reached = Some(reached);
-            return Ok(run);
+            return Ok((run, None));
         }
 
         let feedback = self.settled_feedback(&approved).await;
 
         if let Some(why) = feedback.unreadable() {
-            let mut run = Run::scanned(projection);
+            let mut run = Run::unusable(
+                "the pull request's checks could not be read, so nothing was built or scanned"
+                    .to_string(),
+            );
             run.checks_unreadable = Some(why.to_string());
-            return Ok(run);
+            return Ok((run, None));
         }
 
         let unsettled = feedback.unsettled();
@@ -244,7 +250,6 @@ where
             &approved,
         )
         .await?;
-        self.observed.lock().unwrap().tree = Some(observed_tree(&checkout, report));
 
         let worktree = self.worktree();
         let root = worktree
@@ -273,12 +278,22 @@ where
 
         let fixed = commit_log_dedup(workspace.root(), &self.config.base)?;
 
+        let baseline = self.baseline_of(&workspace).await?;
+
+        let report = match self.scanner.scan(&self.config.image).await {
+            Ok(report) => report,
+            Err(why) => {
+                return Ok((Run::unusable(why.to_string()), Some(why)));
+            }
+        };
+        self.observed.lock().unwrap().tree = Some(observed_tree(&checkout, &report));
+        let projection = project(&report, &self.config.severities)?;
+
         let (taken, deferred) = self
             .config
             .findings
             .apply(projection.all().cloned().collect());
 
-        let baseline = self.baseline_of(&workspace).await?;
         let said = self.conversation(&approved).await;
 
         let spent = counted.as_ref().map_or(0, |it| it.spent);
@@ -291,7 +306,7 @@ where
                 .migrate(&workspace, &taken, feedback.blamed(), &baseline, &said)
                 .await?;
             let evaluation = self
-                .judge(&workspace, &taken, &projection, report, &baseline.failed)
+                .judge(&workspace, &taken, &projection, &report, &baseline.failed)
                 .await?;
             let followed = attempt
                 .report
@@ -378,7 +393,7 @@ where
         run.landed = landed;
         run.judged = judged;
         run.checks_unsettled = unsettled;
-        Ok(run)
+        Ok((run, None))
     }
 
     async fn counted(
@@ -704,16 +719,12 @@ where
             });
         }
 
-        let scanned = self.scanner.scan(&self.config.image).await;
-        let run = match &scanned {
-            Ok(report) => self.sweep(report, work_id).await?,
-            Err(why) => Run::unusable(why.to_string()),
-        };
+        let (run, scanned) = self.sweep(work_id).await?;
 
         let concluded = disposition(&run);
         self.observed.lock().unwrap().disposition = Some(concluded.published());
         self.publish_reports(&concluded)?;
-        if let Err(why) = scanned {
+        if let Some(why) = scanned {
             return Err(CapabilityError::Scan(why));
         }
         if let Some(why) = &run.checks_unreadable {

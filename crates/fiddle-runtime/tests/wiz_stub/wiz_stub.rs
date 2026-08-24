@@ -191,9 +191,12 @@ fn record(report: &Path) {
     let env: Vec<String> = std::env::vars()
         .map(|(name, value)| format!("{name}={value}"))
         .collect();
+    let cwd = std::env::current_dir()
+        .map(|it| it.display().to_string())
+        .unwrap_or_default();
     std::fs::write(
         &record,
-        serde_json::json!({ "argv": argv, "env": env }).to_string(),
+        serde_json::json!({ "argv": argv, "env": env, "cwd": cwd }).to_string(),
     )
     .unwrap_or_else(|source| panic!("could not write {}: {source}", record.display()));
 }

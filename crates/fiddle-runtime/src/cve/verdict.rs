@@ -426,23 +426,6 @@ impl Disposition {
 pub fn disposition(run: &Run) -> Disposition {
     let findings = CompleteFindings::of(run);
 
-    if let Err(why) = &run.scan {
-        return Disposition {
-            outcome: RunOutcome::Retryable {
-                reason: Published::of(why),
-            },
-            reason: Row::ScanUnusable { why: why.clone() },
-            findings,
-            deferred: Vec::new(),
-            verdicts: Vec::new(),
-            already_fixed: Vec::new(),
-            attempts: Vec::new(),
-            branch: None,
-            pull_request: None,
-            attempt_bound: None,
-        };
-    }
-
     if let Some(reached) = run.bound_reached {
         return Disposition {
             outcome: RunOutcome::Completed,
@@ -467,6 +450,23 @@ pub fn disposition(run: &Run) -> Disposition {
                 reason: Published::of(why),
             },
             reason: Row::ChecksUnreadable { why: why.clone() },
+            findings,
+            deferred: Vec::new(),
+            verdicts: Vec::new(),
+            already_fixed: Vec::new(),
+            attempts: Vec::new(),
+            branch: None,
+            pull_request: None,
+            attempt_bound: None,
+        };
+    }
+
+    if let Err(why) = &run.scan {
+        return Disposition {
+            outcome: RunOutcome::Retryable {
+                reason: Published::of(why),
+            },
+            reason: Row::ScanUnusable { why: why.clone() },
             findings,
             deferred: Vec::new(),
             verdicts: Vec::new(),

@@ -2273,7 +2273,7 @@ fn an_advisory_with_no_published_fix_reaches_the_attempt_and_its_decline_is_the_
 }
 
 #[test]
-fn an_unusable_scanner_exits_eleven_and_reaches_no_forge() {
+fn an_unusable_scanner_exits_eleven_and_publishes_nothing() {
     let sweep = Sweep::scanning(
         VULNERABLE,
         "exit-nonzero-no-file",
@@ -2298,11 +2298,15 @@ fn an_unusable_scanner_exits_eleven_and_reaches_no_forge() {
          reading the status line: {payload}"
     );
 
-    assert_eq!(
-        sweep.requested_paths(),
-        Vec::<String>::new(),
-        "the scan is asked before the forge is, so a scan with no document \
-         reaches no forge at all"
+    assert!(
+        sweep
+            .requested_paths()
+            .iter()
+            .all(|path| path.contains("state=open") && path.contains("labels=security")),
+        "the tree has to be chosen before it can be scanned, so a scan with no \
+         document has already asked the forge which pull request is open — and \
+         nothing more than that: {:?}",
+        sweep.requested_paths()
     );
     assert!(
         sweep.pull_requests().is_empty(),
@@ -2310,9 +2314,9 @@ fn an_unusable_scanner_exits_eleven_and_reaches_no_forge() {
         sweep.pull_requests()
     );
     assert!(
-        !sweep.workspace_root().exists(),
-        "a scan with no document creates no worktree: {:?}",
-        walkdir_files(sweep.workspace_root())
+        sweep.workspace_root().exists(),
+        "the tree has to exist before it can be scanned, so a scan with no \
+         document has already made a worktree"
     );
     assert_eq!(
         sweep.remote_branches(),
