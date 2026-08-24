@@ -1120,6 +1120,33 @@ mod body {
     }
 
     #[test]
+    fn a_directed_attempt_is_published_and_says_what_it_went_over() {
+        let group = attempted(
+            GroupStatus::Directed {
+                over: "./policy.sh".to_string(),
+                direction: crate::capability::cve::Followed {
+                    author: "peel".to_string(),
+                    sentence: "understood. publish it.".to_string(),
+                },
+            },
+            &["go.mod", "go.sum"],
+        );
+
+        assert!(
+            group.committed(),
+            "a directed attempt changed the tree and stands, so it publishes like a clean \
+             one — otherwise it commits and nothing carries it anywhere"
+        );
+
+        let body = summary_of(&[group]);
+        assert!(
+            body.contains("published over the failing check `./policy.sh`")
+                && body.contains("peel wrote: understood. publish it."),
+            "and the row names the check it went over and whose words did it: {body}"
+        );
+    }
+
+    #[test]
     fn a_repaired_advisory_is_named_with_both_versions_and_what_the_agent_said() {
         let body = summary_of(&[attempted(GroupStatus::Clean, &["go.mod", "go.sum"])]);
 

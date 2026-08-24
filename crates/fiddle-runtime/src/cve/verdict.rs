@@ -212,7 +212,11 @@ impl Attempted {
     }
 
     pub fn committed(&self) -> bool {
-        self.status == GroupStatus::Clean && !self.attempt.changed.is_empty()
+        let stands = matches!(
+            self.status,
+            GroupStatus::Clean | GroupStatus::Directed { .. }
+        );
+        stands && !self.attempt.changed.is_empty()
     }
 }
 
@@ -542,10 +546,7 @@ fn verdicts_of(run: &Run) -> Vec<Verdict> {
 
     for group in &run.attempted {
         let rationale = match &group.status {
-            GroupStatus::Clean => continue,
-            GroupStatus::Directed { over, direction } => {
-                format!("published over the failing check `{over}` because {direction}")
-            }
+            GroupStatus::Clean | GroupStatus::Directed { .. } => continue,
             GroupStatus::NeedsWork { reason } => reason.to_string(),
         };
         for finding in &group.findings {
