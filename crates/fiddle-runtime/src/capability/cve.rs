@@ -64,9 +64,9 @@ const DIRECTION_FRAME: &str = "\
 People have written on the pull request this run is adding to. Here is what they \
 said, in their words, newest last. A person may know something the checks do not, \
 and may tell you to leave an advisory alone or to take a particular course. Follow \
-what they say over what a check says, and when you do, quote the sentence you \
-followed in `direction` exactly as it is written above. A sentence nobody wrote \
-refuses the whole attempt.";
+what they say over what a check says, and when you do, copy the sentence you \
+followed into `quoted_from_a_comment`, word for word as it is written above. A \
+sentence nobody wrote is ignored, and the rest of your work still counts.";
 
 const REVIEW_FRAME: &str = "\
 A person reviewed this pull request and asked for changes, which stops it being \
@@ -1739,6 +1739,53 @@ mod direction {
             .is_some(),
             "a sentence in the conversation is still quotable, so the two surfaces stay \
              separate rather than one becoming the other"
+        );
+    }
+
+    #[test]
+    fn the_brief_names_the_report_field_the_schema_carries() {
+        let schema = schemars::schema_for!(crate::agent::RepairReport);
+        let document = serde_json::to_value(&schema).expect("a schema serialises");
+        let properties = document["properties"]
+            .as_object()
+            .expect("RepairReport is an object schema");
+
+        let cited = properties
+            .keys()
+            .find(|name| name.contains("quoted"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no field in RepairReport carries a quoted sentence, so the brief asks \
+                     for something the model cannot give: {:?}",
+                    properties.keys().collect::<Vec<_>>()
+                )
+            });
+
+        let brief = migration_task(
+            &[&a_finding()],
+            None,
+            &[HumanSaid {
+                author: "peel".to_string(),
+                body: "publish it".to_string(),
+                entitled: true,
+            }],
+            &[],
+        );
+
+        assert!(
+            brief.contains(&format!("`{cited}`")),
+            "the brief must name `{cited}`, the field the schema carries, or the model is \
+             told to fill one it was not given: {brief}"
+        );
+        let frame = conversation_task(&[HumanSaid {
+            author: "peel".to_string(),
+            body: "publish it".to_string(),
+            entitled: true,
+        }]);
+        assert!(
+            !frame.contains("refuses the whole attempt"),
+            "an unmatched citation is ignored, so the sentence that asks for one must not \
+             threaten otherwise: {frame}"
         );
     }
 
