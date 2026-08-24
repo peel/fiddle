@@ -817,6 +817,7 @@ because a named advisory in a reachable commit reads as a fix to the next run.";
 
 fn commit_subject(advisories: &[AdvisoryId]) -> String {
     match advisories.len() {
+        0 => "fix: answer the review on this pull request".to_string(),
         1 => "fix: mitigate 1 advisory".to_string(),
         many => format!("fix: mitigate {many} advisories"),
     }
@@ -1752,6 +1753,34 @@ mod direction {
             Some("peel".to_string()),
             "and somebody who speaks for the project is followed"
         );
+    }
+
+    #[test]
+    fn a_commit_that_mitigates_nothing_does_not_count_it() {
+        let subject = commit_subject(&[]);
+        assert!(
+            !subject.contains('0'),
+            "a commit answering a review claimed `mitigate 0 advisories`: {subject}"
+        );
+        assert!(
+            subject.contains("review"),
+            "and it says what it did instead: {subject}"
+        );
+        assert_eq!(
+            commit_body(&[]),
+            "",
+            "and it carries no Fixes trailer, because it fixes no advisory"
+        );
+
+        let one = vec![AdvisoryId::parse("CVE-2026-4242").expect("a canonical advisory id")];
+        assert_eq!(commit_subject(&one), "fix: mitigate 1 advisory");
+        assert_eq!(commit_body(&one), "Fixes: CVE-2026-4242");
+
+        let two = vec![
+            AdvisoryId::parse("CVE-2026-4242").expect("a canonical advisory id"),
+            AdvisoryId::parse("CVE-2026-4243").expect("a canonical advisory id"),
+        ];
+        assert_eq!(commit_subject(&two), "fix: mitigate 2 advisories");
     }
 
     #[test]
