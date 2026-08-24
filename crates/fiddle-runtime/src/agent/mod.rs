@@ -189,6 +189,10 @@ pub fn unaccounted(shown: &[&str], reported: &[FindingDisposition]) -> Option<Ag
 }
 
 pub fn accounting(shown: &[&str], reported: &[FindingDisposition]) -> Option<String> {
+    if shown.is_empty() {
+        return None;
+    }
+
     let shown: BTreeSet<&str> = shown.iter().copied().collect();
 
     let mut disposed: BTreeMap<&str, usize> = BTreeMap::new();
@@ -819,6 +823,31 @@ mod tests {
             AgentError::Provider { reason } => reason,
             other => panic!("a provider failure must classify as Provider, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_report_shown_no_advisory_accounts_for_nothing() {
+        let named = vec![FindingDisposition {
+            cve: "CVE-2025-30204".to_string(),
+            attempted: true,
+            note: "named in the comment the reviewer asked for".to_string(),
+        }];
+
+        assert_eq!(
+            accounting(&[], &named),
+            None,
+            "a run answering a review was shown no advisory, so naming one is not a stray \
+             entry and must not refuse the work"
+        );
+        assert_eq!(
+            accounting(&[], &[]),
+            None,
+            "and reporting nothing is equally fine"
+        );
+        assert!(
+            accounting(&["CVE-2026-1"], &[]).is_some(),
+            "an advisory that was shown and not answered is still a breach"
+        );
     }
 
     #[test]

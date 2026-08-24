@@ -543,8 +543,10 @@ where
         )
         .await?;
 
-        if let Some(failure) = unaccounted(&shown, &report.findings) {
-            return Err(failure.into());
+        if !shown.is_empty() {
+            if let Some(failure) = unaccounted(&shown, &report.findings) {
+                return Err(failure.into());
+            }
         }
 
         let edits = workspace.edits()?;
