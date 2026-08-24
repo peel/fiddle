@@ -294,7 +294,8 @@ where
             .findings
             .apply(projection.all().cloned().collect());
 
-        let said = self.conversation(&approved).await;
+        let mut said = self.conversation(&approved).await;
+        said.extend(self.conversation(&unproved).await);
 
         let spent = counted.as_ref().map_or(0, |it| it.spent);
         let mut ignored_citation: Option<String> = None;
