@@ -182,12 +182,30 @@ fn conversation_task(said: &[HumanSaid]) -> String {
     format!("{DIRECTION_FRAME}\n\n{}", quoted.join("\n\n"))
 }
 
+const REVIEW_ONLY_TASK: &str = "\
+The scanner reported no advisory against this project, so there is nothing to \
+repair. Your work is what the person above asked for. Make that change, run the \
+check, and report the files you changed.";
+
 fn migration_task(
     findings: &[&ProjectedFinding],
     failure: Option<&GenuineFailure>,
     said: &[HumanSaid],
     asked: &[ChangesRequested],
 ) -> String {
+    if findings.is_empty() && !asked.is_empty() {
+        let mut sections = vec![review_task(asked)];
+        if let Some(failure) = failure {
+            sections.push(feedback_task(failure));
+        }
+        if !said.is_empty() {
+            sections.push(conversation_task(said));
+        }
+        sections.push(SCOPE_RULES.to_string());
+        sections.push(REVIEW_ONLY_TASK.to_string());
+        return sections.join("\n\n");
+    }
+
     let rendered: Vec<String> = findings.iter().map(|finding| render(finding)).collect();
     let mut sections = vec![FINDINGS_FRAME.to_string(), rendered.join("\n")];
     if let Some(failure) = failure {
@@ -1731,6 +1749,45 @@ mod direction {
             Followed::quoted(&owner, sentence).map(|it| it.author),
             Some("peel".to_string()),
             "and somebody who speaks for the project is followed"
+        );
+    }
+
+    #[test]
+    fn a_run_that_only_answers_a_review_is_not_told_to_clear_an_advisory() {
+        let asked = vec![ChangesRequested {
+            author: "peel".to_string(),
+            body: "add a comment above the require block naming the advisory".to_string(),
+        }];
+        let brief = migration_task(&[], None, &[], &asked);
+
+        assert!(
+            brief.contains("add a comment above the require block"),
+            "the reviewer's words are the job: {brief}"
+        );
+        assert!(
+            brief.contains("no advisory") || brief.contains("nothing to repair"),
+            "and the agent is told there is nothing to repair, so it does not go looking: \
+             {brief}"
+        );
+        for misleading in [
+            "Here are the advisories the scanner reported",
+            "which version to move to",
+            "one entry for every advisory you were shown",
+        ] {
+            assert!(
+                !brief.contains(misleading),
+                "a brief that asks for a repair and a review at once asks for neither: \
+                 `{misleading}` in {brief}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_with_an_advisory_still_leads_with_it() {
+        let brief = migration_task(&[&a_finding()], None, &[], &[]);
+        assert!(
+            brief.contains("Here are the advisories the scanner reported"),
+            "the ordinary path is unchanged: {brief}"
         );
     }
 
