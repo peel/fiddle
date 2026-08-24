@@ -21,7 +21,10 @@ pub const MAX_ARGUMENT_BYTES: usize = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Undeclared {
-    #[error("`{program}` is not a program this project declares, and these are: {declared}")]
+    #[error(
+        "`{program}` is not a program this project declares. Name the program by itself \
+         and put the rest in the arguments. This project declares: {declared}"
+    )]
     Program { program: String, declared: String },
 
     #[error(
@@ -46,6 +49,12 @@ pub fn resolve(
     args: &[String],
     timeout: Duration,
 ) -> Result<WorkspaceCommand, Undeclared> {
+    if let Some((first, rest)) = spelled_as_one_line(declared, program) {
+        let mut widened = rest;
+        widened.extend_from_slice(args);
+        return resolve(declared, &first, &widened, timeout);
+    }
+
     if declared.is_empty() || !declared.iter().any(|entry| entry.program == program) {
         return Err(Undeclared::Program {
             program: program.to_string(),
@@ -85,6 +94,25 @@ pub fn resolve(
         appendable(argument)?;
     }
     Ok(command(matched, args, timeout))
+}
+
+fn spelled_as_one_line(
+    declared: &[DeclaredCommand],
+    program: &str,
+) -> Option<(String, Vec<String>)> {
+    if declared.iter().any(|entry| entry.program == program) {
+        return None;
+    }
+    let mut words = program.split_whitespace().map(str::to_string);
+    let first = words.next()?;
+    let rest: Vec<String> = words.collect();
+    if rest.is_empty() && first == program {
+        return None;
+    }
+    declared
+        .iter()
+        .any(|entry| entry.program == first)
+        .then_some((first, rest))
 }
 
 fn command(matched: &DeclaredCommand, args: &[String], timeout: Duration) -> WorkspaceCommand {
@@ -431,5 +459,136 @@ mod tests {
         let resolved = resolve(&declared, "tidy", &[], Duration::from_millis(7))
             .expect("the declared program runs");
         assert_eq!(resolved.timeout, Duration::from_millis(7));
+    }
+}
+
+#[cfg(test)]
+mod one_line {
+    use super::*;
+    use std::time::Duration;
+
+    const BOUND: Duration = Duration::from_secs(30);
+
+    fn declared() -> Vec<DeclaredCommand> {
+        vec![
+            DeclaredCommand {
+                program: "go".to_string(),
+                args: vec!["get".to_string()],
+                extend: Extend::Arguments,
+            },
+            DeclaredCommand {
+                program: "go".to_string(),
+                args: vec!["mod".to_string(), "tidy".to_string()],
+                extend: Extend::None,
+            },
+        ]
+    }
+
+    #[test]
+    fn a_declaration_written_the_way_the_brief_spells_it_resolves() {
+        let split = resolve(
+            &declared(),
+            "go",
+            &["get".to_string(), "example.com/m@v1.2.3".to_string()],
+            BOUND,
+        )
+        .expect("the split spelling has always worked");
+
+        let one_line = resolve(
+            &declared(),
+            "go get",
+            &["example.com/m@v1.2.3".to_string()],
+            BOUND,
+        )
+        .expect("the brief says to write the whole of a line, so that must work too");
+
+        assert_eq!(
+            (one_line.program, one_line.args),
+            (split.program, split.args),
+            "the two spellings name one command, because the brief teaches the second"
+        );
+    }
+
+    #[test]
+    fn a_fixed_declaration_written_as_one_line_resolves_too() {
+        resolve(&declared(), "go mod tidy", &[], BOUND)
+            .expect("a fixed declaration is spelled as one line in the brief as well");
+    }
+
+    #[test]
+    fn a_refusal_never_lists_the_program_it_just_rejected_as_declared() {
+        let refused = resolve(&declared(), "cargo build", &[], BOUND)
+            .expect_err("cargo is not declared here");
+
+        let sentence = refused.to_string();
+        assert!(
+            !sentence.contains(
+                "`cargo build` is not a program this project declares, and these \
+                                are: `cargo build`"
+            ),
+            "a refusal that lists what it rejected teaches nothing: {sentence}"
+        );
+        assert!(
+            sentence.contains("Name the program by itself"),
+            "the refusal says how to write it instead: {sentence}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod wholesale {
+    use super::*;
+    use std::time::Duration;
+
+    const BOUND: Duration = Duration::from_secs(30);
+
+    fn go_wholesale() -> Vec<DeclaredCommand> {
+        vec![DeclaredCommand {
+            program: "go".to_string(),
+            args: Vec::new(),
+            extend: Extend::Arguments,
+        }]
+    }
+
+    #[test]
+    fn a_program_declared_with_no_fixed_arguments_takes_any_subcommand() {
+        for line in [
+            vec!["get", "example.com/m@v1.2.3"],
+            vec!["mod", "tidy"],
+            vec!["mod", "verify"],
+            vec!["list", "-m", "-versions", "example.com/m"],
+            vec!["build", "./..."],
+            vec!["test", "./...", "-count=1"],
+            vec!["vet", "./..."],
+        ] {
+            let args: Vec<String> = line.iter().map(|it| it.to_string()).collect();
+            let resolved = resolve(&go_wholesale(), "go", &args, BOUND)
+                .unwrap_or_else(|why| panic!("`go {}` must resolve: {why}", line.join(" ")));
+            assert_eq!(resolved.program, "go");
+            assert_eq!(
+                resolved.args, args,
+                "the arguments reach the program unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn the_brief_spells_a_wholesale_declaration_as_the_program_alone() {
+        assert_eq!(
+            spelled(&go_wholesale()),
+            "`go` (you may append arguments)",
+            "with nothing fixed there is no prefix to mis-copy into the program"
+        );
+    }
+
+    #[test]
+    fn a_program_that_is_not_declared_is_still_refused() {
+        resolve(
+            &go_wholesale(),
+            "curl",
+            &["http://example.com".to_string()],
+            BOUND,
+        )
+        .expect_err("declaring go wholesale declares go, not everything");
     }
 }
