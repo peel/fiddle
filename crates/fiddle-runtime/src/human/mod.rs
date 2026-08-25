@@ -140,6 +140,8 @@ impl PublishDecisionRequest {
 impl IntegrationOperation for PublishDecisionRequest {
     type State = PublishedRequest;
 
+    type Error = GhError;
+
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Automatic
     }

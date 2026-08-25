@@ -257,6 +257,8 @@ impl EnsureCheckRequested {
 impl IntegrationOperation for EnsureCheckRequested {
     type State = WorkflowRun;
 
+    type Error = GhError;
+
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Automatic
     }

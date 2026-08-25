@@ -84,6 +84,8 @@ impl EnsurePullRequestReady {
 impl IntegrationOperation for EnsurePullRequestReady {
     type State = ReadyPullRequest;
 
+    type Error = GhError;
+
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Human
     }

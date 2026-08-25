@@ -201,6 +201,8 @@ pub struct ScriptedOperation<'w> {
 impl IntegrationOperation for ScriptedOperation<'_> {
     type State = BranchState;
 
+    type Error = GhError;
+
     fn minimum(&self) -> HumanDecisionRequirement {
         self.minimum
     }

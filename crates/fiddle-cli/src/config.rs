@@ -1607,6 +1607,8 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
     impl fiddle_runtime::effect::IntegrationOperation for NeverSettles {
         type State = NeverObserved;
 
+        type Error = fiddle_runtime::GhError;
+
         fn minimum(&self) -> fiddle_core::HumanDecisionRequirement {
             fiddle_core::HumanDecisionRequirement::Automatic
         }

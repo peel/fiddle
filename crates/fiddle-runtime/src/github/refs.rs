@@ -71,6 +71,8 @@ impl EnsureBranchPublished {
 impl IntegrationOperation for EnsureBranchPublished {
     type State = BranchRef;
 
+    type Error = GhError;
+
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Automatic
     }

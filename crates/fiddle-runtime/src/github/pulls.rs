@@ -158,6 +158,8 @@ fn label_names(listed: &serde_json::Value) -> Vec<String> {
 impl IntegrationOperation for EnsurePullRequest {
     type State = PullRequest;
 
+    type Error = GhError;
+
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Automatic
     }
@@ -410,6 +412,8 @@ pub async fn read_pull_request_body(
 #[async_trait::async_trait]
 impl IntegrationOperation for EnsurePullRequestBody {
     type State = PullRequestBody;
+
+    type Error = GhError;
 
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Automatic
