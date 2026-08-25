@@ -1,7 +1,8 @@
 mod support;
 
 use fiddle_core::{
-    effect_id, EffectKind, Observation, ProposedEffect, VerificationState, FIXTURE_REPAIR,
+    effect_id, EffectName, Observation, ProposedEffect, VerificationState, ENSURE_CHECK_REQUESTED,
+    FIXTURE_REPAIR,
 };
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
@@ -49,7 +50,7 @@ fn expected_run_name() -> String {
     run_name(&effect_id(
         PROJECT,
         INVOCATION_REF,
-        EffectKind::EnsureCheckRequested,
+        ENSURE_CHECK_REQUESTED,
         &check_request_target(REPO, WORKFLOW, &git_ref()),
     ))
 }
@@ -64,7 +65,7 @@ struct Ci {
 }
 
 impl EffectTrace for Ci {
-    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
+    fn step(&self, _kind: &EffectName, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
     }
 }
@@ -240,7 +241,7 @@ async fn request_the_check(
     let deployment = Deployment(fiddle_core::DeploymentRule::Allow);
     let proposed = ProposedEffect {
         capability: FIXTURE_REPAIR,
-        kind: EffectKind::EnsureCheckRequested,
+        kind: EffectName::shipped(ENSURE_CHECK_REQUESTED),
         target: operation.target(),
         payload: operation.payload(),
     };

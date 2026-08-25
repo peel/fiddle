@@ -7,8 +7,8 @@ pub use cve::wiz_stub;
 
 use async_trait::async_trait;
 use fiddle_core::{
-    effect_id, CapabilityId, DeploymentRule, EffectKind, HumanDecisionRequirement, ProposedEffect,
-    FIXTURE_REPAIR,
+    effect_id, CapabilityId, DeploymentRule, EffectName, HumanDecisionRequirement, ProposedEffect,
+    ENSURE_BRANCH_PUBLISHED, FIXTURE_REPAIR,
 };
 use fiddle_runtime::effect::{
     AuthorizedEffect, DeploymentPolicy, EffectContext, EffectTrace, ExecutionStep, Executor,
@@ -158,7 +158,7 @@ impl World {
 }
 
 impl EffectTrace for World {
-    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
+    fn step(&self, _kind: &EffectName, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
     }
 }
@@ -166,7 +166,7 @@ impl EffectTrace for World {
 pub struct Deployment(pub DeploymentRule);
 
 impl DeploymentPolicy for Deployment {
-    fn rule_for(&self, _kind: EffectKind) -> DeploymentRule {
+    fn rule_for(&self, _kind: &EffectName) -> DeploymentRule {
         self.0
     }
 }
@@ -269,12 +269,7 @@ impl IntegrationOperation for ScriptedOperation<'_> {
         self.world.dispatches.fetch_add(1, Ordering::SeqCst);
         assert_eq!(
             authorized.effect_id(),
-            &effect_id(
-                PROJECT,
-                INVOCATION_REF,
-                EffectKind::EnsureBranchPublished,
-                TARGET
-            ),
+            &effect_id(PROJECT, INVOCATION_REF, ENSURE_BRANCH_PUBLISHED, TARGET),
             "the envelope must carry the identity derived for this request"
         );
 
@@ -418,7 +413,7 @@ pub fn branch_effect() -> ProposedEffect {
 pub fn proposed_by(capability: CapabilityId) -> ProposedEffect {
     ProposedEffect {
         capability,
-        kind: EffectKind::EnsureBranchPublished,
+        kind: EffectName::shipped(ENSURE_BRANCH_PUBLISHED),
         target: TARGET.to_string(),
         payload: PAYLOAD.to_string(),
     }

@@ -5,7 +5,7 @@ use fiddle_core::decision::{
     decision_request_id, parse_marker, ActorRef, DecisionBinding, DecisionRequestId,
     InterpretedHumanDecision,
 };
-use fiddle_core::{effect_id, payload_hash, EffectId, EffectKind, PayloadHash};
+use fiddle_core::{effect_id, payload_hash, EffectId, EffectName, PayloadHash};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DecisionStep {
@@ -115,7 +115,7 @@ pub struct DecisionWalk<'a> {
     pub max_pages: u32,
     pub project: &'a str,
     pub invocation_ref: &'a str,
-    pub kind: EffectKind,
+    pub kind: EffectName,
     pub target: &'a str,
     pub payload: &'a str,
     pub allowlist: &'a [u64],
@@ -123,7 +123,12 @@ pub struct DecisionWalk<'a> {
 
 impl DecisionWalk<'_> {
     fn identity(&self) -> (DecisionRequestId, EffectId, PayloadHash) {
-        let effect = effect_id(self.project, self.invocation_ref, self.kind, self.target);
+        let effect = effect_id(
+            self.project,
+            self.invocation_ref,
+            self.kind.as_str(),
+            self.target,
+        );
         let request = decision_request_id(self.project, self.invocation_ref, &effect);
         (request, effect, payload_hash(self.payload))
     }

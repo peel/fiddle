@@ -1,6 +1,8 @@
 mod support;
 
-use fiddle_core::{effect_id, payload_hash, EffectKind, ProposedEffect, FIXTURE_REPAIR};
+use fiddle_core::{
+    effect_id, payload_hash, EffectName, ProposedEffect, ENSURE_PULL_REQUEST, FIXTURE_REPAIR,
+};
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
     IntegrationOperation, ReadRetry,
@@ -40,7 +42,7 @@ struct Forge {
 }
 
 impl EffectTrace for Forge {
-    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
+    fn step(&self, _kind: &EffectName, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
     }
 }
@@ -226,7 +228,7 @@ async fn open_the_pull_request(
     let deployment = Deployment(fiddle_core::DeploymentRule::Allow);
     let proposed = ProposedEffect {
         capability: FIXTURE_REPAIR,
-        kind: EffectKind::EnsurePullRequest,
+        kind: EffectName::shipped(ENSURE_PULL_REQUEST),
         target: operation.target(),
         payload: operation.payload(),
     };
@@ -254,16 +256,11 @@ fn a_title_moves_the_payload_hash_and_never_the_identity() {
         "a reworded title is the same pull request"
     );
     assert_eq!(
+        effect_id(PROJECT, INVOCATION_REF, ENSURE_PULL_REQUEST, &ours.target()),
         effect_id(
             PROJECT,
             INVOCATION_REF,
-            EffectKind::EnsurePullRequest,
-            &ours.target()
-        ),
-        effect_id(
-            PROJECT,
-            INVOCATION_REF,
-            EffectKind::EnsurePullRequest,
+            ENSURE_PULL_REQUEST,
             &reworded.target()
         ),
         "so a fresh process recomputes the same identity for it"

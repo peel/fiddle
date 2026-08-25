@@ -19,7 +19,10 @@ use crate::workspace::{
 };
 use crate::{GhCli, GhError};
 use async_trait::async_trait;
-use fiddle_core::{AdvisoryId, CapabilityId, EffectKind, ProjectedFinding, ProposedEffect};
+use fiddle_core::{
+    AdvisoryId, CapabilityId, EffectName, ProjectedFinding, ProposedEffect,
+    ENSURE_BRANCH_PUBLISHED, ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_BODY,
+};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -1188,7 +1191,7 @@ pub async fn publish_work(
         .execute(
             ProposedEffect {
                 capability,
-                kind: EffectKind::EnsureBranchPublished,
+                kind: EffectName::shipped(ENSURE_BRANCH_PUBLISHED),
                 target: publish_branch.target(),
                 payload: publish_branch.payload(),
             },
@@ -1215,7 +1218,7 @@ pub async fn publish_work(
         .execute(
             ProposedEffect {
                 capability,
-                kind: EffectKind::EnsurePullRequest,
+                kind: EffectName::shipped(ENSURE_PULL_REQUEST),
                 target: open.target(),
                 payload: open.payload(),
             },
@@ -1228,7 +1231,7 @@ pub async fn publish_work(
         .execute(
             ProposedEffect {
                 capability,
-                kind: EffectKind::EnsurePullRequestBody,
+                kind: EffectName::shipped(ENSURE_PULL_REQUEST_BODY),
                 target: describe.target(),
                 payload: describe.payload(),
             },

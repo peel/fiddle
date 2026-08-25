@@ -19,9 +19,10 @@ use crate::human::{InteractionRef, PublishDecisionRequest, CONVERSATION_PAGES};
 use crate::workspace::{DeclaredCommand, Workspace, WorkspaceCommand, WorkspacePath};
 use fiddle_core::{
     correlation_key, decision_request_id, effect_id, payload_hash, AttemptId, CapabilityId,
-    ChangeSetState, DecisionBinding, EffectKind, EvidenceRef, HumanDecisionRequest,
+    ChangeSetState, DecisionBinding, EffectName, EvidenceRef, HumanDecisionRequest,
     InterpretedHumanDecision, Observation, ProposedEffect, Publication, Published, ReviewState,
-    SourceRef, WorkRef,
+    SourceRef, WorkRef, ENSURE_BRANCH_PUBLISHED, ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_READY,
+    PUBLISH_DECISION_REQUEST,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -198,7 +199,7 @@ where
         let effect = effect_id(
             self.executor.project(),
             self.executor.invocation_ref(),
-            EffectKind::EnsurePullRequestReady,
+            ENSURE_PULL_REQUEST_READY,
             &ready.target(),
         );
         let binding = DecisionBinding {
@@ -253,7 +254,7 @@ where
 
     async fn propose<O>(
         &self,
-        kind: EffectKind,
+        kind: EffectName,
         target: String,
         payload: String,
         operation: O,
@@ -266,7 +267,7 @@ where
 
     async fn propose_decided<O>(
         &self,
-        kind: EffectKind,
+        kind: EffectName,
         target: String,
         payload: String,
         operation: O,
@@ -281,7 +282,7 @@ where
 
     async fn proposing<O>(
         &self,
-        kind: EffectKind,
+        kind: EffectName,
         target: String,
         payload: String,
         operation: O,
@@ -292,7 +293,7 @@ where
     {
         let proposed = ProposedEffect {
             capability: self.id(),
-            kind,
+            kind: kind.clone(),
             target,
             payload,
         };
@@ -307,7 +308,7 @@ where
         self.receipts
             .lock()
             .unwrap()
-            .push(receipt_evidence(kind, &receipt));
+            .push(receipt_evidence(&kind, &receipt));
         Ok(receipt)
     }
 
@@ -441,7 +442,7 @@ where
         );
         let published = self
             .propose(
-                EffectKind::EnsureBranchPublished,
+                EffectName::shipped(ENSURE_BRANCH_PUBLISHED),
                 publish_branch.target(),
                 publish_branch.payload(),
                 publish_branch,
@@ -456,7 +457,7 @@ where
         let open = self.draft_pull_request(branch);
         let opened = self
             .propose(
-                EffectKind::EnsurePullRequest,
+                EffectName::shipped(ENSURE_PULL_REQUEST),
                 open.target(),
                 open.payload(),
                 open,
@@ -476,7 +477,7 @@ where
         let ask = PublishDecisionRequest::new(self.config.repo.clone(), pr, request.clone());
         let receipt = self
             .propose(
-                EffectKind::PublishDecisionRequest,
+                EffectName::shipped(PUBLISH_DECISION_REQUEST),
                 ask.target(),
                 ask.payload(),
                 ask,
@@ -507,7 +508,7 @@ where
             max_pages: CONVERSATION_PAGES,
             project: self.executor.project(),
             invocation_ref: self.executor.invocation_ref(),
-            kind: EffectKind::EnsurePullRequestReady,
+            kind: EffectName::shipped(ENSURE_PULL_REQUEST_READY),
             target: &target,
             payload: &payload,
             allowlist: &self.config.deciders,
@@ -621,7 +622,7 @@ where
         let gated = self.gated(pr, head_sha);
         let receipt = self
             .propose_decided(
-                EffectKind::EnsurePullRequestReady,
+                EffectName::shipped(ENSURE_PULL_REQUEST_READY),
                 gated.target(),
                 gated.payload(),
                 gated,
@@ -629,7 +630,7 @@ where
             )
             .await?;
         Ok(receipt_evidence(
-            EffectKind::EnsurePullRequestReady,
+            &EffectName::shipped(ENSURE_PULL_REQUEST_READY),
             &receipt,
         ))
     }
@@ -638,14 +639,14 @@ where
         let gated = self.gated(pr, head_sha);
         let receipt = self
             .propose(
-                EffectKind::EnsurePullRequestReady,
+                EffectName::shipped(ENSURE_PULL_REQUEST_READY),
                 gated.target(),
                 gated.payload(),
                 gated,
             )
             .await?;
         Ok(receipt_evidence(
-            EffectKind::EnsurePullRequestReady,
+            &EffectName::shipped(ENSURE_PULL_REQUEST_READY),
             &receipt,
         ))
     }
@@ -766,12 +767,12 @@ where
         let opened = self
             .opened(&branch)
             .await
-            .map_err(|error| adapter(EffectKind::EnsurePullRequest, error))?;
+            .map_err(|error| adapter(&EffectName::shipped(ENSURE_PULL_REQUEST), error))?;
         if let Some(pull_request) = opened {
             let head_sha = self
                 .head_of(pull_request.number)
                 .await
-                .map_err(|error| adapter(EffectKind::EnsurePullRequest, error))?;
+                .map_err(|error| adapter(&EffectName::shipped(ENSURE_PULL_REQUEST), error))?;
             {
                 let mut observed = self.observed.lock().unwrap();
                 observed.branch = Some(branch.clone());
@@ -788,7 +789,7 @@ where
             let published = asking
                 .inspect(self.ctx)
                 .await
-                .map_err(|error| adapter(EffectKind::PublishDecisionRequest, error))?;
+                .map_err(|error| adapter(&EffectName::shipped(PUBLISH_DECISION_REQUEST), error))?;
             return match published {
                 Some(published) => {
                     let evidence = self
@@ -892,14 +893,14 @@ where
     }
 }
 
-fn adapter(kind: EffectKind, error: GhError) -> CapabilityError {
+fn adapter(kind: &EffectName, error: GhError) -> CapabilityError {
     CapabilityError::Effect(crate::effect::EffectError::Adapter {
-        kind,
+        kind: kind.clone(),
         source: error,
     })
 }
 
-fn receipt_evidence<T>(kind: EffectKind, receipt: &EffectReceipt<T>) -> EvidenceRef {
+fn receipt_evidence<T>(kind: &EffectName, receipt: &EffectReceipt<T>) -> EvidenceRef {
     let outcome = match receipt.outcome {
         EffectOutcome::Committed => "committed",
         EffectOutcome::NotCommitted => "not_committed",

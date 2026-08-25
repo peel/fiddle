@@ -1,8 +1,8 @@
 use crate::effect::{AuthorizedEffect, EffectContext, IntegrationOperation, ObservedState};
 use crate::github::{encode, GhCli, GhError};
 use fiddle_core::{
-    effect_id, EffectId, EffectKind, HumanDecisionRequirement, Observation, SourceRef,
-    VerificationState,
+    effect_id, EffectId, HumanDecisionRequirement, Observation, SourceRef, VerificationState,
+    ENSURE_CHECK_REQUESTED,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -196,7 +196,7 @@ impl EnsureCheckRequested {
         let effect_id = effect_id(
             project,
             invocation_ref,
-            EffectKind::EnsureCheckRequested,
+            ENSURE_CHECK_REQUESTED,
             &check_request_target(&repo, &workflow, &git_ref),
         );
         Self {

@@ -2,8 +2,8 @@ mod support;
 
 use fiddle_core::{
     combine, decision_request_id, effect_id, payload_hash, DecisionBinding, DeploymentRule,
-    EffectKind, HumanDecisionRequirement, InterpretedHumanDecision, PolicyDecision, ProposedEffect,
-    FIXTURE_REPAIR,
+    EffectName, HumanDecisionRequirement, InterpretedHumanDecision, PolicyDecision, ProposedEffect,
+    ENSURE_PULL_REQUEST_READY, FIXTURE_REPAIR,
 };
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
@@ -41,7 +41,7 @@ fn identity_of(operation: &EnsurePullRequestReady) -> fiddle_core::EffectId {
     effect_id(
         PROJECT,
         INVOCATION_REF,
-        EffectKind::EnsurePullRequestReady,
+        ENSURE_PULL_REQUEST_READY,
         &operation.target(),
     )
 }
@@ -52,7 +52,7 @@ struct World {
 }
 
 impl EffectTrace for World {
-    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
+    fn step(&self, _kind: &EffectName, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
     }
 }
@@ -218,7 +218,7 @@ impl World {
         let deployment = Deployment(DeploymentRule::Allow);
         let proposed = ProposedEffect {
             capability: FIXTURE_REPAIR,
-            kind: EffectKind::EnsurePullRequestReady,
+            kind: EffectName::shipped(ENSURE_PULL_REQUEST_READY),
             target: operation.target(),
             payload: operation.payload(),
         };
@@ -282,11 +282,9 @@ async fn a_run_that_reaches_policy_is_refused_for_want_of_a_person() {
 
     assert!(
         matches!(
-            error,
-            EffectError::HumanDecisionRequired {
-                kind: EffectKind::EnsurePullRequestReady,
-                ..
-            }
+            &error,
+            EffectError::HumanDecisionRequired { kind, .. }
+                if kind.as_str() == ENSURE_PULL_REQUEST_READY
         ),
         "got {error:?}"
     );

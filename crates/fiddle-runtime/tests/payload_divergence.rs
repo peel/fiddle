@@ -1,13 +1,15 @@
 mod support;
 
-use fiddle_core::{effect_id, payload_hash, EffectKind, ProposedEffect, FIXTURE_REPAIR};
+use fiddle_core::{
+    effect_id, payload_hash, EffectName, ProposedEffect, ENSURE_BRANCH_PUBLISHED, FIXTURE_REPAIR,
+};
 use fiddle_runtime::effect::{EffectError, EffectOutcome};
 use support::{Harness, Script, INVOCATION_REF, PAYLOAD, PROJECT, TARGET};
 
 fn proposed_with(payload: &str) -> ProposedEffect {
     ProposedEffect {
         capability: FIXTURE_REPAIR,
-        kind: EffectKind::EnsureBranchPublished,
+        kind: EffectName::shipped(ENSURE_BRANCH_PUBLISHED),
         target: TARGET.to_string(),
         payload: payload.to_string(),
     }
@@ -38,7 +40,7 @@ async fn a_payload_the_envelope_was_not_minted_for_never_reaches_the_world() {
             approved,
             applying,
         } => {
-            assert_eq!(kind, EffectKind::EnsureBranchPublished);
+            assert_eq!(kind, EffectName::shipped(ENSURE_BRANCH_PUBLISHED));
             assert_eq!(
                 approved,
                 payload_hash(widened),
@@ -77,7 +79,12 @@ fn the_two_requests_are_one_identity() {
     let widened = r#"{"force":true,"sha":"deadbeef"}"#;
     let of = |payload: &str| {
         let proposed = proposed_with(payload);
-        effect_id(PROJECT, INVOCATION_REF, proposed.kind, &proposed.target)
+        effect_id(
+            PROJECT,
+            INVOCATION_REF,
+            proposed.kind.as_str(),
+            &proposed.target,
+        )
     };
 
     assert_eq!(

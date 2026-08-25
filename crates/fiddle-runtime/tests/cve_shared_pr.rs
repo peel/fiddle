@@ -1,7 +1,9 @@
 mod support;
 
 use fiddle_core::{
-    content_digest, effect_id, AttemptId, EffectId, EffectKind, ProposedEffect, FIXTURE_REPAIR,
+    content_digest, effect_id, AttemptId, EffectId, EffectName, ProposedEffect,
+    ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_BODY,
+    ENSURE_PULL_REQUEST_READY, FIXTURE_REPAIR, PUBLISH_DECISION_REQUEST,
 };
 use fiddle_runtime::capability::cve::{
     check_out, plan, plan_shared_pull_request, publish_work, Approved, Checkout, PlanError,
@@ -67,10 +69,10 @@ struct Forge {
 }
 
 impl EffectTrace for Forge {
-    fn step(&self, kind: EffectKind, step: ExecutionStep) {
+    fn step(&self, kind: &EffectName, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
         self.watched.lock().unwrap().push(Watched {
-            kind,
+            kind: kind.clone(),
             step,
             mutations: self.mutations().len(),
             remote_branches: self.remote_branches(),
@@ -80,7 +82,7 @@ impl EffectTrace for Forge {
 }
 
 struct Watched {
-    kind: EffectKind,
+    kind: EffectName,
     step: ExecutionStep,
     mutations: usize,
     remote_branches: Vec<String>,
@@ -374,7 +376,7 @@ impl Forge {
         windows
     }
 
-    fn branches_gained_during(&self, kind: EffectKind) -> Vec<String> {
+    fn branches_gained_during(&self, kind: EffectName) -> Vec<String> {
         let watched = self.watched.lock().unwrap();
         let before = watched
             .iter()
@@ -432,27 +434,21 @@ impl Journal {
             .collect()
     }
 
-    fn effect_steps_kinds(&self) -> Vec<EffectKind> {
+    fn effect_steps_kinds(&self) -> Vec<EffectName> {
         self.kinds_where(|_| true)
     }
 
-    fn kinds_that_applied(&self) -> Vec<EffectKind> {
+    fn kinds_that_applied(&self) -> Vec<EffectName> {
         self.kinds_where(|step| step == ExecutionStep::Apply.as_str())
     }
 
-    fn kinds_where(&self, wanted: impl Fn(&str) -> bool) -> Vec<EffectKind> {
-        let mut kinds: Vec<EffectKind> = self
+    fn kinds_where(&self, wanted: impl Fn(&str) -> bool) -> Vec<EffectName> {
+        let mut kinds: Vec<EffectName> = self
             .records()
             .iter()
             .filter(|record| record["record"] == "effect_step")
             .filter(|record| wanted(record["step"].as_str().unwrap_or_default()))
-            .filter_map(|record| {
-                let named = record["kind"].as_str()?;
-                EffectKind::ALL
-                    .iter()
-                    .copied()
-                    .find(|k| k.as_str() == named)
-            })
+            .filter_map(|record| EffectName::parse(record["kind"].as_str()?).ok())
             .collect();
         kinds.dedup();
         kinds
@@ -470,7 +466,7 @@ async fn update_body(forge: &Forge, body: &str) -> BodyUpdate {
     let target = operation.target();
     let proposed = ProposedEffect {
         capability: FIXTURE_REPAIR,
-        kind: EffectKind::EnsurePullRequestBody,
+        kind: EffectName::shipped(ENSURE_PULL_REQUEST_BODY),
         target: target.clone(),
         payload: operation.payload(),
     };
@@ -497,12 +493,7 @@ async fn update_body(forge: &Forge, body: &str) -> BodyUpdate {
         "every walk in this file is expected to conclude; only *how* differs"
     );
     BodyUpdate {
-        effect_id: effect_id(
-            PROJECT,
-            INVOCATION_REF,
-            EffectKind::EnsurePullRequestBody,
-            &target,
-        ),
+        effect_id: effect_id(PROJECT, INVOCATION_REF, ENSURE_PULL_REQUEST_BODY, &target),
         applied: forge.steps()[before..].contains(&ExecutionStep::Apply.as_str()),
         observed: receipt.value.body,
     }
@@ -554,12 +545,14 @@ async fn an_unchanged_body_is_idempotent() {
 
 #[test]
 fn the_inversion_of_removing_the_digest_fails_this_test() {
-    assert!(digest_is_part_of_target(EffectKind::EnsurePullRequestBody));
+    assert!(digest_is_part_of_target(&EffectName::shipped(
+        ENSURE_PULL_REQUEST_BODY
+    )));
 }
 
-fn digest_is_part_of_target(kind: EffectKind) -> bool {
-    match kind {
-        EffectKind::EnsurePullRequestBody => {
+fn digest_is_part_of_target(kind: &EffectName) -> bool {
+    match kind.as_str() {
+        ENSURE_PULL_REQUEST_BODY => {
             let short = pull_request_body_target(REPO, PR, "covers 1 CVE");
             let other = pull_request_body_target(REPO, PR, "covers 3 CVEs");
             let long = pull_request_body_target(REPO, PR, &"covers 3 CVEs. ".repeat(500));
@@ -569,11 +562,12 @@ fn digest_is_part_of_target(kind: EffectKind) -> bool {
                 && !short.contains("covers")
                 && long.len() == other.len()
         }
-        EffectKind::EnsureBranchPublished
-        | EffectKind::EnsurePullRequest
-        | EffectKind::EnsureCheckRequested
-        | EffectKind::PublishDecisionRequest
-        | EffectKind::EnsurePullRequestReady => false,
+        ENSURE_BRANCH_PUBLISHED
+        | ENSURE_PULL_REQUEST
+        | ENSURE_CHECK_REQUESTED
+        | PUBLISH_DECISION_REQUEST
+        | ENSURE_PULL_REQUEST_READY => false,
+        other => panic!("{other} is not an effect this build ships"),
     }
 }
 
@@ -606,7 +600,7 @@ async fn open_the_shared_pull_request(
     .labelled(labels.iter().map(|it| it.to_string()).collect());
     let proposed = ProposedEffect {
         capability: FIXTURE_REPAIR,
-        kind: EffectKind::EnsurePullRequest,
+        kind: EffectName::shipped(ENSURE_PULL_REQUEST),
         target: operation.target(),
         payload: operation.payload(),
     };
@@ -1114,17 +1108,17 @@ async fn every_external_mutation_passes_the_effect_executor() {
 
     let kinds = out.journal.effect_steps_kinds();
     assert!(
-        kinds.contains(&EffectKind::EnsureBranchPublished),
+        kinds.contains(&EffectName::shipped(ENSURE_BRANCH_PUBLISHED)),
         "the journal must name the branch effect: {kinds:?}"
     );
     assert!(
-        kinds.contains(&EffectKind::EnsurePullRequest),
+        kinds.contains(&EffectName::shipped(ENSURE_PULL_REQUEST)),
         "and the pull request effect: {kinds:?}"
     );
     let applied = out.journal.kinds_that_applied();
     assert!(
-        applied.contains(&EffectKind::EnsureBranchPublished)
-            && applied.contains(&EffectKind::EnsurePullRequest),
+        applied.contains(&EffectName::shipped(ENSURE_BRANCH_PUBLISHED))
+            && applied.contains(&EffectName::shipped(ENSURE_PULL_REQUEST)),
         "both effects had work to do in an empty world: {applied:?}"
     );
 
@@ -1143,7 +1137,7 @@ async fn every_external_mutation_passes_the_effect_executor() {
     );
 
     assert_eq!(
-        forge.branches_gained_during(EffectKind::EnsureBranchPublished),
+        forge.branches_gained_during(EffectName::shipped(ENSURE_BRANCH_PUBLISHED)),
         [out.approved.branch().to_string()],
         "the push must have happened inside the branch effect's apply window; the \
          remote's branches are now {:?}",
@@ -1356,14 +1350,20 @@ fn the_decision_is_taken_over_the_observation_alone() {
     );
 }
 
+const SHIPPED: [&str; 6] = [
+    ENSURE_BRANCH_PUBLISHED,
+    ENSURE_PULL_REQUEST,
+    ENSURE_CHECK_REQUESTED,
+    PUBLISH_DECISION_REQUEST,
+    ENSURE_PULL_REQUEST_READY,
+    ENSURE_PULL_REQUEST_BODY,
+];
+
 #[test]
 fn no_comment_edit_path_exists() {
     assert!(
-        EffectKind::ALL
-            .iter()
-            .all(|kind| !kind.as_str().contains("comment")),
-        "an effect kind names a comment: {:?}",
-        EffectKind::ALL.map(|kind| kind.as_str())
+        SHIPPED.iter().all(|name| !name.contains("comment")),
+        "an effect name names a comment: {SHIPPED:?}"
     );
 
     let scan = scan_for_comment_dispatches();

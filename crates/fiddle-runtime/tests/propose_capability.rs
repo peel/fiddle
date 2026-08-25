@@ -2,8 +2,10 @@ mod fixture;
 mod support;
 
 use fiddle_core::{
-    effect_id, parse_marker, payload_hash, DecisionBinding, DeploymentRule, EffectKind,
-    EvidenceRef, NextAction, Observation, ProposedEffect, PROPOSE_CHANGE, PUBLISH_CHANGE,
+    effect_id, parse_marker, payload_hash, DecisionBinding, DeploymentRule, EffectName,
+    EvidenceRef, NextAction, Observation, ProposedEffect, ENSURE_BRANCH_PUBLISHED,
+    ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_READY, PROPOSE_CHANGE, PUBLISH_CHANGE,
+    PUBLISH_DECISION_REQUEST,
 };
 use fiddle_runtime::agent::AgentBudget;
 use fiddle_runtime::capability::{
@@ -75,13 +77,16 @@ struct World {
     dir: TempDir,
     remote: PathBuf,
     fixture: PathBuf,
-    steps: Mutex<Vec<(EffectKind, &'static str)>>,
+    steps: Mutex<Vec<(EffectName, &'static str)>>,
     decisions: Mutex<Vec<&'static str>>,
 }
 
 impl EffectTrace for World {
-    fn step(&self, kind: EffectKind, step: ExecutionStep) {
-        self.steps.lock().unwrap().push((kind, step.as_str()));
+    fn step(&self, kind: &EffectName, step: ExecutionStep) {
+        self.steps
+            .lock()
+            .unwrap()
+            .push((kind.clone(), step.as_str()));
     }
 }
 
@@ -381,25 +386,25 @@ impl World {
         std::fs::write(&root, b"not a directory").unwrap();
     }
 
-    fn effects_performed(&self) -> Vec<EffectKind> {
+    fn effects_performed(&self) -> Vec<EffectName> {
         self.steps_matching(ExecutionStep::Apply)
     }
 
-    fn effects_proposed(&self) -> Vec<EffectKind> {
+    fn effects_proposed(&self) -> Vec<EffectName> {
         self.steps_matching(ExecutionStep::ValidateCapability)
     }
 
-    fn steps_matching(&self, step: ExecutionStep) -> Vec<EffectKind> {
+    fn steps_matching(&self, step: ExecutionStep) -> Vec<EffectName> {
         self.steps
             .lock()
             .unwrap()
             .iter()
             .filter(|(_, entered)| *entered == step.as_str())
-            .map(|(kind, _)| *kind)
+            .map(|(kind, _)| kind.clone())
             .collect()
     }
 
-    fn steps(&self) -> Vec<(EffectKind, &'static str)> {
+    fn steps(&self) -> Vec<(EffectName, &'static str)> {
         self.steps.lock().unwrap().clone()
     }
 
@@ -646,7 +651,7 @@ fn walk_at<'a>(target: &'a str, payload: &'a str, allowlist: &'a [u64]) -> Decis
         max_pages: 10,
         project: PROJECT,
         invocation_ref: INVOCATION_REF,
-        kind: EffectKind::EnsurePullRequestReady,
+        kind: EffectName::shipped(ENSURE_PULL_REQUEST_READY),
         target,
         payload,
         allowlist,
@@ -663,7 +668,7 @@ fn identity_at(
     let effect = effect_id(
         PROJECT,
         INVOCATION_REF,
-        EffectKind::EnsurePullRequestReady,
+        ENSURE_PULL_REQUEST_READY,
         &pull_request_ready_target(REPO, PR, head_sha),
     );
     let request = fiddle_core::decision_request_id(PROJECT, INVOCATION_REF, &effect);
@@ -736,9 +741,9 @@ async fn a_first_run_publishes_a_branch_a_draft_and_a_question_then_waits() {
     assert_eq!(
         world.effects_performed(),
         [
-            EffectKind::EnsureBranchPublished,
-            EffectKind::EnsurePullRequest,
-            EffectKind::PublishDecisionRequest,
+            EffectName::shipped(ENSURE_BRANCH_PUBLISHED),
+            EffectName::shipped(ENSURE_PULL_REQUEST),
+            EffectName::shipped(PUBLISH_DECISION_REQUEST),
         ],
         "{:?}",
         world.steps()
@@ -768,11 +773,11 @@ async fn the_gated_effect_is_not_proposed_before_there_is_an_answer() {
 
     assert!(!world
         .effects_performed()
-        .contains(&EffectKind::EnsurePullRequestReady));
+        .contains(&EffectName::shipped(ENSURE_PULL_REQUEST_READY)));
     assert!(
         !world
             .effects_proposed()
-            .contains(&EffectKind::EnsurePullRequestReady),
+            .contains(&EffectName::shipped(ENSURE_PULL_REQUEST_READY)),
         "the effect must not reach the executor at all: {:?}",
         world.effects_proposed()
     );
@@ -1107,9 +1112,9 @@ async fn a_second_process_finds_its_own_question_and_does_not_ask_twice() {
     assert_eq!(
         world.effects_performed(),
         [
-            EffectKind::EnsureBranchPublished,
-            EffectKind::EnsurePullRequest,
-            EffectKind::PublishDecisionRequest,
+            EffectName::shipped(ENSURE_BRANCH_PUBLISHED),
+            EffectName::shipped(ENSURE_PULL_REQUEST),
+            EffectName::shipped(PUBLISH_DECISION_REQUEST),
         ],
         "{:?}",
         world.steps()
@@ -1181,7 +1186,7 @@ async fn a_published_change_nobody_has_been_asked_about_is_resumed_by_asking() {
     );
     assert_eq!(
         world.effects_performed(),
-        [EffectKind::PublishDecisionRequest],
+        [EffectName::shipped(PUBLISH_DECISION_REQUEST)],
         "only the question: the change was already published: {:?}",
         world.steps()
     );
@@ -1223,7 +1228,7 @@ async fn a_readied_pull_request_is_not_re_drafted() {
     );
     assert_eq!(
         world.effects_performed(),
-        [EffectKind::PublishDecisionRequest],
+        [EffectName::shipped(PUBLISH_DECISION_REQUEST)],
         "only the question: the change was already published and already ready: {:?}",
         world.steps()
     );
@@ -1318,7 +1323,7 @@ async fn only_an_approval_marks_the_pull_request_ready() {
         assert_eq!(
             world
                 .effects_performed()
-                .contains(&EffectKind::EnsurePullRequestReady),
+                .contains(&EffectName::shipped(ENSURE_PULL_REQUEST_READY)),
             should_mutate,
             "{reply:?} performed {:?}",
             world.effects_performed()
@@ -1624,7 +1629,7 @@ async fn the_transition_is_performed_through_the_decided_entry_point() {
 
     assert!(
         world.steps().contains(&(
-            EffectKind::EnsurePullRequestReady,
+            EffectName::shipped(ENSURE_PULL_REQUEST_READY),
             ExecutionStep::ResolveDecision.as_str()
         )),
         "the gated effect was authorized by a decision, which only \
@@ -1634,10 +1639,10 @@ async fn the_transition_is_performed_through_the_decided_entry_point() {
     assert_eq!(
         world.effects_performed(),
         [
-            EffectKind::EnsureBranchPublished,
-            EffectKind::EnsurePullRequest,
-            EffectKind::PublishDecisionRequest,
-            EffectKind::EnsurePullRequestReady,
+            EffectName::shipped(ENSURE_BRANCH_PUBLISHED),
+            EffectName::shipped(ENSURE_PULL_REQUEST),
+            EffectName::shipped(PUBLISH_DECISION_REQUEST),
+            EffectName::shipped(ENSURE_PULL_REQUEST_READY),
         ],
         "{:?}",
         world.steps()
@@ -1912,7 +1917,7 @@ async fn the_capability_delegates_the_whole_validation_order() {
     assert!(
         !world
             .effects_performed()
-            .contains(&EffectKind::EnsurePullRequestReady),
+            .contains(&EffectName::shipped(ENSURE_PULL_REQUEST_READY)),
         "{:?}",
         world.effects_performed()
     );
@@ -1994,7 +1999,7 @@ async fn the_second_payload_comparison_catches_what_the_first_could_not_see() {
     );
     assert!(
         !world.steps().contains(&(
-            EffectKind::EnsurePullRequestReady,
+            EffectName::shipped(ENSURE_PULL_REQUEST_READY),
             ExecutionStep::Authorize.as_str()
         )),
         "refused at step 4 by the decision, not at step 6 by the envelope: {:?}",
@@ -2047,7 +2052,7 @@ async fn a_second_invocation_after_an_approval_accounts_for_the_work_and_does_no
             .effects_performed()
             .iter()
             .skip(4)
-            .any(|kind| *kind == EffectKind::EnsurePullRequestReady),
+            .any(|kind| *kind == EffectName::shipped(ENSURE_PULL_REQUEST_READY)),
         "and nothing was applied a second time: {:?}",
         world.effects_performed()
     );
@@ -2072,7 +2077,7 @@ async fn a_second_invocation_after_an_approval_accounts_for_the_work_and_does_no
 fn proposal(target: &str, payload: &str) -> ProposedEffect {
     ProposedEffect {
         capability: PROPOSE_CHANGE,
-        kind: EffectKind::EnsurePullRequestReady,
+        kind: EffectName::shipped(ENSURE_PULL_REQUEST_READY),
         target: target.to_string(),
         payload: payload.to_string(),
     }

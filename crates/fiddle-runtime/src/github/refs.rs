@@ -1,17 +1,12 @@
 use crate::effect::{AuthorizedEffect, EffectContext, IntegrationOperation, ObservedState};
 use crate::git::PublishedBranch;
 use crate::github::GhError;
-use fiddle_core::{effect_id, EffectKind, HumanDecisionRequirement};
+use fiddle_core::{effect_id, HumanDecisionRequirement, ENSURE_BRANCH_PUBLISHED};
 
 const NAMESPACE: &str = "fiddle";
 
 pub fn branch_name(project: &str, invocation_ref: &str) -> String {
-    let id = effect_id(
-        project,
-        invocation_ref,
-        EffectKind::EnsureBranchPublished,
-        project,
-    );
+    let id = effect_id(project, invocation_ref, ENSURE_BRANCH_PUBLISHED, project);
     format!("{NAMESPACE}/{}", id.0)
 }
 

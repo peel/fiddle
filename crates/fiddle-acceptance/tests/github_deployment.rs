@@ -174,8 +174,9 @@ fn a_deployment_rule_in_the_document_refuses_the_effect_it_names() {
         "the document's rule must produce a policy refusal, got {payload}"
     );
     assert!(
-        summary.contains("EnsureBranchPublished"),
-        "the refusal must name the effect kind the rule was written for, got {payload}"
+        summary.contains("ensure_branch_published"),
+        "the refusal must name the effect the rule was written for, in the \
+         spelling the document uses, got {payload}"
     );
 }
 
@@ -207,11 +208,11 @@ fn a_rule_written_for_one_kind_refuses_that_kind_and_not_the_one_before_it() {
     let summary = summary_of(&payload);
 
     assert!(
-        summary.contains("policy denied") && summary.contains("EnsurePullRequest"),
-        "the pull request is the kind the document names, got {payload}"
+        summary.contains("policy denied") && summary.contains("ensure_pull_request"),
+        "the pull request is the effect the document names, got {payload}"
     );
     assert!(
-        !summary.contains("EnsureBranchPublished"),
+        !summary.contains("ensure_branch_published"),
         "the branch carries no rule and must not have been refused, got {payload}"
     );
     let evidence = payload["progress"][0]["evidence"].to_string();

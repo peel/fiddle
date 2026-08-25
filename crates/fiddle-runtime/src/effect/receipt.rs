@@ -1,5 +1,5 @@
 use crate::github::GhError;
-use fiddle_core::{EffectId, EffectKind, PayloadHash};
+use fiddle_core::{EffectId, EffectName, PayloadHash};
 
 pub trait ObservedState {
     type Value;
@@ -33,26 +33,26 @@ pub enum Recurrence {
 
 #[derive(Debug, thiserror::Error)]
 pub enum EffectError {
-    #[error("policy denied {kind:?}: {reason}")]
-    PolicyDenied { kind: EffectKind, reason: String },
-    #[error("{kind:?} is awaiting a human decision on the channel M3 introduced: {reason}")]
-    HumanDecisionRequired { kind: EffectKind, reason: String },
-    #[error("{kind:?} left an unresolved outcome: {reason}")]
-    Unresolved { kind: EffectKind, reason: String },
+    #[error("policy denied {kind}: {reason}")]
+    PolicyDenied { kind: EffectName, reason: String },
+    #[error("{kind} is awaiting a human decision on the channel M3 introduced: {reason}")]
+    HumanDecisionRequired { kind: EffectName, reason: String },
+    #[error("{kind} left an unresolved outcome: {reason}")]
+    Unresolved { kind: EffectName, reason: String },
     #[error(
-        "{kind:?} was authorized for payload {} and would apply {}; nothing was performed",
+        "{kind} was authorized for payload {} and would apply {}; nothing was performed",
         approved.0,
         applying.0
     )]
     PayloadDiverged {
-        kind: EffectKind,
+        kind: EffectName,
         approved: PayloadHash,
         applying: PayloadHash,
     },
-    #[error("{kind:?} found {count} matching objects, expected at most one")]
-    DuplicateState { kind: EffectKind, count: usize },
-    #[error("adapter failure for {kind:?}: {source}")]
-    Adapter { kind: EffectKind, source: GhError },
+    #[error("{kind} found {count} matching objects, expected at most one")]
+    DuplicateState { kind: EffectName, count: usize },
+    #[error("adapter failure for {kind}: {source}")]
+    Adapter { kind: EffectName, source: GhError },
 }
 
 impl EffectError {
@@ -77,7 +77,9 @@ impl EffectError {
 mod tests {
     use super::*;
 
-    const KIND: EffectKind = EffectKind::EnsurePullRequest;
+    fn kind() -> EffectName {
+        EffectName::shipped(fiddle_core::ENSURE_PULL_REQUEST)
+    }
 
     fn reason() -> String {
         "because".to_string()
@@ -89,7 +91,7 @@ mod tests {
             (
                 "a deployment rule denies the kind",
                 EffectError::PolicyDenied {
-                    kind: KIND,
+                    kind: kind(),
                     reason: reason(),
                 },
                 Recurrence::Permanent,
@@ -97,7 +99,7 @@ mod tests {
             (
                 "a decision channel that now exists, and has not answered yet",
                 EffectError::HumanDecisionRequired {
-                    kind: KIND,
+                    kind: kind(),
                     reason: reason(),
                 },
                 Recurrence::Awaiting,
@@ -105,7 +107,7 @@ mod tests {
             (
                 "the caller's own two halves disagree",
                 EffectError::PayloadDiverged {
-                    kind: KIND,
+                    kind: kind(),
                     approved: PayloadHash("a".into()),
                     applying: PayloadHash("b".into()),
                 },
@@ -114,7 +116,7 @@ mod tests {
             (
                 "the world holds an ambiguity fiddle may not resolve",
                 EffectError::DuplicateState {
-                    kind: KIND,
+                    kind: kind(),
                     count: 2,
                 },
                 Recurrence::Permanent,
@@ -122,7 +124,7 @@ mod tests {
             (
                 "nobody knows, and a read settles it",
                 EffectError::Unresolved {
-                    kind: KIND,
+                    kind: kind(),
                     reason: reason(),
                 },
                 Recurrence::Correctable,
@@ -130,7 +132,7 @@ mod tests {
             (
                 "the forge would not answer",
                 EffectError::Adapter {
-                    kind: KIND,
+                    kind: kind(),
                     source: GhError::Auth,
                 },
                 Recurrence::Correctable,
@@ -150,7 +152,7 @@ mod tests {
     #[test]
     fn a_required_human_decision_is_now_awaiting_rather_than_permanent() {
         let error = EffectError::HumanDecisionRequired {
-            kind: EffectKind::EnsurePullRequestReady,
+            kind: EffectName::shipped(fiddle_core::ENSURE_PULL_REQUEST_READY),
             reason: "the capability's minimum requires human judgment".into(),
         };
         assert_eq!(error.recurrence(), Recurrence::Awaiting);
@@ -165,15 +167,15 @@ mod tests {
     fn no_other_permanent_refusal_became_a_wait() {
         let refusals = [
             EffectError::PolicyDenied {
-                kind: KIND,
+                kind: kind(),
                 reason: reason(),
             },
             EffectError::DuplicateState {
-                kind: KIND,
+                kind: kind(),
                 count: 2,
             },
             EffectError::PayloadDiverged {
-                kind: KIND,
+                kind: kind(),
                 approved: PayloadHash("a".into()),
                 applying: PayloadHash("b".into()),
             },
@@ -187,12 +189,12 @@ mod tests {
     fn the_two_families_are_both_inhabited() {
         assert_ne!(
             EffectError::PolicyDenied {
-                kind: KIND,
+                kind: kind(),
                 reason: reason(),
             }
             .recurrence(),
             EffectError::Unresolved {
-                kind: KIND,
+                kind: kind(),
                 reason: reason(),
             }
             .recurrence(),

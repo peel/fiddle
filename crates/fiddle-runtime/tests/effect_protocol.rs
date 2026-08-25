@@ -2,8 +2,9 @@ mod support;
 
 use fiddle_core::{
     decision_request_id, effect_id, payload_hash, DecisionBinding, DeploymentRule, EffectId,
-    EffectKind, HumanDecisionRequirement, InterpretedHumanDecision, PayloadHash, ProposedEffect,
-    Published, FIXTURE_REPAIR, STUB_MARK,
+    EffectName, HumanDecisionRequirement, InterpretedHumanDecision, PayloadHash, ProposedEffect,
+    Published, ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
+    FIXTURE_REPAIR, STUB_MARK,
 };
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
@@ -684,12 +685,7 @@ async fn a_denied_deployment_rule_refuses_before_the_mutation() {
 const DECIDED_HEAD: &str = "1f0e5d4c3b2a19876543210fedcba98765432100";
 
 fn proposed_effect_id() -> EffectId {
-    effect_id(
-        PROJECT,
-        INVOCATION_REF,
-        EffectKind::EnsureBranchPublished,
-        TARGET,
-    )
+    effect_id(PROJECT, INVOCATION_REF, ENSURE_BRANCH_PUBLISHED, TARGET)
 }
 
 fn approval(effect: EffectId, payload: PayloadHash) -> ResolvedDecision {
@@ -803,7 +799,7 @@ async fn a_decision_naming_another_effect_is_refused() {
     let elsewhere = effect_id(
         PROJECT,
         INVOCATION_REF,
-        EffectKind::EnsureBranchPublished,
+        ENSURE_BRANCH_PUBLISHED,
         "refs/heads/fiddle/somewhere-else",
     );
     assert_ne!(
@@ -1074,12 +1070,7 @@ async fn the_receipt_carries_the_recomputable_identity_and_payload_hash() {
 
     assert_eq!(
         receipt.effect_id,
-        effect_id(
-            PROJECT,
-            INVOCATION_REF,
-            EffectKind::EnsureBranchPublished,
-            TARGET
-        )
+        effect_id(PROJECT, INVOCATION_REF, ENSURE_BRANCH_PUBLISHED, TARGET)
     );
     assert_eq!(receipt.payload_hash, payload_hash(PAYLOAD));
     assert_eq!(receipt.target, TARGET);
@@ -1131,7 +1122,7 @@ struct Remote {
 }
 
 impl EffectTrace for Remote {
-    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
+    fn step(&self, _kind: &EffectName, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
     }
 }
@@ -1282,7 +1273,7 @@ where
     let deployment = Deployment(DeploymentRule::Allow);
     let proposed = ProposedEffect {
         capability: FIXTURE_REPAIR,
-        kind: EffectKind::EnsureBranchPublished,
+        kind: EffectName::shipped(ENSURE_BRANCH_PUBLISHED),
         target: fiddle_runtime::github::branch_target(&published_branch()),
         payload: serde_json::json!({ "repo": REPO, "sha": intended }).to_string(),
     };
@@ -1317,7 +1308,7 @@ fn the_branch_name_is_derived_and_stable() {
             effect_id(
                 "acme/widget",
                 "beans:w-1",
-                EffectKind::EnsureBranchPublished,
+                ENSURE_BRANCH_PUBLISHED,
                 "acme/widget"
             )
             .0
@@ -1571,11 +1562,11 @@ const WORKFLOW: &str = "fiddle-check.yml";
 
 const REQUIRED_CHECK: &str = "build";
 
-struct Denying(EffectKind);
+struct Denying(EffectName);
 
 impl fiddle_runtime::effect::DeploymentPolicy for Denying {
-    fn rule_for(&self, kind: EffectKind) -> DeploymentRule {
-        match kind == self.0 {
+    fn rule_for(&self, kind: &EffectName) -> DeploymentRule {
+        match kind == &self.0 {
             true => DeploymentRule::Deny,
             false => DeploymentRule::Allow,
         }
@@ -1826,7 +1817,7 @@ async fn all_three_receipts_reach_the_published_bundle() {
         format!(
             "effect:ensure_branch_published:{}:committed:{sha}:refs/heads/{branch} points at {sha}",
             identity(
-                EffectKind::EnsureBranchPublished,
+                ENSURE_BRANCH_PUBLISHED,
                 &fiddle_runtime::github::branch_target(&branch)
             )
         )
@@ -1835,7 +1826,7 @@ async fn all_three_receipts_reach_the_published_bundle() {
         evidence[2].starts_with(&format!(
             "effect:ensure_pull_request:{}:committed:7:pull request #7 from {HEAD_OWNER}:{branch} \
              into {BASE}",
-            identity(EffectKind::EnsurePullRequest, &pull)
+            identity(ENSURE_PULL_REQUEST, &pull)
         )),
         "{}",
         evidence[2]
@@ -1843,7 +1834,7 @@ async fn all_three_receipts_reach_the_published_bundle() {
     assert!(
         evidence[3].starts_with(&format!(
             "effect:ensure_check_requested:{}:committed:4200:workflow run 4200 named",
-            identity(EffectKind::EnsureCheckRequested, &check)
+            identity(ENSURE_CHECK_REQUESTED, &check)
         )),
         "{}",
         evidence[3]
@@ -1945,7 +1936,12 @@ async fn a_publish_run_populates_the_review_and_verification_observations() {
 #[tokio::test]
 async fn a_denied_effect_stops_the_sequence() {
     let (remote, local) = a_publishable_world();
-    let bundle = publish_attempt(&remote, &local, &Denying(EffectKind::EnsurePullRequest)).await;
+    let bundle = publish_attempt(
+        &remote,
+        &local,
+        &Denying(EffectName::shipped(ENSURE_PULL_REQUEST)),
+    )
+    .await;
 
     let branch = branch_name(PROJECT, INVOCATION_REF);
     assert_eq!(
@@ -2012,7 +2008,7 @@ async fn a_second_attempt_recognises_the_run_the_first_one_dispatched() {
     let expected = fiddle_runtime::github::run_name(&effect_id(
         PROJECT,
         INVOCATION_REF,
-        EffectKind::EnsureCheckRequested,
+        ENSURE_CHECK_REQUESTED,
         &check_target,
     ));
     let dispatched = remote

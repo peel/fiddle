@@ -23,8 +23,9 @@ use crate::github::{
 use crate::scanner::{ScanReport, Scanner};
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError};
 use fiddle_core::{
-    correlation_key, AdvisoryId, AttemptId, CapabilityId, ChangeSetState, EffectKind, EvidenceRef,
+    correlation_key, AdvisoryId, AttemptId, CapabilityId, ChangeSetState, EffectName, EvidenceRef,
     Observation, ProjectedFinding, ProposedEffect, RunDisposition, Severities, TreeObservation,
+    ENSURE_PULL_REQUEST_BODY,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -449,7 +450,7 @@ where
             .execute(
                 ProposedEffect {
                     capability: self.id(),
-                    kind: EffectKind::EnsurePullRequestBody,
+                    kind: EffectName::shipped(ENSURE_PULL_REQUEST_BODY),
                     target: describe.target(),
                     payload: describe.payload(),
                 },
