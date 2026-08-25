@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "crates/fiddle-core",
+  "crates/fiddle-macros",
   "crates/fiddle-runtime",
   "crates/fiddle-cli",
   "crates/fiddle-acceptance",
@@ -22,6 +23,10 @@ blake3 = "1"
 assert_cmd = "2"
 regex = "1"
 tempfile = "3"
+trybuild = "1"
+syn = "2"
+quote = "1"
+proc-macro2 = "1"
 
 rig-core = { version = "=0.41.0", features = ["derive", "test-utils"] }
 rig-agent = "=0.41.0"

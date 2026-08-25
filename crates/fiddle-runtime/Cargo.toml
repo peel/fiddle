@@ -52,6 +52,7 @@ path = "tests/support/support.rs"
 
 [dependencies]
 fiddle-core = { path = "../fiddle-core" }
+fiddle-macros = { path = "../fiddle-macros" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -67,6 +68,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
+trybuild.workspace = true
 fiddle-runtime = { path = ".", features = [
   "gh-stub",
   "git-stub",
