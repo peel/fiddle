@@ -5,8 +5,8 @@ use fiddle_core::{
     FIXTURE_REPAIR,
 };
 use fiddle_runtime::effect::{
-    EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
-    IntegrationOperation, ReadRetry,
+    AdapterError, EffectContext, EffectError, EffectOutcome, EffectPhase, EffectReceipt,
+    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ReadRetry,
 };
 use fiddle_runtime::github::{
     branch_name, check_request_target, classify, observe_checks, run_name, CheckState,
@@ -480,7 +480,7 @@ async fn a_lost_dispatch_response_does_not_start_a_second_run() {
         "expected a child that died without answering, got {lost:?}"
     );
     assert_eq!(
-        lost.outcome(),
+        lost.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "and it must classify Unknown, or the executor would never go and look"
     );

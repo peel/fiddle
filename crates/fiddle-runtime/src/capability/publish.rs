@@ -1,7 +1,9 @@
 use super::stub::write_atomically;
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::effect::{EffectOutcome, EffectReceipt, Executor, IntegrationOperation, ObservedState};
-use crate::github::{branch_name, EnsureBranchPublished, EnsureCheckRequested, EnsurePullRequest};
+use crate::github::{
+    branch_name, EnsureBranchPublished, EnsureCheckRequested, EnsurePullRequest, GhError,
+};
 use fiddle_core::{
     correlation_key, CapabilityId, ChangeSetState, EffectName, EvidenceRef, Observation,
     ProposedEffect, Publication, Published, ReviewState, SourceRef, ENSURE_BRANCH_PUBLISHED,
@@ -81,7 +83,7 @@ impl<'a> PublishChange<'a> {
         operation: O,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, CapabilityError>
     where
-        O: IntegrationOperation,
+        O: IntegrationOperation<Error = GhError>,
     {
         let proposed = ProposedEffect {
             capability: self.id(),

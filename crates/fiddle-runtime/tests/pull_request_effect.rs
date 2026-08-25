@@ -4,8 +4,8 @@ use fiddle_core::{
     effect_id, payload_hash, EffectName, ProposedEffect, ENSURE_PULL_REQUEST, FIXTURE_REPAIR,
 };
 use fiddle_runtime::effect::{
-    EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
-    IntegrationOperation, ReadRetry,
+    AdapterError, EffectContext, EffectError, EffectOutcome, EffectPhase, EffectReceipt,
+    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ReadRetry,
 };
 use fiddle_runtime::github::{branch_name, EnsurePullRequest, PullRequest};
 use fiddle_runtime::{GhCli, GhError};
@@ -430,7 +430,7 @@ async fn a_422_for_a_pull_request_that_already_exists_is_not_a_false_failure() {
         "expected a 422 whose message says nothing, got {refusal:?}"
     );
     assert_eq!(
-        refusal.outcome(),
+        refusal.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "a 422 is never classified on its face; being Unknown is what forces the read"
     );
@@ -518,7 +518,7 @@ async fn a_lost_create_response_does_not_produce_a_second_pull_request() {
         "expected a child that died without answering, got {lost:?}"
     );
     assert_eq!(
-        lost.outcome(),
+        lost.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "and it must classify Unknown, or the executor would never go and look"
     );

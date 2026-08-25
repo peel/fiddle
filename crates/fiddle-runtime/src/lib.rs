@@ -25,8 +25,9 @@ pub use capability::{
     StubMark, CAPABILITIES,
 };
 pub use effect::{
-    AuthorizedEffect, DeploymentPolicy, EffectContext, EffectError, EffectOutcome, EffectReceipt,
-    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ObservedState, ResolvedDecision,
+    AdapterError, AuthorizedEffect, DeploymentPolicy, EffectContext, EffectError, EffectOutcome,
+    EffectPhase, EffectReceipt, EffectTrace, ExecutionStep, Executor, IntegrationOperation,
+    ObservedState, ResolvedDecision,
 };
 pub use evidence::{EvidenceError, BUNDLE_FILE};
 pub use fiddle_core as core;

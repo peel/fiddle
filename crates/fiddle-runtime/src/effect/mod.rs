@@ -25,6 +25,16 @@ pub enum EffectOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EffectPhase {
+    Inspect,
+    Apply,
+}
+
+pub trait AdapterError: std::error::Error + Send + Sync + 'static {
+    fn outcome(&self, phase: EffectPhase) -> EffectOutcome;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExecutionStep {
     ValidateCapability,
     DeriveIdentity,
@@ -169,17 +179,19 @@ struct Settled<S> {
 pub trait IntegrationOperation: Send + Sync + Sized {
     type State: ObservedState + Send;
 
+    type Error: AdapterError;
+
     fn minimum(&self) -> HumanDecisionRequirement;
 
     fn payload(&self) -> String;
 
-    async fn inspect(&self, ctx: &EffectContext) -> Result<Option<Self::State>, GhError>;
+    async fn inspect(&self, ctx: &EffectContext) -> Result<Option<Self::State>, Self::Error>;
 
     async fn apply(
         &self,
         ctx: &EffectContext,
         authorized: &AuthorizedEffect<Self>,
-    ) -> Result<(), GhError>;
+    ) -> Result<(), Self::Error>;
 }
 
 pub struct ResolvedDecision {
@@ -286,7 +298,7 @@ impl<'a> Executor<'a> {
         operation: O,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, EffectError>
     where
-        O: IntegrationOperation,
+        O: IntegrationOperation<Error = GhError>,
     {
         self.walk(proposed, operation, None).await
     }
@@ -298,7 +310,7 @@ impl<'a> Executor<'a> {
         decision: &ResolvedDecision,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, EffectError>
     where
-        O: IntegrationOperation,
+        O: IntegrationOperation<Error = GhError>,
     {
         self.walk(proposed, operation, Some(decision)).await
     }
@@ -310,7 +322,7 @@ impl<'a> Executor<'a> {
         decision: Option<&ResolvedDecision>,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, EffectError>
     where
-        O: IntegrationOperation,
+        O: IntegrationOperation<Error = GhError>,
     {
         let kind = proposed.kind.clone();
 
@@ -441,7 +453,7 @@ impl<'a> Executor<'a> {
                 count,
             }),
             Ok(None) => match dispatched {
-                Err(error) if error.outcome() == EffectOutcome::NotCommitted => {
+                Err(error) if error.outcome(EffectPhase::Apply) == EffectOutcome::NotCommitted => {
                     Err(adapter_failure(&kind, error))
                 }
                 Err(error) => Err(EffectError::Unresolved {
@@ -459,7 +471,7 @@ impl<'a> Executor<'a> {
                 }),
             },
             Err(read_error) => match dispatched {
-                Err(error) if error.outcome() == EffectOutcome::NotCommitted => {
+                Err(error) if error.outcome(EffectPhase::Apply) == EffectOutcome::NotCommitted => {
                     Err(adapter_failure(&kind, error))
                 }
                 unsettled => Err(EffectError::Unresolved {
@@ -477,7 +489,7 @@ impl<'a> Executor<'a> {
         }
     }
 
-    async fn read_until_settled<O: IntegrationOperation>(
+    async fn read_until_settled<O: IntegrationOperation<Error = GhError>>(
         &self,
         operation: &O,
         effect: &EffectId,

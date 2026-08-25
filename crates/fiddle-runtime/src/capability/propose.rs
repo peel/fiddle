@@ -260,7 +260,7 @@ where
         operation: O,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, CapabilityError>
     where
-        O: IntegrationOperation,
+        O: IntegrationOperation<Error = GhError>,
     {
         self.proposing(kind, target, payload, operation, None).await
     }
@@ -274,7 +274,7 @@ where
         decision: &ResolvedDecision,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, CapabilityError>
     where
-        O: IntegrationOperation,
+        O: IntegrationOperation<Error = GhError>,
     {
         self.proposing(kind, target, payload, operation, Some(decision))
             .await
@@ -289,7 +289,7 @@ where
         decision: Option<&ResolvedDecision>,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, CapabilityError>
     where
-        O: IntegrationOperation,
+        O: IntegrationOperation<Error = GhError>,
     {
         let proposed = ProposedEffect {
             capability: self.id(),

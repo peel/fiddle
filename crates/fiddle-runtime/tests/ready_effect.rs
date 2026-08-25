@@ -6,8 +6,8 @@ use fiddle_core::{
     ENSURE_PULL_REQUEST_READY, FIXTURE_REPAIR,
 };
 use fiddle_runtime::effect::{
-    EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
-    IntegrationOperation, ReadRetry, ResolvedDecision,
+    AdapterError, EffectContext, EffectError, EffectOutcome, EffectPhase, EffectReceipt,
+    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ReadRetry, ResolvedDecision,
 };
 use fiddle_runtime::github::{EnsurePullRequestReady, GhError, ReadyPullRequest};
 use fiddle_runtime::GhCli;
@@ -425,7 +425,7 @@ async fn a_refused_mutation_is_not_reported_as_a_lost_write() {
         "and to name what refused it, got {source:?}"
     );
     assert_eq!(
-        source.outcome(),
+        source.outcome(EffectPhase::Apply),
         EffectOutcome::NotCommitted,
         "a refusal in these terms leaves no room for the write having happened"
     );
@@ -536,7 +536,7 @@ async fn a_lost_answer_on_the_ready_transition_is_settled_by_reading() {
         "expected a child that died without answering, got {lost:?}"
     );
     assert_eq!(
-        lost.outcome(),
+        lost.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "and it must classify Unknown, or the executor would never go and look"
     );
@@ -666,5 +666,9 @@ async fn a_pull_request_this_client_cannot_read_is_not_a_verdict() {
         .await
         .expect_err("a response missing both fields is not an answer");
 
-    assert_eq!(error.outcome(), EffectOutcome::Unknown, "got {error:?}");
+    assert_eq!(
+        error.outcome(EffectPhase::Apply),
+        EffectOutcome::Unknown,
+        "got {error:?}"
+    );
 }

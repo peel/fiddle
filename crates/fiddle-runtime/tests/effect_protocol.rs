@@ -8,8 +8,9 @@ use fiddle_core::{
     STUB_MARK,
 };
 use fiddle_runtime::effect::{
-    EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
-    IntegrationOperation, ObservedState, ReadRetry, Recurrence, ResolvedDecision,
+    AdapterError, EffectContext, EffectError, EffectOutcome, EffectPhase, EffectReceipt,
+    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ObservedState, ReadRetry,
+    Recurrence, ResolvedDecision,
 };
 use fiddle_runtime::git::{GitCli, GitError};
 use fiddle_runtime::github::{branch_name, EnsureBranchPublished};
@@ -1269,7 +1270,7 @@ async fn publish_the_branch<O>(
     operation: O,
 ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, EffectError>
 where
-    O: IntegrationOperation,
+    O: IntegrationOperation<Error = GhError>,
 {
     let deployment = Deployment(DeploymentRule::Allow);
     let proposed = ProposedEffect {
@@ -1476,7 +1477,7 @@ async fn a_push_that_landed_before_its_answer_was_lost_is_resolved_by_reading() 
         "expected a child that died without answering, got {lost:?}"
     );
     assert_eq!(
-        lost.outcome(),
+        lost.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "and it must classify Unknown, or the executor would never go and look"
     );

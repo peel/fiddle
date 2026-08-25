@@ -1,4 +1,4 @@
-use crate::effect::EffectOutcome;
+use crate::effect::{AdapterError, EffectOutcome, EffectPhase};
 use crate::process::{run_bounded, Bounded};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -52,8 +52,8 @@ pub enum GitError {
     Killed,
 }
 
-impl GitError {
-    pub fn outcome(&self) -> EffectOutcome {
+impl AdapterError for GitError {
+    fn outcome(&self, _phase: EffectPhase) -> EffectOutcome {
         match self {
             GitError::InvalidBranch { .. }
             | GitError::CancelledBeforePush
@@ -462,8 +462,42 @@ mod tests {
     }
 
     #[test]
-    fn a_push_failure_says_what_it_knows_about_the_ref() {
-        for (error, expected) in [
+    fn only_a_full_object_name_is_reported_as_a_sha() {
+        assert!(is_object_name("0123456789abcdef0123456789abcdef01234567"));
+        assert!(!is_object_name(""));
+        assert!(!is_object_name("0123456"));
+        assert!(!is_object_name(
+            "warning: something\n0123456789abcdef0123456789abcdef0123456"
+        ));
+        assert!(!is_object_name("z123456789abcdef0123456789abcdef01234567"));
+    }
+}
+
+#[cfg(test)]
+mod outcome {
+    use super::*;
+    use crate::effect::{AdapterError, EffectPhase};
+
+    const GIT_VARIANTS: usize = 11;
+
+    fn ordinal(error: &GitError) -> usize {
+        match error {
+            GitError::InvalidBranch { .. } => 0,
+            GitError::NonFastForward { .. } => 1,
+            GitError::Rejected { .. } => 2,
+            GitError::Push { .. } => 3,
+            GitError::Fetch { .. } => 4,
+            GitError::CancelledFetch => 5,
+            GitError::Head { .. } => 6,
+            GitError::Timeout(_) => 7,
+            GitError::CancelledBeforePush => 8,
+            GitError::CancelledMidPush => 9,
+            GitError::Killed => 10,
+        }
+    }
+
+    fn one_case_for_every_variant() -> [(GitError, EffectOutcome); GIT_VARIANTS] {
+        [
             (
                 GitError::InvalidBranch {
                     branch: "+f".to_string(),
@@ -471,35 +505,22 @@ mod tests {
                 },
                 EffectOutcome::NotCommitted,
             ),
-            (GitError::CancelledBeforePush, EffectOutcome::NotCommitted),
-            (GitError::CancelledMidPush, EffectOutcome::Unknown),
-            (
-                GitError::Head {
-                    stderr: "s".to_string(),
-                },
-                EffectOutcome::NotCommitted,
-            ),
             (
                 GitError::NonFastForward {
-                    branch: "fiddle/abc".to_string(),
+                    branch: "b".to_string(),
                 },
                 EffectOutcome::NotCommitted,
             ),
             (
                 GitError::Rejected {
-                    branch: "fiddle/abc".to_string(),
-                    reason: "pre-receive hook".to_string(),
+                    branch: "b".to_string(),
+                    reason: "r".to_string(),
                 },
                 EffectOutcome::NotCommitted,
             ),
             (
-                GitError::Timeout(Duration::from_secs(1)),
-                EffectOutcome::Unknown,
-            ),
-            (GitError::Killed, EffectOutcome::Unknown),
-            (
                 GitError::Push {
-                    stderr: "s".to_string(),
+                    stderr: "no ! line".to_string(),
                 },
                 EffectOutcome::Unknown,
             ),
@@ -510,10 +531,42 @@ mod tests {
                 EffectOutcome::NotCommitted,
             ),
             (GitError::CancelledFetch, EffectOutcome::NotCommitted),
-        ] {
-            assert_eq!(error.outcome(), expected, "{error:?}");
+            (
+                GitError::Head {
+                    stderr: "s".to_string(),
+                },
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                GitError::Timeout(Duration::from_secs(1)),
+                EffectOutcome::Unknown,
+            ),
+            (GitError::CancelledBeforePush, EffectOutcome::NotCommitted),
+            (GitError::CancelledMidPush, EffectOutcome::Unknown),
+            (GitError::Killed, EffectOutcome::Unknown),
+        ]
+    }
+
+    #[test]
+    fn every_git_failure_keeps_the_outcome_it_had_before_the_phase_parameter() {
+        for (index, (error, expected)) in one_case_for_every_variant().into_iter().enumerate() {
             assert_eq!(
-                crate::github::GhError::from(error).outcome(),
+                ordinal(&error),
+                index,
+                "an arm was added without a case here: {error:?}"
+            );
+            assert_eq!(
+                error.outcome(EffectPhase::Apply),
+                expected,
+                "{error:?} under Apply"
+            );
+            assert_eq!(
+                error.outcome(EffectPhase::Inspect),
+                expected,
+                "{error:?} under Inspect"
+            );
+            assert_eq!(
+                crate::github::GhError::from(error).outcome(EffectPhase::Apply),
                 expected,
                 "the wrapped failure must classify the same way"
             );
@@ -521,13 +574,19 @@ mod tests {
     }
 
     #[test]
-    fn only_a_full_object_name_is_reported_as_a_sha() {
-        assert!(is_object_name("0123456789abcdef0123456789abcdef01234567"));
-        assert!(!is_object_name(""));
-        assert!(!is_object_name("0123456"));
-        assert!(!is_object_name(
-            "warning: something\n0123456789abcdef0123456789abcdef0123456"
-        ));
-        assert!(!is_object_name("z123456789abcdef0123456789abcdef01234567"));
+    fn a_push_is_unknown_because_gits_refusal_channel_is_an_absence() {
+        let refused = GitError::Push {
+            stderr: "no ! line".to_string(),
+        };
+
+        assert_eq!(
+            refused.outcome(EffectPhase::Apply),
+            EffectOutcome::Unknown,
+            "a push with no ! line may still have moved the ref"
+        );
+        assert_ne!(
+            refused.outcome(EffectPhase::Apply),
+            EffectOutcome::NotCommitted
+        );
     }
 }

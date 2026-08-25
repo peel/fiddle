@@ -1,4 +1,4 @@
-use fiddle_runtime::effect::EffectOutcome;
+use fiddle_runtime::effect::{AdapterError, EffectOutcome, EffectPhase};
 use fiddle_runtime::github::{GhCli, GhError};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -115,7 +115,7 @@ async fn a_200_carrying_errors_is_a_refusal_and_not_a_success() {
         "the classification is the error's own type and never the status: got {err:?}"
     );
     assert_eq!(
-        err.outcome(),
+        err.outcome(EffectPhase::Apply),
         EffectOutcome::NotCommitted,
         "GitHub could not resolve the node, so nothing was reached to mutate: {err:?}"
     );
@@ -146,7 +146,11 @@ async fn each_error_kind_classifies_by_what_it_settles() {
             .await
             .unwrap_err();
 
-        assert_eq!(err.outcome(), expected, "{kind}: got {err:?}");
+        assert_eq!(
+            err.outcome(EffectPhase::Apply),
+            expected,
+            "{kind}: got {err:?}"
+        );
         assert_eq!(
             err.is_worth_reading_again(),
             expected == EffectOutcome::Unknown,
@@ -167,7 +171,7 @@ async fn an_error_with_no_type_at_all_is_unknown() {
         .unwrap_err();
 
     assert_eq!(
-        err.outcome(),
+        err.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "a refusal this build cannot name is not evidence about the world: {err:?}"
     );
@@ -184,7 +188,11 @@ async fn an_errors_field_that_is_not_an_array_is_a_refusal_and_unknown() {
         .await
         .expect_err("a body this client cannot read is not a success");
 
-    assert_eq!(err.outcome(), EffectOutcome::Unknown, "got {err:?}");
+    assert_eq!(
+        err.outcome(EffectPhase::Apply),
+        EffectOutcome::Unknown,
+        "got {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -198,7 +206,7 @@ async fn a_200_whose_body_cannot_be_interpreted_is_unknown_and_not_a_success() {
         };
 
         assert_eq!(
-            err.outcome(),
+            err.outcome(EffectPhase::Apply),
             EffectOutcome::Unknown,
             "body {body} is a lost answer, not a mutation that did not happen: {err:?}"
         );
@@ -290,7 +298,7 @@ async fn a_transport_failure_is_unknown_exactly_as_it_is_for_api() {
         matches!(err, GhError::Http { status: 502, .. }),
         "a status at or above 400 is read from the status line as it always was: got {err:?}"
     );
-    assert_eq!(err.outcome(), EffectOutcome::Unknown);
+    assert_eq!(err.outcome(EffectPhase::Apply), EffectOutcome::Unknown);
     assert!(err.is_worth_reading_again());
 }
 
@@ -307,7 +315,7 @@ async fn a_cancelled_mutation_never_reaches_the_child() {
         .unwrap_err();
 
     assert!(matches!(err, GhError::CancelledBeforeSpawn), "got {err:?}");
-    assert_eq!(err.outcome(), EffectOutcome::NotCommitted);
+    assert_eq!(err.outcome(EffectPhase::Apply), EffectOutcome::NotCommitted);
     assert!(
         !world.dir.path().join("requests").exists(),
         "a cancelled mutation must not have reached the child at all"

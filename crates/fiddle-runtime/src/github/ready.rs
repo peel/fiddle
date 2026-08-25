@@ -132,7 +132,7 @@ impl IntegrationOperation for EnsurePullRequestReady {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effect::EffectOutcome;
+    use crate::effect::{AdapterError, EffectOutcome, EffectPhase};
     use fiddle_core::payload_hash;
 
     fn ready_at(head_sha: &str) -> EnsurePullRequestReady {
@@ -147,7 +147,7 @@ mod tests {
 
         assert!(matches!(refusal, GhError::NotSent(_)), "got {refusal:?}");
         assert_eq!(
-            refusal.outcome(),
+            refusal.outcome(EffectPhase::Apply),
             EffectOutcome::NotCommitted,
             "nothing was sent, so there is nothing to go and look for"
         );

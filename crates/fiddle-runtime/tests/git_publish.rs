@@ -1,4 +1,4 @@
-use fiddle_runtime::effect::EffectOutcome;
+use fiddle_runtime::effect::{AdapterError, EffectOutcome, EffectPhase};
 use fiddle_runtime::git::{GitCli, GitError};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -596,7 +596,7 @@ async fn a_cancelled_publish_changes_nothing() {
     assert!(matches!(error, GitError::CancelledBeforePush), "{error:?}");
     assert!(branches(&remote).is_empty(), "no ref was created");
     assert_eq!(
-        error.outcome(),
+        error.outcome(EffectPhase::Apply),
         EffectOutcome::NotCommitted,
         "nothing was pushed, and that is knowledge: {error:?}"
     );
@@ -634,17 +634,17 @@ async fn a_cancellation_after_the_push_was_spawned_is_an_ambiguous_write() {
     );
     assert!(matches!(error, GitError::CancelledMidPush), "{error:?}");
     assert_eq!(
-        error.outcome(),
+        error.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "a ref that may already have moved is not a refusal: {error:?}"
     );
     assert_ne!(
-        error.outcome(),
-        GitError::CancelledBeforePush.outcome(),
+        error.outcome(EffectPhase::Apply),
+        GitError::CancelledBeforePush.outcome(EffectPhase::Apply),
         "the two provenances of one cancellation must not classify alike"
     );
     assert_eq!(
-        fiddle_runtime::github::GhError::from(error).outcome(),
+        fiddle_runtime::github::GhError::from(error).outcome(EffectPhase::Apply),
         EffectOutcome::Unknown
     );
 }
