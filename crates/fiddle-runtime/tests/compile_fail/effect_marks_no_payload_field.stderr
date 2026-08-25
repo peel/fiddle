@@ -1,0 +1,5 @@
+error: `EffectMarksNoPayloadField` derives Effect and marks no field `#[payload]`
+  --> tests/compile_fail/effect_marks_no_payload_field.rs:11:8
+   |
+11 | struct EffectMarksNoPayloadField {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^

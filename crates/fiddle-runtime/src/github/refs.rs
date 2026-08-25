@@ -1,7 +1,7 @@
-use crate::effect::{AuthorizedEffect, EffectContext, IntegrationOperation, ObservedState};
+use crate::effect::{AuthorizedEffect, Effect, EffectContext, ObservedState};
 use crate::git::PublishedBranch;
 use crate::github::GhError;
-use fiddle_core::{effect_id, HumanDecisionRequirement, ENSURE_BRANCH_PUBLISHED};
+use fiddle_core::{effect_id, ENSURE_BRANCH_PUBLISHED};
 
 const NAMESPACE: &str = "fiddle";
 
@@ -39,9 +39,19 @@ impl ObservedState for BranchRef {
     }
 }
 
+#[derive(Effect)]
+#[effect(
+    name = ENSURE_BRANCH_PUBLISHED,
+    minimum = "automatic",
+    target = "refs/heads/{branch}",
+    state = BranchRef,
+    error = GhError
+)]
 pub struct EnsureBranchPublished {
+    #[payload]
     repo: String,
     branch: String,
+    #[payload(rename = "sha")]
     intended_sha: String,
 }
 
@@ -58,31 +68,8 @@ impl EnsureBranchPublished {
         &self.branch
     }
 
-    pub fn target(&self) -> String {
-        branch_target(&self.branch)
-    }
-
     fn ref_path(&self) -> String {
         format!("/repos/{}/git/ref/heads/{}", self.repo, self.branch)
-    }
-}
-
-#[async_trait::async_trait]
-impl IntegrationOperation for EnsureBranchPublished {
-    type State = BranchRef;
-
-    type Error = GhError;
-
-    fn minimum(&self) -> HumanDecisionRequirement {
-        HumanDecisionRequirement::Automatic
-    }
-
-    fn payload(&self) -> String {
-        serde_json::json!({
-            "repo": self.repo,
-            "sha": self.intended_sha,
-        })
-        .to_string()
     }
 
     async fn inspect(&self, ctx: &EffectContext) -> Result<Option<BranchRef>, GhError> {

@@ -1,3 +1,5 @@
+extern crate self as fiddle_runtime;
+
 pub mod agent;
 pub mod capability;
 pub mod cve;
@@ -15,6 +17,12 @@ pub(crate) mod process;
 pub mod scanner;
 pub mod stub;
 pub mod workspace;
+
+#[doc(hidden)]
+pub mod derive_support {
+    pub use async_trait::async_trait;
+    pub use serde_json;
+}
 
 pub use agent::{
     AgentBudget, Direction, ToolHost, ToolReceipt, ToolReceipts, TranscriptHook, Transcripts,

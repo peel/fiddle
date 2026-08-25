@@ -1,0 +1,5 @@
+error: `EffectTargetNamesNoField`: `target` reads `{branch}` and `EffectTargetNamesNoField` has no field `branch`
+ --> tests/compile_fail/effect_target_names_no_field.rs:7:14
+  |
+7 |     target = "{repo}#{branch}",
+  |              ^^^^^^^^^^^^^^^^^

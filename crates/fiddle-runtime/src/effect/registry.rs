@@ -1,7 +1,7 @@
+use crate::github::EnsureBranchPublished;
 use fiddle_core::{
-    EffectName, HumanDecisionRequirement, ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED,
-    ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY,
-    PUBLISH_DECISION_REQUEST,
+    EffectName, HumanDecisionRequirement, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
+    ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, PUBLISH_DECISION_REQUEST,
 };
 use std::sync::OnceLock;
 
@@ -22,10 +22,7 @@ pub enum RegistryError {
 }
 
 pub const BUILT_IN: &[EffectDescriptor] = &[
-    EffectDescriptor {
-        name: ENSURE_BRANCH_PUBLISHED,
-        minimum: HumanDecisionRequirement::Automatic,
-    },
+    EnsureBranchPublished::descriptor(),
     EffectDescriptor {
         name: ENSURE_PULL_REQUEST,
         minimum: HumanDecisionRequirement::Automatic,

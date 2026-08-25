@@ -1,0 +1,5 @@
+error: `EffectWithAnUnknownKey`: `#[effect(...)]` knows no key `retries`; it reads `name`, `minimum`, `target`, `state` and `error`
+  --> tests/compile_fail/effect_with_an_unknown_key.rs:10:5
+   |
+10 |     retries = 3
+   |     ^^^^^^^
