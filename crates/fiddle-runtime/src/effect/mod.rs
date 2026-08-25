@@ -1,6 +1,8 @@
 pub mod receipt;
+pub mod registry;
 
 pub use receipt::{EffectError, EffectReceipt, ObservedState, Recurrence};
+pub use registry::{describe, install, registered, EffectDescriptor, RegistryError, BUILT_IN};
 
 use crate::git::GitCli;
 use crate::github::{GhCli, GhError, RetryAdvice};
@@ -311,6 +313,10 @@ impl<'a> Executor<'a> {
         O: IntegrationOperation,
     {
         let kind = proposed.kind.clone();
+
+        if registry::describe(&kind).is_none() {
+            return Err(EffectError::UnknownEffect { kind });
+        }
 
         self.trace.step(&kind, ExecutionStep::ValidateCapability);
         if proposed.capability != self.capability {

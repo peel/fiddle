@@ -33,6 +33,8 @@ pub enum Recurrence {
 
 #[derive(Debug, thiserror::Error)]
 pub enum EffectError {
+    #[error("`{kind}` is not an effect this build performs")]
+    UnknownEffect { kind: EffectName },
     #[error("policy denied {kind}: {reason}")]
     PolicyDenied { kind: EffectName, reason: String },
     #[error("{kind} is awaiting a human decision on the channel M3 introduced: {reason}")]
@@ -58,6 +60,8 @@ pub enum EffectError {
 impl EffectError {
     pub fn recurrence(&self) -> Recurrence {
         match self {
+            EffectError::UnknownEffect { .. } => Recurrence::Permanent,
+
             EffectError::PolicyDenied { .. } => Recurrence::Permanent,
 
             EffectError::HumanDecisionRequired { .. } => Recurrence::Awaiting,
@@ -87,7 +91,14 @@ mod tests {
 
     #[test]
     fn every_effect_failure_declares_which_exit_row_it_belongs_in() {
-        let cases: [(&str, EffectError, Recurrence); 6] = [
+        let cases: [(&str, EffectError, Recurrence); 7] = [
+            (
+                "no descriptor in this build holds the name",
+                EffectError::UnknownEffect {
+                    kind: EffectName::parse("jira.transition").unwrap(),
+                },
+                Recurrence::Permanent,
+            ),
             (
                 "a deployment rule denies the kind",
                 EffectError::PolicyDenied {
@@ -166,6 +177,9 @@ mod tests {
     #[test]
     fn no_other_permanent_refusal_became_a_wait() {
         let refusals = [
+            EffectError::UnknownEffect {
+                kind: EffectName::parse("jira.transition").unwrap(),
+            },
             EffectError::PolicyDenied {
                 kind: kind(),
                 reason: reason(),

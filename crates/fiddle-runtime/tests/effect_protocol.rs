@@ -4,11 +4,12 @@ use fiddle_core::{
     decision_request_id, effect_id, payload_hash, DecisionBinding, DeploymentRule, EffectId,
     EffectName, HumanDecisionRequirement, InterpretedHumanDecision, PayloadHash, ProposedEffect,
     Published, ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
-    FIXTURE_REPAIR, STUB_MARK,
+    ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, FIXTURE_REPAIR, PUBLISH_DECISION_REQUEST,
+    STUB_MARK,
 };
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
-    IntegrationOperation, ObservedState, ReadRetry, ResolvedDecision,
+    IntegrationOperation, ObservedState, ReadRetry, Recurrence, ResolvedDecision,
 };
 use fiddle_runtime::git::{GitCli, GitError};
 use fiddle_runtime::github::{branch_name, EnsureBranchPublished};
@@ -2099,4 +2100,86 @@ async fn a_capability_cannot_publish_through_another_capabilitys_executor() {
     );
     assert_eq!(remote.pull_request_creates(), 0);
     assert_eq!(remote.dispatch_requests(), 0);
+}
+
+#[tokio::test]
+async fn an_unregistered_proposal_is_refused_before_an_identity_is_derived() {
+    let harness = Harness::new(Script::AbsentThenWritten);
+    let error = harness
+        .executor()
+        .execute(unregistered_effect(FIXTURE_REPAIR), harness.operation())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, EffectError::UnknownEffect { .. }),
+        "expected UnknownEffect, got {error:?}"
+    );
+    assert_eq!(error.recurrence(), Recurrence::Permanent);
+    assert!(
+        format!("{error}").contains("jira.transition"),
+        "the refusal must name the effect it refused: {error}"
+    );
+    assert_eq!(
+        harness.world.steps(),
+        Vec::<&str>::new(),
+        "no execution step ran"
+    );
+    assert_eq!(
+        harness.world.calls(),
+        Vec::<&str>::new(),
+        "nothing reached the adapter"
+    );
+}
+
+#[tokio::test]
+async fn an_unregistered_name_is_refused_ahead_of_the_capability_it_names() {
+    let harness = Harness::new(Script::AbsentThenWritten);
+    let error = harness
+        .executor()
+        .execute(unregistered_effect(STUB_MARK), harness.operation())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, EffectError::UnknownEffect { .. }),
+        "the registry decides before validate_capability, so this is not PolicyDenied: {error:?}"
+    );
+    assert_eq!(
+        harness.world.steps(),
+        Vec::<&str>::new(),
+        "not even validate_capability ran"
+    );
+}
+
+#[tokio::test]
+async fn every_name_this_build_ships_survives_the_registry_check() {
+    for shipped in [
+        ENSURE_BRANCH_PUBLISHED,
+        ENSURE_PULL_REQUEST,
+        ENSURE_CHECK_REQUESTED,
+        PUBLISH_DECISION_REQUEST,
+        ENSURE_PULL_REQUEST_READY,
+        ENSURE_PULL_REQUEST_BODY,
+    ] {
+        let harness = Harness::new(Script::AlreadySatisfied);
+        let proposed = ProposedEffect {
+            kind: EffectName::shipped(shipped),
+            ..branch_effect()
+        };
+        harness
+            .executor()
+            .execute(proposed, harness.operation())
+            .await
+            .unwrap_or_else(|error| panic!("{shipped} is registered and was refused: {error}"));
+    }
+}
+
+fn unregistered_effect(capability: fiddle_core::CapabilityId) -> ProposedEffect {
+    ProposedEffect {
+        capability,
+        kind: EffectName::parse("jira.transition").unwrap(),
+        target: TARGET.to_string(),
+        payload: PAYLOAD.to_string(),
+    }
 }
