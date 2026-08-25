@@ -1,4 +1,4 @@
-use crate::github::GhError;
+use super::AdapterError;
 use fiddle_core::{EffectId, EffectName, PayloadHash};
 
 pub trait ObservedState {
@@ -54,10 +54,22 @@ pub enum EffectError {
     #[error("{kind} found {count} matching objects, expected at most one")]
     DuplicateState { kind: EffectName, count: usize },
     #[error("adapter failure for {kind}: {source}")]
-    Adapter { kind: EffectName, source: GhError },
+    Adapter {
+        kind: EffectName,
+        source: Box<dyn AdapterError>,
+    },
 }
 
 impl EffectError {
+    pub fn adapter_source<E: AdapterError>(&self) -> Option<&E> {
+        match self {
+            EffectError::Adapter { source, .. } => {
+                (source.as_ref() as &dyn std::any::Any).downcast_ref::<E>()
+            }
+            _ => None,
+        }
+    }
+
     pub fn recurrence(&self) -> Recurrence {
         match self {
             EffectError::UnknownEffect { .. } => Recurrence::Permanent,
@@ -80,6 +92,7 @@ impl EffectError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::GhError;
 
     fn kind() -> EffectName {
         EffectName::shipped(fiddle_core::ENSURE_PULL_REQUEST)
@@ -144,7 +157,7 @@ mod tests {
                 "the forge would not answer",
                 EffectError::Adapter {
                     kind: kind(),
-                    source: GhError::Auth,
+                    source: Box::new(GhError::Auth),
                 },
                 Recurrence::Correctable,
             ),

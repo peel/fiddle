@@ -1,4 +1,4 @@
-use crate::effect::{AdapterError, EffectOutcome, EffectPhase};
+use crate::effect::{AdapterError, EffectOutcome, EffectPhase, RetryAdvice};
 use crate::git::GitError;
 use crate::process::{run_bounded, Bounded};
 use std::path::PathBuf;
@@ -14,18 +14,6 @@ pub struct GhResponse {
     pub retry_after: Option<Duration>,
     pub rate_limit_remaining: Option<u64>,
     pub link: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct RetryAdvice {
-    pub retry_after: Option<Duration>,
-    pub rate_limit_remaining: Option<u64>,
-}
-
-impl RetryAdvice {
-    pub fn wants_a_wait(&self) -> bool {
-        self.retry_after.is_some() || self.rate_limit_remaining == Some(0)
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -79,17 +67,15 @@ impl AdapterError for GhError {
             GhError::Push(error) => error.outcome(phase),
         }
     }
-}
 
-impl GhError {
-    pub fn advice(&self) -> RetryAdvice {
+    fn advice(&self) -> RetryAdvice {
         match self {
             GhError::Http { advice, .. } => *advice,
             _ => RetryAdvice::default(),
         }
     }
 
-    pub fn is_worth_reading_again(&self) -> bool {
+    fn is_worth_reading_again(&self) -> bool {
         match self {
             GhError::Timeout(_) | GhError::Killed(_) | GhError::CancelledAfterSpawn => true,
             GhError::Http { advice, .. } if advice.wants_a_wait() => true,
@@ -101,6 +87,13 @@ impl GhError {
             | GhError::Malformed(_)
             | GhError::Duplicate { .. }
             | GhError::Push(_) => false,
+        }
+    }
+
+    fn duplicates(&self) -> Option<usize> {
+        match self {
+            GhError::Duplicate { count } => Some(*count),
+            _ => None,
         }
     }
 }

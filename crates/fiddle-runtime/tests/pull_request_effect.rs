@@ -370,11 +370,8 @@ async fn a_pull_request_that_is_not_the_one_asked_for_is_never_settled_on() {
 
     assert!(
         matches!(
-            error,
-            EffectError::Adapter {
-                source: GhError::Malformed(_),
-                ..
-            }
+            error.adapter_source::<GhError>(),
+            Some(GhError::Malformed(_))
         ),
         "expected the read to be refused, got {error:?}"
     );

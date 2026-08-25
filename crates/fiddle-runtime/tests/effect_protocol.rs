@@ -278,11 +278,8 @@ async fn a_confident_refusal_the_world_agrees_with_stays_a_failure() {
 
     assert!(
         matches!(
-            error,
-            EffectError::Adapter {
-                source: GhError::Http { status: 403, .. },
-                ..
-            }
+            error.adapter_source::<GhError>(),
+            Some(GhError::Http { status: 403, .. })
         ),
         "expected the refusal to stand, got {error:?}"
     );
@@ -1437,11 +1434,8 @@ async fn a_ref_at_our_name_pointing_elsewhere_is_refused_not_overwritten() {
 
     assert!(
         matches!(
-            error,
-            EffectError::Adapter {
-                source: GhError::Push(GitError::NonFastForward { .. }),
-                ..
-            }
+            error.adapter_source::<GhError>(),
+            Some(GhError::Push(GitError::NonFastForward { .. }))
         ),
         "expected git's own non-fast-forward verdict, got {error:?}"
     );

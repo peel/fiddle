@@ -638,11 +638,8 @@ async fn an_unreadable_runs_listing_is_never_an_absent_run() {
 
     assert!(
         matches!(
-            error,
-            EffectError::Adapter {
-                source: GhError::Http { status: 500, .. },
-                ..
-            }
+            error.adapter_source::<GhError>(),
+            Some(GhError::Http { status: 500, .. })
         ),
         "expected the read to be reported, got {error:?}"
     );
@@ -676,13 +673,7 @@ async fn a_dispatch_whose_identity_would_not_round_trip_is_refused() {
         .expect_err("a run nobody could find again is not dispatched");
 
     assert!(
-        matches!(
-            error,
-            EffectError::Adapter {
-                source: GhError::NotSent(_),
-                ..
-            }
-        ),
+        matches!(error.adapter_source::<GhError>(), Some(GhError::NotSent(_))),
         "expected the dispatch to be refused, got {error:?}"
     );
     assert_eq!(

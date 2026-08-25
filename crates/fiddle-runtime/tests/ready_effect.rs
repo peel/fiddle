@@ -417,7 +417,7 @@ async fn a_refused_mutation_is_not_reported_as_a_lost_write() {
         .await
         .expect_err("a refused mutation did not make the pull request ready");
 
-    let EffectError::Adapter { source, .. } = &error else {
+    let Some(source) = error.adapter_source::<GhError>() else {
         panic!("expected the adapter's refusal to stand, got {error:?}");
     };
     assert!(

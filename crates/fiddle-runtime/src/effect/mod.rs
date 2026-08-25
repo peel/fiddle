@@ -5,7 +5,7 @@ pub use receipt::{EffectError, EffectReceipt, ObservedState, Recurrence};
 pub use registry::{describe, install, registered, EffectDescriptor, RegistryError, BUILT_IN};
 
 use crate::git::GitCli;
-use crate::github::{GhCli, GhError, RetryAdvice};
+use crate::github::GhCli;
 use fiddle_core::{
     combine, effect_id, payload_hash, CapabilityId, DecisionBinding, DeploymentRule, EffectId,
     EffectName, HumanDecisionRequirement, InterpretedHumanDecision, Observation, PayloadHash,
@@ -30,8 +30,38 @@ pub enum EffectPhase {
     Apply,
 }
 
-pub trait AdapterError: std::error::Error + Send + Sync + 'static {
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RetryAdvice {
+    pub retry_after: Option<Duration>,
+    pub rate_limit_remaining: Option<u64>,
+}
+
+impl RetryAdvice {
+    pub fn wants_a_wait(&self) -> bool {
+        self.retry_after.is_some() || self.rate_limit_remaining == Some(0)
+    }
+}
+
+pub trait AdapterError: std::error::Error + std::any::Any + Send + Sync + 'static {
     fn outcome(&self, phase: EffectPhase) -> EffectOutcome;
+
+    fn advice(&self) -> RetryAdvice {
+        RetryAdvice::default()
+    }
+
+    fn is_worth_reading_again(&self) -> bool {
+        false
+    }
+
+    fn duplicates(&self) -> Option<usize> {
+        None
+    }
+}
+
+impl std::error::Error for Box<dyn AdapterError> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        (**self).source()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -170,8 +200,8 @@ enum Settle {
     WhenThePostconditionAppears,
 }
 
-struct Settled<S> {
-    observed: Result<Option<S>, GhError>,
+struct Settled<S, E> {
+    observed: Result<Option<S>, E>,
     reads: u32,
 }
 
@@ -298,7 +328,7 @@ impl<'a> Executor<'a> {
         operation: O,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, EffectError>
     where
-        O: IntegrationOperation<Error = GhError>,
+        O: IntegrationOperation,
     {
         self.walk(proposed, operation, None).await
     }
@@ -310,7 +340,7 @@ impl<'a> Executor<'a> {
         decision: &ResolvedDecision,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, EffectError>
     where
-        O: IntegrationOperation<Error = GhError>,
+        O: IntegrationOperation,
     {
         self.walk(proposed, operation, Some(decision)).await
     }
@@ -322,7 +352,7 @@ impl<'a> Executor<'a> {
         decision: Option<&ResolvedDecision>,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, EffectError>
     where
-        O: IntegrationOperation<Error = GhError>,
+        O: IntegrationOperation,
     {
         let kind = proposed.kind.clone();
 
@@ -448,10 +478,6 @@ impl<'a> Executor<'a> {
                 EffectOutcome::Committed,
                 state,
             )),
-            Err(GhError::Duplicate { count }) => Err(EffectError::DuplicateState {
-                kind: kind.clone(),
-                count,
-            }),
             Ok(None) => match dispatched {
                 Err(error) if error.outcome(EffectPhase::Apply) == EffectOutcome::NotCommitted => {
                     Err(adapter_failure(&kind, error))
@@ -470,31 +496,39 @@ impl<'a> Executor<'a> {
                     ),
                 }),
             },
-            Err(read_error) => match dispatched {
-                Err(error) if error.outcome(EffectPhase::Apply) == EffectOutcome::NotCommitted => {
-                    Err(adapter_failure(&kind, error))
-                }
-                unsettled => Err(EffectError::Unresolved {
+            Err(read_error) => match read_error.duplicates() {
+                Some(count) => Err(EffectError::DuplicateState {
                     kind: kind.clone(),
-                    reason: format!(
-                        "the outcome was unknown{} and the postcondition could \
-                         not be read{spent}: {read_error}",
-                        match &unsettled {
-                            Err(error) => format!(" ({error})"),
-                            Ok(()) => String::new(),
-                        }
-                    ),
+                    count,
                 }),
+                None => match dispatched {
+                    Err(error)
+                        if error.outcome(EffectPhase::Apply) == EffectOutcome::NotCommitted =>
+                    {
+                        Err(adapter_failure(&kind, error))
+                    }
+                    unsettled => Err(EffectError::Unresolved {
+                        kind: kind.clone(),
+                        reason: format!(
+                            "the outcome was unknown{} and the postcondition could \
+                             not be read{spent}: {read_error}",
+                            match &unsettled {
+                                Err(error) => format!(" ({error})"),
+                                Ok(()) => String::new(),
+                            }
+                        ),
+                    }),
+                },
             },
         }
     }
 
-    async fn read_until_settled<O: IntegrationOperation<Error = GhError>>(
+    async fn read_until_settled<O: IntegrationOperation>(
         &self,
         operation: &O,
         effect: &EffectId,
         settle: Settle,
-    ) -> Settled<O::State> {
+    ) -> Settled<O::State, O::Error> {
         let mut reads: u32 = 0;
         loop {
             let observed = operation.inspect(self.ctx).await;
@@ -550,15 +584,15 @@ fn receipt<S: ObservedState>(
     }
 }
 
-fn adapter_failure(kind: &EffectName, error: GhError) -> EffectError {
-    match error {
-        GhError::Duplicate { count } => EffectError::DuplicateState {
+fn adapter_failure<E: AdapterError>(kind: &EffectName, error: E) -> EffectError {
+    match error.duplicates() {
+        Some(count) => EffectError::DuplicateState {
             kind: kind.clone(),
             count,
         },
-        source => EffectError::Adapter {
+        None => EffectError::Adapter {
             kind: kind.clone(),
-            source,
+            source: Box::new(error),
         },
     }
 }

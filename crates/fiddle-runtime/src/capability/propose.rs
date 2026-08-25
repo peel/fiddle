@@ -2,8 +2,8 @@ use super::stub::write_atomically;
 use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts, Transcripts};
 use crate::effect::{
-    EffectContext, EffectOutcome, EffectReceipt, Executor, IntegrationOperation, ObservedState,
-    ResolvedDecision,
+    AdapterError, EffectContext, EffectOutcome, EffectReceipt, Executor, IntegrationOperation,
+    ObservedState, ResolvedDecision,
 };
 use crate::gateway::Redaction;
 use crate::github::{
@@ -260,7 +260,7 @@ where
         operation: O,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, CapabilityError>
     where
-        O: IntegrationOperation<Error = GhError>,
+        O: IntegrationOperation,
     {
         self.proposing(kind, target, payload, operation, None).await
     }
@@ -274,7 +274,7 @@ where
         decision: &ResolvedDecision,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, CapabilityError>
     where
-        O: IntegrationOperation<Error = GhError>,
+        O: IntegrationOperation,
     {
         self.proposing(kind, target, payload, operation, Some(decision))
             .await
@@ -289,7 +289,7 @@ where
         decision: Option<&ResolvedDecision>,
     ) -> Result<EffectReceipt<<O::State as ObservedState>::Value>, CapabilityError>
     where
-        O: IntegrationOperation<Error = GhError>,
+        O: IntegrationOperation,
     {
         let proposed = ProposedEffect {
             capability: self.id(),
@@ -893,10 +893,10 @@ where
     }
 }
 
-fn adapter(kind: &EffectName, error: GhError) -> CapabilityError {
+fn adapter<E: AdapterError>(kind: &EffectName, error: E) -> CapabilityError {
     CapabilityError::Effect(crate::effect::EffectError::Adapter {
         kind: kind.clone(),
-        source: error,
+        source: Box::new(error),
     })
 }
 
