@@ -1,10 +1,7 @@
-use fiddle_core::{
-    DeploymentRule, EffectName, Severities, ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED,
-    ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY,
-    PUBLISH_DECISION_REQUEST,
-};
-use fiddle_runtime::effect::DeploymentPolicy;
+use fiddle_core::{DeploymentRule, EffectName, Severities};
+use fiddle_runtime::effect::{registry, DeploymentPolicy};
 use serde::Deserialize;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -491,51 +488,64 @@ impl<'de> Deserialize<'de> for Repo {
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(try_from = "PolicyDocument")]
+pub struct PolicyTable(HashMap<EffectName, DeploymentRule>);
+
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PolicyTable {
-    #[serde(default = "allow")]
-    pub ensure_branch_published: DeploymentRule,
-    #[serde(default = "allow")]
-    pub ensure_pull_request: DeploymentRule,
-    #[serde(default = "allow")]
-    pub ensure_check_requested: DeploymentRule,
-    #[serde(default = "allow")]
-    pub publish_decision_request: DeploymentRule,
-    #[serde(default = "allow")]
-    pub ensure_pull_request_ready: DeploymentRule,
-    #[serde(default = "allow")]
-    pub ensure_pull_request_body: DeploymentRule,
-}
+#[serde(transparent)]
+struct PolicyDocument(BTreeMap<String, DeploymentRule>);
 
-fn allow() -> DeploymentRule {
-    DeploymentRule::Allow
-}
+impl TryFrom<PolicyDocument> for PolicyTable {
+    type Error = String;
 
-impl Default for PolicyTable {
-    fn default() -> Self {
-        PolicyTable {
-            ensure_branch_published: allow(),
-            ensure_pull_request: allow(),
-            ensure_check_requested: allow(),
-            publish_decision_request: allow(),
-            ensure_pull_request_ready: allow(),
-            ensure_pull_request_body: allow(),
+    fn try_from(document: PolicyDocument) -> Result<Self, String> {
+        let mut rules = HashMap::new();
+        let mut ungoverned = Vec::new();
+        for (key, rule) in document.0 {
+            match EffectName::parse(&key)
+                .ok()
+                .filter(|name| registry::describe(name).is_some())
+            {
+                Some(name) => {
+                    rules.insert(name, rule);
+                }
+                None => ungoverned.push(format!("`{key}`")),
+            }
         }
+        if !ungoverned.is_empty() {
+            return Err(format!(
+                "a rule gates an effect this build performs, and {} names none. \
+                 A rule written there gates nothing, and the effect it was meant \
+                 for stays ungated, so the document is refused rather than read \
+                 as the silence it would otherwise become. Write a rule for one \
+                 of: {}",
+                ungoverned.join(", "),
+                registry::registered()
+                    .iter()
+                    .map(|descriptor| descriptor.name)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
+        Ok(Self(rules))
+    }
+}
+
+impl PolicyTable {
+    pub fn rows(&self) -> impl Iterator<Item = (&'static str, DeploymentRule)> + '_ {
+        registry::registered().into_iter().map(|descriptor| {
+            (
+                descriptor.name,
+                self.rule_for(&EffectName::shipped(descriptor.name)),
+            )
+        })
     }
 }
 
 impl DeploymentPolicy for PolicyTable {
     fn rule_for(&self, kind: &EffectName) -> DeploymentRule {
-        match kind.as_str() {
-            ENSURE_BRANCH_PUBLISHED => self.ensure_branch_published,
-            ENSURE_PULL_REQUEST => self.ensure_pull_request,
-            ENSURE_CHECK_REQUESTED => self.ensure_check_requested,
-            PUBLISH_DECISION_REQUEST => self.publish_decision_request,
-            ENSURE_PULL_REQUEST_READY => self.ensure_pull_request_ready,
-            ENSURE_PULL_REQUEST_BODY => self.ensure_pull_request_body,
-            _ => DeploymentRule::Allow,
-        }
+        self.0.get(kind).copied().unwrap_or(DeploymentRule::Allow)
     }
 }
 
@@ -795,6 +805,10 @@ fn redacted(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fiddle_core::{
+        ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
+        ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, PUBLISH_DECISION_REQUEST,
+    };
 
     const VALID: &str = r#"
 [project]
@@ -1769,6 +1783,65 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
             table.rule_for(&EffectName::parse("jira.transition").unwrap()),
             DeploymentRule::Allow,
             "a row this document does not write adds no gate of its own"
+        );
+    }
+
+    #[test]
+    fn a_policy_key_naming_no_registered_effect_is_refused_at_load() {
+        let misspelled = [
+            "ensure_pull_requst",
+            "ensure-pull-request",
+            "ensure_chek_requested",
+        ];
+        let document = format!(
+            "{FORGE}\n[github.policy]\nensure_pull_request = \"allow\"\n{}",
+            misspelled
+                .iter()
+                .map(|key| format!("{key} = \"deny\"\n"))
+                .collect::<String>()
+        );
+        let refusal = toml::from_str::<Config>(&document)
+            .expect_err("a key naming no effect is not a rule")
+            .message()
+            .to_string();
+        for key in misspelled {
+            assert!(
+                refusal.contains(key),
+                "the refusal must name {key}, not only the first offender: {refusal}"
+            );
+        }
+        for descriptor in fiddle_runtime::effect::registry::registered() {
+            assert!(
+                refusal.contains(descriptor.name),
+                "and must offer {}, which the registry holds: {refusal}",
+                descriptor.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_row_and_an_unknown_name_are_different_states() {
+        let table = github(&format!(
+            "{FORGE}\n[github.policy]\nensure_pull_request = \"deny\"\n"
+        ))
+        .policy;
+        assert_eq!(
+            table.rule_for(&EffectName::shipped(ENSURE_PULL_REQUEST)),
+            DeploymentRule::Deny,
+            "the row the document wrote gates the effect it names"
+        );
+        assert_eq!(
+            table.rule_for(&EffectName::shipped(ENSURE_BRANCH_PUBLISHED)),
+            DeploymentRule::Allow,
+            "a registered effect the document leaves out is left ungated"
+        );
+        assert!(
+            toml::from_str::<Config>(&format!(
+                "{FORGE}\n[github.policy]\nensure_branch_publishd = \"deny\"\n"
+            ))
+            .is_err(),
+            "while a key naming no effect never reaches the table, where it \
+             would be indistinguishable from the row above"
         );
     }
 

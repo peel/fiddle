@@ -105,14 +105,9 @@ pub fn config_check_json(config: &Config) -> String {
                 "initial": github.read_retry.initial.to_string(),
                 "max": github.read_retry.max.to_string(),
             },
-            "policy": {
-                "ensure_branch_published": rule(github.policy.ensure_branch_published),
-                "ensure_pull_request": rule(github.policy.ensure_pull_request),
-                "ensure_check_requested": rule(github.policy.ensure_check_requested),
-                "publish_decision_request": rule(github.policy.publish_decision_request),
-                "ensure_pull_request_ready": rule(github.policy.ensure_pull_request_ready),
-                "ensure_pull_request_body": rule(github.policy.ensure_pull_request_body),
-            },
+            "policy": github.policy.rows()
+                .map(|(name, gate)| (name.to_string(), serde_json::Value::from(rule(gate))))
+                .collect::<serde_json::Map<String, serde_json::Value>>(),
             "decision": github.decision.as_ref().map(|decision| serde_json::json!({
                 "authorized": decision.authorized,
                 "matched_on": AUTHORIZED_MATCHED_ON,
@@ -271,14 +266,7 @@ pub fn config_check_human(config: &Config) -> String {
              (observed, not enforced: no outcome depends on them — see decision {})\
              \n  github.config_dir = {}\
              \n  github.timeout = {}\
-             \n  github.read_retry = {} attempts (initial {}, max {})\
-             \n  github.policy.ensure_branch_published = {}\
-             \n  github.policy.ensure_pull_request = {}\
-             \n  github.policy.ensure_check_requested = {}\
-             \n  github.policy.publish_decision_request = {}\
-             \n  github.policy.ensure_pull_request_ready = {}\
-             \n  github.policy.ensure_pull_request_body = {}\
-             \n  github.decision.authorized = {}",
+             \n  github.read_retry = {} attempts (initial {}, max {})",
             github.repo,
             github.base,
             github.token.env,
@@ -301,12 +289,12 @@ pub fn config_check_human(config: &Config) -> String {
             github.read_retry.attempts,
             github.read_retry.initial,
             github.read_retry.max,
-            rule(github.policy.ensure_branch_published),
-            rule(github.policy.ensure_pull_request),
-            rule(github.policy.ensure_check_requested),
-            rule(github.policy.publish_decision_request),
-            rule(github.policy.ensure_pull_request_ready),
-            rule(github.policy.ensure_pull_request_body),
+        ));
+        for (name, gate) in github.policy.rows() {
+            out.push_str(&format!("\n  github.policy.{name} = {}", rule(gate)));
+        }
+        out.push_str(&format!(
+            "\n  github.decision.authorized = {}",
             optional(github.decision.as_ref().map(|decision| {
                 format!(
                     "{} (matched on {}; accepted, not enforced: no capability in \
