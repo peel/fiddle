@@ -829,3 +829,71 @@ The lane also creates one `mktemp -d` directory holding the whole disposable
 project — the configuration document, the fixture roots, the clone, the reports —
 and removes it in the same `trap`. It writes nothing outside that directory and
 nothing outside this repository.
+
+## What this repository proves about an open registry
+
+The effect set is no longer a Rust enum. `BUILT_IN` in `fiddle-runtime` holds one
+`EffectDescriptor` for each effect this build performs, and `install` adds a
+further slice for a downstream binary. Nothing loads at run time. ADR 075 records
+why the closed enum was replaced.
+
+The registry rejects an unknown name at two moments, and this lane exercises the
+second one against real GitHub.
+
+1. **Config load.** `TryFrom<PolicyDocument> for PolicyTable` reads each policy
+   key. A key that `EffectName::parse` rejects, or that `registry::describe` does
+   not find, refuses the whole document. The refusal names every effect the build
+   does perform.
+2. **Execution.** `Executor::walk` calls `registry::describe` on the proposed
+   name and returns `EffectError::UnknownEffect` for a name the registry does not
+   hold. The check runs before the first traced step, so it is earlier than
+   capability validation and earlier than identity derivation.
+
+The second check is not redundant. `ProposedEffect` has public fields and a
+capability builds its own, so no type stands between a capability and a proposal.
+
+An adapter reports its own outcome, and it is told the phase. `IntegrationOperation`
+carries an associated `Error: AdapterError`, and `AdapterError::outcome` takes an
+`EffectPhase` of `Inspect` or `Apply`. The distinction matters against a real
+forge: the same HTTP failure mutated nothing during `Inspect`, and may have
+mutated the world during `Apply`. The second case reports `Unknown` rather than a
+guess, and the answer is then resolved by reading the world (ADR 032).
+
+## What re-derivation does not cover
+
+Re-derivation replaces durable state only where an operation has a stable identity
+and an observable postcondition. Both hold for a branch, a pull request and a
+requested check, which is why this lane can prove exactly-once against them.
+Neither holds everywhere. M5 inherits the eight cases below as constraints, and
+they are recorded here so they arrive as constraints rather than as surprises.
+
+1. **A non-idempotent operation.** Appending a comment adds a comment each time it
+   runs. There is no state for `inspect` to compare, so a repeat is a second
+   comment.
+2. **An unobservable postcondition.** An operation whose result the API does not
+   report back cannot be inspected. Re-derivation has nothing to read.
+3. **Eventual consistency.** `inspect` reports the object absent immediately after
+   a successful `apply`. A reader that believes the first answer mutates a second
+   time.
+4. **A partial multi-resource mutation.** An operation that writes several
+   resources can fail between them. Inspection sees one resource of several, and
+   the effect reads as absent or as present depending on which one it looks at.
+5. **A concurrent actor.** Another actor changes the world between `inspect` and
+   `apply`. The `apply` then acts on a state that no longer holds.
+6. **An external actor with the same postcondition.** A person produces the state
+   the effect wanted. `inspect` sees the state and cannot see who made it, so
+   provenance is unknowable and the effect reports work it did not do.
+7. **A destructive operation.** An absent object does not prove the deletion
+   happened. It is equally consistent with an object that never existed, so a
+   delete cannot distinguish success from a wrong target.
+8. **The wrong object or the wrong revision.** A postcondition can be satisfied by
+   an object that is not the one the effect meant, or by the right object at a
+   revision the effect never saw. The state matches and the meaning does not.
+
+**The Jira consequence.** Case 8 is the one a tracker meets first. A Jira target
+identity must carry the issue key and a revision-like fact, such as the issue
+version or its updated timestamp. Without the second component the identity names
+an issue and not a state of it, and a stale approval can be acted on: a person
+approves a transition against what they read, the issue changes, and the effect
+applies the approved transition to a different issue than the one approved. The
+identity must therefore change when the issue changes.
