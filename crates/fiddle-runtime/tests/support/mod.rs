@@ -195,6 +195,7 @@ impl ObservedState for BranchState {
 pub struct ScriptedOperation<'w> {
     world: &'w World,
     minimum: HumanDecisionRequirement,
+    performing: &'static str,
 }
 
 #[async_trait]
@@ -204,7 +205,7 @@ impl IntegrationOperation for ScriptedOperation<'_> {
     type Error = GhError;
 
     fn kind(&self) -> EffectName {
-        EffectName::shipped(ENSURE_BRANCH_PUBLISHED)
+        EffectName::shipped(self.performing)
     }
 
     fn target(&self) -> String {
@@ -384,9 +385,14 @@ impl Harness {
     }
 
     pub fn operation(&self) -> ScriptedOperation<'_> {
+        self.operation_performing(ENSURE_BRANCH_PUBLISHED)
+    }
+
+    pub fn operation_performing(&self, performing: &'static str) -> ScriptedOperation<'_> {
         ScriptedOperation {
             world: &self.world,
             minimum: self.minimum,
+            performing,
         }
     }
 }

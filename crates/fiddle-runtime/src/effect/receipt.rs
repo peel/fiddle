@@ -53,6 +53,16 @@ pub enum EffectError {
         approved: PayloadHash,
         applying: PayloadHash,
     },
+    #[error(
+        "{kind} was proposed with {part} {proposed} and the operation carries {part} \
+         {performing}; nothing was performed"
+    )]
+    IdentityDiverged {
+        kind: EffectName,
+        part: &'static str,
+        proposed: String,
+        performing: String,
+    },
     #[error("{kind} found {count} matching objects, expected at most one")]
     DuplicateState { kind: EffectName, count: usize },
     #[error("adapter failure for {kind}: {source}")]
@@ -84,6 +94,8 @@ impl EffectError {
 
             EffectError::PayloadDiverged { .. } => Recurrence::Permanent,
 
+            EffectError::IdentityDiverged { .. } => Recurrence::Permanent,
+
             EffectError::DuplicateState { .. } => Recurrence::Permanent,
 
             EffectError::Unresolved { .. } => Recurrence::Correctable,
@@ -108,7 +120,7 @@ mod tests {
 
     #[test]
     fn every_effect_failure_declares_which_exit_row_it_belongs_in() {
-        let cases: [(&str, EffectError, Recurrence); 8] = [
+        let cases: [(&str, EffectError, Recurrence); 9] = [
             (
                 "no descriptor in this build holds the name",
                 EffectError::UnknownEffect {
@@ -150,6 +162,16 @@ mod tests {
                 Recurrence::Permanent,
             ),
             (
+                "the proposal names work the operation would not do",
+                EffectError::IdentityDiverged {
+                    kind: kind(),
+                    part: "target",
+                    proposed: "a".into(),
+                    performing: "b".into(),
+                },
+                Recurrence::Permanent,
+            ),
+            (
                 "the world holds an ambiguity fiddle may not resolve",
                 EffectError::DuplicateState {
                     kind: kind(),
@@ -183,6 +205,21 @@ mod tests {
                 error.recurrence()
             );
         }
+    }
+
+    #[test]
+    fn a_diverged_identity_names_the_part_and_both_spellings() {
+        let error = EffectError::IdentityDiverged {
+            kind: kind(),
+            part: "target",
+            proposed: "refs/heads/one".into(),
+            performing: "refs/heads/two".into(),
+        };
+        assert_eq!(
+            format!("{error}"),
+            "ensure_pull_request was proposed with target refs/heads/one and the \
+             operation carries target refs/heads/two; nothing was performed"
+        );
     }
 
     #[test]
@@ -221,6 +258,12 @@ mod tests {
                 kind: kind(),
                 approved: PayloadHash("a".into()),
                 applying: PayloadHash("b".into()),
+            },
+            EffectError::IdentityDiverged {
+                kind: kind(),
+                part: "kind",
+                proposed: "a".into(),
+                performing: "b".into(),
             },
         ];
         for error in refusals {

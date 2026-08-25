@@ -1058,6 +1058,85 @@ async fn an_executor_is_bound_to_one_capability() {
     );
 }
 
+fn proposing_kind(kind: &'static str) -> ProposedEffect {
+    ProposedEffect {
+        kind: EffectName::shipped(kind),
+        ..branch_effect()
+    }
+}
+
+fn proposing_target(target: &str) -> ProposedEffect {
+    ProposedEffect {
+        target: target.to_string(),
+        ..branch_effect()
+    }
+}
+
+#[tokio::test]
+async fn a_proposed_kind_the_operation_would_not_perform_is_refused() {
+    let harness = Harness::new(Script::AbsentThenWritten);
+    let error = harness
+        .executor()
+        .execute(proposing_kind(ENSURE_PULL_REQUEST), harness.operation())
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        harness.world.calls(),
+        Vec::<&str>::new(),
+        "nothing reached the adapter"
+    );
+    assert_eq!(
+        harness.world.steps(),
+        ["validate_capability"],
+        "and no identity was derived from a name the operation would not perform"
+    );
+    assert_eq!(harness.world.mutations(), 0, "and nothing was written");
+    assert!(
+        matches!(
+            &error,
+            EffectError::IdentityDiverged { part: "kind", proposed, performing, .. }
+                if proposed == ENSURE_PULL_REQUEST && performing == ENSURE_BRANCH_PUBLISHED
+        ),
+        "expected IdentityDiverged naming both spellings, got {error:?}"
+    );
+    assert_eq!(error.recurrence(), Recurrence::Permanent);
+}
+
+#[tokio::test]
+async fn a_proposed_target_the_operation_would_not_touch_is_refused() {
+    let harness = Harness::new(Script::AbsentThenWritten);
+    let error = harness
+        .executor()
+        .execute(
+            proposing_target("refs/heads/fiddle/elsewhere"),
+            harness.operation(),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        harness.world.calls(),
+        Vec::<&str>::new(),
+        "nothing reached the adapter"
+    );
+    assert_eq!(
+        harness.world.steps(),
+        ["validate_capability"],
+        "and no identity was derived for a target the operation would not touch"
+    );
+    assert_eq!(harness.world.mutations(), 0, "and nothing was written");
+    assert!(
+        matches!(
+            &error,
+            EffectError::IdentityDiverged { part: "target", proposed, performing, .. }
+                if proposed == "refs/heads/fiddle/elsewhere" && performing == TARGET
+        ),
+        "expected IdentityDiverged naming both targets, got {error:?}"
+    );
+    assert_eq!(error.recurrence(), Recurrence::Permanent);
+}
+
 #[tokio::test]
 async fn the_receipt_carries_the_recomputable_identity_and_payload_hash() {
     let harness = Harness::new(Script::AbsentThenWritten);
@@ -2164,7 +2243,7 @@ async fn every_name_this_build_ships_survives_the_registry_check() {
         };
         harness
             .executor()
-            .execute(proposed, harness.operation())
+            .execute(proposed, harness.operation_performing(shipped))
             .await
             .unwrap_or_else(|error| panic!("{shipped} is registered and was refused: {error}"));
     }

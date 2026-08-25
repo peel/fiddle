@@ -502,6 +502,26 @@ impl<'a> Executor<'a> {
             });
         }
 
+        let performing = operation.kind();
+        if performing != kind {
+            return Err(EffectError::IdentityDiverged {
+                kind: kind.clone(),
+                part: "kind",
+                proposed: kind.to_string(),
+                performing: performing.to_string(),
+            });
+        }
+
+        let performing = operation.target();
+        if performing != proposed.target {
+            return Err(EffectError::IdentityDiverged {
+                kind: kind.clone(),
+                part: "target",
+                proposed: proposed.target.clone(),
+                performing,
+            });
+        }
+
         self.trace.step(&kind, ExecutionStep::DeriveIdentity);
         let effect_id = effect_id(
             &self.project,
