@@ -2,12 +2,12 @@ mod support;
 
 use fiddle_core::{
     combine, decision_request_id, effect_id, payload_hash, DecisionBinding, DeploymentRule,
-    EffectKind, HumanDecisionRequirement, InterpretedHumanDecision, PolicyDecision, ProposedEffect,
-    FIXTURE_REPAIR,
+    EffectName, HumanDecisionRequirement, InterpretedHumanDecision, PolicyDecision, ProposedEffect,
+    ENSURE_PULL_REQUEST_READY, FIXTURE_REPAIR,
 };
 use fiddle_runtime::effect::{
-    EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
-    IntegrationOperation, ReadRetry, ResolvedDecision,
+    AdapterError, EffectContext, EffectError, EffectOutcome, EffectPhase, EffectReceipt,
+    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ReadRetry, ResolvedDecision,
 };
 use fiddle_runtime::github::{EnsurePullRequestReady, GhError, ReadyPullRequest};
 use fiddle_runtime::GhCli;
@@ -41,7 +41,7 @@ fn identity_of(operation: &EnsurePullRequestReady) -> fiddle_core::EffectId {
     effect_id(
         PROJECT,
         INVOCATION_REF,
-        EffectKind::EnsurePullRequestReady,
+        ENSURE_PULL_REQUEST_READY,
         &operation.target(),
     )
 }
@@ -52,7 +52,7 @@ struct World {
 }
 
 impl EffectTrace for World {
-    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
+    fn step(&self, _kind: &EffectName, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
     }
 }
@@ -218,7 +218,7 @@ impl World {
         let deployment = Deployment(DeploymentRule::Allow);
         let proposed = ProposedEffect {
             capability: FIXTURE_REPAIR,
-            kind: EffectKind::EnsurePullRequestReady,
+            kind: EffectName::shipped(ENSURE_PULL_REQUEST_READY),
             target: operation.target(),
             payload: operation.payload(),
         };
@@ -282,11 +282,9 @@ async fn a_run_that_reaches_policy_is_refused_for_want_of_a_person() {
 
     assert!(
         matches!(
-            error,
-            EffectError::HumanDecisionRequired {
-                kind: EffectKind::EnsurePullRequestReady,
-                ..
-            }
+            &error,
+            EffectError::HumanDecisionRequired { kind, .. }
+                if kind.as_str() == ENSURE_PULL_REQUEST_READY
         ),
         "got {error:?}"
     );
@@ -419,7 +417,7 @@ async fn a_refused_mutation_is_not_reported_as_a_lost_write() {
         .await
         .expect_err("a refused mutation did not make the pull request ready");
 
-    let EffectError::Adapter { source, .. } = &error else {
+    let Some(source) = error.adapter_source::<GhError>() else {
         panic!("expected the adapter's refusal to stand, got {error:?}");
     };
     assert!(
@@ -427,7 +425,7 @@ async fn a_refused_mutation_is_not_reported_as_a_lost_write() {
         "and to name what refused it, got {source:?}"
     );
     assert_eq!(
-        source.outcome(),
+        source.outcome(EffectPhase::Apply),
         EffectOutcome::NotCommitted,
         "a refusal in these terms leaves no room for the write having happened"
     );
@@ -538,7 +536,7 @@ async fn a_lost_answer_on_the_ready_transition_is_settled_by_reading() {
         "expected a child that died without answering, got {lost:?}"
     );
     assert_eq!(
-        lost.outcome(),
+        lost.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "and it must classify Unknown, or the executor would never go and look"
     );
@@ -668,5 +666,9 @@ async fn a_pull_request_this_client_cannot_read_is_not_a_verdict() {
         .await
         .expect_err("a response missing both fields is not an answer");
 
-    assert_eq!(error.outcome(), EffectOutcome::Unknown, "got {error:?}");
+    assert_eq!(
+        error.outcome(EffectPhase::Apply),
+        EffectOutcome::Unknown,
+        "got {error:?}"
+    );
 }

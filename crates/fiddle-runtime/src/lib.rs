@@ -1,3 +1,5 @@
+extern crate self as fiddle_runtime;
+
 pub mod agent;
 pub mod capability;
 pub mod cve;
@@ -16,6 +18,12 @@ pub mod scanner;
 pub mod stub;
 pub mod workspace;
 
+#[doc(hidden)]
+pub mod derive_support {
+    pub use async_trait::async_trait;
+    pub use serde_json;
+}
+
 pub use agent::{
     AgentBudget, Direction, ToolHost, ToolReceipt, ToolReceipts, TranscriptHook, Transcripts,
 };
@@ -25,8 +33,9 @@ pub use capability::{
     StubMark, CAPABILITIES,
 };
 pub use effect::{
-    AuthorizedEffect, DeploymentPolicy, EffectContext, EffectError, EffectOutcome, EffectReceipt,
-    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ObservedState, ResolvedDecision,
+    AdapterError, AuthorizedEffect, DeploymentPolicy, EffectContext, EffectError, EffectOutcome,
+    EffectPhase, EffectReceipt, EffectTrace, ExecutionStep, Executor, IntegrationOperation,
+    ObservedState, ResolvedDecision,
 };
 pub use evidence::{EvidenceError, BUNDLE_FILE};
 pub use fiddle_core as core;

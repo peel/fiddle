@@ -5,11 +5,12 @@ pub mod pulls;
 pub mod ready;
 pub mod refs;
 
+pub use crate::effect::RetryAdvice;
 pub use checks::{
     check_request_target, classify, observe_checks, observe_genuine_failure, run_name, BlamedCheck,
     CheckState, EnsureCheckRequested, GenuineFailure, Settlement, WorkflowRun,
 };
-pub use cli::{GhCli, GhError, GhResponse, RetryAdvice};
+pub use cli::{GhCli, GhError, GhResponse};
 pub use comments::{
     read_conversation, read_line_comments, read_one_comment, read_reviews, Annotated,
     HumanResponse, Reviewed, CHANGES_REQUESTED,

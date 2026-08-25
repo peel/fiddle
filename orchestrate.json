@@ -68,5 +68,15 @@
       "deliver": "default"
     }
   },
-  "plans": {}
+  "plans": {},
+  "acceptance": {
+    "live": {
+      "command": "scripts/live-cve-steering.sh",
+      "env": [
+        "FIDDLE_GITHUB_TOKEN",
+        "FIDDLE_CVE_TAG"
+      ],
+      "required": true
+    }
+  }
 }

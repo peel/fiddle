@@ -267,8 +267,9 @@ fn a_run_awaiting_a_decision_exits_ten_and_says_what_it_waits_for() {
         "the reason must say the run is waiting rather than that it failed: {reason}"
     );
     assert!(
-        reason.contains("EnsureBranchPublished"),
-        "and must name what it is waiting about: {reason}"
+        reason.contains("ensure_branch_published"),
+        "and must name what it is waiting about, in the spelling the document \
+         uses: {reason}"
     );
 
     assert_eq!(

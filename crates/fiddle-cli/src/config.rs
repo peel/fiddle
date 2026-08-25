@@ -1,6 +1,7 @@
-use fiddle_core::{DeploymentRule, EffectKind, Severities};
-use fiddle_runtime::effect::DeploymentPolicy;
+use fiddle_core::{DeploymentRule, EffectName, Severities};
+use fiddle_runtime::effect::{registry, DeploymentPolicy};
 use serde::Deserialize;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -487,50 +488,64 @@ impl<'de> Deserialize<'de> for Repo {
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(try_from = "PolicyDocument")]
+pub struct PolicyTable(HashMap<EffectName, DeploymentRule>);
+
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PolicyTable {
-    #[serde(default = "allow")]
-    pub ensure_branch_published: DeploymentRule,
-    #[serde(default = "allow")]
-    pub ensure_pull_request: DeploymentRule,
-    #[serde(default = "allow")]
-    pub ensure_check_requested: DeploymentRule,
-    #[serde(default = "allow")]
-    pub publish_decision_request: DeploymentRule,
-    #[serde(default = "allow")]
-    pub ensure_pull_request_ready: DeploymentRule,
-    #[serde(default = "allow")]
-    pub ensure_pull_request_body: DeploymentRule,
-}
+#[serde(transparent)]
+struct PolicyDocument(BTreeMap<String, DeploymentRule>);
 
-fn allow() -> DeploymentRule {
-    DeploymentRule::Allow
-}
+impl TryFrom<PolicyDocument> for PolicyTable {
+    type Error = String;
 
-impl Default for PolicyTable {
-    fn default() -> Self {
-        PolicyTable {
-            ensure_branch_published: allow(),
-            ensure_pull_request: allow(),
-            ensure_check_requested: allow(),
-            publish_decision_request: allow(),
-            ensure_pull_request_ready: allow(),
-            ensure_pull_request_body: allow(),
+    fn try_from(document: PolicyDocument) -> Result<Self, String> {
+        let mut rules = HashMap::new();
+        let mut ungoverned = Vec::new();
+        for (key, rule) in document.0 {
+            match EffectName::parse(&key)
+                .ok()
+                .filter(|name| registry::describe(name).is_some())
+            {
+                Some(name) => {
+                    rules.insert(name, rule);
+                }
+                None => ungoverned.push(format!("`{key}`")),
+            }
         }
+        if !ungoverned.is_empty() {
+            return Err(format!(
+                "a rule gates an effect this build performs, and {} names none. \
+                 A rule written there gates nothing, and the effect it was meant \
+                 for stays ungated, so the document is refused rather than read \
+                 as the silence it would otherwise become. Write a rule for one \
+                 of: {}",
+                ungoverned.join(", "),
+                registry::registered()
+                    .iter()
+                    .map(|descriptor| descriptor.name)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
+        Ok(Self(rules))
+    }
+}
+
+impl PolicyTable {
+    pub fn rows(&self) -> impl Iterator<Item = (&'static str, DeploymentRule)> + '_ {
+        registry::registered().into_iter().map(|descriptor| {
+            (
+                descriptor.name,
+                self.rule_for(&EffectName::shipped(descriptor.name)),
+            )
+        })
     }
 }
 
 impl DeploymentPolicy for PolicyTable {
-    fn rule_for(&self, kind: EffectKind) -> DeploymentRule {
-        match kind {
-            EffectKind::EnsureBranchPublished => self.ensure_branch_published,
-            EffectKind::EnsurePullRequest => self.ensure_pull_request,
-            EffectKind::EnsureCheckRequested => self.ensure_check_requested,
-            EffectKind::PublishDecisionRequest => self.publish_decision_request,
-            EffectKind::EnsurePullRequestReady => self.ensure_pull_request_ready,
-            EffectKind::EnsurePullRequestBody => self.ensure_pull_request_body,
-        }
+    fn rule_for(&self, kind: &EffectName) -> DeploymentRule {
+        self.0.get(kind).copied().unwrap_or(DeploymentRule::Allow)
     }
 }
 
@@ -790,6 +805,10 @@ fn redacted(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fiddle_core::{
+        ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
+        ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, PUBLISH_DECISION_REQUEST,
+    };
 
     const VALID: &str = r#"
 [project]
@@ -1546,7 +1565,7 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
             );
             let proposed = fiddle_core::ProposedEffect {
                 capability: fiddle_core::PUBLISH_CHANGE,
-                kind: fiddle_core::EffectKind::EnsureBranchPublished,
+                kind: EffectName::shipped(fiddle_core::ENSURE_BRANCH_PUBLISHED),
                 target: "refs/heads/fiddle/abc".to_string(),
                 payload: "{}".to_string(),
             };
@@ -1588,6 +1607,16 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
     impl fiddle_runtime::effect::IntegrationOperation for NeverSettles {
         type State = NeverObserved;
 
+        type Error = fiddle_runtime::GhError;
+
+        fn kind(&self) -> fiddle_core::EffectName {
+            fiddle_core::EffectName::shipped(fiddle_core::ENSURE_BRANCH_PUBLISHED)
+        }
+
+        fn target(&self) -> String {
+            "refs/heads/fiddle/abc".to_string()
+        }
+
         fn minimum(&self) -> fiddle_core::HumanDecisionRequirement {
             fiddle_core::HumanDecisionRequirement::Automatic
         }
@@ -1616,7 +1645,7 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
     struct AllowEverything;
 
     impl fiddle_runtime::effect::DeploymentPolicy for AllowEverything {
-        fn rule_for(&self, _kind: fiddle_core::EffectKind) -> fiddle_core::DeploymentRule {
+        fn rule_for(&self, _kind: &EffectName) -> fiddle_core::DeploymentRule {
             fiddle_core::DeploymentRule::Allow
         }
     }
@@ -1626,7 +1655,7 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
     impl fiddle_runtime::effect::EffectTrace for DiscardTheWalk {
         fn step(
             &self,
-            _kind: fiddle_core::EffectKind,
+            _kind: &fiddle_core::EffectName,
             _step: fiddle_runtime::effect::ExecutionStep,
         ) {
         }
@@ -1710,58 +1739,120 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
         );
     }
 
-    const RULE_KEYS: [(&str, EffectKind); EffectKind::ALL.len()] = [
-        ("ensure_branch_published", EffectKind::EnsureBranchPublished),
-        ("ensure_pull_request", EffectKind::EnsurePullRequest),
-        ("ensure_check_requested", EffectKind::EnsureCheckRequested),
-        (
-            "publish_decision_request",
-            EffectKind::PublishDecisionRequest,
-        ),
-        (
-            "ensure_pull_request_ready",
-            EffectKind::EnsurePullRequestReady,
-        ),
-        (
-            "ensure_pull_request_body",
-            EffectKind::EnsurePullRequestBody,
-        ),
+    const RULE_KEYS: [&str; 6] = [
+        ENSURE_BRANCH_PUBLISHED,
+        ENSURE_PULL_REQUEST,
+        ENSURE_CHECK_REQUESTED,
+        PUBLISH_DECISION_REQUEST,
+        ENSURE_PULL_REQUEST_READY,
+        ENSURE_PULL_REQUEST_BODY,
     ];
 
     #[test]
-    fn the_rule_keys_cover_every_effect_kind() {
-        let named: std::collections::BTreeSet<_> =
-            RULE_KEYS.iter().map(|(_, kind)| kind.as_str()).collect();
-        assert_eq!(named.len(), RULE_KEYS.len(), "a kind is listed twice");
-        for kind in EffectKind::ALL {
+    fn every_rule_key_is_a_distinct_name_a_document_can_spell() {
+        let named: std::collections::BTreeSet<_> = RULE_KEYS.iter().collect();
+        assert_eq!(named.len(), RULE_KEYS.len(), "a key is listed twice");
+        for key in RULE_KEYS {
             assert!(
-                named.contains(kind.as_str()),
-                "{} has no rule key, so no document can gate it",
-                kind.as_str()
+                EffectName::parse(key).is_ok(),
+                "{key} is not a name the grammar admits"
             );
-        }
-        for (key, kind) in RULE_KEYS {
-            assert_eq!(key, kind.as_str());
+            assert!(
+                toml::from_str::<Config>(&format!("{FORGE}\n[github.policy]\n{key} = \"deny\"\n"))
+                    .is_ok(),
+                "{key} names no field of the policy table, so no document can gate it"
+            );
         }
     }
 
     #[test]
-    fn every_rule_key_governs_the_effect_kind_it_is_named_after() {
-        let kinds = RULE_KEYS;
-        for (key, _) in kinds {
+    fn every_rule_key_governs_the_effect_name_it_is_named_after() {
+        for key in RULE_KEYS {
             let table = github(&format!("{FORGE}\n[github.policy]\n{key} = \"deny\"\n")).policy;
-            for (other_key, other_kind) in kinds {
+            for other_key in RULE_KEYS {
                 let expected = match other_key == key {
                     true => DeploymentRule::Deny,
                     false => DeploymentRule::Allow,
                 };
                 assert_eq!(
-                    table.rule_for(other_kind),
+                    table.rule_for(&EffectName::shipped(other_key)),
                     expected,
                     "with only {key} denied, {other_key} must be {expected:?}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_name_no_rule_key_spells_is_left_ungated() {
+        let table = github(&format!(
+            "{FORGE}\n[github.policy]\nensure_pull_request = \"deny\"\n"
+        ))
+        .policy;
+        assert_eq!(
+            table.rule_for(&EffectName::parse("jira.transition").unwrap()),
+            DeploymentRule::Allow,
+            "a row this document does not write adds no gate of its own"
+        );
+    }
+
+    #[test]
+    fn a_policy_key_naming_no_registered_effect_is_refused_at_load() {
+        let misspelled = [
+            "ensure_pull_requst",
+            "ensure-pull-request",
+            "ensure_chek_requested",
+        ];
+        let document = format!(
+            "{FORGE}\n[github.policy]\nensure_pull_request = \"allow\"\n{}",
+            misspelled
+                .iter()
+                .map(|key| format!("{key} = \"deny\"\n"))
+                .collect::<String>()
+        );
+        let refusal = toml::from_str::<Config>(&document)
+            .expect_err("a key naming no effect is not a rule")
+            .message()
+            .to_string();
+        for key in misspelled {
+            assert!(
+                refusal.contains(key),
+                "the refusal must name {key}, not only the first offender: {refusal}"
+            );
+        }
+        for descriptor in fiddle_runtime::effect::registry::registered() {
+            assert!(
+                refusal.contains(descriptor.name),
+                "and must offer {}, which the registry holds: {refusal}",
+                descriptor.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_row_and_an_unknown_name_are_different_states() {
+        let table = github(&format!(
+            "{FORGE}\n[github.policy]\nensure_pull_request = \"deny\"\n"
+        ))
+        .policy;
+        assert_eq!(
+            table.rule_for(&EffectName::shipped(ENSURE_PULL_REQUEST)),
+            DeploymentRule::Deny,
+            "the row the document wrote gates the effect it names"
+        );
+        assert_eq!(
+            table.rule_for(&EffectName::shipped(ENSURE_BRANCH_PUBLISHED)),
+            DeploymentRule::Allow,
+            "a registered effect the document leaves out is left ungated"
+        );
+        assert!(
+            toml::from_str::<Config>(&format!(
+                "{FORGE}\n[github.policy]\nensure_branch_publishd = \"deny\"\n"
+            ))
+            .is_err(),
+            "while a key naming no effect never reaches the table, where it \
+             would be indistinguishable from the row above"
+        );
     }
 
     #[test]
@@ -1775,7 +1866,10 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
                 "{FORGE}\n[github.policy]\nensure_pull_request = \"{written}\"\n"
             ))
             .policy;
-            assert_eq!(policy.rule_for(EffectKind::EnsurePullRequest), expected);
+            assert_eq!(
+                policy.rule_for(&EffectName::shipped(ENSURE_PULL_REQUEST)),
+                expected
+            );
         }
         assert!(
             toml::from_str::<Config>(&format!(
@@ -1793,13 +1887,14 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
             "{FORGE}\n[github.policy]\n{}",
             RULE_KEYS
                 .iter()
-                .map(|(key, _)| format!("{key} = \"allow\"\n"))
+                .map(|key| format!("{key} = \"allow\"\n"))
                 .collect::<String>()
         ))
         .policy;
-        for (key, kind) in RULE_KEYS {
-            assert_eq!(absent.rule_for(kind), DeploymentRule::Allow, "{key}");
-            assert_eq!(absent.rule_for(kind), spelled.rule_for(kind), "{key}");
+        for key in RULE_KEYS {
+            let kind = EffectName::shipped(key);
+            assert_eq!(absent.rule_for(&kind), DeploymentRule::Allow, "{key}");
+            assert_eq!(absent.rule_for(&kind), spelled.rule_for(&kind), "{key}");
         }
     }
 
@@ -1807,7 +1902,7 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
     fn a_silent_policy_table_still_requires_a_human_for_the_ready_transition() {
         let table = github(FORGE).policy;
         assert_eq!(
-            table.rule_for(EffectKind::EnsurePullRequestReady),
+            table.rule_for(&EffectName::shipped(ENSURE_PULL_REQUEST_READY)),
             DeploymentRule::Allow,
             "a document that says nothing must not be stricter than one saying so"
         );
@@ -1815,7 +1910,7 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
             matches!(
                 fiddle_core::combine(
                     fiddle_core::HumanDecisionRequirement::Human,
-                    table.rule_for(EffectKind::EnsurePullRequestReady)
+                    table.rule_for(&EffectName::shipped(ENSURE_PULL_REQUEST_READY))
                 ),
                 fiddle_core::PolicyDecision::RequireHumanDecision { .. }
             ),
@@ -1824,7 +1919,7 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
         assert_eq!(
             fiddle_core::combine(
                 fiddle_core::HumanDecisionRequirement::Automatic,
-                table.rule_for(EffectKind::PublishDecisionRequest)
+                table.rule_for(&EffectName::shipped(PUBLISH_DECISION_REQUEST))
             ),
             fiddle_core::PolicyDecision::Allow,
             "publishing a question cannot itself require a question"
@@ -1838,14 +1933,14 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
         ))
         .policy;
         assert_eq!(
-            table.rule_for(EffectKind::EnsurePullRequestReady),
+            table.rule_for(&EffectName::shipped(ENSURE_PULL_REQUEST_READY)),
             DeploymentRule::Deny
         );
         assert!(
             matches!(
                 fiddle_core::combine(
                     fiddle_core::HumanDecisionRequirement::Human,
-                    table.rule_for(EffectKind::EnsurePullRequestReady)
+                    table.rule_for(&EffectName::shipped(ENSURE_PULL_REQUEST_READY))
                 ),
                 fiddle_core::PolicyDecision::Deny { .. }
             ),

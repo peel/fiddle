@@ -1,7 +1,7 @@
 use crate::effect::{EffectTrace, ExecutionStep};
 use crate::evidence::{EvidenceError, BUNDLE_FILE};
 use crate::human::validate::{DecisionStep, DecisionTrace};
-use fiddle_core::{AttemptId, CapabilityId, EffectKind, EvidenceRef};
+use fiddle_core::{AttemptId, CapabilityId, EffectName, EvidenceRef};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -11,7 +11,7 @@ pub const JOURNAL_DIR: &str = ".attempts";
 pub trait AttemptJournal: Send + Sync {
     fn record_intent(&self, capability: CapabilityId) -> Result<(), EvidenceError>;
 
-    fn record_step(&self, kind: EffectKind, step: ExecutionStep);
+    fn record_step(&self, kind: &EffectName, step: ExecutionStep);
 
     fn record_decision_step(&self, step: DecisionStep);
 
@@ -81,7 +81,7 @@ impl AttemptJournal for FileJournal {
         }))
     }
 
-    fn record_step(&self, kind: EffectKind, step: ExecutionStep) {
+    fn record_step(&self, kind: &EffectName, step: ExecutionStep) {
         let _ = self.append(&serde_json::json!({
             "record": "effect_step",
             "attempt_id": self.attempt,
@@ -137,7 +137,7 @@ impl Default for AttemptTrace {
 }
 
 impl EffectTrace for AttemptTrace {
-    fn step(&self, kind: EffectKind, step: ExecutionStep) {
+    fn step(&self, kind: &EffectName, step: ExecutionStep) {
         let journal = self.journal.lock().unwrap().clone();
         if let Some(journal) = journal {
             journal.record_step(kind, step);
@@ -336,7 +336,10 @@ mod tests {
         let recording = journal(dir.path(), &attempt);
 
         recording.record_intent(STUB_MARK).unwrap();
-        recording.record_step(EffectKind::EnsurePullRequest, ExecutionStep::Apply);
+        recording.record_step(
+            &EffectName::shipped(fiddle_core::ENSURE_PULL_REQUEST),
+            ExecutionStep::Apply,
+        );
 
         let written = std::fs::read_to_string(
             dir.path()
@@ -368,7 +371,10 @@ mod tests {
         let recording = journal(dir.path(), &attempt);
 
         recording.record_intent(STUB_MARK).unwrap();
-        recording.record_step(EffectKind::EnsurePullRequestReady, ExecutionStep::Apply);
+        recording.record_step(
+            &EffectName::shipped(fiddle_core::ENSURE_PULL_REQUEST_READY),
+            ExecutionStep::Apply,
+        );
         recording.record_decision_step(DecisionStep::ReObserveState);
 
         let written = std::fs::read_to_string(
@@ -418,7 +424,7 @@ mod tests {
         let trace = AttemptTrace::new();
         EffectTrace::step(
             &trace,
-            EffectKind::EnsureBranchPublished,
+            &EffectName::shipped(fiddle_core::ENSURE_BRANCH_PUBLISHED),
             ExecutionStep::Apply,
         );
         DecisionTrace::step(&trace, DecisionStep::RecomputeIdentity);
@@ -431,7 +437,7 @@ mod tests {
         trace.attach(Arc::new(journal(dir.path(), &attempt)));
         EffectTrace::step(
             &trace,
-            EffectKind::EnsureBranchPublished,
+            &EffectName::shipped(fiddle_core::ENSURE_BRANCH_PUBLISHED),
             ExecutionStep::Apply,
         );
         DecisionTrace::step(&trace, DecisionStep::RecomputeIdentity);

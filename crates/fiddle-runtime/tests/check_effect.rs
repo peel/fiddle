@@ -1,11 +1,12 @@
 mod support;
 
 use fiddle_core::{
-    effect_id, EffectKind, Observation, ProposedEffect, VerificationState, FIXTURE_REPAIR,
+    effect_id, EffectName, Observation, ProposedEffect, VerificationState, ENSURE_CHECK_REQUESTED,
+    FIXTURE_REPAIR,
 };
 use fiddle_runtime::effect::{
-    EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
-    IntegrationOperation, ReadRetry,
+    AdapterError, EffectContext, EffectError, EffectOutcome, EffectPhase, EffectReceipt,
+    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ReadRetry,
 };
 use fiddle_runtime::github::{
     branch_name, check_request_target, classify, observe_checks, run_name, CheckState,
@@ -49,7 +50,7 @@ fn expected_run_name() -> String {
     run_name(&effect_id(
         PROJECT,
         INVOCATION_REF,
-        EffectKind::EnsureCheckRequested,
+        ENSURE_CHECK_REQUESTED,
         &check_request_target(REPO, WORKFLOW, &git_ref()),
     ))
 }
@@ -64,7 +65,7 @@ struct Ci {
 }
 
 impl EffectTrace for Ci {
-    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
+    fn step(&self, _kind: &EffectName, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
     }
 }
@@ -240,7 +241,7 @@ async fn request_the_check(
     let deployment = Deployment(fiddle_core::DeploymentRule::Allow);
     let proposed = ProposedEffect {
         capability: FIXTURE_REPAIR,
-        kind: EffectKind::EnsureCheckRequested,
+        kind: EffectName::shipped(ENSURE_CHECK_REQUESTED),
         target: operation.target(),
         payload: operation.payload(),
     };
@@ -479,7 +480,7 @@ async fn a_lost_dispatch_response_does_not_start_a_second_run() {
         "expected a child that died without answering, got {lost:?}"
     );
     assert_eq!(
-        lost.outcome(),
+        lost.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "and it must classify Unknown, or the executor would never go and look"
     );
@@ -637,11 +638,8 @@ async fn an_unreadable_runs_listing_is_never_an_absent_run() {
 
     assert!(
         matches!(
-            error,
-            EffectError::Adapter {
-                source: GhError::Http { status: 500, .. },
-                ..
-            }
+            error.adapter_source::<GhError>(),
+            Some(GhError::Http { status: 500, .. })
         ),
         "expected the read to be reported, got {error:?}"
     );
@@ -675,13 +673,7 @@ async fn a_dispatch_whose_identity_would_not_round_trip_is_refused() {
         .expect_err("a run nobody could find again is not dispatched");
 
     assert!(
-        matches!(
-            error,
-            EffectError::Adapter {
-                source: GhError::NotSent(_),
-                ..
-            }
-        ),
+        matches!(error.adapter_source::<GhError>(), Some(GhError::NotSent(_))),
         "expected the dispatch to be refused, got {error:?}"
     );
     assert_eq!(

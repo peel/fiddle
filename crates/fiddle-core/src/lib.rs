@@ -18,7 +18,9 @@ pub use decision::{
     HumanDecisionRequest, InterpretedHumanDecision, MarkerError, MARKER_VERSION,
 };
 pub use effect::{
-    content_digest, effect_id, payload_hash, EffectId, EffectKind, PayloadHash, ProposedEffect,
+    content_digest, effect_id, payload_hash, EffectId, EffectName, EffectNameError, PayloadHash,
+    ProposedEffect, ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
+    ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, PUBLISH_DECISION_REQUEST,
 };
 pub use finding::{
     selected, AdvisoryId, AdvisoryIdError, PackageType, ProjectedFinding, Severities,

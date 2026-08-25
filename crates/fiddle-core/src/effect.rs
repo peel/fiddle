@@ -8,74 +8,70 @@ pub struct EffectId(pub String);
 #[serde(transparent)]
 pub struct PayloadHash(pub String);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EffectKind {
-    EnsureBranchPublished,
-    EnsurePullRequest,
-    EnsureCheckRequested,
-    PublishDecisionRequest,
-    EnsurePullRequestReady,
-    EnsurePullRequestBody,
-}
+#[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct EffectName(String);
 
-const KINDS: usize = 6;
+#[derive(Debug, thiserror::Error, Eq, PartialEq)]
+#[error("`{0}` is not an effect name: use lowercase ASCII letters, digits, `_` and `.`")]
+pub struct EffectNameError(String);
 
-impl EffectKind {
-    pub const ALL: [EffectKind; KINDS] = Self::chain();
-
-    const FIRST: EffectKind = EffectKind::EnsureBranchPublished;
-
-    const fn next(self) -> Option<EffectKind> {
-        match self {
-            EffectKind::EnsureBranchPublished => Some(EffectKind::EnsurePullRequest),
-            EffectKind::EnsurePullRequest => Some(EffectKind::EnsureCheckRequested),
-            EffectKind::EnsureCheckRequested => Some(EffectKind::PublishDecisionRequest),
-            EffectKind::PublishDecisionRequest => Some(EffectKind::EnsurePullRequestReady),
-            EffectKind::EnsurePullRequestReady => Some(EffectKind::EnsurePullRequestBody),
-            EffectKind::EnsurePullRequestBody => None,
+impl EffectName {
+    pub fn parse(text: &str) -> Result<Self, EffectNameError> {
+        let legal = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.';
+        match !text.is_empty() && text.chars().all(legal) {
+            true => Ok(EffectName(text.to_string())),
+            false => Err(EffectNameError(text.to_string())),
         }
     }
 
-    const fn chain() -> [EffectKind; KINDS] {
-        let mut all = [Self::FIRST; KINDS];
-        let mut i = 1;
-        while i < KINDS {
-            all[i] = match all[i - 1].next() {
-                Some(kind) => kind,
-                None => panic!("the successor chain ends before ALL is full"),
-            };
-            i += 1;
-        }
-        assert!(
-            all[KINDS - 1].next().is_none(),
-            "the successor chain continues past the end of ALL, so a kind is missing from it"
-        );
-        all
+    pub fn shipped(spelling: &'static str) -> Self {
+        EffectName::parse(spelling)
+            .expect("a spelling this build ships must parse under the grammar")
     }
 
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            EffectKind::EnsureBranchPublished => "ensure_branch_published",
-            EffectKind::EnsurePullRequest => "ensure_pull_request",
-            EffectKind::EnsureCheckRequested => "ensure_check_requested",
-            EffectKind::PublishDecisionRequest => "publish_decision_request",
-            EffectKind::EnsurePullRequestReady => "ensure_pull_request_ready",
-            EffectKind::EnsurePullRequestBody => "ensure_pull_request_body",
-        }
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
+
+impl std::fmt::Display for EffectName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for EffectName {
+    type Error = EffectNameError;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        EffectName::parse(&text)
+    }
+}
+
+impl From<EffectName> for String {
+    fn from(name: EffectName) -> String {
+        name.0
+    }
+}
+
+pub const ENSURE_BRANCH_PUBLISHED: &str = "ensure_branch_published";
+pub const ENSURE_PULL_REQUEST: &str = "ensure_pull_request";
+pub const ENSURE_CHECK_REQUESTED: &str = "ensure_check_requested";
+pub const PUBLISH_DECISION_REQUEST: &str = "publish_decision_request";
+pub const ENSURE_PULL_REQUEST_READY: &str = "ensure_pull_request_ready";
+pub const ENSURE_PULL_REQUEST_BODY: &str = "ensure_pull_request_body";
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct ProposedEffect {
     pub capability: CapabilityId,
-    pub kind: EffectKind,
+    pub kind: EffectName,
     pub target: String,
     pub payload: String,
 }
 
-pub fn effect_id(project: &str, invocation_ref: &str, kind: EffectKind, target: &str) -> EffectId {
-    let material = length_prefixed([project, invocation_ref, kind.as_str(), target]);
+pub fn effect_id(project: &str, invocation_ref: &str, kind: &str, target: &str) -> EffectId {
+    let material = length_prefixed([project, invocation_ref, kind, target]);
     EffectId(truncated_digest(&material))
 }
 
@@ -105,18 +101,27 @@ pub(crate) fn truncated_digest(material: &str) -> String {
 mod tests {
     use super::*;
 
+    const SPELLINGS: [&str; 6] = [
+        ENSURE_BRANCH_PUBLISHED,
+        ENSURE_PULL_REQUEST,
+        ENSURE_CHECK_REQUESTED,
+        PUBLISH_DECISION_REQUEST,
+        ENSURE_PULL_REQUEST_READY,
+        ENSURE_PULL_REQUEST_BODY,
+    ];
+
     #[test]
     fn an_effect_id_is_recomputable_from_canonical_inputs_alone() {
         let first = effect_id(
             "acme/widget",
             "beans:w-1",
-            EffectKind::EnsurePullRequest,
+            ENSURE_PULL_REQUEST,
             "main<-fiddle/abc",
         );
         let second = effect_id(
             "acme/widget",
             "beans:w-1",
-            EffectKind::EnsurePullRequest,
+            ENSURE_PULL_REQUEST,
             "main<-fiddle/abc",
         );
         assert_eq!(first, second);
@@ -134,7 +139,7 @@ mod tests {
             effect_id(
                 "acme/widget",
                 "beans:w-1",
-                EffectKind::EnsurePullRequest,
+                ENSURE_PULL_REQUEST,
                 "main<-fiddle/abc"
             ),
             EffectId("39b2e77d1d17cb20".to_string())
@@ -146,56 +151,52 @@ mod tests {
     }
 
     #[test]
-    fn the_hashed_kind_and_the_serialized_kind_are_the_same_spelling() {
-        for kind in EffectKind::ALL {
+    fn the_hashed_name_and_the_serialized_name_are_the_same_spelling() {
+        for spelling in SPELLINGS {
+            let name = EffectName::parse(spelling).unwrap();
             assert_eq!(
-                serde_json::to_value(kind).unwrap(),
-                serde_json::json!(kind.as_str()),
-                "serde and as_str must agree for {kind:?}"
+                serde_json::to_value(&name).unwrap(),
+                serde_json::json!(spelling),
+                "serde and as_str must agree for {spelling}"
             );
+            assert_eq!(name.as_str(), spelling);
         }
     }
 
     #[test]
-    fn every_kind_has_a_distinct_wire_spelling() {
+    fn a_name_survives_a_round_trip_through_the_wire() {
+        for spelling in SPELLINGS {
+            let name = EffectName::parse(spelling).unwrap();
+            let wire = serde_json::to_string(&name).unwrap();
+            assert_eq!(serde_json::from_str::<EffectName>(&wire).unwrap(), name);
+        }
+        assert!(serde_json::from_str::<EffectName>("\"Ensure_Pull_Request\"").is_err());
+    }
+
+    #[test]
+    fn every_name_has_a_distinct_wire_spelling() {
         let mut seen = std::collections::BTreeSet::new();
-        for kind in EffectKind::ALL {
-            assert!(
-                seen.insert(kind.as_str()),
-                "{} is spelled twice",
-                kind.as_str()
-            );
+        for spelling in SPELLINGS {
+            assert!(seen.insert(spelling), "{spelling} is spelled twice");
         }
-        assert_eq!(seen.len(), EffectKind::ALL.len());
+        assert_eq!(seen.len(), SPELLINGS.len());
     }
 
     #[test]
-    fn all_holds_every_kind_once_in_declaration_order() {
-        assert_eq!(EffectKind::ALL[0], EffectKind::FIRST);
-        assert_eq!(EffectKind::ALL.last().unwrap().next(), None);
-
-        let mut seen = std::collections::BTreeSet::new();
-        for kind in EffectKind::ALL {
+    fn every_frozen_spelling_parses_under_the_grammar() {
+        for spelling in SPELLINGS {
             assert!(
-                seen.insert(kind.as_str()),
-                "{} appears twice",
-                kind.as_str()
+                EffectName::parse(spelling).is_ok(),
+                "{spelling} ships in this build and no document could spell it"
             );
-        }
-        assert_eq!(seen.len(), KINDS);
-
-        for pair in EffectKind::ALL.windows(2) {
-            assert_eq!(pair[0].next(), Some(pair[1]));
+            assert_eq!(EffectName::shipped(spelling).as_str(), spelling);
         }
     }
 
     #[test]
-    fn the_body_kind_is_spelled_ensure_pull_request_body() {
-        assert_eq!(
-            EffectKind::EnsurePullRequestBody.as_str(),
-            "ensure_pull_request_body"
-        );
-        assert!(EffectKind::ALL.contains(&EffectKind::EnsurePullRequestBody));
+    fn the_body_name_is_spelled_ensure_pull_request_body() {
+        assert_eq!(ENSURE_PULL_REQUEST_BODY, "ensure_pull_request_body");
+        assert!(SPELLINGS.contains(&ENSURE_PULL_REQUEST_BODY));
     }
 
     #[test]
@@ -226,70 +227,35 @@ mod tests {
 
     #[test]
     fn a_kind_participates_in_the_identity() {
-        let a = effect_id(
-            "p",
-            "beans:x",
-            EffectKind::PublishDecisionRequest,
-            "acme/r#7",
-        );
-        let b = effect_id(
-            "p",
-            "beans:x",
-            EffectKind::EnsurePullRequestReady,
-            "acme/r#7",
-        );
+        let a = effect_id("p", "beans:x", PUBLISH_DECISION_REQUEST, "acme/r#7");
+        let b = effect_id("p", "beans:x", ENSURE_PULL_REQUEST_READY, "acme/r#7");
         assert_ne!(a, b);
     }
 
     #[test]
     fn every_canonical_input_changes_the_identity() {
-        let base = effect_id(
-            "acme/widget",
-            "beans:w-1",
-            EffectKind::EnsurePullRequest,
-            "t",
+        let base = effect_id("acme/widget", "beans:w-1", ENSURE_PULL_REQUEST, "t");
+        assert_ne!(
+            base,
+            effect_id("acme/other", "beans:w-1", ENSURE_PULL_REQUEST, "t")
         );
         assert_ne!(
             base,
-            effect_id(
-                "acme/other",
-                "beans:w-1",
-                EffectKind::EnsurePullRequest,
-                "t"
-            )
+            effect_id("acme/widget", "beans:w-2", ENSURE_PULL_REQUEST, "t")
         );
         assert_ne!(
             base,
-            effect_id(
-                "acme/widget",
-                "beans:w-2",
-                EffectKind::EnsurePullRequest,
-                "t"
-            )
+            effect_id("acme/widget", "beans:w-1", ENSURE_BRANCH_PUBLISHED, "t")
         );
         assert_ne!(
             base,
-            effect_id(
-                "acme/widget",
-                "beans:w-1",
-                EffectKind::EnsureBranchPublished,
-                "t"
-            )
-        );
-        assert_ne!(
-            base,
-            effect_id(
-                "acme/widget",
-                "beans:w-1",
-                EffectKind::EnsurePullRequest,
-                "u"
-            )
+            effect_id("acme/widget", "beans:w-1", ENSURE_PULL_REQUEST, "u")
         );
     }
 
     #[test]
     fn an_embedded_nul_cannot_forge_a_shared_identity() {
-        let kind = EffectKind::EnsurePullRequest;
+        let kind = ENSURE_PULL_REQUEST;
         let collide_under_nul_joining = [
             (("a\0b", "c", "t"), ("a", "b\0c", "t")),
             (
@@ -300,8 +266,8 @@ mod tests {
 
         for ((p1, r1, t1), (p2, r2, t2)) in collide_under_nul_joining {
             assert_eq!(
-                format!("{p1}\0{r1}\0{}\0{t1}", kind.as_str()),
-                format!("{p2}\0{r2}\0{}\0{t2}", kind.as_str()),
+                format!("{p1}\0{r1}\0{kind}\0{t1}"),
+                format!("{p2}\0{r2}\0{kind}\0{t2}"),
                 "fixture must actually collide under NUL joining, or it proves nothing"
             );
             assert_ne!(
@@ -314,7 +280,7 @@ mod tests {
 
     #[test]
     fn a_field_that_mimics_the_framing_is_still_only_content() {
-        let kind = EffectKind::EnsureCheckRequested;
+        let kind = ENSURE_CHECK_REQUESTED;
         let tuples = [
             ("2:ab", "c", "t"),
             ("2", "ab1:c", "t"),
@@ -342,8 +308,8 @@ mod tests {
     #[test]
     fn adjacent_fields_cannot_be_confused() {
         assert_ne!(
-            effect_id("ab", "c", EffectKind::EnsureCheckRequested, "t"),
-            effect_id("a", "bc", EffectKind::EnsureCheckRequested, "t"),
+            effect_id("ab", "c", ENSURE_CHECK_REQUESTED, "t"),
+            effect_id("a", "bc", ENSURE_CHECK_REQUESTED, "t"),
         );
     }
 
@@ -356,6 +322,53 @@ mod tests {
         assert_eq!(
             payload_hash(r#"{"title":"a"}"#),
             payload_hash(r#"{"title":"a"}"#)
+        );
+    }
+
+    const PINNED_PULL_REQUEST_IDENTITY: &str = "42138fc13dc17d78";
+
+    #[test]
+    fn a_name_outside_the_grammar_is_refused() {
+        assert!(EffectName::parse("ensure_pull_request").is_ok());
+        assert!(EffectName::parse("jira.transition").is_ok());
+        for bad in [
+            "Ensure_Pull_Request",
+            "ensure pull request",
+            "ensure-pull-request",
+            "",
+            "a\0b",
+        ] {
+            assert!(EffectName::parse(bad).is_err(), "{bad:?} parsed");
+        }
+    }
+
+    #[test]
+    fn the_six_wire_spellings_are_frozen() {
+        assert_eq!(
+            [
+                ENSURE_BRANCH_PUBLISHED,
+                ENSURE_PULL_REQUEST,
+                ENSURE_CHECK_REQUESTED,
+                PUBLISH_DECISION_REQUEST,
+                ENSURE_PULL_REQUEST_READY,
+                ENSURE_PULL_REQUEST_BODY,
+            ],
+            [
+                "ensure_branch_published",
+                "ensure_pull_request",
+                "ensure_check_requested",
+                "publish_decision_request",
+                "ensure_pull_request_ready",
+                "ensure_pull_request_body",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_identity_is_unchanged_by_the_move_to_names() {
+        assert_eq!(
+            effect_id("acme/r", "beans:x", ENSURE_PULL_REQUEST, "acme/r#7").0,
+            PINNED_PULL_REQUEST_IDENTITY
         );
     }
 }

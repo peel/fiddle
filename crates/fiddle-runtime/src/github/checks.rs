@@ -1,8 +1,11 @@
-use crate::effect::{AuthorizedEffect, EffectContext, IntegrationOperation, ObservedState};
+use crate::effect::{
+    required, AuthorizedEffect, EffectContext, EffectError, Executor, FromStepParams,
+    IntegrationOperation, ObservedState, StepParams,
+};
 use crate::github::{encode, GhCli, GhError};
 use fiddle_core::{
-    effect_id, EffectId, EffectKind, HumanDecisionRequirement, Observation, SourceRef,
-    VerificationState,
+    effect_id, EffectId, EffectName, HumanDecisionRequirement, Observation, SourceRef,
+    VerificationState, ENSURE_CHECK_REQUESTED,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -196,7 +199,7 @@ impl EnsureCheckRequested {
         let effect_id = effect_id(
             project,
             invocation_ref,
-            EffectKind::EnsureCheckRequested,
+            ENSURE_CHECK_REQUESTED,
             &check_request_target(&repo, &workflow, &git_ref),
         );
         Self {
@@ -253,9 +256,32 @@ impl EnsureCheckRequested {
     }
 }
 
+impl FromStepParams for EnsureCheckRequested {
+    fn from_params(executor: &Executor<'_>, params: &StepParams) -> Result<Self, EffectError> {
+        let kind = EffectName::shipped(ENSURE_CHECK_REQUESTED);
+        Ok(Self::new(
+            required(&params.repo, &kind, "repo")?,
+            required(&params.check_workflow, &kind, "check_workflow")?,
+            required(&params.branch, &kind, "branch")?,
+            executor.project(),
+            executor.invocation_ref(),
+        ))
+    }
+}
+
 #[async_trait::async_trait]
 impl IntegrationOperation for EnsureCheckRequested {
     type State = WorkflowRun;
+
+    type Error = GhError;
+
+    fn kind(&self) -> EffectName {
+        EffectName::shipped(ENSURE_CHECK_REQUESTED)
+    }
+
+    fn target(&self) -> String {
+        EnsureCheckRequested::target(self)
+    }
 
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Automatic

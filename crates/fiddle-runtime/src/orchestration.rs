@@ -515,7 +515,7 @@ mod tests {
             Ok(())
         }
 
-        fn record_step(&self, kind: fiddle_core::EffectKind, step: crate::effect::ExecutionStep) {
+        fn record_step(&self, kind: &fiddle_core::EffectName, step: crate::effect::ExecutionStep) {
             self.log
                 .record(format!("step:{}:{}", kind.as_str(), step.as_str()));
         }
@@ -844,7 +844,7 @@ mod tests {
             _invocation_ref: &str,
         ) -> Result<EvidenceRef, CapabilityError> {
             self.log.record("execute");
-            let kind = fiddle_core::EffectKind::EnsurePullRequest;
+            let kind = fiddle_core::EffectName::shipped(fiddle_core::ENSURE_PULL_REQUEST);
             if let Refusal::AwaitingDecision = self.how {
                 return Err(CapabilityError::AwaitingDecision {
                     request: fiddle_core::DecisionRequestId("0123456789abcdef".to_string()),

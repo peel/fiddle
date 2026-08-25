@@ -1,7 +1,8 @@
 use fiddle_core::{
     decision_request_id, effect_id, parse_marker, payload_hash, render_marker, CapabilityId,
-    DecisionBinding, DecisionRequestId, DeploymentRule, EffectId, EffectKind, EvidenceRef,
-    HumanDecisionRequest, HumanDecisionRequirement, ProposedEffect, WorkRef, PUBLISH_CHANGE,
+    DecisionBinding, DecisionRequestId, DeploymentRule, EffectId, EffectName, EvidenceRef,
+    HumanDecisionRequest, HumanDecisionRequirement, ProposedEffect, WorkRef,
+    ENSURE_PULL_REQUEST_READY, PUBLISH_CHANGE, PUBLISH_DECISION_REQUEST,
 };
 use fiddle_runtime::effect::{
     DeploymentPolicy, EffectContext, EffectError, EffectReceipt, EffectTrace, ExecutionStep,
@@ -35,7 +36,7 @@ fn gated_effect(head: &str) -> EffectId {
     effect_id(
         PROJECT,
         INVOCATION_REF,
-        EffectKind::EnsurePullRequestReady,
+        ENSURE_PULL_REQUEST_READY,
         &format!("{REPO}#{PR}@{head}"),
     )
 }
@@ -114,7 +115,7 @@ fn comment_with_body(id: u64, body: &str) -> serde_json::Value {
 struct Deployment(DeploymentRule);
 
 impl DeploymentPolicy for Deployment {
-    fn rule_for(&self, _kind: EffectKind) -> DeploymentRule {
+    fn rule_for(&self, _kind: &EffectName) -> DeploymentRule {
         self.0
     }
 }
@@ -123,7 +124,7 @@ impl DeploymentPolicy for Deployment {
 struct Steps(Mutex<Vec<&'static str>>);
 
 impl EffectTrace for Steps {
-    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
+    fn step(&self, _kind: &EffectName, step: ExecutionStep) {
         self.0.lock().unwrap().push(step.as_str());
     }
 }
@@ -234,7 +235,7 @@ impl World {
         );
         let proposed = ProposedEffect {
             capability: PUBLISH_CHANGE,
-            kind: EffectKind::PublishDecisionRequest,
+            kind: EffectName::shipped(PUBLISH_DECISION_REQUEST),
             target: operation.target(),
             payload: operation.payload(),
         };
@@ -493,7 +494,7 @@ fn the_question_is_a_different_effect_from_the_one_it_gates() {
     let publishing = effect_id(
         PROJECT,
         INVOCATION_REF,
-        EffectKind::PublishDecisionRequest,
+        PUBLISH_DECISION_REQUEST,
         &operation().target(),
     );
     assert_ne!(publishing, gated_effect(HEAD));
@@ -603,7 +604,7 @@ async fn a_question_proposed_under_another_capability_is_refused() {
     let op = operation();
     let proposed = ProposedEffect {
         capability: CapabilityId("someone-else"),
-        kind: EffectKind::PublishDecisionRequest,
+        kind: EffectName::shipped(PUBLISH_DECISION_REQUEST),
         target: op.target(),
         payload: op.payload(),
     };

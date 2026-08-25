@@ -47,6 +47,13 @@ Provider configuration comes from `orchestrate.json`; CLI flags never override i
     "spot_check": { "rate": 5 },
     "aging": { "window_days": 90, "quiet_epics": 3 }
   },
+  "acceptance": {
+    "live": {
+      "command": "scripts/live-cve-steering.sh",
+      "env": ["FIDDLE_GITHUB_TOKEN", "FIDDLE_CVE_TAG"],
+      "required": true
+    }
+  },
   "deliver": {
     "product_artifacts": {
       "templates_path": "docs/product/templates",
@@ -118,3 +125,23 @@ Claude is implicit and never listed. A configured `codex` participant means the 
 ## Merge order
 
 Defaults → config file → CLI flags. Later values override earlier ones; provider assignments remain config-only. Orchestrate reads the configuration once during setup, while standalone phase skills read the keys they need.
+
+## Live acceptance
+
+`acceptance.live` names the command that exercises a milestone against the real
+system it acts on. Develop step 3 runs it before holistic review and deliver
+step 2 refuses to deliver an epic whose body does not carry its result.
+
+| Key | Meaning |
+|---|---|
+| `command` | The command to run, relative to the project root. The project provides it. |
+| `env` | Variables the command requires. Their absence is the command's own error to report, not the lifecycle's to guess. |
+| `required` | When true, an epic without a recorded result is not delivered. |
+
+The lifecycle owns the gate and the project owns what it runs, because what
+counts as the real system differs per project. A project that omits the key
+declares no live gate; develop records that fact and what is therefore
+unverified, rather than skipping silently.
+
+The command must fail rather than skip. A gate that reports success without
+exercising anything is the failure that most resembles a pass.

@@ -1,4 +1,4 @@
-use fiddle_runtime::effect::EffectOutcome;
+use fiddle_runtime::effect::{AdapterError, EffectOutcome, EffectPhase};
 use fiddle_runtime::github::{GhCli, GhError, RetryAdvice};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -172,7 +172,7 @@ async fn exit_four_is_authentication_and_exit_two_is_cancellation() {
         .unwrap_err();
     assert!(matches!(err, GhError::Auth), "got {err:?}");
     assert_eq!(
-        err.outcome(),
+        err.outcome(EffectPhase::Apply),
         EffectOutcome::NotCommitted,
         "exit 4 is `gh` refusing before it dispatches: {err:?}"
     );
@@ -183,7 +183,7 @@ async fn exit_four_is_authentication_and_exit_two_is_cancellation() {
         .unwrap_err();
     assert!(matches!(err, GhError::CancelledAfterSpawn), "got {err:?}");
     assert_eq!(
-        err.outcome(),
+        err.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "a child that ran and reported a cancellation instead of an answer is \
          an ambiguous write: {err:?}"
@@ -205,7 +205,7 @@ async fn a_cancelled_attempt_never_reaches_the_network() {
         "a cancelled call must not have reached the child at all"
     );
     assert_eq!(
-        err.outcome(),
+        err.outcome(EffectPhase::Apply),
         EffectOutcome::NotCommitted,
         "nothing ran, so this is the one cancellation that is knowledge: {err:?}"
     );
@@ -240,7 +240,7 @@ async fn a_cancellation_after_the_child_was_spawned_is_an_ambiguous_write() {
     );
     assert!(matches!(err, GhError::CancelledAfterSpawn), "got {err:?}");
     assert_eq!(
-        err.outcome(),
+        err.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "a request that may already have landed is not a refusal: {err:?}"
     );
@@ -249,8 +249,8 @@ async fn a_cancellation_after_the_child_was_spawned_is_an_ambiguous_write() {
         "and the only thing that settles it is looking: {err:?}"
     );
     assert_ne!(
-        err.outcome(),
-        GhError::CancelledBeforeSpawn.outcome(),
+        err.outcome(EffectPhase::Apply),
+        GhError::CancelledBeforeSpawn.outcome(EffectPhase::Apply),
         "the two provenances of one cancellation must not classify alike"
     );
 }
@@ -264,41 +264,62 @@ fn a_lost_answer_is_unknown_and_a_refusal_is_not_committed() {
     };
 
     assert_eq!(
-        GhError::Timeout(Duration::from_secs(1)).outcome(),
-        EffectOutcome::Unknown
-    );
-    assert_eq!(http(500).outcome(), EffectOutcome::Unknown);
-    assert_eq!(http(502).outcome(), EffectOutcome::Unknown);
-    assert_eq!(http(403).outcome(), EffectOutcome::NotCommitted);
-    assert_eq!(http(404).outcome(), EffectOutcome::NotCommitted);
-    assert_eq!(http(401).outcome(), EffectOutcome::NotCommitted);
-    assert_eq!(http(422).outcome(), EffectOutcome::Unknown);
-
-    assert_eq!(
-        GhError::Killed("137".to_string()).outcome(),
+        GhError::Timeout(Duration::from_secs(1)).outcome(EffectPhase::Apply),
         EffectOutcome::Unknown
     );
     assert_eq!(
-        GhError::Duplicate { count: 2 }.outcome(),
+        http(500).outcome(EffectPhase::Apply),
         EffectOutcome::Unknown
     );
-
-    assert_eq!(GhError::Auth.outcome(), EffectOutcome::NotCommitted);
     assert_eq!(
-        GhError::CancelledBeforeSpawn.outcome(),
+        http(502).outcome(EffectPhase::Apply),
+        EffectOutcome::Unknown
+    );
+    assert_eq!(
+        http(403).outcome(EffectPhase::Apply),
         EffectOutcome::NotCommitted
     );
     assert_eq!(
-        GhError::NotSent(String::new()).outcome(),
+        http(404).outcome(EffectPhase::Apply),
+        EffectOutcome::NotCommitted
+    );
+    assert_eq!(
+        http(401).outcome(EffectPhase::Apply),
+        EffectOutcome::NotCommitted
+    );
+    assert_eq!(
+        http(422).outcome(EffectPhase::Apply),
+        EffectOutcome::Unknown
+    );
+
+    assert_eq!(
+        GhError::Killed("137".to_string()).outcome(EffectPhase::Apply),
+        EffectOutcome::Unknown
+    );
+    assert_eq!(
+        GhError::Duplicate { count: 2 }.outcome(EffectPhase::Apply),
+        EffectOutcome::Unknown
+    );
+
+    assert_eq!(
+        GhError::Auth.outcome(EffectPhase::Apply),
+        EffectOutcome::NotCommitted
+    );
+    assert_eq!(
+        GhError::CancelledBeforeSpawn.outcome(EffectPhase::Apply),
+        EffectOutcome::NotCommitted
+    );
+    assert_eq!(
+        GhError::NotSent(String::new()).outcome(EffectPhase::Apply),
         EffectOutcome::NotCommitted
     );
 
     assert_eq!(
-        GhError::CancelledAfterSpawn.outcome(),
+        GhError::CancelledAfterSpawn.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown
     );
     assert_eq!(
-        GhError::Malformed(String::new()).outcome(),
+        GhError::Malformed(String::new()).outcome(EffectPhase::Apply),
         EffectOutcome::Unknown
     );
 }
@@ -312,7 +333,11 @@ async fn a_child_that_died_before_answering_is_unknown() {
             .unwrap_err();
 
         assert!(matches!(err, GhError::Killed(_)), "{mode}: got {err:?}");
-        assert_eq!(err.outcome(), EffectOutcome::Unknown, "{mode}");
+        assert_eq!(
+            err.outcome(EffectPhase::Apply),
+            EffectOutcome::Unknown,
+            "{mode}"
+        );
         assert!(
             err.is_worth_reading_again(),
             "{mode}: and the lost answer is settled by looking, which is what \
@@ -345,7 +370,7 @@ async fn a_gh_that_never_returns_is_killed_and_reported_as_unknown() {
         .unwrap_err();
 
     assert!(matches!(err, GhError::Timeout(_)), "got {err:?}");
-    assert_eq!(err.outcome(), EffectOutcome::Unknown);
+    assert_eq!(err.outcome(EffectPhase::Apply), EffectOutcome::Unknown);
     assert!(
         started.elapsed() < Duration::from_secs(1),
         "the deadline is the runtime's, so it fires without waiting for the child"
@@ -429,7 +454,7 @@ async fn a_garbled_response_is_a_lost_answer_and_not_a_refusal() {
 
     assert!(matches!(err, GhError::Malformed(_)), "got {err:?}");
     assert_eq!(
-        err.outcome(),
+        err.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "a client that cannot read the answer has not learned that the write \
          failed: {err:?}"

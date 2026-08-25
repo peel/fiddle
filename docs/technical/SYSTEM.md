@@ -127,7 +127,10 @@ alone; gemini was removed after two consecutive authentication failures.
 - A capability's outcome is decided by the check it runs over the tree the attempt left. `RepairReport::claimed_complete` is evidence and is branched on nowhere.
 - The correlation marker is written only after the check exits 0.
 - A report bundle is staged, then moved by rename, so a reader never observes a partial bundle.
-- Every external mutation passes the effect executor. Deployment policy may strengthen a capability's minimum and never weaken it (ADR 033).
+- Every external mutation a capability makes passes the effect executor. Deployment policy may strengthen a capability's minimum and never weaken it (ADR 033).
+- The model reaches no mutation. It is offered `read_file`, `edit_file`, `write_file`, `list_files`, `search_files` and `run_check`, and `run_command` where the deployment declares a program. Each one is confined to the workspace. None reaches a forge, and none proposes an effect.
+- No type stops capability code from holding a live client and mutating outside the executor. `ProposedEffect` has public fields and a capability builds its own. That path is closed by review, not by a guarantee (ADR 075).
+- An effect name is rejected at two moments: config load refuses a policy key naming no registered effect, and `Executor::walk` refuses an unregistered proposal before its first traced step (ADR 075).
 - An unknown answer is resolved by reading the world, never by repeating the write (ADR 032).
 - A locator may be inherited, an authority may not. Three spawn sites keep three environments and share one bound, `process.rs::run_bounded` (ADR 029).
 - Containment is checked syntactically, then against the resolved path. `.git` is refused at any depth (ADR 031).
@@ -161,6 +164,7 @@ alone; gemini was removed after two consecutive authentication failures.
 - The offline harness cannot test that the scan follows the tree. Its scripted scanner answers the same document whichever tree it is pointed at, so no lane fails if ADR 066 is reverted.
 - `peel/fiddle-test` cannot find a defect that needs a large file. Its `go.sum` is a few lines, and `snowplow-identities` run 32765904429 spent forty turns on 985 of them (ADR 071).
 - The commit subject is fixed in Rust while the pull request title is a configured template. A repository with a commit convention cannot express it.
+- `agent::offered` and the agent builder disagree. `offered` lists five tool names and omits `search_files`, and the builder registers six. `offered` feeds only the transcript record, so the model is unaffected and the recorded brief under-reports the tool set by one. Nothing detects the drift.
 
 ---
 Last reviewed: 2026-08-25

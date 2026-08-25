@@ -1800,3 +1800,30 @@ exercises the scale. A defect that needs both is invisible to each.
 
 Origin: implementation (`snowplow-identities` run 32765904429)
 Tags: #testing
+
+### 2026-08-25 — A manager agent reaches the world by proxy, and nothing checks it
+
+ADR 075 says the model reaches no mutation. That holds because one agent runs, and its
+tools are confined to the workspace. A capability decides which effects to propose, and
+a capability is Rust.
+
+A workflow capability already weakens the second half. Its `Step::Agent` runs a model,
+and its `Step::Effect` proposes an effect. The file fixes the order, so the model still
+selects nothing.
+
+The boundary breaks when a capability becomes several agents and one of them selects the
+steps. That manager is a model, and the steps it selects mutate the world. The model then
+reaches the world by proxy, and the effect executor sees a proposal it cannot distinguish
+from one a Rust capability wrote. `ProposedEffect` has public fields, so there is no place
+in the type system to seat the check either.
+
+This design seats no check for it. The deployment policy gates an effect kind, not the
+selector of an effect. A manager restricted to `Automatic` effects still chooses which
+automatic mutations happen and in which order, which is a wider authority than any single
+gated effect grants.
+
+What is owed is a decision, not a fix: whether a model-selected step is a distinct
+authority level with its own minimum, or whether a manager is refused until it is.
+
+Origin: implementation (bean `fiddle-w74s`, ADR 074 and ADR 075)
+Tags: #debt #agent #effects

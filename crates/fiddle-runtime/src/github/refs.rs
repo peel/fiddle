@@ -1,17 +1,15 @@
-use crate::effect::{AuthorizedEffect, EffectContext, IntegrationOperation, ObservedState};
+use crate::effect::{
+    required, AuthorizedEffect, Effect, EffectContext, EffectError, Executor, FromStepParams,
+    ObservedState, StepParams,
+};
 use crate::git::PublishedBranch;
 use crate::github::GhError;
-use fiddle_core::{effect_id, EffectKind, HumanDecisionRequirement};
+use fiddle_core::{effect_id, EffectName, ENSURE_BRANCH_PUBLISHED};
 
 const NAMESPACE: &str = "fiddle";
 
 pub fn branch_name(project: &str, invocation_ref: &str) -> String {
-    let id = effect_id(
-        project,
-        invocation_ref,
-        EffectKind::EnsureBranchPublished,
-        project,
-    );
+    let id = effect_id(project, invocation_ref, ENSURE_BRANCH_PUBLISHED, project);
     format!("{NAMESPACE}/{}", id.0)
 }
 
@@ -44,10 +42,31 @@ impl ObservedState for BranchRef {
     }
 }
 
+#[derive(Effect)]
+#[effect(
+    name = ENSURE_BRANCH_PUBLISHED,
+    minimum = "automatic",
+    target = "refs/heads/{branch}",
+    state = BranchRef,
+    error = GhError
+)]
 pub struct EnsureBranchPublished {
+    #[payload]
     repo: String,
     branch: String,
+    #[payload(rename = "sha")]
     intended_sha: String,
+}
+
+impl FromStepParams for EnsureBranchPublished {
+    fn from_params(_executor: &Executor<'_>, params: &StepParams) -> Result<Self, EffectError> {
+        let kind = EffectName::shipped(ENSURE_BRANCH_PUBLISHED);
+        Ok(Self::new(
+            required(&params.repo, &kind, "repo")?,
+            required(&params.branch, &kind, "branch")?,
+            required(&params.head_sha, &kind, "head_sha")?,
+        ))
+    }
 }
 
 impl EnsureBranchPublished {
@@ -63,29 +82,8 @@ impl EnsureBranchPublished {
         &self.branch
     }
 
-    pub fn target(&self) -> String {
-        branch_target(&self.branch)
-    }
-
     fn ref_path(&self) -> String {
         format!("/repos/{}/git/ref/heads/{}", self.repo, self.branch)
-    }
-}
-
-#[async_trait::async_trait]
-impl IntegrationOperation for EnsureBranchPublished {
-    type State = BranchRef;
-
-    fn minimum(&self) -> HumanDecisionRequirement {
-        HumanDecisionRequirement::Automatic
-    }
-
-    fn payload(&self) -> String {
-        serde_json::json!({
-            "repo": self.repo,
-            "sha": self.intended_sha,
-        })
-        .to_string()
     }
 
     async fn inspect(&self, ctx: &EffectContext) -> Result<Option<BranchRef>, GhError> {

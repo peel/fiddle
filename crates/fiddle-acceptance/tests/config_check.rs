@@ -433,15 +433,34 @@ fn config_check_rejects_an_unknown_key_inside_the_github_table() {
 }
 
 #[test]
-fn config_check_rejects_an_unknown_key_inside_the_policy_table() {
+fn a_document_naming_an_unknown_effect_is_refused_by_config_check() {
     let out = check(&format!(
-        "{FORGE}\n[github.policy]\nensure_everything = \"deny\"\n"
+        "{FORGE}\n[github.policy]\nensure_everything = \"deny\"\nensure_pull_requst = \"deny\"\n"
     ));
     assert_eq!(out.status.code(), Some(2), "unknown key must exit 2");
     let stderr = String::from_utf8(out.stderr).unwrap();
+    for key in ["ensure_everything", "ensure_pull_requst"] {
+        assert!(
+            stderr.contains(key),
+            "the diagnostic must name {key}, not only the first offender: {stderr}"
+        );
+    }
     assert!(
-        stderr.contains("ensure_everything") && stderr.contains("unknown field"),
-        "the diagnostic must name the offending key and why, got: {stderr}"
+        stderr.contains("ensure_pull_request_body"),
+        "and must say what a rule may be written for, got: {stderr}"
+    );
+}
+
+#[test]
+fn a_document_leaving_an_effect_out_is_accepted_and_reports_it_ungated() {
+    let github = checked(&format!(
+        "{FORGE}\n[github.policy]\nensure_pull_request = \"deny\"\n"
+    ))["github"]
+        .clone();
+    assert_eq!(github["policy"]["ensure_pull_request"], "deny", "{github}");
+    assert_eq!(
+        github["policy"]["ensure_branch_published"], "allow",
+        "a row the document leaves out is reported as adding no gate: {github}"
     );
 }
 
@@ -593,6 +612,12 @@ fn config_check_reports_the_github_table_it_accepted() {
     assert_eq!(github["policy"]["ensure_check_requested"], "allow");
     assert_eq!(github["policy"]["publish_decision_request"], "allow");
     assert_eq!(github["policy"]["ensure_pull_request_ready"], "allow");
+    assert_eq!(github["policy"]["ensure_pull_request_body"], "allow");
+    assert_eq!(
+        github["policy"].as_object().unwrap().len(),
+        6,
+        "one row per effect this build performs, and no more: {github}"
+    );
     assert_eq!(github["decision"], serde_json::Value::Null, "{github}");
 
     let dir = tempfile::tempdir().unwrap();

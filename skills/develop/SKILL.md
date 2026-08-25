@@ -48,7 +48,35 @@ Use the `fiddle:develop-loop` skill with `--bean <bean-id> --epic <epic-id>`.
 
 The develop-loop sub-skill runs the full cycle for one bean — implementer, evaluators, scorecard merge, convergence — and returns the bean as either `completed` or `needs-attention`.
 
-## Step 3: Holistic Review
+## Step 3: Live Acceptance
+
+Before holistic review, exercise the milestone against the real system it acts
+on, and record the result on the epic. Holistic review does not start until
+this has run.
+
+Read `acceptance.live` from [orchestrate configuration](../orchestrate/configuration.md).
+It names a command the project provides and the variables that command needs.
+The lifecycle owns the gate; the project owns what the gate runs, because what
+counts as the real system differs per project.
+
+When `acceptance.live` is absent, record on the epic that the project declares
+no live gate, and say what is therefore unverified. Do not silently skip: an
+epic delivered without one should say so.
+
+**A gate that reports success without exercising anything has not run.** This is
+the failure that most resembles a pass, because it reports a completed outcome
+and exits 0. A lane that passed by finding nothing cannot be told from one that
+passed because nothing was wrong. Read the command's own report for what it
+actually did, not merely its exit status.
+
+Record which runs were measured, what the gate exercised, and what it did not
+cover. A hermetic suite says nothing about the behaviour of an external system.
+
+A milestone that changes no external behaviour still runs the gate, because its
+value is the regression signal. Record the comparison with the previous run
+rather than skipping.
+
+## Step 4: Holistic Review
 
 Once every task bean is processed (completed or escalated), run holistic review, and do not invoke finish-branch until it has converged or been escalated. Per-task scores say nothing about cross-domain coherence; only a whole-system pass catches it.
 
@@ -56,7 +84,7 @@ Use the `fiddle:develop-holistic` skill with `--epic <epic-id>`.
 
 The develop-holistic sub-skill assesses the system as an integrated whole, creates remediation beans if needed, and iterates until it converges or escalates.
 
-## Step 4: Completion
+## Step 5: Completion
 
 Use the `fiddle:finish-branch` skill.
 

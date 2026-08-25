@@ -3,8 +3,9 @@ use super::{Capability, CapabilityError, ExecutionGrant};
 use crate::effect::{EffectOutcome, EffectReceipt, Executor, IntegrationOperation, ObservedState};
 use crate::github::{branch_name, EnsureBranchPublished, EnsureCheckRequested, EnsurePullRequest};
 use fiddle_core::{
-    correlation_key, CapabilityId, ChangeSetState, EffectKind, EvidenceRef, Observation,
-    ProposedEffect, Publication, Published, ReviewState, SourceRef,
+    correlation_key, CapabilityId, ChangeSetState, EffectName, EvidenceRef, Observation,
+    ProposedEffect, Publication, Published, ReviewState, SourceRef, ENSURE_BRANCH_PUBLISHED,
+    ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -74,7 +75,7 @@ impl<'a> PublishChange<'a> {
 
     async fn propose<O>(
         &self,
-        kind: EffectKind,
+        kind: EffectName,
         target: String,
         payload: String,
         operation: O,
@@ -84,7 +85,7 @@ impl<'a> PublishChange<'a> {
     {
         let proposed = ProposedEffect {
             capability: self.id(),
-            kind,
+            kind: kind.clone(),
             target,
             payload,
         };
@@ -92,7 +93,7 @@ impl<'a> PublishChange<'a> {
         self.receipts
             .lock()
             .unwrap()
-            .push(receipt_evidence(kind, &receipt));
+            .push(receipt_evidence(&kind, &receipt));
         Ok(receipt)
     }
 
@@ -106,7 +107,7 @@ impl<'a> PublishChange<'a> {
         );
         let published = self
             .propose(
-                EffectKind::EnsureBranchPublished,
+                EffectName::shipped(ENSURE_BRANCH_PUBLISHED),
                 publish_branch.target(),
                 publish_branch.payload(),
                 publish_branch,
@@ -129,7 +130,7 @@ impl<'a> PublishChange<'a> {
         );
         let opened = self
             .propose(
-                EffectKind::EnsurePullRequest,
+                EffectName::shipped(ENSURE_PULL_REQUEST),
                 open.target(),
                 open.payload(),
                 open,
@@ -145,7 +146,7 @@ impl<'a> PublishChange<'a> {
             self.executor.invocation_ref(),
         );
         self.propose(
-            EffectKind::EnsureCheckRequested,
+            EffectName::shipped(ENSURE_CHECK_REQUESTED),
             request.target(),
             request.payload(),
             request,
@@ -287,7 +288,7 @@ impl Capability for PublishChange<'_> {
     }
 }
 
-fn receipt_evidence<T>(kind: EffectKind, receipt: &EffectReceipt<T>) -> EvidenceRef {
+fn receipt_evidence<T>(kind: &EffectName, receipt: &EffectReceipt<T>) -> EvidenceRef {
     let outcome = match receipt.outcome {
         EffectOutcome::Committed => "committed",
         EffectOutcome::NotCommitted => "not_committed",

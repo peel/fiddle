@@ -1,9 +1,11 @@
 mod support;
 
-use fiddle_core::{effect_id, payload_hash, EffectKind, ProposedEffect, FIXTURE_REPAIR};
+use fiddle_core::{
+    effect_id, payload_hash, EffectName, ProposedEffect, ENSURE_PULL_REQUEST, FIXTURE_REPAIR,
+};
 use fiddle_runtime::effect::{
-    EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
-    IntegrationOperation, ReadRetry,
+    AdapterError, EffectContext, EffectError, EffectOutcome, EffectPhase, EffectReceipt,
+    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ReadRetry,
 };
 use fiddle_runtime::github::{branch_name, EnsurePullRequest, PullRequest};
 use fiddle_runtime::{GhCli, GhError};
@@ -40,7 +42,7 @@ struct Forge {
 }
 
 impl EffectTrace for Forge {
-    fn step(&self, _kind: EffectKind, step: ExecutionStep) {
+    fn step(&self, _kind: &EffectName, step: ExecutionStep) {
         self.steps.lock().unwrap().push(step.as_str());
     }
 }
@@ -226,7 +228,7 @@ async fn open_the_pull_request(
     let deployment = Deployment(fiddle_core::DeploymentRule::Allow);
     let proposed = ProposedEffect {
         capability: FIXTURE_REPAIR,
-        kind: EffectKind::EnsurePullRequest,
+        kind: EffectName::shipped(ENSURE_PULL_REQUEST),
         target: operation.target(),
         payload: operation.payload(),
     };
@@ -254,16 +256,11 @@ fn a_title_moves_the_payload_hash_and_never_the_identity() {
         "a reworded title is the same pull request"
     );
     assert_eq!(
+        effect_id(PROJECT, INVOCATION_REF, ENSURE_PULL_REQUEST, &ours.target()),
         effect_id(
             PROJECT,
             INVOCATION_REF,
-            EffectKind::EnsurePullRequest,
-            &ours.target()
-        ),
-        effect_id(
-            PROJECT,
-            INVOCATION_REF,
-            EffectKind::EnsurePullRequest,
+            ENSURE_PULL_REQUEST,
             &reworded.target()
         ),
         "so a fresh process recomputes the same identity for it"
@@ -373,11 +370,8 @@ async fn a_pull_request_that_is_not_the_one_asked_for_is_never_settled_on() {
 
     assert!(
         matches!(
-            error,
-            EffectError::Adapter {
-                source: GhError::Malformed(_),
-                ..
-            }
+            error.adapter_source::<GhError>(),
+            Some(GhError::Malformed(_))
         ),
         "expected the read to be refused, got {error:?}"
     );
@@ -433,7 +427,7 @@ async fn a_422_for_a_pull_request_that_already_exists_is_not_a_false_failure() {
         "expected a 422 whose message says nothing, got {refusal:?}"
     );
     assert_eq!(
-        refusal.outcome(),
+        refusal.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "a 422 is never classified on its face; being Unknown is what forces the read"
     );
@@ -521,7 +515,7 @@ async fn a_lost_create_response_does_not_produce_a_second_pull_request() {
         "expected a child that died without answering, got {lost:?}"
     );
     assert_eq!(
-        lost.outcome(),
+        lost.outcome(EffectPhase::Apply),
         EffectOutcome::Unknown,
         "and it must classify Unknown, or the executor would never go and look"
     );

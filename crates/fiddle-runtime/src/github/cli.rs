@@ -1,4 +1,4 @@
-use crate::effect::EffectOutcome;
+use crate::effect::{AdapterError, EffectOutcome, EffectPhase, RetryAdvice};
 use crate::git::GitError;
 use crate::process::{run_bounded, Bounded};
 use std::path::PathBuf;
@@ -14,18 +14,6 @@ pub struct GhResponse {
     pub retry_after: Option<Duration>,
     pub rate_limit_remaining: Option<u64>,
     pub link: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct RetryAdvice {
-    pub retry_after: Option<Duration>,
-    pub rate_limit_remaining: Option<u64>,
-}
-
-impl RetryAdvice {
-    pub fn wants_a_wait(&self) -> bool {
-        self.retry_after.is_some() || self.rate_limit_remaining == Some(0)
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -58,8 +46,8 @@ pub enum GhError {
     Push(#[from] GitError),
 }
 
-impl GhError {
-    pub fn outcome(&self) -> EffectOutcome {
+impl AdapterError for GhError {
+    fn outcome(&self, phase: EffectPhase) -> EffectOutcome {
         match self {
             GhError::Timeout(_) | GhError::Killed(_) | GhError::CancelledAfterSpawn => {
                 EffectOutcome::Unknown
@@ -76,29 +64,36 @@ impl GhError {
             GhError::Auth | GhError::CancelledBeforeSpawn | GhError::NotSent(_) => {
                 EffectOutcome::NotCommitted
             }
-            GhError::Push(error) => error.outcome(),
+            GhError::Push(error) => error.outcome(phase),
         }
     }
 
-    pub fn advice(&self) -> RetryAdvice {
+    fn advice(&self) -> RetryAdvice {
         match self {
             GhError::Http { advice, .. } => *advice,
             _ => RetryAdvice::default(),
         }
     }
 
-    pub fn is_worth_reading_again(&self) -> bool {
+    fn is_worth_reading_again(&self) -> bool {
         match self {
             GhError::Timeout(_) | GhError::Killed(_) | GhError::CancelledAfterSpawn => true,
             GhError::Http { advice, .. } if advice.wants_a_wait() => true,
             GhError::Http { status, .. } => *status == 429 || *status >= 500,
-            GhError::GraphQl { .. } => self.outcome() == EffectOutcome::Unknown,
+            GhError::GraphQl { .. } => self.outcome(EffectPhase::Inspect) == EffectOutcome::Unknown,
             GhError::Auth
             | GhError::CancelledBeforeSpawn
             | GhError::NotSent(_)
             | GhError::Malformed(_)
             | GhError::Duplicate { .. }
             | GhError::Push(_) => false,
+        }
+    }
+
+    fn duplicates(&self) -> Option<usize> {
+        match self {
+            GhError::Duplicate { count } => Some(*count),
+            _ => None,
         }
     }
 }
@@ -462,5 +457,138 @@ fn snippet(text: &str) -> String {
     match text.char_indices().nth(LIMIT) {
         Some((end, _)) => format!("{:?}…", &text[..end]),
         None => format!("{text:?}"),
+    }
+}
+
+#[cfg(test)]
+mod outcome {
+    use super::*;
+    use crate::effect::{AdapterError, EffectPhase};
+
+    const GH_VARIANTS: usize = 11;
+
+    fn ordinal(error: &GhError) -> usize {
+        match error {
+            GhError::Auth => 0,
+            GhError::CancelledBeforeSpawn => 1,
+            GhError::CancelledAfterSpawn => 2,
+            GhError::Timeout(_) => 3,
+            GhError::Killed(_) => 4,
+            GhError::NotSent(_) => 5,
+            GhError::Http { .. } => 6,
+            GhError::GraphQl { .. } => 7,
+            GhError::Malformed(_) => 8,
+            GhError::Duplicate { .. } => 9,
+            GhError::Push(_) => 10,
+        }
+    }
+
+    fn http(status: u16) -> GhError {
+        GhError::Http {
+            status,
+            message: String::new(),
+            advice: RetryAdvice::default(),
+        }
+    }
+
+    fn graphql(kind: &str) -> GhError {
+        GhError::GraphQl {
+            kind: kind.to_string(),
+            message: String::new(),
+        }
+    }
+
+    fn one_case_for_every_variant() -> [(GhError, EffectOutcome); GH_VARIANTS] {
+        [
+            (GhError::Auth, EffectOutcome::NotCommitted),
+            (GhError::CancelledBeforeSpawn, EffectOutcome::NotCommitted),
+            (GhError::CancelledAfterSpawn, EffectOutcome::Unknown),
+            (
+                GhError::Timeout(Duration::from_secs(1)),
+                EffectOutcome::Unknown,
+            ),
+            (GhError::Killed("137".to_string()), EffectOutcome::Unknown),
+            (
+                GhError::NotSent("nothing left the process".to_string()),
+                EffectOutcome::NotCommitted,
+            ),
+            (http(404), EffectOutcome::NotCommitted),
+            (graphql("NOT_FOUND"), EffectOutcome::NotCommitted),
+            (
+                GhError::Malformed("a body no parser read".to_string()),
+                EffectOutcome::Unknown,
+            ),
+            (GhError::Duplicate { count: 2 }, EffectOutcome::Unknown),
+            (
+                GhError::Push(GitError::Push {
+                    stderr: "no ! line".to_string(),
+                }),
+                EffectOutcome::Unknown,
+            ),
+        ]
+    }
+
+    fn under_both_phases(error: &GhError, expected: EffectOutcome) {
+        assert_eq!(
+            error.outcome(EffectPhase::Apply),
+            expected,
+            "{error:?} under Apply"
+        );
+        assert_eq!(
+            error.outcome(EffectPhase::Inspect),
+            expected,
+            "{error:?} under Inspect"
+        );
+    }
+
+    #[test]
+    fn every_gh_failure_keeps_the_outcome_it_had_before_the_phase_parameter() {
+        for (index, (error, expected)) in one_case_for_every_variant().into_iter().enumerate() {
+            assert_eq!(
+                ordinal(&error),
+                index,
+                "an arm was added without a case here: {error:?}"
+            );
+            under_both_phases(&error, expected);
+        }
+    }
+
+    #[test]
+    fn the_status_and_the_kind_decide_inside_their_own_arm() {
+        for (error, expected) in [
+            (http(401), EffectOutcome::NotCommitted),
+            (http(403), EffectOutcome::NotCommitted),
+            (http(429), EffectOutcome::NotCommitted),
+            (http(422), EffectOutcome::Unknown),
+            (http(500), EffectOutcome::Unknown),
+            (http(503), EffectOutcome::Unknown),
+            (graphql("FORBIDDEN"), EffectOutcome::NotCommitted),
+            (graphql("RATE_LIMITED"), EffectOutcome::Unknown),
+        ] {
+            under_both_phases(&error, expected);
+        }
+    }
+
+    #[test]
+    fn an_error_no_arm_names_is_unknown_and_never_not_committed() {
+        let stranger = graphql("A_KIND_NO_ARM_ANTICIPATED");
+
+        for phase in [EffectPhase::Apply, EffectPhase::Inspect] {
+            assert_eq!(stranger.outcome(phase), EffectOutcome::Unknown);
+            assert_ne!(stranger.outcome(phase), EffectOutcome::NotCommitted);
+        }
+    }
+
+    #[test]
+    fn a_wrapped_git_failure_classifies_as_the_git_failure_did() {
+        for inner in [
+            GitError::Head {
+                stderr: "s".to_string(),
+            },
+            GitError::CancelledMidPush,
+        ] {
+            let expected = inner.outcome(EffectPhase::Apply);
+            under_both_phases(&GhError::from(inner), expected);
+        }
     }
 }

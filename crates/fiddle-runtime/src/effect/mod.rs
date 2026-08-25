@@ -1,13 +1,18 @@
 pub mod receipt;
+pub mod registry;
 
+pub use fiddle_macros::Effect;
 pub use receipt::{EffectError, EffectReceipt, ObservedState, Recurrence};
+pub use registry::{
+    describe, install, registered, resolve, Construct, EffectDescriptor, RegistryError, BUILT_IN,
+};
 
 use crate::git::GitCli;
-use crate::github::{GhCli, GhError, RetryAdvice};
+use crate::github::GhCli;
 use fiddle_core::{
     combine, effect_id, payload_hash, CapabilityId, DecisionBinding, DeploymentRule, EffectId,
-    EffectKind, HumanDecisionRequirement, InterpretedHumanDecision, Observation, PayloadHash,
-    PolicyDecision, ProposedEffect, VerificationState,
+    EffectName, HumanDecisionRequest, HumanDecisionRequirement, InterpretedHumanDecision,
+    Observation, PayloadHash, PolicyDecision, ProposedEffect, VerificationState,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,6 +25,46 @@ pub enum EffectOutcome {
     Committed,
     NotCommitted,
     Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EffectPhase {
+    Inspect,
+    Apply,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RetryAdvice {
+    pub retry_after: Option<Duration>,
+    pub rate_limit_remaining: Option<u64>,
+}
+
+impl RetryAdvice {
+    pub fn wants_a_wait(&self) -> bool {
+        self.retry_after.is_some() || self.rate_limit_remaining == Some(0)
+    }
+}
+
+pub trait AdapterError: std::error::Error + std::any::Any + Send + Sync + 'static {
+    fn outcome(&self, phase: EffectPhase) -> EffectOutcome;
+
+    fn advice(&self) -> RetryAdvice {
+        RetryAdvice::default()
+    }
+
+    fn is_worth_reading_again(&self) -> bool {
+        false
+    }
+
+    fn duplicates(&self) -> Option<usize> {
+        None
+    }
+}
+
+impl std::error::Error for Box<dyn AdapterError> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        (**self).source()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,11 +95,11 @@ impl ExecutionStep {
 }
 
 pub trait EffectTrace: Send + Sync {
-    fn step(&self, kind: EffectKind, step: ExecutionStep);
+    fn step(&self, kind: &EffectName, step: ExecutionStep);
 }
 
 pub trait DeploymentPolicy: Send + Sync {
-    fn rule_for(&self, kind: EffectKind) -> DeploymentRule;
+    fn rule_for(&self, kind: &EffectName) -> DeploymentRule;
 }
 
 pub struct EffectContext {
@@ -158,8 +203,8 @@ enum Settle {
     WhenThePostconditionAppears,
 }
 
-struct Settled<S> {
-    observed: Result<Option<S>, GhError>,
+struct Settled<S, E> {
+    observed: Result<Option<S>, E>,
     reads: u32,
 }
 
@@ -167,17 +212,147 @@ struct Settled<S> {
 pub trait IntegrationOperation: Send + Sync + Sized {
     type State: ObservedState + Send;
 
+    type Error: AdapterError;
+
+    fn kind(&self) -> EffectName;
+
+    fn target(&self) -> String;
+
     fn minimum(&self) -> HumanDecisionRequirement;
 
     fn payload(&self) -> String;
 
-    async fn inspect(&self, ctx: &EffectContext) -> Result<Option<Self::State>, GhError>;
+    async fn inspect(&self, ctx: &EffectContext) -> Result<Option<Self::State>, Self::Error>;
 
     async fn apply(
         &self,
         ctx: &EffectContext,
         authorized: &AuthorizedEffect<Self>,
-    ) -> Result<(), GhError>;
+    ) -> Result<(), Self::Error>;
+}
+
+#[derive(Clone, Debug)]
+pub struct StepParams {
+    pub capability: CapabilityId,
+    pub repo: Option<String>,
+    pub head_owner: Option<String>,
+    pub branch: Option<String>,
+    pub base: Option<String>,
+    pub head_sha: Option<String>,
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub draft: bool,
+    pub pull_request: Option<u64>,
+    pub check_workflow: Option<String>,
+    pub decision_request: Option<HumanDecisionRequest>,
+}
+
+impl StepParams {
+    pub fn for_capability(capability: CapabilityId) -> Self {
+        Self {
+            capability,
+            repo: None,
+            head_owner: None,
+            branch: None,
+            base: None,
+            head_sha: None,
+            title: None,
+            body: None,
+            draft: false,
+            pull_request: None,
+            check_workflow: None,
+            decision_request: None,
+        }
+    }
+}
+
+pub fn required<T: Clone>(
+    held: &Option<T>,
+    kind: &EffectName,
+    parameter: &'static str,
+) -> Result<T, EffectError> {
+    held.clone().ok_or_else(|| EffectError::Unbuildable {
+        kind: kind.clone(),
+        reason: format!("the step names no `{parameter}`"),
+    })
+}
+
+pub trait FromStepParams: Sized {
+    fn from_params(executor: &Executor<'_>, params: &StepParams) -> Result<Self, EffectError>;
+}
+
+pub fn build<O>(
+    executor: &Executor<'_>,
+    params: &StepParams,
+) -> Result<Box<dyn DynEffect>, EffectError>
+where
+    O: FromStepParams + IntegrationOperation + 'static,
+{
+    Ok(Box::new(O::from_params(executor, params)?))
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ErasedReceipt {
+    pub kind: EffectName,
+    pub effect_id: EffectId,
+    pub payload_hash: PayloadHash,
+    pub target: String,
+    pub outcome: EffectOutcome,
+    pub postcondition: String,
+    pub external_ref: Option<String>,
+}
+
+impl ErasedReceipt {
+    pub fn of<T>(kind: EffectName, receipt: EffectReceipt<T>) -> Self {
+        Self {
+            kind,
+            effect_id: receipt.effect_id,
+            payload_hash: receipt.payload_hash,
+            target: receipt.target,
+            outcome: receipt.outcome,
+            postcondition: receipt.postcondition,
+            external_ref: receipt.external_ref,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+pub trait DynEffect: Send + Sync {
+    fn kind(&self) -> EffectName;
+
+    async fn run(
+        self: Box<Self>,
+        executor: &Executor<'_>,
+        params: &StepParams,
+    ) -> Result<ErasedReceipt, EffectError>;
+}
+
+#[async_trait::async_trait]
+impl<O> DynEffect for O
+where
+    O: IntegrationOperation + 'static,
+{
+    fn kind(&self) -> EffectName {
+        IntegrationOperation::kind(self)
+    }
+
+    async fn run(
+        self: Box<Self>,
+        executor: &Executor<'_>,
+        params: &StepParams,
+    ) -> Result<ErasedReceipt, EffectError> {
+        let kind = IntegrationOperation::kind(&*self);
+        let proposed = ProposedEffect {
+            capability: params.capability,
+            kind: kind.clone(),
+            target: IntegrationOperation::target(&*self),
+            payload: IntegrationOperation::payload(&*self),
+        };
+        executor
+            .execute(proposed, *self)
+            .await
+            .map(|receipt| ErasedReceipt::of(kind, receipt))
+    }
 }
 
 pub struct ResolvedDecision {
@@ -310,12 +485,16 @@ impl<'a> Executor<'a> {
     where
         O: IntegrationOperation,
     {
-        let kind = proposed.kind;
+        let kind = proposed.kind.clone();
 
-        self.trace.step(kind, ExecutionStep::ValidateCapability);
+        if registry::describe(&kind).is_none() {
+            return Err(EffectError::UnknownEffect { kind });
+        }
+
+        self.trace.step(&kind, ExecutionStep::ValidateCapability);
         if proposed.capability != self.capability {
             return Err(EffectError::PolicyDenied {
-                kind,
+                kind: kind.clone(),
                 reason: format!(
                     "an executor bound to {} cannot propose for {}",
                     self.capability.0, proposed.capability.0
@@ -323,11 +502,16 @@ impl<'a> Executor<'a> {
             });
         }
 
-        self.trace.step(kind, ExecutionStep::DeriveIdentity);
-        let effect_id = effect_id(&self.project, &self.invocation_ref, kind, &proposed.target);
+        self.trace.step(&kind, ExecutionStep::DeriveIdentity);
+        let effect_id = effect_id(
+            &self.project,
+            &self.invocation_ref,
+            kind.as_str(),
+            &proposed.target,
+        );
         let payload_hash = payload_hash(&proposed.payload);
 
-        self.trace.step(kind, ExecutionStep::InspectPostcondition);
+        self.trace.step(&kind, ExecutionStep::InspectPostcondition);
         match self
             .read_until_settled(&operation, &effect_id, Settle::WhenTheLookSucceeds)
             .await
@@ -343,24 +527,32 @@ impl<'a> Executor<'a> {
                 ))
             }
             Ok(None) => {}
-            Err(error) => return Err(adapter_failure(kind, error)),
+            Err(error) => return Err(adapter_failure(&kind, error)),
         }
 
-        self.trace.step(kind, ExecutionStep::CombinePolicy);
-        match combine(operation.minimum(), self.deployment.rule_for(kind)) {
+        self.trace.step(&kind, ExecutionStep::CombinePolicy);
+        match combine(operation.minimum(), self.deployment.rule_for(&kind)) {
             PolicyDecision::Allow => {}
             PolicyDecision::Deny { reason } => {
-                return Err(EffectError::PolicyDenied { kind, reason })
+                return Err(EffectError::PolicyDenied {
+                    kind: kind.clone(),
+                    reason,
+                })
             }
             PolicyDecision::RequireHumanDecision { reason } => match decision {
-                None => return Err(EffectError::HumanDecisionRequired { kind, reason }),
+                None => {
+                    return Err(EffectError::HumanDecisionRequired {
+                        kind: kind.clone(),
+                        reason,
+                    })
+                }
                 Some(decision) => {
-                    self.trace.step(kind, ExecutionStep::ResolveDecision);
+                    self.trace.step(&kind, ExecutionStep::ResolveDecision);
                     let binding = decision.binding();
 
                     if binding.effect != effect_id {
                         return Err(EffectError::HumanDecisionRequired {
-                            kind,
+                            kind: kind.clone(),
                             reason: format!(
                                 "the decision in hand answers effect {} and this is {}, \
                                  so nothing has answered it yet: {reason}",
@@ -371,7 +563,7 @@ impl<'a> Executor<'a> {
 
                     if binding.payload != payload_hash {
                         return Err(EffectError::PayloadDiverged {
-                            kind,
+                            kind: kind.clone(),
                             approved: binding.payload.clone(),
                             applying: payload_hash.clone(),
                         });
@@ -380,7 +572,7 @@ impl<'a> Executor<'a> {
             },
         }
 
-        self.trace.step(kind, ExecutionStep::Authorize);
+        self.trace.step(&kind, ExecutionStep::Authorize);
         let authorized = AuthorizedEffect {
             effect_id: effect_id.clone(),
             payload_hash: payload_hash.clone(),
@@ -390,16 +582,16 @@ impl<'a> Executor<'a> {
         let applying = fiddle_core::payload_hash(&authorized.operation.payload());
         if authorized.payload_hash() != &applying {
             return Err(EffectError::PayloadDiverged {
-                kind,
+                kind: kind.clone(),
                 approved: authorized.payload_hash().clone(),
                 applying,
             });
         }
 
-        self.trace.step(kind, ExecutionStep::Apply);
+        self.trace.step(&kind, ExecutionStep::Apply);
         let dispatched = authorized.operation.apply(self.ctx, &authorized).await;
 
-        self.trace.step(kind, ExecutionStep::ObservePostcondition);
+        self.trace.step(&kind, ExecutionStep::ObservePostcondition);
         let settled = self
             .read_until_settled(
                 &authorized.operation,
@@ -417,40 +609,47 @@ impl<'a> Executor<'a> {
                 EffectOutcome::Committed,
                 state,
             )),
-            Err(GhError::Duplicate { count }) => Err(EffectError::DuplicateState { kind, count }),
             Ok(None) => match dispatched {
-                Err(error) if error.outcome() == EffectOutcome::NotCommitted => {
-                    Err(adapter_failure(kind, error))
+                Err(error) if error.outcome(EffectPhase::Apply) == EffectOutcome::NotCommitted => {
+                    Err(adapter_failure(&kind, error))
                 }
                 Err(error) => Err(EffectError::Unresolved {
-                    kind,
+                    kind: kind.clone(),
                     reason: format!(
                         "the write was not observed{spent} and its answer was lost: {error}"
                     ),
                 }),
                 Ok(()) => Err(EffectError::Unresolved {
-                    kind,
+                    kind: kind.clone(),
                     reason: format!(
                         "the adapter reported success and the postcondition was \
                          not observed{spent}"
                     ),
                 }),
             },
-            Err(read_error) => match dispatched {
-                Err(error) if error.outcome() == EffectOutcome::NotCommitted => {
-                    Err(adapter_failure(kind, error))
-                }
-                unsettled => Err(EffectError::Unresolved {
-                    kind,
-                    reason: format!(
-                        "the outcome was unknown{} and the postcondition could \
-                         not be read{spent}: {read_error}",
-                        match &unsettled {
-                            Err(error) => format!(" ({error})"),
-                            Ok(()) => String::new(),
-                        }
-                    ),
+            Err(read_error) => match read_error.duplicates() {
+                Some(count) => Err(EffectError::DuplicateState {
+                    kind: kind.clone(),
+                    count,
                 }),
+                None => match dispatched {
+                    Err(error)
+                        if error.outcome(EffectPhase::Apply) == EffectOutcome::NotCommitted =>
+                    {
+                        Err(adapter_failure(&kind, error))
+                    }
+                    unsettled => Err(EffectError::Unresolved {
+                        kind: kind.clone(),
+                        reason: format!(
+                            "the outcome was unknown{} and the postcondition could \
+                             not be read{spent}: {read_error}",
+                            match &unsettled {
+                                Err(error) => format!(" ({error})"),
+                                Ok(()) => String::new(),
+                            }
+                        ),
+                    }),
+                },
             },
         }
     }
@@ -460,7 +659,7 @@ impl<'a> Executor<'a> {
         operation: &O,
         effect: &EffectId,
         settle: Settle,
-    ) -> Settled<O::State> {
+    ) -> Settled<O::State, O::Error> {
         let mut reads: u32 = 0;
         loop {
             let observed = operation.inspect(self.ctx).await;
@@ -516,9 +715,15 @@ fn receipt<S: ObservedState>(
     }
 }
 
-fn adapter_failure(kind: EffectKind, error: GhError) -> EffectError {
-    match error {
-        GhError::Duplicate { count } => EffectError::DuplicateState { kind, count },
-        source => EffectError::Adapter { kind, source },
+fn adapter_failure<E: AdapterError>(kind: &EffectName, error: E) -> EffectError {
+    match error.duplicates() {
+        Some(count) => EffectError::DuplicateState {
+            kind: kind.clone(),
+            count,
+        },
+        None => EffectError::Adapter {
+            kind: kind.clone(),
+            source: Box::new(error),
+        },
     }
 }

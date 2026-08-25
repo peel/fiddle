@@ -1,0 +1,5 @@
+error: `EffectWithoutAName`: `#[effect(...)]` states no `name`
+ --> tests/compile_fail/effect_without_a_name.rs:4:1
+  |
+4 | #[effect(minimum = "automatic", target = "{repo}", state = (), error = ())]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -4,7 +4,9 @@ use fiddle_core::decision::{
     decision_request_id, render_marker, DecisionBinding, DecisionRequestId,
     InterpretedHumanDecision,
 };
-use fiddle_core::{effect_id, payload_hash, EffectId, EffectKind, PayloadHash};
+use fiddle_core::{
+    effect_id, payload_hash, EffectId, EffectName, PayloadHash, ENSURE_PULL_REQUEST_READY,
+};
 use fiddle_runtime::effect::{EffectContext, IntegrationOperation, ResolvedDecision};
 use fiddle_runtime::github::EnsurePullRequestReady;
 use fiddle_runtime::human::interpret::InterpretationBounds;
@@ -111,7 +113,7 @@ fn derived() -> (DecisionRequestId, EffectId, PayloadHash) {
     let effect = effect_id(
         PROJECT,
         INVOCATION_REF,
-        EffectKind::EnsurePullRequestReady,
+        ENSURE_PULL_REQUEST_READY,
         &operation().target(),
     );
     let request = decision_request_id(PROJECT, INVOCATION_REF, &effect);
@@ -251,7 +253,7 @@ impl World {
             max_pages: MAX_PAGES,
             project: PROJECT,
             invocation_ref: INVOCATION_REF,
-            kind: EffectKind::EnsurePullRequestReady,
+            kind: EffectName::shipped(ENSURE_PULL_REQUEST_READY),
             target: &target,
             payload: &payload,
             allowlist: &self.allowlist,
