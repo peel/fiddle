@@ -4,6 +4,7 @@ pub mod propose;
 pub mod publish;
 pub mod repair;
 pub mod stub;
+pub mod workflow;
 
 pub use cve::{
     breached, entitled, land, undeclared, ChangesRequested, DeclarationBreach, FailedCheck,
@@ -15,6 +16,7 @@ pub use propose::{attempt_worktree, ProposeChange, ProposeConfig};
 pub use publish::{PublishChange, PublishConfig};
 pub use repair::{FixtureRepair, RepairConfig};
 pub use stub::StubMark;
+pub use workflow::{Step, Workflow, WorkflowError, WorkflowFile, WORKFLOW_VERSION};
 
 use crate::human::validate::DecisionError;
 use crate::human::InteractionRef;
