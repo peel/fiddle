@@ -32,7 +32,7 @@ enum Refused {
 }
 
 fn read(document: &str) -> Result<Workflow, Refused> {
-    let file = serde_saphyr::from_str::<WorkflowFile>(document).map_err(|_| Refused::Reading)?;
+    let file = toml::from_str::<WorkflowFile>(document).map_err(|_| Refused::Reading)?;
     Workflow::try_from(file).map_err(|error| match error {
         WorkflowError::Version(found) => Refused::Version(found),
         WorkflowError::NoSteps => Refused::NoSteps,
@@ -40,13 +40,13 @@ fn read(document: &str) -> Result<Workflow, Refused> {
 }
 
 #[test]
-fn a_rust_workflow_round_trips_through_yaml_unchanged() {
-    let yaml = serde_saphyr::to_string(&canonical().to_file()).unwrap();
-    let back: Workflow = serde_saphyr::from_str::<WorkflowFile>(&yaml)
+fn a_rust_workflow_round_trips_through_toml_unchanged() {
+    let document = toml::to_string(&canonical().to_file()).unwrap();
+    let back: Workflow = toml::from_str::<WorkflowFile>(&document)
         .unwrap()
         .try_into()
         .unwrap();
-    assert_eq!(canonical(), back, "yaml was:\n{yaml}");
+    assert_eq!(canonical(), back, "toml was:\n{document}");
 }
 
 #[test]
@@ -54,32 +54,38 @@ fn every_malformed_document_is_refused_for_the_reason_its_label_claims() {
     let cases = [
         (
             "unknown field",
-            "version: 1\nname: t\nstage: t\nextra: 1\nsteps:\n  - effect:\n      name: ensure_pull_request\n",
-            "version: 1\nname: t\nstage: t\nsteps:\n  - effect:\n      name: ensure_pull_request\n",
+            "version = 1\nname = \"t\"\nstage = \"t\"\nextra = 1\n\n[[steps]]\nkind = \"effect\"\nname = \"ensure_pull_request\"\n",
+            "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"effect\"\nname = \"ensure_pull_request\"\n",
+            Refused::Reading,
+        ),
+        (
+            "unknown field in a step",
+            "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"effect\"\nname = \"ensure_pull_request\"\nextra = 1\n",
+            "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"effect\"\nname = \"ensure_pull_request\"\n",
             Refused::Reading,
         ),
         (
             "unknown step",
-            "version: 1\nname: t\nstage: t\nsteps:\n  - ask:\n      name: ensure_pull_request\n",
-            "version: 1\nname: t\nstage: t\nsteps:\n  - effect:\n      name: ensure_pull_request\n",
+            "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"ask\"\nname = \"ensure_pull_request\"\n",
+            "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"effect\"\nname = \"ensure_pull_request\"\n",
             Refused::Reading,
         ),
         (
             "unknown version",
-            "version: 9\nname: t\nstage: t\nsteps:\n  - effect:\n      name: ensure_pull_request\n",
-            "version: 1\nname: t\nstage: t\nsteps:\n  - effect:\n      name: ensure_pull_request\n",
+            "version = 9\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"effect\"\nname = \"ensure_pull_request\"\n",
+            "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"effect\"\nname = \"ensure_pull_request\"\n",
             Refused::Version(9),
         ),
         (
             "no steps",
-            "version: 1\nname: t\nstage: t\nsteps: []\n",
-            "version: 1\nname: t\nstage: t\nsteps:\n  - effect:\n      name: ensure_pull_request\n",
+            "version = 1\nname = \"t\"\nstage = \"t\"\nsteps = []\n",
+            "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"effect\"\nname = \"ensure_pull_request\"\n",
             Refused::NoSteps,
         ),
         (
             "unspellable name",
-            "version: 1\nname: t\nstage: t\nsteps:\n  - effect:\n      name: Ensure_PR\n",
-            "version: 1\nname: t\nstage: t\nsteps:\n  - effect:\n      name: ensure_pull_request\n",
+            "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"effect\"\nname = \"Ensure_PR\"\n",
+            "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"effect\"\nname = \"ensure_pull_request\"\n",
             Refused::Reading,
         ),
     ];
@@ -104,7 +110,7 @@ fn the_rust_constructor_refuses_what_the_file_path_refuses() {
         "an empty workflow is not work"
     );
     assert_eq!(
-        read("version: 1\nname: t\nstage: t\nsteps: []\n").unwrap_err(),
+        read("version = 1\nname = \"t\"\nstage = \"t\"\nsteps = []\n").unwrap_err(),
         Refused::NoSteps,
         "the file path must refuse an empty workflow by the same rule"
     );

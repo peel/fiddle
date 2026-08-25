@@ -5,7 +5,7 @@ use std::path::PathBuf;
 pub const WORKFLOW_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Step {
     Agent {
         prompt: PathBuf,
