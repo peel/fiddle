@@ -21,7 +21,9 @@ pub struct EffectDescriptor {
 
 impl PartialEq for EffectDescriptor {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.minimum == other.minimum
+        self.name == other.name
+            && self.minimum == other.minimum
+            && std::ptr::fn_addr_eq(self.construct, other.construct)
     }
 }
 
