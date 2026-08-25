@@ -3813,3 +3813,44 @@ fn the_findings_report_names_the_checks_the_tree_already_passed() {
          failing: {scanned}"
     );
 }
+
+const SENTINEL_FORGE_TOKEN: &str = "ghp_forge_token_for_the_sweep";
+
+#[test]
+fn no_credential_the_sweep_was_given_reaches_a_path_in_the_project() {
+    let sweep = Sweep::scanning(VULNERABLE, SCAN_OK, 1, a_repair_moving_the_requirement());
+
+    let run = sweep.run();
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the sweep has to reach the commit and the push, or this proves nothing about \
+         the path that pushes — stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    for (what, sentinel) in [
+        ("the forge token", SENTINEL_FORGE_TOKEN),
+        ("the scanner's secret", SENTINEL_SECRET),
+    ] {
+        let leaked: Vec<String> = sweep
+            .files_holding(sentinel)
+            .into_iter()
+            .filter(|path| !is_fixture_recording(path))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "{what} reached the project tree, and a run that commits and pushes would \
+             carry it to the remote: {leaked:?}"
+        );
+    }
+
+    assert!(
+        sweep
+            .files_holding(SENTINEL_FORGE_TOKEN)
+            .iter()
+            .any(|path| is_fixture_recording(path)),
+        "the stub's own request log has to hold the token, or this search is looking in \
+         a tree the run never wrote to and would pass with the credential leaking"
+    );
+}
