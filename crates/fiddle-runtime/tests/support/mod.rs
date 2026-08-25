@@ -203,6 +203,14 @@ impl IntegrationOperation for ScriptedOperation<'_> {
 
     type Error = GhError;
 
+    fn kind(&self) -> EffectName {
+        EffectName::shipped(ENSURE_BRANCH_PUBLISHED)
+    }
+
+    fn target(&self) -> String {
+        TARGET.to_string()
+    }
+
     fn minimum(&self) -> HumanDecisionRequirement {
         self.minimum
     }

@@ -79,6 +79,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 ::fiddle_runtime::effect::EffectDescriptor {
                     name: #name,
                     minimum: ::fiddle_runtime::core::HumanDecisionRequirement::#minimum,
+                    construct: ::fiddle_runtime::effect::build::<Self>,
                 }
             }
 
@@ -92,6 +93,14 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             type State = #state;
 
             type Error = #error;
+
+            fn kind(&self) -> ::fiddle_runtime::core::EffectName {
+                ::fiddle_runtime::core::EffectName::shipped(#name)
+            }
+
+            fn target(&self) -> ::std::string::String {
+                Self::target(self)
+            }
 
             fn minimum(&self) -> ::fiddle_runtime::core::HumanDecisionRequirement {
                 Self::descriptor().minimum

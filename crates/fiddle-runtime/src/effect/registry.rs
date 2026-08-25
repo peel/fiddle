@@ -1,15 +1,31 @@
-use crate::github::EnsureBranchPublished;
+use crate::effect::{build, DynEffect, EffectError, Executor, StepParams};
+use crate::github::{
+    EnsureBranchPublished, EnsureCheckRequested, EnsurePullRequest, EnsurePullRequestBody,
+    EnsurePullRequestReady,
+};
+use crate::human::PublishDecisionRequest;
 use fiddle_core::{
     EffectName, HumanDecisionRequirement, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
     ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, PUBLISH_DECISION_REQUEST,
 };
 use std::sync::OnceLock;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub type Construct = fn(&Executor<'_>, &StepParams) -> Result<Box<dyn DynEffect>, EffectError>;
+
+#[derive(Clone, Copy, Debug)]
 pub struct EffectDescriptor {
     pub name: &'static str,
     pub minimum: HumanDecisionRequirement,
+    pub construct: Construct,
 }
+
+impl PartialEq for EffectDescriptor {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.minimum == other.minimum
+    }
+}
+
+impl Eq for EffectDescriptor {}
 
 #[derive(Clone, Debug, thiserror::Error, Eq, PartialEq)]
 pub enum RegistryError {
@@ -26,22 +42,27 @@ pub const BUILT_IN: &[EffectDescriptor] = &[
     EffectDescriptor {
         name: ENSURE_PULL_REQUEST,
         minimum: HumanDecisionRequirement::Automatic,
+        construct: build::<EnsurePullRequest>,
     },
     EffectDescriptor {
         name: ENSURE_CHECK_REQUESTED,
         minimum: HumanDecisionRequirement::Automatic,
+        construct: build::<EnsureCheckRequested>,
     },
     EffectDescriptor {
         name: PUBLISH_DECISION_REQUEST,
         minimum: HumanDecisionRequirement::Automatic,
+        construct: build::<PublishDecisionRequest>,
     },
     EffectDescriptor {
         name: ENSURE_PULL_REQUEST_READY,
         minimum: HumanDecisionRequirement::Human,
+        construct: build::<EnsurePullRequestReady>,
     },
     EffectDescriptor {
         name: ENSURE_PULL_REQUEST_BODY,
         minimum: HumanDecisionRequirement::Automatic,
+        construct: build::<EnsurePullRequestBody>,
     },
 ];
 
@@ -62,6 +83,10 @@ pub fn registered() -> Vec<&'static EffectDescriptor> {
 
 pub fn describe(name: &EffectName) -> Option<&'static EffectDescriptor> {
     find(name, extension())
+}
+
+pub fn resolve(name: &EffectName) -> Option<Construct> {
+    describe(name).map(|descriptor| descriptor.construct)
 }
 
 fn extension() -> &'static [EffectDescriptor] {
@@ -112,6 +137,16 @@ mod tests {
         ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, PUBLISH_CHANGE,
         PUBLISH_DECISION_REQUEST,
     };
+
+    fn unshipped(
+        _executor: &Executor<'_>,
+        _params: &StepParams,
+    ) -> Result<Box<dyn DynEffect>, EffectError> {
+        Err(EffectError::Unbuildable {
+            kind: EffectName::shipped("jira.transition"),
+            reason: "an extension in this test declares a name and ships no operation".to_string(),
+        })
+    }
 
     fn branch_op() -> EnsureBranchPublished {
         EnsureBranchPublished::new(
@@ -228,6 +263,7 @@ mod tests {
         static CLASH: &[EffectDescriptor] = &[EffectDescriptor {
             name: ENSURE_PULL_REQUEST,
             minimum: HumanDecisionRequirement::Automatic,
+            construct: unshipped,
         }];
         assert_eq!(
             install(CLASH),
@@ -241,10 +277,12 @@ mod tests {
         EffectDescriptor {
             name: "jira.transition",
             minimum: HumanDecisionRequirement::Human,
+            construct: unshipped,
         },
         EffectDescriptor {
             name: "jira.comment",
             minimum: HumanDecisionRequirement::Automatic,
+            construct: unshipped,
         },
     ];
 
@@ -268,10 +306,12 @@ mod tests {
             EffectDescriptor {
                 name: "jira.comment",
                 minimum: HumanDecisionRequirement::Automatic,
+                construct: unshipped,
             },
             EffectDescriptor {
                 name: "jira.comment",
                 minimum: HumanDecisionRequirement::Human,
+                construct: unshipped,
             },
         ];
         assert_eq!(
@@ -287,6 +327,7 @@ mod tests {
         static SHOUTED: &[EffectDescriptor] = &[EffectDescriptor {
             name: "Jira.Transition",
             minimum: HumanDecisionRequirement::Automatic,
+            construct: unshipped,
         }];
         assert_eq!(
             admissible(SHOUTED),

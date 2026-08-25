@@ -1609,6 +1609,14 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
 
         type Error = fiddle_runtime::GhError;
 
+        fn kind(&self) -> fiddle_core::EffectName {
+            fiddle_core::EffectName::shipped(fiddle_core::ENSURE_BRANCH_PUBLISHED)
+        }
+
+        fn target(&self) -> String {
+            "refs/heads/fiddle/abc".to_string()
+        }
+
         fn minimum(&self) -> fiddle_core::HumanDecisionRequirement {
             fiddle_core::HumanDecisionRequirement::Automatic
         }

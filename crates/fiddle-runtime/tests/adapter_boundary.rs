@@ -2,9 +2,9 @@ use fiddle_core::{
     DeploymentRule, EffectName, HumanDecisionRequirement, ProposedEffect, FIXTURE_REPAIR,
 };
 use fiddle_runtime::effect::{
-    install, AdapterError, AuthorizedEffect, DeploymentPolicy, EffectContext, EffectDescriptor,
-    EffectError, EffectOutcome, EffectPhase, EffectTrace, ExecutionStep, Executor,
-    IntegrationOperation, ObservedState, ReadRetry,
+    install, AdapterError, AuthorizedEffect, DeploymentPolicy, DynEffect, EffectContext,
+    EffectDescriptor, EffectError, EffectOutcome, EffectPhase, EffectTrace, ExecutionStep,
+    Executor, IntegrationOperation, ObservedState, ReadRetry, StepParams,
 };
 use fiddle_runtime::git::GitCli;
 use fiddle_runtime::{GhCli, GhError};
@@ -26,7 +26,18 @@ const PAYLOAD: &str = r#"{"to":"In Review"}"#;
 const JIRA: &[EffectDescriptor] = &[EffectDescriptor {
     name: TRANSITION,
     minimum: HumanDecisionRequirement::Automatic,
+    construct: unshipped,
 }];
+
+fn unshipped(
+    _executor: &Executor<'_>,
+    _params: &StepParams,
+) -> Result<Box<dyn DynEffect>, EffectError> {
+    Err(EffectError::Unbuildable {
+        kind: EffectName::parse(TRANSITION).expect("the tracker's effect name parses"),
+        reason: "this fixture is executed directly and never resolved from a name".to_string(),
+    })
+}
 
 #[derive(Debug, thiserror::Error)]
 enum JiraError {
@@ -82,6 +93,14 @@ impl IntegrationOperation for TransitionIssue<'_> {
     type State = TransitionedIssue;
 
     type Error = JiraError;
+
+    fn kind(&self) -> EffectName {
+        EffectName::parse(TRANSITION).expect("the tracker's effect name parses")
+    }
+
+    fn target(&self) -> String {
+        ISSUE.to_string()
+    }
 
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Automatic

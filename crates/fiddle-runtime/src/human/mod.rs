@@ -1,10 +1,14 @@
 pub mod interpret;
 pub mod validate;
 
-use crate::effect::{AuthorizedEffect, EffectContext, IntegrationOperation, ObservedState};
+use crate::effect::{
+    required, AuthorizedEffect, EffectContext, EffectError, Executor, FromStepParams,
+    IntegrationOperation, ObservedState, StepParams,
+};
 use crate::github::{read_conversation, GhError};
 use fiddle_core::{
-    parse_marker, render_marker, HumanDecisionRequest, HumanDecisionRequirement, MarkerError,
+    parse_marker, render_marker, EffectName, HumanDecisionRequest, HumanDecisionRequirement,
+    MarkerError, PUBLISH_DECISION_REQUEST,
 };
 
 pub use crate::github::HumanResponse;
@@ -136,11 +140,30 @@ impl PublishDecisionRequest {
     }
 }
 
+impl FromStepParams for PublishDecisionRequest {
+    fn from_params(_executor: &Executor<'_>, params: &StepParams) -> Result<Self, EffectError> {
+        let kind = EffectName::shipped(PUBLISH_DECISION_REQUEST);
+        Ok(Self::new(
+            required(&params.repo, &kind, "repo")?,
+            required(&params.pull_request, &kind, "pull_request")?,
+            required(&params.decision_request, &kind, "decision_request")?,
+        ))
+    }
+}
+
 #[async_trait::async_trait]
 impl IntegrationOperation for PublishDecisionRequest {
     type State = PublishedRequest;
 
     type Error = GhError;
+
+    fn kind(&self) -> EffectName {
+        EffectName::shipped(PUBLISH_DECISION_REQUEST)
+    }
+
+    fn target(&self) -> String {
+        PublishDecisionRequest::target(self)
+    }
 
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Automatic

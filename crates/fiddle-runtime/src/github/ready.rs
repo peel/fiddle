@@ -1,6 +1,9 @@
-use crate::effect::{AuthorizedEffect, EffectContext, IntegrationOperation, ObservedState};
+use crate::effect::{
+    required, AuthorizedEffect, EffectContext, EffectError, Executor, FromStepParams,
+    IntegrationOperation, ObservedState, StepParams,
+};
 use crate::github::GhError;
-use fiddle_core::HumanDecisionRequirement;
+use fiddle_core::{EffectName, HumanDecisionRequirement, ENSURE_PULL_REQUEST_READY};
 use std::sync::OnceLock;
 
 const READY_FOR_REVIEW: &str = "mutation($id: ID!) { markPullRequestReadyForReview(input: \
@@ -80,11 +83,30 @@ impl EnsurePullRequestReady {
     }
 }
 
+impl FromStepParams for EnsurePullRequestReady {
+    fn from_params(_executor: &Executor<'_>, params: &StepParams) -> Result<Self, EffectError> {
+        let kind = EffectName::shipped(ENSURE_PULL_REQUEST_READY);
+        Ok(Self::new(
+            required(&params.repo, &kind, "repo")?,
+            required(&params.pull_request, &kind, "pull_request")?,
+            required(&params.head_sha, &kind, "head_sha")?,
+        ))
+    }
+}
+
 #[async_trait::async_trait]
 impl IntegrationOperation for EnsurePullRequestReady {
     type State = ReadyPullRequest;
 
     type Error = GhError;
+
+    fn kind(&self) -> EffectName {
+        EffectName::shipped(ENSURE_PULL_REQUEST_READY)
+    }
+
+    fn target(&self) -> String {
+        EnsurePullRequestReady::target(self)
+    }
 
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Human

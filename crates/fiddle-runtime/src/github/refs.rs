@@ -1,7 +1,10 @@
-use crate::effect::{AuthorizedEffect, Effect, EffectContext, ObservedState};
+use crate::effect::{
+    required, AuthorizedEffect, Effect, EffectContext, EffectError, Executor, FromStepParams,
+    ObservedState, StepParams,
+};
 use crate::git::PublishedBranch;
 use crate::github::GhError;
-use fiddle_core::{effect_id, ENSURE_BRANCH_PUBLISHED};
+use fiddle_core::{effect_id, EffectName, ENSURE_BRANCH_PUBLISHED};
 
 const NAMESPACE: &str = "fiddle";
 
@@ -53,6 +56,17 @@ pub struct EnsureBranchPublished {
     branch: String,
     #[payload(rename = "sha")]
     intended_sha: String,
+}
+
+impl FromStepParams for EnsureBranchPublished {
+    fn from_params(_executor: &Executor<'_>, params: &StepParams) -> Result<Self, EffectError> {
+        let kind = EffectName::shipped(ENSURE_BRANCH_PUBLISHED);
+        Ok(Self::new(
+            required(&params.repo, &kind, "repo")?,
+            required(&params.branch, &kind, "branch")?,
+            required(&params.head_sha, &kind, "head_sha")?,
+        ))
+    }
 }
 
 impl EnsureBranchPublished {

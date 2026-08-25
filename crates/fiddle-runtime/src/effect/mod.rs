@@ -3,14 +3,16 @@ pub mod registry;
 
 pub use fiddle_macros::Effect;
 pub use receipt::{EffectError, EffectReceipt, ObservedState, Recurrence};
-pub use registry::{describe, install, registered, EffectDescriptor, RegistryError, BUILT_IN};
+pub use registry::{
+    describe, install, registered, resolve, Construct, EffectDescriptor, RegistryError, BUILT_IN,
+};
 
 use crate::git::GitCli;
 use crate::github::GhCli;
 use fiddle_core::{
     combine, effect_id, payload_hash, CapabilityId, DecisionBinding, DeploymentRule, EffectId,
-    EffectName, HumanDecisionRequirement, InterpretedHumanDecision, Observation, PayloadHash,
-    PolicyDecision, ProposedEffect, VerificationState,
+    EffectName, HumanDecisionRequest, HumanDecisionRequirement, InterpretedHumanDecision,
+    Observation, PayloadHash, PolicyDecision, ProposedEffect, VerificationState,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -212,6 +214,10 @@ pub trait IntegrationOperation: Send + Sync + Sized {
 
     type Error: AdapterError;
 
+    fn kind(&self) -> EffectName;
+
+    fn target(&self) -> String;
+
     fn minimum(&self) -> HumanDecisionRequirement;
 
     fn payload(&self) -> String;
@@ -223,6 +229,130 @@ pub trait IntegrationOperation: Send + Sync + Sized {
         ctx: &EffectContext,
         authorized: &AuthorizedEffect<Self>,
     ) -> Result<(), Self::Error>;
+}
+
+#[derive(Clone, Debug)]
+pub struct StepParams {
+    pub capability: CapabilityId,
+    pub repo: Option<String>,
+    pub head_owner: Option<String>,
+    pub branch: Option<String>,
+    pub base: Option<String>,
+    pub head_sha: Option<String>,
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub draft: bool,
+    pub pull_request: Option<u64>,
+    pub check_workflow: Option<String>,
+    pub decision_request: Option<HumanDecisionRequest>,
+}
+
+impl StepParams {
+    pub fn for_capability(capability: CapabilityId) -> Self {
+        Self {
+            capability,
+            repo: None,
+            head_owner: None,
+            branch: None,
+            base: None,
+            head_sha: None,
+            title: None,
+            body: None,
+            draft: false,
+            pull_request: None,
+            check_workflow: None,
+            decision_request: None,
+        }
+    }
+}
+
+pub fn required<T: Clone>(
+    held: &Option<T>,
+    kind: &EffectName,
+    parameter: &'static str,
+) -> Result<T, EffectError> {
+    held.clone().ok_or_else(|| EffectError::Unbuildable {
+        kind: kind.clone(),
+        reason: format!("the step names no `{parameter}`"),
+    })
+}
+
+pub trait FromStepParams: Sized {
+    fn from_params(executor: &Executor<'_>, params: &StepParams) -> Result<Self, EffectError>;
+}
+
+pub fn build<O>(
+    executor: &Executor<'_>,
+    params: &StepParams,
+) -> Result<Box<dyn DynEffect>, EffectError>
+where
+    O: FromStepParams + IntegrationOperation + 'static,
+{
+    Ok(Box::new(O::from_params(executor, params)?))
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ErasedReceipt {
+    pub kind: EffectName,
+    pub effect_id: EffectId,
+    pub payload_hash: PayloadHash,
+    pub target: String,
+    pub outcome: EffectOutcome,
+    pub postcondition: String,
+    pub external_ref: Option<String>,
+}
+
+impl ErasedReceipt {
+    pub fn of<T>(kind: EffectName, receipt: EffectReceipt<T>) -> Self {
+        Self {
+            kind,
+            effect_id: receipt.effect_id,
+            payload_hash: receipt.payload_hash,
+            target: receipt.target,
+            outcome: receipt.outcome,
+            postcondition: receipt.postcondition,
+            external_ref: receipt.external_ref,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+pub trait DynEffect: Send + Sync {
+    fn kind(&self) -> EffectName;
+
+    async fn run(
+        self: Box<Self>,
+        executor: &Executor<'_>,
+        params: &StepParams,
+    ) -> Result<ErasedReceipt, EffectError>;
+}
+
+#[async_trait::async_trait]
+impl<O> DynEffect for O
+where
+    O: IntegrationOperation + 'static,
+{
+    fn kind(&self) -> EffectName {
+        IntegrationOperation::kind(self)
+    }
+
+    async fn run(
+        self: Box<Self>,
+        executor: &Executor<'_>,
+        params: &StepParams,
+    ) -> Result<ErasedReceipt, EffectError> {
+        let kind = IntegrationOperation::kind(&*self);
+        let proposed = ProposedEffect {
+            capability: params.capability,
+            kind: kind.clone(),
+            target: IntegrationOperation::target(&*self),
+            payload: IntegrationOperation::payload(&*self),
+        };
+        executor
+            .execute(proposed, *self)
+            .await
+            .map(|receipt| ErasedReceipt::of(kind, receipt))
+    }
 }
 
 pub struct ResolvedDecision {

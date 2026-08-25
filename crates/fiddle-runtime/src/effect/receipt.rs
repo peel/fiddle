@@ -35,6 +35,8 @@ pub enum Recurrence {
 pub enum EffectError {
     #[error("`{kind}` is not an effect this build performs")]
     UnknownEffect { kind: EffectName },
+    #[error("`{kind}` could not be built from this step: {reason}")]
+    Unbuildable { kind: EffectName, reason: String },
     #[error("policy denied {kind}: {reason}")]
     PolicyDenied { kind: EffectName, reason: String },
     #[error("{kind} is awaiting a human decision on the channel M3 introduced: {reason}")]
@@ -74,6 +76,8 @@ impl EffectError {
         match self {
             EffectError::UnknownEffect { .. } => Recurrence::Permanent,
 
+            EffectError::Unbuildable { .. } => Recurrence::Permanent,
+
             EffectError::PolicyDenied { .. } => Recurrence::Permanent,
 
             EffectError::HumanDecisionRequired { .. } => Recurrence::Awaiting,
@@ -104,11 +108,19 @@ mod tests {
 
     #[test]
     fn every_effect_failure_declares_which_exit_row_it_belongs_in() {
-        let cases: [(&str, EffectError, Recurrence); 7] = [
+        let cases: [(&str, EffectError, Recurrence); 8] = [
             (
                 "no descriptor in this build holds the name",
                 EffectError::UnknownEffect {
                     kind: EffectName::parse("jira.transition").unwrap(),
+                },
+                Recurrence::Permanent,
+            ),
+            (
+                "the step named none of what the operation is made of",
+                EffectError::Unbuildable {
+                    kind: kind(),
+                    reason: reason(),
                 },
                 Recurrence::Permanent,
             ),
@@ -192,6 +204,10 @@ mod tests {
         let refusals = [
             EffectError::UnknownEffect {
                 kind: EffectName::parse("jira.transition").unwrap(),
+            },
+            EffectError::Unbuildable {
+                kind: kind(),
+                reason: reason(),
             },
             EffectError::PolicyDenied {
                 kind: kind(),

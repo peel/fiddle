@@ -1,7 +1,13 @@
-use crate::effect::{AuthorizedEffect, EffectContext, IntegrationOperation, ObservedState};
+use crate::effect::{
+    required, AuthorizedEffect, EffectContext, EffectError, Executor, FromStepParams,
+    IntegrationOperation, ObservedState, StepParams,
+};
 use crate::github::comments::has_a_next_page;
 use crate::github::{encode, GhCli, GhError};
-use fiddle_core::{content_digest, HumanDecisionRequirement};
+use fiddle_core::{
+    content_digest, EffectName, HumanDecisionRequirement, ENSURE_PULL_REQUEST,
+    ENSURE_PULL_REQUEST_BODY,
+};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -154,11 +160,34 @@ fn label_names(listed: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+impl FromStepParams for EnsurePullRequest {
+    fn from_params(_executor: &Executor<'_>, params: &StepParams) -> Result<Self, EffectError> {
+        let kind = EffectName::shipped(ENSURE_PULL_REQUEST);
+        Ok(Self::new(
+            required(&params.repo, &kind, "repo")?,
+            required(&params.head_owner, &kind, "head_owner")?,
+            required(&params.branch, &kind, "branch")?,
+            required(&params.base, &kind, "base")?,
+            required(&params.title, &kind, "title")?,
+            required(&params.body, &kind, "body")?,
+            params.draft,
+        ))
+    }
+}
+
 #[async_trait::async_trait]
 impl IntegrationOperation for EnsurePullRequest {
     type State = PullRequest;
 
     type Error = GhError;
+
+    fn kind(&self) -> EffectName {
+        EffectName::shipped(ENSURE_PULL_REQUEST)
+    }
+
+    fn target(&self) -> String {
+        EnsurePullRequest::target(self)
+    }
 
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Automatic
@@ -409,11 +438,30 @@ pub async fn read_pull_request_body(
         .await
 }
 
+impl FromStepParams for EnsurePullRequestBody {
+    fn from_params(_executor: &Executor<'_>, params: &StepParams) -> Result<Self, EffectError> {
+        let kind = EffectName::shipped(ENSURE_PULL_REQUEST_BODY);
+        Ok(Self::new(
+            required(&params.repo, &kind, "repo")?,
+            required(&params.pull_request, &kind, "pull_request")?,
+            required(&params.body, &kind, "body")?,
+        ))
+    }
+}
+
 #[async_trait::async_trait]
 impl IntegrationOperation for EnsurePullRequestBody {
     type State = PullRequestBody;
 
     type Error = GhError;
+
+    fn kind(&self) -> EffectName {
+        EffectName::shipped(ENSURE_PULL_REQUEST_BODY)
+    }
+
+    fn target(&self) -> String {
+        EnsurePullRequestBody::target(self)
+    }
 
     fn minimum(&self) -> HumanDecisionRequirement {
         HumanDecisionRequirement::Automatic
