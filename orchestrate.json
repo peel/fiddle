@@ -35,7 +35,8 @@
           "claude",
           "codex"
         ],
-        "calibration": "docs/evaluator-calibration-general.md"
+        "calibration": "docs/evaluator-calibration-general.md",
+        "antipatterns": "docs/antipatterns-general.md"
       },
       "infrastructure": {
         "template": "evaluator-infrastructure",
