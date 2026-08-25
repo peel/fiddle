@@ -16,7 +16,10 @@ pub use propose::{attempt_worktree, ProposeChange, ProposeConfig};
 pub use publish::{PublishChange, PublishConfig};
 pub use repair::{FixtureRepair, RepairConfig};
 pub use stub::StubMark;
-pub use workflow::{Step, Workflow, WorkflowError, WorkflowFile, WORKFLOW_VERSION};
+pub use workflow::{
+    without_waiting, Step, Workflow, WorkflowCapability, WorkflowError, WorkflowFile,
+    WorkflowPorts, WorkflowRefusal, WORKFLOW, WORKFLOW_VERSION,
+};
 
 use crate::human::validate::DecisionError;
 use crate::human::InteractionRef;
@@ -124,6 +127,9 @@ pub enum CapabilityError {
     #[error("{0}")]
     Effect(#[from] crate::effect::EffectError),
 
+    #[error("a workflow runs to an end or fails, and this step would wait: {reason}")]
+    WouldWait { reason: String },
+
     #[error("awaiting a human decision at {interaction} on request {}: {question}", request.0)]
     AwaitingDecision {
         request: DecisionRequestId,
@@ -189,6 +195,7 @@ impl CapabilityError {
 
             CapabilityError::NotAuthorised { .. }
             | CapabilityError::Misbound { .. }
+            | CapabilityError::WouldWait { .. }
             | CapabilityError::PublishesElsewhere { .. } => Recurrence::Permanent,
 
             CapabilityError::DecisionRejected { .. } => Recurrence::Permanent,

@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::IntoFuture;
 use std::time::Duration;
 
-const PREAMBLE: &str = "\
+pub(crate) const PREAMBLE: &str = "\
 You are repairing one project. Use the tools this run offers you, and name only \
 paths inside the project.\n\
 \n\
