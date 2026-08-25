@@ -1827,3 +1827,50 @@ authority level with its own minimum, or whether a manager is refused until it i
 
 Origin: implementation (bean `fiddle-w74s`, ADR 074 and ADR 075)
 Tags: #debt #agent #effects
+
+### 2026-08-25 — A merge that reads an absent field as a failure
+
+Holistic review of `fiddle-qcch` returned nine failing criteria and seven were false.
+The two reviewers used different schemas: one emitted `met`, the other `pass`.
+`scripts/merge-scorecards.sh:67` computes `"pass": (all(.pass))`, and a null `.pass` is
+falsy in jq, so a criterion that does not carry the field becomes a failure. Six
+criteria scored 9 against a threshold of 8 arrived as failures.
+
+`scripts/validate-scorecard.sh` catches this exactly and names it. `develop-holistic`
+never calls it; `develop-loop` does. The per-task path gates every scorecard before
+merging and the holistic path merges whatever a reviewer returns.
+
+Absent is not false. A false FAIL costs remediation work on defects that do not exist.
+A false PASS ships a milestone on a verdict nobody checked.
+
+Origin: implementation (holistic review of epic `fiddle-qcch`, bean `fiddle-o7ji`)
+Tags: #bug #evaluation #tooling
+
+### 2026-08-25 — A default that names a vendor implies a dependency that is not there
+
+`scripts/live-github.sh` defaults `FIDDLE_LIVE_MODEL_CREDENTIAL` to `LITELLM_API_KEY`
+and `FIDDLE_LIVE_BASE_URL` to a Snowplow-internal host. The client is
+`rig_core::providers::openai`, so the runtime speaks the OpenAI wire protocol to
+whatever `base_url` names, and OpenAI, Azure, vLLM and OpenRouter all work today with
+no code change.
+
+The mechanism is right and settled by ADR 040: a credential can only be named, never
+written, and the document names which variable holds it. Only the defaults mislead.
+Renaming to `OPENAI_API_KEY` would undo ADR 040, so the fix is not obvious.
+
+Origin: implementation (bean `fiddle-bv30`)
+Tags: #debt #docs
+
+### 2026-08-25 — A cross-check that goes vacuous as operations convert
+
+`no_operation_declares_a_minimum_its_descriptor_does_not` exists to catch an operation
+and its descriptor declaring different minimums. `#[derive(Effect)]` now writes both
+from one attribute, so for the converted operation the test cannot fail. Measured:
+flipping `EnsureBranchPublished`'s minimum fails 84 tests and that one is not among
+them.
+
+Five hand-written operations still exercise it, so it is not vacuous today. It becomes
+vacuous when the last one converts, and it will still read as coverage.
+
+Origin: implementation (bean `fiddle-dm18`, carried by bean `fiddle-nry2`)
+Tags: #debt #testing
