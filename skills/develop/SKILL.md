@@ -50,35 +50,31 @@ The develop-loop sub-skill runs the full cycle for one bean — implementer, eva
 
 ## Step 3: Live Acceptance
 
-Before holistic review, exercise the milestone against a real forge and record
-the result on the epic. Holistic review does not start until it has run.
+Before holistic review, exercise the milestone against the real system it acts
+on, and record the result on the epic. Holistic review does not start until
+this has run.
 
-```bash
-FIDDLE_GITHUB_TOKEN=<token> FIDDLE_CVE_TAG=<the release under test> \
-  scripts/live-cve-steering.sh
-```
+Read `acceptance.live` from [orchestrate configuration](../orchestrate/configuration.md).
+It names a command the project provides and the variables that command needs.
+The lifecycle owns the gate; the project owns what the gate runs, because what
+counts as the real system differs per project.
 
-The lane opens a pull request, requests changes on it, and asserts the diff then
-carries what the review asked for. It fails rather than skips.
+When `acceptance.live` is absent, record on the epic that the project declares
+no live gate, and say what is therefore unverified. Do not silently skip: an
+epic delivered without one should say so.
 
-The release under test must be published and the testbed's default branch must
-pin it, because a review trigger takes its workflow from the pull request head
-branch, which inherited it when that branch was cut. The lane refuses when the
-pin and the requested tag disagree, and reads the `Verified` line of every run
-to say which binary actually ran.
+**A gate that reports success without exercising anything has not run.** This is
+the failure that most resembles a pass, because it reports a completed outcome
+and exits 0. A lane that passed by finding nothing cannot be told from one that
+passed because nothing was wrong. Read the command's own report for what it
+actually did, not merely its exit status.
 
-**A run reporting `nothing_to_do` fails this gate.** It reports `outcome
-completed` and exits 0, so it is the failure that looks most like success: a
-lane that passed by finding nothing cannot be told from one that passed because
-nothing was wrong.
+Record which runs were measured, what the gate exercised, and what it did not
+cover. A hermetic suite says nothing about the behaviour of an external system.
 
-Record on the epic which runs were measured, which effects executed, and what
-the lane did not cover. A hermetic suite says nothing about forge behaviour, and
-this lane covers the effect path and steering and nothing else.
-
-When a milestone changes no forge behaviour the gate still runs, because its
-value is the regression signal. Record the comparison with the previous
-release's run rather than skipping.
+A milestone that changes no external behaviour still runs the gate, because its
+value is the regression signal. Record the comparison with the previous run
+rather than skipping.
 
 ## Step 4: Holistic Review
 

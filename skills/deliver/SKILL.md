@@ -19,17 +19,18 @@ Run `beans show <epic-id> --json`. If any child remains `todo` or `in-progress`,
 
 ## 2. Confirm live acceptance ran
 
-Read the epic body for the live acceptance result that develop's Step 3
-records. If it is absent, stop and say so: an epic cannot be delivered on a
-hermetic suite alone, because a hermetic suite says nothing about forge
-behaviour.
+Read the epic body for the live acceptance result that develop's Step 3 records.
 
-If the recorded result is `nothing_to_do`, treat the gate as **not run**. That
-disposition reports `outcome completed` and exits 0, and is indistinguishable
-from a lane that passed because nothing was wrong.
+When the project configures `acceptance.live`, an absent result stops delivery:
+an epic cannot be delivered on a hermetic suite alone, because a hermetic suite
+says nothing about the behaviour of an external system. Confirm the recorded
+result names what it measured, and that it measured this epic's output.
 
-Confirm the recorded result names the release it measured, and that the release
-is the one this epic produced.
+When the project configures no live gate, confirm the epic records that fact and
+what is therefore unverified, then continue.
+
+A recorded result that reports success without exercising anything counts as not
+run.
 
 ## 3. Analyze drift and update artifacts
 
