@@ -115,6 +115,23 @@ pub fn config_check_json(config: &Config) -> String {
             })),
         });
     }
+    if let Some(jira) = &config.jira {
+        body["jira"] = serde_json::json!({
+            "site": jira.site,
+            "project": jira.project,
+            "user": { "env": jira.user.env },
+            "token": { "env": jira.token.env },
+            "timeout": jira.timeout.to_string(),
+            "base_url": jira.base_url,
+            "workflow": {
+                "ready": jira.workflow.ready,
+                "in_progress": jira.workflow.in_progress,
+                "in_review": jira.workflow.in_review,
+                "blocked": jira.workflow.blocked,
+                "done": jira.workflow.done,
+            },
+        });
+    }
     if let Some(scanner) = &config.scanner {
         body["scanner"] = serde_json::json!({
             "cli": { "program": scanner.cli.program, "args": scanner.cli.args },
@@ -308,6 +325,32 @@ pub fn config_check_human(config: &Config) -> String {
                     AUTHORIZED_MATCHED_ON,
                 )
             })),
+        ));
+    }
+    if let Some(jira) = &config.jira {
+        out.push_str(&format!(
+            "\n  jira.site = {}\
+             \n  jira.project = {}\
+             \n  jira.user.env = {}\
+             \n  jira.token.env = {}\
+             \n  jira.timeout = {}\
+             \n  jira.base_url = {}\
+             \n  jira.workflow.ready = {}\
+             \n  jira.workflow.in_progress = {}\
+             \n  jira.workflow.in_review = {}\
+             \n  jira.workflow.blocked = {}\
+             \n  jira.workflow.done = {}",
+            jira.site,
+            jira.project,
+            jira.user.env,
+            jira.token.env,
+            jira.timeout,
+            optional(jira.base_url.clone()),
+            optional(jira.workflow.ready.clone()),
+            optional(jira.workflow.in_progress.clone()),
+            optional(jira.workflow.in_review.clone()),
+            optional(jira.workflow.blocked.clone()),
+            optional(jira.workflow.done.clone()),
         ));
     }
     if let Some(scanner) = &config.scanner {

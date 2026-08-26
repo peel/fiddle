@@ -181,16 +181,23 @@ struct Unconfigured {
 enum CredentialPurpose {
     Model,
     Forge,
+    #[cfg_attr(not(test), expect(dead_code))]
+    Jira,
 }
 
 impl CredentialPurpose {
     #[cfg(test)]
-    const ALL: [CredentialPurpose; 2] = [CredentialPurpose::Model, CredentialPurpose::Forge];
+    const ALL: [CredentialPurpose; 3] = [
+        CredentialPurpose::Model,
+        CredentialPurpose::Forge,
+        CredentialPurpose::Jira,
+    ];
 
     fn table(self) -> &'static str {
         match self {
             CredentialPurpose::Model => "[agent]",
             CredentialPurpose::Forge => "[github]",
+            CredentialPurpose::Jira => "[jira]",
         }
     }
 }
@@ -200,6 +207,7 @@ impl std::fmt::Display for CredentialPurpose {
         f.write_str(match self {
             CredentialPurpose::Model => "model",
             CredentialPurpose::Forge => "forge",
+            CredentialPurpose::Jira => "jira",
         })
     }
 }
@@ -1232,6 +1240,29 @@ mod tests {
                 assert_eq!(absent.variable, "FIDDLE_A_VARIABLE_NOTHING_EXPORTS");
             }
             other => panic!("expected the endpoint to be named, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_two_credential_purposes_name_one_table_or_one_thing() {
+        for purpose in CredentialPurpose::ALL {
+            for other in CredentialPurpose::ALL
+                .into_iter()
+                .filter(|candidate| *candidate != purpose)
+            {
+                assert_ne!(
+                    purpose.table(),
+                    other.table(),
+                    "two purposes naming {} send an operator to one table for two \
+                     credentials",
+                    purpose.table()
+                );
+                assert_ne!(
+                    purpose.to_string(),
+                    other.to_string(),
+                    "two purposes reported as `{purpose}` are one purpose to a reader"
+                );
+            }
         }
     }
 
