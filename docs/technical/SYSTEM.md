@@ -147,6 +147,8 @@ alone; gemini was removed after two consecutive authentication failures.
 - The deterministic suite gates. A real-model lane is opt-in, needs a credential, and never asserts that the model succeeded.
 - The M0 acceptance command stays credential-free and green. Every later milestone runs it unchanged.
 - An acceptance lane resolves its binary through `support::fiddle_binary()` (ADR 035).
+- Jira is reached by request and not by subprocess (ADR 077). One construction holds the credential, derives neither `Debug` nor `Serialize`, and redacts every error text. This is a discipline and not a boundary.
+- An observation port is async, and a `jira:` reference selects the Jira port arm by arm with no wildcard.
 
 ## Known issues
 
@@ -169,6 +171,8 @@ alone; gemini was removed after two consecutive authentication failures.
 - `WorkflowCapability` is built, tested and unreachable. `toml` is a dev-dependency of `fiddle-runtime` only, no `fiddle-cli` path reads a workflow file, and `WORKFLOW` is absent from `CAPABILITIES` by design, because every name there must be selectable on the command line and a workflow needs a document. M5 wires it.
 - **A session runs the skills the plugin root serves, not the ones in its worktree.** `.claude-plugin/plugin.json` declares `"skills": "./skills/"` relative to the plugin root, which is the main checkout. A worktree agent therefore executes the skill version of whichever branch the **main checkout** has out. Measured 2026-08-26: 24 files diverged, and the running copy of `skills/develop/SKILL.md` carried no `Live Acceptance` step while this branch's copy carried it as Step 3. The epic's standing live-acceptance criterion says the gate is "encoded in `skills/develop/SKILL.md` step 3", so the milestone depending on that gate was reading the copy without it. `scripts/gate.sh` now prints a `RUNNING SKILLS:` line naming the divergence and any missing step. It does not gate, because during a stacked milestone the divergence is expected. See `fiddle-wj6o`.
 - A gate assertion that pins a heading **number** reds when a document is renumbered and stays green when the step is deleted. `test-multi-domain-holistic.sh` pinned `## Step 3: Holistic Review` and broke when M4d inserted Live Acceptance ahead of it. It now matches `^## Step [0-9][0-9]*: Holistic Review$` and asserts ordering instead, proved in both directions.
+- `JiraHttp` shares this process's address space, environment and TLS configuration. Nothing structurally stops a future code path from reading the credential, unlike the `gh` child that `env_clear` bounds. ADR 077 records the discipline that replaces the boundary and says it is not one.
+- The Jira adapter has no live evidence. Every Jira claim in the suite is measured against a loopback stub — `crates/fiddle-runtime/tests/support/stub_jira.rs` for the unit lanes and `StubJira` in `crates/fiddle-acceptance/tests/support/mod.rs` for the acceptance lanes — and no run against an Atlassian site has happened. There is no Jira counterpart to `scripts/live-github.sh`. The response shapes, the `fields.updated` formats and any real `[jira.workflow]` status names are arguments rather than measurements (ADR 077).
 - Three registered effects have no live evidence: `publish_decision_request`, `ensure_check_requested` and `ensure_pull_request_ready`. `scripts/live-github.sh` reaches exactly those three and requires a fine-grained token scoped to the disposable repository. They are covered hermetically only, so "unchanged behaviour" for them is an argument rather than a measurement.
 
 ---
