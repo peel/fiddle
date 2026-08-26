@@ -10,6 +10,7 @@ pub mod gateway;
 pub mod git;
 pub mod github;
 pub mod human;
+pub mod jira;
 pub mod journal;
 pub mod orchestration;
 pub mod ports;
@@ -51,6 +52,7 @@ pub use human::{
     decision_request_target, render_request, GitHubConversation, HumanInteractionPort,
     InteractionRef, PublishDecisionRequest, PublishedRequest,
 };
+pub use jira::{project, ConfiguredNames, JiraError, JiraHttp, JiraResponse, JiraWorkItemPort};
 pub use journal::{AttemptJournal, AttemptTrace};
 pub use orchestration::{
     attempt, observe, run, Addressed, AttemptContext, AttemptRecord, RunContext, RunReport,

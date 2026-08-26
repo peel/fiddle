@@ -11,11 +11,12 @@ use fiddle_core::{
 use fiddle_runtime::agent::transcript;
 use fiddle_runtime::effect::{EffectContext, Executor};
 use fiddle_runtime::human::interpret::InterpretationBounds;
+use fiddle_runtime::ports::{ChangePort, WorkItemPort};
 use fiddle_runtime::{
-    Addressed, AgentBudget, AttemptContext, AttemptTrace, Capability, DeclaredCommand, Extend,
-    FixtureRepair, GatewayError, GhCli, GitCli, ProposeChange, ProposeConfig, PublishChange,
-    PublishConfig, RepairConfig, StubChangePort, StubMark, StubWorkItemPort, Transcripts,
-    WorkspaceCommand, CAPABILITIES,
+    Addressed, AgentBudget, AttemptContext, AttemptTrace, Capability, ConfiguredNames,
+    DeclaredCommand, Extend, FixtureRepair, GatewayError, GhCli, GitCli, JiraError, JiraHttp,
+    JiraWorkItemPort, ProposeChange, ProposeConfig, PublishChange, PublishConfig, RepairConfig,
+    StubChangePort, StubMark, StubWorkItemPort, Transcripts, WorkspaceCommand, CAPABILITIES,
 };
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -72,6 +73,10 @@ enum CliError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     Gateway(#[from] GatewayUnavailable),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Jira(#[from] JiraUnusable),
 
     #[error(transparent)]
     #[diagnostic(transparent)]
@@ -181,16 +186,22 @@ struct Unconfigured {
 enum CredentialPurpose {
     Model,
     Forge,
+    Jira,
 }
 
 impl CredentialPurpose {
     #[cfg(test)]
-    const ALL: [CredentialPurpose; 2] = [CredentialPurpose::Model, CredentialPurpose::Forge];
+    const ALL: [CredentialPurpose; 3] = [
+        CredentialPurpose::Model,
+        CredentialPurpose::Forge,
+        CredentialPurpose::Jira,
+    ];
 
     fn table(self) -> &'static str {
         match self {
             CredentialPurpose::Model => "[agent]",
             CredentialPurpose::Forge => "[github]",
+            CredentialPurpose::Jira => "[jira]",
         }
     }
 }
@@ -200,6 +211,7 @@ impl std::fmt::Display for CredentialPurpose {
         f.write_str(match self {
             CredentialPurpose::Model => "model",
             CredentialPurpose::Forge => "forge",
+            CredentialPurpose::Jira => "jira",
         })
     }
 }
@@ -249,6 +261,14 @@ struct NamedValueAbsent {
     help("check the endpoint and the credential the document names")
 )]
 struct GatewayUnavailable(GatewayError);
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("the jira client {1} describes could not be built: {0}")]
+#[diagnostic(
+    code(fiddle::jira::unusable),
+    help("check `site`, `base_url`, and the credential `[jira]` names")
+)]
+struct JiraUnusable(JiraError, String);
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[error(transparent)]
@@ -366,6 +386,7 @@ fn exit_code_for(termination: &Termination) -> u8 {
             | CliError::CredentialAbsent(_)
             | CliError::NamedValueAbsent(_)
             | CliError::Gateway(_)
+            | CliError::Jira(_)
             | CliError::PathUnusable(_)
             | CliError::UnimplementedForm(_)
             | CliError::TranscriptSwitch(_),
@@ -373,16 +394,80 @@ fn exit_code_for(termination: &Termination) -> u8 {
     }
 }
 
-fn ports(config: &config::Config) -> (StubWorkItemPort, StubChangePort) {
-    (
-        StubWorkItemPort::new(&config.stub.root),
-        StubChangePort::new(&config.stub.root),
-    )
+const OBSERVE: CapabilityId = CapabilityId("observe");
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PortKind {
+    Jira,
+    Stub,
 }
 
-fn observe(config: &config::Config, reference: &InvocationRef) -> WorkStateView {
-    let (work_items, changes) = ports(config);
-    fiddle_runtime::observe(&work_items, &changes, Addressed::of(reference))
+type Ports = (Box<dyn WorkItemPort>, Box<dyn ChangePort>);
+
+fn port_kind_for(scheme: InvocationScheme) -> PortKind {
+    match scheme {
+        InvocationScheme::Jira => PortKind::Jira,
+        InvocationScheme::Beans
+        | InvocationScheme::Scheduled
+        | InvocationScheme::Scanner
+        | InvocationScheme::Cve => PortKind::Stub,
+    }
+}
+
+fn jira_work_items(jira: &config::Jira, config_path: &Path) -> Result<JiraWorkItemPort, CliError> {
+    let user = resolve_credential(CredentialPurpose::Jira, &jira.user.env)?;
+    let token = resolve_credential(CredentialPurpose::Jira, &jira.token.env)?;
+    let http = JiraHttp::new(
+        jira.base_url.as_deref().unwrap_or(&jira.site),
+        &user,
+        &token,
+        jira.timeout.as_duration(),
+    )
+    .map_err(|error| CliError::Jira(JiraUnusable(error, config_path.display().to_string())))?;
+    Ok(JiraWorkItemPort::new(
+        http,
+        ConfiguredNames::new(
+            jira.workflow.ready.clone(),
+            jira.workflow.in_progress.clone(),
+            jira.workflow.in_review.clone(),
+            jira.workflow.blocked.clone(),
+            jira.workflow.done.clone(),
+        ),
+        &jira.site,
+    ))
+}
+
+fn ports(
+    config: &config::Config,
+    config_path: &Path,
+    reference: &InvocationRef,
+) -> Result<Ports, CliError> {
+    let work_items: Box<dyn WorkItemPort> = match port_kind_for(reference.scheme()) {
+        PortKind::Jira => {
+            let jira = config.jira.as_ref().ok_or_else(|| Unconfigured {
+                capability: OBSERVE,
+                missing: "a [jira] table",
+                path: config_path.display().to_string(),
+            })?;
+            Box::new(jira_work_items(jira, config_path)?)
+        }
+        PortKind::Stub => Box::new(StubWorkItemPort::new(&config.stub.root)),
+    };
+    Ok((work_items, Box::new(StubChangePort::new(&config.stub.root))))
+}
+
+async fn observe(
+    config: &config::Config,
+    config_path: &Path,
+    reference: &InvocationRef,
+) -> Result<WorkStateView, CliError> {
+    let (work_items, changes) = ports(config, config_path, reference)?;
+    Ok(fiddle_runtime::observe(
+        work_items.as_ref(),
+        changes.as_ref(),
+        Addressed::of(reference),
+    )
+    .await)
 }
 
 fn build_identity() -> FiddleBuild {
@@ -946,7 +1031,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             let reference = reference_from(invocation_ref)?;
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
-            let observed = observe(&config, &reference);
+            let observed = observe(&config, &cli.config, &reference).await?;
             let expected_marker =
                 fiddle_core::correlation_key(&config.project.name, &reference.as_str());
             let assessment = fiddle_core::assess(&observed, &expected_marker);
@@ -977,7 +1062,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
 
             let recording = transcripts(&config.report.dir, &reference)?;
 
-            let (work_items, changes) = ports(&config);
+            let (work_items, changes) = ports(&config, &cli.config, &reference)?;
             let cancel = CancellationToken::new();
             let forge = match selection {
                 Selection::Publish | Selection::Propose | Selection::Mitigate => {
@@ -1000,8 +1085,8 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 mode: *mode,
                 build: build_identity(),
                 report_dir: &config.report.dir,
-                work_items: &work_items,
-                changes: &changes,
+                work_items: work_items.as_ref(),
+                changes: changes.as_ref(),
                 capability: selected.as_ref(),
                 trace: forge.as_ref().map(|forge| &forge.trace),
             })
@@ -1232,6 +1317,29 @@ mod tests {
                 assert_eq!(absent.variable, "FIDDLE_A_VARIABLE_NOTHING_EXPORTS");
             }
             other => panic!("expected the endpoint to be named, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_two_credential_purposes_name_one_table_or_one_thing() {
+        for purpose in CredentialPurpose::ALL {
+            for other in CredentialPurpose::ALL
+                .into_iter()
+                .filter(|candidate| *candidate != purpose)
+            {
+                assert_ne!(
+                    purpose.table(),
+                    other.table(),
+                    "two purposes naming {} send an operator to one table for two \
+                     credentials",
+                    purpose.table()
+                );
+                assert_ne!(
+                    purpose.to_string(),
+                    other.to_string(),
+                    "two purposes reported as `{purpose}` are one purpose to a reader"
+                );
+            }
         }
     }
 
@@ -1592,12 +1700,115 @@ mod tests {
         looks: AtomicUsize,
     }
 
+    #[async_trait::async_trait]
     impl ChangePort for OvertakenAfterTheFirstLook {
-        fn observe(&self, work_id: &str) -> Observation<ChangeSetState> {
+        async fn observe(&self, work_id: &str) -> Observation<ChangeSetState> {
             if self.looks.fetch_add(1, Ordering::Relaxed) == 1 {
                 std::fs::write(&self.change_set, r#"{"marker":"0123456789abcdef"}"#).unwrap();
             }
-            self.inner.observe(work_id)
+            self.inner.observe(work_id).await
+        }
+    }
+
+    fn a_document_without_jira() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiddle.toml");
+        std::fs::write(
+            &path,
+            "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n",
+        )
+        .unwrap();
+        (dir, path)
+    }
+
+    fn a_jira_reference() -> InvocationRef {
+        "jira:IDENT-1".parse().unwrap()
+    }
+
+    #[test]
+    fn every_scheme_names_the_port_it_uses_and_none_falls_through_to_the_stub() {
+        let pinned: [(InvocationScheme, PortKind); 5] = [
+            (InvocationScheme::Beans, PortKind::Stub),
+            (InvocationScheme::Jira, PortKind::Jira),
+            (InvocationScheme::Scheduled, PortKind::Stub),
+            (InvocationScheme::Scanner, PortKind::Stub),
+            (InvocationScheme::Cve, PortKind::Stub),
+        ];
+        for (scheme, expected) in pinned {
+            assert_eq!(
+                port_kind_for(scheme),
+                expected,
+                "{scheme:?} must reach {expected:?} and nothing else"
+            );
+        }
+        let uncovered: Vec<InvocationScheme> = InvocationScheme::ALL
+            .into_iter()
+            .filter(|scheme| !pinned.iter().any(|(named, _)| named == scheme))
+            .collect();
+        assert!(
+            uncovered.is_empty(),
+            "{uncovered:?} reaches a port no case above pins, so a new scheme \
+             would be scored by whatever arm caught it"
+        );
+    }
+
+    #[test]
+    fn a_jira_reference_without_a_jira_table_refuses_and_says_what_is_missing() {
+        let (_dir, path) = a_document_without_jira();
+        let config = config::load(&path).unwrap();
+
+        let Err(error) = ports(&config, &path, &a_jira_reference()) else {
+            panic!("a jira reference cannot be observed without a [jira] table")
+        };
+        let said = format!("{error}");
+        assert!(
+            said.contains("[jira]"),
+            "the refusal names the missing table: {said}"
+        );
+        match error {
+            CliError::Unconfigured(unconfigured) => {
+                assert_eq!(unconfigured.missing, "a [jira] table");
+                assert_eq!(unconfigured.capability, OBSERVE);
+            }
+            other => panic!("expected a missing-table refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_same_document_serves_a_beans_reference_so_the_refusal_is_the_scheme_s() {
+        let (_dir, path) = a_document_without_jira();
+        let config = config::load(&path).unwrap();
+
+        assert!(
+            ports(&config, &path, &a_reference()).is_ok(),
+            "a beans reference needs no [jira] table, so the refusal above \
+             cannot be the minimal document's"
+        );
+    }
+
+    #[test]
+    fn a_jira_table_naming_an_unexported_credential_is_refused_for_the_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiddle.toml");
+        std::fs::write(
+            &path,
+            "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
+             [jira]\nsite=\"https://icecube.atlassian.net\"\nproject=\"IDENT\"\n\
+             user={env=\"FIDDLE_A_JIRA_USER_NOTHING_EXPORTS\"}\n\
+             token={env=\"FIDDLE_A_JIRA_TOKEN_NOTHING_EXPORTS\"}\n",
+        )
+        .unwrap();
+        let config = config::load(&path).unwrap();
+
+        let Err(error) = ports(&config, &path, &a_jira_reference()) else {
+            panic!("nothing exports the variables the table names")
+        };
+        match error {
+            CliError::CredentialAbsent(absent) => {
+                assert_eq!(absent.purpose, CredentialPurpose::Jira);
+                assert_eq!(absent.variable, "FIDDLE_A_JIRA_USER_NOTHING_EXPORTS");
+            }
+            other => panic!("with the table present the credential is next, got {other:?}"),
         }
     }
 }

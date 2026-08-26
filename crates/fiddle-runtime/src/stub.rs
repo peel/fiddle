@@ -15,8 +15,9 @@ impl StubWorkItemPort {
     }
 }
 
+#[async_trait::async_trait]
 impl WorkItemPort for StubWorkItemPort {
-    fn observe(&self, work_id: &str) -> Observation<WorkItemState> {
+    async fn observe(&self, work_id: &str) -> Observation<WorkItemState> {
         let rel = format!("work/{work_id}.json");
         let source = SourceRef(format!("{STUB_ORIGIN}:{rel}"));
         match read_fixture(&self.root, &rel) {
@@ -36,8 +37,9 @@ impl StubChangePort {
     }
 }
 
+#[async_trait::async_trait]
 impl ChangePort for StubChangePort {
-    fn observe(&self, work_id: &str) -> Observation<ChangeSetState> {
+    async fn observe(&self, work_id: &str) -> Observation<ChangeSetState> {
         let rel = format!("changes/{work_id}.json");
         let source = SourceRef(format!("{STUB_ORIGIN}:{rel}"));
         match read_fixture(&self.root, &rel) {
@@ -183,36 +185,38 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stub_work_item_port_satisfies_the_port_contract() {
-        work_item_port_contract(&StubWorlds::new());
+    #[tokio::test]
+    async fn stub_work_item_port_satisfies_the_port_contract() {
+        work_item_port_contract(&StubWorlds::new()).await;
     }
 
-    #[test]
-    fn stub_change_port_satisfies_the_port_contract() {
-        change_port_contract(&StubWorlds::new());
+    #[tokio::test]
+    async fn stub_change_port_satisfies_the_port_contract() {
+        change_port_contract(&StubWorlds::new()).await;
     }
 
-    #[test]
-    fn a_stub_source_ref_names_the_fixture_it_read() {
+    #[tokio::test]
+    async fn a_stub_source_ref_names_the_fixture_it_read() {
         let worlds = StubWorlds::new();
-        let observed = WorkItemWorlds::source_open(&worlds).observe(WORK_ID);
+        let observed = WorkItemWorlds::source_open(&worlds).observe(WORK_ID).await;
         assert_eq!(
             observed.source().map(|s| s.0.as_str()),
             Some("stub:work/fiddle-m0-demo.json")
         );
 
-        let observed = ChangeWorlds::source_unmarked(&worlds).observe(WORK_ID);
+        let observed = ChangeWorlds::source_unmarked(&worlds)
+            .observe(WORK_ID)
+            .await;
         assert_eq!(
             observed.source().map(|s| s.0.as_str()),
             Some("stub:changes/fiddle-m0-demo.json")
         );
     }
 
-    #[test]
-    fn an_unrecorded_work_item_is_unavailable_rather_than_defaulted() {
+    #[tokio::test]
+    async fn an_unrecorded_work_item_is_unavailable_rather_than_defaulted() {
         let worlds = StubWorlds::new();
-        let observed = StubWorkItemPort::new(worlds.root()).observe(WORK_ID);
+        let observed = StubWorkItemPort::new(worlds.root()).observe(WORK_ID).await;
         assert!(observed.is_unavailable(), "got {observed:?}");
         assert_eq!(observed.value(), None);
     }

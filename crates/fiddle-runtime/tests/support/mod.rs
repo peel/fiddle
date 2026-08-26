@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod cve;
+pub mod stub_jira;
 
 #[allow(unused_imports)]
 pub use cve::wiz_stub;

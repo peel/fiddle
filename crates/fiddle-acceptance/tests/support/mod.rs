@@ -808,6 +808,164 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
+pub const JIRA_ISSUE_KEY: &str = "IDENT-1";
+
+pub const JIRA_ISSUE_STATUS_ID: &str = "10001";
+
+pub const JIRA_ISSUE_STATUS: &str = "In Review";
+
+pub const JIRA_ISSUE_CATEGORY: &str = "In Progress";
+
+pub const JIRA_ISSUE_UPDATED: &str = "2026-08-26T01:30:00.000+0530";
+
+struct Recorded {
+    authorizations: Vec<String>,
+    status: u16,
+    body: String,
+}
+
+pub struct StubJira {
+    port: u16,
+    state: std::sync::Arc<std::sync::Mutex<Recorded>>,
+}
+
+impl StubJira {
+    pub fn holding_the_issue() -> Self {
+        StubJira::answering(
+            200,
+            serde_json::json!({
+                "id": "10000",
+                "key": JIRA_ISSUE_KEY,
+                "fields": {
+                    "updated": JIRA_ISSUE_UPDATED,
+                    "status": {
+                        "id": JIRA_ISSUE_STATUS_ID,
+                        "name": JIRA_ISSUE_STATUS,
+                        "statusCategory": {
+                            "id": 4,
+                            "key": "indeterminate",
+                            "name": JIRA_ISSUE_CATEGORY,
+                        },
+                    },
+                },
+            })
+            .to_string(),
+        )
+    }
+
+    pub fn refusing_the_credential() -> Self {
+        StubJira::answering(
+            401,
+            serde_json::json!({
+                "errorMessages": ["the site refused this request"],
+                "errors": {},
+            })
+            .to_string(),
+        )
+    }
+
+    pub fn answering(status: u16, body: String) -> Self {
+        use std::sync::{Arc, Mutex};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let port = listener.local_addr().unwrap().port();
+        let state = Arc::new(Mutex::new(Recorded {
+            authorizations: Vec::new(),
+            status,
+            body,
+        }));
+        let serving = Arc::clone(&state);
+        std::thread::spawn(move || {
+            while let Ok((stream, _)) = listener.accept() {
+                let _ = answer_recording(stream, &serving);
+            }
+        });
+        StubJira { port, state }
+    }
+
+    pub fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    fn held(&self) -> std::sync::MutexGuard<'_, Recorded> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn served(&self) -> usize {
+        self.held().authorizations.len()
+    }
+
+    pub fn the_only_authorization(&self) -> String {
+        let held = self.held();
+        let mut distinct = held.authorizations.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            1,
+            "one credential reached this site, so it received one header: \
+             {distinct:?}"
+        );
+        distinct.remove(0)
+    }
+}
+
+fn answer_recording(
+    mut stream: std::net::TcpStream,
+    state: &std::sync::Arc<std::sync::Mutex<Recorded>>,
+) -> std::io::Result<()> {
+    use std::io::{Read, Write};
+
+    let mut request = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while find(&request, b"\r\n\r\n").is_none() {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            return Ok(());
+        }
+        request.extend_from_slice(&chunk[..read]);
+    }
+
+    let head = String::from_utf8_lossy(&request).into_owned();
+    let authorization = head
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        .map(|(_, value)| value.trim().to_string())
+        .unwrap_or_default();
+
+    let (status, body) = {
+        let mut held = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        held.authorizations.push(authorization);
+        (held.status, held.body.clone())
+    };
+
+    stream.write_all(
+        format!(
+            "HTTP/1.1 {status} {}\r\ncontent-type: application/json\r\n\
+             content-length: {}\r\nconnection: close\r\n\r\n{body}",
+            reason(status),
+            body.len(),
+        )
+        .as_bytes(),
+    )?;
+    stream.flush()?;
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    Ok(())
+}
+
+fn reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        401 => "Unauthorized",
+        _ => "Unassigned",
+    }
+}
+
 pub fn completion(message: serde_json::Value, finish_reason: &str) -> serde_json::Value {
     serde_json::json!({
         "id": "chatcmpl-stub",

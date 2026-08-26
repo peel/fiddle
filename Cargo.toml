@@ -20,6 +20,7 @@ toml = "0.8"
 miette = "7"
 thiserror = "2"
 blake3 = "1"
+base64 = "0.22"
 assert_cmd = "2"
 regex = "1"
 tempfile = "3"
@@ -33,4 +34,6 @@ rig-agent = "=0.41.0"
 async-trait = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "signal", "sync", "time"] }
 tokio-util = "0.7"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 schemars = "1"
+time = { version = "0.3", default-features = false, features = ["alloc", "parsing", "formatting", "macros"] }

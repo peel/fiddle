@@ -1,0 +1,218 @@
+# 077 — Jira is reached by request, not by subprocess
+
+Status: accepted
+
+Cites: JiraHttp, JiraHttp::api, JiraError::Unauthorized, JiraWorkItemPort, WorkItemPort, EnvRef, CREDENTIAL_MUST_BE_NAMED, CLAMP, REDACTED, port_kind_for, the_jira_client_can_be_neither_printed_nor_serialized, no_surface_a_reader_sees_carries_the_jira_credential, the_same_search_finds_the_credential_when_a_surface_does_carry_it, every_surface_searched_is_output_of_a_jira_read, a_written_jira_token_is_refused, a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts, no_workspace_crate_pulls_openssl_into_its_closure, crates/fiddle-runtime/src/jira/http.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_printable.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_serializable.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-acceptance/tests/jira_credential.rs
+
+## Context
+
+The RFC prefers an existing tool to new code. ADR 015 applied that rule to
+GitHub and made `gh api -i` the adapter. It gave one reason for the shape, and
+the reason was containment rather than convenience: the credential is the asset,
+and `crates/fiddle-runtime/src/github/cli.rs` builds a child from `env_clear`
+plus five names and nothing else.
+
+M5a adds a Jira observation port. The RFC names `acli` as the Jira adapter in
+its adapter section, its milestone list and its adapter contract tests, so the
+plan of record points at the same shape a second time. That plan does not
+survive contact with how `acli` takes a credential.
+
+The rule the plan rests on already anticipates this. It is an ordering, not a
+mandate, and it is a per-operation choice: an existing CLI **when it provides
+stable structured output and suitable authentication**, then a library, then a
+narrow direct API call. `acli` fails the second half of the first condition, so
+this record moves one operation down the same list rather than overriding it.
+The RFC's own open question asks which `gh` or `acli` operations need a narrow
+fallback. It asks about output stability. The answer here is about
+authentication.
+
+## Decision
+
+Reach Jira by request. `JiraHttp` holds one `reqwest::Client`, one base URL, one
+credential and one timeout, and `JiraHttp::api` sends every call.
+`JiraWorkItemPort` reads an issue through it and answers with an `Observation`.
+
+ADR 015 chose a subprocess because the credential is the asset, and a child
+built from `env_clear` plus five names is an adapter whose whole view of the
+world fits on one screen. `gh` accepts `GH_TOKEN` in that child. `acli` does
+not: Atlassian's CI guide pipes a token into `acli jira auth login`, which
+writes credential state to a configuration directory. An `acli` adapter must
+hold a credential directory on disk, which is weaker containment than a header
+on one request, and ADR 029 refuses an inherited authority. A login that
+happened before this process started is exactly that authority.
+
+The one-screen property does not survive a library. `JiraHttp` answers with
+discipline and not with a boundary: one construction, no `Debug`, no
+`Serialize`, redaction and a length bound on every error text. A discipline is
+not a guarantee, and this ADR says so rather than implying otherwise.
+
+`reqwest` becomes a direct dependency of `fiddle-runtime`, declared
+`default-features = false, features = ["rustls", "json"]`. ADR 015 already
+recorded that a subprocess saves no dependency here, because `reqwest` was in
+the resolved graph through `rig-core` before this milestone.
+
+## The discipline, stated so a reader can check it
+
+- **One construction.** `JiraHttp::new` is the only place a Jira credential
+  becomes an `Authorization` header. The header is built once, marked sensitive,
+  and cloned onto each request. The other header-building site in the crate is
+  `git/publish.rs`, and it carries the GitHub push credential, not this one.
+- **Nothing prints the client.** `JiraHttp` derives neither `Debug` nor
+  `Serialize`. `the_jira_client_can_be_neither_printed_nor_serialized` pins both
+  with trybuild, so the reason is part of the assertion and a derive added later
+  fails the case. `JiraResponse` derives `Debug` and holds no credential.
+- **Redaction, then a bound.** Every error text `JiraHttp` builds passes the
+  encoded credential and the raw token through a replacement with `REDACTED`,
+  then a clamp at `CLAMP` bytes on a character boundary. `JiraError` itself
+  redacts nothing:
+  `a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts` asserts
+  that it prints a caller's payload word for word, so the obligation stays where
+  the credential is, at the construction site.
+- **Two variants carry no caller text at all.** `JiraError::Unauthorized` and
+  `Forbidden` carry a status and nothing else, so the two failures most likely
+  to quote a credential exchange have no text to quote.
+- **The credential is named, never written.** `[jira] user` and `token` are
+  `EnvRef` values, so `fiddle.toml` holds the variable name. A written string
+  fails deserialization with `CREDENTIAL_MUST_BE_NAMED`, so a document that
+  carries a secret does not load. `a_written_jira_token_is_refused` and
+  `a_written_jira_user_is_refused_because_it_is_half_the_credential` cover both
+  halves, because basic authentication signs with both.
+
+The port is async. `WorkItemPort::observe` is an `async fn` under
+`async_trait`, because a request is awaited rather than waited on, and
+`port_kind_for` selects the Jira port from `InvocationScheme::Jira` arm by arm
+with no wildcard. A scheme added later is a compile error rather than a silent
+fall through to the stub port.
+
+## Consequences
+
+- The test seam moves, and it moves toward the real protocol. ADR 015's seam
+  substitutes a scripted `gh`, and that ADR records the cost: the suite proves
+  the parser reads what the stub prints and can never prove the stub prints what
+  `gh` prints. `[jira] base_url` points at a loopback HTTP server instead. The
+  stub still decides every byte, so the fidelity question does not disappear. It
+  narrows. ADR 015's parser reads a status line, splits headers from a body and
+  guesses at line endings, and all of that is code this repository has to get
+  right. Here hyper does the framing, and a stub that speaks something other than
+  HTTP fails at the client rather than being read as an answer. What stays ours
+  is the body: `serde_json` decodes it and `issue_from` names the four fields it
+  needs. So the suite still proves only that this adapter reads what the stub
+  serves.
+- The TLS closure is asserted, not assumed.
+  `no_workspace_crate_pulls_openssl_into_its_closure` refuses `openssl`,
+  `openssl-sys` and `native-tls` in the resolved closure. Measured 2026-08-26,
+  and it corrects the obvious reading of the feature line above:
+  `default-features = false` is not what holds the property. reqwest 0.13
+  declares `default-tls = ["rustls"]`, so removing that line still resolves to
+  rustls and the guard still passes. The feature that reds the guard is
+  `native-tls`. Both inversions were run when the dependency landed: removing
+  `default-features = false` gives `1 passed`, exit 0; enabling `native-tls`
+  gives `FAILED`, exit 101, with `openssl`, `openssl-sys`, `native-tls`,
+  `tokio-native-tls` and `hyper-tls` all in the closure.
+- One observation is one request with one timeout, where a GitHub publication
+  spawns ten children.
+- The failure surface is typed. ADR 015 records that `gh` returns bytes on two
+  streams and that the project gave up typed failures for GitHub. `JiraError`
+  names five read failures, and a unit test matches all five with no wildcard
+  and pins each one's words, so a sixth variant is a compile error in that test
+  rather than a new sentence nobody reviewed.
+
+## What this gives up
+
+**1. The one-screen argument cannot be made again.** `JiraHttp` runs in this
+process. It shares the address space, the environment and the TLS configuration
+with the agent loop, the capability code and every dependency in the graph.
+There is no `env_clear` to point at and no five names to enumerate. The
+statement ADR 015 could make about `gh` cannot be made about this adapter, and
+no test can restore it.
+
+**2. What replaces the boundary is a discipline, and a discipline is not a
+guarantee.** Four of the five items above are pinned by a test. A test that
+passes is still not a type that refuses.
+
+The item with no test is the first one. Nothing asserts that `JiraHttp::new` is
+the only place a Jira credential becomes a header. ADR 015 has the same gap for
+`-i`, and it says so: no test can catch a second call path that does not exist
+yet. This adapter inherits that sentence.
+
+The redaction claim is measured, and three tests keep the measurement from
+being vacuous. `no_surface_a_reader_sees_carries_the_jira_credential` searches
+every surface a Jira invocation writes or says, and it pins that set as a
+26-name census, so a surface this build starts writing cannot join the tree
+unsearched and a surface it stops writing cannot leave the search passing on an
+absent file. `the_same_search_finds_the_credential_when_a_surface_does_carry_it`
+plants the credential on a surface, so the search cannot pass by finding nothing
+anywhere. `every_surface_searched_is_output_of_a_jira_read` requires at least six
+of the searched surfaces to name both the site and the issue key, so a surface
+that is not Jira output cannot pad the census.
+
+What the census cannot reach is a surface written outside a Jira invocation. The
+lane bounds this adapter's own output; it says nothing about a future code path
+that reads the credential out of this heap and writes it somewhere else.
+
+**3. The credential now lives where ordinary code can reach it.** With `gh`, a
+capability that wanted the GitHub token would have to spawn its own child and
+supply it. With `JiraHttp`, the token is a `String` in this heap for the life of
+the port. Nothing structural stops a future code path from reading it. This is
+recorded as a known issue in `docs/technical/SYSTEM.md` and not resolved here.
+
+**4. A dependency is now on the credential path.** A `gh` that changes its
+output shape fails loudly on the first call, and ADR 015 records
+`[github] cli.program` as the operator's answer. A `reqwest` or `rustls` that
+changes behaviour is a lockfile move inside this process, and the operator has
+no equivalent pin.
+
+## What is verified, and against what
+
+The adapter is verified against two loopback stubs, and each one binds
+`127.0.0.1:0` and speaks HTTP over a real socket.
+
+`crates/fiddle-runtime/tests/support/stub_jira.rs` serves the unit lanes. It
+answers the issue route, an absent issue, a refusal with a JSON body, a refusal
+with an HTML body, an unrouted path, a method it does not serve, a request line
+it cannot parse, and a body that arrives with no content length. `StubJira` in
+`crates/fiddle-acceptance/tests/support/mod.rs` serves the acceptance lanes, and
+`crates/fiddle-acceptance/tests/jira_credential.rs` runs the public CLI against
+it and searches every surface a reader sees.
+
+Nothing here is verified against Atlassian. There is no Jira counterpart to
+`scripts/live-github.sh` at this revision, and no run against an Atlassian site
+has happened. Three things are therefore arguments rather than measurements: the
+shapes Atlassian's `/rest/api/3/issue` returns, the `fields.updated` formats a
+real site emits, and whether a real workflow's status names match a deployment's
+`[jira.workflow]` table. A live lane is a separate task and it needs a
+credential this environment does not hold.
+
+## The identifier question ADR 011 left open
+
+ADR 011 admits ASCII letters, digits, `-`, `_` and `:` in an invocation
+reference value, and it asks somebody to confirm the real Jira format before the
+adapter lands. The answer is that a Jira key cannot fail that grammar.
+
+Atlassian documents a project key as `[A-Z][A-Z0-9]+` and an issue key as
+`<project-key>-<number>`. Both alphabets are subsets of ADR 011's class, so
+every issue key parses and `jira:IDENT-1` needs no widening. This is Atlassian's
+documented format, not a range this repository measured, and a site with a
+renamed project key would still produce a key of that shape.
+
+The same question about a `scheduled` or a `scanner` identifier stays open. This
+ADR answers for Jira only.
+
+## What would reverse it
+
+**An `acli` that takes a credential per invocation.** If Atlassian documents an
+environment variable that authenticates one `acli` call with no login step, the
+containment argument returns and the delegate rule points back at `acli`.
+
+**An authentication flow that cannot be a header on one request.** OAuth 2.0 3LO
+holds a refresh token and a token lifetime, which is credential state over time
+rather than one value. That state has to live somewhere, and where it lives is a
+new decision rather than an extension of this one.
+
+Reversing does not reach the port. `JiraWorkItemPort` is written against
+`JiraHttp::api` and `JiraError`, so a different transport replaces one
+construction and leaves the observation, the status projection and the
+`WorkItemPort` implementation untouched.
+
+This supersedes no earlier ADR. It bounds ADR 015's one-screen argument to the
+adapter that argument was made about.

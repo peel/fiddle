@@ -75,6 +75,26 @@ if [ "$MODE" != "--quick" ]; then
   [ "$SHELL_FAIL" -ne 0 ] && FAILED=1
 fi
 
+PLUGIN_ROOT=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+printf "  RUNNING SKILLS: "
+if [ "$PLUGIN_ROOT" = "$(git rev-parse --show-toplevel)" ]; then
+  echo "$PLUGIN_ROOT (this checkout)"
+elif diff -rq "$PLUGIN_ROOT/skills" skills >/dev/null 2>&1; then
+  echo "$PLUGIN_ROOT, identical to this branch"
+else
+  DIVERGED=$(diff -rq "$PLUGIN_ROOT/skills" skills 2>/dev/null | wc -l | tr -d ' ')
+  echo "$PLUGIN_ROOT, DIVERGED from this branch in $DIVERGED files"
+  echo "    The plugin serves \`$PLUGIN_ROOT/skills\`, so that is the version a session runs,"
+  echo "    whichever worktree it works in. This branch's copy is not what executed."
+  if grep -q "^## Step [0-9][0-9]*: Live Acceptance$" "$PLUGIN_ROOT/skills/develop/SKILL.md" 2>/dev/null; then
+    echo "    the running copy carries the Live Acceptance step"
+  else
+    echo "    the running copy has NO Live Acceptance step"
+    echo "    A standing acceptance criterion cannot be honoured by a session never given it."
+  fi
+  echo "    Not gating: during a stacked milestone this divergence is expected. See fiddle-wj6o."
+fi
+
 CITES=0
 printf "  ADR CITES: "
 scripts/check-adr-cites.sh || CITES=$?

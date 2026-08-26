@@ -89,6 +89,7 @@ Tags: #debt #test
 ADR 011 limits an invocation reference value at the parse boundary. It admits ASCII letters, digits, `-`, `_`, and `:`. That is the safe direction for path derivation. M1's `jira`, `scheduled`, and `scanner` references come from external systems. Those identifiers may hold non-ASCII characters, and the parser rejects them with exit 2. Confirm the real identifier formats before those adapters land.
 Origin: implementation (epic fiddle-7lmw, bean fiddle-1p8q)
 Tags: #idea #risk
+Status: Jira half answered 2026-08-26 in `decisions/077-jira-is-reached-by-request-not-by-subprocess.md`. A Jira key cannot fail ADR 011's grammar: Atlassian documents a project key as `[A-Z][A-Z0-9]+` and an issue key as `<project-key>-<number>`, and both alphabets are subsets of ASCII letters, digits and `-`. That is Atlassian's documented format, not a range this repository measured. The `scheduled` and `scanner` halves stay open, because neither adapter exists and neither identifier format has been confirmed.
 
 ### 2026-08-08 — ReportBundle.work_ref is Option<WorkRef> but the design requires it
 Design §4.7 models `work_ref` as a required `WorkRef`. `crates/fiddle-core/src/report.rs` declares `Option<crate::identity::WorkRef>`. The runtime always supplies `Some` and the bundle always carries it. The type still permits `None`, and tests construct it. Tighten the type or amend the design.

@@ -1014,7 +1014,81 @@ fn check_with_env(text: &str, extra: &[&str], env: &[(&str, &str)]) -> std::proc
 
 fn every_table() -> String {
     let forge = FORGE.split_once("[github]").expect("FORGE names a forge").1;
-    format!("{AGENTIC}{CHECK_LIST}{COMMAND_LIST}\n[github]{forge}{SWEEP}")
+    format!("{AGENTIC}{CHECK_LIST}{COMMAND_LIST}\n[github]{forge}{SWEEP}{TRACKER}")
+}
+
+const TRACKER: &str = r#"
+[jira]
+site = "https://example.atlassian.net"
+project = "IDENT"
+user = { env = "JIRA_USER_EMAIL" }
+token = { env = "JIRA_API_TOKEN" }
+
+[jira.workflow]
+ready = "Ready"
+in_progress = "In Progress"
+in_review = "In Review"
+blocked = "Blocked"
+done = "Done"
+"#;
+
+const TRACKER_CREDENTIAL: &str = "JIRA_API_TOKEN";
+
+#[test]
+fn config_check_echoes_the_tracker_and_names_its_credential_without_resolving_it() {
+    let document = format!("{AGENTIC}{TRACKER}");
+    assert_eq!(
+        checked(&document)["jira"],
+        serde_json::json!({
+            "site": "https://example.atlassian.net",
+            "project": "IDENT",
+            "user": { "env": "JIRA_USER_EMAIL" },
+            "token": { "env": "JIRA_API_TOKEN" },
+            "timeout": "5m",
+            "base_url": null,
+            "workflow": {
+                "ready": "Ready",
+                "in_progress": "In Progress",
+                "in_review": "In Review",
+                "blocked": "Blocked",
+                "done": "Done",
+            },
+        }),
+        "an operator must read back the site, the project, the bound and the \
+         variables the document names"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fiddle.toml");
+    std::fs::write(&path, &document).unwrap();
+    for extra in [vec!["--json"], vec![]] {
+        let out = support::fiddle_command()
+            .args(["config", "check", "--config", path.to_str().unwrap()])
+            .args(&extra)
+            .env(TRACKER_CREDENTIAL, SENTINEL)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        assert_eq!(out.status.code(), Some(0), "{extra:?}: stderr = {stderr}");
+        assert!(
+            !stdout.contains(SENTINEL) && !stderr.contains(SENTINEL),
+            "{extra:?} resolved the tracker credential and printed it: {stdout}{stderr}"
+        );
+        assert!(
+            stdout.contains(TRACKER_CREDENTIAL),
+            "{extra:?} must still name the variable the document points at: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn a_document_naming_no_tracker_echoes_no_tracker() {
+    assert!(
+        checked(AGENTIC).get("jira").is_none(),
+        "an absent table describes a deployment that reads no tracker, and it is \
+         never a blank filled in silently"
+    );
 }
 
 fn admitted_tables() -> Vec<String> {

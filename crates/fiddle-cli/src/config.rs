@@ -18,6 +18,8 @@ pub struct Config {
     #[serde(default)]
     pub github: Option<GitHub>,
     #[serde(default)]
+    pub jira: Option<Jira>,
+    #[serde(default)]
     pub scanner: Option<Scanner>,
     #[serde(default)]
     pub orchestration: Option<Orchestration>,
@@ -579,6 +581,46 @@ impl TryFrom<DecisionDocument> for Decision {
             authorized: document.authorized,
         })
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Jira {
+    pub site: String,
+
+    pub project: String,
+
+    pub user: EnvRef,
+
+    pub token: EnvRef,
+
+    #[serde(default = "default_effect_timeout")]
+    pub timeout: HumanDuration,
+
+    #[serde(default)]
+    pub base_url: Option<String>,
+
+    #[serde(default)]
+    pub workflow: JiraWorkflow,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JiraWorkflow {
+    #[serde(default)]
+    pub ready: Option<String>,
+
+    #[serde(default)]
+    pub in_progress: Option<String>,
+
+    #[serde(default)]
+    pub in_review: Option<String>,
+
+    #[serde(default)]
+    pub blocked: Option<String>,
+
+    #[serde(default)]
+    pub done: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -2051,5 +2093,154 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
             toml::from_str("[project]\nname=\"p\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n")
                 .unwrap();
         assert!(cfg.github.is_none());
+    }
+
+    const TRACKER: &str = r#"
+[project]
+name = "p"
+
+[stub]
+root = "s"
+
+[report]
+dir = "r"
+
+[jira]
+site = "https://example.atlassian.net"
+project = "IDENT"
+user = { env = "JIRA_USER_EMAIL" }
+token = { env = "JIRA_API_TOKEN" }
+"#;
+
+    fn jira(text: &str) -> Jira {
+        toml::from_str::<Config>(text).unwrap().jira.unwrap()
+    }
+
+    #[test]
+    fn a_written_jira_token_is_refused() {
+        let bad = TRACKER.replace(
+            r#"token = { env = "JIRA_API_TOKEN" }"#,
+            r#"token = "a-real-token""#,
+        );
+        let error = toml::from_str::<Config>(&bad).expect_err("a written credential is refused");
+        assert_eq!(
+            error.message(),
+            CREDENTIAL_MUST_BE_NAMED,
+            "the refusal must be the one `load` redacts the source line for"
+        );
+    }
+
+    #[test]
+    fn a_written_jira_user_is_refused_because_it_is_half_the_credential() {
+        let bad = TRACKER.replace(
+            r#"user = { env = "JIRA_USER_EMAIL" }"#,
+            r#"user = "someone@example.com""#,
+        );
+        let error = toml::from_str::<Config>(&bad)
+            .expect_err("basic authentication signs with both halves");
+        assert_eq!(error.message(), CREDENTIAL_MUST_BE_NAMED);
+    }
+
+    #[test]
+    fn a_jira_table_names_its_credential_and_its_site() {
+        let jira = jira(TRACKER);
+        assert_eq!(jira.site, "https://example.atlassian.net");
+        assert_eq!(jira.project, "IDENT");
+        assert_eq!(jira.token.env, "JIRA_API_TOKEN");
+        assert_eq!(jira.user.env, "JIRA_USER_EMAIL");
+        assert_eq!(jira.base_url, None, "a deployment sets no base_url");
+        assert_eq!(jira.timeout.as_duration(), Duration::from_secs(5 * 60));
+    }
+
+    #[test]
+    fn the_deterministic_suite_points_the_table_at_a_loopback_server() {
+        let jira = jira(&format!("{TRACKER}base_url = \"http://127.0.0.1:8421\"\n"));
+        assert_eq!(jira.base_url.as_deref(), Some("http://127.0.0.1:8421"));
+    }
+
+    #[test]
+    fn a_document_naming_no_tracker_still_loads() {
+        let cfg: Config =
+            toml::from_str("[project]\nname=\"p\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n")
+                .unwrap();
+        assert!(
+            cfg.jira.is_none(),
+            "a repository that receives no jira reference writes no [jira] table"
+        );
+        assert!(
+            toml::from_str::<Config>(TRACKER).unwrap().jira.is_some(),
+            "and the absence must be the document's, not this parser refusing every table"
+        );
+        assert!(toml::from_str::<Config>(FORGE).unwrap().jira.is_none());
+    }
+
+    #[test]
+    fn a_jira_table_naming_neither_half_of_its_credential_is_refused() {
+        for absent in [
+            r#"user = { env = "JIRA_USER_EMAIL" }
+"#,
+            r#"token = { env = "JIRA_API_TOKEN" }
+"#,
+            r#"site = "https://example.atlassian.net"
+"#,
+            r#"project = "IDENT"
+"#,
+        ] {
+            let bad = TRACKER.replace(absent, "");
+            assert!(
+                toml::from_str::<Config>(&bad).is_err(),
+                "a table missing {absent:?} names an incomplete reader and must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn the_workflow_names_the_statuses_this_site_uses() {
+        let jira = jira(&format!(
+            "{TRACKER}\n[jira.workflow]\nready = \"Ready\"\n\
+             in_progress = \"In Progress\"\nin_review = \"In Review\"\n\
+             blocked = \"Blocked\"\ndone = \"Done\"\n"
+        ));
+        assert_eq!(jira.workflow.ready.as_deref(), Some("Ready"));
+        assert_eq!(jira.workflow.in_progress.as_deref(), Some("In Progress"));
+        assert_eq!(jira.workflow.in_review.as_deref(), Some("In Review"));
+        assert_eq!(jira.workflow.blocked.as_deref(), Some("Blocked"));
+        assert_eq!(jira.workflow.done.as_deref(), Some("Done"));
+    }
+
+    #[test]
+    fn a_table_naming_no_workflow_guesses_no_status_name() {
+        let workflow = jira(TRACKER).workflow;
+        assert_eq!(
+            (
+                workflow.ready,
+                workflow.in_progress,
+                workflow.in_review,
+                workflow.blocked,
+                workflow.done
+            ),
+            (None, None, None, None, None)
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_inside_the_jira_or_workflow_table_is_refused() {
+        let bad = format!("{TRACKER}reviewers = [\"someone\"]\n");
+        assert!(
+            toml::from_str::<Config>(&bad)
+                .unwrap_err()
+                .message()
+                .contains("reviewers"),
+            "an unknown key in [jira] must be refused rather than ignored"
+        );
+
+        let bad = format!("{TRACKER}\n[jira.workflow]\nin_flight = \"In Progress\"\n");
+        assert!(
+            toml::from_str::<Config>(&bad)
+                .unwrap_err()
+                .message()
+                .contains("in_flight"),
+            "an unknown key in [jira.workflow] would silently map no status"
+        );
     }
 }

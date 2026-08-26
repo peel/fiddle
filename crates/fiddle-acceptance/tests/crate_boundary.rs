@@ -166,3 +166,32 @@ fn fiddle_core_performs_no_process_or_filesystem_access() {
         "fiddle-core must stay pure; found {offenders:?}"
     );
 }
+
+#[test]
+fn no_workspace_crate_pulls_openssl_into_its_closure() {
+    let meta = cargo_metadata();
+    for root in ["fiddle-runtime", "fiddle-cli"] {
+        let closure = resolved_closure(&meta, root);
+
+        for reachable in ["reqwest", "rustls"] {
+            assert!(
+                closure.contains(reachable),
+                "{root}'s closure must reach {reachable} and does not, so this walk is not \
+                 seeing the TLS region and the boundary below would pass vacuously; closure \
+                 = {closure:?}"
+            );
+        }
+
+        for banned in ["openssl", "openssl-sys", "native-tls"] {
+            assert!(
+                !closure.contains(banned),
+                "{root}'s closure must not contain {banned}; reqwest carries \
+                 `default-features = false` and the `rustls` feature for this reason. \
+                 In reqwest 0.13 the rustls feature is named `rustls`, not `rustls-tls`, \
+                 and `default-tls` already resolves to `rustls`. What reds this guard is \
+                 the `native-tls` feature, not the loss of `default-features = false`. \
+                 closure = {closure:?}"
+            );
+        }
+    }
+}
