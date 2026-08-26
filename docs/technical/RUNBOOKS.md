@@ -17,6 +17,8 @@ literal secret does not load.
 | `FIDDLE_CVE_TOKEN` | the host's CVE sweep | the host repository's secret; it needs `Checks: read`, which the two above do not carry |
 | `WIZ_CLIENT_ID` | the host's `setup-wiz` step | the host repository's secret; the Wiz service account the scan runs as |
 | `WIZ_CLIENT_SECRET` | the host's `setup-wiz` step | the host repository's secret; that account's secret |
+| `JIRA_USER_EMAIL` | the live Jira read lane | opt-in, reads one issue, writes nothing |
+| `JIRA_API_TOKEN` | the live Jira read lane | the same account's classic unscoped API token |
 
 The two `WIZ_` variables are the only ones `fiddle.toml` never names. `setup-wiz`
 runs `wizcli auth --id --secret` with them, and fiddle passes the scanner no
@@ -109,6 +111,10 @@ FIDDLE_BIN="$PWD/target/release/fiddle" scripts/live-github.sh
 # the same walk from a runner; --ref is required, see Common issues
 gh workflow run github-effects.yml --repo peel/fiddle \
   --ref ci/github-effects-dispatch-proof
+
+# the live Jira read lane; one issue, read only
+JIRA_SITE=https://snplow.atlassian.net JIRA_ISSUE=ISP-267 \
+  FIDDLE_BIN="$PWD/target/release/fiddle" scripts/live-jira-observe.sh
 ```
 
 Read the gate's coverage off its `TOTALS` line. It says `N of M binaries`, and
@@ -117,6 +123,44 @@ Read the gate's coverage off its `TOTALS` line. It says `N of M binaries`, and
 Neither forge lane gates. Both write to `peel/fiddle-effects-acceptance`, which
 exists to be dirtied and holds no secret. `docs/technical/effects-repository.md`
 describes it.
+
+### The live Jira read lane
+
+**The site is `snplow.atlassian.net`.** `snowplow.atlassian.net` is a different
+organisation's tenant and answers `serverTitle: Aspen Digital`. A run against it
+spends its rounds on authentication that could never succeed.
+
+`scripts/live-jira-observe.sh` reads one issue two ways and compares them. It
+calls `/rest/api/3/issue/KEY?fields=status,updated` itself, then runs
+`fiddle inspect jira:KEY --json` against a generated document that names
+`JIRA_USER_EMAIL` and `JIRA_API_TOKEN` and carries neither value. It refuses when
+any of `JIRA_SITE`, `JIRA_ISSUE`, `JIRA_USER_EMAIL`, `JIRA_API_TOKEN` or
+`FIDDLE_BIN` is absent, because a lane that skipped for want of a credential
+would read exactly like one that passed.
+
+What it proves, and why each assertion is there:
+
+- `fields.updated` is present. It is the only revision Jira Cloud offers, and the
+  whole target identity rests on it (ADR 077).
+- the root carries no `version` key, so there is no counter to prefer over
+  `fields.updated`. A site that grew one would print a note here.
+- `fiddle` reported a status, a projected state and a revision. The revision is
+  the load-bearing one: Jira Cloud sends `fields.updated` with a **colonless**
+  offset, which is not RFC 3339, so `read_instant` in
+  `crates/fiddle-runtime/src/jira/work_item.rs` tries two further format
+  descriptions after `Rfc3339`. If the site's shape ever moves outside all three,
+  `canonical_revision` returns `None`, the port reports `Unavailable`, and this
+  lane is the only thing that would say so — the hermetic suite reads a stub that
+  emits the shape it was written to emit.
+
+The lane records evidence and does not gate. `scripts/gate.sh` references no
+`live-*.sh` script. It reads an issue and writes nothing, so it needs no
+disposable target; do not point it at an issue whose `status` you mind being
+printed to your terminal.
+
+The lane prints the issue it read. It requests `fields=status,updated` and no
+other field, so no ticket prose crosses the boundary, and nothing it prints is
+committed here.
 
 ## Cut a release
 
@@ -246,6 +290,22 @@ document that loaded yesterday fails today. Delete the key. The table admits
 
 **A run exits 2 naming `FIDDLE_TRANSCRIPT`.** The variable accepts only `1`.
 Unset it to record nothing.
+
+**The Jira lane says `the site holds no issue KEY` for an issue you can open in a
+browser.** Jira Cloud answers **404** for a private issue read with a bad
+credential, with no credential, and for an issue that does not exist. All three
+are the same response, so `JiraError::Absent` is what a wrong `JIRA_API_TOKEN`
+produces and the 401 and 403 arms of `JiraWorkItemPort::read` are unreachable for
+an issue read. Check the credential before you doubt the key:
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+  https://snplow.atlassian.net/rest/api/3/myself
+```
+
+`200` means the credential is good and the key is wrong. Anything else means the
+credential is wrong, whatever the issue read said.
 
 **A run exits 20 rather than 11.** That is a permanent refusal: a `[github.policy]`
 deny, a duplicate remote state, a diverged payload, or an unanswerable
