@@ -1,11 +1,13 @@
 use fiddle_core::{ChangeSetState, Observation, WorkItemState};
 
+#[async_trait::async_trait]
 pub trait WorkItemPort: Send + Sync {
-    fn observe(&self, work_id: &str) -> Observation<WorkItemState>;
+    async fn observe(&self, work_id: &str) -> Observation<WorkItemState>;
 }
 
+#[async_trait::async_trait]
 pub trait ChangePort: Send + Sync {
-    fn observe(&self, work_id: &str) -> Observation<ChangeSetState>;
+    async fn observe(&self, work_id: &str) -> Observation<ChangeSetState>;
 }
 
 #[cfg(any(test, feature = "contract-harness"))]
@@ -43,22 +45,22 @@ pub mod contract {
         fn source_marked(&self, marker: &str) -> Self::Port;
     }
 
-    pub fn work_item_port_contract<W: WorkItemWorlds>(worlds: &W) {
+    pub async fn work_item_port_contract<W: WorkItemWorlds>(worlds: &W) {
         let id = worlds.work_id();
 
         assert_unavailable_with_reason(
-            &worlds.source_absent().observe(id),
+            &worlds.source_absent().observe(id).await,
             worlds.origin(),
             "an unreachable source",
         );
 
         assert_unavailable_with_reason(
-            &worlds.source_malformed().observe(id),
+            &worlds.source_malformed().observe(id).await,
             worlds.origin(),
             "a malformed source",
         );
 
-        match worlds.source_open().observe(id) {
+        match worlds.source_open().observe(id).await {
             Observation::Available { value, source, .. } => {
                 assert_eq!(
                     value.status, "open",
@@ -70,21 +72,21 @@ pub mod contract {
         }
     }
 
-    pub fn change_port_contract<W: ChangeWorlds>(worlds: &W) {
+    pub async fn change_port_contract<W: ChangeWorlds>(worlds: &W) {
         let id = worlds.work_id();
 
         assert_unavailable_with_reason(
-            &worlds.source_absent().observe(id),
+            &worlds.source_absent().observe(id).await,
             worlds.origin(),
             "an unreachable source",
         );
         assert_unavailable_with_reason(
-            &worlds.source_malformed().observe(id),
+            &worlds.source_malformed().observe(id).await,
             worlds.origin(),
             "a malformed source",
         );
 
-        match worlds.source_unmarked().observe(id) {
+        match worlds.source_unmarked().observe(id).await {
             Observation::Available { value, source, .. } => {
                 assert_eq!(
                     value.marker, None,
@@ -95,7 +97,7 @@ pub mod contract {
             other => panic!("a readable but unmarked source must be Available, got {other:?}"),
         }
 
-        match worlds.source_marked("m0-marker").observe(id) {
+        match worlds.source_marked("m0-marker").observe(id).await {
             Observation::Available { value, source, .. } => {
                 assert_eq!(
                     value.marker.as_deref(),
@@ -134,6 +136,99 @@ pub mod contract {
         assert!(
             source.len() > expected.len(),
             "{world} must locate itself within its origin, got `{source}`"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkItemPort;
+    use fiddle_core::{Observation, SourceRef, WorkItemState};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct AnswersDifferentlyEachTime {
+        reads: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkItemPort for AnswersDifferentlyEachTime {
+        async fn observe(&self, work_id: &str) -> Observation<WorkItemState> {
+            let read = self.reads.fetch_add(1, Ordering::SeqCst);
+            Observation::Available {
+                value: WorkItemState {
+                    id: work_id.to_string(),
+                    status: format!("read-{read}"),
+                    projected: None,
+                },
+                source: SourceRef(format!("test:{work_id}")),
+                revision: None,
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct RepeatsItsFirstAnswer {
+        world: AnswersDifferentlyEachTime,
+        remembered: Mutex<Option<WorkItemState>>,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkItemPort for RepeatsItsFirstAnswer {
+        async fn observe(&self, work_id: &str) -> Observation<WorkItemState> {
+            let remembered = self.remembered.lock().unwrap().clone();
+            let value = match remembered {
+                Some(value) => value,
+                None => {
+                    let observed = self.world.observe(work_id).await;
+                    let value = observed
+                        .value()
+                        .expect("the memoised world always answers")
+                        .clone();
+                    *self.remembered.lock().unwrap() = Some(value.clone());
+                    value
+                }
+            };
+            Observation::Available {
+                value,
+                source: SourceRef(format!("test:{work_id}")),
+                revision: None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_second_observation_reads_the_world_again() {
+        let port = AnswersDifferentlyEachTime::default();
+        let first = port.observe("IDENT-1").await;
+        let second = port.observe("IDENT-1").await;
+        assert_ne!(
+            first.value().map(|v| v.status.as_str()),
+            second.value().map(|v| v.status.as_str()),
+            "re-derivation must read the source again, never a cached first answer"
+        );
+        assert_eq!(
+            port.reads.load(Ordering::SeqCst),
+            2,
+            "two observations must be two reads of the world"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_port_that_answers_from_its_first_read_fails_that_comparison() {
+        let port = RepeatsItsFirstAnswer::default();
+        let first = port.observe("IDENT-1").await;
+        let second = port.observe("IDENT-1").await;
+        assert_eq!(
+            first.value().map(|v| v.status.as_str()),
+            second.value().map(|v| v.status.as_str()),
+            "a memoising port answers the same twice, so the comparison above is not vacuous"
+        );
+        assert_eq!(
+            port.world.reads.load(Ordering::SeqCst),
+            1,
+            "a memoising port reads the world once"
         );
     }
 }
