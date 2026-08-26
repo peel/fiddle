@@ -61,6 +61,7 @@ rig-agent.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+reqwest.workspace = true
 schemars.workspace = true
 
 [target.'cfg(unix)'.dependencies]

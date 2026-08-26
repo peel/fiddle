@@ -33,4 +33,5 @@ rig-agent = "=0.41.0"
 async-trait = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "signal", "sync", "time"] }
 tokio-util = "0.7"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 schemars = "1"

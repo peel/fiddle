@@ -572,6 +572,7 @@ dependencies = [
  "fiddle-macros",
  "fiddle-runtime",
  "libc",
+ "reqwest",
  "rig-agent",
  "rig-core",
  "schemars",
