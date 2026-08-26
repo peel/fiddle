@@ -12,3 +12,10 @@ fn a_malformed_effect_attribute_does_not_compile() {
     cases.compile_fail("tests/compile_fail/effect_target_names_no_field.rs");
     cases.compile_fail("tests/compile_fail/effect_marks_no_payload_field.rs");
 }
+
+#[test]
+fn the_jira_client_can_be_neither_printed_nor_serialized() {
+    let cases = trybuild::TestCases::new();
+    cases.compile_fail("tests/compile_fail/jira_http_is_not_printable.rs");
+    cases.compile_fail("tests/compile_fail/jira_http_is_not_serializable.rs");
+}
