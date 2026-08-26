@@ -124,6 +124,53 @@ Neither forge lane gates. Both write to `peel/fiddle-effects-acceptance`, which
 exists to be dirtied and holds no secret. `docs/technical/effects-repository.md`
 describes it.
 
+### The live CVE steering lane
+
+```sh
+FIDDLE_GITHUB_TOKEN=<token> FIDDLE_CVE_TAG=v0.44.0 scripts/live-cve-steering.sh
+```
+
+It dispatches `cve-remediation.yml` on `peel/fiddle-test`, waits for the run to
+open a pull request, requests changes on it, and asserts the next attempt's diff
+carries what the review asked for. It closes the pull request and deletes the
+branch afterwards, so the board is clean for the next run.
+
+**Bump the pin before you run it.** The lane refuses unless
+`peel/fiddle-test` `main` pins the tag you gave it, in
+`.github/workflows/cve-remediation.yml`:
+
+```yaml
+          FIDDLE_TAG: v0.44.0
+          FIDDLE_SHA256: 40bbef0a85b58fa2564f5cdc2bf674e0869b71f86f2e8c9191c9e92f138a4d30
+```
+
+`FIDDLE_TAG` and `FIDDLE_SHA256` move together, because the job refuses when the
+measured checksum and the pinned one disagree. Read the sha off the release's
+published `fiddle-linux-amd64.sha256` asset.
+
+Measured 2026-08-26: the pin had drifted to `v0.42.0`, which is **older than the
+release M4d measured**. Nothing failed and nothing warned. A dispatch would have
+produced a green run against the wrong binary, and no comparison with the previous
+milestone would have been possible. Check the pin first, every time.
+
+**`nothing_to_do` is a failure.** It reports `outcome completed` and exits 0, and
+it is the failure that most resembles success: a lane that passed by finding
+nothing cannot be told from one that passed because nothing was wrong. Its usual
+cause is an open pull request whose tip already carries the fix being reused, so
+confirm the testbed has none before running.
+
+**The token needs `actions=write`.** A fine-grained token with Contents and Pull
+requests is not enough; the dispatch endpoint returns 403 without it. When a
+GitHub 403 is puzzling, read the `x-accepted-github-permissions` header on the
+failing response — it names the exact permission the endpoint wants, and
+`repos/.../actions/permissions` is not a proxy for it because that endpoint
+requires `administration` instead.
+
+The lane covers the effect path and steering through review. It covers nothing
+else, and in particular it is not evidence about Jira, the observation ports, or
+the credential boundary.
+
+
 ### The live Jira read lane
 
 **The site is `snplow.atlassian.net`.** `snowplow.atlassian.net` is a different
