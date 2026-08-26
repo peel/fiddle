@@ -33,6 +33,22 @@ assert_contains() {
   fi
 }
 
+assert_ordered() {
+  local desc="$1" file="$2" first="$3" second="$4"
+  local a b
+  a=$(grep -n "$first" "$file" | head -1 | cut -d: -f1)
+  b=$(grep -n "$second" "$file" | head -1 | cut -d: -f1)
+  if [ -z "$a" ]; then
+    FAIL=$((FAIL+1)); echo "  FAIL: $desc (no line matches '$first' in $file)"
+  elif [ -z "$b" ]; then
+    FAIL=$((FAIL+1)); echo "  FAIL: $desc (no line matches '$second' in $file)"
+  elif [ "$a" -lt "$b" ]; then
+    PASS=$((PASS+1)); echo "  PASS: $desc"
+  else
+    FAIL=$((FAIL+1)); echo "  FAIL: $desc ('$first' at line $a is not before '$second' at line $b)"
+  fi
+}
+
 assert_file_exists() {
   local desc="$1" path="$2"
   if [ -f "$path" ]; then
@@ -390,7 +406,12 @@ assert_file_exists "develop-loop SKILL.md exists" "$DEVELOP_LOOP_SKILL"
 assert_file_exists "develop-holistic SKILL.md exists" "$DEVELOP_HOLISTIC_SKILL"
 SKILL_CONTENT=$(cat "$DEVELOP_SKILL" "$DEVELOP_LOOP_SKILL" "$DEVELOP_HOLISTIC_SKILL" "$DEVELOP_DISPATCH_PROTOCOL" "$HOLISTIC_FILE")
 
-assert_contains "SKILL.md has Step 3: Holistic Review" "## Step 3: Holistic Review" "$SKILL_CONTENT"
+assert_contains "SKILL.md has a holistic review step" "^## Step [0-9][0-9]*: Holistic Review$" "$SKILL_CONTENT"
+assert_contains "SKILL.md has a live acceptance step" "^## Step [0-9][0-9]*: Live Acceptance$" "$SKILL_CONTENT"
+assert_ordered "live acceptance precedes holistic review" "$DEVELOP_SKILL" \
+  "^## Step [0-9][0-9]*: Live Acceptance$" "^## Step [0-9][0-9]*: Holistic Review$"
+assert_ordered "the per-task loop precedes holistic review" "$DEVELOP_SKILL" \
+  "^## Step [0-9][0-9]*: Per-Task Loop$" "^## Step [0-9][0-9]*: Holistic Review$"
 
 assert_contains "SKILL.md references resolve-domains.sh" "resolve-domains.sh" "$SKILL_CONTENT"
 
