@@ -8,6 +8,7 @@ use fiddle_runtime::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 mod support;
 
@@ -196,8 +197,9 @@ impl ForeignWriterBetweenObservations {
     }
 }
 
+#[async_trait::async_trait]
 impl ChangePort for ForeignWriterBetweenObservations {
-    fn observe(&self, work_id: &str) -> Observation<ChangeSetState> {
+    async fn observe(&self, work_id: &str) -> Observation<ChangeSetState> {
         if self.observations.fetch_add(1, Ordering::Relaxed) == 1 {
             std::fs::write(
                 &self.change_set,
@@ -205,7 +207,7 @@ impl ChangePort for ForeignWriterBetweenObservations {
             )
             .unwrap();
         }
-        self.inner.observe(work_id)
+        self.inner.observe(work_id).await
     }
 }
 
@@ -308,21 +310,27 @@ async fn an_executed_capability_is_recorded_even_when_publication_fails() {
     );
 }
 
-#[test]
-fn an_attempt_interrupted_between_the_effect_and_publication_is_detectable() {
-    let project = Project::unstarted();
+#[tokio::test]
+async fn an_attempt_interrupted_between_the_effect_and_publication_is_detectable() {
+    let project = Arc::new(Project::unstarted());
     let capability = MutateThenDie(StubMark::new(project.stub_root(), PROJECT));
 
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
-    let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(run_attempt(&project, &capability, &project.report_dir()))
-    }));
+    let died = tokio::spawn({
+        let project = Arc::clone(&project);
+        async move {
+            let report_dir = project.report_dir();
+            run_attempt(&project, &capability, &report_dir).await
+        }
+    })
+    .await;
     std::panic::set_hook(previous);
 
-    assert!(died.is_err(), "the capability was supposed to die");
+    assert!(
+        died.is_err_and(|joined| joined.is_panic()),
+        "the capability was supposed to die"
+    );
     assert!(
         project.marker().is_some(),
         "the world must have moved, or there is nothing to detect"

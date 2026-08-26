@@ -204,7 +204,9 @@ mod tests {
             Some("stub:work/fiddle-m0-demo.json")
         );
 
-        let observed = ChangeWorlds::source_unmarked(&worlds).observe(WORK_ID).await;
+        let observed = ChangeWorlds::source_unmarked(&worlds)
+            .observe(WORK_ID)
+            .await;
         assert_eq!(
             observed.source().map(|s| s.0.as_str()),
             Some("stub:changes/fiddle-m0-demo.json")

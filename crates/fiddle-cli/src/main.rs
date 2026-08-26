@@ -388,9 +388,9 @@ fn ports(config: &config::Config) -> (StubWorkItemPort, StubChangePort) {
     )
 }
 
-fn observe(config: &config::Config, reference: &InvocationRef) -> WorkStateView {
+async fn observe(config: &config::Config, reference: &InvocationRef) -> WorkStateView {
     let (work_items, changes) = ports(config);
-    fiddle_runtime::observe(&work_items, &changes, Addressed::of(reference))
+    fiddle_runtime::observe(&work_items, &changes, Addressed::of(reference)).await
 }
 
 fn build_identity() -> FiddleBuild {
@@ -954,7 +954,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             let reference = reference_from(invocation_ref)?;
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
-            let observed = observe(&config, &reference);
+            let observed = observe(&config, &reference).await;
             let expected_marker =
                 fiddle_core::correlation_key(&config.project.name, &reference.as_str());
             let assessment = fiddle_core::assess(&observed, &expected_marker);
@@ -1623,12 +1623,13 @@ mod tests {
         looks: AtomicUsize,
     }
 
+    #[async_trait::async_trait]
     impl ChangePort for OvertakenAfterTheFirstLook {
-        fn observe(&self, work_id: &str) -> Observation<ChangeSetState> {
+        async fn observe(&self, work_id: &str) -> Observation<ChangeSetState> {
             if self.looks.fetch_add(1, Ordering::Relaxed) == 1 {
                 std::fs::write(&self.change_set, r#"{"marker":"0123456789abcdef"}"#).unwrap();
             }
-            self.inner.observe(work_id)
+            self.inner.observe(work_id).await
         }
     }
 }

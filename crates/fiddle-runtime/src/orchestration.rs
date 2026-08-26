@@ -10,18 +10,19 @@ use fiddle_core::{
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub fn observe(
+pub async fn observe(
     work_items: &dyn WorkItemPort,
     changes: &dyn ChangePort,
     addressed: Addressed<'_>,
 ) -> WorkStateView {
     let work_item = match addressed {
-        Addressed::WorkItem(work_id) => work_items.observe(work_id),
+        Addressed::WorkItem(work_id) => work_items.observe(work_id).await,
         Addressed::NoWorkItem { .. } => fiddle_core::Observation::NotApplicable {
             reason: "this invocation names no work item, so no tracker was consulted".to_string(),
         },
     };
-    WorkStateView::without_publication(work_item, changes.observe(addressed.change_set()))
+    let change_set = changes.observe(addressed.change_set()).await;
+    WorkStateView::without_publication(work_item, change_set)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,12 +62,12 @@ pub struct RunContext<'a> {
 }
 
 impl RunContext<'_> {
-    pub fn observe(&self) -> WorkStateView {
-        observe(self.work_items, self.changes, self.addressed)
+    pub async fn observe(&self) -> WorkStateView {
+        observe(self.work_items, self.changes, self.addressed).await
     }
 
-    fn observe_with(&self, capability: &dyn Capability) -> WorkStateView {
-        with_publication(self.observe(), capability)
+    async fn observe_with(&self, capability: &dyn Capability) -> WorkStateView {
+        with_publication(self.observe().await, capability)
     }
 
     fn expected_marker(&self) -> String {
@@ -139,7 +140,7 @@ fn concluded(next_action: &NextAction, after: &WorkStateView) -> RunOutcome {
 
 pub async fn run(ctx: &RunContext<'_>) -> RunReport {
     let marker = ctx.expected_marker();
-    let view = ctx.observe();
+    let view = ctx.observe().await;
     let derived = derive_next(&view, &marker, ctx.capability.id());
 
     let Some(grant) = ExecutionGrant::authorise(&derived, ctx.attempt) else {
@@ -183,7 +184,7 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             ctx.journal
                 .record_effect(capability_id, "completed", std::slice::from_ref(&evidence));
             let observed = ctx.capability.receipts();
-            let after = ctx.observe_with(ctx.capability);
+            let after = ctx.observe_with(ctx.capability).await;
             let next_action = derive_next(&after, &marker, ctx.capability.id());
             RunReport {
                 outcome: concluded(&next_action, &after),
