@@ -1,10 +1,7 @@
 mod support;
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use support::Scenario;
+use support::{Scenario, StubJira};
 
 const TOKEN_CREDENTIAL: &str = "JIRA_API_TOKEN";
 
@@ -14,7 +11,7 @@ const SENTINEL: &str = "jira-sentinel-do-not-log";
 
 const USER: &str = "bot@example.com";
 
-const KEY: &str = "IDENT-1";
+const KEY: &str = support::JIRA_ISSUE_KEY;
 
 const REFERENCE: &str = "jira:IDENT-1";
 
@@ -609,151 +606,4 @@ fn ask(scenario: &Scenario, args: &[&str], credentials: &[(&str, &str)]) -> Said
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     }
-}
-
-struct Recorded {
-    authorizations: Vec<String>,
-    status: u16,
-    body: String,
-}
-
-struct StubJira {
-    port: u16,
-    state: Arc<Mutex<Recorded>>,
-}
-
-impl StubJira {
-    fn holding_the_issue() -> Self {
-        StubJira::answering(
-            200,
-            serde_json::json!({
-                "id": "10000",
-                "key": KEY,
-                "fields": {
-                    "updated": "2026-08-26T11:00:00.000+0000",
-                    "status": {
-                        "id": "10001",
-                        "name": "In Review",
-                        "statusCategory": {
-                            "id": 4,
-                            "key": "indeterminate",
-                            "name": "In Progress",
-                        },
-                    },
-                },
-            })
-            .to_string(),
-        )
-    }
-
-    fn refusing_the_credential() -> Self {
-        StubJira::answering(
-            401,
-            serde_json::json!({
-                "errorMessages": ["the site refused this request"],
-                "errors": {},
-            })
-            .to_string(),
-        )
-    }
-
-    fn answering(status: u16, body: String) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
-        let port = listener.local_addr().unwrap().port();
-        let state = Arc::new(Mutex::new(Recorded {
-            authorizations: Vec::new(),
-            status,
-            body,
-        }));
-        let serving = Arc::clone(&state);
-        std::thread::spawn(move || {
-            while let Ok((stream, _)) = listener.accept() {
-                let _ = answer(stream, &serving);
-            }
-        });
-        StubJira { port, state }
-    }
-
-    fn base_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
-    }
-
-    fn held(&self) -> std::sync::MutexGuard<'_, Recorded> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    fn served(&self) -> usize {
-        self.held().authorizations.len()
-    }
-
-    fn the_only_authorization(&self) -> String {
-        let held = self.held();
-        let mut distinct = held.authorizations.clone();
-        distinct.sort();
-        distinct.dedup();
-        assert_eq!(
-            distinct.len(),
-            1,
-            "one credential reached this site, so it received one header: \
-             {distinct:?}"
-        );
-        distinct.remove(0)
-    }
-}
-
-fn answer(mut stream: std::net::TcpStream, state: &Arc<Mutex<Recorded>>) -> std::io::Result<()> {
-    let mut request = Vec::new();
-    let mut chunk = [0u8; 4096];
-    while find(&request, b"\r\n\r\n").is_none() {
-        let read = stream.read(&mut chunk)?;
-        if read == 0 {
-            return Ok(());
-        }
-        request.extend_from_slice(&chunk[..read]);
-    }
-
-    let head = String::from_utf8_lossy(&request).into_owned();
-    let authorization = head
-        .lines()
-        .filter_map(|line| line.split_once(':'))
-        .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
-        .map(|(_, value)| value.trim().to_string())
-        .unwrap_or_default();
-
-    let (status, body) = {
-        let mut held = state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        held.authorizations.push(authorization);
-        (held.status, held.body.clone())
-    };
-
-    stream.write_all(
-        format!(
-            "HTTP/1.1 {status} {}\r\ncontent-type: application/json\r\n\
-             content-length: {}\r\nconnection: close\r\n\r\n{body}",
-            reason(status),
-            body.len(),
-        )
-        .as_bytes(),
-    )?;
-    stream.flush()?;
-    let _ = stream.shutdown(std::net::Shutdown::Write);
-    Ok(())
-}
-
-fn reason(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        401 => "Unauthorized",
-        _ => "Unassigned",
-    }
-}
-
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
 }
