@@ -320,3 +320,50 @@ async fn a_base_url_with_a_trailing_slash_reaches_the_same_path() {
         "one slash, not two"
     );
 }
+
+#[tokio::test]
+async fn a_refusal_answered_in_html_reaches_the_caller_as_its_status_with_a_null_body() {
+    for status in [401, 403] {
+        let server = StubJira::start().await;
+        server.refuses_in_html_with(status).await;
+
+        let answered = client_for(&server)
+            .api("GET", ISSUE, None, &CancellationToken::new())
+            .await
+            .expect("a refusal is an answer whatever body it carries");
+
+        assert_eq!(
+            answered.status, status,
+            "jira cloud answers some refusals with an html login page, and the status is the fact a caller must classify"
+        );
+        assert_eq!(
+            answered.body,
+            serde_json::Value::Null,
+            "an html body parses to nothing, and nothing is what the caller is handed: {}",
+            answered.body
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_success_whose_body_is_not_json_is_still_malformed() {
+    let server = StubJira::start().await;
+    server
+        .answer_with_body("<html>this is not an issue</html>")
+        .await;
+
+    let error = client_for(&server)
+        .api("GET", ISSUE, None, &CancellationToken::new())
+        .await
+        .expect_err("a 2xx that is not json answered nothing a caller can read");
+
+    let said = format!("{error}");
+    assert!(
+        matches!(error, JiraError::Malformed(_)),
+        "a 2xx must parse, so no status excuses the body: {said}"
+    );
+    assert!(
+        said.contains("this is not an issue"),
+        "the answered body reached the error, so the status above is what separates it from a refusal: {said}"
+    );
+}

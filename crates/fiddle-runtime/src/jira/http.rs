@@ -72,9 +72,14 @@ impl JiraHttp {
             _ = cancel.cancelled() => return Err(JiraError::Unreachable("cancelled".to_string())),
             answered = round_trip => answered?,
         };
-        let body = match text.trim().is_empty() {
-            true => serde_json::Value::Null,
-            false => serde_json::from_str(&text).map_err(|_| self.malformed(status, &text))?,
+        let parsed = match text.trim().is_empty() {
+            true => Some(serde_json::Value::Null),
+            false => serde_json::from_str(&text).ok(),
+        };
+        let body = match parsed {
+            Some(body) => body,
+            None if (200..300).contains(&status) => return Err(self.malformed(status, &text)),
+            None => serde_json::Value::Null,
         };
         Ok(JiraResponse { status, body })
     }

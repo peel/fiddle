@@ -36,3 +36,4 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "si
 tokio-util = "0.7"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 schemars = "1"
+time = { version = "0.3", default-features = false, features = ["alloc", "parsing", "formatting", "macros"] }

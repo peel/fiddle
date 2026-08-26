@@ -25,12 +25,34 @@ const NOT_ALLOWED: &str =
 const UNPARSED: &str = r#"{"errorMessages":["the request line could not be parsed"],"errors":{}}"#;
 const NO_LENGTH: &str =
     r#"{"errorMessages":["a body must arrive with a content length"],"errors":{}}"#;
+const HTML_REFUSAL: &str = "<!DOCTYPE html><html><head><title>Sign in</title></head><body>\
+                            <h1>You are not authenticated</h1></body></html>";
+
+const JSON: &str = "application/json";
+const HTML: &str = "text/html;charset=UTF-8";
 
 enum Answer {
     Body(String),
     Issue { path: String, body: String },
     Absent,
     Refusal(u16),
+    HtmlRefusal(u16),
+}
+
+struct Served {
+    status: u16,
+    body: String,
+    content_type: &'static str,
+}
+
+impl Served {
+    fn json(status: u16, body: &str) -> Self {
+        Served {
+            status,
+            body: body.to_string(),
+            content_type: JSON,
+        }
+    }
 }
 
 enum Length {
@@ -101,6 +123,10 @@ impl StubJira {
         &self.address
     }
 
+    pub fn site(&self) -> &str {
+        &self.address
+    }
+
     pub async fn holds_issue(
         &self,
         key: &str,
@@ -151,6 +177,10 @@ impl StubJira {
 
     pub async fn refuses_with(&self, status: u16) {
         self.state.lock().await.answer = Answer::Refusal(status);
+    }
+
+    pub async fn refuses_in_html_with(&self, status: u16) {
+        self.state.lock().await.answer = Answer::HtmlRefusal(status);
     }
 
     pub async fn stays_silent(&self) {
@@ -274,13 +304,17 @@ async fn answer(mut socket: TcpStream, state: Arc<Mutex<StubState>>, cancel: Can
         None => {
             let mut unmeasured = vec![0u8; 8192];
             let _ = tokio::time::timeout(SETTLES, socket.read(&mut unmeasured)).await;
-            (411, NO_LENGTH.to_string())
+            Served::json(411, NO_LENGTH)
         }
     };
 
-    let (status, body) = answering;
+    let Served {
+        status,
+        body,
+        content_type,
+    } = answering;
     let response = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\
          Connection: close\r\n\r\n{body}",
         reason(status),
         body.len()
@@ -300,30 +334,35 @@ fn measured(request_line: &str, length: Length) -> Option<usize> {
     }
 }
 
-fn routed(request_line: &str, answer: &Answer) -> (u16, String) {
+fn routed(request_line: &str, answer: &Answer) -> Served {
     let mut parts = request_line.split_whitespace();
     let (Some(method), Some(target), Some(version), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
-        return (400, UNPARSED.to_string());
+        return Served::json(400, UNPARSED);
     };
     if !version.starts_with("HTTP/") || !target.starts_with('/') {
-        return (400, UNPARSED.to_string());
+        return Served::json(400, UNPARSED);
     }
     let path = target.split('?').next().unwrap_or(target);
     if !matches!(method, "GET" | "PUT") {
-        return (405, NOT_ALLOWED.to_string());
+        return Served::json(405, NOT_ALLOWED);
     }
     match answer {
-        Answer::Refusal(status) => (*status, REFUSED.to_string()),
-        Answer::Absent => (404, absent_or_unrouted(path)),
+        Answer::Refusal(status) => Served::json(*status, REFUSED),
+        Answer::HtmlRefusal(status) => Served {
+            status: *status,
+            body: HTML_REFUSAL.to_string(),
+            content_type: HTML,
+        },
+        Answer::Absent => Served::json(404, &absent_or_unrouted(path)),
         Answer::Issue { path: held, body } => match path == held {
-            true => (200, body.clone()),
-            false => (404, absent_or_unrouted(path)),
+            true => Served::json(200, body),
+            false => Served::json(404, &absent_or_unrouted(path)),
         },
         Answer::Body(body) => match names_an_issue(path) {
-            true => (200, body.clone()),
-            false => (404, UNROUTED.to_string()),
+            true => Served::json(200, body),
+            false => Served::json(404, UNROUTED),
         },
     }
 }
