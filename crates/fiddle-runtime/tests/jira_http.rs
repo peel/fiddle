@@ -1,162 +1,18 @@
+mod support;
+
 use fiddle_runtime::jira::http::CLAMP;
 use fiddle_runtime::jira::{JiraError, JiraHttp};
 use fiddle_runtime::REDACTED;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use support::stub_jira::{
+    client_for, client_waiting, StubJira, ENCODED, ISSUE, PATIENT, TOKEN, USER,
+};
 use tokio_util::sync::CancellationToken;
-
-const USER: &str = "bot@example.com";
-const TOKEN: &str = "s3cr3t";
-const ENCODED: &str = "Ym90QGV4YW1wbGUuY29tOnMzY3IzdA==";
-const ISSUE: &str = "/rest/api/3/issue/IDENT-1";
-const PATIENT: Duration = Duration::from_secs(30);
-
-struct StubState {
-    body: String,
-    silent: bool,
-    authorizations: Vec<String>,
-    request_lines: Vec<String>,
-}
-
-struct StubJira {
-    base_url: String,
-    state: Arc<Mutex<StubState>>,
-    cancel: CancellationToken,
-}
-
-impl StubJira {
-    async fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("a loopback port is available");
-        let port = listener
-            .local_addr()
-            .expect("an accepted listener has an address")
-            .port();
-        let state = Arc::new(Mutex::new(StubState {
-            body: r#"{"key":"IDENT-1"}"#.to_string(),
-            silent: false,
-            authorizations: Vec::new(),
-            request_lines: Vec::new(),
-        }));
-        let cancel = CancellationToken::new();
-        let accepting = (state.clone(), cancel.clone());
-        tokio::spawn(async move {
-            let (state, cancel) = accepting;
-            loop {
-                let accepted = tokio::select! {
-                    _ = cancel.cancelled() => return,
-                    accepted = listener.accept() => accepted,
-                };
-                match accepted {
-                    Ok((socket, _)) => {
-                        tokio::spawn(answer(socket, state.clone(), cancel.clone()));
-                    }
-                    Err(_) => return,
-                }
-            }
-        });
-        Self {
-            base_url: format!("http://127.0.0.1:{port}"),
-            state,
-            cancel,
-        }
-    }
-
-    fn base_url(&self) -> &str {
-        &self.base_url
-    }
-
-    async fn answer_with_body(&self, body: &str) {
-        self.state.lock().await.body = body.to_string();
-    }
-
-    async fn stays_silent(&self) {
-        self.state.lock().await.silent = true;
-    }
-
-    async fn last_authorization(&self) -> String {
-        self.state
-            .lock()
-            .await
-            .authorizations
-            .last()
-            .cloned()
-            .expect("the stub was asked something")
-    }
-
-    async fn request_lines(&self) -> Vec<String> {
-        self.state.lock().await.request_lines.clone()
-    }
-}
-
-impl Drop for StubJira {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-    }
-}
-
-async fn answer(mut socket: TcpStream, state: Arc<Mutex<StubState>>, cancel: CancellationToken) {
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        match socket.read(&mut byte).await {
-            Ok(0) | Err(_) => return,
-            Ok(_) => head.push(byte[0]),
-        }
-    }
-    let head = String::from_utf8_lossy(&head).to_string();
-    let mut lines = head.lines();
-    let request_line = lines.next().unwrap_or_default().to_string();
-    let mut authorization = String::new();
-    let mut length = 0usize;
-    for line in lines {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        match name.to_ascii_lowercase().as_str() {
-            "authorization" => authorization = value.trim().to_string(),
-            "content-length" => length = value.trim().parse().unwrap_or(0),
-            _ => {}
-        }
-    }
-    let mut body = vec![0u8; length];
-    if length > 0 && socket.read_exact(&mut body).await.is_err() {
-        return;
-    }
-
-    let (answering, silent) = {
-        let mut held = state.lock().await;
-        held.authorizations.push(authorization);
-        held.request_lines.push(request_line);
-        (held.body.clone(), held.silent)
-    };
-
-    if silent {
-        cancel.cancelled().await;
-        return;
-    }
-
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-         Connection: close\r\n\r\n{answering}",
-        answering.len()
-    );
-    let _ = socket.write_all(response.as_bytes()).await;
-    let _ = socket.flush().await;
-}
-
-fn client(server: &StubJira, timeout: Duration) -> JiraHttp {
-    JiraHttp::new(server.base_url(), USER, TOKEN, timeout).expect("the client builds")
-}
 
 #[tokio::test]
 async fn the_request_carries_a_basic_header_and_the_client_never_prints_it() {
     let server = StubJira::start().await;
-    let jira = client(&server, PATIENT);
+    let jira = client_for(&server);
 
     let answer = jira
         .api("GET", ISSUE, None, &CancellationToken::new())
@@ -183,7 +39,7 @@ async fn a_body_echoing_the_token_never_reaches_an_error_string() {
     server
         .answer_with_body(&format!("{TOKEN} is not json"))
         .await;
-    let jira = client(&server, PATIENT);
+    let jira = client_for(&server);
 
     let error = jira
         .api("GET", ISSUE, None, &CancellationToken::new())
@@ -211,7 +67,7 @@ async fn a_body_echoing_the_sent_header_never_reaches_an_error_string() {
     server
         .answer_with_body(&format!("Basic {ENCODED} was rejected"))
         .await;
-    let jira = client(&server, PATIENT);
+    let jira = client_for(&server);
 
     let error = jira
         .api("GET", ISSUE, None, &CancellationToken::new())
@@ -233,7 +89,7 @@ async fn a_body_echoing_the_sent_header_never_reaches_an_error_string() {
 async fn an_oversized_multibyte_body_is_clamped_on_a_character_boundary() {
     let server = StubJira::start().await;
     server.answer_with_body(&"é".repeat(50_000)).await;
-    let jira = client(&server, PATIENT);
+    let jira = client_for(&server);
 
     let error = jira
         .api("GET", ISSUE, None, &CancellationToken::new())
@@ -308,7 +164,7 @@ async fn an_empty_credential_half_redacts_nothing_it_was_not_given() {
 async fn a_read_that_is_never_answered_ends_at_its_timeout() {
     let server = StubJira::start().await;
     server.stays_silent().await;
-    let jira = client(&server, Duration::from_millis(300));
+    let jira = client_waiting(&server, Duration::from_millis(300));
 
     let started = Instant::now();
     let error = jira
@@ -340,7 +196,7 @@ async fn a_read_that_is_never_answered_ends_at_its_timeout() {
 async fn a_read_cancelled_while_it_waits_returns_before_its_timeout() {
     let server = StubJira::start().await;
     server.stays_silent().await;
-    let jira = client(&server, PATIENT);
+    let jira = client_for(&server);
     let cancel = CancellationToken::new();
 
     let started = Instant::now();
@@ -370,7 +226,7 @@ async fn a_read_cancelled_while_it_waits_returns_before_its_timeout() {
 #[tokio::test]
 async fn a_read_cancelled_before_it_starts_sends_nothing() {
     let server = StubJira::start().await;
-    let jira = client(&server, PATIENT);
+    let jira = client_for(&server);
     let cancel = CancellationToken::new();
     cancel.cancel();
 
@@ -393,7 +249,7 @@ async fn a_read_cancelled_before_it_starts_sends_nothing() {
 #[tokio::test]
 async fn a_method_the_client_cannot_send_is_refused_before_the_site_is_reached() {
     let server = StubJira::start().await;
-    let jira = client(&server, PATIENT);
+    let jira = client_for(&server);
 
     let error = jira
         .api("GET ISSUE", ISSUE, None, &CancellationToken::new())
@@ -414,7 +270,7 @@ async fn a_method_the_client_cannot_send_is_refused_before_the_site_is_reached()
 #[tokio::test]
 async fn a_body_the_caller_supplies_reaches_the_site_as_json() {
     let server = StubJira::start().await;
-    let jira = client(&server, PATIENT);
+    let jira = client_for(&server);
 
     let answer = jira
         .api(
@@ -437,7 +293,7 @@ async fn a_body_the_caller_supplies_reaches_the_site_as_json() {
 async fn an_empty_answer_is_a_null_body_and_not_a_malformed_one() {
     let server = StubJira::start().await;
     server.answer_with_body("").await;
-    let jira = client(&server, PATIENT);
+    let jira = client_for(&server);
 
     let answer = jira
         .api("GET", ISSUE, None, &CancellationToken::new())
