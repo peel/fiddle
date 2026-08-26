@@ -52,7 +52,7 @@ pub use human::{
     decision_request_target, render_request, GitHubConversation, HumanInteractionPort,
     InteractionRef, PublishDecisionRequest, PublishedRequest,
 };
-pub use jira::{JiraError, JiraHttp, JiraResponse};
+pub use jira::{project, ConfiguredNames, JiraError, JiraHttp, JiraResponse};
 pub use journal::{AttemptJournal, AttemptTrace};
 pub use orchestration::{
     attempt, observe, run, Addressed, AttemptContext, AttemptRecord, RunContext, RunReport,
