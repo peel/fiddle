@@ -30,8 +30,8 @@ pub use identity::{
     AttemptId, CapabilityId, InvocationRef, InvocationRefError, InvocationScheme, WorkRef,
 };
 pub use observation::{
-    ChangeSetState, Observation, Publication, ReviewState, SourceRef, TreeObservation,
-    VerificationState, WorkItemState, WorkStateView,
+    ChangeSetState, Observation, ProjectedStatus, Publication, ReviewState, SourceRef,
+    TreeObservation, VerificationState, WorkItemState, WorkState, WorkStateView,
 };
 pub use outcome::{Mode, RunOutcome, UnknownMode};
 pub use policy::{combine, DeploymentRule, HumanDecisionRequirement, PolicyDecision};

@@ -180,6 +180,7 @@ mod tests {
                     value: WorkItemState {
                         id: "fiddle-m0-demo".to_string(),
                         status: "open".to_string(),
+                        projected: None,
                     },
                     source: SourceRef("stub:work/fiddle-m0-demo.json".to_string()),
                     revision: None,
