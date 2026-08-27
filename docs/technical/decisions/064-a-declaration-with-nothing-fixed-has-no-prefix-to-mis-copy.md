@@ -34,4 +34,4 @@ The refusal names the shape: "Name the program by itself and put the rest in the
 - Declaring `go` wholesale is a wider grant than two prefixes. `go run` executes arbitrary code, and this is the same grant the workspace already gives through `[[workspace.checks]]`. It is consistent with the sandbox posture accepted for V1, not an increase beyond it.
 - `MAX_EXTRA_ARGUMENTS` of 8 and `MAX_ARGUMENT_BYTES` of 256 still bound every call, and each argument must be one line of printable text. Eight covers `go test ./... -count=1 -shuffle=on -race`.
 - Declaring `go` declares `go`. `curl` is still refused.
-- The transcript records a tool call and not its result, so the refusal a call received had to be inferred from what the model did next. Tracked as `fiddle-pteu`.
+- The transcript records a tool call and not its result, so the refusal a call received had to be inferred from what the model did next. Tracked as `fiddle-pteu`. **Amended.** ADR 065 shows this consequence is false: the transcript recorded every result all along, and the tracker carries `fiddle-pteu` as `scrapped`.

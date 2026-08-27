@@ -222,8 +222,12 @@ shape: `a_refused_credential_and_a_missing_issue_do_not_read_alike` in
 `crates/fiddle-runtime/tests/jira_work_item.rs` drives the stub with 401 and
 proves the two reasons differ. If the site answers 404 for both, both reads
 report `JiraError::Absent`, one reason answers both, and only a live read would
-say so. `fiddle-2n67` holds that read. It is blocked, because the credential was
-destroyed at the operator's request and the read needs a fresh token.
+say so. `fiddle-2n67` holds that read. The tracker carries it as status `todo`,
+tagged `blocked` and `needs-attention`, with no `blocked_by` edge. Nothing in
+this repository supplies what it waits for: the credential was destroyed at the
+operator's request, and the read needs a fresh token an operator must provision.
+`beans list --ready` reads the `blocked_by` edge and not the tag, so it still
+returns the bean, and the bean body carries the reason.
 `docs/technical/RUNBOOKS.md` carries the same argument as operator advice, and
 that advice stands under either status.
 
