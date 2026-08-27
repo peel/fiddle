@@ -166,6 +166,19 @@ failing response — it names the exact permission the endpoint wants, and
 `repos/.../actions/permissions` is not a proxy for it because that endpoint
 requires `administration` instead.
 
+**The credential this lane has been proved with is not the one the epic
+specifies.** The standing result — runs 33010960178 and 33011135515 on
+2026-08-26 — was produced with the operator's `gh` keyring token, whose scopes
+are `repo` and `workflow` and which reaches every repository that account can
+push to. `FIDDLE_GITHUB_TOKEN`, the fine-grained token the section above tells
+you to mint, has never been shown to work here: it still answers the dispatch
+endpoint with 403 and `x-accepted-github-permissions: actions=write`. The forge
+behaviour is the same either way, because both credentials issue the same API
+calls. What is unmeasured is whether a credential scoped to one repository
+suffices for this lane. An evaluator scored that gap 5 against a threshold of 7;
+the operator waived the dimension on 2026-08-27 rather than regenerate the
+token, so the lane's result stands and the specified credential stays unproven.
+
 The lane covers the effect path and steering through review. It covers nothing
 else, and in particular it is not evidence about Jira, the observation ports, or
 the credential boundary.

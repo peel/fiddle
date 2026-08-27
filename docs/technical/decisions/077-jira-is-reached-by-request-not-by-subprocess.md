@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Cites: JiraHttp, JiraHttp::api, JiraError::Unauthorized, JiraWorkItemPort, WorkItemPort, EnvRef, CREDENTIAL_MUST_BE_NAMED, CLAMP, REDACTED, port_kind_for, the_jira_client_can_be_neither_printed_nor_serialized, no_surface_a_reader_sees_carries_the_jira_credential, the_same_search_finds_the_credential_when_a_surface_does_carry_it, every_surface_searched_is_output_of_a_jira_read, a_written_jira_token_is_refused, a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts, no_workspace_crate_pulls_openssl_into_its_closure, crates/fiddle-runtime/src/jira/http.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_printable.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_serializable.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-acceptance/tests/jira_credential.rs
+Cites: JiraHttp, JiraHttp::api, JiraError::Unauthorized, JiraError::Forbidden, JiraWorkItemPort, WorkItemPort, EnvRef, CREDENTIAL_MUST_BE_NAMED, CLAMP, REDACTED, port_kind_for, the_jira_client_can_be_neither_printed_nor_serialized, no_surface_a_reader_sees_carries_the_jira_credential, the_same_search_finds_the_credential_when_a_surface_does_carry_it, every_surface_searched_is_output_of_a_jira_read, a_written_jira_token_is_refused, a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts, no_workspace_crate_pulls_openssl_into_its_closure, crates/fiddle-runtime/src/jira/http.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_printable.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_serializable.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-acceptance/tests/jira_credential.rs, scripts/live-jira-observe.sh, issue_from, read_instant, canonical_revision, ConfiguredNames, state_for
 
 ## Context
 
@@ -175,13 +175,45 @@ it cannot parse, and a body that arrives with no content length. `StubJira` in
 `crates/fiddle-acceptance/tests/jira_credential.rs` runs the public CLI against
 it and searches every surface a reader sees.
 
-Nothing here is verified against Atlassian. There is no Jira counterpart to
-`scripts/live-github.sh` at this revision, and no run against an Atlassian site
-has happened. Three things are therefore arguments rather than measurements: the
-shapes Atlassian's `/rest/api/3/issue` returns, the `fields.updated` formats a
-real site emits, and whether a real workflow's status names match a deployment's
-`[jira.workflow]` table. A live lane is a separate task and it needs a
-credential this environment does not hold.
+One issue is verified against Atlassian.
+`scripts/live-jira-observe.sh` is the Jira counterpart to
+`scripts/live-github.sh`. It reads one issue two ways — a direct
+`/rest/api/3/issue/KEY?fields=status,updated` call beside
+`fiddle inspect jira:KEY --json` — and it refuses rather than skips when the
+site, the issue key, either half of the credential or the binary path is absent.
+It records evidence and does not gate. It read ISP-267 from
+`snplow.atlassian.net` on 2026-08-26, and `docs/technical/RUNBOOKS.md` records
+what came back.
+
+When this record was first written, three things were arguments rather than
+measurements: the shapes Atlassian's `/rest/api/3/issue` returns, the
+`fields.updated` formats a real site emits, and whether a real workflow's status
+names match a deployment's `[jira.workflow]` table. That read settles the first
+two and leaves the third.
+
+- **Now a measurement: the shape `/rest/api/3/issue` returns.** The site
+  answered with `fields.status.id`, `fields.status.name`,
+  `fields.status.statusCategory.name` and `fields.updated`, which are the four
+  values `issue_from` reads. The response root carried no `version` key, so
+  `fields.updated` is the only revision the site offers and the target identity
+  has nothing better to rest on.
+- **Now a measurement: the `fields.updated` format.** Jira Cloud sends a
+  **colonless** offset. That is not RFC 3339, so `read_instant` needs the two
+  further format descriptions it carries after `Rfc3339`. Without them
+  `canonical_revision` answers `None` and the port reports `Unavailable`.
+- **Still an argument: real `[jira.workflow]` status names.** The lane generates
+  a `[jira]` table with no `[jira.workflow]` under it. `ConfiguredNames`
+  therefore held no name, `state_for` answered nothing, and `project` used the
+  status category instead. The configured-name path a deployment uses was not
+  exercised, so no real status name has been compared with a configured one.
+
+The measurement is one issue on one site. A second project, a second workflow
+and a second issue type are unmeasured, and so is every failure arm. Jira Cloud
+answers 404 for a private issue read with a bad credential, with no credential,
+and for an issue that does not exist, so no issue read reaches
+`JiraError::Unauthorized` or `JiraError::Forbidden`.
+`docs/technical/RUNBOOKS.md` records that behaviour, and `fiddle-2n67` holds it
+open.
 
 ## The identifier question ADR 011 left open
 
