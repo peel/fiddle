@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Cites: JiraHttp, JiraHttp::api, JiraError::Unauthorized, JiraError::Forbidden, JiraWorkItemPort, WorkItemPort, EnvRef, CREDENTIAL_MUST_BE_NAMED, CLAMP, REDACTED, port_kind_for, the_jira_client_can_be_neither_printed_nor_serialized, no_surface_a_reader_sees_carries_the_jira_credential, the_same_search_finds_the_credential_when_a_surface_does_carry_it, every_surface_searched_is_output_of_a_jira_read, a_written_jira_token_is_refused, a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts, JiraHttp::quoted, a_credential_planted_in_the_sites_error_body_is_redacted_before_a_reader_sees_it, no_workspace_crate_pulls_openssl_into_its_closure, crates/fiddle-runtime/src/jira/http.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_printable.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_serializable.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-acceptance/tests/jira_credential.rs, scripts/live-jira-observe.sh, issue_from, read_instant, canonical_revision, ConfiguredNames, state_for, WorkState, ProjectedStatus, projected_status, assess, derive_next, no_projected_work_state_moves_the_assessment_or_the_next_action, crates/fiddle-core/src/assessment.rs, crates/fiddle-runtime/src/jira/work_item.rs
+Cites: JiraHttp, JiraHttp::api, JiraError::Unauthorized, JiraError::Forbidden, JiraError::Absent, JiraWorkItemPort, WorkItemPort, EnvRef, CREDENTIAL_MUST_BE_NAMED, CLAMP, REDACTED, port_kind_for, the_jira_client_can_be_neither_printed_nor_serialized, no_surface_a_reader_sees_carries_the_jira_credential, the_same_search_finds_the_credential_when_a_surface_does_carry_it, every_surface_searched_is_output_of_a_jira_read, a_written_jira_token_is_refused, a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts, JiraHttp::quoted, a_credential_planted_in_the_sites_error_body_is_redacted_before_a_reader_sees_it, no_workspace_crate_pulls_openssl_into_its_closure, crates/fiddle-runtime/src/jira/http.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_printable.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_serializable.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-acceptance/tests/jira_credential.rs, scripts/live-jira-observe.sh, issue_from, read_instant, canonical_revision, ConfiguredNames, state_for, WorkState, ProjectedStatus, projected_status, assess, derive_next, no_projected_work_state_moves_the_assessment_or_the_next_action, crates/fiddle-core/src/assessment.rs, crates/fiddle-runtime/src/jira/work_item.rs, a_refused_credential_and_a_missing_issue_do_not_read_alike, crates/fiddle-runtime/tests/jira_work_item.rs
 
 ## Context
 
@@ -208,12 +208,24 @@ two and leaves the third.
   exercised, so no real status name has been compared with a configured one.
 
 The measurement is one issue on one site. A second project, a second workflow
-and a second issue type are unmeasured, and so is every failure arm. Jira Cloud
-answers 404 for a private issue read with a bad credential, with no credential,
-and for an issue that does not exist, so no issue read reaches
-`JiraError::Unauthorized` or `JiraError::Forbidden`.
-`docs/technical/RUNBOOKS.md` records that behaviour, and `fiddle-2n67` holds it
-open.
+and a second issue type are unmeasured, and so is every failure arm.
+
+**Still an argument: what a bad credential returns.** The argument is that Jira
+Cloud answers 404 for a private issue read with a bad credential, with no
+credential, and for an issue that does not exist, so no issue read reaches
+`JiraError::Unauthorized` or `JiraError::Forbidden`. One observation stands behind
+it: a 404 on `/rest/api/3/project/ISP`, from a request that authenticated against
+the wrong tenant. A wrong tenant is not a bad credential, and that path is not an
+issue read. No read has carried a bad credential to a real issue on `snplow`, so
+no site has driven either failure arm. The cost is a suite that pins the opposite
+shape: `a_refused_credential_and_a_missing_issue_do_not_read_alike` in
+`crates/fiddle-runtime/tests/jira_work_item.rs` drives the stub with 401 and
+proves the two reasons differ. If the site answers 404 for both, both reads
+report `JiraError::Absent`, one reason answers both, and only a live read would
+say so. `fiddle-2n67` holds that read. It is blocked, because the credential was
+destroyed at the operator's request and the read needs a fresh token.
+`docs/technical/RUNBOOKS.md` carries the same argument as operator advice, and
+that advice stands under either status.
 
 **No decision reads the projection, so nothing measures what it decides.** No
 consumer branches on `WorkState`. Serde writes it and `assess` ignores it:

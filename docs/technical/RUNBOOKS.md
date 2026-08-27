@@ -352,11 +352,19 @@ document that loaded yesterday fails today. Delete the key. The table admits
 Unset it to record nothing.
 
 **The Jira lane says `the site holds no issue KEY` for an issue you can open in a
-browser.** Jira Cloud answers **404** for a private issue read with a bad
-credential, with no credential, and for an issue that does not exist. All three
-are the same response, so `JiraError::Absent` is what a wrong `JIRA_API_TOKEN`
-produces and the 401 and 403 arms of `JiraWorkItemPort::read` are unreachable for
-an issue read. Check the credential before you doubt the key:
+browser.** Check the credential before you doubt the key. A bad `JIRA_API_TOKEN`
+is expected to read as a missing issue, because a private issue read with a bad
+credential should answer **404**, the status an issue that does not exist also
+answers. On that expectation `JiraError::Absent` is what a wrong `JIRA_API_TOKEN`
+produces, and the 401 and 403 arms of `JiraWorkItemPort::read` are unreachable for
+an issue read.
+
+The expectation is an inference and not a measurement. One observation stands
+behind it: a 404 on `/rest/api/3/project/ISP`, from a request that authenticated
+against the wrong tenant rather than carrying a bad credential to a real issue.
+`fiddle-2n67` holds the live read that would settle it. Run the check either way.
+It reads the credential on its own, so it answers whatever status the issue read
+returned:
 
 ```sh
 curl -s -o /dev/null -w '%{http_code}\n' \
