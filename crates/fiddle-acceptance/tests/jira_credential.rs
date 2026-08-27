@@ -52,8 +52,6 @@ const CENSUS: [&str; 26] = [
 
 const PROJECTS: usize = 5;
 
-const SITES: usize = 2;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Presence {
     Written,
@@ -168,12 +166,31 @@ fn no_surface_a_reader_sees_carries_the_jira_credential() {
          writing cannot join the tree unsearched and a surface it stops writing cannot \
          leave the search passing on an absent file"
     );
-    assert_eq!(
-        searched.needles.len(),
-        2,
+    let token = searched
+        .needles
+        .iter()
+        .find(|needle| needle.what.contains("token"))
+        .expect("the token an operator exported has to be one of the needles");
+    let header = searched
+        .needles
+        .iter()
+        .find(|needle| needle.what.contains("header"))
+        .expect("the header the credential is encoded into has to be one of the needles");
+    assert!(
+        !token.text.is_empty() && !header.text.is_empty(),
+        "an empty needle is carried by every surface, so it reports a leak on a \
+         surface that holds nothing: the token is {:?} and the header is {:?}",
+        token.text,
+        header.text
+    );
+    assert!(
+        !header.text.contains(&token.text) && !token.text.contains(&header.text),
         "the credential reaches a surface either as the token an operator exported or \
-         as the header it is encoded into, and a search for one of those is blind to \
-         the other"
+         as the header it is encoded into, and neither needle may contain the other, \
+         or a search for one stands in for a search for the other: the token is {:?} \
+         and the header is {:?}",
+        token.text,
+        header.text
     );
 
     assert_eq!(
@@ -187,18 +204,18 @@ fn no_surface_a_reader_sees_carries_the_jira_credential() {
 fn every_surface_searched_is_output_of_a_jira_read() {
     let searched = surfaces_of_every_jira_invocation();
 
+    let answering = &searched.sites[0];
+    let refusing = &searched.sites[1];
     assert_eq!(
-        searched.projects.len(),
-        PROJECTS,
-        "each disposable project has to outlive the search, or a file surface is read \
-         from a directory that has already been deleted and reads as empty"
+        answering.the_only_authorization(),
+        refusing.the_only_authorization(),
+        "a site that answers and a site that refuses are different code paths, and \
+         the needle this lane searches for is the header the site that answers \
+         received, so the site that refuses has to have received that same header or \
+         the search is blind to what the refusing path carried; the left header \
+         reached the site that answers and the right one the site that refuses"
     );
-    assert_eq!(
-        searched.sites.len(),
-        SITES,
-        "a site that answers and a site that refuses are different code paths and \
-         both carry the credential"
-    );
+
     for project in &searched.projects {
         assert!(
             project.dir().is_dir(),
