@@ -179,4 +179,4 @@ alone; gemini was removed after two consecutive authentication failures.
 - **The fine-grained credential the epic specifies has never been shown to work.** `scripts/live-cve-steering.sh` produced M5a's standing forge result with the operator's `gh` keyring token, whose scopes are `repo` and `workflow` and which reaches every repository that account can push to. `FIDDLE_GITHUB_TOKEN`, scoped to one repository, still answers the dispatch endpoint with 403 and `x-accepted-github-permissions: actions=write`. Both credentials issue the same API calls, so the forge behaviour is measured and the credential scope is not. An evaluator scored that gap 5 against a threshold of 7; the operator waived the dimension on 2026-08-27 rather than regenerate the token, so the lane's result stands and the specified credential stays unproven. `docs/technical/RUNBOOKS.md` records it.
 
 ---
-Last reviewed: 2026-08-26
+Last reviewed: 2026-08-27

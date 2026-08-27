@@ -1875,3 +1875,47 @@ vacuous when the last one converts, and it will still read as coverage.
 
 Origin: implementation (bean `fiddle-dm18`, carried by bean `fiddle-nry2`)
 Tags: #debt #testing
+
+### 2026-08-27 — The acceptance stub's `served()` counts requests it did not serve
+
+`StubJira::served()` in `crates/fiddle-acceptance/tests/support/mod.rs` returns
+`authorizations.len()`, and `answer_recording` records an authorization for every request
+it reads. Since `fiddle-fbqd` gave the stub routing, a 404 at an unrouted path and a 405
+at a wrong method also increment it.
+
+`jira_credential.rs` reads `served()` as "the site was asked", which stays true. But the
+name suggests the site answered something it was asked for, and after routing it no
+longer means that. A lane asserting `served() >= 3` cannot tell three reads from three
+refusals.
+
+Origin: implementation (bean `fiddle-fbqd`, self-disclosed by the implementer)
+Tags: #debt #testing
+
+### 2026-08-27 — Two site bindings in the credential audit are positional
+
+`jira_credential.rs` binds `answering = &searched.sites[0]` and
+`refusing = &searched.sites[1]`, mirroring the builder's own order. Reordering the vec in
+the builder without reordering here swaps the two names.
+
+Nothing false is asserted: the assertion between them is an equality, which is order-free.
+Only the failure message's left and right labels would be wrong, and only when it fails.
+Recorded because a test whose failure message misidentifies its own operands is a trap for
+whoever reads it at 2am.
+
+Origin: implementation (bean `fiddle-82yf`, self-disclosed by the implementer)
+Tags: #debt #testing
+
+### 2026-08-27 — `JIRA_SITE` without a scheme fails in two different ways
+
+Set as `snplow.atlassian.net` rather than `https://snplow.atlassian.net`, the two consumers
+disagree. `scripts/live-jira-observe.sh` refuses outright, which is correct. A hand-run
+`curl` silently defaults to http and gets a 301 from Atlassian, and a caller reading only
+the status code sees 301 for every probe including ones that should have been 200, 401 and
+404.
+
+That happened during M5a's live measurement and the first probe round was discarded as
+void. The lane's refusal is the right shape; the trap is that nothing catches it outside
+the lane.
+
+Origin: delivery (epic `fiddle-gyyo`, live measurement 2026-08-27)
+Tags: #debt #operations
