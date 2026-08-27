@@ -1,7 +1,8 @@
 use crate::config::{Config, WrittenOrNamed};
 use fiddle_core::{
     CapabilityAssessment, CapabilityExecution, InvocationRef, NextAction, Observation,
-    ProgressEntry, ReportBundle, WorkStateView, CONFIG_CHECK_SCHEMA, INSPECT_SCHEMA, RUN_SCHEMA,
+    ProgressEntry, ReportBundle, WorkItemState, WorkState, WorkStateView, CONFIG_CHECK_SCHEMA,
+    INSPECT_SCHEMA, RUN_SCHEMA,
 };
 use fiddle_runtime::agent::transcript;
 use fiddle_runtime::{EvidenceError, Transcripts};
@@ -455,10 +456,7 @@ pub fn inspect_human(
         reference.as_str(),
         reference.scheme(),
         reference.value(),
-        observation_line(&observed.work_item, |state| format!(
-            "status {}",
-            state.status
-        )),
+        observation_line(&observed.work_item, work_item_line),
         observation_line(&observed.changes, |state| match &state.marker {
             Some(marker) => format!("marked {marker}"),
             None => "not marked".to_string(),
@@ -647,6 +645,28 @@ fn join_evidence(evidence: &[fiddle_core::EvidenceRef]) -> String {
         .join(", ")
 }
 
+fn work_item_line(state: &WorkItemState) -> String {
+    match &state.projected_status {
+        Some(projected) => format!(
+            "status \"{}\", state {}",
+            state.status,
+            work_state_word(&projected.state)
+        ),
+        None => format!("status \"{}\"", state.status),
+    }
+}
+
+fn work_state_word(state: &WorkState) -> &'static str {
+    match state {
+        WorkState::Ready => "ready",
+        WorkState::InProgress => "in progress",
+        WorkState::InReview => "in review",
+        WorkState::Blocked => "blocked",
+        WorkState::Done => "done",
+        WorkState::Unknown => "unknown",
+    }
+}
+
 fn observation_line<T>(observed: &Observation<T>, describe: impl Fn(&T) -> String) -> String {
     match observed {
         Observation::Available { value, source, .. } => {
@@ -667,5 +687,131 @@ pub fn diagnostic(error: &dyn miette::Diagnostic) -> String {
     match handler.render_report(&mut rendered, error) {
         Ok(()) => rendered,
         Err(_) => format!("{error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fiddle_core::{ProjectedStatus, SourceRef};
+
+    const SOURCE: &str = "jira:IDENT-1";
+
+    const VERBATIM_STATUS: &str = "Awaiting Security Review";
+
+    fn reported(work_item: WorkItemState) -> String {
+        let reference: InvocationRef = SOURCE.parse().expect("the reference parses");
+        let observed = WorkStateView::without_publication(
+            Observation::Available {
+                value: work_item,
+                source: SourceRef(SOURCE.to_string()),
+                revision: None,
+            },
+            Observation::NotApplicable {
+                reason: "no tree was read".to_string(),
+            },
+        );
+        let rendered = inspect_human(
+            &reference,
+            &observed,
+            &CapabilityAssessment::NotStarted {
+                evidence: Vec::new(),
+            },
+            &NextAction::Complete,
+        );
+        rendered
+            .lines()
+            .find_map(|line| line.trim_start().strip_prefix("work item   = "))
+            .expect("the human rendering carries a work item line")
+            .to_string()
+    }
+
+    fn projected(state: WorkState) -> WorkItemState {
+        WorkItemState {
+            id: "IDENT-1".to_string(),
+            status: VERBATIM_STATUS.to_string(),
+            projected_status: Some(ProjectedStatus {
+                state,
+                jira_status_id: "10001".to_string(),
+                jira_status_name: VERBATIM_STATUS.to_string(),
+                jira_status_category: "In Progress".to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn the_human_work_item_line_carries_the_typed_state_beside_the_verbatim_status() {
+        assert_eq!(
+            reported(projected(WorkState::InReview)),
+            format!("status \"{VERBATIM_STATUS}\", state in review (from {SOURCE})"),
+            "the design asks the human line to print the typed state beside the \
+             verbatim status, so a build that prints one without the other reds here"
+        );
+    }
+
+    #[test]
+    fn the_verbatim_status_is_reported_whole_and_is_not_the_typed_state_spelled_over() {
+        let line = reported(projected(WorkState::InReview));
+
+        assert!(
+            line.contains(VERBATIM_STATUS),
+            "ADR 077 asks for the source's own words, and `{VERBATIM_STATUS}` \
+             is what the source said: {line}"
+        );
+        assert_ne!(
+            VERBATIM_STATUS.to_lowercase(),
+            "in review",
+            "this fixture's verbatim status has to differ from the typed state's \
+             spelling, or the assertion above holds for a build that prints the \
+             typed state alone"
+        );
+    }
+
+    #[test]
+    fn the_human_work_item_line_carries_no_typed_state_when_the_source_projected_none() {
+        let line = reported(WorkItemState {
+            id: "IDENT-1".to_string(),
+            status: VERBATIM_STATUS.to_string(),
+            projected_status: None,
+        });
+
+        assert_eq!(
+            line,
+            format!("status \"{VERBATIM_STATUS}\" (from {SOURCE})"),
+            "an observation that carries no projection has no typed state to print, \
+             so a build that prints an empty or placeholder one reds here"
+        );
+        assert!(
+            !line.contains("state"),
+            "`state` is the word the projected line uses, so its absence is what \
+             separates the two cases: {line}"
+        );
+    }
+
+    #[test]
+    fn every_typed_state_reaches_the_human_line_in_a_word_of_its_own() {
+        let cases = [
+            WorkState::Ready,
+            WorkState::InProgress,
+            WorkState::InReview,
+            WorkState::Blocked,
+            WorkState::Done,
+            WorkState::Unknown,
+        ];
+        let mut seen: Vec<String> = Vec::new();
+
+        for state in cases {
+            let word = work_state_word(&state);
+            assert!(
+                !word.is_empty(),
+                "{state:?} reaches the human line as nothing at all"
+            );
+            assert!(
+                !seen.contains(&word.to_string()),
+                "{state:?} reaches the human line as `{word}`, which another state \
+                 already claimed, so the line cannot tell them apart"
+            );
+            seen.push(word.to_string());
+        }
     }
 }

@@ -14,6 +14,8 @@ const REFERENCE: &str = "jira:IDENT-1";
 
 const REVISION: &str = "2026-08-25T20:00:00Z";
 
+const SOURCE: &str = "jira:https://icecube.atlassian.net/IDENT-1";
+
 #[test]
 fn inspect_reports_a_jira_issue_through_the_public_cli() {
     let stub = StubJira::holding_the_issue();
@@ -130,6 +132,44 @@ fn the_site_answers_nothing_at_a_path_or_a_method_the_cli_never_asks_for() {
     }
 }
 
+#[test]
+fn the_human_reading_names_the_typed_state_beside_the_status_the_site_sent() {
+    let stub = StubJira::holding_the_issue();
+    let project = disposable_project_reading(&stub.base_url());
+    let run = read_the_issue_for_a_reader(&project);
+
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let out = String::from_utf8(run.stdout).expect("the human reading is text");
+    let line = out
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("work item   = "))
+        .unwrap_or_else(|| panic!("the human reading carries a work item line: {out}"));
+
+    let verbatim_alone = format!("status \"{}\" (from {SOURCE})", support::JIRA_ISSUE_STATUS);
+
+    assert_eq!(
+        line,
+        format!(
+            "status \"{}\", state in review (from {SOURCE})",
+            support::JIRA_ISSUE_STATUS
+        ),
+        "a caller at a terminal gets this line and no JSON, so the typed state has \
+         to reach it beside the site's own words: {out}"
+    );
+    assert_ne!(
+        line,
+        verbatim_alone,
+        "`{}` and `in review` differ only in case, so this states what the \
+         assertion above rests on: a build that prints the site's words alone \
+         cannot satisfy it",
+        support::JIRA_ISSUE_STATUS
+    );
+}
+
 fn read_the_issue(project: &Scenario) -> std::process::Output {
     let mut command = std::process::Command::new(support::fiddle_binary());
     for name in support::CREDENTIAL_VARS {
@@ -138,6 +178,21 @@ fn read_the_issue(project: &Scenario) -> std::process::Output {
     command.env_remove(USER_CREDENTIAL);
     command
         .args(["inspect", REFERENCE, "--json"])
+        .current_dir(project.dir())
+        .env(USER_CREDENTIAL, THROWAWAY_USER)
+        .env(TOKEN_CREDENTIAL, THROWAWAY_TOKEN)
+        .output()
+        .expect("fiddle runs")
+}
+
+fn read_the_issue_for_a_reader(project: &Scenario) -> std::process::Output {
+    let mut command = std::process::Command::new(support::fiddle_binary());
+    for name in support::CREDENTIAL_VARS {
+        command.env_remove(name);
+    }
+    command.env_remove(USER_CREDENTIAL);
+    command
+        .args(["inspect", REFERENCE])
         .current_dir(project.dir())
         .env(USER_CREDENTIAL, THROWAWAY_USER)
         .env(TOKEN_CREDENTIAL, THROWAWAY_TOKEN)
