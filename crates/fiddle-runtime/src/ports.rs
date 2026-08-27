@@ -160,7 +160,7 @@ mod tests {
                 value: WorkItemState {
                     id: work_id.to_string(),
                     status: format!("read-{read}"),
-                    projected: None,
+                    projected_status: None,
                 },
                 source: SourceRef(format!("test:{work_id}")),
                 revision: None,

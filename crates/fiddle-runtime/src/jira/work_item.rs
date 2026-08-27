@@ -80,7 +80,7 @@ impl WorkItemPort for JiraWorkItemPort {
             value: WorkItemState {
                 id: work_id.to_string(),
                 status: issue.status_name.clone(),
-                projected: Some(project(
+                projected_status: Some(project(
                     &self.names,
                     &issue.status_id,
                     &issue.status_name,

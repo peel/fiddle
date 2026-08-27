@@ -73,7 +73,7 @@ pub struct WorkItemState {
     pub id: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub projected: Option<ProjectedStatus>,
+    pub projected_status: Option<ProjectedStatus>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -170,7 +170,7 @@ mod tests {
         WorkItemState {
             id: "fiddle-m0-demo".to_string(),
             status: "open".to_string(),
-            projected: None,
+            projected_status: None,
         }
     }
 
@@ -192,29 +192,32 @@ mod tests {
     fn a_projected_status_appears_only_when_one_was_projected() {
         let unprojected = serde_json::to_value(work_item()).unwrap();
         assert!(
-            unprojected.get("projected").is_none(),
+            unprojected.get("projected_status").is_none(),
             "a work item nobody projected onto must not carry the key: {unprojected}"
         );
 
         let mut value = work_item();
-        value.projected = Some(ProjectedStatus {
+        value.projected_status = Some(ProjectedStatus {
             state: WorkState::InReview,
             jira_status_id: "10001".into(),
             jira_status_name: "Awaiting Security Review".into(),
             jira_status_category: "In Progress".into(),
         });
         let json = serde_json::to_value(&value).unwrap();
-        assert_eq!(json["projected"]["state"], serde_json::json!("in_review"));
         assert_eq!(
-            json["projected"]["jira_status_id"],
+            json["projected_status"]["state"],
+            serde_json::json!("in_review")
+        );
+        assert_eq!(
+            json["projected_status"]["jira_status_id"],
             serde_json::json!("10001")
         );
         assert_eq!(
-            json["projected"]["jira_status_name"],
+            json["projected_status"]["jira_status_name"],
             serde_json::json!("Awaiting Security Review")
         );
         assert_eq!(
-            json["projected"]["jira_status_category"],
+            json["projected_status"]["jira_status_category"],
             serde_json::json!("In Progress")
         );
     }
@@ -222,7 +225,7 @@ mod tests {
     #[test]
     fn a_projected_status_survives_the_document_it_was_written_to() {
         let mut value = work_item();
-        value.projected = Some(ProjectedStatus {
+        value.projected_status = Some(ProjectedStatus {
             state: WorkState::Blocked,
             jira_status_id: "10004".into(),
             jira_status_name: "Waiting on Vendor".into(),

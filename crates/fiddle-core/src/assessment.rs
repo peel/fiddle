@@ -130,7 +130,7 @@ mod tests {
             value: WorkItemState {
                 id: "x".into(),
                 status: "open".into(),
-                projected: None,
+                projected_status: None,
             },
             source: SourceRef("stub:work/x.json".into()),
             revision: None,

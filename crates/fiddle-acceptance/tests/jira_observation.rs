@@ -57,7 +57,7 @@ fn inspect_reports_a_jira_issue_through_the_public_cli() {
         "the status is reported in the site's own words: {observed}"
     );
     assert_eq!(
-        observed["value"]["projected"]["state"],
+        observed["value"]["projected_status"]["state"],
         "in_review",
         "the document names `In Review` as its in_review status, and the issue's \
          category `{}` would project to in_progress on its own, so this is the \

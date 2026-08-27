@@ -492,7 +492,7 @@ async fn the_port_reports_the_status_verbatim_and_the_updated_time_as_the_revisi
             );
             assert_eq!(value.id, KEY);
             assert_eq!(
-                value.projected.expect("a read issue projects").state,
+                value.projected_status.expect("a read issue projects").state,
                 WorkState::InProgress,
                 "no name is configured, so the status category decides"
             );
@@ -528,7 +528,7 @@ async fn the_configured_names_the_port_was_built_with_reach_its_projection() {
     );
     assert_eq!(
         value
-            .projected
+            .projected_status
             .as_ref()
             .expect("a read issue projects")
             .state,

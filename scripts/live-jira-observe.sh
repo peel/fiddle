@@ -97,7 +97,7 @@ $reported"
   || fail "the issue reported no status"
 [ "$(jq -r '.observations.work_item.available.revision' <<<"$reported")" != "null" ] \
   || fail "the issue reported no revision, so no target identity can name a state of it"
-state=$(jq -r '.observations.work_item.available.value.projected.state' <<<"$reported")
+state=$(jq -r '.observations.work_item.available.value.projected_status.state' <<<"$reported")
 [ "$state" != "null" ] || fail "no typed state was projected"
 [ "$state" != "unknown" ] || note "the real status maps to no configured name and no known category: record it"
 
