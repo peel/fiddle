@@ -1,3 +1,5 @@
+use crate::effect::{AdapterError, EffectOutcome, EffectPhase};
+
 #[derive(Debug, thiserror::Error)]
 pub enum JiraError {
     #[error("the site refused the credential with {status}")]
@@ -23,6 +25,22 @@ pub enum JiraError {
 
     #[error("the site could not be reached: {0}")]
     Unreachable(String),
+}
+
+impl AdapterError for JiraError {
+    fn outcome(&self, phase: EffectPhase) -> EffectOutcome {
+        match phase {
+            EffectPhase::Inspect => EffectOutcome::NotCommitted,
+            EffectPhase::Apply => match self {
+                JiraError::Unauthorized { .. }
+                | JiraError::Forbidden { .. }
+                | JiraError::Absent { .. }
+                | JiraError::AbsentOrRefused { .. }
+                | JiraError::RateLimited(_) => EffectOutcome::NotCommitted,
+                JiraError::Malformed(_) | JiraError::Unreachable(_) => EffectOutcome::Unknown,
+            },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -180,5 +198,97 @@ mod tests {
         let spoken = said.len();
         said.dedup();
         assert_eq!(said.len(), spoken, "two failures read the same: {said:?}");
+    }
+
+    #[test]
+    fn every_failure_names_what_a_write_that_ended_this_way_did() {
+        let pinned = [
+            (
+                JiraError::Unauthorized { status: 401 },
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                JiraError::Forbidden { status: 403 },
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                JiraError::Absent {
+                    key: "IDENT-1".into(),
+                },
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                JiraError::AbsentOrRefused {
+                    key: "IDENT-1".into(),
+                    why: "HTTP 503".into(),
+                },
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                JiraError::RateLimited("HTTP 429".into()),
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                JiraError::Malformed("the body is not an issue".into()),
+                EffectOutcome::Unknown,
+            ),
+            (
+                JiraError::Unreachable("connection refused".into()),
+                EffectOutcome::Unknown,
+            ),
+        ];
+        let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
+        let all: Vec<&str> = cases().iter().map(variant).collect();
+        assert_eq!(named, all, "every variant of JiraError is pinned here");
+        for (case, expected) in pinned {
+            let named = variant(&case);
+            assert_eq!(
+                case.outcome(EffectPhase::Apply),
+                expected,
+                "{named} during a write means this and nothing weaker"
+            );
+        }
+    }
+
+    #[test]
+    fn a_lost_answer_during_apply_is_unknown_and_never_not_committed() {
+        let lost: Vec<&str> = cases()
+            .iter()
+            .filter(|case| case.outcome(EffectPhase::Apply) == EffectOutcome::Unknown)
+            .map(variant)
+            .collect();
+        assert_eq!(
+            lost,
+            ["malformed", "unreachable"],
+            "the site may have written and could not say so in exactly these failures"
+        );
+    }
+
+    #[test]
+    fn the_phase_changes_the_answer_so_a_read_reports_no_write() {
+        for case in cases() {
+            assert_eq!(
+                case.outcome(EffectPhase::Inspect),
+                EffectOutcome::NotCommitted,
+                "{} during a read changed nothing",
+                variant(&case)
+            );
+        }
+        let lost = JiraError::Unreachable("timed out".into());
+        assert_ne!(
+            lost.outcome(EffectPhase::Inspect),
+            lost.outcome(EffectPhase::Apply),
+            "an implementation that ignores the phase fails here"
+        );
+    }
+
+    #[test]
+    fn a_jira_failure_stands_where_the_executor_holds_an_adapter_error() {
+        let held: Box<dyn AdapterError> = Box::new(JiraError::Unreachable("timed out".into()));
+        assert_eq!(
+            held.outcome(EffectPhase::Apply),
+            EffectOutcome::Unknown,
+            "the executor boxes an adapter failure and asks it what a write did"
+        );
     }
 }
