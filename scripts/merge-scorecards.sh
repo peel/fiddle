@@ -111,6 +111,7 @@ echo "$INPUT" | jq -c '
     "guidance": ([$cards[].guidance // empty] | join("\n---\n")),
     "dispatch_count": ([$cards[].dispatch_count // 0] | add)
   } |
+  if ($cards | all(.[]; .mode == "evidence-only")) then .mode = "evidence-only" else . end |
   if ($cards | any(.[]; has("spec_coverage_matrix"))) then
     .spec_coverage_matrix = $merged_coverage
   else . end |

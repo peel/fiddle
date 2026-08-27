@@ -299,28 +299,29 @@ OUTPUT=$(cat "$OUTFILE")
 assert_exit "truncated scorecard -> exit 2" 2 "$EXIT_CODE"
 assert_json "stdout reports the parse failure" ".error" "scorecard is not valid JSON" "$OUTPUT"
 
-echo "Test 13: An evidence-only scorecard still passes with an empty dimensions map"
+echo "Test 13: An evidence-only scorecard passes only when it declares the mode"
 cat > "$TMPDIR/scorecard.json" << 'EOF'
 {
+  "mode": "evidence-only",
   "domains": {
     "general": {
       "dimensions": {}
     }
   },
-  "criteria": []
+  "criteria": [{"id": "tests-pass", "pass": true}]
 }
 EOF
 cat > "$TMPDIR/criteria.json" << 'EOF'
-[]
+[{"id": "tests-pass", "pass": true}]
 EOF
 
 EXIT_CODE=0
 "$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/scorecard.json" --criteria "$TMPDIR/criteria.json" > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
 OUTPUT=$(cat "$OUTFILE")
-assert_exit "evidence-only -> exit 0" 0 "$EXIT_CODE"
+assert_exit "declared evidence-only -> exit 0" 0 "$EXIT_CODE"
 assert_json "verdict is PASS" ".verdict" "PASS" "$OUTPUT"
 assert_json "dimensions map is empty" '.dimensions | length' "0" "$OUTPUT"
-
+assert_json "the verdict carries the declaration forward" ".mode" "evidence-only" "$OUTPUT"
 
 echo "Test 14: A real criterion failure reproduces its recorded verdict (fiddle-ek1e it2)"
 cat > "$TMPDIR/scorecard.json" << 'EOF'
@@ -494,6 +495,127 @@ else
   PASS=$((PASS+1)); echo "  PASS: absent pass reports no misspelling"
 fi
 
+
+echo "Test 18: A scorecard with no dimensions and no criteria is refused, not passed"
+cat > "$TMPDIR/scorecard.json" << 'EOF'
+{"domains": {}, "criteria": []}
+EOF
+cat > "$TMPDIR/criteria.json" << 'EOF'
+[]
+EOF
+
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/scorecard.json" --criteria "$TMPDIR/criteria.json" > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+ERRTEXT=$(cat "$ERRFILE")
+assert_exit "nothing to grade -> exit 2" 2 "$EXIT_CODE"
+assert_json "verdict is not PASS" ".verdict" "null" "$OUTPUT"
+assert_json "stdout names the refusal" ".error" "scorecard has nothing to grade" "$OUTPUT"
+assert_contains "stdout counts what it found" "0 dimensions and 0 criteria" "$OUTPUT"
+assert_contains "stderr states the reason" "0 dimensions and 0 criteria" "$ERRTEXT"
+
+echo "Test 18b: The merge product of a refused scorecard is refused (fiddle-0dzn)"
+cat > "$TMPDIR/scorecard.json" << 'EOF'
+{"domains":{},"criteria":[]}
+EOF
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/scorecard.json" --criteria "$TMPDIR/criteria.json" --tree-sha deadbeef > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+assert_exit "empty merge product -> exit 2" 2 "$EXIT_CODE"
+assert_json "no tree_sha is stamped on a refusal" ".tree_sha" "null" "$OUTPUT"
+
+echo "Test 19: Zero dimensions beside real criteria is refused without a declaration (fiddle-ayrq)"
+cat > "$TMPDIR/scorecard.json" << 'EOF'
+{
+  "domains": { "general": { "dimensions": {} } },
+  "criteria": [
+    {"id": "a", "pass": true},
+    {"id": "b", "pass": true},
+    {"id": "c", "pass": true}
+  ]
+}
+EOF
+cat > "$TMPDIR/criteria.json" << 'EOF'
+[{"id": "a", "pass": true}, {"id": "b", "pass": true}, {"id": "c", "pass": true}]
+EOF
+
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/scorecard.json" --criteria "$TMPDIR/criteria.json" > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+ERRTEXT=$(cat "$ERRFILE")
+assert_exit "undeclared empty dimensions -> exit 2" 2 "$EXIT_CODE"
+assert_json "verdict is not PASS" ".verdict" "null" "$OUTPUT"
+assert_json "stdout names the refusal" ".error" "scorecard scored no dimensions and does not declare evidence-only" "$OUTPUT"
+assert_contains "stderr names the declaration it wanted" 'mode' "$ERRTEXT"
+assert_contains "stderr names the domain that scored nothing" "domain general" "$ERRTEXT"
+
+echo "Test 19b: A mode the envelope does not accept is refused"
+cat > "$TMPDIR/scorecard.json" << 'EOF'
+{
+  "mode": "evidence_only",
+  "domains": { "general": { "dimensions": {} } },
+  "criteria": [{"id": "a", "pass": true}]
+}
+EOF
+cat > "$TMPDIR/criteria.json" << 'EOF'
+[{"id": "a", "pass": true}]
+EOF
+
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/scorecard.json" --criteria "$TMPDIR/criteria.json" > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
+ERRTEXT=$(cat "$ERRFILE")
+assert_exit "unaccepted mode -> exit 2" 2 "$EXIT_CODE"
+assert_contains "stderr names the value it got" 'evidence_only' "$ERRTEXT"
+
+echo "Test 20: Criteria carrying one id twice are refused, not double-counted"
+cat > "$TMPDIR/scorecard.json" << 'EOF'
+{
+  "domains": {
+    "general": {
+      "dimensions": { "correctness": {"score": 8, "threshold": 7} }
+    }
+  }
+}
+EOF
+cat > "$TMPDIR/criteria.json" << 'EOF'
+[
+  {"id": "a", "pass": true},
+  {"id": "b", "pass": true},
+  {"id": "a", "pass": true},
+  {"id": "b", "pass": false}
+]
+EOF
+
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/scorecard.json" --criteria "$TMPDIR/criteria.json" > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+ERRTEXT=$(cat "$ERRFILE")
+assert_exit "duplicated criterion ids -> exit 2" 2 "$EXIT_CODE"
+assert_json "verdict is neither PASS nor FAIL" ".verdict" "null" "$OUTPUT"
+assert_contains "stderr names the duplicated id" 'duplicate criterion id: `a`' "$ERRTEXT"
+assert_contains "stderr names the other duplicated id" 'duplicate criterion id: `b`' "$ERRTEXT"
+assert_contains "stderr counts the entries against the ids" "4 criteria carry 2 distinct ids" "$ERRTEXT"
+
+echo "Test 21: A domain scoring nothing beside a scored domain is refused at 1g, not here"
+cat > "$TMPDIR/scorecard.json" << 'EOF'
+{
+  "domains": {
+    "general": { "dimensions": { "correctness": {"score": 8, "threshold": 7} } },
+    "frontend": { "dimensions": {} }
+  },
+  "criteria": [{"id": "a", "pass": true}]
+}
+EOF
+cat > "$TMPDIR/criteria.json" << 'EOF'
+[{"id": "a", "pass": true}]
+EOF
+
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/scorecard.json" --criteria "$TMPDIR/criteria.json" > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+assert_exit "a partly scored card still grades -> exit 0" 0 "$EXIT_CODE"
+assert_json "the scored dimension is graded" '.dimensions["general.correctness"]' "8" "$OUTPUT"
+assert_json "the unscored domain contributes nothing" '.dimensions | length' "1" "$OUTPUT"
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

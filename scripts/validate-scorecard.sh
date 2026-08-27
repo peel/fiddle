@@ -71,6 +71,10 @@ FAILURES=$(jq -n \
   [
     (if ($c.provider | nonempty) then empty else "provider must be a non-empty string" end),
 
+    (if ($c.mode != null and $c.mode != "evidence-only") then
+       "mode accepts only \"evidence-only\", got \($c.mode | tojson)"
+     else empty end),
+
     (if (($c.domains == null) or (($c.domains | type) == "object")) then empty
      else "domains must be an object keyed by domain name, got \($c.domains | type)" end),
 
@@ -96,7 +100,21 @@ FAILURES=$(jq -n \
         end
       end),
 
+    (($c.domains | if type == "object" then . else {} end) as $domains |
+     ([$domains[] | if type == "object" then (.dimensions | if type == "object" then length else 0 end) else 0 end] | add // 0) as $scored |
+     if $scored == 0 and $c.mode != "evidence-only" then
+       "scorecard scored no dimensions and does not declare `mode`: \"evidence-only\"",
+       ($domains | to_entries[] |
+        select((.value | type) == "object" and ((.value.dimensions | type) == "object") and ((.value.dimensions | length) == 0)) |
+        "domain \(.key): dimensions is empty, which only a declared evidence-only scorecard may be")
+     else empty end),
+
     (if ($c.criteria | type) != "array" then "criteria must be an array" else empty end),
+
+    ((if ($c.criteria | type) == "array" then $c.criteria else [] end) |
+      [.[] | select(type == "object") | .id | select(type == "string")] |
+      group_by(.) | map(select(length > 1)) | .[] |
+      "duplicate criterion id: \(.[0]) appears \(length) times, so one verdict would overwrite another"),
 
     ((if ($c.criteria | type) == "array" then $c.criteria else [] end) | to_entries[] |
       .key as $index | .value as $entry |

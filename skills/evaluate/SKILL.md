@@ -20,7 +20,7 @@ Score only what the evidence supports, and cite the artifact that supports it: t
 
 ## Dimensions
 
-Dimensions are scored only when the task's eval block sets thresholds for the domain. When no thresholds are set, emit an explicitly empty `"dimensions": {}` and evaluate criteria alone. The key is always present: only the explicitly empty object distinguishes evidence-only convergence from a dimension you dropped.
+Dimensions are scored only when the task's eval block sets thresholds for the domain. When no thresholds are set, emit an explicitly empty `"dimensions": {}` **and the top-level declaration `"mode": "evidence-only"`**, then evaluate criteria alone. Both are required together: the empty object alone cannot be told from a dimension you dropped, so a card carrying it without the declaration is refused by `scripts/validate-scorecard.sh` and `scripts/check-thresholds.sh`. Never emit the declaration beside scored dimensions, and never omit the `dimensions` key.
 
 When thresholds are configured:
 
@@ -96,10 +96,26 @@ Return this JSON structure to stdout, with no markdown fences and no commentary 
 "spec_defect": { "detected": true, "reason": "Spec requires calling resolveIdentity() with a batch arg, but that function is single-record only; the batch path is a different API. Faithful implementation would break resolution." }
 ```
 
+An evidence-only card — what a bean whose eval block sets no thresholds for the domain returns —
+carries the declaration and the empty object together:
+
+```json
+{
+  "provider": "your-provider-name",
+  "mode": "evidence-only",
+  "domains": { "general": { "dimensions": {} } },
+  "criteria": [ { "id": "criterion-id", "pass": true, "evidence": "Evidence text" } ]
+}
+```
+
+One without the other is refused: `"dimensions": {}` alone reads as scores you dropped, and `mode`
+beside scored dimensions contradicts itself.
+
 ### Schema Rules
 
 - `domains`: object keyed by domain name (e.g., "general", "frontend", "backend") — matching the domain template you were given
-- `domains.<domain>.dimensions`: scored dimensions when the task's eval block sets thresholds for the domain; an explicitly empty object `{}` for evidence-only evaluation. The key is always present; omitting it is a schema violation
+- `domains.<domain>.dimensions`: scored dimensions when the task's eval block sets thresholds for the domain; an explicitly empty object `{}` for evidence-only evaluation, which the top-level `"mode": "evidence-only"` must declare. The key is always present; omitting it is a schema violation
+- `mode`: absent on a scored card, or exactly `"evidence-only"` when no dimension was scored. Any other value is refused
 - `domains.<domain>.dimensions` keys: snake_case, matching the domain template's dimension names exactly (when thresholds are configured)
 - `score`: integer 1-10, no decimals, no nulls
 - `threshold`: number, required on every scored dimension — the domain template's "Default threshold" or the bean's override. `check-thresholds.sh` has nothing to compare against without it and refuses the card
@@ -120,7 +136,7 @@ Return this JSON structure to stdout, with no markdown fences and no commentary 
 1. Read the task description and acceptance criteria.
 2. Read the implementation (code, files, diffs) and the evidence pack.
 3. Read the domain template and internalize its scoring scales.
-4. Score each dimension independently on the template's scale when the eval block sets thresholds; otherwise emit an explicitly empty `"dimensions": {}`.
+4. Score each dimension independently on the template's scale when the eval block sets thresholds; otherwise emit an explicitly empty `"dimensions": {}` and declare `"mode": "evidence-only"`.
 5. Evaluate each criterion from the Evaluation block, citing the evidence pack artifact behind each verdict.
 6. Check antipatterns if any were provided.
 7. Compare against the prior scorecard if this is iteration 2 or later.

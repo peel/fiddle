@@ -40,7 +40,7 @@ than grading around a gap. These are the only accepted names:
 | --- | --- | --- | --- |
 | top level | `provider` | non-empty string | names the evaluator that produced this card |
 | top level | `domains` | object | keyed by domain name; a top-level domain key instead is refused |
-| `domains.<d>` | `dimensions` | object | explicitly `{}` for an evidence-only evaluation; never absent |
+| `domains.<d>` | `dimensions` | object | `{}` only on a card that declares `mode` `"evidence-only"`; never absent |
 | `domains.<d>.dimensions.<k>` | `score` | number | 1-10 integer, never a string |
 | `domains.<d>.dimensions.<k>` | `threshold` | number | the domain template's default, or the bean's override |
 | `domains.<d>.dimensions.<k>` | `evidence` | non-empty string | `comment` is accepted as an alias |
@@ -62,6 +62,14 @@ evaluator with this file in its context instead.
 ## Optional fields
 
 - `antipatterns_detected` — array, empty when none found. Entries are either an id string or `{"id", "severity", "evidence"}`. `check-thresholds.sh` carries them into its verdict as `findings`, which is what convergence compares when two iterations graded the same tree; an entry stating `severity: "low"` is excluded from that comparison and one stating no severity is not. See `skills/develop-loop/convergence-and-recovery.md`.
+- `mode` — absent on a scored card, or exactly `"evidence-only"`. It declares that the card
+  scored no dimensions on purpose. `check-thresholds.sh` and `validate-scorecard.sh` both refuse a
+  card that scored none and does not declare it, and `check-convergence.sh` takes the single-pass
+  evidence-only path only when the declaration is present. An empty `dimensions` on its own cannot
+  be told from an evaluator that dropped its scores: in M5a a well-formed card carrying
+  `"dimensions": {}` beside three valid criteria was accepted by all three tools, and the bean
+  would have converged with no scores at all. Absent and empty are different, so the intent is
+  declared rather than inferred.
 - `spec_defect` — `null`, absent, or `{"detected": true, "reason": "<non-empty>"}`. Flags
   spec-vs-reality, not implementation-vs-spec; see `skills/evaluate/SKILL.md`.
 - `guidance` — actionable fix instructions; empty string when every dimension passes.
@@ -72,9 +80,9 @@ evaluator with this file in its context instead.
 
 | Script | Reads | Refuses |
 | --- | --- | --- |
-| `scripts/validate-scorecard.sh` | one raw per-provider card, plus `--criteria-ids` | any field above missing or mistyped, criteria ids not matching the bean in both directions, empty evidence, a `spec_defect` with no reason |
+| `scripts/validate-scorecard.sh` | one raw per-provider card, plus `--criteria-ids` | any field above missing or mistyped, criteria ids not matching the bean in both directions, one id twice, empty evidence, a `spec_defect` with no reason, zero scored dimensions with no `mode` declaration |
 | `scripts/merge-scorecards.sh` | a JSON array of validated cards | — |
-| `scripts/check-thresholds.sh` | `--scorecard` the merged card, `--criteria` its graded `criteria` array, `--tree-sha` the tree graded | a dimension with no numeric `score` or `threshold`, a criterion with no string `id` or boolean `pass` |
+| `scripts/check-thresholds.sh` | `--scorecard` the merged card, `--criteria` its graded `criteria` array, `--tree-sha` the tree graded | a dimension with no numeric `score` or `threshold`, a criterion with no string `id` or boolean `pass`, one id twice, zero dimensions and zero criteria, zero scored dimensions with no `mode` declaration |
 
 `check-thresholds.sh` also stamps whatever `--tree-sha` it is given onto the verdict it emits, as
 `tree_sha`. Nothing in the envelope carries it: the tree is a property of the checkout that was
@@ -93,3 +101,10 @@ scripts/check-thresholds.sh --scorecard scorecard.json --criteria criteria-grade
 Both scripts exit 2 on a card they cannot read, printing one line per problem naming the field
 and the dimension or criterion it belongs to. Exit 2 is not a FAIL verdict: repair or
 re-dispatch, and never feed it to `check-convergence.sh`.
+
+A card with nothing in it is a card they cannot read. `check-thresholds.sh` exits 2 with
+`{"error": "scorecard has nothing to grade"}` when the merged card carries zero dimensions and
+zero criteria, because a PASS there reports an evaluation that never ran — which is what
+`{"domains":{},"criteria":[]}`, the merge product of a refused card, used to return. One criterion
+id appearing twice is refused for the same reason: the grader counts every entry, so a duplicate
+is counted twice and one verdict overwrites the other in the merge.

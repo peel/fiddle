@@ -18,9 +18,11 @@ with reason "no evidence".
 Scored dimensions are optional for this domain. Include the `dimensions`
 object in your scorecard only when the task's eval block sets thresholds for
 this domain. When no thresholds are set, emit an explicitly empty object,
-`"dimensions": {}`, and the task converges on evidence criteria alone. The
-key is always present: only the explicitly empty object signals
-evidence-only convergence.
+`"dimensions": {}`, together with the top-level declaration
+`"mode": "evidence-only"`, and the task converges on evidence criteria
+alone. Both are required: the empty object on its own cannot be told from a
+dimension you dropped, and the graders refuse a card that scores nothing
+without the declaration.
 
 The dimension definitions below apply when thresholds are configured.
 

@@ -421,6 +421,61 @@ assert_json "remediation deduplicates by requirement" '[.remediation_beans[] | s
 assert_json "remediation keeps most specific description" '.remediation_beans[] | select(.requirement=="R1") | .description' "the more specific remediation" "$OUT"
 assert_json "remediation records source providers" '.remediation_beans[] | select(.requirement=="R1") | .source_providers | sort | join(",")' "claude,codex" "$OUT"
 
+echo "=== Test 14: an all-evidence-only merge carries the declaration forward ==="
+INPUT='[
+  {
+    "task_id": "bean-14",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "mode": "evidence-only",
+    "domains": { "general": { "dimensions": {} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e1"}]
+  },
+  {
+    "task_id": "bean-14",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "mode": "evidence-only",
+    "domains": { "general": { "dimensions": {} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e2"}]
+  }
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "merged card declares evidence-only" ".mode" "evidence-only" "$OUT"
+
+echo "$OUT" > "$TMPDIR/merged-14.json"
+echo "$OUT" | jq -c '.criteria' > "$TMPDIR/criteria-14.json"
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/merged-14.json" --criteria "$TMPDIR/criteria-14.json" > "$TMPDIR/verdict-14.json" 2>/dev/null || EXIT_CODE=$?
+assert_exit "the grader accepts the declared merge" 0 "$EXIT_CODE"
+assert_json "the verdict carries the declaration" ".mode" "evidence-only" "$(cat "$TMPDIR/verdict-14.json")"
+
+echo "=== Test 15: one scored card among evidence-only cards drops the declaration ==="
+INPUT='[
+  {
+    "task_id": "bean-15",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "mode": "evidence-only",
+    "domains": { "general": { "dimensions": {} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e1"}]
+  },
+  {
+    "task_id": "bean-15",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e2"}]
+  }
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "merged card claims no declaration" ".mode" "null" "$OUT"
+assert_json "the scored dimension survives the merge" '.domains.general.dimensions.correctness.score' "8" "$OUT"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

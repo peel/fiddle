@@ -84,7 +84,20 @@ UNGRADEABLE=$(jq -n --slurpfile card "$SCORECARD" --slurpfile crit "$CRITERIA" '
               "\($where): `pass` must be a boolean, got \($entry.pass | type)"
             else empty end)
          end)
-     end)
+     end),
+
+    (if ($c | type) == "object" and $c.mode != null and $c.mode != "evidence-only" then
+       "scorecard: `mode` accepts only \"evidence-only\", got \($c.mode | tojson)"
+     else empty end),
+
+    (if ($k | type) == "array" then
+       ([$k[] | select(type == "object") | .id | select(type == "string")]) as $ids |
+       if ($ids | length) > ($ids | unique | length) then
+         "criteria: \($ids | length) criteria carry \($ids | unique | length) distinct ids, so a duplicate is counted twice",
+         ($ids | group_by(.) | map(select(length > 1)) | .[] |
+          "criteria: duplicate criterion id: `\(.[0])`")
+       else empty end
+     else empty end)
   ]
 ')
 
@@ -102,6 +115,41 @@ if [[ "$(echo "$UNGRADEABLE" | jq 'length')" -gt 0 ]]; then
   jq -n --argjson problems "$UNGRADEABLE" --arg schema "$SCHEMA_DOC" \
     '{error: "scorecard cannot be graded", schema: $schema, problems: $problems}'
   exit 2
+fi
+
+MODE=$(jq -r '.mode // "" | tostring' "$SCORECARD")
+DIM_TOTAL=$(jq '[(.domains // {}) | .[] | (.dimensions // {}) | length] | add // 0' "$SCORECARD")
+CRIT_TOTAL=$(jq 'length' "$CRITERIA")
+
+refuse() {
+  local error="$1"; shift
+  {
+    echo "$error"
+    printf '%s\n' "$@"
+    echo "schema: $SCHEMA_DOC"
+  } >&2
+  printf '%s\n' "$@" | jq -Rs 'split("\n") | map(select(length > 0))' | \
+    jq --arg error "$error" --arg schema "$SCHEMA_DOC" \
+      '{error: $error, schema: $schema, problems: .}'
+  exit 2
+}
+
+if [[ "$DIM_TOTAL" -eq 0 && "$CRIT_TOTAL" -eq 0 ]]; then
+  refuse "scorecard has nothing to grade" \
+    "scorecard carries 0 dimensions and 0 criteria: a PASS here would report an evaluation that did not run" \
+    "this is the shape a scorecard takes when a merge produced nothing, not the shape of a passing evaluation"
+fi
+
+if [[ "$DIM_TOTAL" -eq 0 && "$MODE" != "evidence-only" ]]; then
+  EMPTY_DOMAINS=$(jq -r '
+    (.domains // {}) | to_entries[] |
+    select(((.value.dimensions // {}) | length) == 0) |
+    "domain \(.key): dimensions is empty"
+  ' "$SCORECARD")
+  refuse "scorecard scored no dimensions and does not declare evidence-only" \
+    ${EMPTY_DOMAINS:+"$EMPTY_DOMAINS"} \
+    'an evaluation that deliberately scores no dimensions declares `mode`: "evidence-only"' \
+    "absent and empty are different: without the declaration this card cannot be told from one that dropped its scores"
 fi
 
 FAILING_DIMS=$(jq -c '
@@ -141,15 +189,18 @@ if [[ "$FAIL_DIM_COUNT" -eq 0 && "$FAIL_CRIT_COUNT" -eq 0 ]]; then
   jq -n --argjson passing "$PASSING_DIMS" \
         --argjson dimensions "$DIMENSIONS_MAP" \
         --argjson findings "$FINDINGS" \
+        --arg mode "$MODE" \
         --arg tree_sha "$TREE_SHA" '{
     verdict: "PASS",
+    mode: $mode,
     tree_sha: $tree_sha,
     failing_dimensions: [],
     failing_criteria: [],
     passing_dimensions: $passing,
     dimensions: $dimensions,
     findings: $findings
-  } | if .tree_sha == "" then del(.tree_sha) else . end'
+  } | if .tree_sha == "" then del(.tree_sha) else . end
+      | if .mode == "" then del(.mode) else . end'
   exit 0
 else
   jq -n --argjson failing_dims "$FAILING_DIMS" \
@@ -157,14 +208,17 @@ else
         --argjson passing "$PASSING_DIMS" \
         --argjson dimensions "$DIMENSIONS_MAP" \
         --argjson findings "$FINDINGS" \
+        --arg mode "$MODE" \
         --arg tree_sha "$TREE_SHA" '{
     verdict: "FAIL",
+    mode: $mode,
     tree_sha: $tree_sha,
     failing_dimensions: $failing_dims,
     failing_criteria: $failing_crit,
     passing_dimensions: $passing,
     dimensions: $dimensions,
     findings: $findings
-  } | if .tree_sha == "" then del(.tree_sha) else . end'
+  } | if .tree_sha == "" then del(.tree_sha) else . end
+      | if .mode == "" then del(.mode) else . end'
   exit 1
 fi

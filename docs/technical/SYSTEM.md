@@ -115,7 +115,8 @@ alone; gemini was removed after two consecutive authentication failures.
 - `docs/specs/` and `docs/plans/` stay gitignored. The bean body carries the durable contract.
 - A worktree agent routes every bean call through `--beans-path`. Only the lead changes bean status (ADR 002).
 - An evaluator interprets a pre-gathered evidence pack and gathers nothing itself (ADR 007).
-- An evidence-only scorecard emits an explicit `"dimensions": {}`. The key is never omitted.
+- An evidence-only scorecard emits an explicit `"dimensions": {}` and declares `"mode": "evidence-only"`. The key is never omitted, and the declaration is never inferred from the empty object.
+- A scorecard tool refuses empty input rather than answering from it: zero dimensions with no declaration, zero dimensions and zero criteria, and one criterion id twice all exit 2.
 - Every scorecard carries a criteria array; `merge-scorecards.sh` rejects one without it.
 - `check-convergence.sh` accepts a terminal result from the final allowed dispatch before it reports `DISPATCHES_EXCEEDED`.
 - A subagent model resolves through `scripts/resolve-subagent-model.sh`. A role override wins over a phase default, and `default` inherits the session.

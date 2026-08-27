@@ -40,13 +40,24 @@ After all domain evaluators return, merge their scorecards:
 # Merge per-domain (already provider-merged) scorecards into a single cross-domain scorecard.
 # Use only scorecard-{domain}.json files (not scorecard-{domain}-{provider}.json raw files).
 jq -s '
-  { domains: (reduce .[] as $s ({}; . + ($s.domains // {}))) ,
-    criteria: [.[] | .criteria[]?] }
+  . as $cards |
+  { domains: (reduce $cards[] as $s ({}; . + ($s.domains // {}))) ,
+    criteria: [$cards[] | .criteria[]?] } |
+  if ($cards | all(.[]; .mode == "evidence-only")) then .mode = "evidence-only" else . end
 ' scorecard-general.json scorecard-frontend.json ... > scorecard.json
 
 # Extract merged criteria
 jq '.criteria' scorecard.json > criteria.json
 ```
+
+The `mode` line carries an evidence-only declaration across the domain union, and only when every
+domain declared it. Without that line the declaration is dropped here and `check-thresholds.sh`
+refuses the merged card, because a card scoring no dimensions and declaring nothing cannot be told
+from one whose evaluator dropped its scores. `merge-scorecards.sh` applies the same rule at 1g.
+
+Criteria are concatenated, not deduplicated. Two domains that graded the same criterion id produce
+that id twice, and `check-thresholds.sh` refuses the card rather than counting one verdict twice —
+which is what an evaluator emitting another domain's ids produced in M5a: 8 criteria where 4 exist.
 
 List only the per-domain merged scorecards (one per resolved domain), not the raw per-provider scorecards (`scorecard-{domain}-{provider}.json`).
 

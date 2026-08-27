@@ -67,7 +67,7 @@ This is the same contract the evaluation protocol in `## Instructions` states, a
 ### Field Requirements
 
 - **provider** (required): Your provider identifier (e.g. `"codex"`, `"gemini"`). Match the provider name used to dispatch you.
-- **domains** (required): Object keyed by domain name. Each domain contains a `dimensions` object with scored dimensions. An explicitly empty `dimensions: {}` is valid for an evidence-only scorecard.
+- **domains** (required): Object keyed by domain name. Each domain contains a `dimensions` object with scored dimensions. An explicitly empty `dimensions: {}` is valid only on a scorecard that also carries the top-level declaration `"mode": "evidence-only"`; without it the graders refuse the card.
 - **score** (required): Integer 1-10 for each dimension.
 - **threshold** (required): The minimum passing score for this dimension (copied from the evaluation template).
 - **comment** (required per scored dimension): Brief justification, non-empty. `evidence` is accepted as an alias; `scripts/validate-scorecard.sh` checks either.

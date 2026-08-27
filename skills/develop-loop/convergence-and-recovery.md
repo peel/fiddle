@@ -14,6 +14,38 @@ That protocol runs a pre-merge Spec-Defect Check, so its result is known once th
 
 Otherwise continue to 1i.
 
+### Precondition for 1j: the merged card must be gradeable
+
+The graders assert this. Do not assert it by hand. `check-thresholds.sh` exits 2 with a reason,
+rather than returning a verdict, when the merged card:
+
+| the merged card | the reason it exits 2 |
+|---|---|
+| carries 0 dimensions and 0 criteria | `scorecard has nothing to grade` |
+| scored no dimensions and declares no `mode` | `scorecard scored no dimensions and does not declare evidence-only` |
+| carries one criterion id twice | `duplicate criterion id` |
+
+Each is a mis-shaped card and not a failing one: repair it or re-dispatch, and never pass an exit-2
+result to `check-convergence.sh`. The rule counts dimensions across the whole card, because a bean
+may set thresholds for one domain and none for another. One domain scoring nothing is caught at 1g
+instead, by `validate-scorecard.sh`, where every card carries exactly one domain.
+
+An evaluation that scores no dimensions on purpose declares `"mode": "evidence-only"` on the card
+(`skills/develop/scorecard-envelope.md`). Both merges carry the declaration forward only when every
+input card holds it, `check-thresholds.sh` stamps it on the verdict, and `check-convergence.sh`
+takes the one-pass evidence-only path only when it is there. An empty `dimensions` alone is not the
+declaration.
+
+Two beans in M5a reached this point with a card holding no scores, and both were caught only by a
+check the operator ran by hand on every bean after `fiddle-0dzn`:
+
+    DIMS=$(jq '[.domains[]?.dimensions // {} | length] | add // 0' scorecard.json)
+    CRIT=$(jq 'length' criteria.json)
+    [ "$DIMS" -gt 0 ] && [ "$CRIT" -gt 0 ] || exit 2
+
+That check now lives in the tools. A precondition applied by hand protects only the beans whose
+operator remembers to apply it.
+
 ## 1i. Attended Scorecard Gate
 
 If `evaluators.attended` is true in orchestrate.json, follow: `skills/develop-loop/attended-gate.md`. When it is false, go straight to 1j.
@@ -27,14 +59,16 @@ scripts/check-thresholds.sh --scorecard {scorecard_file} --criteria {criteria_fi
 scripts/check-convergence.sh --current {verdict_file} --history {history_file} --max-dispatches N --current-dispatches M
 ```
 
-`check-thresholds.sh` takes the merged scorecard (from 1h, as corrected in 1i) and returns `PASS` (exit 0) or `FAIL` (exit 1), naming the failing domain(s) and including a `dimensions` flat map (`{"frontend.correctness": 8, ...}`). It returns neither when the input cannot be graded: a dimension with no `threshold`, or a `--criteria` entry with no `pass`, exits 2 with `{"error", "problems"}` on stdout, one stderr line per problem naming the missing field and the dimension or criterion id, and a stderr line naming the envelope it wanted (`skills/develop/scorecard-envelope.md`). That is a mis-shaped scorecard, not a failing one — repair it or re-dispatch, and do not feed an exit-2 result to `check-convergence.sh`. `{criteria_file}` is the scorecard's graded `criteria` array (`jq '.criteria' {scorecard_file}`), never the ungraded briefing array the evaluator was given. Pass that output to `check-convergence.sh` as `--current`, and append it to the `--history` array for later checks. `check-convergence.sh` returns:
+`check-thresholds.sh` takes the merged scorecard (from 1h, as corrected in 1i) and returns `PASS` (exit 0) or `FAIL` (exit 1), naming the failing domain(s) and including a `dimensions` flat map (`{"frontend.correctness": 8, ...}`). It returns neither when the input cannot be graded: a dimension with no `threshold`, a `--criteria` entry with no `pass`, one criterion id twice, or a card with no scores and no evidence-only declaration exits 2 with `{"error", "problems"}` on stdout, one stderr line per problem naming the missing field and the dimension or criterion id, and a stderr line naming the envelope it wanted (`skills/develop/scorecard-envelope.md`). That is a mis-shaped scorecard, not a failing one — repair it or re-dispatch, and do not feed an exit-2 result to `check-convergence.sh`. `{criteria_file}` is the scorecard's graded `criteria` array (`jq '.criteria' {scorecard_file}`), never the ungraded briefing array the evaluator was given. Pass that output to `check-convergence.sh` as `--current`, and append it to the `--history` array for later checks. `check-convergence.sh` returns:
 
-- **CONVERGED** (exit 0) — two consecutive passes, with no score regression across a changed tree and no contradiction on an unchanged one
+- **CONVERGED** (exit 0) — two consecutive passes, with no score regression across a changed tree and no contradiction on an unchanged one. A verdict declaring `mode` `"evidence-only"` and carrying no dimension scores converges on one pass: it has no scores for a second pass to confirm. A verdict that carries no scores and no declaration takes the two-pass path
 - **FAIL** (exit 1) — thresholds not met
 - **PASS_PENDING** (exit 1) — passed once, needs a consecutive pass
 - **PASS_REGRESSED** (exit 1) — passed but regressed on previously-passing dimensions, the tree having changed in between
 - **CONTESTED** (exit 2) — two iterations on the same tree contradict each other about a criterion, a dimension, or a finding
 - **DISPATCHES_EXCEEDED** (exit 2) — budget exhausted
+
+`check-convergence.sh` also exits 2 with `{"error": "current verdict is not a check-thresholds.sh result"}` when `--current` names a file whose `verdict` is neither `PASS` nor `FAIL`. That is a refused or hand-made card reaching the convergence check, not a convergence result.
 
 ### Two iterations, two cases
 

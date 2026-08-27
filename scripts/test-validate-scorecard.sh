@@ -70,6 +70,7 @@ echo "Test 2: missing provider → exit 2"
 cat > "$SC" << 'EOF'
 {
   "task_id": "t-2",
+  "mode": "evidence-only",
   "domains": { "infrastructure": { "dimensions": {} } },
   "criteria": [
     { "id": "a", "pass": true, "evidence": "e1" },
@@ -86,6 +87,7 @@ echo "Test 3: criteria id mismatch (extra + missing) → exit 2 naming ids"
 cat > "$SC" << 'EOF'
 {
   "provider": "claude",
+  "mode": "evidence-only",
   "domains": { "infrastructure": { "dimensions": {} } },
   "criteria": [
     { "id": "id_alpha", "pass": true, "evidence": "e1" },
@@ -102,6 +104,7 @@ echo "Test 4a: empty evidence on a criterion → exit 2"
 cat > "$SC" << 'EOF'
 {
   "provider": "claude",
+  "mode": "evidence-only",
   "domains": { "infrastructure": { "dimensions": {} } },
   "criteria": [
     { "id": "id_alpha", "pass": true, "evidence": "e1" },
@@ -190,10 +193,11 @@ run "a,b"
 assert_exit "dimensions not object → exit 2" 2 "$EXIT_CODE"
 assert_contains "names dimensions" "dimensions" "$ERR"
 
-echo "Test 6: explicit empty dimensions {} → exit 0"
+echo "Test 6: explicit empty dimensions {} with the declaration → exit 0"
 cat > "$SC" << 'EOF'
 {
   "provider": "claude",
+  "mode": "evidence-only",
   "domains": { "infrastructure": { "dimensions": {} } },
   "criteria": [
     { "id": "a", "pass": true, "evidence": "e1" },
@@ -208,6 +212,7 @@ echo "Test 7: spec_defect detected:true without reason → exit 2"
 cat > "$SC" << 'EOF'
 {
   "provider": "claude",
+  "mode": "evidence-only",
   "domains": { "infrastructure": { "dimensions": {} } },
   "criteria": [
     { "id": "a", "pass": true, "evidence": "e1" },
@@ -224,6 +229,7 @@ echo "Test 7b: spec_defect detected:false without reason → exit 0"
 cat > "$SC" << 'EOF'
 {
   "provider": "claude",
+  "mode": "evidence-only",
   "domains": { "infrastructure": { "dimensions": {} } },
   "criteria": [
     { "id": "a", "pass": true, "evidence": "e1" },
@@ -247,6 +253,7 @@ echo "Test 9: criterion/met instead of id/pass → exit 2 naming both spellings"
 cat > "$SC" << 'EOF'
 {
   "provider": "claude",
+  "mode": "evidence-only",
   "domains": { "general": { "dimensions": {} } },
   "criteria": [
     { "criterion": "a", "met": true, "evidence": "e1" }
@@ -306,6 +313,7 @@ echo "Test 12: criteria mis-nested under domains is reported, not a jq crash"
 cat > "$SC" << 'EOF'
 {
   "provider": "claude",
+  "mode": "evidence-only",
   "domains": {
     "criteria": [
       { "id": "a", "pass": true, "evidence": "e1" }
@@ -317,6 +325,68 @@ run "a"
 assert_exit "mis-nested criteria → exit 2" 2 "$EXIT_CODE"
 assert_json_array "error is a JSON array, not a jq trace" "$ERR"
 assert_contains "names the mis-nested key as a domain" "domain criteria" "$ERR"
+
+echo "Test 13: empty dimensions with no declaration → exit 2 (fiddle-ayrq)"
+cat > "$SC" << 'EOF'
+{
+  "provider": "codex",
+  "domains": { "general": { "dimensions": {} } },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" },
+    { "id": "b", "pass": true, "evidence": "e2" }
+  ]
+}
+EOF
+run "a,b"
+assert_exit "undeclared empty dimensions → exit 2" 2 "$EXIT_CODE"
+assert_json_array "error is a JSON array" "$ERR"
+assert_contains "names the domain that scored nothing" "domain general" "$ERR"
+assert_contains "names the declaration it wanted" 'mode' "$ERR"
+
+echo "Test 14: no domains at all → exit 2 for the same reason"
+cat > "$SC" << 'EOF'
+{
+  "provider": "codex",
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" }
+  ]
+}
+EOF
+run "a"
+assert_exit "no domains → exit 2" 2 "$EXIT_CODE"
+assert_contains "names the missing scores" "scored no dimensions" "$ERR"
+
+echo "Test 15: one criterion id twice → exit 2, not silently collapsed"
+cat > "$SC" << 'EOF'
+{
+  "provider": "codex",
+  "mode": "evidence-only",
+  "domains": { "general": { "dimensions": {} } },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" },
+    { "id": "a", "pass": false, "evidence": "e2" },
+    { "id": "b", "pass": true, "evidence": "e3" }
+  ]
+}
+EOF
+run "a,b"
+assert_exit "duplicated criterion id → exit 2" 2 "$EXIT_CODE"
+assert_contains "names the duplicated id" "duplicate criterion id" "$ERR"
+
+echo "Test 16: a mode the envelope does not accept → exit 2"
+cat > "$SC" << 'EOF'
+{
+  "provider": "codex",
+  "mode": "evidence_only",
+  "domains": { "general": { "dimensions": {} } },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" }
+  ]
+}
+EOF
+run "a"
+assert_exit "unaccepted mode → exit 2" 2 "$EXIT_CODE"
+assert_contains "names the value it got" "evidence_only" "$ERR"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

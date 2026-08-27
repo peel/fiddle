@@ -32,7 +32,19 @@ if [[ "$CURRENT_DISPATCHES" -gt "$MAX_DISPATCHES" ]]; then
   emit_budget_exhausted
 fi
 
-VERDICT=$(jq -r '.verdict' "$CURRENT")
+VERDICT=$(jq -r '.verdict // "" | tostring' "$CURRENT")
+case "$VERDICT" in
+  PASS|FAIL) ;;
+  *)
+    echo "current verdict names neither PASS nor FAIL: \"$VERDICT\"" >&2
+    echo "--current takes a check-thresholds.sh verdict, which is refused on an ungradeable card" >&2
+    jq -n --arg verdict "$VERDICT" \
+      '{"error":"current verdict is not a check-thresholds.sh result","verdict":$verdict}'
+    exit 2
+    ;;
+esac
+
+MODE=$(jq -r '.mode // "" | tostring' "$CURRENT")
 HISTORY_LEN=$(jq 'length' "$HISTORY")
 
 CURRENT_TREE=$(jq -r '.tree_sha // "" | tostring' "$CURRENT")
@@ -114,7 +126,7 @@ if [[ "$VERDICT" != "PASS" ]]; then
 fi
 
 DIM_COUNT=$(jq 'if (.dimensions | type) == "object" then (.dimensions | length) else -1 end' "$CURRENT")
-if [[ "$DIM_COUNT" -eq 0 ]]; then
+if [[ "$DIM_COUNT" -eq 0 && "$MODE" == "evidence-only" ]]; then
   echo '{"status":"CONVERGED","mode":"evidence-only"}'
   exit 0
 fi

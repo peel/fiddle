@@ -90,9 +90,9 @@ OUTPUT=$(cat "$OUTFILE")
 assert_exit "dispatches exceeded → exit 2" 2 "$EXIT_CODE"
 assert_json "status DISPATCHES_EXCEEDED" ".status" "DISPATCHES_EXCEEDED" "$OUTPUT"
 
-echo "Test 6: PASS with empty dimensions map → CONVERGED on first pass"
+echo "Test 6: PASS declaring evidence-only → CONVERGED on first pass"
 cat > "$TMPDIR/current.json" << 'EOF'
-{"verdict":"PASS","failing_dimensions":[],"failing_criteria":[],"dimensions":{}}
+{"verdict":"PASS","mode":"evidence-only","failing_dimensions":[],"failing_criteria":[],"dimensions":{}}
 EOF
 echo "[]" > "$TMPDIR/history.json"
 EXIT_CODE=0
@@ -113,9 +113,9 @@ OUTPUT=$(cat "$OUTFILE")
 assert_exit "judgment first pass → exit 1" 1 "$EXIT_CODE"
 assert_json "status PASS_PENDING" ".status" "PASS_PENDING" "$OUTPUT"
 
-echo "Test 8: evidence-only FAIL still fails"
+echo "Test 8: a declared evidence-only FAIL still fails"
 cat > "$TMPDIR/current.json" << 'EOF'
-{"verdict":"FAIL","failing_dimensions":[],"failing_criteria":["tests-pass"],"dimensions":{}}
+{"verdict":"FAIL","mode":"evidence-only","failing_dimensions":[],"failing_criteria":["tests-pass"],"dimensions":{}}
 EOF
 echo "[]" > "$TMPDIR/history.json"
 EXIT_CODE=0
@@ -138,7 +138,7 @@ assert_json "confirming pass at budget converges" ".status" "CONVERGED" "$OUTPUT
 echo "Test 10: evidence-only PASS at exact budget still converges"
 echo "[]" > "$TMPDIR/history.json"
 cat > "$TMPDIR/current.json" <<'EOF'
-{"verdict":"PASS","failing_dimensions":[],"failing_criteria":[],"dimensions":{}}
+{"verdict":"PASS","mode":"evidence-only","failing_dimensions":[],"failing_criteria":[],"dimensions":{}}
 EOF
 EXIT_CODE=0
 "$SCRIPT_DIR/check-convergence.sh" --current "$TMPDIR/current.json" --history "$TMPDIR/history.json" --max-dispatches 2 --current-dispatches 2 > "$OUTFILE" 2>/dev/null || EXIT_CODE=$?
@@ -155,6 +155,51 @@ EXIT_CODE=0
 OUTPUT=$(cat "$OUTFILE")
 assert_exit "non-terminal result at budget → exit 2" 2 "$EXIT_CODE"
 assert_json "non-terminal result at budget is exhausted" ".status" "DISPATCHES_EXCEEDED" "$OUTPUT"
+
+echo "Test 12: PASS with an empty dimensions map and no declaration is not evidence-only"
+cat > "$TMPDIR/current.json" << 'EOF'
+{"verdict":"PASS","failing_dimensions":[],"failing_criteria":[],"dimensions":{}}
+EOF
+echo "[]" > "$TMPDIR/history.json"
+EXIT_CODE=0
+"$SCRIPT_DIR/check-convergence.sh" --current "$TMPDIR/current.json" --history "$TMPDIR/history.json" --max-dispatches 60 --current-dispatches 2 > "$OUTFILE" 2>/dev/null || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+assert_exit "undeclared empty dimensions → exit 1" 1 "$EXIT_CODE"
+assert_json "status PASS_PENDING" ".status" "PASS_PENDING" "$OUTPUT"
+assert_json "no evidence-only mode is claimed" ".mode" "null" "$OUTPUT"
+
+echo "Test 13: A mode the envelope does not accept takes no shortcut"
+cat > "$TMPDIR/current.json" << 'EOF'
+{"verdict":"PASS","mode":"evidence_only","failing_dimensions":[],"failing_criteria":[],"dimensions":{}}
+EOF
+echo "[]" > "$TMPDIR/history.json"
+EXIT_CODE=0
+"$SCRIPT_DIR/check-convergence.sh" --current "$TMPDIR/current.json" --history "$TMPDIR/history.json" --max-dispatches 60 --current-dispatches 2 > "$OUTFILE" 2>/dev/null || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+assert_exit "misspelled mode → exit 1" 1 "$EXIT_CODE"
+assert_json "status PASS_PENDING" ".status" "PASS_PENDING" "$OUTPUT"
+
+echo "Test 14: A declaration beside real dimension scores takes no shortcut"
+cat > "$TMPDIR/current.json" << 'EOF'
+{"verdict":"PASS","mode":"evidence-only","failing_dimensions":[],"failing_criteria":[],"dimensions":{"general.correctness":8}}
+EOF
+echo "[]" > "$TMPDIR/history.json"
+EXIT_CODE=0
+"$SCRIPT_DIR/check-convergence.sh" --current "$TMPDIR/current.json" --history "$TMPDIR/history.json" --max-dispatches 60 --current-dispatches 2 > "$OUTFILE" 2>/dev/null || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+assert_exit "declaration with scores → exit 1" 1 "$EXIT_CODE"
+assert_json "status PASS_PENDING" ".status" "PASS_PENDING" "$OUTPUT"
+
+echo "Test 15: A verdict field naming neither PASS nor FAIL is refused"
+cat > "$TMPDIR/current.json" << 'EOF'
+{"failing_dimensions":[],"failing_criteria":[],"dimensions":{}}
+EOF
+echo "[]" > "$TMPDIR/history.json"
+EXIT_CODE=0
+"$SCRIPT_DIR/check-convergence.sh" --current "$TMPDIR/current.json" --history "$TMPDIR/history.json" --max-dispatches 60 --current-dispatches 2 > "$OUTFILE" 2>"$TMPDIR/err.txt" || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+assert_exit "no verdict field → exit 2" 2 "$EXIT_CODE"
+assert_json "status names the unreadable input" ".error" "current verdict is not a check-thresholds.sh result" "$OUTPUT"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
