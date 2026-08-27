@@ -2,7 +2,7 @@
 
 Date: 2026-03-15
 Status: accepted
-Cites: hooks/dispatch-provider.sh, skills/develop/provider-context.md, orchestrate.json
+Cites: hooks/dispatch-provider.sh, scripts/build-scorecard-schema.sh, skills/develop/provider-context.md, orchestrate.json
 
 ## Context
 
@@ -18,4 +18,6 @@ Drop the Codex MCP route and call `codex exec` instead. Reach every external pro
 - Every provider is invoked the same way, so a new provider is a config block rather than a new integration.
 - A provider CLI reads the codebase from the project directory, so no prompt has to carry that context.
 - Every provider call is asynchronous and collected on an event, so nothing blocks.
+- Reaching a provider through its CLI means using what that CLI offers, not re-deriving it. `codex exec` writes its last message to the path given to `-o` and constrains its reply to the JSON Schema given to `--output-schema`, so the dispatch uses both rather than scraping `--json` event lines and asking for JSON shape in prose. Measured on 2026-08-27, the scraping route returned a scorecard one closing brace short three times in one epic.
+- A CLI that offers neither affordance still works: `extract` is unset for it and the dispatch returns its stdout as before. Constraining a reply is therefore per provider, not assumed of all of them.
 - This ADR named `roles/provider-dispatch.md`, `roles/provider-context.md` and `orchestrate.conf`. The dispatch hook, `skills/develop/provider-context.md` and `orchestrate.json` replaced them.

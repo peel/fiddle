@@ -71,6 +71,8 @@ hooks/dispatch-provider.sh <provider> \
   --evidence-file evidence-holistic.txt
 ```
 
+No domain or dimension flag is passed here. The `holistic-reviewer` role resolves to the holistic schema profile in `orchestrate.json`, which fixes the domain key and the five dimension names, and adds `spec_coverage_matrix` and `remediation_beans`. An external reviewer's reply is constrained to that shape; see `skills/develop/scorecard-envelope.md`.
+
 Every holistic reviewer, claude or external, gets the same context:
 
 - The evidence pack from 2a-2: `evidence-holistic.txt`

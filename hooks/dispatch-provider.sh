@@ -15,6 +15,9 @@ DESIGN_DOC=""
 DIFF=""
 EVIDENCE=""
 PREVIOUS_FEEDBACK=""
+DOMAIN=""
+DIMENSIONS=""
+DIMENSIONS_GIVEN=false
 
 PROVIDER="${1:?Usage: dispatch-provider.sh <provider> [--check] --role ... --topic ... --instructions ...}"
 shift
@@ -31,6 +34,8 @@ while [[ $# -gt 0 ]]; do
     --diff-file) DIFF="$(cat "$2")"; shift 2 ;;
     --evidence-file) EVIDENCE="$(cat "$2")"; shift 2 ;;
     --previous-feedback-file) PREVIOUS_FEEDBACK="$(cat "$2")"; shift 2 ;;
+    --domain) DOMAIN="$2"; shift 2 ;;
+    --dimensions) DIMENSIONS="$2"; DIMENSIONS_GIVEN=true; shift 2 ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
   esac
 done
@@ -104,31 +109,80 @@ replace_prompt_marker "{DIFF}" "$DIFF"
 replace_prompt_marker "{EVIDENCE}" "$EVIDENCE"
 replace_prompt_marker "{PREVIOUS_FEEDBACK}" "$PREVIOUS_FEEDBACK"
 
-PROMPT_FILE=$(mktemp /tmp/provider-XXXX.md)
-RAW_FILE=$(mktemp /tmp/provider-raw-XXXX)
+WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/provider-XXXXXX")
+trap 'rm -rf "$WORK_DIR"' EXIT
+PROMPT_FILE="$WORK_DIR/prompt.md"
+RAW_FILE="$WORK_DIR/raw"
+MESSAGE_FILE="$WORK_DIR/message"
+SCHEMA_FILE="$WORK_DIR/schema.json"
 echo "$PROMPT" > "$PROMPT_FILE"
-trap 'rm -f "$PROMPT_FILE" "$RAW_FILE"' EXIT
+
+PROVIDER_ARGS=""
+add_provider_arg() { PROVIDER_ARGS="$PROVIDER_ARGS $(printf '%q' "$1")"; }
+
+SCHEMA_REQUESTED=false
+if [[ "$EXTRACT" == "codex-last-message" ]]; then
+  add_provider_arg "-o"
+  add_provider_arg "$MESSAGE_FILE"
+
+  SCHEMA_PROFILE=$(jq -r --arg p "$PROVIDER" --arg r "$ROLE" \
+    '.providers[$p].schema_roles[$r] // empty' "$CONF")
+
+  if [[ -n "$SCHEMA_PROFILE" ]]; then
+    BUILDER="$PROJECT_DIR/scripts/build-scorecard-schema.sh"
+    [[ -x "$BUILDER" ]] || {
+      echo "dispatch-provider: role '$ROLE' needs schema profile '$SCHEMA_PROFILE' but $BUILDER is not executable" >&2
+      exit 2
+    }
+    BUILD_ARGS=(--profile "$SCHEMA_PROFILE")
+    if [[ "$SCHEMA_PROFILE" == "evaluator" ]]; then
+      [[ -n "$DOMAIN" ]] || {
+        echo "dispatch-provider: role '$ROLE' on provider '$PROVIDER' carries schema profile 'evaluator', which needs --domain" >&2
+        exit 2
+      }
+      [[ "$DIMENSIONS_GIVEN" == true ]] || {
+        echo "dispatch-provider: role '$ROLE' on provider '$PROVIDER' carries schema profile 'evaluator', which needs --dimensions; pass an empty value for an evidence-only card" >&2
+        exit 2
+      }
+      BUILD_ARGS+=(--domain "$DOMAIN" --dimensions "$DIMENSIONS")
+    fi
+    "$BUILDER" "${BUILD_ARGS[@]}" > "$SCHEMA_FILE" || {
+      echo "dispatch-provider: could not build the '$SCHEMA_PROFILE' scorecard schema for role '$ROLE'" >&2
+      exit 2
+    }
+    add_provider_arg "--output-schema"
+    add_provider_arg "$SCHEMA_FILE"
+    SCHEMA_REQUESTED=true
+  fi
+fi
 
 PROVIDER_EXIT=0
-eval $COMMAND $FLAGS < "$PROMPT_FILE" > "$RAW_FILE" || PROVIDER_EXIT=$?
+eval $COMMAND $FLAGS $PROVIDER_ARGS < "$PROMPT_FILE" > "$RAW_FILE" || PROVIDER_EXIT=$?
+
+refuse() {
+  echo "dispatch-provider: $1" >&2
+  shift
+  cat "$@" >&2
+  exit 2
+}
 
 case "$EXTRACT" in
   ""|raw)
     cat "$RAW_FILE"
     ;;
-  codex-jsonl)
-    REPLY=$(jq -Rrn '[inputs
-      | fromjson?
-      | select(.type == "item.completed")
-      | .item
-      | select(.type == "agent_message")
-      | .text] | last // empty' < "$RAW_FILE")
-    if [[ -z "$REPLY" ]]; then
-      echo "dispatch-provider: no agent_message in '$PROVIDER' output (provider exit $PROVIDER_EXIT); raw stream follows" >&2
-      cat "$RAW_FILE" >&2
-      exit 1
+  codex-last-message)
+    [[ -f "$MESSAGE_FILE" ]] || refuse \
+      "provider '$PROVIDER' wrote no last-message file (provider exit $PROVIDER_EXIT); its raw output follows" \
+      "$RAW_FILE"
+    grep -q '[^[:space:]]' "$MESSAGE_FILE" || refuse \
+      "provider '$PROVIDER' wrote an empty last message (provider exit $PROVIDER_EXIT); its raw output follows" \
+      "$RAW_FILE"
+    if [[ "$SCHEMA_REQUESTED" == true ]] && ! jq -e . "$MESSAGE_FILE" > /dev/null 2>&1; then
+      refuse \
+        "provider '$PROVIDER' answered role '$ROLE' under a schema with text that is not one JSON value (provider exit $PROVIDER_EXIT); the answer follows" \
+        "$MESSAGE_FILE"
     fi
-    printf '%s\n' "$REPLY"
+    cat "$MESSAGE_FILE"
     ;;
   *)
     echo "dispatch-provider: unknown extract mode '$EXTRACT' for provider '$PROVIDER'" >&2

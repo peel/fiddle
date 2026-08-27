@@ -59,6 +59,33 @@ evaluator with this file in its context instead.
 `threshold` in particular has no safe default. A dimension that omits it once let a
 5/6/6/6/9 scorecard clear 7/7/8/6/9, because a comparison against `null` is not a comparison.
 
+## The envelope as a response schema
+
+`scripts/build-scorecard-schema.sh` emits this envelope as a JSON Schema, and
+`hooks/dispatch-provider.sh` hands that schema to a provider CLI able to constrain its
+reply to it. `orchestrate.json` decides which roles get one: `providers.<p>.schema_roles`
+maps a role to a profile, and a role absent from the map answers in prose with no schema.
+
+The schema is built per dispatch rather than kept as a fixed file. The provider enforces
+strict structured output, where every object closes with `additionalProperties: false`
+and lists all its keys in `required`, so an object keyed by domain name or by dimension
+name cannot be expressed. The builder is told the domain and the dimension names and
+closes those objects around them. Measured against codex 0.146.0 on 2026-08-27: a schema
+whose `domains` was an open map was refused with HTTP 400 `invalid_json_schema`, and the
+closed form was accepted and honoured for the scored, evidence-only and holistic profiles.
+
+The builder refuses rather than guessing: an unknown profile, a missing `--domain` on the
+`evaluator` profile, a `--dimensions` flag that is absent rather than empty, and a
+dimension list containing spaces all exit 2 with the reason. Absent and empty are
+different here for the same reason they are on `dimensions` itself — a dropped flag and a
+deliberate evidence-only card must not produce the same schema.
+
+The schema carries the exact field names, the 1-10 bounds on `score` and `threshold`,
+non-empty `evidence`, and the `"mode": "evidence-only"` declaration on a card that scores
+nothing. It does not retire `validate-scorecard.sh`. Only a provider dispatched through a
+schema-carrying role is constrained; a claude evaluator subagent is not, and the schema
+says nothing about whether a criterion id matches the bean.
+
 ## Optional fields
 
 - `antipatterns_detected` — array, empty when none found. Entries are either an id string or `{"id", "severity", "evidence"}`. `check-thresholds.sh` carries them into its verdict as `findings`, which is what convergence compares when two iterations graded the same tree; an entry stating `severity: "low"` is excluded from that comparison and one stating no severity is not. See `skills/develop-loop/convergence-and-recovery.md`.

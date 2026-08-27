@@ -28,9 +28,9 @@ Respond with your analysis only — no preamble, no meta-commentary.
 
 ## Scorecard Output Requirements
 
-When your role is `evaluator`, your entire reply is the scorecard: one JSON object conforming to the schema below, with no prose before or after it and no markdown fences around it.
+When your role is `evaluator` or `holistic-reviewer`, your reply is the scorecard: one JSON object in the shape described below.
 
-This is the same contract the evaluation protocol in `## Instructions` states, and it is the only one — an earlier revision of this file asked instead for the scorecard as the "last content block" with preceding text discarded, which contradicted those instructions and left the schema section itself ambiguous. Reply with anything other than the bare object and the scorecard is unusable, costing a re-dispatch.
+The shape is enforced rather than requested. `hooks/dispatch-provider.sh` builds a JSON Schema from this envelope with `scripts/build-scorecard-schema.sh` and passes it to the provider CLI, which constrains the reply to it. So write the evidence the finding deserves and do not trim it to fit: the guarantee lives in the schema, not in how short the answer is. A reply cannot arrive a closing brace short, and no sentinel or trailing marker is needed to detect one.
 
 ### Scorecard JSON Schema
 
@@ -46,7 +46,7 @@ This is the same contract the evaluation protocol in `## Instructions` states, a
         "<dimension-name>": {
           "score": <1-10>,
           "threshold": <1-10>,
-          "comment": "<brief justification>"
+          "comment": "<justification>"
         }
       }
     }
@@ -55,7 +55,7 @@ This is the same contract the evaluation protocol in `## Instructions` states, a
     {
       "id": "<criterion-id>",
       "pass": <true|false>,
-      "evidence": "<brief evidence>"
+      "evidence": "<evidence>"
     }
   ],
   "antipatterns_detected": [],
@@ -70,7 +70,7 @@ This is the same contract the evaluation protocol in `## Instructions` states, a
 - **domains** (required): Object keyed by domain name. Each domain contains a `dimensions` object with scored dimensions. An explicitly empty `dimensions: {}` is valid only on a scorecard that also carries the top-level declaration `"mode": "evidence-only"`; without it the graders refuse the card.
 - **score** (required): Integer 1-10 for each dimension.
 - **threshold** (required): The minimum passing score for this dimension (copied from the evaluation template).
-- **comment** (required per scored dimension): Brief justification, non-empty. `evidence` is accepted as an alias; `scripts/validate-scorecard.sh` checks either.
-- **criteria** (required): Array of pass/fail criteria results. Each entry has `id`, `pass` (boolean), and non-empty `evidence`. The ids match the task's eval-block criteria exactly. `criterion` and `met` are not accepted spellings; the graders refuse a card that uses them rather than translating it. Full field list: `skills/develop/scorecard-envelope.md`.
+- **comment** (required per scored dimension): The justification, non-empty. `evidence` is accepted as an alias; `scripts/validate-scorecard.sh` checks either.
+- **criteria** (required): Array of pass/fail criteria results. Each entry has `id`, `pass` (boolean), and non-empty `evidence` naming the artifact and line behind the verdict. The ids match the task's eval-block criteria exactly. `criterion` and `met` are not accepted spellings; the graders refuse a card that uses them rather than translating it. Full field list: `skills/develop/scorecard-envelope.md`.
 - **guidance** (required): Actionable instructions for the implementer. Empty string if all dimensions pass.
 - **dispatch_count** (required): Always `1` (each scorecard represents one dispatch).
