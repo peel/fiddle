@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Cites: JiraHttp, JiraHttp::api, JiraError::Unauthorized, JiraError::Forbidden, JiraError::Absent, JiraWorkItemPort, WorkItemPort, EnvRef, CREDENTIAL_MUST_BE_NAMED, CLAMP, REDACTED, port_kind_for, the_jira_client_can_be_neither_printed_nor_serialized, no_surface_a_reader_sees_carries_the_jira_credential, the_same_search_finds_the_credential_when_a_surface_does_carry_it, every_surface_searched_is_output_of_a_jira_read, a_written_jira_token_is_refused, a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts, JiraHttp::quoted, a_credential_planted_in_the_sites_error_body_is_redacted_before_a_reader_sees_it, no_workspace_crate_pulls_openssl_into_its_closure, crates/fiddle-runtime/src/jira/http.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_printable.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_serializable.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-acceptance/tests/jira_credential.rs, scripts/live-jira-observe.sh, issue_from, read_instant, canonical_revision, ConfiguredNames, state_for, WorkState, ProjectedStatus, projected_status, assess, derive_next, no_projected_work_state_moves_the_assessment_or_the_next_action, crates/fiddle-core/src/assessment.rs, crates/fiddle-runtime/src/jira/work_item.rs, a_refused_credential_and_a_missing_issue_do_not_read_alike, crates/fiddle-runtime/tests/jira_work_item.rs
+Cites: JiraHttp, JiraHttp::api, JiraError::Unauthorized, JiraError::Forbidden, JiraError::Absent, JiraError::AbsentOrRefused, JiraWorkItemPort::read, JiraWorkItemPort, WorkItemPort, EnvRef, CREDENTIAL_MUST_BE_NAMED, CLAMP, REDACTED, port_kind_for, the_jira_client_can_be_neither_printed_nor_serialized, no_surface_a_reader_sees_carries_the_jira_credential, the_same_search_finds_the_credential_when_a_surface_does_carry_it, every_surface_searched_is_output_of_a_jira_read, a_written_jira_token_is_refused, a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts, JiraHttp::quoted, a_credential_planted_in_the_sites_error_body_is_redacted_before_a_reader_sees_it, no_workspace_crate_pulls_openssl_into_its_closure, crates/fiddle-runtime/src/jira/http.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_printable.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_serializable.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-acceptance/tests/jira_credential.rs, scripts/live-jira-observe.sh, issue_from, read_instant, canonical_revision, ConfiguredNames, state_for, WorkState, ProjectedStatus, projected_status, assess, derive_next, no_projected_work_state_moves_the_assessment_or_the_next_action, crates/fiddle-core/src/assessment.rs, crates/fiddle-runtime/src/jira/work_item.rs, a_refused_credential_and_a_missing_issue_do_not_read_alike, the_stub_answers_a_refused_credential_the_way_the_measured_site_answers_it, a_read_the_site_answers_asks_the_site_nothing_further, a_status_other_than_404_names_its_own_cause_and_costs_no_credential_check, crates/fiddle-runtime/tests/jira_work_item.rs
 
 ## Context
 
@@ -208,28 +208,42 @@ two and leaves the third.
   exercised, so no real status name has been compared with a configured one.
 
 The measurement is one issue on one site. A second project, a second workflow
-and a second issue type are unmeasured, and so is every failure arm.
+and a second issue type are unmeasured, and so is every failure arm but the 404
+the paragraph below measures.
 
-**Still an argument: what a bad credential returns.** The argument is that Jira
-Cloud answers 404 for a private issue read with a bad credential, with no
-credential, and for an issue that does not exist, so no issue read reaches
-`JiraError::Unauthorized` or `JiraError::Forbidden`. One observation stands behind
-it: a 404 on `/rest/api/3/project/ISP`, from a request that authenticated against
-the wrong tenant. A wrong tenant is not a bad credential, and that path is not an
-issue read. No read has carried a bad credential to a real issue on `snplow`, so
-no site has driven either failure arm. The cost is a suite that pins the opposite
-shape: `a_refused_credential_and_a_missing_issue_do_not_read_alike` in
-`crates/fiddle-runtime/tests/jira_work_item.rs` drives the stub with 401 and
-proves the two reasons differ. If the site answers 404 for both, both reads
-report `JiraError::Absent`, one reason answers both, and only a live read would
-say so. `fiddle-2n67` holds that read. The tracker carries it as status `todo`,
-tagged `blocked` and `needs-attention`, with no `blocked_by` edge. Nothing in
-this repository supplies what it waits for: the credential was destroyed at the
-operator's request, and the read needs a fresh token an operator must provision.
-`beans list --ready` reads the `blocked_by` edge and not the tag, so it still
-returns the bean, and the bean body carries the reason.
-`docs/technical/RUNBOOKS.md` carries the same argument as operator advice, and
-that advice stands under either status.
+**Now a measurement: what a bad credential returns.** Six probes ran against
+`snplow.atlassian.net` on 2026-08-27, with an operator's valid credential and
+with that same credential corrupted by four appended characters. A read of
+`ISP-239`, a real issue on the real tenant, answered **200** with the valid
+credential, **404** with the corrupted one and **404** with no credential at all.
+A read of `ISP-99999999` with the valid credential answered **404** too. So a bad
+credential, no credential and an issue that does not exist are one answer on an
+issue read, and no issue read reaches `JiraError::Unauthorized` or
+`JiraError::Forbidden` by its own status. `/rest/api/3/myself` separates them: it
+answered **401** with the corrupted credential and **200** with the valid one. It
+reads the credential alone and does not depend on issue permissions. This
+supersedes the one observation the claim first rested on, a 404 on
+`/rest/api/3/project/ISP` from a request that authenticated against the wrong
+tenant, which was neither a bad credential nor an issue read.
+
+`JiraWorkItemPort::read` therefore asks `/rest/api/3/myself` once, and only when
+an issue read answered 404. A 401 there names `JiraError::Unauthorized`, a 2xx
+names `JiraError::Absent`, and any other answer names
+`JiraError::AbsentOrRefused`, which carries both causes and the endpoint that
+settles them rather than reporting an absence no probe established. The check
+costs one request on the 404 path and none on any other, so a 404 can wait one
+further `[jira] timeout` before it reports, which
+`a_read_the_site_answers_asks_the_site_nothing_further` and
+`a_status_other_than_404_names_its_own_cause_and_costs_no_credential_check` hold.
+The suite no longer pins the opposite shape:
+`a_refused_credential_and_a_missing_issue_do_not_read_alike` in
+`crates/fiddle-runtime/tests/jira_work_item.rs` drives both worlds with a 404
+issue read, as the site answers, and
+`the_stub_answers_a_refused_credential_the_way_the_measured_site_answers_it`
+pins `crates/fiddle-runtime/tests/support/stub_jira.rs` to the probes.
+`fiddle-2n67` held this read and is now done, so the tracker no longer carries it
+as status `todo` tagged `blocked` and `needs-attention`.
+`docs/technical/RUNBOOKS.md` carries the same measurement as operator advice.
 
 **No decision reads the projection, so nothing measures what it decides.** No
 consumer branches on `WorkState`. Serde writes it and `assess` ignores it:

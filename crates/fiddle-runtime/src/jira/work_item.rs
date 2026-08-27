@@ -6,6 +6,8 @@ use time::macros::format_description;
 use time::{OffsetDateTime, UtcOffset};
 use tokio_util::sync::CancellationToken;
 
+const MYSELF: &str = "/rest/api/3/myself";
+
 pub struct JiraWorkItemPort {
     http: JiraHttp,
     names: ConfiguredNames,
@@ -44,12 +46,55 @@ impl JiraWorkItemPort {
             .await?;
         match answered.status {
             status if (200..300).contains(&status) => issue_from(&answered.body),
-            status => Err(failure_for(
-                status,
-                work_id,
+            status => Err(self
+                .told_apart(
+                    failure_for(status, work_id, self.http.quoted(&answered.body).as_deref()),
+                    work_id,
+                )
+                .await),
+        }
+    }
+
+    async fn told_apart(&self, failure: JiraError, work_id: &str) -> JiraError {
+        match failure {
+            JiraError::Absent { .. } => absent_or_refused(work_id, self.credential().await),
+            named => named,
+        }
+    }
+
+    async fn credential(&self) -> Credential {
+        match self
+            .http
+            .api("GET", MYSELF, None, &CancellationToken::new())
+            .await
+        {
+            Ok(answered) if answered.status == 401 => Credential::Refused,
+            Ok(answered) if (200..300).contains(&answered.status) => Credential::Accepted,
+            Ok(answered) => Credential::Unchecked(explained(
+                answered.status,
                 self.http.quoted(&answered.body).as_deref(),
             )),
+            Err(failed) => Credential::Unchecked(failed.to_string()),
         }
+    }
+}
+
+enum Credential {
+    Accepted,
+    Refused,
+    Unchecked(String),
+}
+
+fn absent_or_refused(work_id: &str, credential: Credential) -> JiraError {
+    match credential {
+        Credential::Refused => JiraError::Unauthorized { status: 401 },
+        Credential::Accepted => JiraError::Absent {
+            key: work_id.to_string(),
+        },
+        Credential::Unchecked(why) => JiraError::AbsentOrRefused {
+            key: work_id.to_string(),
+            why,
+        },
     }
 }
 
@@ -162,6 +207,7 @@ mod tests {
             JiraError::Unauthorized { .. } => "unauthorized",
             JiraError::Forbidden { .. } => "forbidden",
             JiraError::Absent { .. } => "absent",
+            JiraError::AbsentOrRefused { .. } => "absent or refused",
             JiraError::RateLimited(_) => "rate limited",
             JiraError::Malformed(_) => "malformed",
             JiraError::Unreachable(_) => "unreachable",
@@ -248,6 +294,63 @@ mod tests {
                 "HTTP {status} must read as the {named} failure reads"
             );
         }
+    }
+
+    #[test]
+    fn a_status_the_site_uses_for_two_causes_is_named_by_what_the_credential_check_answered() {
+        let cases = [
+            (
+                Credential::Refused,
+                "unauthorized",
+                "the site refused the credential with 401",
+            ),
+            (
+                Credential::Accepted,
+                "absent",
+                "the site holds no issue `IDENT-1`",
+            ),
+            (
+                Credential::Unchecked("HTTP 503".to_string()),
+                "absent or refused",
+                "the site holds no issue `IDENT-1`, or it refused the credential, and \
+                 `/rest/api/3/myself` could not say which: HTTP 503",
+            ),
+        ];
+
+        for (credential, named, expected) in cases {
+            let failure = absent_or_refused("IDENT-1", credential);
+            assert_eq!(
+                variant(&failure),
+                named,
+                "the credential check must reach the {named} failure, not the {} one",
+                variant(&failure)
+            );
+            assert_eq!(
+                format!("{failure}"),
+                expected,
+                "a 404 the credential check explained must read as the {named} failure reads"
+            );
+        }
+    }
+
+    #[test]
+    fn a_credential_that_was_not_checked_says_so_and_never_reads_as_a_settled_absence() {
+        let unchecked = absent_or_refused(
+            "IDENT-1",
+            Credential::Unchecked("the site could not be reached".to_string()),
+        );
+        let settled = absent_or_refused("IDENT-1", Credential::Accepted);
+
+        assert_ne!(
+            format!("{unchecked}"),
+            format!("{settled}"),
+            "an unchecked credential must not read as a checked one, or a probe that failed \
+             reports an absence nothing established"
+        );
+        assert!(
+            format!("{unchecked}").contains(MYSELF),
+            "the reason must name the endpoint that settles it: {unchecked}"
+        );
     }
 
     #[test]

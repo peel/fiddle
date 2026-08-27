@@ -7,7 +7,7 @@ use fiddle_runtime::ports::contract::{work_item_port_contract, WorkItemWorlds};
 use fiddle_runtime::ports::WorkItemPort;
 use fiddle_runtime::REDACTED;
 use std::time::{Duration, Instant};
-use support::stub_jira::{client_for, StubJira, ENCODED, ISSUE, TOKEN};
+use support::stub_jira::{client_for, StubJira, ENCODED, ISSUE, MYSELF, TOKEN};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
@@ -198,7 +198,12 @@ async fn a_path_the_stub_does_not_route_is_a_404_with_a_json_body() {
     let server = StubJira::start().await;
 
     let answered = client_for(&server)
-        .api("GET", "/rest/api/3/myself", None, &CancellationToken::new())
+        .api(
+            "GET",
+            "/rest/api/3/project/IDENT",
+            None,
+            &CancellationToken::new(),
+        )
         .await
         .expect("a 404 with a json body parses");
 
@@ -544,9 +549,73 @@ async fn the_configured_names_the_port_was_built_with_reach_its_projection() {
 }
 
 #[tokio::test]
+async fn the_stub_answers_a_refused_credential_the_way_the_measured_site_answers_it() {
+    let server = StubJira::start().await;
+    server
+        .refuses_the_credential_and_so_answers_no_issue()
+        .await;
+    let client = client_for(&server);
+
+    let read = client
+        .api("GET", ISSUE, None, &CancellationToken::new())
+        .await
+        .expect("a 404 with a json body parses");
+    let who = client
+        .api("GET", MYSELF, None, &CancellationToken::new())
+        .await
+        .expect("a 401 with a json body parses");
+
+    assert_eq!(
+        read.status, 404,
+        "the live site answered 404 for an issue read with a corrupted credential on 2026-08-27, \
+         so a stub that answered 401 here would pin a world no site produces"
+    );
+    assert_eq!(
+        read.body["errorMessages"][0],
+        "Issue does not exist or you do not have permission to see it.",
+        "the site says the same words for a bad credential as for a missing issue: {}",
+        read.body
+    );
+    assert_eq!(
+        who.status, 401,
+        "`{MYSELF}` reads the credential alone and answered 401 for the corrupted credential, \
+         so it is the one answer that tells the two causes apart"
+    );
+}
+
+#[tokio::test]
+async fn the_stub_answers_a_good_credential_and_a_missing_issue_the_way_the_measured_site_answers_them(
+) {
+    let server = StubJira::start().await;
+    server.holds_nothing().await;
+    let client = client_for(&server);
+
+    let read = client
+        .api("GET", ISSUE, None, &CancellationToken::new())
+        .await
+        .expect("a 404 with a json body parses");
+    let who = client
+        .api("GET", MYSELF, None, &CancellationToken::new())
+        .await
+        .expect("a 200 with a json body parses");
+
+    assert_eq!(
+        read.status, 404,
+        "the live site answered 404 for a real credential reading an issue it does not hold"
+    );
+    assert_eq!(
+        who.status, 200,
+        "`{MYSELF}` answered 200 for the real credential, which is what makes a 404 on the \
+         issue read mean the issue and not the credential"
+    );
+}
+
+#[tokio::test]
 async fn a_refused_credential_and_a_missing_issue_do_not_read_alike() {
     let refused = StubJira::start().await;
-    refused.refuses_with(401).await;
+    refused
+        .refuses_the_credential_and_so_answers_no_issue()
+        .await;
     let missing = StubJira::start().await;
     missing.holds_nothing().await;
 
@@ -585,6 +654,79 @@ async fn a_refused_credential_and_a_missing_issue_do_not_read_alike() {
         said[0], said[1],
         "a refused credential and a missing issue read as two reasons: {said:?}"
     );
+    for server in [&refused, &missing] {
+        assert!(
+            server
+                .request_lines()
+                .await
+                .iter()
+                .any(|line| line.starts_with(&format!("GET {MYSELF} "))),
+            "both worlds answered the issue read 404, so the two reasons above can only \
+             differ because the port asked `{MYSELF}`: {:?}",
+            server.request_lines().await
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_credential_the_site_cannot_check_is_reported_as_neither_cause_and_not_as_one_of_them() {
+    let server = StubJira::start().await;
+    server
+        .cannot_check_the_credential_and_answers_no_issue(503)
+        .await;
+
+    let reason = reason_of(&observe_from(&server).await);
+
+    assert!(
+        reason.contains(KEY) && reason.contains("credential"),
+        "a probe that could not answer leaves both causes open, so the reason must name \
+         the issue and the credential: {reason}"
+    );
+    assert!(
+        reason.contains(MYSELF),
+        "the reason must say where the operator can settle it: {reason}"
+    );
+    assert!(
+        reason.contains("HTTP 503"),
+        "the reason must say why the credential could not be checked: {reason}"
+    );
+}
+
+#[tokio::test]
+async fn a_read_the_site_answers_asks_the_site_nothing_further() {
+    let server = StubJira::start().await;
+    server
+        .holds_issue(KEY, "10001", "In Review", "In Progress", 7)
+        .await;
+
+    let observed = observe_from(&server).await;
+
+    assert!(
+        observed.value().is_some(),
+        "the issue was readable: {observed:?}"
+    );
+    assert_eq!(
+        server.request_lines().await,
+        vec![format!("GET {ISSUE}?fields=status,updated HTTP/1.1")],
+        "the credential check costs a request, so it must reach the site only when the \
+         site answered 404 and not on every read"
+    );
+}
+
+#[tokio::test]
+async fn a_status_other_than_404_names_its_own_cause_and_costs_no_credential_check() {
+    for status in [401, 403, 429, 503] {
+        let server = StubJira::start().await;
+        server.refuses_with(status).await;
+
+        let reason = reason_of(&observe_from(&server).await);
+
+        assert_eq!(
+            server.request_lines().await,
+            vec![format!("GET {ISSUE}?fields=status,updated HTTP/1.1")],
+            "a {status} names its own cause, so nothing is asked twice: {reason}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -748,7 +890,9 @@ async fn seven_ways_of_failing_to_read_name_the_site_and_read_as_seven_reasons()
         .answer_with_body("<html>not an issue</html>")
         .await;
     let refused = StubJira::start().await;
-    refused.refuses_with(401).await;
+    refused
+        .refuses_the_credential_and_so_answers_no_issue()
+        .await;
     let forbidden = StubJira::start().await;
     forbidden.refuses_in_html_with(403).await;
     let unreadable_time = StubJira::start().await;

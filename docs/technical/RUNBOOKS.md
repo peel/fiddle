@@ -196,7 +196,10 @@ calls `/rest/api/3/issue/KEY?fields=status,updated` itself, then runs
 `JIRA_USER_EMAIL` and `JIRA_API_TOKEN` and carries neither value. It refuses when
 any of `JIRA_SITE`, `JIRA_ISSUE`, `JIRA_USER_EMAIL`, `JIRA_API_TOKEN` or
 `FIDDLE_BIN` is absent, because a lane that skipped for want of a credential
-would read exactly like one that passed.
+would read exactly like one that passed. It also refuses a `JIRA_SITE` that is
+not an `https://` origin. Set the scheme. A bare `snplow.atlassian.net` reaches
+the site over http, and the site answers **301** to every request, which reads
+like a refusal and measures nothing.
 
 What it proves, and why each assertion is there:
 
@@ -352,19 +355,33 @@ document that loaded yesterday fails today. Delete the key. The table admits
 Unset it to record nothing.
 
 **The Jira lane says `the site holds no issue KEY` for an issue you can open in a
-browser.** Check the credential before you doubt the key. A bad `JIRA_API_TOKEN`
-is expected to read as a missing issue, because a private issue read with a bad
-credential should answer **404**, the status an issue that does not exist also
-answers. On that expectation `JiraError::Absent` is what a wrong `JIRA_API_TOKEN`
-produces, and the 401 and 403 arms of `JiraWorkItemPort::read` are unreachable for
-an issue read.
+browser.** The credential is good and the key is wrong. The port asks
+`/rest/api/3/myself` before it says this, so it says it only after a **200** from
+that endpoint. A wrong `JIRA_API_TOKEN` reads as `the site refused the credential
+with 401` instead.
 
-The expectation is an inference and not a measurement. One observation stands
-behind it: a 404 on `/rest/api/3/project/ISP`, from a request that authenticated
-against the wrong tenant rather than carrying a bad credential to a real issue.
-`fiddle-2n67` holds the live read that would settle it. Run the check either way.
-It reads the credential on its own, so it answers whatever status the issue read
-returned:
+This is measured, not inferred. Six probes ran against `snplow.atlassian.net` on
+2026-08-27, with an operator's valid token and with that token corrupted by four
+appended characters:
+
+| probe | endpoint | credential | status |
+|---|---|---|---|
+| 1 | `/rest/api/3/issue/ISP-239?fields=status,updated` | valid | 200 |
+| 2 | `/rest/api/3/issue/ISP-239?fields=status,updated` | corrupted | 404 |
+| 3 | `/rest/api/3/issue/ISP-239?fields=status,updated` | none | 404 |
+| 4 | `/rest/api/3/issue/ISP-99999999?fields=status,updated` | valid | 404 |
+| 5 | `/rest/api/3/myself` | corrupted | 401 |
+| 6 | `/rest/api/3/myself` | valid | 200 |
+
+Probes 2, 3 and 4 are one answer, so an issue read cannot tell a bad credential
+from a missing issue and the 401 and 403 arms of `JiraWorkItemPort::read` are
+unreachable for an issue read on their own status. Probes 5 and 6 differ, so
+`/rest/api/3/myself` tells them apart. It reads the credential alone and does not
+depend on issue permissions.
+
+**The Jira lane says the site holds no issue `KEY`, or it refused the credential.**
+The credential check itself did not answer. The reason carries the status it got
+back. Run the check by hand:
 
 ```sh
 curl -s -o /dev/null -w '%{http_code}\n' \
@@ -372,8 +389,9 @@ curl -s -o /dev/null -w '%{http_code}\n' \
   https://snplow.atlassian.net/rest/api/3/myself
 ```
 
-`200` means the credential is good and the key is wrong. Anything else means the
-credential is wrong, whatever the issue read said.
+`200` means the credential is good and the key is wrong. `401` means the
+credential is wrong, whatever the issue read said. Anything else is the site, not
+the credential and not the key.
 
 **A run exits 20 rather than 11.** That is a permanent refusal: a `[github.policy]`
 deny, a duplicate remote state, a diverged payload, or an unanswerable

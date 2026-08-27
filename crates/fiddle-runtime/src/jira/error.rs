@@ -9,6 +9,12 @@ pub enum JiraError {
     #[error("the site holds no issue `{key}`")]
     Absent { key: String },
 
+    #[error(
+        "the site holds no issue `{key}`, or it refused the credential, and \
+         `/rest/api/3/myself` could not say which: {why}"
+    )]
+    AbsentOrRefused { key: String, why: String },
+
     #[error("the site limited this request and it can be sent again: {0}")]
     RateLimited(String),
 
@@ -31,6 +37,7 @@ mod tests {
             JiraError::Unauthorized { .. } => "unauthorized",
             JiraError::Forbidden { .. } => "forbidden",
             JiraError::Absent { .. } => "absent",
+            JiraError::AbsentOrRefused { .. } => "absent or refused",
             JiraError::RateLimited(_) => "rate limited",
             JiraError::Malformed(_) => "malformed",
             JiraError::Unreachable(_) => "unreachable",
@@ -44,6 +51,10 @@ mod tests {
             JiraError::Absent {
                 key: "IDENT-1".into(),
             },
+            JiraError::AbsentOrRefused {
+                key: "IDENT-1".into(),
+                why: "HTTP 503".into(),
+            },
             JiraError::RateLimited("HTTP 429".into()),
             JiraError::Malformed("the body is not an issue".into()),
             JiraError::Unreachable("connection refused".into()),
@@ -54,6 +65,10 @@ mod tests {
         vec![
             JiraError::Absent {
                 key: planted.into(),
+            },
+            JiraError::AbsentOrRefused {
+                key: planted.into(),
+                why: planted.into(),
             },
             JiraError::RateLimited(planted.into()),
             JiraError::Malformed(planted.into()),
@@ -84,6 +99,14 @@ mod tests {
                     key: "IDENT-1".into(),
                 },
                 "the site holds no issue `IDENT-1`",
+            ),
+            (
+                JiraError::AbsentOrRefused {
+                    key: "IDENT-1".into(),
+                    why: "HTTP 503".into(),
+                },
+                "the site holds no issue `IDENT-1`, or it refused the credential, and \
+                 `/rest/api/3/myself` could not say which: HTTP 503",
             ),
             (
                 JiraError::RateLimited("HTTP 429".into()),
@@ -135,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn the_six_read_failures_read_as_six_failures() {
+    fn the_seven_read_failures_read_as_seven_failures() {
         let cases = cases();
         let mut named: Vec<&str> = cases.iter().map(variant).collect();
         named.sort_unstable();
@@ -143,6 +166,7 @@ mod tests {
             named,
             [
                 "absent",
+                "absent or refused",
                 "forbidden",
                 "malformed",
                 "rate limited",

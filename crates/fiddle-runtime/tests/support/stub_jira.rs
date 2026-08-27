@@ -11,6 +11,7 @@ pub const TOKEN: &str = "s3cr3t";
 pub const ENCODED: &str = "Ym90QGV4YW1wbGUuY29tOnMzY3IzdA==";
 pub const ISSUE_ROUTE: &str = "/rest/api/3/issue/";
 pub const ISSUE: &str = "/rest/api/3/issue/IDENT-1";
+pub const MYSELF: &str = "/rest/api/3/myself";
 pub const PATIENT: Duration = Duration::from_secs(30);
 pub const HELD_DAY: &str = "2026-08-26";
 
@@ -25,11 +26,20 @@ const NOT_ALLOWED: &str =
 const UNPARSED: &str = r#"{"errorMessages":["the request line could not be parsed"],"errors":{}}"#;
 const NO_LENGTH: &str =
     r#"{"errorMessages":["a body must arrive with a content length"],"errors":{}}"#;
+const UNCHECKED: &str =
+    r#"{"errorMessages":["the site could not say whether this credential is good"],"errors":{}}"#;
+const WHO: &str = r#"{"accountId":"5b10a2844c20165700ede21g","displayName":"the bot"}"#;
 const HTML_REFUSAL: &str = "<!DOCTYPE html><html><head><title>Sign in</title></head><body>\
                             <h1>You are not authenticated</h1></body></html>";
 
 const JSON: &str = "application/json";
 const HTML: &str = "text/html;charset=UTF-8";
+
+enum Credential {
+    Accepted,
+    Refused,
+    Unreadable(u16),
+}
 
 enum Answer {
     Body(String),
@@ -63,6 +73,7 @@ enum Length {
 
 struct StubState {
     answer: Answer,
+    credential: Credential,
     silent: bool,
     authorizations: Vec<String>,
     request_lines: Vec<String>,
@@ -86,6 +97,7 @@ impl StubJira {
             .to_string();
         let state = Arc::new(Mutex::new(StubState {
             answer: Answer::Body(r#"{"key":"IDENT-1"}"#.to_string()),
+            credential: Credential::Accepted,
             silent: false,
             authorizations: Vec::new(),
             request_lines: Vec::new(),
@@ -169,6 +181,18 @@ impl StubJira {
 
     pub async fn holds_nothing(&self) {
         self.state.lock().await.answer = Answer::Absent;
+    }
+
+    pub async fn refuses_the_credential_and_so_answers_no_issue(&self) {
+        let mut held = self.state.lock().await;
+        held.credential = Credential::Refused;
+        held.answer = Answer::Absent;
+    }
+
+    pub async fn cannot_check_the_credential_and_answers_no_issue(&self, status: u16) {
+        let mut held = self.state.lock().await;
+        held.credential = Credential::Unreadable(status);
+        held.answer = Answer::Absent;
     }
 
     pub async fn answer_with_body(&self, body: &str) {
@@ -292,7 +316,10 @@ async fn answer(mut socket: TcpStream, state: Arc<Mutex<StubState>>, cancel: Can
         let mut held = state.lock().await;
         held.authorizations.push(authorization);
         held.request_lines.push(request_line.clone());
-        (routed(&request_line, &held.answer), held.silent)
+        (
+            routed(&request_line, &held.answer, &held.credential),
+            held.silent,
+        )
     };
 
     if silent {
@@ -341,7 +368,7 @@ fn measured(request_line: &str, length: Length) -> Option<usize> {
     }
 }
 
-fn routed(request_line: &str, answer: &Answer) -> Served {
+fn routed(request_line: &str, answer: &Answer, credential: &Credential) -> Served {
     let mut parts = request_line.split_whitespace();
     let (Some(method), Some(target), Some(version), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
@@ -354,6 +381,13 @@ fn routed(request_line: &str, answer: &Answer) -> Served {
     let path = target.split('?').next().unwrap_or(target);
     if !matches!(method, "GET" | "PUT") {
         return Served::json(405, NOT_ALLOWED);
+    }
+    if path == MYSELF {
+        return match credential {
+            Credential::Accepted => Served::json(200, WHO),
+            Credential::Refused => Served::json(401, REFUSED),
+            Credential::Unreadable(status) => Served::json(*status, UNCHECKED),
+        };
     }
     match answer {
         Answer::Refusal { status, body } => Served::json(*status, body),
