@@ -35,7 +35,7 @@ enum Answer {
     Body(String),
     Issue { path: String, body: String },
     Absent,
-    Refusal(u16),
+    Refusal { status: u16, body: String },
     HtmlRefusal(u16),
 }
 
@@ -176,7 +176,14 @@ impl StubJira {
     }
 
     pub async fn refuses_with(&self, status: u16) {
-        self.state.lock().await.answer = Answer::Refusal(status);
+        self.refuses_with_body(status, REFUSED).await
+    }
+
+    pub async fn refuses_with_body(&self, status: u16, body: &str) {
+        self.state.lock().await.answer = Answer::Refusal {
+            status,
+            body: body.to_string(),
+        };
     }
 
     pub async fn refuses_in_html_with(&self, status: u16) {
@@ -349,7 +356,7 @@ fn routed(request_line: &str, answer: &Answer) -> Served {
         return Served::json(405, NOT_ALLOWED);
     }
     match answer {
-        Answer::Refusal(status) => Served::json(*status, REFUSED),
+        Answer::Refusal { status, body } => Served::json(*status, body),
         Answer::HtmlRefusal(status) => Served {
             status: *status,
             body: HTML_REFUSAL.to_string(),

@@ -44,13 +44,32 @@ impl JiraWorkItemPort {
             .await?;
         match answered.status {
             status if (200..300).contains(&status) => issue_from(&answered.body),
-            status @ 401 => Err(JiraError::Unauthorized { status }),
-            status @ 403 => Err(JiraError::Forbidden { status }),
-            404 => Err(JiraError::Absent {
-                key: work_id.to_string(),
-            }),
-            status => Err(JiraError::Malformed(format!("HTTP {status}"))),
+            status => Err(failure_for(
+                status,
+                work_id,
+                self.http.quoted(&answered.body).as_deref(),
+            )),
         }
+    }
+}
+
+fn failure_for(status: u16, work_id: &str, quoted: Option<&str>) -> JiraError {
+    match status {
+        401 => JiraError::Unauthorized { status },
+        403 => JiraError::Forbidden { status },
+        404 => JiraError::Absent {
+            key: work_id.to_string(),
+        },
+        429 => JiraError::RateLimited(explained(status, quoted)),
+        500..=599 => JiraError::Unreachable(explained(status, quoted)),
+        _ => JiraError::Malformed(explained(status, quoted)),
+    }
+}
+
+fn explained(status: u16, quoted: Option<&str>) -> String {
+    match quoted {
+        Some(spoken) => format!("HTTP {status}: {spoken}"),
+        None => format!("HTTP {status}"),
     }
 }
 
@@ -132,4 +151,136 @@ fn read_instant(updated: &str) -> Option<OffsetDateTime> {
         .or_else(|_| OffsetDateTime::parse(updated, &subsecond))
         .or_else(|_| OffsetDateTime::parse(updated, &whole_second))
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn variant(error: &JiraError) -> &'static str {
+        match error {
+            JiraError::Unauthorized { .. } => "unauthorized",
+            JiraError::Forbidden { .. } => "forbidden",
+            JiraError::Absent { .. } => "absent",
+            JiraError::RateLimited(_) => "rate limited",
+            JiraError::Malformed(_) => "malformed",
+            JiraError::Unreachable(_) => "unreachable",
+        }
+    }
+
+    #[test]
+    fn each_status_the_port_cannot_read_reaches_the_failure_that_names_it() {
+        let cases = [
+            (
+                401,
+                "unauthorized",
+                "the site refused the credential with 401",
+            ),
+            (
+                403,
+                "forbidden",
+                "the credential may not read this issue: 403",
+            ),
+            (404, "absent", "the site holds no issue `IDENT-1`"),
+            (
+                429,
+                "rate limited",
+                "the site limited this request and it can be sent again: HTTP 429",
+            ),
+            (
+                500,
+                "unreachable",
+                "the site could not be reached: HTTP 500",
+            ),
+            (
+                502,
+                "unreachable",
+                "the site could not be reached: HTTP 502",
+            ),
+            (
+                503,
+                "unreachable",
+                "the site could not be reached: HTTP 503",
+            ),
+            (
+                599,
+                "unreachable",
+                "the site could not be reached: HTTP 599",
+            ),
+            (
+                400,
+                "malformed",
+                "the site answered with something that is not an issue: HTTP 400",
+            ),
+            (
+                405,
+                "malformed",
+                "the site answered with something that is not an issue: HTTP 405",
+            ),
+            (
+                428,
+                "malformed",
+                "the site answered with something that is not an issue: HTTP 428",
+            ),
+            (
+                499,
+                "malformed",
+                "the site answered with something that is not an issue: HTTP 499",
+            ),
+            (
+                600,
+                "malformed",
+                "the site answered with something that is not an issue: HTTP 600",
+            ),
+        ];
+
+        for (status, named, expected) in cases {
+            let failure = failure_for(status, "IDENT-1", None);
+            assert_eq!(
+                variant(&failure),
+                named,
+                "HTTP {status} must reach the {named} failure, not the {} one",
+                variant(&failure)
+            );
+            assert_eq!(
+                format!("{failure}"),
+                expected,
+                "HTTP {status} must read as the {named} failure reads"
+            );
+        }
+    }
+
+    #[test]
+    fn an_outage_and_a_rate_limit_carry_the_sites_words_and_the_status_alone_without_them() {
+        for status in [429, 500, 503, 400] {
+            let quoted = failure_for(status, "IDENT-1", Some("the site said this"));
+            let silent = failure_for(status, "IDENT-1", None);
+            assert!(
+                format!("{quoted}").ends_with(&format!("HTTP {status}: the site said this")),
+                "the site's own words must reach the {} failure a {status} names: {quoted}",
+                variant(&quoted)
+            );
+            assert!(
+                format!("{silent}").ends_with(&format!("HTTP {status}")),
+                "a site that supplies no words leaves the status as the whole reason: {silent}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_credential_and_an_absent_issue_quote_no_body_so_their_words_are_unchanged() {
+        let planted = "a body no refusal may quote";
+        for (status, expected) in [
+            (401, "the site refused the credential with 401"),
+            (403, "the credential may not read this issue: 403"),
+            (404, "the site holds no issue `IDENT-1`"),
+        ] {
+            let failure = failure_for(status, "IDENT-1", Some(planted));
+            assert_eq!(
+                format!("{failure}"),
+                expected,
+                "a {status} says only what its status means, so this change reaches none of its words"
+            );
+        }
+    }
 }

@@ -1,11 +1,13 @@
 mod support;
 
 use fiddle_core::{Observation, WorkItemState, WorkState};
+use fiddle_runtime::jira::http::CLAMP;
 use fiddle_runtime::jira::{ConfiguredNames, JiraWorkItemPort};
 use fiddle_runtime::ports::contract::{work_item_port_contract, WorkItemWorlds};
 use fiddle_runtime::ports::WorkItemPort;
+use fiddle_runtime::REDACTED;
 use std::time::{Duration, Instant};
-use support::stub_jira::{client_for, StubJira, ISSUE};
+use support::stub_jira::{client_for, StubJira, ENCODED, ISSUE, TOKEN};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
@@ -401,6 +403,10 @@ fn revision_of(observed: &Observation<WorkItemState>) -> String {
     }
 }
 
+fn error_body(said: &str) -> String {
+    serde_json::json!({"errorMessages": [said], "errors": {}}).to_string()
+}
+
 fn reason_of(observed: &Observation<WorkItemState>) -> String {
     match observed {
         Observation::Unavailable { reason, .. } => reason.clone(),
@@ -734,7 +740,7 @@ async fn the_port_sees_a_status_that_changed_between_two_reads() {
 }
 
 #[tokio::test]
-async fn five_ways_of_failing_to_read_name_the_site_and_read_as_five_reasons() {
+async fn seven_ways_of_failing_to_read_name_the_site_and_read_as_seven_reasons() {
     let absent = StubJira::start().await;
     absent.holds_nothing().await;
     let malformed = StubJira::start().await;
@@ -749,9 +755,21 @@ async fn five_ways_of_failing_to_read_name_the_site_and_read_as_five_reasons() {
     unreadable_time
         .holds_issue_updated_at(KEY, "10001", "In Review", "In Progress", "yesterday")
         .await;
+    let out = StubJira::start().await;
+    out.refuses_with(503).await;
+    let limited = StubJira::start().await;
+    limited.refuses_with(429).await;
 
     let mut reasons = Vec::new();
-    for server in [&absent, &malformed, &refused, &forbidden, &unreadable_time] {
+    for server in [
+        &absent,
+        &malformed,
+        &refused,
+        &forbidden,
+        &unreadable_time,
+        &out,
+        &limited,
+    ] {
         let reason = reason_of(&observe_from(server).await);
         assert!(
             reason.starts_with(server.site()),
@@ -767,5 +785,105 @@ async fn five_ways_of_failing_to_read_name_the_site_and_read_as_five_reasons() {
         reasons.len(),
         spoken,
         "two ways of failing to read read the same: {reasons:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_outage_and_a_rate_limit_are_reported_as_what_they_are_and_not_as_a_broken_answer() {
+    for (status, expected) in [
+        (500, "the site could not be reached: HTTP 500"),
+        (502, "the site could not be reached: HTTP 502"),
+        (503, "the site could not be reached: HTTP 503"),
+        (
+            429,
+            "the site limited this request and it can be sent again: HTTP 429",
+        ),
+    ] {
+        let server = StubJira::start().await;
+        server
+            .refuses_with_body(status, &error_body("the site said this"))
+            .await;
+
+        let reason = reason_of(&observe_from(&server).await);
+
+        assert_eq!(
+            reason,
+            format!("{}: {expected}: the site said this", server.site()),
+            "a {status} says what happened and carries the site's own words"
+        );
+        assert!(
+            !reason.contains("not an issue"),
+            "the port never parsed a body here, so a {status} is not a malformed answer: {reason}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_outage_answered_in_html_reads_as_unreachable_and_quotes_no_body() {
+    let server = StubJira::start().await;
+    server.refuses_in_html_with(503).await;
+
+    let reason = reason_of(&observe_from(&server).await);
+
+    assert_eq!(
+        reason,
+        format!("{}: the site could not be reached: HTTP 503", server.site()),
+        "a body the client could not read is quoted back as nothing, and the status is still the fact"
+    );
+}
+
+#[tokio::test]
+async fn a_credential_planted_in_the_sites_error_body_is_redacted_before_a_reader_sees_it() {
+    for planted in [TOKEN, ENCODED] {
+        for status in [429, 503] {
+            let server = StubJira::start().await;
+            server
+                .refuses_with_body(
+                    status,
+                    &error_body(&format!("the gateway wrote {planted} to its log")),
+                )
+                .await;
+
+            let reason = reason_of(&observe_from(&server).await);
+
+            assert!(
+                !reason.contains(planted),
+                "carrying the site's words must not carry the credential out of a {status}: {reason}"
+            );
+            assert!(
+                reason.contains(REDACTED),
+                "the credential was in the body, so the reason must show it was replaced: {reason}"
+            );
+            assert!(
+                reason.contains("the gateway wrote"),
+                "the rest of the site's words survived, so the two assertions above did not pass on an empty reason: {reason}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_error_body_longer_than_the_clamp_reaches_the_reason_bounded() {
+    let long = "x".repeat(CLAMP * 4);
+    let server = StubJira::start().await;
+    server.refuses_with_body(503, &error_body(&long)).await;
+
+    let reason = reason_of(&observe_from(&server).await);
+
+    assert!(
+        reason.contains(&"x".repeat(1_000)) && reason.len() > CLAMP,
+        "the head of the site's words reached the reason: {} bytes",
+        reason.len()
+    );
+    assert!(
+        reason.contains("elided"),
+        "the clamp must say it clamped: {} bytes",
+        reason.len()
+    );
+    assert!(
+        reason.len() < CLAMP + 512,
+        "the reason is bounded by the clamp and not by the answered body of {} bytes, got {} bytes",
+        long.len(),
+        reason.len()
     );
 }

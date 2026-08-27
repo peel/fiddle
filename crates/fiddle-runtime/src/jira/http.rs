@@ -84,6 +84,19 @@ impl JiraHttp {
         Ok(JiraResponse { status, body })
     }
 
+    pub fn quoted(&self, body: &serde_json::Value) -> Option<String> {
+        let spoken: Vec<&str> = body["errorMessages"]
+            .as_array()?
+            .iter()
+            .filter_map(|held| held.as_str())
+            .filter(|held| !held.trim().is_empty())
+            .collect();
+        match spoken.is_empty() {
+            true => None,
+            false => Some(self.said(&spoken.join("; "))),
+        }
+    }
+
     fn unreachable(&self, error: &reqwest::Error) -> JiraError {
         JiraError::Unreachable(self.said(&error.to_string()))
     }

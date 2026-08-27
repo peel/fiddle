@@ -9,6 +9,9 @@ pub enum JiraError {
     #[error("the site holds no issue `{key}`")]
     Absent { key: String },
 
+    #[error("the site limited this request and it can be sent again: {0}")]
+    RateLimited(String),
+
     #[error("the site answered with something that is not an issue: {0}")]
     Malformed(String),
 
@@ -28,6 +31,7 @@ mod tests {
             JiraError::Unauthorized { .. } => "unauthorized",
             JiraError::Forbidden { .. } => "forbidden",
             JiraError::Absent { .. } => "absent",
+            JiraError::RateLimited(_) => "rate limited",
             JiraError::Malformed(_) => "malformed",
             JiraError::Unreachable(_) => "unreachable",
         }
@@ -40,6 +44,7 @@ mod tests {
             JiraError::Absent {
                 key: "IDENT-1".into(),
             },
+            JiraError::RateLimited("HTTP 429".into()),
             JiraError::Malformed("the body is not an issue".into()),
             JiraError::Unreachable("connection refused".into()),
         ]
@@ -50,6 +55,7 @@ mod tests {
             JiraError::Absent {
                 key: planted.into(),
             },
+            JiraError::RateLimited(planted.into()),
             JiraError::Malformed(planted.into()),
             JiraError::Unreachable(planted.into()),
         ]
@@ -78,6 +84,10 @@ mod tests {
                     key: "IDENT-1".into(),
                 },
                 "the site holds no issue `IDENT-1`",
+            ),
+            (
+                JiraError::RateLimited("HTTP 429".into()),
+                "the site limited this request and it can be sent again: HTTP 429",
             ),
             (
                 JiraError::Malformed("the body is not an issue".into()),
@@ -125,7 +135,7 @@ mod tests {
     }
 
     #[test]
-    fn the_five_read_failures_read_as_five_failures() {
+    fn the_six_read_failures_read_as_six_failures() {
         let cases = cases();
         let mut named: Vec<&str> = cases.iter().map(variant).collect();
         named.sort_unstable();
@@ -135,6 +145,7 @@ mod tests {
                 "absent",
                 "forbidden",
                 "malformed",
+                "rate limited",
                 "unauthorized",
                 "unreachable"
             ],
