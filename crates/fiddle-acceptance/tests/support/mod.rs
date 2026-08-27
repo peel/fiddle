@@ -818,10 +818,26 @@ pub const JIRA_ISSUE_CATEGORY: &str = "In Progress";
 
 pub const JIRA_ISSUE_UPDATED: &str = "2026-08-26T01:30:00.000+0530";
 
+const JIRA_ISSUE_ROUTE: &str = "/rest/api/3/issue/";
+
+const JIRA_UNROUTED: &str =
+    r#"{"errorMessages":["the site serves no resource at that path"],"errors":{}}"#;
+
+const JIRA_NOT_ALLOWED: &str =
+    r#"{"errorMessages":["the site does not serve that method here"],"errors":{}}"#;
+
+const JIRA_UNPARSED: &str =
+    r#"{"errorMessages":["the request line could not be parsed"],"errors":{}}"#;
+
+enum Answer {
+    Issue { path: String, body: String },
+    Refusal { status: u16, body: String },
+}
+
 struct Recorded {
     authorizations: Vec<String>,
-    status: u16,
-    body: String,
+    request_lines: Vec<String>,
+    answer: Answer,
 }
 
 pub struct StubJira {
@@ -831,9 +847,9 @@ pub struct StubJira {
 
 impl StubJira {
     pub fn holding_the_issue() -> Self {
-        StubJira::answering(
-            200,
-            serde_json::json!({
+        StubJira::serving(Answer::Issue {
+            path: format!("{JIRA_ISSUE_ROUTE}{JIRA_ISSUE_KEY}"),
+            body: serde_json::json!({
                 "id": "10000",
                 "key": JIRA_ISSUE_KEY,
                 "fields": {
@@ -850,29 +866,29 @@ impl StubJira {
                 },
             })
             .to_string(),
-        )
+        })
     }
 
     pub fn refusing_the_credential() -> Self {
-        StubJira::answering(
-            401,
-            serde_json::json!({
+        StubJira::serving(Answer::Refusal {
+            status: 401,
+            body: serde_json::json!({
                 "errorMessages": ["the site refused this request"],
                 "errors": {},
             })
             .to_string(),
-        )
+        })
     }
 
-    pub fn answering(status: u16, body: String) -> Self {
+    fn serving(answer: Answer) -> Self {
         use std::sync::{Arc, Mutex};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         let port = listener.local_addr().unwrap().port();
         let state = Arc::new(Mutex::new(Recorded {
             authorizations: Vec::new(),
-            status,
-            body,
+            request_lines: Vec::new(),
+            answer,
         }));
         let serving = Arc::clone(&state);
         std::thread::spawn(move || {
@@ -895,6 +911,10 @@ impl StubJira {
 
     pub fn served(&self) -> usize {
         self.held().authorizations.len()
+    }
+
+    pub fn request_lines(&self) -> Vec<String> {
+        self.held().request_lines.clone()
     }
 
     pub fn the_only_authorization(&self) -> String {
@@ -929,6 +949,7 @@ fn answer_recording(
     }
 
     let head = String::from_utf8_lossy(&request).into_owned();
+    let request_line = head.lines().next().unwrap_or_default().to_string();
     let authorization = head
         .lines()
         .filter_map(|line| line.split_once(':'))
@@ -941,7 +962,8 @@ fn answer_recording(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         held.authorizations.push(authorization);
-        (held.status, held.body.clone())
+        held.request_lines.push(request_line.clone());
+        routed(&request_line, &held.answer)
     };
 
     stream.write_all(
@@ -958,10 +980,36 @@ fn answer_recording(
     Ok(())
 }
 
+fn routed(request_line: &str, answer: &Answer) -> (u16, String) {
+    let mut parts = request_line.split_whitespace();
+    let (Some(method), Some(target), Some(version), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return (400, JIRA_UNPARSED.to_string());
+    };
+    if !version.starts_with("HTTP/") || !target.starts_with('/') {
+        return (400, JIRA_UNPARSED.to_string());
+    }
+    if method != "GET" {
+        return (405, JIRA_NOT_ALLOWED.to_string());
+    }
+    let path = target.split('?').next().unwrap_or(target);
+    match answer {
+        Answer::Refusal { status, body } => (*status, body.clone()),
+        Answer::Issue { path: held, body } => match path == held {
+            true => (200, body.clone()),
+            false => (404, JIRA_UNROUTED.to_string()),
+        },
+    }
+}
+
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        400 => "Bad Request",
         401 => "Unauthorized",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
         _ => "Unassigned",
     }
 }

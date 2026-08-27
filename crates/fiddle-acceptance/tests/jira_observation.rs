@@ -18,19 +18,7 @@ const REVISION: &str = "2026-08-25T20:00:00Z";
 fn inspect_reports_a_jira_issue_through_the_public_cli() {
     let stub = StubJira::holding_the_issue();
     let project = disposable_project_reading(&stub.base_url());
-
-    let mut command = std::process::Command::new(support::fiddle_binary());
-    for name in support::CREDENTIAL_VARS {
-        command.env_remove(name);
-    }
-    command.env_remove(USER_CREDENTIAL);
-    let run = command
-        .args(["inspect", REFERENCE, "--json"])
-        .current_dir(project.dir())
-        .env(USER_CREDENTIAL, THROWAWAY_USER)
-        .env(TOKEN_CREDENTIAL, THROWAWAY_TOKEN)
-        .output()
-        .expect("fiddle runs");
+    let run = read_the_issue(&project);
 
     assert!(
         run.status.success(),
@@ -94,4 +82,84 @@ fn disposable_project_reading(base_url: &str) -> Scenario {
         support::JIRA_ISSUE_STATUS
     ));
     project
+}
+
+#[test]
+fn inspect_asks_the_site_for_the_issue_at_the_documented_path_and_no_more_fields() {
+    let stub = StubJira::holding_the_issue();
+    let project = disposable_project_reading(&stub.base_url());
+    let run = read_the_issue(&project);
+
+    assert!(
+        run.status.success(),
+        "the read has to reach the site for a request line to have been received: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        stub.request_lines(),
+        vec![format!(
+            "GET /rest/api/3/issue/{}?fields=status,updated HTTP/1.1",
+            support::JIRA_ISSUE_KEY
+        )],
+        "the CLI reads one issue with one GET, and it names the two fields it uses, \
+         so a build that asks for the whole issue or asks at another path reds here"
+    );
+}
+
+#[test]
+fn the_site_answers_nothing_at_a_path_or_a_method_the_cli_never_asks_for() {
+    let stub = StubJira::holding_the_issue();
+    let held = format!("/rest/api/3/issue/{}", support::JIRA_ISSUE_KEY);
+
+    for (request_line, expected) in [
+        (format!("GET {held}?fields=status,updated HTTP/1.1"), "200"),
+        (format!("GET {held} HTTP/1.1"), "200"),
+        (format!("GET {held}/transitions HTTP/1.1"), "404"),
+        ("GET /rest/api/3/issue/OTHER-9 HTTP/1.1".to_string(), "404"),
+        ("GET /rest/api/3/myself HTTP/1.1".to_string(), "404"),
+        (format!("POST {held} HTTP/1.1"), "405"),
+        ("GET nonsense HTTP/1.1".to_string(), "400"),
+    ] {
+        let said = ask_over_tcp(&stub.base_url(), &request_line);
+        assert!(
+            said.starts_with(&format!("HTTP/1.1 {expected}")),
+            "`{request_line}` has to be answered {expected}, or this site answers an \
+             issue to requests the CLI never sends and every assertion made through \
+             it holds for a build that asks for something else: {said}"
+        );
+    }
+}
+
+fn read_the_issue(project: &Scenario) -> std::process::Output {
+    let mut command = std::process::Command::new(support::fiddle_binary());
+    for name in support::CREDENTIAL_VARS {
+        command.env_remove(name);
+    }
+    command.env_remove(USER_CREDENTIAL);
+    command
+        .args(["inspect", REFERENCE, "--json"])
+        .current_dir(project.dir())
+        .env(USER_CREDENTIAL, THROWAWAY_USER)
+        .env(TOKEN_CREDENTIAL, THROWAWAY_TOKEN)
+        .output()
+        .expect("fiddle runs")
+}
+
+fn ask_over_tcp(base_url: &str, request_line: &str) -> String {
+    use std::io::{Read, Write};
+
+    let address = base_url.trim_start_matches("http://").to_string();
+    let mut stream =
+        std::net::TcpStream::connect(&address).expect("the stub site accepts a connection");
+    stream
+        .write_all(
+            format!("{request_line}\r\nhost: {address}\r\nconnection: close\r\n\r\n").as_bytes(),
+        )
+        .expect("the stub site reads a request");
+    stream.flush().expect("the request leaves");
+    let mut said = String::new();
+    stream
+        .read_to_string(&mut said)
+        .expect("the stub site answers");
+    said.lines().next().unwrap_or_default().to_string()
 }
