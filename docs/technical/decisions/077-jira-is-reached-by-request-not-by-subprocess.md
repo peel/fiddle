@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Cites: JiraHttp, JiraHttp::api, JiraError::Unauthorized, JiraError::Forbidden, JiraWorkItemPort, WorkItemPort, EnvRef, CREDENTIAL_MUST_BE_NAMED, CLAMP, REDACTED, port_kind_for, the_jira_client_can_be_neither_printed_nor_serialized, no_surface_a_reader_sees_carries_the_jira_credential, the_same_search_finds_the_credential_when_a_surface_does_carry_it, every_surface_searched_is_output_of_a_jira_read, a_written_jira_token_is_refused, a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts, JiraHttp::quoted, a_credential_planted_in_the_sites_error_body_is_redacted_before_a_reader_sees_it, no_workspace_crate_pulls_openssl_into_its_closure, crates/fiddle-runtime/src/jira/http.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_printable.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_serializable.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-acceptance/tests/jira_credential.rs, scripts/live-jira-observe.sh, issue_from, read_instant, canonical_revision, ConfiguredNames, state_for
+Cites: JiraHttp, JiraHttp::api, JiraError::Unauthorized, JiraError::Forbidden, JiraWorkItemPort, WorkItemPort, EnvRef, CREDENTIAL_MUST_BE_NAMED, CLAMP, REDACTED, port_kind_for, the_jira_client_can_be_neither_printed_nor_serialized, no_surface_a_reader_sees_carries_the_jira_credential, the_same_search_finds_the_credential_when_a_surface_does_carry_it, every_surface_searched_is_output_of_a_jira_read, a_written_jira_token_is_refused, a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts, JiraHttp::quoted, a_credential_planted_in_the_sites_error_body_is_redacted_before_a_reader_sees_it, no_workspace_crate_pulls_openssl_into_its_closure, crates/fiddle-runtime/src/jira/http.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_printable.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_serializable.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-acceptance/tests/jira_credential.rs, scripts/live-jira-observe.sh, issue_from, read_instant, canonical_revision, ConfiguredNames, state_for, WorkState, ProjectedStatus, projected_status, assess, derive_next, no_projected_work_state_moves_the_assessment_or_the_next_action, crates/fiddle-core/src/assessment.rs, crates/fiddle-runtime/src/jira/work_item.rs
 
 ## Context
 
@@ -214,6 +214,24 @@ and for an issue that does not exist, so no issue read reaches
 `JiraError::Unauthorized` or `JiraError::Forbidden`.
 `docs/technical/RUNBOOKS.md` records that behaviour, and `fiddle-2n67` holds it
 open.
+
+**No decision reads the projection, so nothing measures what it decides.** No
+consumer branches on `WorkState`. Serde writes it and `assess` ignores it:
+`assess` branches on whether each observation is available and on the
+change-set marker, `derive_next` maps its three verdicts, and
+`projected_status` therefore reaches the `fiddle inspect --json` payload and
+stops there. So a projection that named the wrong state would move no outcome,
+and the third item above can compare a status name with a configured one and
+can compare nothing that follows from one. M5b supplies the first consumer:
+`docs/plans/2026-08-26-m5b-jira-effects.md` Task 6 gives
+`jira.issue_transitioned` an `inspect` that reads an issue's current status to
+choose a target state. Until that lands,
+`no_projected_work_state_moves_the_assessment_or_the_next_action` in
+`crates/fiddle-core/src/assessment.rs` pins the absence and not the projection.
+It holds the assessment and the next action equal across all six `WorkState`
+variants and all three marker cases, and it reds when a projected `Done` is
+allowed to complete the work. `docs/technical/SYSTEM.md` carries it as a known
+issue.
 
 ## The identifier question ADR 011 left open
 

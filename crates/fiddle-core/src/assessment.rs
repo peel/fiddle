@@ -116,7 +116,9 @@ pub fn derive_next(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observation::{ChangeSetState, SourceRef, WorkItemState};
+    use crate::observation::{
+        ChangeSetState, ProjectedStatus, SourceRef, WorkItemState, WorkState,
+    };
 
     fn view(
         work: Observation<WorkItemState>,
@@ -319,6 +321,64 @@ mod tests {
                 EvidenceRef("stub:changes/x.json".into()),
             ]
         );
+    }
+
+    fn jira_names(state: &WorkState) -> (&'static str, &'static str, &'static str) {
+        match state {
+            WorkState::Ready => ("10000", "To Do", "To Do"),
+            WorkState::InProgress => ("10001", "In Progress", "In Progress"),
+            WorkState::InReview => ("10002", "In Review", "In Progress"),
+            WorkState::Blocked => ("10003", "Blocked", "In Progress"),
+            WorkState::Done => ("10004", "Done", "Done"),
+            WorkState::Unknown => ("10005", "Awaiting Triage", "In Progress"),
+        }
+    }
+
+    fn work_projecting(state: WorkState) -> Observation<WorkItemState> {
+        let (id, name, category) = jira_names(&state);
+        Observation::Available {
+            value: WorkItemState {
+                id: "x".into(),
+                status: name.into(),
+                projected_status: Some(ProjectedStatus {
+                    state,
+                    jira_status_id: id.into(),
+                    jira_status_name: name.into(),
+                    jira_status_category: category.into(),
+                }),
+            },
+            source: SourceRef("stub:work/x.json".into()),
+            revision: None,
+        }
+    }
+
+    #[test]
+    fn no_projected_work_state_moves_the_assessment_or_the_next_action() {
+        for state in [
+            WorkState::Ready,
+            WorkState::InProgress,
+            WorkState::InReview,
+            WorkState::Blocked,
+            WorkState::Done,
+            WorkState::Unknown,
+        ] {
+            for marker in [None, Some("aaaa"), Some("bbbb")] {
+                let projected = view(work_projecting(state.clone()), changes_with(marker));
+                let unprojected = view(avail_work(), changes_with(marker));
+                assert_eq!(
+                    assess(&projected, "aaaa"),
+                    assess(&unprojected, "aaaa"),
+                    "a projection is not an input to this decision: `assess` branches on \
+                     observation availability and on the change-set marker, so a projected \
+                     {state:?} under marker {marker:?} must not move its verdict"
+                );
+                assert_eq!(
+                    derive_next(&projected, "aaaa", STUB_MARK),
+                    derive_next(&unprojected, "aaaa", STUB_MARK),
+                    "and the action derived from that verdict must not move either"
+                );
+            }
+        }
     }
 
     #[test]
