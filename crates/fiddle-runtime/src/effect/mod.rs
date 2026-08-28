@@ -1,7 +1,7 @@
 pub mod receipt;
 pub mod registry;
 
-pub use fiddle_macros::Effect;
+pub use fiddle_macros::{Effect, VariantCount};
 pub use receipt::{EffectError, EffectReceipt, ObservedState, Recurrence};
 pub use registry::{
     describe, install, registered, resolve, Construct, EffectDescriptor, RegistryError, BUILT_IN,

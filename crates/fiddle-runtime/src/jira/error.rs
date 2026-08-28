@@ -1,6 +1,6 @@
 use crate::effect::{AdapterError, EffectOutcome, EffectPhase, RetryAdvice};
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, crate::effect::VariantCount)]
 pub enum JiraError {
     #[error("the site refused the credential with {status}")]
     Unauthorized { status: u16 },
@@ -123,7 +123,7 @@ mod tests {
     }
 
     fn cases() -> Vec<JiraError> {
-        vec![
+        let listed = vec![
             JiraError::Unauthorized { status: 401 },
             JiraError::Forbidden { status: 403 },
             JiraError::Absent {
@@ -142,7 +142,16 @@ mod tests {
                 count: 2,
             },
             JiraError::NotSent("the lookup resolved nothing to send".into()),
-        ]
+        ];
+        assert_eq!(
+            listed.len(),
+            JiraError::VARIANT_COUNT,
+            "this list is written by hand and every claim below that reads `every variant \
+             of JiraError` rests on it holding one case per variant; a variant added to the \
+             enum and to the matches that must name it, and not added here, arrives as a \
+             shorter list and fails on this line"
+        );
+        listed
     }
 
     fn carrying(planted: &str) -> Vec<JiraError> {
