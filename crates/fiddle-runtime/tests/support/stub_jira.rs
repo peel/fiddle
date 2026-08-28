@@ -117,13 +117,41 @@ struct StoredIssue {
 
 impl StoredIssue {
     fn body(&self, base_url: &str) -> Value {
+        let mut fields = self.fields.clone();
+        if fields["comment"].is_null() {
+            merged(&mut fields, &commentless());
+        }
         json!({
             "id": self.id,
             "key": self.key,
             "self": format!("{base_url}{ISSUE_ROUTE}{}", self.key),
-            "fields": self.fields,
+            "fields": fields,
         })
     }
+}
+
+fn commentless() -> Value {
+    json!({"comment": {"comments": [], "maxResults": 0, "total": 0, "startAt": 0}})
+}
+
+fn with_comment(fields: &mut Value, id: &str, body: &Value) {
+    let mut comments = fields["comment"]["comments"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    comments.push(json!({"id": id, "body": body.clone()}));
+    let total = comments.len();
+    merged(
+        fields,
+        &json!({
+            "comment": {
+                "comments": comments,
+                "maxResults": total,
+                "total": total,
+                "startAt": 0,
+            }
+        }),
+    );
 }
 
 enum WriteAnswer {
@@ -990,6 +1018,7 @@ fn commented(key: &str, sent: &Value, state: &mut StubState) -> Served {
         return Served::json(404, ABSENT);
     };
     merged(&mut held.fields, &json!({"updated": updated}));
+    with_comment(&mut held.fields, &id, &sent["body"]);
     state.record(WriteRoute::AddComment, key, sent, true);
     let body = json!({"id": id, "body": sent["body"]}).to_string();
     Served::json(201, &body)
