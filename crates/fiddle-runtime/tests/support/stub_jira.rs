@@ -20,6 +20,8 @@ pub const HELD_DAY: &str = "2026-08-26";
 pub const SEEDED_PROJECT: &str = "IDENT";
 
 const SETTLES: Duration = Duration::from_millis(100);
+const PAGE_CAP: usize = 50;
+const PAGE_WALK_BOUND: usize = 1000;
 
 const ABSENT: &str = r#"{"errorMessages":["Issue does not exist or you do not have permission to see it."],"errors":{}}"#;
 const REFUSED: &str = r#"{"errorMessages":["the site refused this request"],"errors":{}}"#;
@@ -134,6 +136,12 @@ enum SearchIndex {
     LaggingBehindNewIssues,
 }
 
+struct IssuedPageToken {
+    token: String,
+    jql: String,
+    offset: usize,
+}
+
 struct OfferedTransition {
     issue: String,
     id: String,
@@ -152,6 +160,8 @@ struct StubState {
     write_answer: WriteAnswer,
     search_index: SearchIndex,
     offered: Vec<OfferedTransition>,
+    page_cap: usize,
+    page_tokens: Vec<IssuedPageToken>,
     minted: u32,
     ticks: u32,
 }
@@ -241,6 +251,8 @@ impl StubJira {
             write_answer: WriteAnswer::Sent,
             search_index: SearchIndex::Current,
             offered: Vec::new(),
+            page_cap: PAGE_CAP,
+            page_tokens: Vec::new(),
             minted: 0,
             ticks: 0,
         }));
@@ -422,24 +434,33 @@ impl StubJira {
         });
     }
 
+    pub async fn caps_search_pages_at(&self, issues: usize) {
+        assert!(issues > 0, "a page holds at least one issue");
+        self.state.lock().await.page_cap = issues;
+    }
+
     pub async fn writes(&self) -> Vec<RecordedWrite> {
         self.state.lock().await.writes.clone()
     }
 
-    pub async fn creates(&self) -> usize {
+    pub async fn create_requests(&self) -> usize {
         self.state.lock().await.wrote(WriteRoute::CreateIssue)
     }
 
-    pub async fn edits(&self) -> usize {
+    pub async fn edit_requests(&self) -> usize {
         self.state.lock().await.wrote(WriteRoute::EditIssue)
     }
 
-    pub async fn comments(&self) -> usize {
+    pub async fn comment_requests(&self) -> usize {
         self.state.lock().await.wrote(WriteRoute::AddComment)
     }
 
-    pub async fn transitions(&self) -> usize {
+    pub async fn transition_requests(&self) -> usize {
         self.state.lock().await.wrote(WriteRoute::TransitionIssue)
+    }
+
+    pub async fn issues_that_exist(&self) -> usize {
+        self.state.lock().await.issues.len()
     }
 
     pub async fn last_create(&self) -> Value {
@@ -448,7 +469,7 @@ impl StubJira {
             .expect("the stub was asked to create an issue")
     }
 
-    pub async fn comments_on(&self, key: &str) -> usize {
+    pub async fn comment_requests_on(&self, key: &str) -> usize {
         self.state
             .lock()
             .await
@@ -539,27 +560,64 @@ impl StubJira {
             .expect("the stub answers the read")
     }
 
-    pub async fn search_answer(&self, jql: &str) -> Answered {
+    pub async fn search_answer_with(&self, params: &[(&str, &str)]) -> Answered {
+        let query: Vec<String> = params
+            .iter()
+            .map(|(name, value)| format!("{name}={}", percent_encoded(value)))
+            .collect();
         let request = reqwest::Client::new().get(format!(
-            "{}{SEARCH_ROUTE}?jql={}",
+            "{}{SEARCH_ROUTE}?{}",
             self.base_url,
-            percent_encoded(jql)
+            query.join("&")
         ));
         answered_by(request)
             .await
             .expect("the stub answers the search")
     }
 
-    pub async fn search(&self, jql: &str) -> Value {
-        let answered = self.search_answer(jql).await;
-        assert_eq!(
-            answered.status, 200,
-            "the stub refused the jql `{jql}`, so a count taken from this answer would be a \
-             count of nothing rather than a count of matches: {}",
-            answered.body
-        );
-        answered.body
+    pub async fn search_answer(&self, jql: &str) -> Answered {
+        self.search_answer_with(&[("jql", jql)]).await
     }
+
+    pub async fn search_page_answer_after(&self, jql: &str, token: &str) -> Answered {
+        self.search_answer_with(&[("jql", jql), ("nextPageToken", token)])
+            .await
+    }
+
+    pub async fn search_page(&self, jql: &str) -> Value {
+        served_page(jql, self.search_answer(jql).await)
+    }
+
+    pub async fn search_page_after(&self, jql: &str, token: &str) -> Value {
+        served_page(jql, self.search_page_answer_after(jql, token).await)
+    }
+
+    pub async fn all_search_matches(&self, jql: &str) -> Vec<Value> {
+        let mut matched = Vec::new();
+        let mut token: Option<String> = None;
+        for _ in 0..PAGE_WALK_BOUND {
+            let page = match &token {
+                None => self.search_page(jql).await,
+                Some(held) => self.search_page_after(jql, held).await,
+            };
+            matched.extend(page["issues"].as_array().cloned().unwrap_or_default());
+            match page["nextPageToken"].as_str() {
+                Some(next) => token = Some(next.to_string()),
+                None => return matched,
+            }
+        }
+        panic!("the search for `{jql}` never reported a last page within {PAGE_WALK_BOUND} pages");
+    }
+}
+
+fn served_page(jql: &str, answered: Answered) -> Value {
+    assert_eq!(
+        answered.status, 200,
+        "the stub refused the search for `{jql}`, so a count taken from this answer would be a \
+         count of nothing rather than a count of matches: {}",
+        answered.body
+    );
+    answered.body
 }
 
 impl Drop for StubJira {
@@ -937,22 +995,74 @@ fn transitioned(key: &str, sent: &Value, state: &mut StubState) -> Served {
     Served::json(204, "")
 }
 
-fn searched(target: &str, state: &StubState) -> Served {
+fn searched(target: &str, state: &mut StubState) -> Served {
     let Some(jql) = query_value(target, "jql") else {
         return Served::refusal(400, "a search must carry a jql query parameter");
     };
+    if query_value(target, "startAt").is_some() {
+        return Served::refusal(
+            400,
+            "this endpoint pages by nextPageToken and not by startAt; the offset-paged search \
+             endpoint is withdrawn",
+        );
+    }
     let clauses = match clauses_of(&jql) {
         Ok(clauses) => clauses,
         Err(reason) => return Served::refusal(400, &reason),
     };
-    let issues: Vec<Value> = state
+    let size = match query_value(target, "maxResults") {
+        None => state.page_cap,
+        Some(asked) => match asked.parse::<usize>() {
+            Ok(asked) if asked > 0 => asked.min(state.page_cap),
+            _ => {
+                return Served::refusal(
+                    400,
+                    &format!("`{asked}` is not a page size this endpoint can serve"),
+                )
+            }
+        },
+    };
+    let offset =
+        match query_value(target, "nextPageToken") {
+            None => 0,
+            Some(token) => match state
+                .page_tokens
+                .iter()
+                .find(|issued| issued.token == token)
+            {
+                None => return Served::refusal(
+                    400,
+                    "a page token is opaque and must be one this site issued; it is not an offset",
+                ),
+                Some(issued) if issued.jql != jql => {
+                    return Served::refusal(
+                        400,
+                        "that page token names a position in a different query's result",
+                    )
+                }
+                Some(issued) => issued.offset,
+            },
+        };
+    let matched: Vec<Value> = state
         .issues
         .iter()
         .filter(|issue| issue.found_by_search)
         .filter(|issue| clauses.iter().all(|clause| selects(clause, issue)))
         .map(|issue| issue.body(&state.base_url))
         .collect();
-    Served::json(200, &json!({"issues": issues}).to_string())
+    let beyond = (offset + size).min(matched.len());
+    let page: Vec<Value> = matched[offset.min(matched.len())..beyond].to_vec();
+    let mut answer = json!({"issues": page, "isLast": beyond >= matched.len()});
+    if beyond < matched.len() {
+        let token = format!("tok-{}", state.page_tokens.len() + 1);
+        state.page_tokens.push(IssuedPageToken {
+            token: token.clone(),
+            jql: jql.clone(),
+            offset: beyond,
+        });
+        merged(&mut answer, &json!({"nextPageToken": token}));
+    }
+    Served::json(200, &answer.to_string())
 }
 
 struct Clause {
