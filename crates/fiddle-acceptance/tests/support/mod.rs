@@ -203,13 +203,25 @@ impl Scenario {
                 let bytes = if path.is_dir() {
                     Vec::new()
                 } else {
-                    std::fs::read(&path).unwrap()
+                    std::fs::read(&path).unwrap_or_else(|source| {
+                        panic!(
+                            "`{relative}` was listed by the walk of the scenario directory \
+                             and could not be read a moment later: {source}. A process the \
+                             test does not wait for is writing inside the scenario directory \
+                             while it is being snapshotted, so every byte-for-byte comparison \
+                             of that directory is racy until that process is stopped"
+                        )
+                    })
                 };
                 (relative, bytes)
             })
             .collect();
         entries.sort();
         entries
+    }
+
+    pub fn assert_tree_unchanged(&self, before: &[(String, Vec<u8>)], property: &str) {
+        assert_tree_unchanged(before, &self.project_tree(), property);
     }
 
     pub fn config_check(&self) -> std::process::Output {
@@ -253,6 +265,7 @@ impl Scenario {
             std::fs::write(at, contents).unwrap();
         }
         git(&repo, &["init", "-q", "."]);
+        git(&repo, &["config", "maintenance.auto", "false"]);
         git(&repo, &["add", "-A"]);
         git(
             &repo,
@@ -647,6 +660,56 @@ pub fn git(dir: &Path, args: &[&str]) {
         out.status.success(),
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+pub fn tree_difference(before: &[(String, Vec<u8>)], after: &[(String, Vec<u8>)]) -> Vec<String> {
+    let index = |entries: &[(String, Vec<u8>)]| -> std::collections::BTreeMap<String, Vec<u8>> {
+        entries
+            .iter()
+            .map(|(path, bytes)| (path.clone(), bytes.clone()))
+            .collect()
+    };
+    let was = index(before);
+    let is = index(after);
+    let mut difference = Vec::new();
+    for (path, bytes) in &was {
+        match is.get(path) {
+            None => difference.push(format!("removed `{path}` ({} bytes)", bytes.len())),
+            Some(now) if now != bytes => difference.push(format!(
+                "changed `{path}` ({} bytes -> {} bytes)",
+                bytes.len(),
+                now.len()
+            )),
+            Some(_) => {}
+        }
+    }
+    for (path, bytes) in &is {
+        if !was.contains_key(path) {
+            difference.push(format!("added `{path}` ({} bytes)", bytes.len()));
+        }
+    }
+    difference.sort();
+    difference
+}
+
+pub fn assert_tree_unchanged(
+    before: &[(String, Vec<u8>)],
+    after: &[(String, Vec<u8>)],
+    property: &str,
+) {
+    let difference = tree_difference(before, after);
+    assert!(
+        difference.is_empty(),
+        "{property}; the scenario directory differs by:\n  {}",
+        difference.join("\n  ")
+    );
+    assert_eq!(
+        before.len(),
+        after.len(),
+        "{property}; the two snapshots hold a different number of entries although no \
+         path was added, removed or changed, which means one path was listed twice and \
+         the difference above cannot be trusted"
     );
 }
 
