@@ -161,10 +161,74 @@ fn an_absent_credential_is_a_configuration_error_naming_the_variable() {
         stderr.contains(CREDENTIAL),
         "the diagnostic must name the variable to set: {stderr}"
     );
+    s.assert_tree_unchanged(
+        &before,
+        "a refused invocation must have changed nothing at all",
+    );
+}
+
+#[test]
+fn a_commit_in_a_fixture_repository_starts_no_maintenance_that_outlives_it() {
+    let s = Scenario::new();
+    let repo = s.write_fixture_repo();
+    std::fs::write(repo.join("src/lib.rs"), support::REPAIRED_FIXTURE).unwrap();
+
+    let out = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qam",
+            "a second commit",
+        ])
+        .current_dir(&repo)
+        .env("GIT_TRACE", "1")
+        .output()
+        .unwrap();
+    let trace = String::from_utf8_lossy(&out.stderr);
+
+    assert!(out.status.success(), "the second commit failed: {trace}");
+    assert!(
+        !trace.contains("maintenance"),
+        "git ends a commit with `git maintenance run --auto --quiet --detach`, whose \
+         detached grandchild creates `.git/objects/maintenance.lock` and removes it after \
+         `git commit` has already exited. That lock sits inside the scenario directory, so \
+         it lands in one byte-for-byte snapshot and not the next, and a walk can list it a \
+         moment before it is gone. A fixture repository must therefore switch auto \
+         maintenance off. The trace of this commit was:\n{trace}"
+    );
+}
+
+#[test]
+fn the_tree_difference_names_an_added_a_removed_and_a_changed_path_and_is_silent_otherwise() {
+    let before = vec![
+        ("kept".to_string(), b"same".to_vec()),
+        ("edited".to_string(), b"one".to_vec()),
+        ("gone".to_string(), b"four".to_vec()),
+    ];
+    let after = vec![
+        ("kept".to_string(), b"same".to_vec()),
+        ("edited".to_string(), b"eleven".to_vec()),
+        ("fresh".to_string(), b"new".to_vec()),
+    ];
+
     assert_eq!(
-        s.project_tree(),
-        before,
-        "a refused invocation must have changed nothing at all"
+        support::tree_difference(&before, &before),
+        Vec::<String>::new(),
+        "a tree compared against itself must report no difference, or every caller of \
+         assert_tree_unchanged fails for a reason that is not there"
+    );
+    assert_eq!(
+        support::tree_difference(&before, &after),
+        vec![
+            "added `fresh` (3 bytes)".to_string(),
+            "changed `edited` (3 bytes -> 6 bytes)".to_string(),
+            "removed `gone` (4 bytes)".to_string(),
+        ],
+        "each kind of difference must be reported with the path it happened to, or a \
+         failing snapshot comparison says only that something changed"
     );
 }
 
@@ -349,10 +413,9 @@ fn selecting_a_capability_leaves_inspect_read_only() {
         payload["next_action"]["execute"]["capability_id"], "fixture_repair",
         "the scenario must have reached the derivation to prove anything: {payload}"
     );
-    assert_eq!(
-        s.project_tree(),
-        before,
-        "inspect is read-only, whichever capability it was asked about"
+    s.assert_tree_unchanged(
+        &before,
+        "inspect is read-only, whichever capability it was asked about",
     );
     assert!(
         !s.report_dir().exists(),
@@ -378,11 +441,7 @@ fn an_unknown_capability_is_refused_by_inspect_too() {
         stderr.contains("stub_mark") && stderr.contains("fixture_repair"),
         "the diagnostic must list every id this build can execute: {stderr}"
     );
-    assert_eq!(
-        s.project_tree(),
-        before,
-        "a rejected inspection provably did nothing"
-    );
+    s.assert_tree_unchanged(&before, "a rejected inspection provably did nothing");
 }
 
 #[test]
@@ -399,11 +458,7 @@ fn an_unknown_capability_is_a_usage_error_listing_the_known_ids() {
         stderr.contains("stub_mark") && stderr.contains("fixture_repair"),
         "the diagnostic must list every id this build can execute: {stderr}"
     );
-    assert_eq!(
-        s.project_tree(),
-        before,
-        "a rejected invocation provably did nothing"
-    );
+    s.assert_tree_unchanged(&before, "a rejected invocation provably did nothing");
 }
 
 #[test]
