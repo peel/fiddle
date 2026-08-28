@@ -1104,12 +1104,6 @@ fn create_labelled(labels: &[&str]) -> serde_json::Value {
     })
 }
 
-struct Silent;
-
-impl EffectTrace for Silent {
-    fn step(&self, _kind: &EffectName, _step: ExecutionStep) {}
-}
-
 static FILED: &[EffectDescriptor] = &[FileVerdict::descriptor()];
 
 fn the_registry_answers_the_name() {
