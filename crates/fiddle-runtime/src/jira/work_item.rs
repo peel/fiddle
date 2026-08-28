@@ -218,6 +218,7 @@ mod tests {
             JiraError::RateLimited(_) => "rate limited",
             JiraError::Malformed(_) => "malformed",
             JiraError::Unreachable(_) => "unreachable",
+            JiraError::Unconfigured => "unconfigured",
         }
     }
 

@@ -9,6 +9,7 @@ pub use registry::{
 
 use crate::git::GitCli;
 use crate::github::GhCli;
+use crate::jira::{JiraError, JiraHttp};
 use fiddle_core::{
     combine, effect_id, payload_hash, CapabilityId, DecisionBinding, DeploymentRule, EffectId,
     EffectName, HumanDecisionRequest, HumanDecisionRequirement, InterpretedHumanDecision,
@@ -105,6 +106,7 @@ pub trait DeploymentPolicy: Send + Sync {
 pub struct EffectContext {
     pub gh: GhCli,
     pub git: GitCli,
+    pub jira: Option<JiraHttp>,
     pub work: PathBuf,
     pub cancel: CancellationToken,
 }
@@ -114,9 +116,19 @@ impl EffectContext {
         Self {
             gh,
             git,
+            jira: None,
             work,
             cancel,
         }
+    }
+
+    pub fn with_jira(mut self, jira: JiraHttp) -> Self {
+        self.jira = Some(jira);
+        self
+    }
+
+    pub fn jira_client(&self) -> Result<&JiraHttp, JiraError> {
+        self.jira.as_ref().ok_or(JiraError::Unconfigured)
     }
 }
 

@@ -14,6 +14,7 @@ use fiddle_runtime::effect::{
 };
 use fiddle_runtime::git::{GitCli, GitError};
 use fiddle_runtime::github::{branch_name, EnsureBranchPublished};
+use fiddle_runtime::jira::JiraHttp;
 use fiddle_runtime::{GhCli, GhError, RetryAdvice};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -2258,4 +2259,62 @@ fn unregistered_effect(capability: fiddle_core::CapabilityId) -> ProposedEffect 
         target: TARGET.to_string(),
         payload: PAYLOAD.to_string(),
     }
+}
+
+fn a_client_for_a_site_no_test_reaches() -> JiraHttp {
+    JiraHttp::new(
+        "http://127.0.0.1:1",
+        "bot@example.com",
+        "s3cr3t",
+        Duration::from_secs(1),
+    )
+    .expect("a client is built without reaching the site")
+}
+
+#[test]
+fn a_context_built_from_four_arguments_holds_no_jira_client_and_refuses_in_these_words() {
+    let ctx = support::unreachable_context();
+    assert!(
+        ctx.jira.is_none(),
+        "a deployment with no `[jira]` table holds no client"
+    );
+    let refused = ctx
+        .jira_client()
+        .err()
+        .expect("a context holding no client hands one to nobody");
+    assert_eq!(
+        format!("{refused}"),
+        "this deployment holds no `[jira]` configuration, so no request was sent",
+        "every later jira operation reports this refusal, so its words are fixed here"
+    );
+    assert_eq!(
+        refused.outcome(EffectPhase::Apply),
+        EffectOutcome::NotCommitted,
+        "no request left the process, so a write that refused this way committed nothing"
+    );
+    assert!(
+        !refused.is_worth_reading_again(),
+        "no later read supplies a client this deployment never configured"
+    );
+}
+
+#[test]
+fn with_jira_hands_out_the_client_and_carries_the_other_four_fields_unchanged() {
+    let before = support::unreachable_context();
+    let work = before.work.clone();
+    let cancel = before.cancel.clone();
+
+    let after = before.with_jira(a_client_for_a_site_no_test_reaches());
+
+    assert!(
+        after.jira_client().is_ok(),
+        "a context given a client refuses nothing"
+    );
+    assert_eq!(after.work, work, "with_jira replaces no working directory");
+    cancel.cancel();
+    assert!(
+        after.cancel.is_cancelled(),
+        "with_jira keeps the run's own token, and a context holding a second token \
+         would never learn the run was cancelled"
+    );
 }

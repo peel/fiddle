@@ -25,6 +25,9 @@ pub enum JiraError {
 
     #[error("the site could not be reached: {0}")]
     Unreachable(String),
+
+    #[error("this deployment holds no `[jira]` configuration, so no request was sent")]
+    Unconfigured,
 }
 
 impl AdapterError for JiraError {
@@ -36,7 +39,8 @@ impl AdapterError for JiraError {
                 | JiraError::Forbidden { .. }
                 | JiraError::Absent { .. }
                 | JiraError::AbsentOrRefused { .. }
-                | JiraError::RateLimited(_) => EffectOutcome::NotCommitted,
+                | JiraError::RateLimited(_)
+                | JiraError::Unconfigured => EffectOutcome::NotCommitted,
                 JiraError::Malformed(_) | JiraError::Unreachable(_) => EffectOutcome::Unknown,
             },
         }
@@ -50,7 +54,8 @@ impl AdapterError for JiraError {
             | JiraError::AbsentOrRefused { .. }
             | JiraError::RateLimited(_)
             | JiraError::Malformed(_)
-            | JiraError::Unreachable(_) => RetryAdvice::default(),
+            | JiraError::Unreachable(_)
+            | JiraError::Unconfigured => RetryAdvice::default(),
         }
     }
 
@@ -62,7 +67,8 @@ impl AdapterError for JiraError {
             JiraError::Unauthorized { .. }
             | JiraError::Forbidden { .. }
             | JiraError::Absent { .. }
-            | JiraError::Malformed(_) => false,
+            | JiraError::Malformed(_)
+            | JiraError::Unconfigured => false,
         }
     }
 }
@@ -83,6 +89,7 @@ mod tests {
             JiraError::RateLimited(_) => "rate limited",
             JiraError::Malformed(_) => "malformed",
             JiraError::Unreachable(_) => "unreachable",
+            JiraError::Unconfigured => "unconfigured",
         }
     }
 
@@ -100,6 +107,7 @@ mod tests {
             JiraError::RateLimited("HTTP 429".into()),
             JiraError::Malformed("the body is not an issue".into()),
             JiraError::Unreachable("connection refused".into()),
+            JiraError::Unconfigured,
         ]
     }
 
@@ -122,11 +130,12 @@ mod tests {
         vec![
             JiraError::Unauthorized { status: 401 },
             JiraError::Forbidden { status: 403 },
+            JiraError::Unconfigured,
         ]
     }
 
     #[test]
-    fn every_read_failure_explains_itself_in_exactly_these_words() {
+    fn every_jira_failure_explains_itself_in_exactly_these_words() {
         let pinned = [
             (
                 JiraError::Unauthorized { status: 401 },
@@ -161,6 +170,10 @@ mod tests {
             (
                 JiraError::Unreachable("connection refused".into()),
                 "the site could not be reached: connection refused",
+            ),
+            (
+                JiraError::Unconfigured,
+                "this deployment holds no `[jira]` configuration, so no request was sent",
             ),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
@@ -200,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn the_seven_read_failures_read_as_seven_failures() {
+    fn the_eight_jira_failures_read_as_eight_failures() {
         let cases = cases();
         let mut named: Vec<&str> = cases.iter().map(variant).collect();
         named.sort_unstable();
@@ -213,6 +226,7 @@ mod tests {
                 "malformed",
                 "rate limited",
                 "unauthorized",
+                "unconfigured",
                 "unreachable"
             ],
             "every variant of JiraError has a case here"
@@ -260,6 +274,7 @@ mod tests {
                 JiraError::Unreachable("connection refused".into()),
                 EffectOutcome::Unknown,
             ),
+            (JiraError::Unconfigured, EffectOutcome::NotCommitted),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
         let all: Vec<&str> = cases().iter().map(variant).collect();
@@ -340,6 +355,7 @@ mod tests {
                 false,
             ),
             (JiraError::Unreachable("connection refused".into()), true),
+            (JiraError::Unconfigured, false),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
         let all: Vec<&str> = cases().iter().map(variant).collect();
@@ -374,7 +390,13 @@ mod tests {
         );
         assert_eq!(
             standing,
-            ["unauthorized", "forbidden", "absent", "malformed"],
+            [
+                "unauthorized",
+                "forbidden",
+                "absent",
+                "malformed",
+                "unconfigured"
+            ],
             "these answers do not change by asking twice, so an adapter that reads no \
              failure again fails here"
         );
