@@ -1030,12 +1030,14 @@ impl EffectTrace for Silent {
     fn step(&self, _kind: &EffectName, _step: ExecutionStep) {}
 }
 
-const JIRA: &[EffectDescriptor] = &[TransitionIssue::descriptor()];
+const JIRA: &[EffectDescriptor] = &[TransitionIssue::descriptor(), FileVerdict::descriptor()];
 
 fn registered() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        install(JIRA).expect("this operation's effect is installed once for this binary");
+        if describe(&EffectName::shipped(JIRA_ISSUE_TRANSITIONED)).is_none() {
+            install(JIRA).expect("one extension holds every jira effect this binary drives");
+        }
     });
 }
 
@@ -1104,15 +1106,8 @@ fn create_labelled(labels: &[&str]) -> serde_json::Value {
     })
 }
 
-static FILED: &[EffectDescriptor] = &[FileVerdict::descriptor()];
-
 fn the_registry_answers_the_name() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        if describe(&EffectName::shipped(JIRA_ISSUE_FILED)).is_none() {
-            install(FILED).expect("no other extension is installed in this test binary");
-        }
-    });
+    registered();
     assert!(
         describe(&EffectName::shipped(JIRA_ISSUE_FILED)).is_some(),
         "the executor stops at UnknownEffect for a name no descriptor holds, so every run below \
