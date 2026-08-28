@@ -460,12 +460,14 @@ async fn observe(
     config: &config::Config,
     config_path: &Path,
     reference: &InvocationRef,
+    cancel: &CancellationToken,
 ) -> Result<WorkStateView, CliError> {
     let (work_items, changes) = ports(config, config_path, reference)?;
     Ok(fiddle_runtime::observe(
         work_items.as_ref(),
         changes.as_ref(),
         Addressed::of(reference),
+        cancel,
     )
     .await)
 }
@@ -661,8 +663,6 @@ fn build_capability<'a>(
                 .as_ref()
                 .ok_or_else(|| missing("github.work"))?;
 
-            cancel_on_interrupt(cancel);
-
             let executor = Executor::new(
                 fiddle_core::PUBLISH_CHANGE,
                 config.project.name.clone(),
@@ -713,8 +713,6 @@ fn build_capability<'a>(
                 .ok_or_else(|| missing("workspace.check"))?;
 
             let gateway = model_client(agent)?;
-
-            cancel_on_interrupt(cancel);
 
             let config::Isolation::GitWorktree = workspace.isolation;
             let config::Cleanup::Always = workspace.cleanup;
@@ -769,8 +767,6 @@ fn build_capability<'a>(
             let forge = forge.ok_or_else(|| missing("[github]"))?;
 
             let gateway = model_client(agent)?;
-
-            cancel_on_interrupt(cancel);
 
             let config::Isolation::GitWorktree = workspace.isolation;
             let config::Cleanup::Always = workspace.cleanup;
@@ -854,8 +850,6 @@ fn build_capability<'a>(
             let forge = forge.ok_or_else(|| missing("[github]"))?;
 
             let gateway = model_client(agent)?;
-
-            cancel_on_interrupt(cancel);
 
             let config::Isolation::GitWorktree = workspace.isolation;
             let config::Cleanup::Always = workspace.cleanup;
@@ -1031,7 +1025,9 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             let reference = reference_from(invocation_ref)?;
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
-            let observed = observe(&config, &cli.config, &reference).await?;
+            let cancel = CancellationToken::new();
+            cancel_on_interrupt(&cancel);
+            let observed = observe(&config, &cli.config, &reference, &cancel).await?;
             let expected_marker =
                 fiddle_core::correlation_key(&config.project.name, &reference.as_str());
             let assessment = fiddle_core::assess(&observed, &expected_marker);
@@ -1062,8 +1058,9 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
 
             let recording = transcripts(&config.report.dir, &reference)?;
 
-            let (work_items, changes) = ports(&config, &cli.config, &reference)?;
             let cancel = CancellationToken::new();
+            cancel_on_interrupt(&cancel);
+            let (work_items, changes) = ports(&config, &cli.config, &reference)?;
             let forge = match selection {
                 Selection::Publish | Selection::Propose | Selection::Mitigate => {
                     Some(resolve_forge(&config, &cli.config, &cancel, selection, &reference).await?)
@@ -1089,6 +1086,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 changes: changes.as_ref(),
                 capability: selected.as_ref(),
                 trace: forge.as_ref().map(|forge| &forge.trace),
+                cancel: &cancel,
             })
             .await;
 
@@ -1673,6 +1671,7 @@ mod tests {
             changes: &changes,
             capability: &marking as &dyn Capability,
             trace: None,
+            cancel: &CancellationToken::new(),
         })
         .await;
 
@@ -1702,11 +1701,15 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ChangePort for OvertakenAfterTheFirstLook {
-        async fn observe(&self, work_id: &str) -> Observation<ChangeSetState> {
+        async fn observe(
+            &self,
+            work_id: &str,
+            cancel: &CancellationToken,
+        ) -> Observation<ChangeSetState> {
             if self.looks.fetch_add(1, Ordering::Relaxed) == 1 {
                 std::fs::write(&self.change_set, r#"{"marker":"0123456789abcdef"}"#).unwrap();
             }
-            self.inner.observe(work_id).await
+            self.inner.observe(work_id, cancel).await
         }
     }
 

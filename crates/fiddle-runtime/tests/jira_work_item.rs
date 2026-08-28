@@ -7,12 +7,20 @@ use fiddle_runtime::ports::contract::{work_item_port_contract, WorkItemWorlds};
 use fiddle_runtime::ports::WorkItemPort;
 use fiddle_runtime::REDACTED;
 use std::time::{Duration, Instant};
-use support::stub_jira::{client_for, StubJira, ENCODED, ISSUE, MYSELF, TOKEN};
+use support::stub_jira::{client_for, client_waiting, StubJira, ENCODED, ISSUE, MYSELF, TOKEN};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 
 const ANSWERED: Duration = Duration::from_millis(500);
+
+const SITE_TIMEOUT: Duration = Duration::from_secs(300);
+
+const CANCELS_AFTER: Duration = Duration::from_millis(50);
+
+const BOUND: Duration = Duration::from_secs(10);
+
+const PROMPTLY: Duration = Duration::from_secs(5);
 
 #[tokio::test]
 async fn the_stub_answers_a_real_issue_body() {
@@ -396,7 +404,9 @@ fn port_for(server: &StubJira) -> JiraWorkItemPort {
 }
 
 async fn observe_from(server: &StubJira) -> Observation<WorkItemState> {
-    port_for(server).observe(KEY).await
+    port_for(server)
+        .observe(KEY, &CancellationToken::new())
+        .await
 }
 
 fn revision_of(observed: &Observation<WorkItemState>) -> String {
@@ -530,7 +540,7 @@ async fn the_configured_names_the_port_was_built_with_reach_its_projection() {
         server.site(),
     );
 
-    let observed = port.observe(KEY).await;
+    let observed = port.observe(KEY, &CancellationToken::new()).await;
 
     let value = observed.value().expect("a readable issue is available");
     assert_eq!(
@@ -859,11 +869,12 @@ async fn the_port_sees_a_status_that_changed_between_two_reads() {
     server.holds_issue(KEY, "10001", "Ready", "To Do", 7).await;
     let port = port_for(&server);
 
-    let first = port.observe(KEY).await;
+    let running = CancellationToken::new();
+    let first = port.observe(KEY, &running).await;
     server
         .holds_issue(KEY, "10002", "In Review", "In Progress", 8)
         .await;
-    let second = port.observe(KEY).await;
+    let second = port.observe(KEY, &running).await;
 
     assert_eq!(
         first.value().expect("the first read is available").status,
@@ -1029,5 +1040,61 @@ async fn an_error_body_longer_than_the_clamp_reaches_the_reason_bounded() {
         "the reason is bounded by the clamp and not by the answered body of {} bytes, got {} bytes",
         long.len(),
         reason.len()
+    );
+}
+
+#[tokio::test]
+async fn a_read_the_run_cancels_stops_before_the_sites_timeout() {
+    let server = StubJira::start().await;
+    server.stays_silent().await;
+    let port = JiraWorkItemPort::new(
+        client_waiting(&server, SITE_TIMEOUT),
+        names(&[]),
+        server.site(),
+    );
+    let cancel = CancellationToken::new();
+
+    let started = Instant::now();
+    let observed = tokio::time::timeout(BOUND, async {
+        let (observed, ()) = tokio::join!(port.observe(KEY, &cancel), async {
+            tokio::time::sleep(CANCELS_AFTER).await;
+            cancel.cancel();
+        });
+        observed
+    })
+    .await
+    .expect(
+        "cancelling the run must end a read the site never answers, and this read was still \
+         waiting when the test's own bound expired",
+    );
+    let waited = started.elapsed();
+
+    match &observed {
+        Observation::Unavailable { source, reason } => {
+            assert!(
+                reason.contains("cancelled"),
+                "a read the run cancelled must say so, or a reader reads it as an outage: {reason}"
+            );
+            assert_eq!(
+                source.0,
+                format!("jira:{}/{KEY}", server.site()),
+                "a cancelled read still names the issue it was reading"
+            );
+        }
+        other => panic!("a cancelled read observes no state, got {other:?}"),
+    }
+    assert!(
+        waited >= CANCELS_AFTER,
+        "the cancellation ended the read, not something that ended it sooner: {waited:?}"
+    );
+    assert!(
+        waited < PROMPTLY,
+        "the read must end on the cancellation and not on the site timeout of \
+         {SITE_TIMEOUT:?}: {waited:?}"
+    );
+    assert_eq!(
+        server.request_lines().await.len(),
+        1,
+        "the request reached the site, so the read was in flight when the run was cancelled"
     );
 }

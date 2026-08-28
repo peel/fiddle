@@ -108,7 +108,10 @@ mod tests {
             .unwrap();
         assert_eq!(evidence.0, "stub:changes/fiddle-m0-demo.json");
 
-        match StubChangePort::new(root).observe(WORK_ID).await {
+        match StubChangePort::new(root)
+            .observe(WORK_ID, &tokio_util::sync::CancellationToken::new())
+            .await
+        {
             Observation::Available { value, .. } => assert_eq!(
                 value.marker.as_deref(),
                 Some(correlation_key("icecube", INVOCATION_REF).as_str())

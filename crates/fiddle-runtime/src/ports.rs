@@ -1,19 +1,29 @@
 use fiddle_core::{ChangeSetState, Observation, WorkItemState};
+use tokio_util::sync::CancellationToken;
 
 #[async_trait::async_trait]
 pub trait WorkItemPort: Send + Sync {
-    async fn observe(&self, work_id: &str) -> Observation<WorkItemState>;
+    async fn observe(
+        &self,
+        work_id: &str,
+        cancel: &CancellationToken,
+    ) -> Observation<WorkItemState>;
 }
 
 #[async_trait::async_trait]
 pub trait ChangePort: Send + Sync {
-    async fn observe(&self, work_id: &str) -> Observation<ChangeSetState>;
+    async fn observe(
+        &self,
+        work_id: &str,
+        cancel: &CancellationToken,
+    ) -> Observation<ChangeSetState>;
 }
 
 #[cfg(any(test, feature = "contract-harness"))]
 pub mod contract {
     use super::{ChangePort, WorkItemPort};
     use fiddle_core::Observation;
+    use tokio_util::sync::CancellationToken;
 
     pub trait WorkItemWorlds {
         type Port: WorkItemPort;
@@ -47,20 +57,27 @@ pub mod contract {
 
     pub async fn work_item_port_contract<W: WorkItemWorlds>(worlds: &W) {
         let id = worlds.work_id();
+        let running = CancellationToken::new();
 
         assert_unavailable_with_reason(
-            &worlds.source_absent().observe(id).await,
+            &worlds.source_absent().observe(id, &running).await,
             worlds.origin(),
             "an unreachable source",
         );
 
         assert_unavailable_with_reason(
-            &worlds.source_malformed().observe(id).await,
+            &worlds.source_malformed().observe(id, &running).await,
             worlds.origin(),
             "a malformed source",
         );
 
-        match worlds.source_open().observe(id).await {
+        assert_unavailable_with_reason(
+            &worlds.source_open().observe(id, &cancelled()).await,
+            worlds.origin(),
+            "a readable source a cancelled run reads",
+        );
+
+        match worlds.source_open().observe(id, &running).await {
             Observation::Available { value, source, .. } => {
                 assert_eq!(
                     value.status, "open",
@@ -74,19 +91,35 @@ pub mod contract {
 
     pub async fn change_port_contract<W: ChangeWorlds>(worlds: &W) {
         let id = worlds.work_id();
+        let running = CancellationToken::new();
 
         assert_unavailable_with_reason(
-            &worlds.source_absent().observe(id).await,
+            &worlds.source_absent().observe(id, &running).await,
             worlds.origin(),
             "an unreachable source",
         );
         assert_unavailable_with_reason(
-            &worlds.source_malformed().observe(id).await,
+            &worlds.source_malformed().observe(id, &running).await,
             worlds.origin(),
             "a malformed source",
         );
 
-        match worlds.source_unmarked().observe(id).await {
+        assert_unavailable_with_reason(
+            &worlds
+                .source_marked("m0-marker")
+                .observe(id, &cancelled())
+                .await,
+            worlds.origin(),
+            "a readable source a cancelled run reads",
+        );
+
+        assert_unavailable_with_reason(
+            &worlds.source_unmarked().observe(id, &cancelled()).await,
+            worlds.origin(),
+            "an unmarked source a cancelled run reads",
+        );
+
+        match worlds.source_unmarked().observe(id, &running).await {
             Observation::Available { value, source, .. } => {
                 assert_eq!(
                     value.marker, None,
@@ -97,7 +130,11 @@ pub mod contract {
             other => panic!("a readable but unmarked source must be Available, got {other:?}"),
         }
 
-        match worlds.source_marked("m0-marker").observe(id).await {
+        match worlds
+            .source_marked("m0-marker")
+            .observe(id, &running)
+            .await
+        {
             Observation::Available { value, source, .. } => {
                 assert_eq!(
                     value.marker.as_deref(),
@@ -108,6 +145,12 @@ pub mod contract {
             }
             other => panic!("a recorded change set must be Available, got {other:?}"),
         }
+    }
+
+    fn cancelled() -> CancellationToken {
+        let token = CancellationToken::new();
+        token.cancel();
+        token
     }
 
     fn assert_unavailable_with_reason<T: std::fmt::Debug>(
@@ -146,6 +189,7 @@ mod tests {
     use fiddle_core::{Observation, SourceRef, WorkItemState};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use tokio_util::sync::CancellationToken;
 
     #[derive(Default)]
     struct AnswersDifferentlyEachTime {
@@ -154,7 +198,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WorkItemPort for AnswersDifferentlyEachTime {
-        async fn observe(&self, work_id: &str) -> Observation<WorkItemState> {
+        async fn observe(
+            &self,
+            work_id: &str,
+            _cancel: &CancellationToken,
+        ) -> Observation<WorkItemState> {
             let read = self.reads.fetch_add(1, Ordering::SeqCst);
             Observation::Available {
                 value: WorkItemState {
@@ -176,12 +224,16 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WorkItemPort for RepeatsItsFirstAnswer {
-        async fn observe(&self, work_id: &str) -> Observation<WorkItemState> {
+        async fn observe(
+            &self,
+            work_id: &str,
+            cancel: &CancellationToken,
+        ) -> Observation<WorkItemState> {
             let remembered = self.remembered.lock().unwrap().clone();
             let value = match remembered {
                 Some(value) => value,
                 None => {
-                    let observed = self.world.observe(work_id).await;
+                    let observed = self.world.observe(work_id, cancel).await;
                     let value = observed
                         .value()
                         .expect("the memoised world always answers")
@@ -201,8 +253,9 @@ mod tests {
     #[tokio::test]
     async fn a_second_observation_reads_the_world_again() {
         let port = AnswersDifferentlyEachTime::default();
-        let first = port.observe("IDENT-1").await;
-        let second = port.observe("IDENT-1").await;
+        let running = CancellationToken::new();
+        let first = port.observe("IDENT-1", &running).await;
+        let second = port.observe("IDENT-1", &running).await;
         assert_ne!(
             first.value().map(|v| v.status.as_str()),
             second.value().map(|v| v.status.as_str()),
@@ -218,8 +271,9 @@ mod tests {
     #[tokio::test]
     async fn a_port_that_answers_from_its_first_read_fails_that_comparison() {
         let port = RepeatsItsFirstAnswer::default();
-        let first = port.observe("IDENT-1").await;
-        let second = port.observe("IDENT-1").await;
+        let running = CancellationToken::new();
+        let first = port.observe("IDENT-1", &running).await;
+        let second = port.observe("IDENT-1", &running).await;
         assert_eq!(
             first.value().map(|v| v.status.as_str()),
             second.value().map(|v| v.status.as_str()),

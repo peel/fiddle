@@ -2,6 +2,7 @@ use crate::ports::{ChangePort, WorkItemPort};
 use fiddle_core::{ChangeSetState, Observation, SourceRef, WorkItemState};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use tokio_util::sync::CancellationToken;
 
 pub const STUB_ORIGIN: &str = "stub";
 
@@ -17,9 +18,19 @@ impl StubWorkItemPort {
 
 #[async_trait::async_trait]
 impl WorkItemPort for StubWorkItemPort {
-    async fn observe(&self, work_id: &str) -> Observation<WorkItemState> {
+    async fn observe(
+        &self,
+        work_id: &str,
+        cancel: &CancellationToken,
+    ) -> Observation<WorkItemState> {
         let rel = format!("work/{work_id}.json");
         let source = SourceRef(format!("{STUB_ORIGIN}:{rel}"));
+        if cancel.is_cancelled() {
+            return Observation::Unavailable {
+                source,
+                reason: CANCELLED.to_string(),
+            };
+        }
         match read_fixture(&self.root, &rel) {
             Ok(text) => parse(&text, source),
             Err(reason) => Observation::Unavailable { source, reason },
@@ -39,9 +50,19 @@ impl StubChangePort {
 
 #[async_trait::async_trait]
 impl ChangePort for StubChangePort {
-    async fn observe(&self, work_id: &str) -> Observation<ChangeSetState> {
+    async fn observe(
+        &self,
+        work_id: &str,
+        cancel: &CancellationToken,
+    ) -> Observation<ChangeSetState> {
         let rel = format!("changes/{work_id}.json");
         let source = SourceRef(format!("{STUB_ORIGIN}:{rel}"));
+        if cancel.is_cancelled() {
+            return Observation::Unavailable {
+                source,
+                reason: CANCELLED.to_string(),
+            };
+        }
         match read_fixture(&self.root, &rel) {
             Ok(text) => parse(&text, source),
             Err(reason) if reason == NOT_RECORDED => Observation::Available {
@@ -55,6 +76,8 @@ impl ChangePort for StubChangePort {
 }
 
 const NOT_RECORDED: &str = "stub source not recorded";
+
+const CANCELLED: &str = "the run was cancelled before this source was read";
 
 fn read_fixture(root: &Path, rel: &str) -> Result<String, String> {
     match std::fs::read_to_string(root.join(rel)) {
@@ -198,14 +221,17 @@ mod tests {
     #[tokio::test]
     async fn a_stub_source_ref_names_the_fixture_it_read() {
         let worlds = StubWorlds::new();
-        let observed = WorkItemWorlds::source_open(&worlds).observe(WORK_ID).await;
+        let running = CancellationToken::new();
+        let observed = WorkItemWorlds::source_open(&worlds)
+            .observe(WORK_ID, &running)
+            .await;
         assert_eq!(
             observed.source().map(|s| s.0.as_str()),
             Some("stub:work/fiddle-m0-demo.json")
         );
 
         let observed = ChangeWorlds::source_unmarked(&worlds)
-            .observe(WORK_ID)
+            .observe(WORK_ID, &running)
             .await;
         assert_eq!(
             observed.source().map(|s| s.0.as_str()),
@@ -216,7 +242,9 @@ mod tests {
     #[tokio::test]
     async fn an_unrecorded_work_item_is_unavailable_rather_than_defaulted() {
         let worlds = StubWorlds::new();
-        let observed = StubWorkItemPort::new(worlds.root()).observe(WORK_ID).await;
+        let observed = StubWorkItemPort::new(worlds.root())
+            .observe(WORK_ID, &CancellationToken::new())
+            .await;
         assert!(observed.is_unavailable(), "got {observed:?}");
         assert_eq!(observed.value(), None);
     }

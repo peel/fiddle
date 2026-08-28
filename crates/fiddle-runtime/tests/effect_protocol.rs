@@ -1799,6 +1799,7 @@ async fn publish_attempt(
         changes: &changes,
         capability: &capability,
         trace: None,
+        cancel: &tokio_util::sync::CancellationToken::new(),
     })
     .await;
     serde_json::to_value(&record.bundle).unwrap()
@@ -2155,6 +2156,7 @@ async fn a_capability_cannot_publish_through_another_capabilitys_executor() {
         changes: &changes,
         capability: &capability,
         trace: None,
+        cancel: &tokio_util::sync::CancellationToken::new(),
     })
     .await;
 

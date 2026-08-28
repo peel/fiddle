@@ -38,36 +38,39 @@ impl JiraWorkItemPort {
         format!("{}: {reason}", self.site)
     }
 
-    async fn read(&self, work_id: &str) -> Result<ReadIssue, JiraError> {
+    async fn read(
+        &self,
+        work_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ReadIssue, JiraError> {
         let path = format!("/rest/api/3/issue/{work_id}?fields=status,updated");
-        let answered = self
-            .http
-            .api("GET", &path, None, &CancellationToken::new())
-            .await?;
+        let answered = self.http.api("GET", &path, None, cancel).await?;
         match answered.status {
             status if (200..300).contains(&status) => issue_from(&answered.body),
             status => Err(self
                 .told_apart(
                     failure_for(status, work_id, self.http.quoted(&answered.body).as_deref()),
                     work_id,
+                    cancel,
                 )
                 .await),
         }
     }
 
-    async fn told_apart(&self, failure: JiraError, work_id: &str) -> JiraError {
+    async fn told_apart(
+        &self,
+        failure: JiraError,
+        work_id: &str,
+        cancel: &CancellationToken,
+    ) -> JiraError {
         match failure {
-            JiraError::Absent { .. } => absent_or_refused(work_id, self.credential().await),
+            JiraError::Absent { .. } => absent_or_refused(work_id, self.credential(cancel).await),
             named => named,
         }
     }
 
-    async fn credential(&self) -> Credential {
-        match self
-            .http
-            .api("GET", MYSELF, None, &CancellationToken::new())
-            .await
-        {
+    async fn credential(&self, cancel: &CancellationToken) -> Credential {
+        match self.http.api("GET", MYSELF, None, cancel).await {
             Ok(answered) if answered.status == 401 => Credential::Refused,
             Ok(answered) if (200..300).contains(&answered.status) => Credential::Accepted,
             Ok(answered) => Credential::Unchecked(explained(
@@ -120,9 +123,13 @@ fn explained(status: u16, quoted: Option<&str>) -> String {
 
 #[async_trait::async_trait]
 impl WorkItemPort for JiraWorkItemPort {
-    async fn observe(&self, work_id: &str) -> Observation<WorkItemState> {
+    async fn observe(
+        &self,
+        work_id: &str,
+        cancel: &CancellationToken,
+    ) -> Observation<WorkItemState> {
         let source = self.source(work_id);
-        let issue = match self.read(work_id).await {
+        let issue = match self.read(work_id, cancel).await {
             Ok(issue) => issue,
             Err(failed) => {
                 return Observation::Unavailable {
