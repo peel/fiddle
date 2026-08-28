@@ -77,7 +77,7 @@ impl JiraHttp {
             false => serde_json::from_str(&text).ok(),
         };
         let body = match parsed {
-            Some(body) => body,
+            Some(body) => self.credential.scrubbed(body),
             None if (200..300).contains(&status) => return Err(self.malformed(status, &text)),
             None => serde_json::Value::Null,
         };
@@ -135,6 +135,21 @@ impl Credential {
             .into_iter()
             .filter(|held| !held.is_empty())
             .fold(text.to_string(), |text, held| text.replace(held, REDACTED))
+    }
+
+    fn scrubbed(&self, body: serde_json::Value) -> serde_json::Value {
+        match body {
+            serde_json::Value::String(held) => serde_json::Value::String(self.redacted(&held)),
+            serde_json::Value::Array(held) => {
+                serde_json::Value::Array(held.into_iter().map(|each| self.scrubbed(each)).collect())
+            }
+            serde_json::Value::Object(held) => serde_json::Value::Object(
+                held.into_iter()
+                    .map(|(name, value)| (self.redacted(&name), self.scrubbed(value)))
+                    .collect(),
+            ),
+            held => held,
+        }
     }
 }
 

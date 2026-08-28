@@ -254,8 +254,12 @@ async fn a_page_larger_than_the_cap_is_still_capped_and_still_says_there_is_more
     assert_eq!(
         answered.body["issues"].as_array().unwrap().len(),
         1,
-        "the site caps the page whatever the caller asks for, so asking for everything is not a \
-         way to avoid paging: {}",
+        "the stub caps the page whatever the caller asks for, so every lane here walks pages \
+         rather than reading one answer. This is the stub being strict and not a fact about a \
+         real site: measured 2026-08-28 by scripts/live-jira-search-shape.sh, \
+         snplow.atlassian.net answered maxResults=500 with all 265 matches and no further page \
+         token, so a caller must still follow pages and must never read a page length as a \
+         total: {}",
         answered.body
     );
     assert_eq!(answered.body["isLast"], false);
@@ -273,7 +277,11 @@ async fn a_start_at_offset_is_refused_because_this_endpoint_pages_by_token() {
     assert_eq!(
         refused.status, 400,
         "the withdrawn search endpoint paged by offset and this one does not; accepting startAt \
-         and ignoring it would answer page one to a caller that asked for page two: {}",
+         and ignoring it would answer page one to a caller that asked for page two. Measured \
+         2026-08-28 by scripts/live-jira-search-shape.sh: snplow.atlassian.net answers 200 to \
+         startAt and returns the same first key as an unparameterised page, so it ignores the \
+         parameter silently and this refusal is a deliberate divergence toward strictness that \
+         stands: {}",
         refused.body
     );
 }

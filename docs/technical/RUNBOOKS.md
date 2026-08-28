@@ -115,6 +115,14 @@ gh workflow run github-effects.yml --repo peel/fiddle \
 # the live Jira read lane; one issue, read only
 JIRA_SITE=https://snplow.atlassian.net JIRA_ISSUE=ISP-267 \
   FIDDLE_BIN="$PWD/target/release/fiddle" scripts/live-jira-observe.sh
+
+# the live Jira search shape lane; searches and workflow statuses, read only
+JIRA_SITE=https://snplow.atlassian.net JIRA_SEARCH_PROJECT=ISP \
+  scripts/live-jira-search-shape.sh
+
+# the live Jira write lane; it CREATES an issue, so the project must be disposable
+JIRA_SITE=https://snplow.atlassian.net JIRA_WRITE_PROJECT=<disposable> \
+  scripts/live-jira-write.sh
 ```
 
 Read the gate's coverage off its `TOTALS` line. It says `N of M binaries`, and
@@ -224,6 +232,114 @@ printed to your terminal.
 The lane prints the issue it read. It requests `fields=status,updated` and no
 other field, so no ticket prose crosses the boundary, and nothing it prints is
 committed here.
+
+### The live Jira search shape lane
+
+`scripts/live-jira-search-shape.sh` sends six GET requests and writes nothing. It
+settles what `crates/fiddle-runtime/tests/support/stub_jira.rs` assumed about
+`/rest/api/3/search/jql`, which until now was the only definition in this
+repository of that endpoint's shape. It refuses when `JIRA_SITE`,
+`JIRA_SEARCH_PROJECT`, `JIRA_USER_EMAIL` or `JIRA_API_TOKEN` is absent, and it
+exits 2 with a reason.
+
+Before it measures anything it plants the credential in a file of its own and
+greps for it. A grep that cannot find a planted credential proves nothing by
+finding none elsewhere, so the lane refuses when the planted case does not bite.
+
+**Measured 2026-08-28 against `snplow.atlassian.net`, project `ISP`.**
+
+| what | the stub assumed | the site answered |
+| --- | --- | --- |
+| top level members | `issues`, `isLast`, `nextPageToken` | `isLast, issues, nextPageToken` |
+| `isLast` | emitted, never depended on | present, `false` on a page that is not the last |
+| `total`, `startAt`, `maxResults` in an answer | absent | absent |
+| default page size | 50, graded medium confidence | 50 |
+| `nextPageToken` | present until the last page, and it advances | present, and it advances |
+| `startAt` in a request | refused with 400 | **200, and silently ignored** |
+| `maxResults=500` | capped at the stub's page cap | 265 matches in one page, no further token |
+
+Two of those need reading rather than glancing at.
+
+**`startAt`.** The stub refuses it with 400 and the site answers 200. That is not
+a defect in the stub. The site returns the same first key as an unparameterised
+page, so it accepts the parameter and does nothing with it: a caller that asked
+for page two is handed page one and cannot tell. The stub's 400 is a deliberate
+divergence toward strictness and it stands. `all_search_matches` and
+`every_issue_carrying_the_marker` page by `nextPageToken` and send no `startAt`,
+so nothing in this build depends on either behaviour.
+
+**The page cap.** `a_page_larger_than_the_cap_is_still_capped_and_still_says_there_is_more`
+holds of the stub and is not a fact about a real site. `ISP` holds 265 issues and
+the site served all 265 to `maxResults=500`. A caller must still follow pages,
+because 265 is not a bound the site published — it is how many matched.
+
+**Now a measurement: real `[jira.workflow]` status names.** ADR 077 recorded this
+as the one item its live read left open. Every issue type in `ISP` — Task, Story,
+Bug, Epic, Spike, Sub-task — offers the same six statuses:
+
+| status | category |
+| --- | --- |
+| To Do | new |
+| In Progress | indeterminate |
+| In Review | indeterminate |
+| Blocked | indeterminate |
+| Done | done |
+| Won't Do | done |
+
+`Blocked` is the one that matters. Its category is `indeterminate`, the same as
+`In Progress` and `In Review`, so a deployment that wants blocked work to read as
+blocked has to name it in `[jira.workflow]`. The category cannot tell them apart.
+
+### The live Jira write lane
+
+`scripts/live-jira-write.sh` **creates an issue on a real site.** It refuses when
+`JIRA_WRITE_PROJECT` is absent, when the key is not a bare project key, and when
+that key is the project `JIRA_ISSUE` is read from, because a disposable project is
+not the project a read lane observes.
+
+It sends the same search-then-create requests `FileVerdict` sends: it walks
+`/rest/api/3/search/jql` for `project = KEY AND labels = MARKER` following
+`nextPageToken`, and creates only when the walk matched nothing. It runs that
+twice with no wait between them, which is the interruption case exactly-once is
+scoped to, then polls until the marker becomes searchable and reports how many
+seconds that took. That number is the bound on the exactly-once claim: a re-run
+inside it files a duplicate.
+
+**What it leaves behind.** One issue, labelled `fiddle-live-lane` and this run's
+marker. The lane deletes every issue carrying the marker before it exits. When the
+site refuses a delete, the lane names the keys on stderr and says they remain;
+delete them by hand, because the next run's ambiguity check reads them.
+
+**Now a measurement: a create this build sends would be refused.** The shape lane
+reads `/rest/api/3/issue/createmeta/ISP/issuetypes/10002` and reports the required
+fields of a `Task` in `ISP` as `issuetype`, `project` and `summary`.
+`FileVerdict::body` sends `project`, `summary`, `labels` and `description` and no
+`issuetype`, so `jira.issue_filed` cannot land against this site as written. The
+create stub requires `fields.project.key` alone, so no hermetic lane reds it.
+`docs/BACKLOG.md` carries it, and the fix needs the same missing `[jira]`
+configuration `fiddle-zlc4` needs.
+
+**It does not drive `fiddle`.** `ticket_proposals` in
+`crates/fiddle-runtime/src/cve/verdict.rs` builds `TicketProposal` values and no
+run path calls it, which `fiddle-zlc4` holds. `human::publish`, the other route a
+Jira write could take, has no caller outside tests either. So no `fiddle` binary
+performs a Jira write at all, this lane measures the site rather than the build,
+and the credential census in
+`crates/fiddle-acceptance/tests/jira_credential.rs` has no new stdout surface to
+search: every Jira surface a binary writes is still a read's. When `fiddle-zlc4`
+lands, the lane should drive the binary as `scripts/live-jira-observe.sh` does and
+the census should grow a write scenario.
+
+**Unrun as of 2026-08-28.** No disposable Jira project exists, so the lane refuses
+and the two things only it can measure are untaken: the real indexing lag, and
+whether two runs really leave one issue. `scripts/test-live-jira-lanes.sh` holds
+that the refusal is a refusal and not a silent skip.
+
+**Out of reach and not claimed by either lane.** Concurrent duplicate
+invocations. The design scopes exactly-once to interruptions, and one process
+cannot race itself. Whether a page boundary shifts under a walk is also
+unmeasured: it needs an issue indexed between two pages of one walk, which
+nothing here can arrange.
 
 ## Cut a release
 

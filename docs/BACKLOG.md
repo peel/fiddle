@@ -1919,3 +1919,25 @@ the lane.
 
 Origin: delivery (epic `fiddle-gyyo`, live measurement 2026-08-27)
 Tags: #debt #operations
+
+### 2026-08-28 — `FileVerdict` sends no `fields.issuetype` and a real create requires one
+
+`FileVerdict::body` in `crates/fiddle-runtime/src/jira/file_verdict.rs` sends
+`fields.project`, `fields.summary`, `fields.labels` and `fields.description`.
+
+Measured 2026-08-28 by `scripts/live-jira-search-shape.sh` against
+`snplow.atlassian.net`, project `ISP`, issue type `Task` (id 10002):
+`/rest/api/3/issue/createmeta/ISP/issuetypes/10002` reports the required fields as
+`issuetype`, `project` and `summary`. So a create this build sends would be refused, and
+`jira.issue_filed` cannot land against a real site as written.
+
+No hermetic lane can red this. `created` in
+`crates/fiddle-runtime/tests/support/stub_jira.rs` requires `fields.project.key` alone,
+and it is the only definition of the create shape this repository holds.
+
+An issue type is a deployment's choice, so the fix needs a configured name in the same
+place `fiddle-zlc4` needs a filing project key. Both are the same missing `[jira]`
+configuration and should land together.
+
+Origin: implementation (bean `fiddle-pu2c`, live measurement 2026-08-28)
+Tags: #bug #jira #operations
