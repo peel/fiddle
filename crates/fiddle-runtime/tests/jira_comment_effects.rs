@@ -299,6 +299,12 @@ async fn an_operation_whose_identity_the_executor_does_not_share_posts_nothing()
         format!("{error}").contains(&a_comment(AT_SEVEN, "the fixture is repaired").marker()),
         "the refusal names the marker the operation would have looked up: {error}"
     );
+    assert!(
+        matches!(error, EffectError::Adapter { .. }),
+        "the identities were compared before the post, so nothing left the process and the run \
+         ends at a definite adapter failure; an Unresolved here would record an ambiguous write \
+         for a comment never sent: {error}"
+    );
 }
 
 #[tokio::test]

@@ -32,8 +32,8 @@ pub fn canonical_updated(raw: &str) -> Result<String, JiraError> {
 pub fn agreed(authorized: &EffectId, held: &EffectId) -> Result<String, JiraError> {
     match authorized == held {
         true => Ok(marker_for(held)),
-        false => Err(JiraError::Malformed(format!(
-            "the comment would carry `{}` and be looked up as `{}`, so nothing was posted",
+        false => Err(JiraError::NotSent(format!(
+            "the comment would carry `{}` and be looked up as `{}`",
             marker_for(authorized),
             marker_for(held)
         ))),
@@ -118,11 +118,10 @@ pub fn marked_comment(
             issue: issue.to_string(),
             comment_id: named_id(issue, one)?,
         })),
-        many => Err(JiraError::Malformed(format!(
-            "{} comments on `{issue}` carry `{marker}` and this effect writes one, so the read \
-             cannot say which one it wrote",
-            many.len()
-        ))),
+        many => Err(JiraError::Ambiguous {
+            marker: marker.to_string(),
+            count: many.len(),
+        }),
     }
 }
 
@@ -269,7 +268,7 @@ impl AddComment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effect::IntegrationOperation;
+    use crate::effect::{AdapterError, EffectOutcome, EffectPhase, IntegrationOperation};
     use serde_json::json;
 
     const MARKER_ONE: &str = "fiddle-effect:1111111111111111";
@@ -381,6 +380,17 @@ mod tests {
             format!("{refused}").contains('2'),
             "the refusal counts what it found: {refused}"
         );
+        assert_eq!(
+            refused.duplicates(),
+            Some(2),
+            "the read found the postcondition twice, so the executor exits at the duplicate \
+             state and never reports an ambiguous write: {refused}"
+        );
+        assert_eq!(
+            refused.outcome(EffectPhase::Apply),
+            EffectOutcome::NotCommitted,
+            "and a read that found two comments wrote neither of them: {refused}"
+        );
     }
 
     #[test]
@@ -407,6 +417,17 @@ mod tests {
         assert!(
             format!("{refused}").contains(MARKER_ONE) && format!("{refused}").contains(MARKER_TWO),
             "a reader has to see both markers to know which one the world would carry: {refused}"
+        );
+        assert_eq!(
+            refused.outcome(EffectPhase::Apply),
+            EffectOutcome::NotCommitted,
+            "this refusal happens before the post, so no request left the process, and an \
+             Unknown would record an ambiguous write for a comment never sent: {refused}"
+        );
+        assert_eq!(
+            refused.duplicates(),
+            None,
+            "one identity disagreeing with another is not a state read twice: {refused}"
         );
     }
 

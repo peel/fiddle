@@ -849,6 +849,12 @@ async fn a_state_two_transitions_reach_is_refused_rather_than_resolved_to_the_fi
         said.contains("31") && said.contains("41"),
         "the refusal must name both transitions it could not choose between: {said}"
     );
+    assert!(
+        matches!(refused, EffectError::Adapter { .. }),
+        "the lookup refused before the write, so nothing was sent and the run ends at a \
+         definite adapter failure; an Unresolved here would tell a reader the write may have \
+         landed and its answer was lost: {refused}"
+    );
     assert_eq!(
         server.transition_requests().await,
         0,
@@ -875,6 +881,11 @@ async fn a_state_the_workflow_does_not_offer_is_refused_and_writes_nothing() {
     assert!(
         said.contains("In Review") && said.contains("31 to `Done`"),
         "the refusal must name the state asked for and what the workflow does offer: {said}"
+    );
+    assert!(
+        matches!(refused, EffectError::Adapter { .. }),
+        "a workflow that offers no route sends nothing, so the run ends at a definite adapter \
+         failure and never at an ambiguous write: {refused}"
     );
     assert_eq!(server.transition_requests().await, 0);
     assert_eq!(
