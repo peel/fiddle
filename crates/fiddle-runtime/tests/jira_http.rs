@@ -367,3 +367,60 @@ async fn a_success_whose_body_is_not_json_is_still_malformed() {
         "the answered body reached the error, so the status above is what separates it from a refusal: {said}"
     );
 }
+
+#[tokio::test]
+async fn a_body_that_parses_and_echoes_the_token_is_handed_to_the_caller_with_it_replaced() {
+    let server = StubJira::start().await;
+    server
+        .answer_with_body(&format!(
+            r#"{{"key":"IDENT-1","fields":{{"summary":"the site said {TOKEN} out loud"}},"{TOKEN}":"a key it named after the credential"}}"#
+        ))
+        .await;
+
+    let answered = client_for(&server)
+        .api("GET", ISSUE, None, &CancellationToken::new())
+        .await
+        .expect("the stub answers");
+
+    let whole = answered.body.to_string();
+    assert!(
+        whole.contains("out loud"),
+        "the answered body reached the caller, so the absence below is redaction and not an \
+         empty answer: {whole}"
+    );
+    assert_eq!(
+        answered.body["fields"]["summary"],
+        format!("the site said {REDACTED} out loud"),
+        "a 2xx body is the only thing a receipt and a published bundle are built from, and it \
+         is never passed through the error path that redacts"
+    );
+    assert!(
+        !whole.contains(TOKEN),
+        "no value and no member name of an answered body may carry the token: {whole}"
+    );
+}
+
+#[tokio::test]
+async fn a_token_a_json_body_must_escape_is_replaced_in_the_value_the_caller_reads() {
+    let planted = r#"s3cr3t"quoted"#;
+    let server = StubJira::start().await;
+    server
+        .answer_with_body(
+            r#"{"key":"IDENT-1","fields":{"summary":"the site said s3cr3t\"quoted"}}"#,
+        )
+        .await;
+    let jira = JiraHttp::new(server.base_url(), USER, planted, PATIENT).expect("the client builds");
+
+    let answered = jira
+        .api("GET", ISSUE, None, &CancellationToken::new())
+        .await
+        .expect("the stub answers");
+
+    assert_eq!(
+        answered.body["fields"]["summary"],
+        format!("the site said {REDACTED}"),
+        "the token is escaped in the bytes on the wire and unescaped in the value a reader \
+         holds, so replacing it in the raw text would leave it in the value: {}",
+        answered.body
+    );
+}
