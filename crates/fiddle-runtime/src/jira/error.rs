@@ -28,6 +28,9 @@ pub enum JiraError {
 
     #[error("this deployment holds no `[jira]` configuration, so no request was sent")]
     Unconfigured,
+
+    #[error("{count} issues carry the marker `{marker}`, and this write files one issue or none")]
+    Ambiguous { marker: String, count: usize },
 }
 
 impl AdapterError for JiraError {
@@ -40,7 +43,8 @@ impl AdapterError for JiraError {
                 | JiraError::Absent { .. }
                 | JiraError::AbsentOrRefused { .. }
                 | JiraError::RateLimited(_)
-                | JiraError::Unconfigured => EffectOutcome::NotCommitted,
+                | JiraError::Unconfigured
+                | JiraError::Ambiguous { .. } => EffectOutcome::NotCommitted,
                 JiraError::Malformed(_) | JiraError::Unreachable(_) => EffectOutcome::Unknown,
             },
         }
@@ -55,7 +59,8 @@ impl AdapterError for JiraError {
             | JiraError::RateLimited(_)
             | JiraError::Malformed(_)
             | JiraError::Unreachable(_)
-            | JiraError::Unconfigured => RetryAdvice::default(),
+            | JiraError::Unconfigured
+            | JiraError::Ambiguous { .. } => RetryAdvice::default(),
         }
     }
 
@@ -68,7 +73,22 @@ impl AdapterError for JiraError {
             | JiraError::Forbidden { .. }
             | JiraError::Absent { .. }
             | JiraError::Malformed(_)
-            | JiraError::Unconfigured => false,
+            | JiraError::Unconfigured
+            | JiraError::Ambiguous { .. } => false,
+        }
+    }
+
+    fn duplicates(&self) -> Option<usize> {
+        match self {
+            JiraError::Ambiguous { count, .. } => Some(*count),
+            JiraError::Unauthorized { .. }
+            | JiraError::Forbidden { .. }
+            | JiraError::Absent { .. }
+            | JiraError::AbsentOrRefused { .. }
+            | JiraError::RateLimited(_)
+            | JiraError::Malformed(_)
+            | JiraError::Unreachable(_)
+            | JiraError::Unconfigured => None,
         }
     }
 }
@@ -90,6 +110,7 @@ mod tests {
             JiraError::Malformed(_) => "malformed",
             JiraError::Unreachable(_) => "unreachable",
             JiraError::Unconfigured => "unconfigured",
+            JiraError::Ambiguous { .. } => "ambiguous",
         }
     }
 
@@ -108,6 +129,10 @@ mod tests {
             JiraError::Malformed("the body is not an issue".into()),
             JiraError::Unreachable("connection refused".into()),
             JiraError::Unconfigured,
+            JiraError::Ambiguous {
+                marker: "fx-abc123".into(),
+                count: 2,
+            },
         ]
     }
 
@@ -123,6 +148,10 @@ mod tests {
             JiraError::RateLimited(planted.into()),
             JiraError::Malformed(planted.into()),
             JiraError::Unreachable(planted.into()),
+            JiraError::Ambiguous {
+                marker: planted.into(),
+                count: 2,
+            },
         ]
     }
 
@@ -175,6 +204,13 @@ mod tests {
                 JiraError::Unconfigured,
                 "this deployment holds no `[jira]` configuration, so no request was sent",
             ),
+            (
+                JiraError::Ambiguous {
+                    marker: "fx-abc123".into(),
+                    count: 2,
+                },
+                "2 issues carry the marker `fx-abc123`, and this write files one issue or none",
+            ),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
         let all: Vec<&str> = cases().iter().map(variant).collect();
@@ -213,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn the_eight_jira_failures_read_as_eight_failures() {
+    fn the_nine_jira_failures_read_as_nine_failures() {
         let cases = cases();
         let mut named: Vec<&str> = cases.iter().map(variant).collect();
         named.sort_unstable();
@@ -222,6 +258,7 @@ mod tests {
             [
                 "absent",
                 "absent or refused",
+                "ambiguous",
                 "forbidden",
                 "malformed",
                 "rate limited",
@@ -275,6 +312,13 @@ mod tests {
                 EffectOutcome::Unknown,
             ),
             (JiraError::Unconfigured, EffectOutcome::NotCommitted),
+            (
+                JiraError::Ambiguous {
+                    marker: "fx-abc123".into(),
+                    count: 2,
+                },
+                EffectOutcome::NotCommitted,
+            ),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
         let all: Vec<&str> = cases().iter().map(variant).collect();
@@ -356,6 +400,13 @@ mod tests {
             ),
             (JiraError::Unreachable("connection refused".into()), true),
             (JiraError::Unconfigured, false),
+            (
+                JiraError::Ambiguous {
+                    marker: "fx-abc123".into(),
+                    count: 2,
+                },
+                false,
+            ),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
         let all: Vec<&str> = cases().iter().map(variant).collect();
@@ -395,10 +446,81 @@ mod tests {
                 "forbidden",
                 "absent",
                 "malformed",
-                "unconfigured"
+                "unconfigured",
+                "ambiguous"
             ],
             "these answers do not change by asking twice, so an adapter that reads no \
              failure again fails here"
+        );
+    }
+
+    #[test]
+    fn every_failure_says_how_many_objects_it_read_where_at_most_one_was_expected() {
+        let pinned = [
+            (JiraError::Unauthorized { status: 401 }, None),
+            (JiraError::Forbidden { status: 403 }, None),
+            (
+                JiraError::Absent {
+                    key: "IDENT-1".into(),
+                },
+                None,
+            ),
+            (
+                JiraError::AbsentOrRefused {
+                    key: "IDENT-1".into(),
+                    why: "HTTP 503".into(),
+                },
+                None,
+            ),
+            (JiraError::RateLimited("HTTP 429".into()), None),
+            (
+                JiraError::Malformed("the body is not an issue".into()),
+                None,
+            ),
+            (JiraError::Unreachable("connection refused".into()), None),
+            (JiraError::Unconfigured, None),
+            (
+                JiraError::Ambiguous {
+                    marker: "fx-abc123".into(),
+                    count: 2,
+                },
+                Some(2),
+            ),
+        ];
+        let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
+        let all: Vec<&str> = cases().iter().map(variant).collect();
+        assert_eq!(named, all, "every variant of JiraError is pinned here");
+        for (case, expected) in pinned {
+            let named = variant(&case);
+            assert_eq!(
+                case.duplicates(),
+                expected,
+                "{named} names how many objects it read, and the executor turns exactly the \
+                 named ones into DuplicateState"
+            );
+        }
+    }
+
+    #[test]
+    fn exactly_one_failure_names_a_count_and_it_is_the_one_whose_words_carry_that_count() {
+        let counted: Vec<&str> = cases()
+            .iter()
+            .filter(|case| case.duplicates().is_some())
+            .map(variant)
+            .collect();
+        assert_eq!(
+            counted,
+            ["ambiguous"],
+            "an adapter that named every failure a duplicate observation, or none, fails here"
+        );
+        let ambiguous = JiraError::Ambiguous {
+            marker: "fx-abc123".into(),
+            count: 3,
+        };
+        assert_eq!(ambiguous.duplicates(), Some(3));
+        assert!(
+            format!("{ambiguous}").contains('3'),
+            "the count the executor reads is the count the reader reads: {ambiguous}"
         );
     }
 
