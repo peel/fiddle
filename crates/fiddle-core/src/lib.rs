@@ -20,7 +20,8 @@ pub use decision::{
 pub use effect::{
     content_digest, effect_id, payload_hash, EffectId, EffectName, EffectNameError, PayloadHash,
     ProposedEffect, ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
-    ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, PUBLISH_DECISION_REQUEST,
+    ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, JIRA_COMMENT_ADDED, JIRA_ISSUE_FILED,
+    JIRA_ISSUE_TRANSITIONED, JIRA_PULL_REQUEST_LINKED, PUBLISH_DECISION_REQUEST,
 };
 pub use finding::{
     selected, AdvisoryId, AdvisoryIdError, PackageType, ProjectedFinding, Severities,

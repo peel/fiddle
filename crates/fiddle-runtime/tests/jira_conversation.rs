@@ -3,18 +3,17 @@ mod support;
 use fiddle_core::{
     decision_request_id, effect_id, payload_hash, DecisionBinding, DeploymentRule, EffectName,
     EvidenceRef, HumanDecisionRequest, ProposedEffect, WorkRef, ENSURE_PULL_REQUEST_READY,
-    FIXTURE_REPAIR, PUBLISH_CHANGE,
+    FIXTURE_REPAIR, JIRA_COMMENT_ADDED, PUBLISH_CHANGE,
 };
 use fiddle_runtime::effect::{
-    install, EffectContext, EffectDescriptor, EffectError, EffectReceipt, EffectTrace,
-    ExecutionStep, Executor, IntegrationOperation, ReadRetry,
+    describe, EffectContext, EffectError, EffectReceipt, EffectTrace, ExecutionStep, Executor,
+    IntegrationOperation, ReadRetry,
 };
 use fiddle_runtime::human::validate::Ignored;
 use fiddle_runtime::human::{
     authoritative, publish, ChannelError, DecisionChannel, GitHubConversation,
     HumanInteractionPort, InteractionRef, PublishError,
 };
-use fiddle_runtime::jira::comment::AddComment;
 use fiddle_runtime::jira::conversation::{ConversationError, JiraConversation};
 use fiddle_runtime::GhCli;
 use support::stub_jira::{client_for, StubJira, BOT};
@@ -41,13 +40,13 @@ const DECIDER: &str = "70121:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
 const STRANGER: &str = "70121:ffffffff-0000-1111-2222-333333333333";
 
-static INSTALLED: &[EffectDescriptor] = &[AddComment::descriptor()];
-
 fn registered() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        install(INSTALLED).expect("this binary installs `jira.comment_added` once");
-    });
+    assert!(
+        describe(&EffectName::shipped(JIRA_COMMENT_ADDED)).is_some(),
+        "`walk` refuses an unregistered name before its first traced step, so every run below \
+         would stop at UnknownEffect; {JIRA_COMMENT_ADDED} is a built-in of this build and this \
+         binary installs nothing"
+    );
 }
 
 struct Silent;

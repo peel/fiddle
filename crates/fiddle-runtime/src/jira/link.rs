@@ -6,9 +6,7 @@ use crate::jira::comment::{
     UNBUILT,
 };
 use crate::jira::JiraError;
-use fiddle_core::{effect_id, EffectId, EffectName};
-
-pub const JIRA_PULL_REQUEST_LINKED: &str = "jira.pull_request_linked";
+use fiddle_core::{effect_id, EffectId, EffectName, JIRA_PULL_REQUEST_LINKED};
 
 const FORGE: &str = "https://github.com";
 

@@ -4,10 +4,8 @@ use crate::effect::{
 };
 use crate::jira::work_item::{named, read_failure};
 use crate::jira::{canonical_revision, project, ConfiguredNames, JiraError, JiraHttp};
-use fiddle_core::{EffectName, ProjectedStatus};
+use fiddle_core::{EffectName, ProjectedStatus, JIRA_ISSUE_TRANSITIONED};
 use tokio_util::sync::CancellationToken;
-
-pub const JIRA_ISSUE_TRANSITIONED: &str = "jira.issue_transitioned";
 
 pub struct TransitionedIssue {
     pub key: String,

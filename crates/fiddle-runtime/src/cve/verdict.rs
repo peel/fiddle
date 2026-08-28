@@ -1,8 +1,8 @@
 use crate::agent::FindingDisposition;
 use crate::capability::cve::{GroupStatus, MigrationAttempt};
 use crate::cve::project::{Arm, Projection};
-use crate::jira::file_verdict::{FileVerdict, JIRA_ISSUE_FILED};
-use fiddle_core::{effect_id, AdvisoryId, Published, RunOutcome, Severity};
+use crate::jira::file_verdict::FileVerdict;
+use fiddle_core::{effect_id, AdvisoryId, Published, RunOutcome, Severity, JIRA_ISSUE_FILED};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 

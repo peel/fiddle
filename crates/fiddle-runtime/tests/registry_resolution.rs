@@ -3,7 +3,8 @@ mod support;
 use fiddle_core::{
     CapabilityId, DecisionBinding, DecisionRequestId, DeploymentRule, EffectId, EffectName,
     HumanDecisionRequest, PayloadHash, ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_READY,
-    FIXTURE_REPAIR, PUBLISH_CHANGE, STUB_MARK,
+    FIXTURE_REPAIR, JIRA_COMMENT_ADDED, JIRA_ISSUE_FILED, JIRA_ISSUE_TRANSITIONED,
+    JIRA_PULL_REQUEST_LINKED, PUBLISH_CHANGE, STUB_MARK,
 };
 use fiddle_runtime::effect::{
     registry, EffectContext, EffectError, EffectOutcome, EffectTrace, ExecutionStep, Executor,
@@ -232,36 +233,76 @@ async fn a_registered_name_resolves_to_the_operation_that_name_means() {
 }
 
 #[tokio::test]
-async fn every_registered_descriptor_builds_the_operation_its_name_means() {
+async fn every_registered_descriptor_builds_the_operation_its_name_means_or_refuses_in_its_name() {
     let forge = Forge::empty();
     let ctx = forge.context();
     let deployment = allowing();
     let executor = executor(&forge, &ctx, &deployment);
     let params = params();
 
-    let mut built = 0;
+    let mut built = Vec::new();
+    let mut refused = Vec::new();
     for descriptor in BUILT_IN {
         let name = EffectName::parse(descriptor.name).expect("a registered name parses");
         let construct = registry::resolve(&name).expect("a registered effect has no constructor");
-        let effect = construct(&executor, &params)
-            .unwrap_or_else(|error| panic!("{} could not be built: {error}", descriptor.name));
-        assert_eq!(
-            effect.kind(),
-            name,
-            "{} resolves to an operation that means something else",
-            descriptor.name
-        );
-        built += 1;
+        match construct(&executor, &params) {
+            Ok(effect) => {
+                assert_eq!(
+                    effect.kind(),
+                    name,
+                    "{} resolves to an operation that means something else",
+                    descriptor.name
+                );
+                built.push(descriptor.name);
+            }
+            Err(EffectError::Unbuildable { kind, reason }) => {
+                assert_eq!(
+                    kind, name,
+                    "{} refuses in another effect's name, so a reader is told the wrong \
+                     operation could not be built",
+                    descriptor.name
+                );
+                assert!(
+                    reason.len() > 40,
+                    "{} refuses with `{reason}`, which does not say what a step lacks",
+                    descriptor.name
+                );
+                refused.push(descriptor.name);
+            }
+            Err(other) => panic!("{} answered a step with {other:?}", descriptor.name),
+        }
     }
 
     assert_eq!(
         built,
-        BUILT_IN.len(),
-        "a registered effect has no constructor"
+        vec![
+            "ensure_branch_published",
+            "ensure_pull_request",
+            "ensure_check_requested",
+            "publish_decision_request",
+            "ensure_pull_request_ready",
+            "ensure_pull_request_body",
+        ],
+        "these are the effects a workflow step names, and the list is measured by building \
+         every registered descriptor rather than declared"
     );
-    assert!(
-        built > 0,
-        "an empty registry satisfies the line above vacuously"
+    assert_eq!(
+        refused,
+        vec![
+            "jira.issue_filed",
+            "jira.comment_added",
+            "jira.issue_transitioned",
+            "jira.pull_request_linked",
+        ],
+        "each of these carries an observed issue revision or a scan verdict in its identity, \
+         which a synchronous `from_params` cannot read, so it is registered because the \
+         executor refuses an unregistered name and not because a step can name it; a jira \
+         effect that moved into the list above gained a constructor made of defaults"
+    );
+    assert_eq!(
+        built.len() + refused.len(),
+        BUILT_IN.len(),
+        "every registered descriptor was asked"
     );
     assert_eq!(
         forge.calls(),
@@ -411,4 +452,33 @@ async fn a_step_that_names_no_repository_builds_nothing_and_reaches_no_adapter()
         "got {refusal:?}"
     );
     assert_eq!(forge.calls(), 0, "and nothing was asked of the forge");
+}
+
+#[test]
+fn the_four_jira_names_resolve_and_jira_transition_still_does_not() {
+    for registered in [
+        JIRA_ISSUE_FILED,
+        JIRA_COMMENT_ADDED,
+        JIRA_ISSUE_TRANSITIONED,
+        JIRA_PULL_REQUEST_LINKED,
+    ] {
+        assert!(
+            registry::resolve(&EffectName::parse(registered).unwrap()).is_some(),
+            "{registered} is an effect this build performs, and the executor refuses \
+             UnknownEffect for a name no descriptor holds"
+        );
+    }
+    assert!(
+        registry::resolve(&EffectName::parse("jira.transition").unwrap()).is_none(),
+        "`jira.transition` is this suite's example of an unregistered name in four places; \
+         registering it would leave all four passing while they stop meaning what they say"
+    );
+}
+
+#[test]
+fn every_jira_spelling_is_frozen() {
+    assert_eq!(JIRA_ISSUE_FILED, "jira.issue_filed");
+    assert_eq!(JIRA_COMMENT_ADDED, "jira.comment_added");
+    assert_eq!(JIRA_ISSUE_TRANSITIONED, "jira.issue_transitioned");
+    assert_eq!(JIRA_PULL_REQUEST_LINKED, "jira.pull_request_linked");
 }
