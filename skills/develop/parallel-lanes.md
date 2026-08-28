@@ -108,7 +108,7 @@ and an amend cannot reach a merge that already happened.
 | Merge conflicts in one shared module | Expected when siblings each add a line | Merge sequentially and re-gate; do not batch |
 | Merged tree compiles but tests do not | `cargo check` skips test targets | Use `--all-targets` on the merged result |
 | Merged tests fail on a process-global | A `OnceLock` or similar claimed by two lanes | One claim site per binary; only a test run finds it |
-| Every lane fails at once, linker says `No space left on device` | Accumulated `target/` directories | Reclaim merged lanes; a lane needs ~8 GB |
+| Every lane fails at once, linker says `No space left on device` | Accumulated `target/` directories | Reclaim merged lanes; size the next wave against a measured one |
 
 An agent that stops without a report is the dangerous one. Its work exists and
 is uncommitted, and a completion notification looks the same as a real one. Read
@@ -116,38 +116,48 @@ the worktree before believing the turn ended cleanly.
 
 ## Making lanes affordable
 
-Each worktree carries its own `target/`. Seven lanes measured at roughly 31 GB
-of duplicated artifacts, and each paid a cold compile of identical dependencies.
+Each worktree carries its own `target/`, so every lane pays the storage of a
+full build and, without a shared compilation cache, the CPU of one too.
 
-The devshell sets `RUSTC_WRAPPER` to `sccache` with `CARGO_INCREMENTAL=0`, so
-lanes share compilation across worktrees. Measured: a worktree with an emptied
-`target/` rebuilt at a 100 percent cache hit rate and zero misses.
+A compilation cache fixes the second and not the first. Where the devshell sets
+`RUSTC_WRAPPER` to `sccache` with `CARGO_INCREMENTAL=0`, lanes share compilation
+across worktrees — measured here, a worktree with an emptied `target/` rebuilt at
+a 100 percent hit rate and zero misses. **The compiler output is still written
+into each lane's own `target/`.** The cache saves the work, not the disk.
 
-A shared `CARGO_TARGET_DIR` is the wrong answer. Cargo locks the target
-directory, so lanes would serialise on it, and the one-build-per-tree rule would
-be broken invisibly rather than made impossible.
+A shared `CARGO_TARGET_DIR` would fix the storage and is the wrong answer. Cargo
+locks the target directory, so lanes would serialise on it, and the
+one-build-per-tree rule would be broken invisibly rather than made impossible.
+There is no setting that gives both.
 
-**sccache removes the recompilation, not the duplication.** Every lane still
-carries its own `target/`, and a full gate grows one to 6-8 GB. Three concurrent
-lanes therefore need about 21 GB of headroom, and a milestone that opens waves
-without reclaiming finished ones accumulates all of them.
+**Measure your own footprint rather than carrying one from this document.** A
+lane's `target/` is nearly the whole of it — measured here at 1.5 GB against
+4 KB of `.git` and 5.5 MB of everything else — but the size depends on the
+dependency count, the number of test binaries, and whether the lane ran a
+release build. It will drift.
 
-Measured, and the reason this paragraph exists: a milestone reached 100 percent
-disk with roughly 62 GB across eleven worktrees. Three lanes had finished their
-work; one had not yet committed it. Every build failed, and so did the harness
-itself, so the failure could not be cleared from inside the session.
+    du -sh .worktrees/*/target
+    df -h .
 
-Two rules follow.
+Two rules follow, and neither needs a constant.
 
-- **Delete a lane's `target/` when its branch merges.** Better, remove the whole
-  worktree: `git merge-base --is-ancestor lane/<name> HEAD` proves the commits
-  are in the branch first, and `git worktree prune` tidies the metadata.
-- **Check free space before opening a wave**, and size it against 8 GB per lane.
+- **Reclaim a lane when its branch merges.** Delete its `target/`, or remove the
+  whole worktree: `git merge-base --is-ancestor lane/<name> HEAD` proves the
+  commits are in the branch before anything is deleted, and `git worktree prune`
+  tidies the metadata.
+- **Check free space against a measured lane before opening a wave.** Take the
+  size from a lane that has run a full gate in this repository, today, and
+  multiply by the wave.
+
+The reason this section exists: a milestone here reached 100 percent disk across
+eleven worktrees. Three lanes had finished their work and one had not yet
+committed it. Every build failed, and so did the harness, so the failure could
+not be cleared from inside the session.
 
 A lane that fills the disk fails in a way that looks like a code failure. The
 gate reported `0 binaries of an unknown total` and a linker error reading
-`No space left on device`; the refusal was correct, but the cause was
-housekeeping and nothing in the output said so.
+`No space left on device`. The refusal was correct; the cause was housekeeping,
+and nothing in the output said so.
 
 ## What lanes do not change
 
