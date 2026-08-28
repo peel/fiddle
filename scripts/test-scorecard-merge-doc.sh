@@ -9,7 +9,7 @@ OPENER="jq -s '"
 
 PASS=0; FAIL=0
 
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d) || { echo "CANNOT RUN: mktemp -d failed, so this lane has nowhere to write its fixtures" >&2; exit 2; }
 trap 'rm -rf "$TMPDIR"' EXIT
 
 assert_exit() {
@@ -138,8 +138,8 @@ rewrite_line() {
   awk -v n="$number" -v repl="$replacement" 'NR == n { print repl; next } { print }' "$file" > "$out"
 }
 
-MARKER_LINE=$(line_of "$MARKER" "$DOC")
-OPENER_LINE=$(line_of "$OPENER" "$DOC")
+MARKER_LINE=$(line_of "$MARKER" "$DOC") || exit 2
+OPENER_LINE=$(line_of "$OPENER" "$DOC") || exit 2
 
 MERGED=""
 merge_cards() {
@@ -273,6 +273,22 @@ RC=0
 OUT=$(merge_program_from "$EMPTY_BLOCK" 2>"$TMPDIR/err-7.txt") || RC=$?
 assert_exit "an empty marked block refuses, because an empty jq program would return the input unchanged and pass" 2 "$RC"
 assert_contains "the refusal says no program was extracted" "no jq program was extracted" "$(cat "$TMPDIR/err-7.txt")"
+
+echo "=== Test 8: a line the mutation cases must name once refuses when the document carries it twice ==="
+TWO_MARKERS="$TMPDIR/two-markers.md"
+printf '%s\n%s\n%s\n%s\n' "$MARKER" '```' "$MARKER" '```' > "$TWO_MARKERS"
+RC=0
+OUT=$(line_of "$MARKER" "$TWO_MARKERS" 2>"$TMPDIR/err-8.txt") || RC=$?
+assert_exit "a marker that appears twice refuses, because a mutation case that names the wrong line would red for a reason it did not test" 2 "$RC"
+assert_equal "the refusal prints no line number, so no mutation case runs against a guessed line" "" "$OUT"
+assert_contains "the refusal reports how many times the line was found" "appears 2 times" "$(cat "$TMPDIR/err-8.txt")"
+
+ONE_MARKER="$TMPDIR/one-marker.md"
+printf '%s\n%s\n' "$MARKER" '```' > "$ONE_MARKER"
+RC=0
+OUT=$(line_of "$MARKER" "$ONE_MARKER" 2>/dev/null) || RC=$?
+assert_exit "removing only the second marker makes the same lookup succeed, so Test 8 refused for the count and not for another fault" 0 "$RC"
+assert_equal "the successful lookup returns the line the marker is on" "1" "$OUT"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed of $((PASS + FAIL))"
