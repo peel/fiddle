@@ -108,6 +108,7 @@ and an amend cannot reach a merge that already happened.
 | Merge conflicts in one shared module | Expected when siblings each add a line | Merge sequentially and re-gate; do not batch |
 | Merged tree compiles but tests do not | `cargo check` skips test targets | Use `--all-targets` on the merged result |
 | Merged tests fail on a process-global | A `OnceLock` or similar claimed by two lanes | One claim site per binary; only a test run finds it |
+| Every lane fails at once, linker says `No space left on device` | Accumulated `target/` directories | Reclaim merged lanes; a lane needs ~8 GB |
 
 An agent that stops without a report is the dangerous one. Its work exists and
 is uncommitted, and a completion notification looks the same as a real one. Read
@@ -125,6 +126,28 @@ lanes share compilation across worktrees. Measured: a worktree with an emptied
 A shared `CARGO_TARGET_DIR` is the wrong answer. Cargo locks the target
 directory, so lanes would serialise on it, and the one-build-per-tree rule would
 be broken invisibly rather than made impossible.
+
+**sccache removes the recompilation, not the duplication.** Every lane still
+carries its own `target/`, and a full gate grows one to 6-8 GB. Three concurrent
+lanes therefore need about 21 GB of headroom, and a milestone that opens waves
+without reclaiming finished ones accumulates all of them.
+
+Measured, and the reason this paragraph exists: a milestone reached 100 percent
+disk with roughly 62 GB across eleven worktrees. Three lanes had finished their
+work; one had not yet committed it. Every build failed, and so did the harness
+itself, so the failure could not be cleared from inside the session.
+
+Two rules follow.
+
+- **Delete a lane's `target/` when its branch merges.** Better, remove the whole
+  worktree: `git merge-base --is-ancestor lane/<name> HEAD` proves the commits
+  are in the branch first, and `git worktree prune` tidies the metadata.
+- **Check free space before opening a wave**, and size it against 8 GB per lane.
+
+A lane that fills the disk fails in a way that looks like a code failure. The
+gate reported `0 binaries of an unknown total` and a linker error reading
+`No space left on device`; the refusal was correct, but the cause was
+housekeeping and nothing in the output said so.
 
 ## What lanes do not change
 
