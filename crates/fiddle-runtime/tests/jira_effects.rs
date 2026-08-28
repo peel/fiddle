@@ -2,15 +2,14 @@ mod support;
 
 use fiddle_core::{
     DeploymentRule, EffectName, HumanDecisionRequirement, ProjectedStatus, ProposedEffect,
-    WorkState, FIXTURE_REPAIR,
+    WorkState, FIXTURE_REPAIR, JIRA_ISSUE_FILED, JIRA_ISSUE_TRANSITIONED,
 };
 use fiddle_runtime::effect::{
-    describe, install, resolve, EffectContext, EffectDescriptor, EffectError, EffectOutcome,
-    EffectReceipt, EffectTrace, ExecutionStep, Executor, IntegrationOperation, ReadRetry,
-    StepParams,
+    describe, resolve, EffectContext, EffectError, EffectOutcome, EffectReceipt, EffectTrace,
+    ExecutionStep, Executor, IntegrationOperation, ReadRetry, StepParams,
 };
-use fiddle_runtime::jira::file_verdict::{FileVerdict, FiledIssue, JIRA_ISSUE_FILED};
-use fiddle_runtime::jira::{TransitionIssue, JIRA_ISSUE_TRANSITIONED};
+use fiddle_runtime::jira::file_verdict::{FileVerdict, FiledIssue};
+use fiddle_runtime::jira::TransitionIssue;
 use serde_json::json;
 use support::stub_jira::{client_for, StubJira, WriteRoute, SEEDED_PROJECT};
 use support::{unreachable_context, Deployment, INVOCATION_REF, PROJECT};
@@ -1041,15 +1040,13 @@ impl EffectTrace for Silent {
     fn step(&self, _kind: &EffectName, _step: ExecutionStep) {}
 }
 
-const JIRA: &[EffectDescriptor] = &[TransitionIssue::descriptor(), FileVerdict::descriptor()];
-
-fn registered() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        if describe(&EffectName::shipped(JIRA_ISSUE_TRANSITIONED)).is_none() {
-            install(JIRA).expect("one extension holds every jira effect this binary drives");
-        }
-    });
+fn the_registry_answers(name: &'static str) {
+    assert!(
+        describe(&EffectName::shipped(name)).is_some(),
+        "the executor stops at UnknownEffect for a name no descriptor holds, so every run below \
+         would refuse before it reached the operation, and {name} is registered by this build \
+         rather than installed by this binary"
+    );
 }
 
 async fn transition_to(
@@ -1058,7 +1055,7 @@ async fn transition_to(
     read_in: &str,
     to: &str,
 ) -> Result<EffectReceipt<ProjectedStatus>, EffectError> {
-    registered();
+    the_registry_answers(JIRA_ISSUE_TRANSITIONED);
     let operation = TransitionIssue::new(key, read_in, to)
         .expect("the stub sends a `fields.updated` this build can read");
     let ctx: EffectContext = unreachable_context().with_jira(client_for(server));
@@ -1117,15 +1114,6 @@ fn create_labelled(labels: &[&str]) -> serde_json::Value {
     })
 }
 
-fn the_registry_answers_the_name() {
-    registered();
-    assert!(
-        describe(&EffectName::shipped(JIRA_ISSUE_FILED)).is_some(),
-        "the executor stops at UnknownEffect for a name no descriptor holds, so every run below \
-         would refuse before it reached the operation"
-    );
-}
-
 fn verdict() -> FileVerdict {
     FileVerdict::new(
         CVE.to_string(),
@@ -1142,7 +1130,7 @@ async fn filed_through_the_executor(
     ctx: &EffectContext,
     operation: FileVerdict,
 ) -> Result<EffectReceipt<FiledIssue>, EffectError> {
-    the_registry_answers_the_name();
+    the_registry_answers(JIRA_ISSUE_FILED);
     let deployment = Deployment(DeploymentRule::Allow);
     let trace = Silent;
     let executor = Executor::new(
@@ -1198,7 +1186,7 @@ fn the_descriptor_the_derive_wrote_names_this_effect_and_the_judgment_it_needs()
 async fn a_step_names_no_verdict_so_the_registered_constructor_refuses_rather_than_defaults() {
     let server = StubJira::start().await;
     let ctx = unreachable_context().with_jira(client_for(&server));
-    the_registry_answers_the_name();
+    the_registry_answers(JIRA_ISSUE_FILED);
     let deployment = Deployment(DeploymentRule::Allow);
     let trace = Silent;
     let executor = Executor::new(

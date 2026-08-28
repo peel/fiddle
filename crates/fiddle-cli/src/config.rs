@@ -849,7 +849,8 @@ mod tests {
     use super::*;
     use fiddle_core::{
         ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
-        ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, PUBLISH_DECISION_REQUEST,
+        ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, JIRA_COMMENT_ADDED, JIRA_ISSUE_FILED,
+        JIRA_ISSUE_TRANSITIONED, JIRA_PULL_REQUEST_LINKED, PUBLISH_DECISION_REQUEST,
     };
 
     const VALID: &str = r#"
@@ -1781,14 +1782,36 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
         );
     }
 
-    const RULE_KEYS: [&str; 6] = [
+    const RULE_KEYS: [&str; 10] = [
         ENSURE_BRANCH_PUBLISHED,
         ENSURE_PULL_REQUEST,
         ENSURE_CHECK_REQUESTED,
         PUBLISH_DECISION_REQUEST,
         ENSURE_PULL_REQUEST_READY,
         ENSURE_PULL_REQUEST_BODY,
+        JIRA_ISSUE_FILED,
+        JIRA_COMMENT_ADDED,
+        JIRA_ISSUE_TRANSITIONED,
+        JIRA_PULL_REQUEST_LINKED,
     ];
+
+    fn row(key: &str, rule: &str) -> String {
+        format!("\"{key}\" = \"{rule}\"\n")
+    }
+
+    #[test]
+    fn every_effect_this_build_performs_has_a_rule_key_here() {
+        let held: Vec<&str> = fiddle_runtime::effect::registry::registered()
+            .iter()
+            .map(|descriptor| descriptor.name)
+            .collect();
+        assert_eq!(
+            RULE_KEYS.to_vec(),
+            held,
+            "a registered effect absent from RULE_KEYS is gated by no case below, so a rule an \
+             operator writes for it is covered by nothing"
+        );
+    }
 
     #[test]
     fn every_rule_key_is_a_distinct_name_a_document_can_spell() {
@@ -1800,8 +1823,11 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
                 "{key} is not a name the grammar admits"
             );
             assert!(
-                toml::from_str::<Config>(&format!("{FORGE}\n[github.policy]\n{key} = \"deny\"\n"))
-                    .is_ok(),
+                toml::from_str::<Config>(&format!(
+                    "{FORGE}\n[github.policy]\n{}",
+                    row(key, "deny")
+                ))
+                .is_ok(),
                 "{key} names no field of the policy table, so no document can gate it"
             );
         }
@@ -1810,7 +1836,7 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
     #[test]
     fn every_rule_key_governs_the_effect_name_it_is_named_after() {
         for key in RULE_KEYS {
-            let table = github(&format!("{FORGE}\n[github.policy]\n{key} = \"deny\"\n")).policy;
+            let table = github(&format!("{FORGE}\n[github.policy]\n{}", row(key, "deny"))).policy;
             for other_key in RULE_KEYS {
                 let expected = match other_key == key {
                     true => DeploymentRule::Deny,
@@ -1823,6 +1849,33 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_dotted_effect_name_is_gated_only_when_the_document_quotes_it() {
+        let quoted = github(&format!(
+            "{FORGE}\n[github.policy]\n\"jira.issue_filed\" = \"deny\"\n"
+        ))
+        .policy;
+        assert_eq!(
+            quoted.rule_for(&EffectName::shipped(JIRA_ISSUE_FILED)),
+            DeploymentRule::Deny,
+            "a quoted key is one toml key, so it names the effect it spells"
+        );
+        let refusal = toml::from_str::<Config>(&format!(
+            "{FORGE}\n[github.policy]\njira.issue_filed = \"deny\"\n"
+        ))
+        .expect_err("an unquoted dotted key is a `jira` table and not a rule")
+        .message()
+        .to_string();
+        assert_eq!(
+            refusal,
+            "unknown variant `issue_filed`, expected one of `allow`, `require_human`, `deny`",
+            "an unquoted dotted key becomes a `jira` table, so toml offers `issue_filed` where \
+             a rule belongs. The document is refused, which is what matters: no effect is left \
+             ungated in silence. The refusal names the value and not the key, so it reads as a \
+             misspelled rule rather than a misspelled name"
+        );
     }
 
     #[test]
@@ -1929,7 +1982,7 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
             "{FORGE}\n[github.policy]\n{}",
             RULE_KEYS
                 .iter()
-                .map(|key| format!("{key} = \"allow\"\n"))
+                .map(|key| row(key, "allow"))
                 .collect::<String>()
         ))
         .policy;

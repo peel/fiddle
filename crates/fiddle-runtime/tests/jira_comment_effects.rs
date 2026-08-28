@@ -1,10 +1,12 @@
 mod support;
 
-use fiddle_core::{DeploymentRule, EffectName, ProposedEffect, FIXTURE_REPAIR};
+use fiddle_core::{
+    DeploymentRule, EffectName, ProposedEffect, FIXTURE_REPAIR, JIRA_COMMENT_ADDED,
+    JIRA_PULL_REQUEST_LINKED,
+};
 use fiddle_runtime::effect::{
-    install, EffectDescriptor, EffectError, EffectOutcome, EffectReceipt, EffectTrace,
-    ExecutionStep, Executor, FromStepParams, IntegrationOperation, ObservedState, ReadRetry,
-    StepParams,
+    describe, EffectError, EffectOutcome, EffectReceipt, EffectTrace, ExecutionStep, Executor,
+    FromStepParams, IntegrationOperation, ObservedState, ReadRetry, StepParams,
 };
 use fiddle_runtime::jira::comment::{AddComment, MarkedComment};
 use fiddle_runtime::jira::link::LinkPullRequest;
@@ -21,8 +23,6 @@ const REPO: &str = "peel/fiddle-test";
 
 const PULL: u64 = 42;
 
-static INSTALLED: &[EffectDescriptor] = &[AddComment::descriptor(), LinkPullRequest::descriptor()];
-
 struct Silent;
 
 impl EffectTrace for Silent {
@@ -30,10 +30,14 @@ impl EffectTrace for Silent {
 }
 
 fn registered() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        install(INSTALLED).expect("this binary installs its two jira effects once");
-    });
+    for name in [JIRA_COMMENT_ADDED, JIRA_PULL_REQUEST_LINKED] {
+        assert!(
+            describe(&EffectName::shipped(name)).is_some(),
+            "`walk` refuses an unregistered name before its first traced step, so every run \
+             below would stop at UnknownEffect; {name} is a built-in of this build and this \
+             binary installs nothing"
+        );
+    }
 }
 
 async fn holding_the_issue() -> StubJira {

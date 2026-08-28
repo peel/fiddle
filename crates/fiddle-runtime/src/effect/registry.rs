@@ -4,6 +4,8 @@ use crate::github::{
     EnsurePullRequestReady,
 };
 use crate::human::PublishDecisionRequest;
+use crate::jira::file_verdict::FileVerdict;
+use crate::jira::{AddComment, LinkPullRequest, TransitionIssue};
 use fiddle_core::{
     EffectName, HumanDecisionRequirement, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
     ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, PUBLISH_DECISION_REQUEST,
@@ -66,6 +68,10 @@ pub const BUILT_IN: &[EffectDescriptor] = &[
         minimum: HumanDecisionRequirement::Automatic,
         construct: build::<EnsurePullRequestBody>,
     },
+    FileVerdict::descriptor(),
+    AddComment::descriptor(),
+    TransitionIssue::descriptor(),
+    LinkPullRequest::descriptor(),
 ];
 
 static EXTRA: OnceLock<&'static [EffectDescriptor]> = OnceLock::new();
@@ -136,8 +142,9 @@ mod tests {
     use fiddle_core::{
         DecisionBinding, DecisionRequestId, EffectId, EffectName, HumanDecisionRequest,
         HumanDecisionRequirement, PayloadHash, ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED,
-        ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, PUBLISH_CHANGE,
-        PUBLISH_DECISION_REQUEST,
+        ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY,
+        JIRA_COMMENT_ADDED, JIRA_ISSUE_FILED, JIRA_ISSUE_TRANSITIONED, JIRA_PULL_REQUEST_LINKED,
+        PUBLISH_CHANGE, PUBLISH_DECISION_REQUEST,
     };
 
     fn unshipped(
@@ -211,6 +218,48 @@ mod tests {
         EnsurePullRequestBody::new("acme/widget".to_string(), 7, "a body".to_string())
     }
 
+    const OBSERVED_REVISION: &str = "2026-08-26T09:15:00Z";
+
+    fn verdict_op() -> FileVerdict {
+        FileVerdict::new(
+            "CVE-2025-1".to_string(),
+            "high".to_string(),
+            "libwidget".to_string(),
+            "no upstream fix".to_string(),
+            "legacy".to_string(),
+            "ACME".to_string(),
+            "fx-abc123".to_string(),
+        )
+    }
+
+    fn comment_op() -> AddComment {
+        AddComment::new(
+            "ACME-7".to_string(),
+            OBSERVED_REVISION,
+            "a comment".to_string(),
+            "acme/widget",
+            "beans:w-1",
+        )
+        .expect("the fixture revision is one this build can read")
+    }
+
+    fn transition_op() -> TransitionIssue {
+        TransitionIssue::new("ACME-7", OBSERVED_REVISION, "In Review")
+            .expect("the fixture revision is one this build can read")
+    }
+
+    fn link_op() -> LinkPullRequest {
+        LinkPullRequest::new(
+            "ACME-7".to_string(),
+            OBSERVED_REVISION,
+            "acme/widget".to_string(),
+            7,
+            "acme/widget",
+            "beans:w-1",
+        )
+        .expect("the fixture revision is one this build can read")
+    }
+
     #[test]
     fn every_registered_name_is_unique_and_parses() {
         let mut seen = std::collections::BTreeSet::new();
@@ -230,18 +279,44 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_holds_exactly_the_six_this_build_ships() {
-        let names: Vec<&str> = BUILT_IN.iter().map(|d| d.name).collect();
+    fn the_registry_holds_exactly_the_ten_this_build_ships() {
+        let held: Vec<(&str, HumanDecisionRequirement)> =
+            BUILT_IN.iter().map(|d| (d.name, d.minimum)).collect();
         assert_eq!(
-            names,
+            held,
             vec![
-                "ensure_branch_published",
-                "ensure_pull_request",
-                "ensure_check_requested",
-                "publish_decision_request",
-                "ensure_pull_request_ready",
-                "ensure_pull_request_body",
-            ]
+                (
+                    "ensure_branch_published",
+                    HumanDecisionRequirement::Automatic
+                ),
+                ("ensure_pull_request", HumanDecisionRequirement::Automatic),
+                (
+                    "ensure_check_requested",
+                    HumanDecisionRequirement::Automatic
+                ),
+                (
+                    "publish_decision_request",
+                    HumanDecisionRequirement::Automatic
+                ),
+                ("ensure_pull_request_ready", HumanDecisionRequirement::Human),
+                (
+                    "ensure_pull_request_body",
+                    HumanDecisionRequirement::Automatic
+                ),
+                ("jira.issue_filed", HumanDecisionRequirement::Automatic),
+                ("jira.comment_added", HumanDecisionRequirement::Automatic),
+                (
+                    "jira.issue_transitioned",
+                    HumanDecisionRequirement::Automatic
+                ),
+                (
+                    "jira.pull_request_linked",
+                    HumanDecisionRequirement::Automatic
+                ),
+            ],
+            "the spelling and the judgment are written here as literal data and nowhere near the \
+             `#[effect(...)]` attribute that generates both, so a changed attribute reds here \
+             rather than migrating an identity in silence"
         );
     }
 
@@ -348,6 +423,10 @@ mod tests {
             (PUBLISH_DECISION_REQUEST, request_op().minimum()),
             (ENSURE_PULL_REQUEST_READY, ready_op().minimum()),
             (ENSURE_PULL_REQUEST_BODY, body_op().minimum()),
+            (JIRA_ISSUE_FILED, verdict_op().minimum()),
+            (JIRA_COMMENT_ADDED, comment_op().minimum()),
+            (JIRA_ISSUE_TRANSITIONED, transition_op().minimum()),
+            (JIRA_PULL_REQUEST_LINKED, link_op().minimum()),
         ];
         assert_eq!(
             cases.len(),

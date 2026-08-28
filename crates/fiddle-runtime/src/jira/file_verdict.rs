@@ -3,10 +3,8 @@ use crate::effect::{
     StepParams,
 };
 use crate::jira::JiraError;
-use fiddle_core::EffectName;
+use fiddle_core::{EffectName, JIRA_ISSUE_FILED};
 use serde_json::{json, Value};
-
-pub const JIRA_ISSUE_FILED: &str = "jira.issue_filed";
 
 const SEARCH: &str = "/rest/api/3/search/jql";
 const CREATE: &str = "/rest/api/3/issue";

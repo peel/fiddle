@@ -4,13 +4,12 @@ use fiddle_core::{
     decision_request_id, effect_id, payload_hash, DecisionBinding, DeploymentRule, EffectId,
     EffectName, HumanDecisionRequirement, InterpretedHumanDecision, PayloadHash, ProposedEffect,
     Published, ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
-    ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, FIXTURE_REPAIR, PUBLISH_DECISION_REQUEST,
-    STUB_MARK,
+    FIXTURE_REPAIR, STUB_MARK,
 };
 use fiddle_runtime::effect::{
     AdapterError, EffectContext, EffectError, EffectOutcome, EffectPhase, EffectReceipt,
     EffectTrace, ExecutionStep, Executor, IntegrationOperation, ObservedState, ReadRetry,
-    Recurrence, ResolvedDecision,
+    Recurrence, ResolvedDecision, BUILT_IN,
 };
 use fiddle_runtime::git::{GitCli, GitError};
 use fiddle_runtime::github::{branch_name, EnsureBranchPublished};
@@ -2231,14 +2230,9 @@ async fn an_unregistered_name_is_refused_ahead_of_the_capability_it_names() {
 
 #[tokio::test]
 async fn every_name_this_build_ships_survives_the_registry_check() {
-    for shipped in [
-        ENSURE_BRANCH_PUBLISHED,
-        ENSURE_PULL_REQUEST,
-        ENSURE_CHECK_REQUESTED,
-        PUBLISH_DECISION_REQUEST,
-        ENSURE_PULL_REQUEST_READY,
-        ENSURE_PULL_REQUEST_BODY,
-    ] {
+    let mut asked = 0;
+    for descriptor in BUILT_IN {
+        let shipped = descriptor.name;
         let harness = Harness::new(Script::AlreadySatisfied);
         let proposed = ProposedEffect {
             kind: EffectName::shipped(shipped),
@@ -2249,7 +2243,15 @@ async fn every_name_this_build_ships_survives_the_registry_check() {
             .execute(proposed, harness.operation_performing(shipped))
             .await
             .unwrap_or_else(|error| panic!("{shipped} is registered and was refused: {error}"));
+        asked += 1;
     }
+    assert_eq!(
+        asked,
+        BUILT_IN.len(),
+        "the names are read from the registry rather than listed here, so an effect added \
+         without a line in this file is still asked"
+    );
+    assert!(asked > 0, "an empty registry satisfies the loop vacuously");
 }
 
 fn unregistered_effect(capability: fiddle_core::CapabilityId) -> ProposedEffect {

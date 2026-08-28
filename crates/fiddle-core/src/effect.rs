@@ -61,6 +61,10 @@ pub const ENSURE_CHECK_REQUESTED: &str = "ensure_check_requested";
 pub const PUBLISH_DECISION_REQUEST: &str = "publish_decision_request";
 pub const ENSURE_PULL_REQUEST_READY: &str = "ensure_pull_request_ready";
 pub const ENSURE_PULL_REQUEST_BODY: &str = "ensure_pull_request_body";
+pub const JIRA_ISSUE_FILED: &str = "jira.issue_filed";
+pub const JIRA_COMMENT_ADDED: &str = "jira.comment_added";
+pub const JIRA_ISSUE_TRANSITIONED: &str = "jira.issue_transitioned";
+pub const JIRA_PULL_REQUEST_LINKED: &str = "jira.pull_request_linked";
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct ProposedEffect {
@@ -101,13 +105,17 @@ pub(crate) fn truncated_digest(material: &str) -> String {
 mod tests {
     use super::*;
 
-    const SPELLINGS: [&str; 6] = [
+    const SPELLINGS: [&str; 10] = [
         ENSURE_BRANCH_PUBLISHED,
         ENSURE_PULL_REQUEST,
         ENSURE_CHECK_REQUESTED,
         PUBLISH_DECISION_REQUEST,
         ENSURE_PULL_REQUEST_READY,
         ENSURE_PULL_REQUEST_BODY,
+        JIRA_ISSUE_FILED,
+        JIRA_COMMENT_ADDED,
+        JIRA_ISSUE_TRANSITIONED,
+        JIRA_PULL_REQUEST_LINKED,
     ];
 
     #[test]
@@ -343,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn the_six_wire_spellings_are_frozen() {
+    fn the_ten_wire_spellings_are_frozen() {
         assert_eq!(
             [
                 ENSURE_BRANCH_PUBLISHED,
@@ -352,6 +360,10 @@ mod tests {
                 PUBLISH_DECISION_REQUEST,
                 ENSURE_PULL_REQUEST_READY,
                 ENSURE_PULL_REQUEST_BODY,
+                JIRA_ISSUE_FILED,
+                JIRA_COMMENT_ADDED,
+                JIRA_ISSUE_TRANSITIONED,
+                JIRA_PULL_REQUEST_LINKED,
             ],
             [
                 "ensure_branch_published",
@@ -360,6 +372,10 @@ mod tests {
                 "publish_decision_request",
                 "ensure_pull_request_ready",
                 "ensure_pull_request_body",
+                "jira.issue_filed",
+                "jira.comment_added",
+                "jira.issue_transitioned",
+                "jira.pull_request_linked",
             ]
         );
     }

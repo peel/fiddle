@@ -1,7 +1,7 @@
 # 075 — An effect is named, not enumerated
 
 Status: accepted
-Cites: EffectName, EffectDescriptor, BUILT_IN, RegistryError, ENSURE_BRANCH_PUBLISHED, PolicyTable, PolicyDocument, UnknownEffect, effect_id, branch_name, ProposedEffect, IntegrationOperation, AdapterError, EffectPhase
+Cites: EffectName, EffectDescriptor, BUILT_IN, RegistryError, ENSURE_BRANCH_PUBLISHED, JIRA_ISSUE_FILED, JIRA_COMMENT_ADDED, JIRA_ISSUE_TRANSITIONED, JIRA_PULL_REQUEST_LINKED, PolicyTable, PolicyDocument, UnknownEffect, effect_id, branch_name, ProposedEffect, IntegrationOperation, AdapterError, EffectPhase, FromStepParams, resolve, describe
 
 ## Context
 
@@ -29,7 +29,11 @@ Both comments rest on the same argument. The type rejects an unknown name, so no
 
 **The execution check is not redundant with the config check.** `ProposedEffect` has four public fields, and a capability constructs its own. No constructor and no type stands between a capability and a proposal. The executor check is therefore the only guard at that moment, and it must stay even though the config check exists.
 
-**The six wire spellings are frozen.** `ensure_branch_published`, `ensure_pull_request`, `ensure_check_requested`, `publish_decision_request`, `ensure_pull_request_ready` and `ensure_pull_request_body` are constants in `fiddle-core`.
+**The ten wire spellings are frozen.** `ensure_branch_published`, `ensure_pull_request`, `ensure_check_requested`, `publish_decision_request`, `ensure_pull_request_ready`, `ensure_pull_request_body`, `jira.issue_filed`, `jira.comment_added`, `jira.issue_transitioned` and `jira.pull_request_linked` are constants in `fiddle-core`.
+
+M5b added the last four. They were written as `pub const` in their own operation modules while three lanes built them in parallel, so that no two lanes edited `fiddle-core/src/effect.rs` at once. That reason expired when the lanes merged. A shipped spelling belongs in `fiddle-core` because the consequence below is about the spelling and not about the module that happens to hold the operation.
+
+**`jira.transition` is not a spelling this build ships.** Six cases across `fiddle-runtime` and `fiddle-cli` use that exact name as their example of a name no descriptor holds, and `docs/plans/2026-08-26-m5c-toil-agent.md` adds a seventh. Registering it would leave every one of them green while none of them still meant what it says.
 
 ## Consequences
 
@@ -41,8 +45,16 @@ The identity is written into the world. `branch_name` builds the published branc
 
 A person's approval stops answering. `walk` compares `binding.effect` to the derived identity and refuses a decision that does not match. An approval issued before a rename answers the old identity, so it no longer authorizes the effect it was granted for.
 
-A rename therefore needs a migration that maps old identities to new ones, or it needs every in-flight run to be drained first. Neither is free, and neither is implemented. Treat the six spellings as a wire format.
+A rename therefore needs a migration that maps old identities to new ones, or it needs every in-flight run to be drained first. Neither is free, and neither is implemented. Treat the ten spellings as a wire format.
 
 **An adapter reports the outcome, and it knows the phase.** `IntegrationOperation` carries an associated `Error: AdapterError`, and `AdapterError::outcome` takes an `EffectPhase` of `Inspect` or `Apply`. The same transport failure means different things in the two phases. A failure while inspecting mutated nothing. A failure while applying may have mutated the world, and it reports `Unknown` rather than a guess.
+
+**Registration says this build performs the effect. It does not say a step can name it.**
+
+`resolve` is `describe(name).map(|descriptor| descriptor.construct)`, so every descriptor carries a `Construct`. Six built-ins build an operation from a `StepParams`. The four Jira effects refuse one, and the refusal is the correct answer rather than an unfinished constructor.
+
+Each Jira target carries an observed revision of an issue, or a scan verdict. `TransitionIssue`, `AddComment` and `LinkPullRequest` put the issue's `fields.updated` into the target, so the identity names one state of one issue. `FromStepParams::from_params` is synchronous and takes no adapter, so it cannot read that field. Putting a snapshot of the issue into `StepParams` would not help: a snapshot taken earlier derives an identity for a state the issue has left, which is the failure the revision was added to prevent. `FileVerdict` needs an advisory, a package and a rationale, which exist in a scan verdict and not in a workflow step; a constructor built from defaults would file a real ticket made of them.
+
+So the four are registered because `Executor::walk` refuses an unregistered name before its first traced step, and because `PolicyTable` gates only a registered name. They are constructed by the capability that holds the observation. `every_registered_descriptor_builds_the_operation_its_name_means_or_refuses_in_its_name` measures both lists by asking every descriptor, and a Jira effect that moved into the building list gained a constructor made of defaults.
 
 **A downstream effect gets the same treatment as a built-in one.** `install` validates a name before the registry accepts it, and both rejection moments read the registry rather than a compiled list. What the two removed comments protected is now enforced by code that runs, not by a type that cannot be extended.

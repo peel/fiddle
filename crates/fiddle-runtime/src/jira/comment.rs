@@ -5,10 +5,8 @@ use crate::effect::{
 use crate::jira::revision::canonical_revision;
 use crate::jira::work_item::failure_for;
 use crate::jira::{JiraError, JiraHttp};
-use fiddle_core::{effect_id, EffectId, EffectName};
+use fiddle_core::{effect_id, EffectId, EffectName, JIRA_COMMENT_ADDED};
 use tokio_util::sync::CancellationToken;
-
-pub const JIRA_COMMENT_ADDED: &str = "jira.comment_added";
 
 const MARKER: &str = "fiddle-effect:";
 
