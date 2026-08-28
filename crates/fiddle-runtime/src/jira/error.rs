@@ -29,8 +29,11 @@ pub enum JiraError {
     #[error("this deployment holds no `[jira]` configuration, so no request was sent")]
     Unconfigured,
 
-    #[error("{count} issues carry the marker `{marker}`, and this write files one issue or none")]
+    #[error("{count} objects carry the marker `{marker}`, and this write acts on one or none")]
     Ambiguous { marker: String, count: usize },
+
+    #[error("no request was sent: {0}")]
+    NotSent(String),
 }
 
 impl AdapterError for JiraError {
@@ -44,7 +47,8 @@ impl AdapterError for JiraError {
                 | JiraError::AbsentOrRefused { .. }
                 | JiraError::RateLimited(_)
                 | JiraError::Unconfigured
-                | JiraError::Ambiguous { .. } => EffectOutcome::NotCommitted,
+                | JiraError::Ambiguous { .. }
+                | JiraError::NotSent(_) => EffectOutcome::NotCommitted,
                 JiraError::Malformed(_) | JiraError::Unreachable(_) => EffectOutcome::Unknown,
             },
         }
@@ -60,7 +64,8 @@ impl AdapterError for JiraError {
             | JiraError::Malformed(_)
             | JiraError::Unreachable(_)
             | JiraError::Unconfigured
-            | JiraError::Ambiguous { .. } => RetryAdvice::default(),
+            | JiraError::Ambiguous { .. }
+            | JiraError::NotSent(_) => RetryAdvice::default(),
         }
     }
 
@@ -74,7 +79,8 @@ impl AdapterError for JiraError {
             | JiraError::Absent { .. }
             | JiraError::Malformed(_)
             | JiraError::Unconfigured
-            | JiraError::Ambiguous { .. } => false,
+            | JiraError::Ambiguous { .. }
+            | JiraError::NotSent(_) => false,
         }
     }
 
@@ -88,7 +94,8 @@ impl AdapterError for JiraError {
             | JiraError::RateLimited(_)
             | JiraError::Malformed(_)
             | JiraError::Unreachable(_)
-            | JiraError::Unconfigured => None,
+            | JiraError::Unconfigured
+            | JiraError::NotSent(_) => None,
         }
     }
 }
@@ -111,6 +118,7 @@ mod tests {
             JiraError::Unreachable(_) => "unreachable",
             JiraError::Unconfigured => "unconfigured",
             JiraError::Ambiguous { .. } => "ambiguous",
+            JiraError::NotSent(_) => "not sent",
         }
     }
 
@@ -133,6 +141,7 @@ mod tests {
                 marker: "fx-abc123".into(),
                 count: 2,
             },
+            JiraError::NotSent("the lookup resolved nothing to send".into()),
         ]
     }
 
@@ -152,6 +161,7 @@ mod tests {
                 marker: planted.into(),
                 count: 2,
             },
+            JiraError::NotSent(planted.into()),
         ]
     }
 
@@ -209,7 +219,11 @@ mod tests {
                     marker: "fx-abc123".into(),
                     count: 2,
                 },
-                "2 issues carry the marker `fx-abc123`, and this write files one issue or none",
+                "2 objects carry the marker `fx-abc123`, and this write acts on one or none",
+            ),
+            (
+                JiraError::NotSent("the lookup resolved nothing to send".into()),
+                "no request was sent: the lookup resolved nothing to send",
             ),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
@@ -249,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn the_nine_jira_failures_read_as_nine_failures() {
+    fn the_ten_jira_failures_read_as_ten_failures() {
         let cases = cases();
         let mut named: Vec<&str> = cases.iter().map(variant).collect();
         named.sort_unstable();
@@ -261,6 +275,7 @@ mod tests {
                 "ambiguous",
                 "forbidden",
                 "malformed",
+                "not sent",
                 "rate limited",
                 "unauthorized",
                 "unconfigured",
@@ -319,6 +334,10 @@ mod tests {
                 },
                 EffectOutcome::NotCommitted,
             ),
+            (
+                JiraError::NotSent("the lookup resolved nothing to send".into()),
+                EffectOutcome::NotCommitted,
+            ),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
         let all: Vec<&str> = cases().iter().map(variant).collect();
@@ -344,6 +363,31 @@ mod tests {
             lost,
             ["malformed", "unreachable"],
             "the site may have written and could not say so in exactly these failures"
+        );
+    }
+
+    #[test]
+    fn a_refusal_that_sent_nothing_is_not_committed_during_apply_and_never_unknown() {
+        let settled: Vec<&str> = cases()
+            .iter()
+            .filter(|case| case.outcome(EffectPhase::Apply) == EffectOutcome::NotCommitted)
+            .map(variant)
+            .collect();
+        assert_eq!(
+            settled,
+            [
+                "unauthorized",
+                "forbidden",
+                "absent",
+                "absent or refused",
+                "rate limited",
+                "unconfigured",
+                "ambiguous",
+                "not sent"
+            ],
+            "a write that ended in exactly these failures reached no site or was refused by \
+             one, so the executor reports a definite adapter failure; a variant that lands \
+             here instead of among the lost answers, or the other way, fails this line"
         );
     }
 
@@ -407,6 +451,10 @@ mod tests {
                 },
                 false,
             ),
+            (
+                JiraError::NotSent("the lookup resolved nothing to send".into()),
+                false,
+            ),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
         let all: Vec<&str> = cases().iter().map(variant).collect();
@@ -447,7 +495,8 @@ mod tests {
                 "absent",
                 "malformed",
                 "unconfigured",
-                "ambiguous"
+                "ambiguous",
+                "not sent"
             ],
             "these answers do not change by asking twice, so an adapter that reads no \
              failure again fails here"
@@ -485,6 +534,10 @@ mod tests {
                     count: 2,
                 },
                 Some(2),
+            ),
+            (
+                JiraError::NotSent("the lookup resolved nothing to send".into()),
+                None,
             ),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();

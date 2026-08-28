@@ -137,6 +137,10 @@ impl TransitionIssue {
                 self.transitions_path()
             )));
         };
+        self.resolved(offered)
+    }
+
+    fn resolved(&self, offered: &[serde_json::Value]) -> Result<String, JiraError> {
         let leading: Vec<&serde_json::Value> = offered
             .iter()
             .filter(|held| held["to"]["name"].as_str() == Some(self.to.as_str()))
@@ -154,13 +158,13 @@ impl TransitionIssue {
         }
         match ids.as_slice() {
             [only] => Ok((*only).to_string()),
-            [] => Err(JiraError::Malformed(format!(
+            [] => Err(JiraError::NotSent(format!(
                 "`{}` offers no transition to `{}`; its workflow offers {}",
                 self.issue_key,
                 self.to,
                 offers(offered)
             ))),
-            many => Err(JiraError::Malformed(format!(
+            many => Err(JiraError::NotSent(format!(
                 "`{}` offers {} transitions to `{}` ({}), and a lookup by name would send the \
                  first of them",
                 self.issue_key,
@@ -235,7 +239,20 @@ fn offers(transitions: &[serde_json::Value]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effect::IntegrationOperation;
+    use crate::effect::{AdapterError, EffectOutcome, EffectPhase, IntegrationOperation};
+    use serde_json::json;
+
+    fn offered(named: &[(&str, &str)]) -> Vec<serde_json::Value> {
+        named
+            .iter()
+            .map(|(id, leads_to)| json!({"id": id, "to": {"name": leads_to}}))
+            .collect()
+    }
+
+    fn heading_to(to: &str) -> TransitionIssue {
+        TransitionIssue::new("IDENT-7", "2026-08-27T09:14:02Z", to)
+            .expect("a readable `fields.updated` builds the operation")
+    }
 
     fn transition(issue_updated: &str) -> TransitionIssue {
         TransitionIssue::new("IDENT-1", issue_updated, "In Review")
@@ -322,5 +339,69 @@ mod tests {
     #[test]
     fn a_workflow_that_offers_nothing_reads_as_nothing_rather_than_an_empty_list() {
         assert_eq!(offers(&[]), "nothing");
+    }
+
+    #[test]
+    fn one_offered_route_to_the_named_state_resolves_to_the_id_the_site_gave_it() {
+        let heading = heading_to("Done");
+        let routes = offered(&[("31", "Done"), ("41", "In Review")]);
+
+        assert_eq!(
+            heading
+                .resolved(&routes)
+                .expect("one offered route resolves"),
+            "31",
+            "a lookup that resolved nothing here could not fail the refusals below for the \
+             right reason"
+        );
+    }
+
+    #[test]
+    fn a_lookup_that_found_no_route_sent_no_write_and_says_so_in_its_outcome() {
+        let heading = heading_to("Done");
+        let routes = offered(&[("31", "In Review")]);
+
+        let refused = heading
+            .resolved(&routes)
+            .expect_err("a workflow that offers no route to a state cannot reach it");
+
+        assert_eq!(
+            refused.outcome(EffectPhase::Apply),
+            EffectOutcome::NotCommitted,
+            "the lookup runs before the write, so a refusal here left the site untouched, and \
+             an Unknown would report an ambiguous write for a request never sent: {refused}"
+        );
+        assert!(
+            format!("{refused}").contains("31 to `In Review`"),
+            "and the reader still learns what the workflow does offer: {refused}"
+        );
+    }
+
+    #[test]
+    fn a_lookup_that_found_two_routes_sent_no_write_and_still_names_both_ids() {
+        let heading = heading_to("Done");
+        let routes = offered(&[("31", "Done"), ("41", "Done")]);
+
+        let refused = heading
+            .resolved(&routes)
+            .expect_err("two routes to one state cannot be told apart by that state's name");
+
+        assert_eq!(
+            refused.outcome(EffectPhase::Apply),
+            EffectOutcome::NotCommitted,
+            "this build refused to choose between two routes and sent nothing, so nothing was \
+             written and no answer was lost: {refused}"
+        );
+        let said = format!("{refused}");
+        assert!(
+            said.contains("31") && said.contains("41"),
+            "and the reader learns which two routes it could not choose between: {said}"
+        );
+        assert_eq!(
+            refused.duplicates(),
+            None,
+            "two routes to one state are not two states, so the executor must not report the \
+             postcondition as duplicated and drop the ids this refusal carries"
+        );
     }
 }

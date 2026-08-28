@@ -191,6 +191,7 @@ mod tests {
             JiraError::Unreachable(_) => "unreachable",
             JiraError::Unconfigured => "unconfigured",
             JiraError::Ambiguous { .. } => "ambiguous",
+            JiraError::NotSent(_) => "not sent",
         }
     }
 
