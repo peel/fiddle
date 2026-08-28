@@ -443,6 +443,10 @@ impl<'a> Executor<'a> {
         }
     }
 
+    pub fn capability(&self) -> CapabilityId {
+        self.capability
+    }
+
     pub fn project(&self) -> &str {
         &self.project
     }

@@ -2,13 +2,15 @@ pub mod interpret;
 pub mod validate;
 
 use crate::effect::{
-    required, AuthorizedEffect, EffectContext, EffectError, Executor, FromStepParams,
-    IntegrationOperation, ObservedState, StepParams,
+    required, AuthorizedEffect, EffectContext, EffectError, EffectReceipt, Executor,
+    FromStepParams, IntegrationOperation, ObservedState, StepParams,
 };
 use crate::github::{read_conversation, GhError};
+use crate::jira::comment::AddComment;
+use crate::jira::JiraError;
 use fiddle_core::{
     parse_marker, render_marker, EffectName, HumanDecisionRequest, HumanDecisionRequirement,
-    MarkerError, PUBLISH_DECISION_REQUEST,
+    MarkerError, ProposedEffect, PUBLISH_DECISION_REQUEST,
 };
 
 pub use crate::github::HumanResponse;
@@ -18,6 +20,16 @@ pub(crate) const CONVERSATION_PAGES: u32 = 10;
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum InteractionRef {
     GitHubPullRequestComment { repo: String, pr: u64, comment: u64 },
+    JiraIssueComment { issue: String, comment: String },
+}
+
+impl InteractionRef {
+    pub fn channel(&self) -> &'static str {
+        match self {
+            InteractionRef::GitHubPullRequestComment { .. } => GITHUB,
+            InteractionRef::JiraIssueComment { .. } => JIRA,
+        }
+    }
 }
 
 impl std::fmt::Display for InteractionRef {
@@ -26,7 +38,123 @@ impl std::fmt::Display for InteractionRef {
             InteractionRef::GitHubPullRequestComment { repo, pr, comment } => {
                 write!(f, "{repo}#{pr} comment {comment}")
             }
+            InteractionRef::JiraIssueComment { issue, comment } => {
+                write!(f, "{issue} comment {comment}")
+            }
         }
+    }
+}
+
+pub const GITHUB: &str = "github";
+
+pub const JIRA: &str = "jira";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DecisionChannel {
+    GitHubPullRequest { repo: String, pr: u64 },
+    JiraIssue { issue: String, updated: String },
+}
+
+impl DecisionChannel {
+    pub fn channel(&self) -> &'static str {
+        match self {
+            DecisionChannel::GitHubPullRequest { .. } => GITHUB,
+            DecisionChannel::JiraIssue { .. } => JIRA,
+        }
+    }
+}
+
+impl std::fmt::Display for DecisionChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DecisionChannel::GitHubPullRequest { repo, pr } => write!(f, "github {repo}#{pr}"),
+            DecisionChannel::JiraIssue { issue, updated } => {
+                write!(f, "jira {issue}@{updated}")
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ChannelError {
+    #[error(
+        "no channel is named for this decision request and exactly one channel is authoritative \
+         for one request, so nothing was published"
+    )]
+    NoneNamed,
+    #[error(
+        "{named} channels are named for this decision request and exactly one channel is \
+         authoritative for one request, so nothing was published to any of them: {spelled}"
+    )]
+    NotOne { named: usize, spelled: String },
+}
+
+pub fn authoritative(named: &[DecisionChannel]) -> Result<&DecisionChannel, ChannelError> {
+    match named {
+        [] => Err(ChannelError::NoneNamed),
+        [only] => Ok(only),
+        many => Err(ChannelError::NotOne {
+            named: many.len(),
+            spelled: many
+                .iter()
+                .map(DecisionChannel::to_string)
+                .collect::<Vec<String>>()
+                .join(", "),
+        }),
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PublishError {
+    #[error("{0}")]
+    Channel(#[from] ChannelError),
+    #[error("{0}")]
+    Unpublished(#[from] EffectError),
+    #[error("the named jira issue carries no revision this run can build an identity from: {0}")]
+    Unaddressable(#[from] JiraError),
+}
+
+pub async fn publish(
+    executor: &Executor<'_>,
+    named: &[DecisionChannel],
+    request: &HumanDecisionRequest,
+) -> Result<EffectReceipt<InteractionRef>, PublishError> {
+    match authoritative(named)? {
+        DecisionChannel::GitHubPullRequest { repo, pr } => {
+            let ask = PublishDecisionRequest::new(repo.clone(), *pr, request.clone());
+            Ok(executor.execute(proposing(executor, &ask), ask).await?)
+        }
+        DecisionChannel::JiraIssue { issue, updated } => {
+            let ask = AddComment::new(
+                issue.clone(),
+                updated,
+                render_request(request),
+                executor.project(),
+                executor.invocation_ref(),
+            )?;
+            let receipt = executor.execute(proposing(executor, &ask), ask).await?;
+            Ok(EffectReceipt {
+                effect_id: receipt.effect_id,
+                payload_hash: receipt.payload_hash,
+                target: receipt.target,
+                outcome: receipt.outcome,
+                postcondition: receipt.postcondition,
+                external_ref: receipt.external_ref,
+                value: InteractionRef::JiraIssueComment {
+                    issue: receipt.value.issue,
+                    comment: receipt.value.comment_id,
+                },
+            })
+        }
+    }
+}
+
+fn proposing<O: IntegrationOperation>(executor: &Executor<'_>, ask: &O) -> ProposedEffect {
+    ProposedEffect {
+        capability: executor.capability(),
+        kind: ask.kind(),
+        target: ask.target(),
+        payload: ask.payload(),
     }
 }
 
@@ -216,24 +344,36 @@ impl IntegrationOperation for PublishDecisionRequest {
 
 #[async_trait::async_trait]
 pub trait HumanInteractionPort: Send + Sync {
+    type Ask: IntegrationOperation;
+
+    type Reply: Send;
+
+    type Error: std::error::Error + Send + Sync;
+
     async fn request(
         &self,
         ctx: &EffectContext,
-        request: &PublishDecisionRequest,
-        authorized: &AuthorizedEffect<PublishDecisionRequest>,
-    ) -> Result<InteractionRef, GhError>;
+        request: &Self::Ask,
+        authorized: &AuthorizedEffect<Self::Ask>,
+    ) -> Result<InteractionRef, Self::Error>;
 
     async fn responses(
         &self,
         ctx: &EffectContext,
         interaction: &InteractionRef,
-    ) -> Result<Vec<HumanResponse>, GhError>;
+    ) -> Result<Vec<Self::Reply>, Self::Error>;
 }
 
 pub struct GitHubConversation;
 
 #[async_trait::async_trait]
 impl HumanInteractionPort for GitHubConversation {
+    type Ask = PublishDecisionRequest;
+
+    type Reply = HumanResponse;
+
+    type Error = GhError;
+
     async fn request(
         &self,
         ctx: &EffectContext,
@@ -265,6 +405,11 @@ impl HumanInteractionPort for GitHubConversation {
             InteractionRef::GitHubPullRequestComment { repo, pr, .. } => {
                 read_conversation(&ctx.gh, repo, *pr, CONVERSATION_PAGES, &ctx.cancel).await
             }
+            InteractionRef::JiraIssueComment { .. } => Err(GhError::NotSent(format!(
+                "{interaction} is a jira interaction and this port reads a github conversation; \
+                 exactly one channel is authoritative for one request, so no github comment was \
+                 read for it"
+            ))),
         }
     }
 }
