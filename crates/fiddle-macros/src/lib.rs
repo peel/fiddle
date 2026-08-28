@@ -16,6 +16,31 @@ pub fn derive_effect(input: TokenStream) -> TokenStream {
     }
 }
 
+#[proc_macro_derive(VariantCount)]
+pub fn derive_variant_count(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match expand_variant_count(&input) {
+        Ok(generated) => generated.into(),
+        Err(refusal) => refusal.to_compile_error().into(),
+    }
+}
+
+fn expand_variant_count(input: &DeriveInput) -> syn::Result<TokenStream2> {
+    let named = &input.ident;
+    let Data::Enum(held) = &input.data else {
+        return Err(syn::Error::new_spanned(
+            named,
+            format!("`{named}` derives VariantCount and is not an enum"),
+        ));
+    };
+    let counted = held.variants.len();
+    Ok(quote! {
+        impl #named {
+            pub const VARIANT_COUNT: usize = #counted;
+        }
+    })
+}
+
 enum Arg {
     Name(Expr),
     Minimum(LitStr),

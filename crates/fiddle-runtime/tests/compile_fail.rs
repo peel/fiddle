@@ -14,6 +14,11 @@ fn a_malformed_effect_attribute_does_not_compile() {
 }
 
 #[test]
+fn a_count_of_variants_asked_of_something_that_has_none_does_not_compile() {
+    trybuild::TestCases::new().compile_fail("tests/compile_fail/variant_count_on_a_struct.rs");
+}
+
+#[test]
 fn a_target_that_names_an_issue_without_a_revision_does_not_compile() {
     trybuild::TestCases::new().compile_fail("tests/compile_fail/jira_target_without_revision.rs");
 }

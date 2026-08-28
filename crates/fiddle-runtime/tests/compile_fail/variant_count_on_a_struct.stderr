@@ -1,0 +1,5 @@
+error: `VariantCountOnAStruct` derives VariantCount and is not an enum
+ --> tests/compile_fail/variant_count_on_a_struct.rs:4:8
+  |
+4 | struct VariantCountOnAStruct {
+  |        ^^^^^^^^^^^^^^^^^^^^^
