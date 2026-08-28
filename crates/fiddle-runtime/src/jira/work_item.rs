@@ -35,7 +35,7 @@ impl JiraWorkItemPort {
     }
 
     fn said(&self, reason: &str) -> String {
-        format!("{}: {reason}", self.site)
+        format!("{}: {}", self.site, self.http.quotable(reason))
     }
 
     async fn read(

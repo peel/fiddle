@@ -1044,6 +1044,38 @@ async fn an_error_body_longer_than_the_clamp_reaches_the_reason_bounded() {
 }
 
 #[tokio::test]
+async fn an_updated_time_longer_than_the_clamp_reaches_the_reason_bounded() {
+    let oversized = "x".repeat(CLAMP * 4);
+    let server = StubJira::start().await;
+    server
+        .holds_issue_updated_at(KEY, "10001", "In Review", "In Progress", &oversized)
+        .await;
+
+    let reason = reason_of(&observe_from(&server).await);
+
+    assert!(
+        reason.contains("`fields.updated`"),
+        "the reason must be the one an unreadable time builds, or this test bounds a path it did not mean to reach: {reason}"
+    );
+    assert!(
+        reason.contains(&"x".repeat(1_000)),
+        "the head of the site's oversized time must reach the reason, or the bound below passes on a reason the site's text never entered: {} bytes",
+        reason.len()
+    );
+    assert!(
+        reason.contains("elided"),
+        "the clamp must say it clamped: {} bytes",
+        reason.len()
+    );
+    assert!(
+        reason.len() < CLAMP + 512,
+        "a reason built from a server-supplied time is bounded by the clamp and not by the {} bytes the site sent, got {} bytes",
+        oversized.len(),
+        reason.len()
+    );
+}
+
+#[tokio::test]
 async fn a_read_the_run_cancels_stops_before_the_sites_timeout() {
     let server = StubJira::start().await;
     server.stays_silent().await;

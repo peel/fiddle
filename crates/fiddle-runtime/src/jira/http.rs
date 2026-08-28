@@ -93,19 +93,19 @@ impl JiraHttp {
             .collect();
         match spoken.is_empty() {
             true => None,
-            false => Some(self.said(&spoken.join("; "))),
+            false => Some(self.quotable(&spoken.join("; "))),
         }
     }
 
     fn unreachable(&self, error: &reqwest::Error) -> JiraError {
-        JiraError::Unreachable(self.said(&error.to_string()))
+        JiraError::Unreachable(self.quotable(&error.to_string()))
     }
 
     fn malformed(&self, status: u16, text: &str) -> JiraError {
-        JiraError::Malformed(format!("HTTP {status}: {}", self.said(text)))
+        JiraError::Malformed(format!("HTTP {status}: {}", self.quotable(text)))
     }
 
-    fn said(&self, text: &str) -> String {
+    pub fn quotable(&self, text: &str) -> String {
         clamp(&self.credential.redacted(text))
     }
 }
