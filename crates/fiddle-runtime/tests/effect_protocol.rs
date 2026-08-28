@@ -2301,6 +2301,8 @@ fn a_context_built_from_four_arguments_holds_no_jira_client_and_refuses_in_these
 #[test]
 fn with_jira_hands_out_the_client_and_carries_the_other_four_fields_unchanged() {
     let before = support::unreachable_context();
+    let gh = format!("{:?}", before.gh);
+    let git = format!("{:?}", before.git);
     let work = before.work.clone();
     let cancel = before.cancel.clone();
 
@@ -2309,6 +2311,16 @@ fn with_jira_hands_out_the_client_and_carries_the_other_four_fields_unchanged() 
     assert!(
         after.jira_client().is_ok(),
         "a context given a client refuses nothing"
+    );
+    assert_eq!(
+        format!("{:?}", after.gh),
+        gh,
+        "with_jira hands back the gh client it was given, by every field GhCli prints"
+    );
+    assert_eq!(
+        format!("{:?}", after.git),
+        git,
+        "with_jira hands back the git client it was given, by every field GitCli prints"
     );
     assert_eq!(after.work, work, "with_jira replaces no working directory");
     cancel.cancel();
