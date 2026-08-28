@@ -35,6 +35,7 @@ const NO_LENGTH: &str =
 const UNCHECKED: &str =
     r#"{"errorMessages":["the site could not say whether this credential is good"],"errors":{}}"#;
 const WHO: &str = r#"{"accountId":"5b10a2844c20165700ede21g","displayName":"the bot"}"#;
+pub const BOT: &str = "5b10a2844c20165700ede21g";
 const HTML_REFUSAL: &str = "<!DOCTYPE html><html><head><title>Sign in</title></head><body>\
                             <h1>You are not authenticated</h1></body></html>";
 
@@ -130,16 +131,34 @@ impl StoredIssue {
     }
 }
 
+pub fn account(account_id: &str, display_name: &str) -> Value {
+    json!({"accountId": account_id, "displayName": display_name})
+}
+
+pub fn said(text: &str) -> Value {
+    json!({
+        "type": "doc",
+        "version": 1,
+        "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}],
+    })
+}
+
 fn commentless() -> Value {
     json!({"comment": {"comments": [], "maxResults": 0, "total": 0, "startAt": 0}})
 }
 
-fn with_comment(fields: &mut Value, id: &str, body: &Value) {
+fn with_comment(fields: &mut Value, id: &str, body: &Value, author: &Value, at: &str) {
     let mut comments = fields["comment"]["comments"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    comments.push(json!({"id": id, "body": body.clone()}));
+    comments.push(json!({
+        "id": id,
+        "body": body.clone(),
+        "author": author.clone(),
+        "created": at,
+        "updated": at,
+    }));
     let total = comments.len();
     merged(
         fields,
@@ -445,6 +464,18 @@ impl StubJira {
                 "updated": updated,
             }),
         );
+    }
+
+    pub async fn comment_from(&self, key: &str, account_id: &str, text: &str) {
+        let mut held = self.state.lock().await;
+        let at = held.stamp();
+        let id = format!("3{:04}", held.writes.len() + held.ticks as usize);
+        let author = account(account_id, "a person");
+        let said = said(text);
+        let Some(issue) = held.holding(key) else {
+            panic!("the stub was asked to seed a comment on {key}, which it does not hold");
+        };
+        with_comment(&mut issue.fields, &id, &said, &author, &at);
     }
 
     pub async fn holds_issue_in_status(
@@ -1018,7 +1049,13 @@ fn commented(key: &str, sent: &Value, state: &mut StubState) -> Served {
         return Served::json(404, ABSENT);
     };
     merged(&mut held.fields, &json!({"updated": updated}));
-    with_comment(&mut held.fields, &id, &sent["body"]);
+    with_comment(
+        &mut held.fields,
+        &id,
+        &sent["body"],
+        &account(BOT, "the bot"),
+        &updated,
+    );
     state.record(WriteRoute::AddComment, key, sent, true);
     let body = json!({"id": id, "body": sent["body"]}).to_string();
     Served::json(201, &body)

@@ -1,4 +1,5 @@
 pub mod comment;
+pub mod conversation;
 pub mod error;
 pub mod file_verdict;
 pub mod http;
@@ -9,6 +10,7 @@ pub mod transition;
 pub mod work_item;
 
 pub use comment::{AddComment, MarkedComment, JIRA_COMMENT_ADDED};
+pub use conversation::{ConversationError, JiraActor, JiraConversation, JiraReply};
 pub use error::JiraError;
 pub use http::{JiraHttp, JiraResponse};
 pub use link::{LinkPullRequest, JIRA_PULL_REQUEST_LINKED};

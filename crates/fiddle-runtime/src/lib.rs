@@ -49,10 +49,14 @@ pub use github::{
 pub use github::{pull_request_target, EnsurePullRequest, PullRequest};
 pub use github::{GhCli, GhError, GhResponse, RetryAdvice};
 pub use human::{
-    decision_request_target, render_request, GitHubConversation, HumanInteractionPort,
-    InteractionRef, PublishDecisionRequest, PublishedRequest,
+    authoritative, decision_request_target, publish, render_request, ChannelError, DecisionChannel,
+    GitHubConversation, HumanInteractionPort, InteractionRef, PublishDecisionRequest, PublishError,
+    PublishedRequest,
 };
-pub use jira::{project, ConfiguredNames, JiraError, JiraHttp, JiraResponse, JiraWorkItemPort};
+pub use jira::{
+    project, ConfiguredNames, ConversationError, JiraActor, JiraConversation, JiraError, JiraHttp,
+    JiraReply, JiraResponse, JiraWorkItemPort,
+};
 pub use journal::{AttemptJournal, AttemptTrace};
 pub use orchestration::{
     attempt, observe, run, Addressed, AttemptContext, AttemptRecord, RunContext, RunReport,
