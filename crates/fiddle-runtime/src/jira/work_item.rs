@@ -101,7 +101,7 @@ fn absent_or_refused(work_id: &str, credential: Credential) -> JiraError {
     }
 }
 
-fn failure_for(status: u16, work_id: &str, quoted: Option<&str>) -> JiraError {
+pub(crate) fn failure_for(status: u16, work_id: &str, quoted: Option<&str>) -> JiraError {
     match status {
         401 => JiraError::Unauthorized { status },
         403 => JiraError::Forbidden { status },
@@ -184,7 +184,7 @@ fn named(held: &serde_json::Value, path: &str) -> Result<String, JiraError> {
     }
 }
 
-fn canonical_revision(updated: &str) -> Option<String> {
+pub(crate) fn canonical_revision(updated: &str) -> Option<String> {
     read_instant(updated)?
         .to_offset(UtcOffset::UTC)
         .format(&Rfc3339)
