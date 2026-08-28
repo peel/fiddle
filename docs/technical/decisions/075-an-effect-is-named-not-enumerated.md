@@ -33,7 +33,13 @@ Both comments rest on the same argument. The type rejects an unknown name, so no
 
 M5b added the last four. They were written as `pub const` in their own operation modules while three lanes built them in parallel, so that no two lanes edited `fiddle-core/src/effect.rs` at once. That reason expired when the lanes merged. A shipped spelling belongs in `fiddle-core` because the consequence below is about the spelling and not about the module that happens to hold the operation.
 
-**`jira.transition` is not a spelling this build ships.** Six cases across `fiddle-runtime` and `fiddle-cli` use that exact name as their example of a name no descriptor holds, and `docs/plans/2026-08-26-m5c-toil-agent.md` adds a seventh. Registering it would leave every one of them green while none of them still meant what it says.
+**`jira.transition` is not a spelling this build ships.** It is the suite's example of a name no descriptor holds. Registering it as an alias was measured: it reds six tests that depend on the name staying unregistered, in four files.
+
+Four of the six reach the registry through `describe`: `lookup_refuses_a_name_no_descriptor_holds`, `an_unregistered_proposal_is_refused_before_an_identity_is_derived` and `an_unregistered_name_is_refused_ahead_of_the_capability_it_names` through `Executor::walk`, and `an_effect_this_build_does_not_perform_is_refused_when_the_workflow_is_built` through `WorkflowCapability::new`. One reaches it through `resolve`: `a_name_no_descriptor_holds_resolves_to_no_constructor`. One reads `BUILT_IN` directly: `an_admissible_extension_is_answered_beside_the_built_ins` installs a test extension that claims the name, so a built-in of the same name makes `admissible` answer `Duplicate`.
+
+**Five further tests spell the name and are not evidence for this.** They stay green whether or not the name is registered, so a reader must not count them. `a_name_no_rule_key_spells_is_left_ungated` (`fiddle-cli/src/config.rs`) tests that `rule_for` allows a row no document wrote, which holds for a registered name too. `a_name_outside_the_grammar_is_refused` (`fiddle-core/src/effect.rs`) tests the grammar. `every_effect_failure_declares_which_exit_row_it_belongs_in`, `no_other_permanent_refusal_became_a_wait` and `no_effect_failure_a_workflow_can_meet_is_a_wait` build an `EffectError` value and ask the registry nothing.
+
+Bean `fiddle-cphb` adds a seventh dependent case that has not landed: a toil document naming `jira.transition` must refuse at load.
 
 ## Consequences
 

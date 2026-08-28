@@ -468,10 +468,47 @@ fn the_four_jira_names_resolve_and_jira_transition_still_does_not() {
              UnknownEffect for a name no descriptor holds"
         );
     }
+
+    let unperformed = EffectName::parse("jira.transition").unwrap();
+
     assert!(
-        registry::resolve(&EffectName::parse("jira.transition").unwrap()).is_none(),
-        "`jira.transition` is this suite's example of an unregistered name in four places; \
-         registering it would leave all four passing while they stop meaning what they say"
+        !BUILT_IN
+            .iter()
+            .any(|descriptor| descriptor.name == unperformed.as_str()),
+        "no descriptor may carry the name `jira.transition`. This is the root fact, and \
+         `admissible` reads `BUILT_IN` directly rather than through a lookup: \
+         `an_admissible_extension_is_answered_beside_the_built_ins` \
+         (`src/effect/registry.rs`) installs a test extension that claims this name, and a \
+         built-in of the same name makes `admissible` answer `Duplicate` instead"
+    );
+
+    assert!(
+        registry::describe(&unperformed).is_none(),
+        "`describe` is what refuses `jira.transition` for four tests, and registering the \
+         name reds every one. In `src/effect/registry.rs`: \
+         `lookup_refuses_a_name_no_descriptor_holds`. In `tests/effect_protocol.rs`, through \
+         `Executor::walk`: \
+         `an_unregistered_proposal_is_refused_before_an_identity_is_derived` and \
+         `an_unregistered_name_is_refused_ahead_of_the_capability_it_names`. In \
+         `tests/workflow_capability.rs`, through `WorkflowCapability::new`: \
+         `an_effect_this_build_does_not_perform_is_refused_when_the_workflow_is_built`"
+    );
+
+    assert!(
+        registry::resolve(&unperformed).is_none(),
+        "and `resolve` is what refuses it for the sixth, \
+         `a_name_no_descriptor_holds_resolves_to_no_constructor` in this file. Five further \
+         tests spell `jira.transition` and do not depend on it, so none of them is evidence \
+         for this invariant: `a_name_no_rule_key_spells_is_left_ungated` \
+         (`fiddle-cli/src/config.rs`) passes registered or not, because `rule_for` allows any \
+         row a document did not write; `a_name_outside_the_grammar_is_refused` \
+         (`fiddle-core/src/effect.rs`) tests the grammar alone; and \
+         `every_effect_failure_declares_which_exit_row_it_belongs_in`, \
+         `no_other_permanent_refusal_became_a_wait` (`src/effect/receipt.rs`) and \
+         `no_effect_failure_a_workflow_can_meet_is_a_wait` \
+         (`tests/workflow_capability.rs`) build an `EffectError` value and ask the registry \
+         nothing. Bean `fiddle-cphb` adds a seventh dependent case that has not landed: a \
+         toil document naming `jira.transition` must refuse at load"
     );
 }
 
