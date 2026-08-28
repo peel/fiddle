@@ -1,10 +1,25 @@
 mod support;
 
+use fiddle_core::{
+    DeploymentRule, EffectName, HumanDecisionRequirement, ProposedEffect, FIXTURE_REPAIR,
+};
+use fiddle_runtime::effect::{
+    describe, install, resolve, EffectContext, EffectDescriptor, EffectError, EffectOutcome,
+    EffectReceipt, EffectTrace, ExecutionStep, Executor, IntegrationOperation, ReadRetry,
+    StepParams,
+};
+use fiddle_runtime::jira::file_verdict::{FileVerdict, FiledIssue, JIRA_ISSUE_FILED};
 use serde_json::json;
-use support::stub_jira::{StubJira, WriteRoute, SEEDED_PROJECT};
+use support::stub_jira::{client_for, StubJira, WriteRoute, SEEDED_PROJECT};
+use support::{unreachable_context, Deployment, INVOCATION_REF, PROJECT};
 
 const MARKER: &str = "fx-abc123";
 const OTHER_MARKER: &str = "fx-def456";
+const CVE: &str = "CVE-2025-1";
+const SEVERITY: &str = "high";
+const PACKAGE: &str = "acme-parser";
+const RATIONALE: &str = "the advisory reaches this build";
+const LABEL: &str = "security";
 
 #[tokio::test]
 async fn the_stub_records_a_created_issue_and_answers_a_search_for_its_marker() {
@@ -752,4 +767,335 @@ fn create_labelled(labels: &[&str]) -> serde_json::Value {
             "labels": labels,
         }
     })
+}
+
+struct Silent;
+
+impl EffectTrace for Silent {
+    fn step(&self, _kind: &EffectName, _step: ExecutionStep) {}
+}
+
+static FILED: &[EffectDescriptor] = &[FileVerdict::descriptor()];
+
+fn the_registry_answers_the_name() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if describe(&EffectName::shipped(JIRA_ISSUE_FILED)).is_none() {
+            install(FILED).expect("no other extension is installed in this test binary");
+        }
+    });
+    assert!(
+        describe(&EffectName::shipped(JIRA_ISSUE_FILED)).is_some(),
+        "the executor stops at UnknownEffect for a name no descriptor holds, so every run below \
+         would refuse before it reached the operation"
+    );
+}
+
+fn verdict() -> FileVerdict {
+    FileVerdict::new(
+        CVE.to_string(),
+        SEVERITY.to_string(),
+        PACKAGE.to_string(),
+        RATIONALE.to_string(),
+        LABEL.to_string(),
+        SEEDED_PROJECT.to_string(),
+        MARKER.to_string(),
+    )
+}
+
+async fn filed_through_the_executor(
+    ctx: &EffectContext,
+    operation: FileVerdict,
+) -> Result<EffectReceipt<FiledIssue>, EffectError> {
+    the_registry_answers_the_name();
+    let deployment = Deployment(DeploymentRule::Allow);
+    let trace = Silent;
+    let executor = Executor::new(
+        FIXTURE_REPAIR,
+        PROJECT.to_string(),
+        INVOCATION_REF.to_string(),
+        &deployment,
+        ctx,
+        &trace,
+        ReadRetry::none(),
+    );
+    let proposed = ProposedEffect {
+        capability: FIXTURE_REPAIR,
+        kind: EffectName::shipped(JIRA_ISSUE_FILED),
+        target: IntegrationOperation::target(&operation),
+        payload: IntegrationOperation::payload(&operation),
+    };
+    executor.execute(proposed, operation).await
+}
+
+async fn file_verdict(server: &StubJira) -> Result<EffectReceipt<FiledIssue>, EffectError> {
+    let ctx = unreachable_context().with_jira(client_for(server));
+    filed_through_the_executor(&ctx, verdict()).await
+}
+
+#[test]
+fn the_descriptor_the_derive_wrote_names_this_effect_and_the_judgment_it_needs() {
+    assert_eq!(FileVerdict::descriptor().name, JIRA_ISSUE_FILED);
+    assert_eq!(
+        FileVerdict::descriptor().minimum,
+        HumanDecisionRequirement::Automatic
+    );
+    assert_eq!(
+        IntegrationOperation::kind(&verdict()).as_str(),
+        JIRA_ISSUE_FILED,
+        "the kind the executor compares against comes from the derive"
+    );
+    assert_eq!(
+        IntegrationOperation::minimum(&verdict()),
+        HumanDecisionRequirement::Automatic,
+        "one derive writes both the descriptor and the operation, so this pins the requirement \
+         itself; a hand-written `minimum` that drifted from the descriptor is what it guards"
+    );
+    assert_eq!(
+        IntegrationOperation::target(&verdict()),
+        format!("{SEEDED_PROJECT}/{MARKER}"),
+        "the identity is the project and the marker, so the same verdict re-derives the same \
+         effect id in a later process"
+    );
+}
+
+#[tokio::test]
+async fn a_step_names_no_verdict_so_the_registered_constructor_refuses_rather_than_defaults() {
+    let server = StubJira::start().await;
+    let ctx = unreachable_context().with_jira(client_for(&server));
+    the_registry_answers_the_name();
+    let deployment = Deployment(DeploymentRule::Allow);
+    let trace = Silent;
+    let executor = Executor::new(
+        FIXTURE_REPAIR,
+        PROJECT.to_string(),
+        INVOCATION_REF.to_string(),
+        &deployment,
+        &ctx,
+        &trace,
+        ReadRetry::none(),
+    );
+
+    let construct =
+        resolve(&EffectName::shipped(JIRA_ISSUE_FILED)).expect("the derived descriptor is held");
+    let error = construct(&executor, &StepParams::for_capability(FIXTURE_REPAIR))
+        .err()
+        .expect("a step carries no advisory and no rationale");
+
+    assert!(
+        matches!(error, EffectError::Unbuildable { .. }),
+        "the operation refuses a step it cannot be built from rather than filing a ticket made \
+         of defaults: {error:?}"
+    );
+    assert_eq!(
+        server.create_requests().await,
+        0,
+        "and a refused construction reaches no site"
+    );
+}
+
+#[tokio::test]
+async fn two_marker_matches_refuse_the_write_and_create_nothing() {
+    let server = StubJira::start().await;
+    server.holds_two_issues_labelled(MARKER).await;
+
+    let error = file_verdict(&server)
+        .await
+        .expect_err("an ambiguous marker refuses");
+
+    assert!(
+        matches!(error, EffectError::DuplicateState { count: 2, .. }),
+        "two issues carry the marker, so the run must end at the ambiguity exit and nothing \
+         weaker: {error:?}"
+    );
+    assert!(
+        format!("{error}").contains('2'),
+        "the refusal must say how many it found: {error}"
+    );
+    assert_eq!(
+        server.create_requests().await,
+        0,
+        "an ambiguous marker sends no create"
+    );
+    assert_eq!(
+        server.issues_that_exist().await,
+        2,
+        "and files no third issue beside the two it refused to choose between"
+    );
+}
+
+#[tokio::test]
+async fn a_marker_matching_across_more_than_one_search_page_is_still_ambiguous() {
+    let server = StubJira::start().await;
+    server.caps_search_pages_at(1).await;
+    for key in ["901", "902", "903"] {
+        server
+            .holds_issue_labelled(&format!("{SEEDED_PROJECT}-{key}"), &[MARKER])
+            .await;
+    }
+
+    let error = file_verdict(&server)
+        .await
+        .expect_err("three matches are not one");
+
+    assert!(
+        matches!(error, EffectError::DuplicateState { count: 3, .. }),
+        "the site serves one issue per page here, so an inspect that counted a single page \
+         would read one match, answer a receipt naming it and never refuse; the count has to \
+         come from following the page token: {error:?}"
+    );
+    assert_eq!(server.create_requests().await, 0);
+}
+
+#[tokio::test]
+async fn the_marker_is_written_in_the_create_and_never_in_a_second_edit() {
+    let server = StubJira::start().await;
+
+    let receipt = file_verdict(&server).await.expect("it files");
+
+    let created = server.last_create().await;
+    let labels = created["fields"]["labels"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a create carries a labels array: {created}"));
+    assert!(
+        labels.iter().any(|label| label == &json!(MARKER)),
+        "the marker rides the create, or an interruption between create and edit orphans an \
+         unmarked issue: {created}"
+    );
+    assert_eq!(
+        server.edit_requests().await,
+        0,
+        "and no second write carries it"
+    );
+    assert_eq!(server.create_requests().await, 1);
+    assert_eq!(server.issues_that_exist().await, 1);
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(
+        receipt.external_ref.as_deref(),
+        Some(receipt.value.key.as_str()),
+        "the receipt names the issue a person opens"
+    );
+    assert_eq!(
+        found(&server, &by_marker(MARKER)).await,
+        1,
+        "and the marker search finds exactly the issue the receipt names"
+    );
+}
+
+#[tokio::test]
+async fn an_issue_that_already_carries_the_marker_is_answered_by_a_read_and_no_write() {
+    let server = StubJira::start().await;
+    server
+        .holds_issue_labelled(&format!("{SEEDED_PROJECT}-901"), &[MARKER])
+        .await;
+
+    let receipt = file_verdict(&server)
+        .await
+        .expect("the world already satisfies this");
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(receipt.value.key, format!("{SEEDED_PROJECT}-901"));
+    assert!(
+        server.writes().await.is_empty(),
+        "an effect the world already satisfies sends no write at all: {:?}",
+        server.writes().await
+    );
+}
+
+#[tokio::test]
+async fn an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_one_issue() {
+    let server = StubJira::start().await;
+    server.withholds_new_issues_from_search().await;
+    server.loses_the_answer_to_a_committed_write().await;
+
+    let interrupted = file_verdict(&server)
+        .await
+        .expect_err("a lost answer is not a receipt");
+
+    assert!(
+        matches!(interrupted, EffectError::Unresolved { .. }),
+        "the client heard no key and the index cannot yet see the issue, so the run ends \
+         unresolved rather than refused: {interrupted:?}"
+    );
+    assert_eq!(
+        server.issues_that_exist().await,
+        1,
+        "the write committed all the same"
+    );
+
+    server.answers_every_committed_write().await;
+    server.admits_the_withheld_issues_to_search().await;
+
+    let resolved = file_verdict(&server)
+        .await
+        .expect("a fresh process resolves it by reading");
+
+    assert_eq!(resolved.outcome, EffectOutcome::Committed);
+    assert_eq!(
+        resolved.value.key,
+        format!("{SEEDED_PROJECT}-1"),
+        "and the receipt names the issue the interrupted run created"
+    );
+    assert_eq!(
+        server.create_requests().await,
+        1,
+        "the second run resolved the ambiguity by reading the world, so it sent no second create"
+    );
+    assert_eq!(
+        server.issues_that_exist().await,
+        1,
+        "exactly one issue exists; this counts the issues the store holds and never the create \
+         requests, which a refused create would inflate"
+    );
+}
+
+#[tokio::test]
+async fn a_fresh_process_inside_the_lag_window_files_a_second_issue_and_the_next_read_refuses_both()
+{
+    let server = StubJira::start().await;
+    server.withholds_new_issues_from_search().await;
+    server.loses_the_answer_to_a_committed_write().await;
+
+    let interrupted = file_verdict(&server)
+        .await
+        .expect_err("a lost answer is not a receipt");
+    assert!(
+        matches!(interrupted, EffectError::Unresolved { .. }),
+        "{interrupted:?}"
+    );
+
+    server.answers_every_committed_write().await;
+
+    let inside = file_verdict(&server)
+        .await
+        .expect_err("the index still hides the first issue from its own marker");
+
+    assert!(
+        matches!(inside, EffectError::Unresolved { .. }),
+        "{inside:?}"
+    );
+    assert_eq!(
+        server.issues_that_exist().await,
+        2,
+        "a retry arriving inside the indexing lag searches by the marker, sees nothing for an \
+         issue that exists and files a second ticket; the exactly-once claim holds across an \
+         interruption longer than that lag and not inside it"
+    );
+
+    server.admits_the_withheld_issues_to_search().await;
+
+    let refused = file_verdict(&server)
+        .await
+        .expect_err("two markers are not one");
+
+    assert!(
+        matches!(refused, EffectError::DuplicateState { count: 2, .. }),
+        "once the index catches up the pair is named for a person rather than added to: \
+         {refused:?}"
+    );
+    assert_eq!(
+        server.create_requests().await,
+        2,
+        "and the run that found the pair sent no third create"
+    );
 }

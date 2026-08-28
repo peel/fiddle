@@ -219,6 +219,7 @@ mod tests {
             JiraError::Malformed(_) => "malformed",
             JiraError::Unreachable(_) => "unreachable",
             JiraError::Unconfigured => "unconfigured",
+            JiraError::Ambiguous { .. } => "ambiguous",
         }
     }
 

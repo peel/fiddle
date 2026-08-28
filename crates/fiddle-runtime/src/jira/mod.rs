@@ -1,4 +1,5 @@
 pub mod error;
+pub mod file_verdict;
 pub mod http;
 pub mod status;
 pub mod work_item;
