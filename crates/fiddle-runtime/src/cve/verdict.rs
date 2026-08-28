@@ -1,10 +1,16 @@
 use crate::agent::FindingDisposition;
 use crate::capability::cve::{GroupStatus, MigrationAttempt};
 use crate::cve::project::{Arm, Projection};
-use fiddle_core::{AdvisoryId, Published, RunOutcome, Severity};
+use crate::jira::file_verdict::{FileVerdict, JIRA_ISSUE_FILED};
+use fiddle_core::{effect_id, AdvisoryId, Published, RunOutcome, Severity};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub const REPORT_FILE: &str = "verdicts.json";
+
+pub const TICKET_LABEL_PREFIX: &str = "cve-";
+
+pub const TICKET_MARKER_PREFIX: &str = "fiddle-cve-";
 
 pub const FINDINGS_FILE: &str = "findings.json";
 
@@ -555,6 +561,89 @@ pub fn disposition(run: &Run) -> Disposition {
 
 pub fn report_of(run: &Run) -> serde_json::Value {
     disposition(run).report()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Filing<'a> {
+    pub project_key: &'a str,
+
+    pub project: &'a str,
+
+    pub invocation_ref: &'a str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketProposal {
+    pub cve: AdvisoryId,
+
+    pub severity: Severity,
+
+    pub package: String,
+
+    pub rationale: String,
+
+    pub label: String,
+
+    project_key: String,
+
+    marker: String,
+}
+
+impl TicketProposal {
+    pub fn marker(&self) -> &str {
+        &self.marker
+    }
+
+    pub fn project_key(&self) -> &str {
+        &self.project_key
+    }
+
+    pub fn operation(&self) -> FileVerdict {
+        FileVerdict::new(
+            self.cve.as_str().to_string(),
+            self.severity.as_str().to_string(),
+            self.package.clone(),
+            self.rationale.clone(),
+            self.label.clone(),
+            self.project_key.clone(),
+            self.marker.clone(),
+        )
+    }
+}
+
+pub fn ticket_proposals(verdicts: &[Verdict], filing: &Filing<'_>) -> Vec<TicketProposal> {
+    let mut filed: Vec<TicketProposal> = Vec::new();
+    let mut named: HashSet<&str> = HashSet::new();
+
+    for verdict in verdicts {
+        let Some(legacy_label) = verdict.legacy_label else {
+            continue;
+        };
+        if !named.insert(verdict.cve.as_str()) {
+            continue;
+        }
+        filed.push(TicketProposal {
+            cve: verdict.cve.clone(),
+            severity: verdict.severity,
+            package: verdict.package.clone(),
+            rationale: verdict.rationale.clone(),
+            label: format!("{TICKET_LABEL_PREFIX}{legacy_label}"),
+            project_key: filing.project_key.to_string(),
+            marker: ticket_marker(filing, &verdict.cve),
+        });
+    }
+
+    filed
+}
+
+fn ticket_marker(filing: &Filing<'_>, cve: &AdvisoryId) -> String {
+    let identity = effect_id(
+        filing.project,
+        filing.invocation_ref,
+        JIRA_ISSUE_FILED,
+        &format!("{}/{}", filing.project_key, cve.as_str()),
+    );
+    format!("{TICKET_MARKER_PREFIX}{}", identity.0)
 }
 
 fn verdicts_of(run: &Run) -> Vec<Verdict> {
