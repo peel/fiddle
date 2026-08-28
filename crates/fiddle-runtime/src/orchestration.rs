@@ -581,6 +581,53 @@ mod tests {
         dir
     }
 
+    async fn attempt_reading_against(dir: &Path, cancel: &CancellationToken) -> WorkStateView {
+        let reference: InvocationRef = INVOCATION_REF.parse().unwrap();
+        attempt(&AttemptContext {
+            project: PROJECT,
+            reference: &reference,
+            mode: Mode::Unattended,
+            build: FiddleBuild::new("0.1.0", fiddle_core::UNKNOWN_REVISION),
+            report_dir: &dir.join("reports"),
+            work_items: &StubWorkItemPort::new(dir),
+            changes: &StubChangePort::new(dir),
+            capability: &StubMark::new(dir, PROJECT),
+            trace: None,
+            cancel,
+        })
+        .await
+        .bundle
+        .observations
+    }
+
+    #[tokio::test]
+    async fn the_token_an_attempt_holds_is_the_token_its_ports_read_against() {
+        let dir = fixture_root();
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+
+        let running = attempt_reading_against(dir.path(), &CancellationToken::new()).await;
+        let stopped = attempt_reading_against(dir.path(), &cancelled).await;
+
+        assert!(
+            running.work_item.value().is_some(),
+            "the same world answers a running attempt, so the read below stopped for the \
+             cancellation and not for an unreadable source: {:?}",
+            running.work_item
+        );
+        assert!(
+            stopped.work_item.is_unavailable(),
+            "the attempt's own token must reach the work item port, or cancelling a run \
+             leaves its reads running: {:?}",
+            stopped.work_item
+        );
+        assert!(
+            stopped.changes.is_unavailable(),
+            "the attempt's own token must reach the change port too: {:?}",
+            stopped.changes
+        );
+    }
+
     #[tokio::test]
     async fn a_first_run_executes_and_then_reports_complete() {
         let dir = fixture_root();
