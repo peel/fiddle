@@ -60,6 +60,32 @@ have looked ordinary.
 
 Give each lane its own directory. Quarantine loose scripts at the shared root.
 
+## Disjoint files are necessary and not sufficient
+
+Two lanes can pass the wave-legality test above and still collide, because the
+collision is in a name rather than in a file. Both defects below came from one
+merged wave, and neither is attributable to any lane: each was correct alone.
+
+**A name defined twice in one shared file.** Two lanes each added an identical
+test helper to different regions of a file both legitimately touched. Git merged
+them with no conflict, because textually there was none. The result did not
+compile: `E0428` the name is defined multiple times, and `E0119` conflicting
+trait implementations.
+
+**A process-global claimed twice.** `install()` is a `OnceLock`, one extension
+set per test binary. Each lane had its own install site, alone in its own
+binary and correct there. Merged into one binary, the first won, the second got
+`AlreadyInstalled`, panicked, and **poisoned the `Once`** — so eight tests failed
+with `Once instance has previously been poisoned`, seven of them innocent.
+
+Run `cargo check --workspace --all-features --all-targets` on every merged
+result before the gate. Plain `cargo check` does **not** build test targets, so a
+duplicate inside a test file passes it while the tree cannot compile its tests.
+That check costs seconds and catches the first defect.
+
+Nothing short of running the tests catches the second. That is the argument for
+gating every merged wave rather than trusting arithmetic across green lanes.
+
 ## Gates prove what they ran on
 
 A lane's gate proves that lane. It says nothing about the wave, because the lane
@@ -80,6 +106,8 @@ and an amend cannot reach a merge that already happened.
 | Provider dispatch writes an empty file and exits 0 | The provider CLI reads its prompt from stdin, and a backgrounded process has no stdin | Dispatch providers in the foreground |
 | Lane reports numbers it cannot defend | It raced its own gate, or read a log with no completion marker | Re-run one gate on a quiet tree |
 | Merge conflicts in one shared module | Expected when siblings each add a line | Merge sequentially and re-gate; do not batch |
+| Merged tree compiles but tests do not | `cargo check` skips test targets | Use `--all-targets` on the merged result |
+| Merged tests fail on a process-global | A `OnceLock` or similar claimed by two lanes | One claim site per binary; only a test run finds it |
 
 An agent that stops without a report is the dangerous one. Its work exists and
 is uncommitted, and a completion notification looks the same as a real one. Read
