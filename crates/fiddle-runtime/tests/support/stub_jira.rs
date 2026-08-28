@@ -419,6 +419,34 @@ impl StubJira {
         );
     }
 
+    pub async fn holds_issue_in_status(
+        &self,
+        key: &str,
+        status_id: &str,
+        status_name: &str,
+        status_category: &str,
+    ) {
+        let updated = self.state.lock().await.stamp();
+        let (category_id, category_key) = category(status_category);
+        self.state.lock().await.seed(
+            key,
+            json!({
+                "project": {"key": project_of(key)},
+                "summary": format!("a seeded issue {key}"),
+                "updated": updated,
+                "status": {
+                    "id": status_id,
+                    "name": status_name,
+                    "statusCategory": {
+                        "id": category_id,
+                        "key": category_key,
+                        "name": status_category,
+                    },
+                },
+            }),
+        );
+    }
+
     pub async fn holds_two_issues_labelled(&self, label: &str) {
         self.holds_issue_labelled(&format!("{SEEDED_PROJECT}-901"), &[label])
             .await;
@@ -552,6 +580,12 @@ impl StubJira {
         )
         .await
         .expect("the stub answers the transition")
+    }
+
+    pub async fn get_transitions(&self, key: &str) -> Answered {
+        self.attempt("GET", &format!("{ISSUE_ROUTE}{key}/transitions"), None)
+            .await
+            .expect("the stub answers the transitions listing")
     }
 
     pub async fn get_issue(&self, key: &str) -> Answered {
@@ -852,6 +886,12 @@ fn routed(request_line: &str, sent: &Value, state: &mut StubState) -> Reply {
         }
     }
     if method == "GET" {
+        if let Some(key) = issue_sub(path, "transitions") {
+            return Reply::Answered(match state.holds(key) {
+                true => Served::json(200, &offered(key, state)),
+                false => Served::json(404, ABSENT),
+            });
+        }
         if let Some(key) = issue_key(path) {
             if let Some(held) = state.issues.iter().find(|issue| issue.key == key) {
                 let body = held.body(&state.base_url).to_string();
@@ -985,7 +1025,7 @@ fn transitioned(key: &str, sent: &Value, state: &mut StubState) -> Served {
         &json!({
             "updated": updated,
             "status": {
-                "id": id,
+                "id": status_id_for(&id),
                 "name": leads_to,
                 "statusCategory": {"id": category_id, "key": category_key, "name": leads_to},
             },
@@ -993,6 +1033,35 @@ fn transitioned(key: &str, sent: &Value, state: &mut StubState) -> Served {
     );
     state.record(WriteRoute::TransitionIssue, key, sent, true);
     Served::json(204, "")
+}
+
+fn status_id_for(transition_id: &str) -> String {
+    format!("9{transition_id}")
+}
+
+fn offered(key: &str, state: &StubState) -> String {
+    let transitions: Vec<Value> = state
+        .offered
+        .iter()
+        .filter(|offered| offered.issue == key)
+        .map(|offered| {
+            let (category_id, category_key) = category(&offered.leads_to);
+            json!({
+                "id": offered.id,
+                "name": format!("Move to {}", offered.leads_to),
+                "to": {
+                    "id": status_id_for(&offered.id),
+                    "name": offered.leads_to,
+                    "statusCategory": {
+                        "id": category_id,
+                        "key": category_key,
+                        "name": offered.leads_to,
+                    },
+                },
+            })
+        })
+        .collect();
+    json!({"expand": "transitions", "transitions": transitions}).to_string()
 }
 
 fn searched(target: &str, state: &mut StubState) -> Served {

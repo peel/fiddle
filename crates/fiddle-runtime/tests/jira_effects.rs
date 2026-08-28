@@ -1,7 +1,16 @@
 mod support;
 
+use fiddle_core::{
+    DeploymentRule, EffectName, ProjectedStatus, ProposedEffect, WorkState, FIXTURE_REPAIR,
+};
+use fiddle_runtime::effect::{
+    install, EffectContext, EffectDescriptor, EffectError, EffectOutcome, EffectReceipt,
+    EffectTrace, ExecutionStep, Executor, IntegrationOperation, ReadRetry,
+};
+use fiddle_runtime::jira::{TransitionIssue, JIRA_ISSUE_TRANSITIONED};
 use serde_json::json;
-use support::stub_jira::{StubJira, WriteRoute, SEEDED_PROJECT};
+use support::stub_jira::{client_for, StubJira, WriteRoute, SEEDED_PROJECT};
+use support::{unreachable_context, Deployment, INVOCATION_REF, PROJECT};
 
 const MARKER: &str = "fx-abc123";
 const OTHER_MARKER: &str = "fx-def456";
@@ -727,6 +736,315 @@ async fn an_edit_merges_into_the_stored_issue_rather_than_replacing_it() {
         read_back["fields"]["labels"][0], MARKER,
         "an edit that dropped the untouched fields would hide a marker the create wrote"
     );
+}
+
+#[tokio::test]
+async fn the_transitions_the_stub_lists_name_a_destination_status_apart_from_the_transition() {
+    let server = StubJira::start().await;
+    let key = format!("{SEEDED_PROJECT}-7");
+    server
+        .holds_issue_in_status(&key, "10000", "To Do", "To Do")
+        .await;
+    server.offers_transition(&key, "31", "In Review").await;
+
+    let listed = server.get_transitions(&key).await;
+
+    assert_eq!(listed.status, 200);
+    let only = &listed.body["transitions"][0];
+    assert_eq!(only["id"], "31", "the transition is sent by this id");
+    assert_eq!(
+        only["name"], "Move to In Review",
+        "a transition carries a name of its own, so a resolver that read this one would resolve \
+         nothing when it looked for a status"
+    );
+    assert_eq!(
+        only["to"]["name"], "In Review",
+        "the destination status is what a caller asks for"
+    );
+    assert_eq!(
+        only["to"]["id"], "931",
+        "and the destination status carries an id that is not the transition id, so `resolved to \
+         an id` names one of the two and not the other"
+    );
+}
+
+#[tokio::test]
+async fn a_transitions_listing_for_an_issue_the_stub_does_not_hold_is_refused_and_lists_nothing() {
+    let server = StubJira::start().await;
+
+    let listed = server
+        .get_transitions(&format!("{SEEDED_PROJECT}-404"))
+        .await;
+
+    assert_eq!(
+        listed.status, 404,
+        "a listing that answered for an absent issue would let a resolution succeed against \
+         nothing"
+    );
+}
+
+#[tokio::test]
+async fn the_transition_that_is_sent_is_the_id_the_site_offered_and_never_a_name() {
+    let server = StubJira::start().await;
+    let key = format!("{SEEDED_PROJECT}-7");
+    server
+        .holds_issue_in_status(&key, "10000", "To Do", "To Do")
+        .await;
+    server.offers_transition(&key, "31", "In Review").await;
+    let read_in = updated(&server, &key).await;
+
+    let receipt = transition_to(&server, &key, &read_in, "In Review")
+        .await
+        .expect("the offered transition is performed");
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(receipt.value.jira_status_name, "In Review");
+    assert_eq!(
+        server.transition_requests().await,
+        1,
+        "one transition was sent, so no read was mistaken for a write"
+    );
+    assert_eq!(
+        last_transition(&server, &key).await,
+        json!({"transition": {"id": "31"}}),
+        "the id the listing offered is what reaches the site; a name would have reached it \
+         verbatim and the stub refuses a transition it never offered"
+    );
+    assert!(
+        server
+            .request_lines()
+            .await
+            .iter()
+            .any(|line| line == &format!("GET /rest/api/3/issue/{key}/transitions HTTP/1.1")),
+        "the id was read from the site rather than assumed: {:?}",
+        server.request_lines().await
+    );
+}
+
+#[tokio::test]
+async fn a_state_two_transitions_reach_is_refused_rather_than_resolved_to_the_first() {
+    let server = StubJira::start().await;
+    let key = format!("{SEEDED_PROJECT}-7");
+    server
+        .holds_issue_in_status(&key, "10000", "To Do", "To Do")
+        .await;
+    server.offers_transition(&key, "31", "Done").await;
+    server.offers_transition(&key, "41", "Done").await;
+    let read_in = updated(&server, &key).await;
+
+    let refused = transition_to(&server, &key, &read_in, "Done")
+        .await
+        .expect_err("two transitions to one status name cannot be told apart by that name");
+
+    let said = format!("{refused}");
+    assert!(
+        said.contains("31") && said.contains("41"),
+        "the refusal must name both transitions it could not choose between: {said}"
+    );
+    assert_eq!(
+        server.transition_requests().await,
+        0,
+        "a lookup by name returns the first match only, so a build that took it would have \
+         written one of two states here"
+    );
+}
+
+#[tokio::test]
+async fn a_state_the_workflow_does_not_offer_is_refused_and_writes_nothing() {
+    let server = StubJira::start().await;
+    let key = format!("{SEEDED_PROJECT}-7");
+    server
+        .holds_issue_in_status(&key, "10000", "To Do", "To Do")
+        .await;
+    server.offers_transition(&key, "31", "Done").await;
+    let read_in = updated(&server, &key).await;
+
+    let refused = transition_to(&server, &key, &read_in, "In Review")
+        .await
+        .expect_err("a workflow that offers no route to a state cannot reach it");
+
+    let said = format!("{refused}");
+    assert!(
+        said.contains("In Review") && said.contains("31 to `Done`"),
+        "the refusal must name the state asked for and what the workflow does offer: {said}"
+    );
+    assert_eq!(server.transition_requests().await, 0);
+    assert_eq!(
+        server.get_issue(&key).await.body["fields"]["status"]["name"],
+        "To Do",
+        "the refused transition moved nothing"
+    );
+}
+
+#[tokio::test]
+async fn an_issue_already_in_the_state_is_committed_and_no_transition_is_sent() {
+    let server = StubJira::start().await;
+    let key = format!("{SEEDED_PROJECT}-7");
+    server
+        .holds_issue_in_status(&key, "10001", "In Review", "In Progress")
+        .await;
+    let read_in = updated(&server, &key).await;
+
+    let receipt = transition_to(&server, &key, &read_in, "In Review")
+        .await
+        .expect("an issue already in the state needs no write");
+
+    assert_eq!(receipt.outcome, EffectOutcome::Committed);
+    assert_eq!(
+        server.transition_requests().await,
+        0,
+        "the postcondition was already held, so nothing was sent and no workflow was consulted"
+    );
+    assert!(
+        !server
+            .request_lines()
+            .await
+            .iter()
+            .any(|line| line.contains("/transitions")),
+        "and the transitions listing costs nothing on the path that writes nothing: {:?}",
+        server.request_lines().await
+    );
+}
+
+#[tokio::test]
+async fn the_receipt_names_the_state_the_issue_was_read_in_and_not_the_one_it_reached() {
+    let server = StubJira::start().await;
+    let key = format!("{SEEDED_PROJECT}-7");
+    server
+        .holds_issue_in_status(&key, "10000", "To Do", "To Do")
+        .await;
+    server.offers_transition(&key, "31", "In Review").await;
+    let read_in = updated(&server, &key).await;
+
+    let receipt = transition_to(&server, &key, &read_in, "In Review")
+        .await
+        .expect("the offered transition is performed");
+    let after = updated(&server, &key).await;
+
+    assert_ne!(
+        read_in, after,
+        "a committed write moves `fields.updated`, so the two revisions differ"
+    );
+    assert_eq!(
+        receipt.target,
+        format!("{key}@2026-08-26T09:00:01Z"),
+        "the identity names the state a human approved, canonicalised, and never the state the \
+         write produced"
+    );
+    assert!(
+        !receipt.target.contains("+0000"),
+        "and the colonless offset jira sent never reaches it: {}",
+        receipt.target
+    );
+}
+
+#[tokio::test]
+async fn a_typed_state_is_reported_beside_the_status_the_site_named() {
+    let server = StubJira::start().await;
+    let key = format!("{SEEDED_PROJECT}-7");
+    server
+        .holds_issue_in_status(&key, "10002", "Awaiting QA", "In Progress")
+        .await;
+    let read_in = updated(&server, &key).await;
+
+    let receipt = transition_to(&server, &key, &read_in, "Awaiting QA")
+        .await
+        .expect("an issue already in the state needs no write");
+
+    assert_eq!(
+        receipt.value,
+        ProjectedStatus {
+            state: WorkState::InProgress,
+            jira_status_id: "10002".to_string(),
+            jira_status_name: "Awaiting QA".to_string(),
+            jira_status_category: "In Progress".to_string(),
+        },
+        "no `[jira.workflow]` table reaches an effect context, so the category is what supplies \
+         the typed state and every jira fact must survive beside it"
+    );
+    assert!(
+        receipt.postcondition.contains("Awaiting QA")
+            && receipt.postcondition.contains("InProgress"),
+        "the line a person reads names the site's word and this build's reading of it: {}",
+        receipt.postcondition
+    );
+}
+
+#[tokio::test]
+async fn an_issue_the_site_does_not_hold_is_refused_before_any_workflow_is_read() {
+    let server = StubJira::start().await;
+    server.holds_nothing().await;
+    let missing = format!("{SEEDED_PROJECT}-404");
+
+    let refused = transition_to(
+        &server,
+        &missing,
+        "2026-08-26T09:00:01.000+0000",
+        "In Review",
+    )
+    .await
+    .expect_err("an issue that is not there has no state to move");
+
+    assert!(
+        format!("{refused}").contains(&missing),
+        "the refusal names the issue it could not read: {refused}"
+    );
+    assert_eq!(server.transition_requests().await, 0);
+}
+
+struct Silent;
+
+impl EffectTrace for Silent {
+    fn step(&self, _kind: &EffectName, _step: ExecutionStep) {}
+}
+
+const JIRA: &[EffectDescriptor] = &[TransitionIssue::descriptor()];
+
+fn registered() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        install(JIRA).expect("this operation's effect is installed once for this binary");
+    });
+}
+
+async fn transition_to(
+    server: &StubJira,
+    key: &str,
+    read_in: &str,
+    to: &str,
+) -> Result<EffectReceipt<ProjectedStatus>, EffectError> {
+    registered();
+    let operation = TransitionIssue::new(key, read_in, to)
+        .expect("the stub sends a `fields.updated` this build can read");
+    let ctx: EffectContext = unreachable_context().with_jira(client_for(server));
+    let deployment = Deployment(DeploymentRule::Allow);
+    let proposed = ProposedEffect {
+        capability: FIXTURE_REPAIR,
+        kind: EffectName::shipped(JIRA_ISSUE_TRANSITIONED),
+        target: operation.target(),
+        payload: IntegrationOperation::payload(&operation),
+    };
+    Executor::new(
+        FIXTURE_REPAIR,
+        PROJECT.to_string(),
+        INVOCATION_REF.to_string(),
+        &deployment,
+        &ctx,
+        &Silent,
+        ReadRetry::none(),
+    )
+    .execute(proposed, operation)
+    .await
+}
+
+async fn last_transition(server: &StubJira, key: &str) -> serde_json::Value {
+    server
+        .writes()
+        .await
+        .iter()
+        .rfind(|write| write.route == WriteRoute::TransitionIssue && write.issue == key)
+        .map(|write| write.body.clone())
+        .unwrap_or_else(|| panic!("the stub was asked to transition {key}"))
 }
 
 async fn found(server: &StubJira, jql: &str) -> usize {
