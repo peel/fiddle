@@ -2,7 +2,7 @@ use crate::effect::{
     AuthorizedEffect, Effect, EffectContext, EffectError, Executor, FromStepParams, ObservedState,
     StepParams,
 };
-use crate::jira::work_item::read_failure;
+use crate::jira::work_item::{named, read_failure};
 use crate::jira::{canonical_revision, project, ConfiguredNames, JiraError, JiraHttp};
 use fiddle_core::{EffectName, ProjectedStatus};
 use tokio_util::sync::CancellationToken;
@@ -12,7 +12,7 @@ pub const JIRA_ISSUE_TRANSITIONED: &str = "jira.issue_transitioned";
 pub struct TransitionedIssue {
     pub key: String,
     pub status: ProjectedStatus,
-    pub revision: Option<String>,
+    pub revision: String,
 }
 
 impl ObservedState for TransitionedIssue {
@@ -26,7 +26,7 @@ impl ObservedState for TransitionedIssue {
     }
 
     fn reference(&self) -> Option<String> {
-        self.revision.clone()
+        Some(self.revision.clone())
     }
 
     fn into_value(self) -> ProjectedStatus {
@@ -62,25 +62,11 @@ impl FromStepParams for TransitionIssue {
 
 impl TransitionIssue {
     pub fn new(issue_key: &str, issue_updated: &str, to: &str) -> Result<Self, JiraError> {
-        let Some(canonical) = canonical_revision(issue_updated) else {
-            return Err(JiraError::Malformed(format!(
-                "`{issue_key}` was read with `fields.updated` of `{issue_updated}`, which is not \
-                 a time this build can read, so no identity can name the state it was read in"
-            )));
-        };
         Ok(Self {
             issue_key: issue_key.to_string(),
-            issue_updated: canonical,
+            issue_updated: revision_of(issue_key, issue_updated)?,
             to: to.to_string(),
         })
-    }
-
-    pub fn issue_key(&self) -> &str {
-        &self.issue_key
-    }
-
-    pub fn to(&self) -> &str {
-        &self.to
     }
 
     fn issue_path(&self) -> String {
@@ -119,10 +105,10 @@ impl TransitionIssue {
                     "fields.status.statusCategory.name",
                 )?,
             ),
-            revision: canonical_revision(&named(
-                &answered.body["fields"]["updated"],
-                "fields.updated",
-            )?),
+            revision: revision_of(
+                &self.issue_key,
+                &named(&answered.body["fields"]["updated"], "fields.updated")?,
+            )?,
         })
     }
 
@@ -222,11 +208,13 @@ impl TransitionIssue {
     }
 }
 
-fn named(held: &serde_json::Value, path: &str) -> Result<String, JiraError> {
-    match held.as_str() {
-        Some(held) => Ok(held.to_string()),
-        None => Err(JiraError::Malformed(format!("no `{path}`"))),
-    }
+fn revision_of(issue_key: &str, updated: &str) -> Result<String, JiraError> {
+    canonical_revision(updated).ok_or_else(|| {
+        JiraError::Malformed(format!(
+            "`{issue_key}` was read with `fields.updated` of `{updated}`, which is not a time \
+             this build can read, so no identity can name the state it was read in"
+        ))
+    })
 }
 
 fn offers(transitions: &[serde_json::Value]) -> String {

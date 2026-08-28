@@ -169,7 +169,7 @@ fn issue_from(body: &serde_json::Value) -> Result<ReadIssue, JiraError> {
     })
 }
 
-fn named(held: &serde_json::Value, path: &str) -> Result<String, JiraError> {
+pub(crate) fn named(held: &serde_json::Value, path: &str) -> Result<String, JiraError> {
     match held.as_str() {
         Some(held) => Ok(held.to_string()),
         None => Err(JiraError::Malformed(format!("no `{path}`"))),

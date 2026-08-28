@@ -992,6 +992,30 @@ async fn an_issue_the_site_does_not_hold_is_refused_before_any_workflow_is_read(
     assert_eq!(server.transition_requests().await, 0);
 }
 
+#[tokio::test]
+async fn an_issue_whose_updated_field_is_not_a_time_is_refused_rather_than_read_as_a_state() {
+    let server = StubJira::start().await;
+    let key = format!("{SEEDED_PROJECT}-7");
+    server
+        .holds_issue_updated_at(&key, "10000", "To Do", "To Do", "yesterday")
+        .await;
+
+    let refused = transition_to(&server, &key, "2026-08-26T09:00:01.000+0000", "In Review")
+        .await
+        .expect_err("a state no identity can name must not be reported as observed");
+
+    assert!(
+        format!("{refused}").contains("yesterday"),
+        "the refusal quotes the field it could not read, so a reader is not left guessing: \
+         {refused}"
+    );
+    assert_eq!(
+        server.transition_requests().await,
+        0,
+        "and nothing was written on the strength of a state that could not be named"
+    );
+}
+
 struct Silent;
 
 impl EffectTrace for Silent {
