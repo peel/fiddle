@@ -1,9 +1,6 @@
-use crate::jira::{project, ConfiguredNames, JiraError, JiraHttp};
+use crate::jira::{canonical_revision, project, ConfiguredNames, JiraError, JiraHttp};
 use crate::ports::WorkItemPort;
 use fiddle_core::{Observation, SourceRef, WorkItemState};
-use time::format_description::well_known::Rfc3339;
-use time::macros::format_description;
-use time::{OffsetDateTime, UtcOffset};
 use tokio_util::sync::CancellationToken;
 
 const MYSELF: &str = "/rest/api/3/myself";
@@ -47,38 +44,33 @@ impl JiraWorkItemPort {
         let answered = self.http.api("GET", &path, None, cancel).await?;
         match answered.status {
             status if (200..300).contains(&status) => issue_from(&answered.body),
-            status => Err(self
-                .told_apart(
-                    failure_for(status, work_id, self.http.quoted(&answered.body).as_deref()),
-                    work_id,
-                    cancel,
-                )
-                .await),
+            status => Err(read_failure(&self.http, status, work_id, &answered.body, cancel).await),
         }
     }
+}
 
-    async fn told_apart(
-        &self,
-        failure: JiraError,
-        work_id: &str,
-        cancel: &CancellationToken,
-    ) -> JiraError {
-        match failure {
-            JiraError::Absent { .. } => absent_or_refused(work_id, self.credential(cancel).await),
-            named => named,
-        }
+pub(crate) async fn read_failure(
+    http: &JiraHttp,
+    status: u16,
+    work_id: &str,
+    body: &serde_json::Value,
+    cancel: &CancellationToken,
+) -> JiraError {
+    match failure_for(status, work_id, http.quoted(body).as_deref()) {
+        JiraError::Absent { .. } => absent_or_refused(work_id, credential(http, cancel).await),
+        named => named,
     }
+}
 
-    async fn credential(&self, cancel: &CancellationToken) -> Credential {
-        match self.http.api("GET", MYSELF, None, cancel).await {
-            Ok(answered) if answered.status == 401 => Credential::Refused,
-            Ok(answered) if (200..300).contains(&answered.status) => Credential::Accepted,
-            Ok(answered) => Credential::Unchecked(explained(
-                answered.status,
-                self.http.quoted(&answered.body).as_deref(),
-            )),
-            Err(failed) => Credential::Unchecked(failed.to_string()),
-        }
+async fn credential(http: &JiraHttp, cancel: &CancellationToken) -> Credential {
+    match http.api("GET", MYSELF, None, cancel).await {
+        Ok(answered) if answered.status == 401 => Credential::Refused,
+        Ok(answered) if (200..300).contains(&answered.status) => Credential::Accepted,
+        Ok(answered) => Credential::Unchecked(explained(
+            answered.status,
+            http.quoted(&answered.body).as_deref(),
+        )),
+        Err(failed) => Credential::Unchecked(failed.to_string()),
     }
 }
 
@@ -101,7 +93,7 @@ fn absent_or_refused(work_id: &str, credential: Credential) -> JiraError {
     }
 }
 
-fn failure_for(status: u16, work_id: &str, quoted: Option<&str>) -> JiraError {
+pub(crate) fn failure_for(status: u16, work_id: &str, quoted: Option<&str>) -> JiraError {
     match status {
         401 => JiraError::Unauthorized { status },
         403 => JiraError::Forbidden { status },
@@ -177,32 +169,11 @@ fn issue_from(body: &serde_json::Value) -> Result<ReadIssue, JiraError> {
     })
 }
 
-fn named(held: &serde_json::Value, path: &str) -> Result<String, JiraError> {
+pub(crate) fn named(held: &serde_json::Value, path: &str) -> Result<String, JiraError> {
     match held.as_str() {
         Some(held) => Ok(held.to_string()),
         None => Err(JiraError::Malformed(format!("no `{path}`"))),
     }
-}
-
-fn canonical_revision(updated: &str) -> Option<String> {
-    read_instant(updated)?
-        .to_offset(UtcOffset::UTC)
-        .format(&Rfc3339)
-        .ok()
-}
-
-fn read_instant(updated: &str) -> Option<OffsetDateTime> {
-    let subsecond = format_description!(
-        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond][offset_hour \
-         sign:mandatory][offset_minute]"
-    );
-    let whole_second = format_description!(
-        "[year]-[month]-[day]T[hour]:[minute]:[second][offset_hour sign:mandatory][offset_minute]"
-    );
-    OffsetDateTime::parse(updated, &Rfc3339)
-        .or_else(|_| OffsetDateTime::parse(updated, &subsecond))
-        .or_else(|_| OffsetDateTime::parse(updated, &whole_second))
-        .ok()
 }
 
 #[cfg(test)]
