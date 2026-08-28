@@ -36,7 +36,7 @@ After all domain evaluators return, merge their scorecards:
 - **No shared dimensions** — `domain_spec_fidelity` in frontend is completely independent from `domain_spec_fidelity` in backend
 - Each domain must independently meet its own thresholds
 
-```bash
+```bash cross-domain-merge
 # Merge per-domain (already provider-merged) scorecards into a single cross-domain scorecard.
 # Use only scorecard-{domain}.json files (not scorecard-{domain}-{provider}.json raw files).
 jq -s '
@@ -49,6 +49,11 @@ jq -s '
 # Extract merged criteria
 jq '.criteria' scorecard.json > criteria.json
 ```
+
+`scripts/test-scorecard-merge-doc.sh` finds this block by the fence marker `cross-domain-merge`,
+extracts the `jq -s` program, and runs it against fixtures. Keep the marker and the `jq -s '`
+opening line. If the lane finds no block, it exits 2 and names the marker. It does not pass over
+an empty extraction.
 
 The `mode` line carries an evidence-only declaration across the domain union, and only when every
 domain declared it. Without that line the declaration is dropped here and `check-thresholds.sh`
