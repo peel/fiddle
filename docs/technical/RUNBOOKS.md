@@ -310,6 +310,13 @@ marker. The lane deletes every issue carrying the marker before it exits. When t
 site refuses a delete, the lane names the keys on stderr and says they remain;
 delete them by hand, because the next run's ambiguity check reads them.
 
+**That cleanup is wrong, and the operator ruled on it on 2026-08-28.** The lane
+closes its ticket to `Won't Do`, or at worst to `Done`, and never deletes.
+Deletion is refused in `ISP` by project policy, so the advice to delete by hand
+cannot be followed there. Resolve the closing transition to a single id and
+refuse before writing when the token cannot close. The lane still deletes; bean
+`fiddle-jh1z` carries the correction, and ADR 079 carries the ruling.
+
 **Now a measurement: a create this build sends would be refused.** The shape lane
 reads `/rest/api/3/issue/createmeta/ISP/issuetypes/10002` and reports the required
 fields of a `Task` in `ISP` as `issuetype`, `project` and `summary`.
@@ -330,10 +337,13 @@ search: every Jira surface a binary writes is still a read's. When `fiddle-zlc4`
 lands, the lane should drive the binary as `scripts/live-jira-observe.sh` does and
 the census should grow a write scenario.
 
-**Unrun as of 2026-08-28.** No disposable Jira project exists, so the lane refuses
-and the two things only it can measure are untaken: the real indexing lag, and
-whether two runs really leave one issue. `scripts/test-live-jira-lanes.sh` holds
-that the refusal is a refusal and not a silent skip.
+**Run twice against `ISP` on 2026-08-28.** It filed `ISP-272` and `ISP-273`, so
+two runs left two issues rather than one. Both were closed to `Won't Do` by hand.
+The lane reported the indexing lag as `0 seconds` and, in the same run, reported
+one issue where two existed, so its lag computation is unsound and the real lag
+stays unmeasured. Do not quote that number. ADR 079 records what the run measured
+and what it refutes. `scripts/test-live-jira-lanes.sh` holds that a refusal is a
+refusal and not a silent skip.
 
 **Out of reach and not claimed by either lane.** Concurrent duplicate
 invocations. The design scopes exactly-once to interruptions, and one process

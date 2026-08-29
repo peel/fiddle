@@ -1,0 +1,176 @@
+# 079 — A ticket is deduplicated by a marker it carries
+
+Status: accepted; amended in M5b by the note "What one live run measured", which
+leaves the mechanism standing and refutes the claim made for it against a real
+site
+
+Cites: FileVerdict, FiledIssue, ticket_proposals, TicketProposal, Filing, TICKET_MARKER_PREFIX, TICKET_LABEL_PREFIX, effect_id, JIRA_ISSUE_FILED, JiraError::Ambiguous, JiraError::Malformed, JiraError::NotSent, EffectError::DuplicateState, EffectError::Unresolved, EffectOutcome::Unknown, PAGE_WALK_BOUND, RULE_KEYS, VariantCount, two_marker_matches_refuse_the_write_and_create_nothing, a_marker_matching_across_more_than_one_search_page_is_still_ambiguous, the_marker_is_written_in_the_create_and_never_in_a_second_edit, an_issue_that_already_carries_the_marker_is_answered_by_a_read_and_no_write, an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_one_issue, a_fresh_process_inside_the_lag_window_files_a_second_issue_and_the_next_read_refuses_both, a_count_taken_from_one_search_page_is_a_floor_and_never_a_total, crates/fiddle-runtime/src/jira/file_verdict.rs, crates/fiddle-runtime/src/cve/verdict.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-runtime/tests/jira_effects.rs, scripts/live-jira-write.sh, scripts/live-jira-search-shape.sh, scripts/gate.sh, docs/technical/RUNBOOKS.md
+
+## Context
+
+Jira offers no client-supplied idempotency key on issue creation. A search and a
+create are two requests, so they are not one atomic step. JQL indexing lags a
+create by an amount the site does not publish.
+
+ADR 032 fixes the rule that answers the general case. An unknown answer is
+resolved by reading the world, never by repeating the write. A create whose
+answer was lost needs something in the world to read.
+
+## Decision
+
+**`FileVerdict` writes a marker label on the issue it creates, and reads the
+marker back.**
+
+`ticket_marker` derives the marker from `effect_id` over the project, the
+invocation reference, `JIRA_ISSUE_FILED` and the project key with the advisory.
+`TICKET_MARKER_PREFIX` spells it. The marker is therefore a function of the
+identity and not of the run.
+
+- `inspect` searches `project = KEY AND labels = MARKER`. Zero matches answer
+  `None`. One match answers `Some`. **Two or more matches answer
+  `JiraError::Ambiguous`, never a second create.** `Ambiguous` surfaces as
+  `EffectError::DuplicateState`, so a person reads a duplicate as a duplicate.
+- `apply` writes the marker in the create body, not in a second edit. A create
+  that answers and a create whose answer is lost are then the same state in the
+  world, and the next `inspect` tells them apart.
+  `the_marker_is_written_in_the_create_and_never_in_a_second_edit` pins it.
+- The search walks `nextPageToken` to the end. A count taken from one page is a
+  floor and never a total, so a match on page two is still a match.
+  `PAGE_WALK_BOUND` bounds the walk and refuses rather than answering from a
+  part.
+
+## What the marker does not promise
+
+Jira offers no client-supplied idempotency key. The marker makes an interrupted
+run safe, because the next `inspect` finds what the last `apply` wrote. It does
+not make two concurrent invocations safe: both can search, both can see nothing,
+and both can create. This milestone claims exactly-once across an interruption
+and does not claim it across concurrent invocations.
+
+The interruption claim carries a bound of its own. It holds across an
+interruption **longer than the indexing lag** and fails inside it.
+`a_fresh_process_inside_the_lag_window_files_a_second_issue_and_the_next_read_refuses_both`
+states the bound in its own assertion and shows the outcome: two issues, and a
+later read that refuses both rather than adding a third.
+
+## What one live run measured
+
+`scripts/live-jira-write.sh` ran twice against `snplow.atlassian.net` project
+`ISP` on 2026-08-28, with an operator's read and write token. It was the first
+time any part of M5b reached a real Jira write path. Bean `fiddle-jh1z` carries
+the captured output.
+
+**1. The search answers no `key`. Measured.** `GET /rest/api/3/search/jql`
+returns each issue carrying `id` and no `key`. Adding `fields=key` returns the
+keys. The lane read `ISP-273` and `ISP-272` only after it asked for the field.
+
+**2. `FileVerdict` cannot recognise a ticket it filed. Argued from that
+measurement.** `FileVerdict` builds its search path with no `fields` parameter,
+and `filed` reads `issue["key"]` on every result. The path is unconditional, so
+the first result answers `JiraError::Malformed`. No live run has driven
+`FileVerdict` itself, so this is an argument from a measured premise and one
+line of code, and not a measurement.
+
+**3. Two runs filed two tickets. Measured.** Run one created `ISP-272`. Run two
+searched for the marker run one had just written, matched nothing, and created
+`ISP-273`. This is the lag window, observed for the first time. The lane sends
+the search-then-create shape that `FileVerdict` sends; it is not `FileVerdict`.
+
+**4. The indexing lag is unmeasured.** The lane reported `0 seconds` and, in the
+same run, reported one issue carrying the marker where two existed. A later
+search returned two. The two numbers cannot both be true, so the lane's lag
+computation is unsound and must not be quoted. The bound on the interruption
+claim is therefore a duration no number in this repository describes.
+
+**5. The create omits a required field. Measured, with an argued
+consequence.** `scripts/live-jira-search-shape.sh` read `createmeta` for `ISP`
+and issue type `Task`. The required fields are `issuetype`, `project` and
+`summary`. `FileVerdict::body` sends `project`, `summary`, `labels` and
+`description`. So a create this build sends would be refused. `fiddle-zlc4`
+carries the missing `[jira]` configuration the fix needs.
+
+**The grade of the milestone's central claim.** `jira.issue_filed` files exactly
+one ticket across an interruption: **measured against the loopback stub,
+refuted for a real site.** Two of the three refutations are independent of each
+other. The mechanism above is not withdrawn, because nothing measured says the
+marker is the wrong mechanism. What is withdrawn is the claim that this build
+performs it.
+
+Every hermetic lane in this milestone passed on the tree that carries these
+defects. That is the correct result and not a fault in the lanes. ADR 077
+already states what the suite proves: that this adapter reads what the stub
+serves. A green suite was never evidence about Atlassian, and this milestone is
+where that sentence acquired a price.
+
+## Why every hermetic test passed
+
+`crates/fiddle-runtime/tests/support/stub_jira.rs` returns `id` and `key` on
+every search result. This milestone wrote the stub, and the stub was the only
+definition in this repository of Jira's search shape. The code reads `key`, the
+stub serves `key`, and the two agree. A check that compares two things one
+milestone wrote proves that they agree and nothing else.
+
+The same shape produced three further defects inside M5b, and each was found by
+the milestone rather than by a user.
+
+- `RULE_KEYS` was a hand-written list of six against a registry of ten. A policy
+  rule for any Jira effect was covered by no case. It now derives from the
+  registry in order (`fiddle-njxx`).
+- `JiraError::cases()` was a hand-written list. A variant added to all six
+  exhaustive matches and omitted from the list passed silently at 67 tests. The
+  `VariantCount` derive now measures the list against the enum
+  (`fiddle-wglg`). The sweep that followed found 22 sibling
+  enum-exhaustiveness tests, 18 with the same hole and two already false
+  (`fiddle-0lcc`).
+- `JiraError::Malformed` classified `Unknown` on `Apply`. A refusal that sent no
+  request was reported as `EffectError::Unresolved`, which says the write was
+  not observed and its answer was lost. `JiraError::NotSent` now classifies
+  `NotCommitted` in both phases. Two lanes reached this conclusion from
+  different call sites (`fiddle-wglg`).
+
+The lesson is one lesson. A guard that compares this build against itself
+measures agreement, not correctness. The live lane is the only check in this
+milestone that compared the build against something it did not write, and it is
+the only check that failed.
+
+## How the live lane is run, and how it cleans up
+
+Two operator rulings, taken on 2026-08-28 after the run left residue.
+
+**Cleanup is a close, never a delete.** The lane transitions its ticket to
+`Won't Do`, or at worst to `Done`. `Won't Do` says what is true, because the
+ticket was never real work. Deletion is not a fallback and is not attempted:
+`ISP` refuses a delete by project policy, not by a missing permission, and the
+site answered `HTTP 403` to both. `ISP-272` and `ISP-273` were closed by hand,
+each through the single transition `id=51`, and each verified by a second read.
+
+The closing transition is resolved and never assumed. ADR 077 measured that
+`Won't Do` and `Done` share the category `done`, and that `Blocked` and
+`In Progress` share `indeterminate`. So a category match cannot find the closing
+transition, and a name must be configured. The lane must also refuse before it
+writes when it cannot close, because discovering it after the create is what
+left two issues behind.
+
+`scripts/live-jira-write.sh` still deletes. Its failure text still advises a
+reader to delete by hand, which the operator cannot do in `ISP`. `fiddle-jh1z`
+carries the correction.
+
+**The lane is a human gate.** A person runs it and reads the result. It never
+runs in `scripts/gate.sh`, and no gate step calls it. This matches
+`scripts/live-jira-observe.sh`, which records evidence and does not gate. The
+lane refusing on an absent variable is therefore correct behaviour and not an
+obstacle.
+
+## Consequences
+
+**Residue poisons the next run.** Two issues carrying one marker are the
+`Ambiguous` case. A run that leaves residue makes the next run refuse. The
+marker search must exclude closed issues, or every unrun cleanup costs the next
+run.
+
+**The host workflow keeps its Jira step.** `docs/technical/host-workflow-m4b.patch`
+records why the step is not retired.
+
+**Follow-up.** `fiddle-jh1z` is critical and carries the four defects above.
+`fiddle-0lcc` is high. `fiddle-zlc4`, `fiddle-4bul`, `fiddle-y4zt` and
+`fiddle-nry2` carry the rest.
