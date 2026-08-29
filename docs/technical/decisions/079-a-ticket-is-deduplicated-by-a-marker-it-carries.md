@@ -83,6 +83,12 @@ search returned two. The two numbers cannot both be true, so the lane's lag
 computation is unsound and must not be quoted. The bound on the interruption
 claim is therefore a duration no number in this repository describes.
 
+> Amended 2026-08-29 by `fiddle-2690`. That last sentence held until the filing
+> lane ran. It bracketed one run's lag at more than 634 ms and at most 1940 ms;
+> see "FileVerdict has now reached a real site" below. One run of one project on
+> one day brackets one lag and characterises none, so the interruption bound is
+> still not a number that predicts the next run.
+
 **5. The create omits a required field. Measured, with an argued
 consequence.** `scripts/live-jira-search-shape.sh` read `createmeta` for `ISP`
 and issue type `Task`. The required fields are `issuetype`, `project` and
@@ -171,6 +177,15 @@ run.
 
 **The host workflow keeps its Jira step.** `docs/technical/host-workflow-m4b.patch`
 records why the step is not retired.
+
+> Amended 2026-08-29 by `fiddle-2690`. That sentence was written while
+> `ticket_proposals` reached no run path. The patch now records the verdict
+> mapping step as removed, and the Jira step as keeping only the work that does
+> not read `non-patchable.json`, which is the pull request linking. The
+> retirement rests on `FileVerdict` measured against Atlassian, on a run path
+> measured against the loopback stub, and on an argued equivalence between the
+> jq program and `ticket_proposals`. No run of a `fiddle` binary has written to
+> a real site.
 
 **Follow-up.** `fiddle-jh1z` is critical and carries the four defects above.
 `fiddle-0lcc` is high. `fiddle-zlc4`, `fiddle-4bul`, `fiddle-y4zt` and
