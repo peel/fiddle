@@ -1,7 +1,7 @@
 mod support;
 
 use fiddle_core::{
-    DeploymentRule, EffectName, ProposedEffect, FIXTURE_REPAIR, JIRA_COMMENT_ADDED,
+    DeploymentRule, EffectName, Observation, ProposedEffect, FIXTURE_REPAIR, JIRA_COMMENT_ADDED,
     JIRA_PULL_REQUEST_LINKED,
 };
 use fiddle_runtime::effect::{
@@ -10,8 +10,11 @@ use fiddle_runtime::effect::{
 };
 use fiddle_runtime::jira::comment::{AddComment, MarkedComment};
 use fiddle_runtime::jira::link::LinkPullRequest;
+use fiddle_runtime::jira::{ConfiguredNames, JiraWorkItemPort};
+use fiddle_runtime::ports::WorkItemPort;
 use support::stub_jira::{client_for, StubJira};
 use support::{unreachable_context, Deployment, INVOCATION_REF, PROJECT};
+use tokio_util::sync::CancellationToken;
 
 const ISSUE: &str = "IDENT-1";
 
@@ -166,6 +169,58 @@ async fn a_pull_request_link_names_the_run_that_made_it() {
     assert!(
         comment.contains(&a_link(AT_SEVEN).marker()),
         "and it carries the marker the next run looks for: {comment}"
+    );
+}
+
+#[tokio::test]
+async fn the_revision_a_run_observes_is_the_revision_the_link_builds_its_identity_from() {
+    let server = StubJira::start().await;
+    server
+        .holds_issue_in_status(ISSUE, "10001", "In Review", "In Progress")
+        .await;
+    let raw = server.get_issue(ISSUE).await.body["fields"]["updated"]
+        .as_str()
+        .expect("the stub answers a `fields.updated`")
+        .to_string();
+
+    let observed = JiraWorkItemPort::new(
+        client_for(&server),
+        ConfiguredNames::new(None, None, None, None, None),
+        server.site(),
+    )
+    .observe(ISSUE, &CancellationToken::new())
+    .await;
+    let Observation::Available { revision, .. } = observed else {
+        panic!("the stub holds the issue the port was asked for");
+    };
+    let revision = revision.expect("the port reads the `fields.updated` it was answered");
+    assert_ne!(
+        revision, raw,
+        "the port canonicalises, so the two runs below are given two spellings and not one \
+         string compared with itself"
+    );
+
+    link_pull_request(&server, &raw).await.expect("it links");
+    link_pull_request(&server, &revision)
+        .await
+        .expect("a run given the observed revision links again");
+
+    assert_eq!(
+        server.comment_requests_on(ISSUE).await,
+        1,
+        "the revision a work item observation carries is the input this effect derives its \
+         identity from, so the second run found its own marker and sent no write"
+    );
+
+    link_pull_request(&server, AT_EIGHT)
+        .await
+        .expect("a revision naming another state links again");
+
+    assert_eq!(
+        server.comment_requests_on(ISSUE).await,
+        2,
+        "a revision the run did not observe builds a second identity and writes a second time, \
+         so the count above is not one for every input this test could have given"
     );
 }
 
