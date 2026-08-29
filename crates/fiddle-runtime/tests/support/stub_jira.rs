@@ -129,6 +129,65 @@ impl StoredIssue {
             "fields": fields,
         })
     }
+
+    fn matched(&self, base_url: &str, asked: &Asked) -> Value {
+        let mut answer = json!({"id": self.id});
+        if asked.carries_the_key() {
+            merged(
+                &mut answer,
+                &json!({
+                    "key": self.key,
+                    "self": format!("{base_url}{ISSUE_ROUTE}{}", self.key),
+                }),
+            );
+        }
+        if let Some(named) = asked.named_fields(&self.fields) {
+            merged(&mut answer, &json!({"fields": named}));
+        }
+        answer
+    }
+}
+
+pub struct Asked(Vec<String>);
+
+impl Asked {
+    fn of(target: &str) -> Self {
+        Asked(match query_value(target, "fields") {
+            None => Vec::new(),
+            Some(listed) => listed
+                .split(',')
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .collect(),
+        })
+    }
+
+    fn names(&self, wanted: &str) -> bool {
+        self.0.iter().any(|name| name == wanted)
+    }
+
+    fn everything(&self) -> bool {
+        self.names("*all") || self.names("*navigable")
+    }
+
+    fn carries_the_key(&self) -> bool {
+        self.everything() || self.names("key")
+    }
+
+    fn named_fields(&self, held: &Value) -> Option<Value> {
+        if self.everything() {
+            return Some(held.clone());
+        }
+        let wanted: Vec<&String> = self.0.iter().filter(|name| name.as_str() != "key").collect();
+        if wanted.is_empty() {
+            return None;
+        }
+        let mut answered = serde_json::Map::new();
+        for name in wanted {
+            answered.insert(name.clone(), held[name.as_str()].clone());
+        }
+        Some(Value::Object(answered))
+    }
 }
 
 pub fn account(account_id: &str, display_name: &str) -> Value {
@@ -1178,12 +1237,13 @@ fn searched(target: &str, state: &mut StubState) -> Served {
                 Some(issued) => issued.offset,
             },
         };
+    let asked = Asked::of(target);
     let matched: Vec<Value> = state
         .issues
         .iter()
         .filter(|issue| issue.found_by_search)
         .filter(|issue| clauses.iter().all(|clause| selects(clause, issue)))
-        .map(|issue| issue.body(&state.base_url))
+        .map(|issue| issue.matched(&state.base_url, &asked))
         .collect();
     let beyond = (offset + size).min(matched.len());
     let page: Vec<Value> = matched[offset.min(matched.len())..beyond].to_vec();
