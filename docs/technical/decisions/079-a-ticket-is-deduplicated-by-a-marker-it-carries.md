@@ -5,7 +5,7 @@ Status: accepted; amended in M5b by the note "What one live run measured", by
 rests on". The marker stands as identity. It is no longer what a run reads to
 decide whether to file.
 
-Cites: FileVerdict, a_start_at_offset_is_refused_because_this_endpoint_pages_by_token, FiledIssue, ticket_proposals, TicketProposal, Filing, TICKET_MARKER_PREFIX, TICKET_LABEL_PREFIX, effect_id, JIRA_ISSUE_FILED, JiraError::Ambiguous, JiraError::Malformed, JiraError::NotSent, EffectError::DuplicateState, EffectError::Unresolved, EffectOutcome::Unknown, PAGE_WALK_BOUND, RULE_KEYS, VariantCount, two_marker_matches_refuse_the_write_and_create_nothing, a_marker_matching_across_more_than_one_search_page_is_still_ambiguous, the_marker_is_written_in_the_create_and_never_in_a_second_edit, an_issue_that_already_carries_the_marker_is_answered_by_a_read_and_no_write, an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_one_issue, a_fresh_process_inside_the_lag_window_reads_the_claim_and_files_no_second_issue, a_claim_with_no_key_inside_the_lag_window_is_unresolved_and_never_a_second_create, the_search_then_create_protocol_files_a_second_issue_where_the_claim_ledger_files_one, a_search_answers_an_id_and_no_key_unless_the_caller_asks_for_the_key_field, an_issue_property_is_readable_the_moment_it_is_written_and_the_search_never_sees_it, a_jql_naming_an_issue_property_answers_no_issue_rather_than_every_issue, a_create_that_names_no_issue_type_is_refused_and_stores_nothing, the_search_asks_for_the_key_field_because_the_site_answers_an_id_alone, the_create_names_the_issue_type_the_project_requires, the_claim_is_written_before_the_create_and_carries_the_key_after_it, a_create_the_site_refuses_releases_the_claim_so_the_next_run_is_not_wedged, a_ledger_issue_the_site_does_not_hold_is_named_and_no_create_is_sent, JiraError::Claimed, Filing, a_count_taken_from_one_search_page_is_a_floor_and_never_a_total, crates/fiddle-runtime/src/jira/file_verdict.rs, crates/fiddle-runtime/src/cve/verdict.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-runtime/tests/jira_effects.rs, a_ticket_file_verdict_filed_is_found_by_a_later_inspect_against_the_real_site, crates/fiddle-runtime/tests/live_jira_filing.rs, scripts/live-jira-write.sh, scripts/live-jira-file-verdict.sh, scripts/live-jira-search-shape.sh, scripts/gate.sh, docs/technical/RUNBOOKS.md
+Cites: FileVerdict, a_start_at_offset_is_refused_because_this_endpoint_pages_by_token, FiledIssue, ticket_proposals, TicketProposal, Filing, TICKET_MARKER_PREFIX, TICKET_LABEL_PREFIX, effect_id, JIRA_ISSUE_FILED, JiraError::Ambiguous, JiraError::Malformed, JiraError::NotSent, EffectError::DuplicateState, EffectError::Unresolved, EffectOutcome::Unknown, PAGE_WALK_BOUND, RULE_KEYS, VariantCount, two_marker_matches_refuse_the_write_and_create_nothing, a_marker_matching_across_more_than_one_search_page_is_still_ambiguous, the_marker_is_written_in_the_create_and_never_in_a_second_edit, an_issue_that_already_carries_the_marker_is_answered_by_a_read_and_no_write, an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_one_issue, a_fresh_process_inside_the_lag_window_reads_the_claim_and_files_no_second_issue, a_claim_with_no_key_inside_the_lag_window_is_unresolved_and_never_a_second_create, the_search_then_create_protocol_files_a_second_issue_where_the_claim_ledger_files_one, a_search_answers_an_id_and_no_key_unless_the_caller_asks_for_the_key_field, an_issue_property_is_readable_the_moment_it_is_written_and_the_search_never_sees_it, a_jql_naming_an_issue_property_answers_no_issue_rather_than_every_issue, a_create_that_names_no_issue_type_is_refused_and_stores_nothing, the_search_asks_for_the_key_field_because_the_site_answers_an_id_alone, the_create_names_the_issue_type_the_project_requires, the_claim_is_written_before_the_create_and_carries_the_key_after_it, a_create_the_site_refuses_releases_the_claim_so_the_next_run_is_not_wedged, a_ledger_issue_the_site_does_not_hold_is_named_and_no_create_is_sent, JiraError::Claimed, Filing, a_count_taken_from_one_search_page_is_a_floor_and_never_a_total, crates/fiddle-runtime/src/jira/file_verdict.rs, crates/fiddle-runtime/src/cve/verdict.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-runtime/tests/jira_effects.rs, a_ticket_file_verdict_filed_is_found_by_a_later_inspect_against_the_real_site, crates/fiddle-runtime/tests/live_jira_filing.rs, scripts/live-jira-write.sh, scripts/live-jira-file-verdict.sh, scripts/live-jira-search-shape.sh, scripts/gate.sh, docs/technical/RUNBOOKS.md, search_path, JiraFiling, filing_client, CveMitigate::file_tickets, crates/fiddle-runtime/tests/cve_filing.rs
 
 ## Context
 
@@ -85,10 +85,27 @@ the first result answers `JiraError::Malformed`. No live run has driven
 `FileVerdict` itself, so this is an argument from a measured premise and one
 line of code, and not a measurement.
 
+> Amended 2026-08-29 by `fiddle-hc7t`. Repaired, and the repair is measured.
+> `search_path` in `crates/fiddle-runtime/src/jira/file_verdict.rs` writes
+> `&fields=key` on every page, so the `fields` parameter is no longer absent and
+> `filed` is no longer reading a field the site withheld. On 2026-08-29, with the
+> claim removed from the ledger, `FileVerdict::inspect` fell through to the
+> search, asked for the field and read `ISP-276` off `snplow.atlassian.net`; see
+> "FileVerdict has now reached a real site" below. The argument above describes
+> the build of 2026-08-28 and is not withdrawn as a description of it.
+
 **3. Two runs filed two tickets. Measured.** Run one created `ISP-272`. Run two
 searched for the marker run one had just written, matched nothing, and created
 `ISP-273`. This is the lag window, observed for the first time. The lane sends
 the search-then-create shape that `FileVerdict` sends; it is not `FileVerdict`.
+
+> Amended 2026-08-29 by `fiddle-hc7t`. Superseded, and not contradicted. Both
+> tickets were filed by the search-then-create protocol, and the claim ledger
+> replaced that protocol. On 2026-08-29 two executions over one invocation
+> reference made one create, and the second answered `ISP-276` from `inspect`;
+> see "FileVerdict has now reached a real site" below. Those two executions were
+> one process, so a genuinely fresh process is still argued from the derivation
+> of `effect_id` and measured hermetically alone.
 
 **4. The indexing lag is unmeasured.** The lane reported `0 seconds` and, in the
 same run, reported one issue carrying the marker where two existed. A later
@@ -109,18 +126,48 @@ and issue type `Task`. The required fields are `issuetype`, `project` and
 `description`. So a create this build sends would be refused. `fiddle-zlc4`
 carries the missing `[jira]` configuration the fix needs.
 
-**The grade of the milestone's central claim.** `jira.issue_filed` files exactly
-one ticket across an interruption: **measured against the loopback stub,
-refuted for a real site.** Two of the three refutations are independent of each
-other. The mechanism above is not withdrawn, because nothing measured says the
-marker is the wrong mechanism. What is withdrawn is the claim that this build
-performs it.
+> Amended 2026-08-29 by `fiddle-hc7t`. Repaired, and the repair is measured.
+> `FileVerdict::body` names `fields.issuetype` at
+> `crates/fiddle-runtime/src/jira/file_verdict.rs:138`, and on 2026-08-29 a
+> create carrying it answered 201 from `snplow.atlassian.net` for project `ISP`;
+> see "FileVerdict has now reached a real site" below. `fiddle-zlc4` landed the
+> `[jira]` configuration. `createmeta` was read for `ISP` and issue type `Task`
+> alone, so what a second project or a second issue type requires is unmeasured.
 
-Every hermetic lane in this milestone passed on the tree that carries these
+**The grade of the milestone's central claim, as it stands on 2026-08-29.**
+`jira.issue_filed` files exactly one ticket across an interruption. The three
+refutations above are repaired, and each repair is **MEASURED against
+`snplow.atlassian.net` for `FileVerdict`, the executor and Atlassian together**:
+one create over two executions of one invocation reference, `fields=key` asked
+and `ISP-276` read back off the site, and a create carrying `fields.issuetype`
+answered 201. `crates/fiddle-runtime/tests/live_jira_filing.rs` is that run and
+"FileVerdict has now reached a real site" is its record. The grade of
+2026-08-28 stands as the grade of the build of 2026-08-28.
+
+The reinstatement reaches that scope and no wider one.
+
+- **ARGUED, not measured:** that two executions in one process stand for two
+  processes. `effect_id` digests four strings the process holds none of, so the
+  marker cannot depend on process state. That is a derivation, and the only run
+  of it is hermetic.
+- **STUB-MEASURED only:** the deployment route. `JiraFiling`, `filing_client`
+  and `CveMitigate::file_tickets` are measured against the loopback stub in
+  `crates/fiddle-runtime/tests/cve_filing.rs` and against nothing else, because
+  the live lane builds a `TicketFiling` itself and reads no `fiddle.toml`
+  (ADR 080).
+- **Unmeasured:** a `fiddle` binary writing to a real site. No run of one has.
+  The only run path to `FileVerdict` through the binary is a full CVE sweep,
+  which needs a scanner, an agent and a GitHub repository.
+- **Unchanged:** the scope. Exactly-once holds across an interruption and not
+  across concurrent invocations, and "What the marker does not promise" states
+  it.
+
+Every hermetic lane in this milestone passed on the tree that carried these
 defects. That is the correct result and not a fault in the lanes. ADR 077
 already states what the suite proves: that this adapter reads what the stub
 serves. A green suite was never evidence about Atlassian, and this milestone is
-where that sentence acquired a price.
+where that sentence acquired a price. The repairs above are graded from the live
+run and not from the suite that went green with them.
 
 ## Why every hermetic test passed
 
@@ -139,9 +186,11 @@ the milestone rather than by a user.
 - `JiraError::cases()` was a hand-written list. A variant added to all six
   exhaustive matches and omitted from the list passed silently at 67 tests. The
   `VariantCount` derive now measures the list against the enum
-  (`fiddle-wglg`). The sweep that followed found 22 sibling
-  enum-exhaustiveness tests, 18 with the same hole and two already false
-  (`fiddle-0lcc`).
+  (`fiddle-wglg`). The sweep that followed found the same shape across the
+  workspace, found two lists already false while green, and held each remaining
+  list to its enum (`fiddle-0lcc`). That bean carries the count and its
+  denominator. The 22 first written here counted tests, and one list backs
+  several tests, so it is not the denominator the sweep reported.
 - `JiraError::Malformed` classified `Unknown` on `Apply`. A refusal that sent no
   request was reported as `EffectError::Unresolved`, which says the write was
   not observed and its answer was lost. `JiraError::NotSent` now classifies
@@ -302,6 +351,12 @@ instead of a stale index.
 Not fixed: the indexing lag is still unmeasured. `scripts/live-jira-write.sh` now
 refuses to print a lag unless the search it read agrees with the number of creates
 it made, so a future run measures it or says it did not.
+
+> Amended 2026-08-29 by `fiddle-hc7t`. That future run happened. One run is
+> bracketed at more than 634 ms and at most 1940 ms, and no number bounds the
+> lag across runs; see item 4 above and "FileVerdict has now reached a real
+> site" below. One run of one project on one day brackets one lag and
+> characterises none.
 
 Not verified at the time of writing: none of this had been driven against a real
 site. That changed on 2026-08-29; see "FileVerdict has now reached a real site"
