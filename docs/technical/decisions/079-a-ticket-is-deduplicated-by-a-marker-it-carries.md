@@ -48,11 +48,24 @@ not make two concurrent invocations safe: both can search, both can see nothing,
 and both can create. This milestone claims exactly-once across an interruption
 and does not claim it across concurrent invocations.
 
-The interruption claim carries a bound of its own. It holds across an
-interruption **longer than the indexing lag** and fails inside it.
-`a_fresh_process_inside_the_lag_window_files_a_second_issue_and_the_next_read_refuses_both`
-states the bound in its own assertion and shows the outcome: two issues, and a
-later read that refuses both rather than adding a third.
+The interruption claim once carried a second bound. It held across an interruption
+**longer than the indexing lag** and failed inside it. The claim ledger closed that
+window. A run arriving inside the lag window reads the claim on the ledger issue,
+which is a direct read the index never touches, and sends no second create.
+`a_fresh_process_inside_the_lag_window_reads_the_claim_and_files_no_second_issue`
+states the bound this build ships and shows the outcome: one create and one filed
+issue, where the search-then-create design filed two. That is measured against the
+loopback stub. Against Atlassian on 2026-08-29 two executions over one invocation
+reference filed one issue; that two executions in one process stand for two
+processes is argued and not measured.
+
+One window stays inside the interruption case, and it is a refusal rather than a
+duplicate. A process that dies between the claim and the create leaves a claim
+naming no issue. The next run files nothing and names the ledger issue and the
+claim for a person.
+`a_claim_with_no_key_inside_the_lag_window_is_unresolved_and_never_a_second_create`
+holds it. "The claim ledger, which is what exactly-once now rests on" states the
+mechanism and its scope.
 
 ## What one live run measured
 

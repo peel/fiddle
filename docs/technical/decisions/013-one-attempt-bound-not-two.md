@@ -3,6 +3,7 @@
 Date: 2026-08-09
 Status: accepted; amended in M4b by the note below, which records that the deferral is over and names the decision that ended it
 Cites: agent.max_capability_attempts, MitigateConfig::max_attempts, CveMitigate::bound_reached, crates/fiddle-acceptance/tests/config_check.rs::config_check_reports_the_attempt_bound_it_enforces_and_where_the_count_lives, fiddle_runtime::attempt, RunOutcome::Retryable, AgentBudget
+Retired: config_check_marks_the_attempt_bound_it_accepts_and_does_not_enforce
 
 `crates/fiddle-cli/src/render.rs` no longer holds this file's stem. It holds 037's; see the amendment.
 
