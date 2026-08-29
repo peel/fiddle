@@ -111,6 +111,7 @@ says nothing about whether a criterion id matches the bean.
 | --- | --- | --- |
 | `scripts/validate-scorecard.sh` | one raw per-provider card, plus `--criteria-ids` | any field above missing or mistyped, criteria ids not matching the bean in both directions, one id twice, empty evidence, a `spec_defect` with no reason, zero scored dimensions with no `mode` declaration |
 | `scripts/merge-scorecards.sh` | a JSON array of validated cards | — |
+| `scripts/check-thresholds.sh` | `--scorecard` the merged card, `--criteria` its graded `criteria` array, `--tree-sha` the tree graded | a dimension with no numeric `score` or `threshold`, a criterion with no string `id` or boolean `pass`, one id twice, zero dimensions and zero criteria, zero scored dimensions with no `mode` declaration |
 
 `merge-scorecards.sh` emits `spec_defect` on every merged card, as one of three states, so a
 dropped field cannot read as a clean evaluation:
@@ -125,7 +126,6 @@ A `detected` source outranks a silent one, and `missing_from` still names the si
 cross-domain merge in `skills/develop-loop/scorecard-merge.md` applies the same three states across
 domains, naming a source by its domain. Before M5b the merge dropped `spec_defect` entirely, so
 a flagged bean and a clean one produced the same `null`.
-| `scripts/check-thresholds.sh` | `--scorecard` the merged card, `--criteria` its graded `criteria` array, `--tree-sha` the tree graded | a dimension with no numeric `score` or `threshold`, a criterion with no string `id` or boolean `pass`, one id twice, zero dimensions and zero criteria, zero scored dimensions with no `mode` declaration |
 
 `check-thresholds.sh` also stamps whatever `--tree-sha` it is given onto the verdict it emits, as
 `tree_sha`. Nothing in the envelope carries it: the tree is a property of the checkout that was
