@@ -1952,11 +1952,12 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
 
     #[test]
     fn the_rules_a_document_may_write_are_the_three_that_exist() {
-        for (written, expected) in [
+        let written: [(&str, DeploymentRule); DeploymentRule::VARIANT_COUNT] = [
             ("allow", DeploymentRule::Allow),
             ("require_human", DeploymentRule::RequireHuman),
             ("deny", DeploymentRule::Deny),
-        ] {
+        ];
+        for (written, expected) in written {
             let policy = github(&format!(
                 "{FORGE}\n[github.policy]\nensure_pull_request = \"{written}\"\n"
             ))

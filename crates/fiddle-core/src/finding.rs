@@ -28,7 +28,16 @@ impl<'de> serde::Deserialize<'de> for AdvisoryId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    serde::Deserialize,
+    serde::Serialize,
+    fiddle_macros::VariantCount,
+)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Severity {
     Critical,
@@ -107,7 +116,16 @@ impl TryFrom<Vec<Severity>> for Severities {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    serde::Deserialize,
+    serde::Serialize,
+    fiddle_macros::VariantCount,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageType {
     Library,
@@ -250,13 +268,14 @@ mod tests {
 
     #[test]
     fn every_severity_has_the_wire_spelling_the_scanner_writes() {
-        for (wire, expected) in [
+        let spellings: [(&str, Severity); Severity::VARIANT_COUNT] = [
             ("CRITICAL", Severity::Critical),
             ("HIGH", Severity::High),
             ("MEDIUM", Severity::Medium),
             ("LOW", Severity::Low),
             ("INFORMATIONAL", Severity::Informational),
-        ] {
+        ];
+        for (wire, expected) in spellings {
             let parsed: Severity = serde_json::from_str(&format!("\"{wire}\""))
                 .unwrap_or_else(|e| panic!("{wire} must deserialize, got {e}"));
             assert_eq!(parsed, expected);
@@ -275,7 +294,9 @@ mod tests {
 
     #[test]
     fn every_package_type_has_the_wire_spelling_the_scanner_writes() {
-        for (wire, expected) in [("library", PackageType::Library), ("os", PackageType::Os)] {
+        let spellings: [(&str, PackageType); PackageType::VARIANT_COUNT] =
+            [("library", PackageType::Library), ("os", PackageType::Os)];
+        for (wire, expected) in spellings {
             let parsed: PackageType = serde_json::from_str(&format!("\"{wire}\""))
                 .unwrap_or_else(|e| panic!("{wire} must deserialize, got {e}"));
             assert_eq!(parsed, expected);
