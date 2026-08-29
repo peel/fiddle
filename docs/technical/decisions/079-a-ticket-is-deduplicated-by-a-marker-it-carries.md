@@ -352,6 +352,10 @@ NOT MEASURED, and the run says nothing about these:
   GitHub repository and which opens a pull request.
 - Concurrent duplicate invocations, and a page boundary shifting under a walk.
   One process cannot arrange either.
+- A genuinely fresh process. The two runs are two executions in one process,
+  each rebuilding the proposal from the configuration. `effect_id` digests four
+  strings the process holds none of, so the marker cannot depend on process
+  state, but that is argued from the derivation and measured only hermetically.
 
 Cleanup, to the operator's ruling of 2026-08-28: `ISP-275` and `ISP-276` were
 closed as `Won't Do` through transition 51, each verified by a second read, and
