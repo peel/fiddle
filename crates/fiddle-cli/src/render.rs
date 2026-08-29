@@ -131,6 +131,11 @@ pub fn config_check_json(config: &Config) -> String {
                 "blocked": jira.workflow.blocked,
                 "done": jira.workflow.done,
             },
+            "filing": jira.filing.as_ref().map(|filing| serde_json::json!({
+                "project": filing.project,
+                "issue_type": filing.issue_type,
+                "ledger_issue": filing.ledger_issue,
+            })),
         });
     }
     if let Some(scanner) = &config.scanner {
@@ -340,7 +345,10 @@ pub fn config_check_human(config: &Config) -> String {
              \n  jira.workflow.in_progress = {}\
              \n  jira.workflow.in_review = {}\
              \n  jira.workflow.blocked = {}\
-             \n  jira.workflow.done = {}",
+             \n  jira.workflow.done = {}\
+             \n  jira.filing.project = {}\
+             \n  jira.filing.issue_type = {}\
+             \n  jira.filing.ledger_issue = {}",
             jira.site,
             jira.project,
             jira.user.env,
@@ -352,6 +360,13 @@ pub fn config_check_human(config: &Config) -> String {
             optional(jira.workflow.in_review.clone()),
             optional(jira.workflow.blocked.clone()),
             optional(jira.workflow.done.clone()),
+            optional(jira.filing.as_ref().map(|filing| filing.project.clone())),
+            optional(jira.filing.as_ref().map(|filing| filing.issue_type.clone())),
+            optional(
+                jira.filing
+                    .as_ref()
+                    .map(|filing| filing.ledger_issue.clone())
+            ),
         ));
     }
     if let Some(scanner) = &config.scanner {

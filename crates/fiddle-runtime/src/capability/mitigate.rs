@@ -10,7 +10,8 @@ use crate::cve::attempts;
 use crate::cve::dedup::commit_log_dedup;
 use crate::cve::project::{project, Projection};
 use crate::cve::verdict::{
-    disposition, Attempted, BoundReached, Budget, Disposition, InProgress, Run,
+    disposition, ticket_proposals, Attempted, BoundReached, Budget, Disposition, FiledTickets,
+    InProgress, Run, TicketFiled, TicketFiling, TicketProposal, Verdict,
 };
 use crate::effect::{EffectContext, Executor, IntegrationOperation};
 use crate::evaluate::{
@@ -25,7 +26,7 @@ use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError};
 use fiddle_core::{
     correlation_key, AdvisoryId, AttemptId, CapabilityId, ChangeSetState, EffectName, EvidenceRef,
     Observation, ProjectedFinding, ProposedEffect, RunDisposition, Severities, TreeObservation,
-    ENSURE_PULL_REQUEST_BODY,
+    ENSURE_PULL_REQUEST_BODY, JIRA_ISSUE_FILED,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -80,6 +81,8 @@ pub struct MitigateConfig {
     pub today: String,
 
     pub settle: Duration,
+
+    pub filing: Option<TicketFiling>,
 
     pub cancel: CancellationToken,
 }
@@ -460,6 +463,50 @@ where
         Ok(())
     }
 
+    async fn file_tickets(&self, verdicts: &[Verdict]) -> FiledTickets {
+        let Some(filing) = &self.config.filing else {
+            return FiledTickets::NotConfigured;
+        };
+        let over = filing.over(&self.config.project, self.executor.invocation_ref());
+        let mut tickets = Vec::new();
+        for proposal in ticket_proposals(verdicts, &over) {
+            tickets.push(self.file(&proposal).await);
+        }
+        FiledTickets::Attempted { tickets }
+    }
+
+    async fn file(&self, proposal: &TicketProposal) -> TicketFiled {
+        let operation = proposal.operation();
+        let proposed = ProposedEffect {
+            capability: self.id(),
+            kind: EffectName::shipped(JIRA_ISSUE_FILED),
+            target: operation.target(),
+            payload: operation.payload(),
+        };
+        match self.executor.execute(proposed, operation).await {
+            Ok(receipt) => {
+                self.observed
+                    .lock()
+                    .unwrap()
+                    .receipts
+                    .push(EvidenceRef(format!(
+                        "{CVE_ORIGIN}:{JIRA_ISSUE_FILED}:{}",
+                        receipt.value.key
+                    )));
+                TicketFiled::Filed {
+                    cve: proposal.cve.clone(),
+                    marker: proposal.marker().to_string(),
+                    issue: receipt.value.key,
+                }
+            }
+            Err(why) => TicketFiled::Refused {
+                cve: proposal.cve.clone(),
+                marker: proposal.marker().to_string(),
+                why: why.to_string(),
+            },
+        }
+    }
+
     async fn feedback(&self, approved: &Approved) -> Feedback {
         let Some(candidate) = approved.pr_head() else {
             return Feedback::NoCandidate;
@@ -788,6 +835,8 @@ where
         let concluded = disposition(&run);
         self.observed.lock().unwrap().disposition = Some(concluded.published());
         self.publish_reports(&concluded)?;
+        let filed = self.file_tickets(concluded.verdicts()).await;
+        self.publish_filings(&filed)?;
         if let Some(why) = scanned {
             return Err(CapabilityError::Scan(why));
         }
@@ -835,6 +884,14 @@ impl<M, S> CveMitigate<'_, M, S> {
             .write_findings(&self.config.report_dir)
             .map_err(|source| self.refuse(crate::cve::verdict::FINDINGS_FILE, source))?;
         self.receipt(crate::cve::verdict::FINDINGS_FILE);
+        Ok(())
+    }
+
+    fn publish_filings(&self, filed: &FiledTickets) -> Result<(), CapabilityError> {
+        filed
+            .write(&self.config.report_dir)
+            .map_err(|source| self.refuse(crate::cve::verdict::FILINGS_FILE, source))?;
+        self.receipt(crate::cve::verdict::FILINGS_FILE);
         Ok(())
     }
 

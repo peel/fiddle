@@ -5,8 +5,9 @@ use fiddle_runtime::agent::{FindingDisposition, RepairReport};
 use fiddle_runtime::capability::{GroupStatus, MigrationAttempt, NeedsWork};
 use fiddle_runtime::cve::project::{project, Projection};
 use fiddle_runtime::cve::verdict::{
-    disposition, report_of, ticket_proposals, Attempted, BoundReached, Budget, Filing, InProgress,
-    Judgement, Landed, Row, Run, TicketProposal, Verdict, FINDINGS_FILE, REPORT_FILE,
+    disposition, report_of, ticket_proposals, Attempted, BoundReached, Budget, FiledTickets,
+    Filing, InProgress, Judgement, Landed, Row, Run, TicketFiled, TicketFiling, TicketProposal,
+    Verdict, FILINGS_FILE, FINDINGS_FILE, REPORT_FILE,
 };
 use fiddle_runtime::effect::IntegrationOperation;
 use fiddle_runtime::evaluate::{evaluate, Evaluation, RescanVerdict};
@@ -1834,5 +1835,141 @@ async fn the_same_advisory_filed_twice_in_one_invocation_is_one_marker() {
         again.iter().map(TicketProposal::marker).collect::<Vec<_>>(),
         "the marker is the search key, so a second pass over one invocation \
          has to look for the ticket the first pass filed"
+    );
+}
+
+fn a_ticket_filing() -> TicketFiling {
+    TicketFiling {
+        project_key: TRACKER_PROJECT.to_string(),
+        issue_type: TRACKER_ISSUE_TYPE.to_string(),
+        ledger_issue: TRACKER_LEDGER_ISSUE.to_string(),
+    }
+}
+
+fn every_filed_state() -> [TicketFiled; TicketFiled::VARIANT_COUNT] {
+    [
+        TicketFiled::Filed {
+            cve: advisory(BLOCKED_CVE),
+            marker: "fiddle-cve-c2574ccbe0a624fd".to_string(),
+            issue: "IDENT-7".to_string(),
+        },
+        TicketFiled::Refused {
+            cve: advisory(BLOCKED_CVE),
+            marker: "fiddle-cve-c2574ccbe0a624fd".to_string(),
+            why: "the credential may not read this issue: 403".to_string(),
+        },
+    ]
+}
+
+#[tokio::test]
+async fn a_configured_filing_names_the_same_identity_as_the_filing_it_stands_for() {
+    let verdicts = disposition(&a_run_reaching(&Row::UnsafeWithoutDirection).await);
+    let configured = a_ticket_filing();
+    let over = configured.over(FILING_PROJECT, FILING_INVOCATION);
+    assert_eq!(
+        ticket_proposals(verdicts.verdicts(), &over),
+        ticket_proposals(verdicts.verdicts(), &filing()),
+        "a deployment names the project key, the issue type and the ledger issue, and the \
+         run supplies the project and the invocation reference. A configuration that \
+         reordered the two would derive a different marker and file a second ticket"
+    );
+    assert!(
+        !ticket_proposals(verdicts.verdicts(), &over).is_empty(),
+        "and this comparison is over proposals that exist, not two empty lists"
+    );
+}
+
+#[test]
+fn a_filing_that_was_refused_is_a_state_of_its_own_and_never_an_absent_ticket() {
+    let states = every_filed_state();
+    assert_eq!(
+        states
+            .iter()
+            .map(discriminant)
+            .collect::<HashSet<_>>()
+            .len(),
+        TicketFiled::VARIANT_COUNT,
+        "each state named once, and the matches below are what a further state would fail \
+         to compile against"
+    );
+    for state in &states {
+        match state {
+            TicketFiled::Filed { issue, .. } => {
+                assert_eq!(state.issue(), Some(issue.as_str()));
+                assert_eq!(
+                    state.refusal(),
+                    None,
+                    "a filed ticket carries no reason it was not filed"
+                );
+            }
+            TicketFiled::Refused { why, .. } => {
+                assert_eq!(state.refusal(), Some(why.as_str()));
+                assert_eq!(
+                    state.issue(),
+                    None,
+                    "a refused filing names no issue, because none exists to name"
+                );
+            }
+        }
+        assert_eq!(state.cve().as_str(), BLOCKED_CVE);
+    }
+}
+
+#[test]
+fn a_refusal_is_written_beside_the_advisory_it_refused_and_not_as_a_write_error() {
+    let written = serde_json::to_value(FiledTickets::Attempted {
+        tickets: every_filed_state().to_vec(),
+    })
+    .expect("a filing report serializes");
+    assert_eq!(
+        written["tickets"][0],
+        serde_json::json!({
+            "state": "filed",
+            "cve": BLOCKED_CVE,
+            "marker": "fiddle-cve-c2574ccbe0a624fd",
+            "issue": "IDENT-7",
+        })
+    );
+    assert_eq!(
+        written["tickets"][1],
+        serde_json::json!({
+            "state": "refused",
+            "cve": BLOCKED_CVE,
+            "marker": "fiddle-cve-c2574ccbe0a624fd",
+            "why": "the credential may not read this issue: 403",
+        }),
+        "the refusal carries the site's own words. It names no path and no io::Error, so it \
+         cannot be read as a failure to write {FILINGS_FILE}"
+    );
+}
+
+#[test]
+fn a_deployment_that_configured_no_filing_does_not_read_as_one_that_filed_nothing() {
+    let unconfigured =
+        serde_json::to_value(FiledTickets::NotConfigured).expect("a filing report serializes");
+    let empty = serde_json::to_value(FiledTickets::Attempted {
+        tickets: Vec::new(),
+    })
+    .expect("a filing report serializes");
+    assert_eq!(
+        unconfigured,
+        serde_json::json!({"filing": "not_configured"})
+    );
+    assert_eq!(
+        empty,
+        serde_json::json!({"filing": "attempted", "tickets": []})
+    );
+    assert_ne!(
+        unconfigured, empty,
+        "a deployment that files nowhere and a run that had nothing to file are different \
+         facts, and a reader counting tickets in both would call them the same"
+    );
+    assert_eq!(FiledTickets::NotConfigured.attempted(), None);
+    assert_eq!(
+        FiledTickets::Attempted {
+            tickets: Vec::new()
+        }
+        .attempted(),
+        Some(&[][..])
     );
 }

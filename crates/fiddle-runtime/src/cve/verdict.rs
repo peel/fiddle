@@ -14,6 +14,8 @@ pub const TICKET_MARKER_PREFIX: &str = "fiddle-cve-";
 
 pub const FINDINGS_FILE: &str = "findings.json";
 
+pub const FILINGS_FILE: &str = "filings.json";
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompleteFindings {
@@ -650,6 +652,98 @@ pub fn ticket_proposals(verdicts: &[Verdict], filing: &Filing<'_>) -> Vec<Ticket
     }
 
     filed
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketFiling {
+    pub project_key: String,
+
+    pub issue_type: String,
+
+    pub ledger_issue: String,
+}
+
+impl TicketFiling {
+    pub fn over<'a>(&'a self, project: &'a str, invocation_ref: &'a str) -> Filing<'a> {
+        Filing {
+            project_key: &self.project_key,
+            issue_type: &self.issue_type,
+            ledger_issue: &self.ledger_issue,
+            project,
+            invocation_ref,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, crate::effect::VariantCount)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum TicketFiled {
+    Filed {
+        cve: AdvisoryId,
+        marker: String,
+        issue: String,
+    },
+
+    Refused {
+        cve: AdvisoryId,
+        marker: String,
+        why: String,
+    },
+}
+
+impl TicketFiled {
+    pub fn cve(&self) -> &AdvisoryId {
+        match self {
+            TicketFiled::Filed { cve, .. } | TicketFiled::Refused { cve, .. } => cve,
+        }
+    }
+
+    pub fn marker(&self) -> &str {
+        match self {
+            TicketFiled::Filed { marker, .. } | TicketFiled::Refused { marker, .. } => marker,
+        }
+    }
+
+    pub fn issue(&self) -> Option<&str> {
+        match self {
+            TicketFiled::Filed { issue, .. } => Some(issue),
+            TicketFiled::Refused { .. } => None,
+        }
+    }
+
+    pub fn refusal(&self) -> Option<&str> {
+        match self {
+            TicketFiled::Filed { .. } => None,
+            TicketFiled::Refused { why, .. } => Some(why),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, crate::effect::VariantCount)]
+#[serde(rename_all = "snake_case", tag = "filing")]
+pub enum FiledTickets {
+    NotConfigured,
+
+    Attempted { tickets: Vec<TicketFiled> },
+}
+
+impl FiledTickets {
+    pub fn attempted(&self) -> Option<&[TicketFiled]> {
+        match self {
+            FiledTickets::NotConfigured => None,
+            FiledTickets::Attempted { tickets } => Some(tickets),
+        }
+    }
+
+    pub fn write(&self, dir: &Path) -> Result<PathBuf, std::io::Error> {
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join(FILINGS_FILE);
+        let mut document =
+            serde_json::to_vec_pretty(self).expect("a filing holds no value serde can refuse");
+        document.push(b'\n');
+        std::fs::write(&path, document)?;
+        Ok(path)
+    }
 }
 
 fn ticket_marker(filing: &Filing<'_>, cve: &AdvisoryId) -> String {
