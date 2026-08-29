@@ -254,6 +254,43 @@ Which of those the host declares is the host's decision. This lane cannot make
 that decision correctly, so it does not write the document.
 
 `[github] base` replaces `CVE_BASE_BRANCH`. The deleted step read the default
+M5B DOES NOT RETIRE THE VERDICT MAPPING STEP OR THE JIRA STEP
+
+Recorded 2026-08-29 by bean fiddle-2690, the M5b record.
+
+M5b planned to remove both steps, because fiddle would file the ticket itself.
+It does not file the ticket. Both steps stay, and the four reasons are below.
+Each reason carries its evidence class.
+
+1. No fiddle binary performs a Jira write. MEASURED at `6c42fb1`.
+   `ticket_proposals` in `crates/fiddle-runtime/src/cve/verdict.rs` builds a
+   `TicketProposal` for each verdict row that carries a legacy label, and no run
+   path calls it. `human::publish` is the other route a Jira write could take,
+   and it has no caller outside tests. Bean `fiddle-zlc4` holds this.
+
+2. The create would be refused. MEASURED on `snplow.atlassian.net`.
+   `createmeta` for project `ISP` and issue type `Task` reports required fields
+   `issuetype`, `project` and `summary`. `FileVerdict::body` sends no
+   `issuetype`.
+
+3. The effect cannot recognise a ticket it filed. ARGUED from a measurement.
+   `GET /rest/api/3/search/jql` answers each issue with `id` and no `key` unless
+   the caller asks for `fields=key`. `FileVerdict` asks for no fields and reads
+   `key` on every result. ADR 079 records the measurement and the argument.
+
+4. Two runs against a real site filed two tickets. MEASURED on 2026-08-28.
+   `ISP-272` and `ISP-273` carry one marker. The indexing lag that caused it is
+   unmeasured, so the interruption bound is a duration no number in this
+   repository describes.
+
+`verdicts.json` keeps being written either way. `write_report` is its only
+writer, the Slack step is M9's and still reads it, and the report bundle is
+retained evidence in its own right.
+
+The mapping step above is therefore still the contract between fiddle and Jira.
+Nothing in this record changes the five fields, the `legacy_label` read, the
+`unique_by(.cve)` rule or the `cve-<verdict>` label.
+
 diff --git a/.github/workflows/cve-remediation.yml b/.github/workflows/cve-remediation.yml
 index f8d9b8b..4b92f5d 100644
 --- a/.github/workflows/cve-remediation.yml
