@@ -22,6 +22,10 @@ const PACKAGE: &str = "acme-parser";
 const RATIONALE: &str = "the advisory reaches this build";
 const LABEL: &str = "security";
 
+const ISSUE_TYPE: &str = "Task";
+
+const ANCHOR: &str = "IDENT-900";
+
 #[tokio::test]
 async fn the_stub_records_a_created_issue_and_answers_a_search_for_its_marker() {
     let server = StubJira::start().await;
@@ -30,6 +34,7 @@ async fn the_stub_records_a_created_issue_and_answers_a_search_for_its_marker() 
         .post_issue(json!({
             "fields": {
                 "project": {"key": "IDENT"},
+                "issuetype": {"name": "Task"},
                 "summary": "CVE-2025-1",
                 "labels": [MARKER],
             }
@@ -72,7 +77,9 @@ async fn a_search_selects_the_one_issue_that_carries_the_marker_and_not_its_neig
     server.post_issue(create_labelled(&[MARKER])).await;
     server.post_issue(create_labelled(&[OTHER_MARKER])).await;
 
-    let issues = server.all_search_matches(&by_marker(MARKER)).await;
+    let issues = server
+        .all_search_matches_asking(&by_marker(MARKER), "key,labels")
+        .await;
 
     assert_eq!(
         issues.len(),
@@ -1116,6 +1123,7 @@ fn create_labelled(labels: &[&str]) -> serde_json::Value {
     json!({
         "fields": {
             "project": {"key": SEEDED_PROJECT},
+            "issuetype": {"name": "Task"},
             "summary": "CVE-2025-1",
             "labels": labels,
         }
@@ -1130,6 +1138,8 @@ fn verdict() -> FileVerdict {
         RATIONALE.to_string(),
         LABEL.to_string(),
         SEEDED_PROJECT.to_string(),
+        ISSUE_TYPE.to_string(),
+        ANCHOR.to_string(),
         MARKER.to_string(),
     )
 }
@@ -1228,6 +1238,7 @@ async fn a_step_names_no_verdict_so_the_registered_constructor_refuses_rather_th
 #[tokio::test]
 async fn two_marker_matches_refuse_the_write_and_create_nothing() {
     let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
     server.holds_two_issues_labelled(MARKER).await;
 
     let error = file_verdict(&server)
@@ -1250,14 +1261,20 @@ async fn two_marker_matches_refuse_the_write_and_create_nothing() {
     );
     assert_eq!(
         server.issues_that_exist().await,
-        2,
-        "and files no third issue beside the two it refused to choose between"
+        3,
+        "the two it refused to choose between and the anchor, and no fourth"
+    );
+    assert_eq!(
+        server.property_writes().await,
+        0,
+        "an ambiguous marker claims nothing, so no ledger entry outlives the refusal"
     );
 }
 
 #[tokio::test]
 async fn a_marker_matching_across_more_than_one_search_page_is_still_ambiguous() {
     let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
     server.caps_search_pages_at(1).await;
     for key in ["901", "902", "903"] {
         server
@@ -1281,6 +1298,7 @@ async fn a_marker_matching_across_more_than_one_search_page_is_still_ambiguous()
 #[tokio::test]
 async fn the_marker_is_written_in_the_create_and_never_in_a_second_edit() {
     let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
 
     let receipt = file_verdict(&server).await.expect("it files");
 
@@ -1299,7 +1317,7 @@ async fn the_marker_is_written_in_the_create_and_never_in_a_second_edit() {
         "and no second write carries it"
     );
     assert_eq!(server.create_requests().await, 1);
-    assert_eq!(server.issues_that_exist().await, 1);
+    assert_eq!(server.issues_that_exist().await, 2);
     assert_eq!(receipt.outcome, EffectOutcome::Committed);
     assert_eq!(
         receipt.external_ref.as_deref(),
@@ -1316,6 +1334,7 @@ async fn the_marker_is_written_in_the_create_and_never_in_a_second_edit() {
 #[tokio::test]
 async fn an_issue_that_already_carries_the_marker_is_answered_by_a_read_and_no_write() {
     let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
     server
         .holds_issue_labelled(&format!("{SEEDED_PROJECT}-901"), &[MARKER])
         .await;
@@ -1336,8 +1355,11 @@ async fn an_issue_that_already_carries_the_marker_is_answered_by_a_read_and_no_w
 #[tokio::test]
 async fn an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_one_issue() {
     let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
     server.withholds_new_issues_from_search().await;
-    server.loses_the_answer_to_a_committed_write().await;
+    server
+        .loses_the_answer_to_a_committed(WriteRoute::CreateIssue)
+        .await;
 
     let interrupted = file_verdict(&server)
         .await
@@ -1350,8 +1372,8 @@ async fn an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_o
     );
     assert_eq!(
         server.issues_that_exist().await,
-        1,
-        "the write committed all the same"
+        2,
+        "the write committed all the same, beside the anchor the ledger is kept on"
     );
 
     server.answers_every_committed_write().await;
@@ -1374,18 +1396,20 @@ async fn an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_o
     );
     assert_eq!(
         server.issues_that_exist().await,
-        1,
-        "exactly one issue exists; this counts the issues the store holds and never the create \
-         requests, which a refused create would inflate"
+        2,
+        "one filed issue and the anchor; this counts the issues the store holds and never the \
+         create requests, which a refused create would inflate"
     );
 }
 
 #[tokio::test]
-async fn a_fresh_process_inside_the_lag_window_files_a_second_issue_and_the_next_read_refuses_both()
-{
+async fn a_fresh_process_inside_the_lag_window_reads_the_claim_and_files_no_second_issue() {
     let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
     server.withholds_new_issues_from_search().await;
-    server.loses_the_answer_to_a_committed_write().await;
+    server
+        .loses_the_answer_to_a_committed(WriteRoute::CreateIssue)
+        .await;
 
     let interrupted = file_verdict(&server)
         .await
@@ -1401,32 +1425,417 @@ async fn a_fresh_process_inside_the_lag_window_files_a_second_issue_and_the_next
         .await
         .expect_err("the index still hides the first issue from its own marker");
 
-    assert!(
-        matches!(inside, EffectError::Unresolved { .. }),
-        "{inside:?}"
+    assert_eq!(
+        server.create_requests().await,
+        1,
+        "the claim on {ANCHOR} is read directly and the index never touches it, so a run \
+         arriving inside the lag window reads the claim the interrupted run wrote and sends \
+         no second create. Before the ledger this line read 2: {inside:?}"
     );
     assert_eq!(
         server.issues_that_exist().await,
         2,
-        "a retry arriving inside the indexing lag searches by the marker, sees nothing for an \
-         issue that exists and files a second ticket; the exactly-once claim holds across an \
-         interruption longer than that lag and not inside it"
+        "one filed issue and the anchor, and no third"
     );
 
     server.admits_the_withheld_issues_to_search().await;
 
-    let refused = file_verdict(&server)
+    let settled = file_verdict(&server)
         .await
-        .expect_err("two markers are not one");
+        .expect("once the index admits it, the claim resolves to the issue it named");
 
+    assert_eq!(settled.outcome, EffectOutcome::Committed);
+    assert_eq!(settled.value.key, format!("{SEEDED_PROJECT}-1"));
+    assert_eq!(server.create_requests().await, 1);
+}
+
+#[tokio::test]
+async fn a_claim_with_no_key_inside_the_lag_window_is_unresolved_and_never_a_second_create() {
+    let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
+    server.withholds_new_issues_from_search().await;
+    server
+        .loses_the_answer_to_a_committed(WriteRoute::CreateIssue)
+        .await;
+
+    file_verdict(&server)
+        .await
+        .expect_err("a lost answer is not a receipt");
+    server.answers_every_committed_write().await;
+
+    let inside = file_verdict(&server)
+        .await
+        .expect_err("a claim naming no issue is not a receipt");
+
+    let said = format!("{inside}");
     assert!(
-        matches!(refused, EffectError::DuplicateState { count: 2, .. }),
-        "once the index catches up the pair is named for a person rather than added to: \
-         {refused:?}"
+        said.contains(ANCHOR) && said.contains(MARKER),
+        "the refusal names the ledger issue and the claim a person must look at: {said}"
     );
+    assert!(
+        said.contains("may have committed"),
+        "and says the create may have committed, which is what an unknown outcome means: {said}"
+    );
+}
+
+#[tokio::test]
+async fn the_search_then_create_protocol_files_a_second_issue_where_the_claim_ledger_files_one() {
+    let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
+    server.withholds_new_issues_from_search().await;
+
+    for _ in 0..2 {
+        if server
+            .all_search_matches(&by_marker(MARKER))
+            .await
+            .is_empty()
+        {
+            server.post_issue(create_labelled(&[MARKER])).await;
+        }
+    }
+
     assert_eq!(
         server.create_requests().await,
         2,
-        "and the run that found the pair sent no third create"
+        "search-then-create is the design ADR 079 shipped, and inside the lag window it files \
+         twice: the second run searches for the marker the first run wrote and the index \
+         answers nothing"
+    );
+
+    let by_the_claim = StubJira::start().await;
+    by_the_claim.holds_anchor_issue(ANCHOR).await;
+    by_the_claim.withholds_new_issues_from_search().await;
+
+    for _ in 0..2 {
+        if by_the_claim.get_issue_property(ANCHOR, MARKER).await.status == 404 {
+            by_the_claim
+                .put_issue_property(ANCHOR, MARKER, json!({"marker": MARKER}))
+                .await;
+            by_the_claim.post_issue(create_labelled(&[MARKER])).await;
+        }
+    }
+
+    assert_eq!(
+        by_the_claim.create_requests().await,
+        1,
+        "a claim read directly off the anchor issue is immediately consistent, so the second \
+         run reads what the first wrote and files nothing. This is the whole difference \
+         between the two designs, and a stub that answered a property read out of the search \
+         index would report 2 here and tell them apart no better than the old one did"
+    );
+}
+
+#[tokio::test]
+async fn a_search_answers_an_id_and_no_key_unless_the_caller_asks_for_the_key_field() {
+    let server = StubJira::start().await;
+    server.post_issue(create_labelled(&[MARKER])).await;
+
+    let unasked = server.all_search_matches(&by_marker(MARKER)).await;
+    let asked = server
+        .all_search_matches_asking(&by_marker(MARKER), "key")
+        .await;
+
+    assert_eq!(unasked.len(), 1);
+    assert!(
+        unasked[0]["id"].is_string(),
+        "the site names every match by id: {}",
+        unasked[0]
+    );
+    assert!(
+        unasked[0]["key"].is_null(),
+        "MEASURED 2026-08-28 against snplow.atlassian.net: GET /rest/api/3/search/jql answers \
+         each issue carrying id alone. A stub that volunteers the key here agrees with a \
+         caller that reads it and proves nothing about the site: {}",
+        unasked[0]
+    );
+    assert_eq!(
+        asked[0]["id"], unasked[0]["id"],
+        "the two answers describe the same match"
+    );
+    assert_eq!(
+        asked[0]["key"],
+        format!("{SEEDED_PROJECT}-1"),
+        "and asked with fields=key it names the issue a person opens: {}",
+        asked[0]
+    );
+}
+
+#[tokio::test]
+async fn a_field_a_caller_never_asked_for_is_absent_from_a_search_answer() {
+    let server = StubJira::start().await;
+    server.post_issue(create_labelled(&[MARKER])).await;
+
+    let asked = server
+        .all_search_matches_asking(&by_marker(MARKER), "key")
+        .await;
+
+    assert!(
+        asked[0]["fields"]["labels"].is_null(),
+        "the caller asked for the key alone, so a stub that answered every field would hide \
+         a caller that reads a field it never requested: {}",
+        asked[0]
+    );
+
+    let both = server
+        .all_search_matches_asking(&by_marker(MARKER), "key,labels")
+        .await;
+    assert_eq!(
+        both[0]["fields"]["labels"][0], MARKER,
+        "and a field the caller does ask for comes back, so the check above is not the check \
+         that every field is absent: {}",
+        both[0]
+    );
+}
+
+#[tokio::test]
+async fn an_issue_property_is_readable_the_moment_it_is_written_and_the_search_never_sees_it() {
+    let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
+    server.withholds_new_issues_from_search().await;
+
+    let written = server
+        .put_issue_property(
+            ANCHOR,
+            MARKER,
+            json!({"marker": MARKER, "filed": "IDENT-7"}),
+        )
+        .await;
+    let read = server.get_issue_property(ANCHOR, MARKER).await;
+
+    assert_eq!(written.status, 201);
+    assert_eq!(
+        read.status, 200,
+        "no delay stands between the two: {read:?}"
+    );
+    assert_eq!(
+        read.body,
+        json!({"key": MARKER, "value": {"marker": MARKER, "filed": "IDENT-7"}}),
+        "MEASURED 2026-08-28: PUT then GET with no wait answered the value that was written"
+    );
+    assert_eq!(
+        found(&server, &by_marker(MARKER)).await,
+        0,
+        "and the index the search reads is lagging throughout, so a property read that were \
+         served out of that index would answer nothing here and the stub could not tell a \
+         property design from a search design"
+    );
+}
+
+#[tokio::test]
+async fn a_jql_naming_an_issue_property_answers_no_issue_rather_than_every_issue() {
+    let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
+    server.post_issue(create_labelled(&[MARKER])).await;
+    server
+        .put_issue_property(ANCHOR, MARKER, json!({"marker": MARKER}))
+        .await;
+
+    let by_property = server
+        .search_answer(&format!("issue.property[{MARKER}].marker = {MARKER}"))
+        .await;
+
+    assert_eq!(
+        by_property.status, 200,
+        "the site parses the clause and does not refuse it: {}",
+        by_property.body
+    );
+    assert_eq!(
+        by_property.body["issues"].as_array().map(Vec::len),
+        Some(0),
+        "MEASURED 2026-08-28: a JQL clause over an issue property answered 0 issues while a \
+         direct read of that property answered its value. A clause the stub ignored would \
+         answer 2 here, which is every issue it holds: {}",
+        by_property.body
+    );
+    assert_eq!(
+        found(&server, &by_marker(MARKER)).await,
+        1,
+        "and a clause the stub does select on still selects, so the line above is not a search \
+         that matches nothing whatever it is asked"
+    );
+}
+
+#[tokio::test]
+async fn a_create_that_names_no_issue_type_is_refused_and_stores_nothing() {
+    let server = StubJira::start().await;
+
+    let refused = server
+        .post_issue(json!({
+            "fields": {"project": {"key": SEEDED_PROJECT}, "summary": "no type"}
+        }))
+        .await;
+
+    assert_eq!(
+        refused.status, 400,
+        "MEASURED 2026-08-28 by scripts/live-jira-search-shape.sh: createmeta for ISP and \
+         issue type Task names issuetype, project and summary as required: {}",
+        refused.body
+    );
+    assert_eq!(server.issues_that_exist().await, 0);
+    assert_eq!(
+        server
+            .post_issue(json!({
+                "fields": {
+                    "project": {"key": SEEDED_PROJECT},
+                    "issuetype": {"name": "Task"},
+                    "summary": "a type",
+                }
+            }))
+            .await
+            .status,
+        201,
+        "and the same create naming a type is accepted, so the refusal above is the missing \
+         field and not a stub that refuses every create"
+    );
+}
+
+#[tokio::test]
+async fn a_property_named_in_the_create_is_readable_on_the_issue_the_create_answered() {
+    let server = StubJira::start().await;
+
+    let created = server
+        .post_issue(json!({
+            "fields": {
+                "project": {"key": SEEDED_PROJECT},
+                "issuetype": {"name": "Task"},
+                "summary": "carrying a property",
+            },
+            "properties": [{"key": MARKER, "value": {"marker": MARKER}}],
+        }))
+        .await;
+    let key = created.body["key"]
+        .as_str()
+        .expect("a create answers a key");
+
+    assert_eq!(created.status, 201);
+    assert_eq!(
+        server.get_issue_property(key, MARKER).await.body["value"],
+        json!({"marker": MARKER}),
+        "POST /rest/api/3/issue accepts a properties array, so the marker is atomic with the \
+         create rather than a second write that an interruption can orphan"
+    );
+    assert_eq!(
+        server.get_issue_property(key, OTHER_MARKER).await.status,
+        404,
+        "and a property the create never named is absent, so the read above is not a stub \
+         that answers every property it is asked for"
+    );
+}
+
+#[tokio::test]
+async fn the_search_asks_for_the_key_field_because_the_site_answers_an_id_alone() {
+    let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
+    server
+        .holds_issue_labelled(&format!("{SEEDED_PROJECT}-901"), &[MARKER])
+        .await;
+
+    file_verdict(&server).await.expect("it reads the world");
+
+    let searched: Vec<String> = server
+        .request_lines()
+        .await
+        .into_iter()
+        .filter(|line| line.contains("/rest/api/3/search/jql"))
+        .collect();
+
+    assert!(!searched.is_empty(), "the run searched");
+    for line in &searched {
+        assert!(
+            line.contains("fields=key"),
+            "MEASURED 2026-08-28: a search that names no fields answers an id and no key, and \
+             this build reads the key off every match. A search sent without the parameter \
+             answers Malformed on the first result: {line}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_create_names_the_issue_type_the_project_requires() {
+    let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
+
+    file_verdict(&server).await.expect("it files");
+
+    let created = server.last_create().await;
+    assert_eq!(
+        created["fields"]["issuetype"]["name"], ISSUE_TYPE,
+        "MEASURED 2026-08-28: createmeta for ISP and Task names issuetype required, and a \
+         create that omits it is refused: {created}"
+    );
+}
+
+#[tokio::test]
+async fn the_claim_is_written_before_the_create_and_carries_the_key_after_it() {
+    let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
+
+    let receipt = file_verdict(&server).await.expect("it files");
+
+    let routes: Vec<WriteRoute> = server
+        .writes()
+        .await
+        .into_iter()
+        .map(|write| write.route)
+        .collect();
+    assert_eq!(
+        routes,
+        vec![
+            WriteRoute::SetIssueProperty,
+            WriteRoute::CreateIssue,
+            WriteRoute::SetIssueProperty,
+        ],
+        "the claim is written first, or a process that dies between the create and the claim \
+         leaves an issue no later run can recognise"
+    );
+    assert_eq!(
+        server.get_issue_property(ANCHOR, MARKER).await.body["value"],
+        json!({"marker": MARKER, "filed": receipt.value.key}),
+        "and the settled claim names the issue, so the next run answers from one direct read \
+         and never from the index"
+    );
+}
+
+#[tokio::test]
+async fn a_create_the_site_refuses_releases_the_claim_so_the_next_run_is_not_wedged() {
+    let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
+    server.refuses_the_create_with(403).await;
+
+    let refused = file_verdict(&server)
+        .await
+        .expect_err("a refused create is not a receipt");
+
+    assert!(
+        matches!(refused, EffectError::Adapter { .. }),
+        "a create the site refused is a definite non-commit: {refused:?}"
+    );
+    assert_eq!(
+        server.get_issue_property(ANCHOR, MARKER).await.status,
+        404,
+        "the create was refused, so nothing was filed and the claim is released; a claim left \
+         standing over a create that never happened wedges every later run on an unknown that \
+         can never resolve"
+    );
+    assert_eq!(server.issues_that_exist().await, 1, "the anchor alone");
+}
+
+#[tokio::test]
+async fn a_ledger_issue_the_site_does_not_hold_is_named_and_no_create_is_sent() {
+    let server = StubJira::start().await;
+
+    let refused = file_verdict(&server)
+        .await
+        .expect_err("a ledger that does not exist cannot hold a claim");
+
+    let said = format!("{refused}");
+    assert!(
+        said.contains(ANCHOR),
+        "the refusal names the issue the deployment configured: {said}"
+    );
+    assert_eq!(
+        server.create_requests().await,
+        0,
+        "and it refuses before it writes, so a misconfigured ledger costs no ticket"
     );
 }

@@ -93,6 +93,7 @@ pub enum WriteRoute {
     EditIssue,
     AddComment,
     TransitionIssue,
+    SetIssueProperty,
 }
 
 #[derive(Clone, Debug)]
@@ -113,6 +114,7 @@ struct StoredIssue {
     id: String,
     key: String,
     fields: Value,
+    properties: serde_json::Map<String, Value>,
     found_by_search: bool,
 }
 
@@ -178,7 +180,11 @@ impl Asked {
         if self.everything() {
             return Some(held.clone());
         }
-        let wanted: Vec<&String> = self.0.iter().filter(|name| name.as_str() != "key").collect();
+        let wanted: Vec<&String> = self
+            .0
+            .iter()
+            .filter(|name| name.as_str() != "key")
+            .collect();
         if wanted.is_empty() {
             return None;
         }
@@ -234,7 +240,7 @@ fn with_comment(fields: &mut Value, id: &str, body: &Value, author: &Value, at: 
 
 enum WriteAnswer {
     Sent,
-    LostAfterTheWriteCommits,
+    LostAfterTheWriteCommits(Option<WriteRoute>),
 }
 
 enum SearchIndex {
@@ -264,6 +270,7 @@ struct StubState {
     issues: Vec<StoredIssue>,
     writes: Vec<RecordedWrite>,
     write_answer: WriteAnswer,
+    create_answer: Option<u16>,
     search_index: SearchIndex,
     offered: Vec<OfferedTransition>,
     page_cap: usize,
@@ -279,6 +286,13 @@ impl StubState {
 
     fn holds(&self, key: &str) -> bool {
         self.issues.iter().any(|issue| issue.key == key)
+    }
+
+    fn property(&self, key: &str, named: &str) -> Option<&Value> {
+        self.issues
+            .iter()
+            .find(|issue| issue.key == key)
+            .and_then(|issue| issue.properties.get(named))
     }
 
     fn stamp(&mut self) -> String {
@@ -307,6 +321,7 @@ impl StubState {
             id,
             key: key.to_string(),
             fields,
+            properties: serde_json::Map::new(),
             found_by_search: true,
         });
     }
@@ -355,6 +370,7 @@ impl StubJira {
             issues: Vec::new(),
             writes: Vec::new(),
             write_answer: WriteAnswer::Sent,
+            create_answer: None,
             search_index: SearchIndex::Current,
             offered: Vec::new(),
             page_cap: PAGE_CAP,
@@ -493,7 +509,15 @@ impl StubJira {
     }
 
     pub async fn loses_the_answer_to_a_committed_write(&self) {
-        self.state.lock().await.write_answer = WriteAnswer::LostAfterTheWriteCommits;
+        self.state.lock().await.write_answer = WriteAnswer::LostAfterTheWriteCommits(None);
+    }
+
+    pub async fn loses_the_answer_to_a_committed(&self, route: WriteRoute) {
+        self.state.lock().await.write_answer = WriteAnswer::LostAfterTheWriteCommits(Some(route));
+    }
+
+    pub async fn refuses_the_create_with(&self, status: u16) {
+        self.state.lock().await.create_answer = Some(status);
     }
 
     pub async fn answers_every_committed_write(&self) {
@@ -706,6 +730,34 @@ impl StubJira {
             .expect("the stub answers the transitions listing")
     }
 
+    pub async fn put_issue_property(&self, key: &str, named: &str, value: Value) -> Answered {
+        self.attempt(
+            "PUT",
+            &format!("{ISSUE_ROUTE}{key}/properties/{named}"),
+            Some(value),
+        )
+        .await
+        .expect("the stub answers the property write")
+    }
+
+    pub async fn get_issue_property(&self, key: &str, named: &str) -> Answered {
+        self.attempt(
+            "GET",
+            &format!("{ISSUE_ROUTE}{key}/properties/{named}"),
+            None,
+        )
+        .await
+        .expect("the stub answers the property read")
+    }
+
+    pub async fn property_writes(&self) -> usize {
+        self.state.lock().await.wrote(WriteRoute::SetIssueProperty)
+    }
+
+    pub async fn holds_anchor_issue(&self, key: &str) {
+        self.holds_issue_labelled(key, &[]).await
+    }
+
     pub async fn get_issue(&self, key: &str) -> Answered {
         self.attempt("GET", &format!("{ISSUE_ROUTE}{key}"), None)
             .await
@@ -745,13 +797,27 @@ impl StubJira {
     }
 
     pub async fn all_search_matches(&self, jql: &str) -> Vec<Value> {
+        self.walked(jql, None).await
+    }
+
+    pub async fn all_search_matches_asking(&self, jql: &str, fields: &str) -> Vec<Value> {
+        self.walked(jql, Some(fields)).await
+    }
+
+    async fn walked(&self, jql: &str, fields: Option<&str>) -> Vec<Value> {
         let mut matched = Vec::new();
         let mut token: Option<String> = None;
         for _ in 0..PAGE_WALK_BOUND {
-            let page = match &token {
-                None => self.search_page(jql).await,
-                Some(held) => self.search_page_after(jql, held).await,
-            };
+            let mut params: Vec<(&str, &str)> = vec![("jql", jql)];
+            if let Some(fields) = fields {
+                params.push(("fields", fields));
+            }
+            let held;
+            if let Some(next) = &token {
+                held = next.clone();
+                params.push(("nextPageToken", &held));
+            }
+            let page = served_page(jql, self.search_answer_with(&params).await);
             matched.extend(page["issues"].as_array().cloned().unwrap_or_default());
             match page["nextPageToken"].as_str() {
                 Some(next) => token = Some(next.to_string()),
@@ -957,7 +1023,10 @@ fn routed(request_line: &str, sent: &Value, state: &mut StubState) -> Reply {
         return Reply::Answered(Served::json(400, UNPARSED));
     }
     let path = target.split('?').next().unwrap_or(target);
-    if !matches!(method, "GET" | "PUT" | "POST") {
+    if !matches!(method, "GET" | "PUT" | "POST" | "DELETE") {
+        return Reply::Answered(Served::json(405, NOT_ALLOWED));
+    }
+    if method == "DELETE" && issue_property(path).is_none() {
         return Reply::Answered(Served::json(405, NOT_ALLOWED));
     }
     if path == MYSELF {
@@ -977,27 +1046,76 @@ fn routed(request_line: &str, sent: &Value, state: &mut StubState) -> Reply {
         return Reply::Answered(searched(target, state));
     }
     if method == "POST" && path == CREATE_ROUTE {
-        return committed(created(sent, state), state);
+        return committed(WriteRoute::CreateIssue, created(sent, state), state);
     }
     if method == "PUT" {
         if let Some(key) = issue_key(path) {
             if state.holds(key) {
-                return committed(edited(key, sent, state), state);
+                return committed(WriteRoute::EditIssue, edited(key, sent, state), state);
             }
             state.record(WriteRoute::EditIssue, key, sent, false);
         }
     }
+    if let Some((key, named)) = issue_property(path) {
+        if !state.holds(key) {
+            if method == "PUT" {
+                state.record(WriteRoute::SetIssueProperty, key, sent, false);
+            }
+            return Reply::Answered(Served::json(404, ABSENT));
+        }
+        return match method {
+            "GET" => Reply::Answered(match state.property(key, named) {
+                Some(value) => Served::json(
+                    200,
+                    &json!({"key": named, "value": value.clone()}).to_string(),
+                ),
+                None => Served::json(
+                    404,
+                    &refusal(&format!(
+                        "the issue {key} carries no property named {named}"
+                    )),
+                ),
+            }),
+            "PUT" => {
+                let replaced = state.property(key, named).is_some();
+                let stored = sent.clone();
+                if let Some(held) = state.holding(key) {
+                    held.properties.insert(named.to_string(), stored);
+                }
+                state.record(WriteRoute::SetIssueProperty, key, sent, true);
+                committed(
+                    WriteRoute::SetIssueProperty,
+                    match replaced {
+                        true => Served::json(200, ""),
+                        false => Served::json(201, ""),
+                    },
+                    state,
+                )
+            }
+            "DELETE" => {
+                if let Some(held) = state.holding(key) {
+                    held.properties.remove(named);
+                }
+                Reply::Answered(Served::json(204, ""))
+            }
+            _ => Reply::Answered(Served::json(405, NOT_ALLOWED)),
+        };
+    }
     if method == "POST" {
         if let Some(key) = issue_sub(path, "comment") {
             if state.holds(key) {
-                return committed(commented(key, sent, state), state);
+                return committed(WriteRoute::AddComment, commented(key, sent, state), state);
             }
             state.record(WriteRoute::AddComment, key, sent, false);
             return Reply::Answered(Served::json(404, ABSENT));
         }
         if let Some(key) = issue_sub(path, "transitions") {
             if state.holds(key) {
-                return committed(transitioned(key, sent, state), state);
+                return committed(
+                    WriteRoute::TransitionIssue,
+                    transitioned(key, sent, state),
+                    state,
+                );
             }
             state.record(WriteRoute::TransitionIssue, key, sent, false);
             return Reply::Answered(Served::json(404, ABSENT));
@@ -1043,14 +1161,21 @@ fn scripted(answer: &Answer, path: &str) -> Served {
     }
 }
 
-fn committed(served: Served, state: &StubState) -> Reply {
+fn committed(route: WriteRoute, served: Served, state: &StubState) -> Reply {
     match (&state.write_answer, served.status) {
-        (WriteAnswer::LostAfterTheWriteCommits, 200..=299) => Reply::Unanswered,
+        (WriteAnswer::LostAfterTheWriteCommits(None), 200..=299) => Reply::Unanswered,
+        (WriteAnswer::LostAfterTheWriteCommits(Some(lost)), 200..=299) if *lost == route => {
+            Reply::Unanswered
+        }
         _ => Reply::Answered(served),
     }
 }
 
 fn created(sent: &Value, state: &mut StubState) -> Served {
+    if let Some(status) = state.create_answer {
+        state.record(WriteRoute::CreateIssue, "", sent, false);
+        return Served::refusal(status, "this project refuses a create from this credential");
+    }
     let Some(project) = sent["fields"]["project"]["key"].as_str().map(String::from) else {
         state.record(WriteRoute::CreateIssue, "", sent, false);
         return Served::refusal(400, "a create must name fields.project.key");
@@ -1059,6 +1184,35 @@ fn created(sent: &Value, state: &mut StubState) -> Served {
         state.record(WriteRoute::CreateIssue, "", sent, false);
         return Served::refusal(400, "fields.labels must be an array of strings");
     }
+    for required in ["issuetype", "summary"] {
+        if sent["fields"][required].is_null() {
+            state.record(WriteRoute::CreateIssue, "", sent, false);
+            return Served::refusal(
+                400,
+                &format!(
+                    "fields.{required} is required on a create in this project. Measured \
+                     2026-08-28 against snplow.atlassian.net: createmeta for ISP and issue type \
+                     Task names issuetype, project and summary as the required fields"
+                ),
+            );
+        }
+    }
+    if sent["fields"]["issuetype"]["name"].as_str().is_none()
+        && sent["fields"]["issuetype"]["id"].as_str().is_none()
+    {
+        state.record(WriteRoute::CreateIssue, "", sent, false);
+        return Served::refusal(
+            400,
+            "fields.issuetype names the type by `name` or by `id`, and this names neither",
+        );
+    }
+    let claimed = match claimed_properties(sent) {
+        Ok(claimed) => claimed,
+        Err(reason) => {
+            state.record(WriteRoute::CreateIssue, "", sent, false);
+            return Served::refusal(400, &reason);
+        }
+    };
     let key = state.mint(&project);
     let updated = state.stamp();
     let mut fields = sent["fields"].clone();
@@ -1069,6 +1223,7 @@ fn created(sent: &Value, state: &mut StubState) -> Served {
         id: id.clone(),
         key: key.clone(),
         fields,
+        properties: claimed,
         found_by_search,
     });
     state.record(WriteRoute::CreateIssue, &key, sent, true);
@@ -1279,7 +1434,7 @@ fn clauses_of(jql: &str) -> Result<Vec<Clause>, String> {
             ));
         };
         let field = field.trim().to_ascii_lowercase();
-        if !matches!(field.as_str(), "labels" | "project" | "key") {
+        if !matches!(field.as_str(), "labels" | "project" | "key") && !names_a_property(&field) {
             return Err(format!(
                 "the stub selects on labels, project and key only; `{field}` is none of them"
             ));
@@ -1329,6 +1484,10 @@ fn unquoted(value: &str) -> (String, bool) {
     (value.to_string(), false)
 }
 
+fn names_a_property(field: &str) -> bool {
+    field.starts_with("issue.property[") && field.contains(']')
+}
+
 fn selects(clause: &Clause, issue: &StoredIssue) -> bool {
     match clause.field.as_str() {
         "key" => issue.key == clause.value,
@@ -1336,6 +1495,7 @@ fn selects(clause: &Clause, issue: &StoredIssue) -> bool {
         "labels" => issue.fields["labels"]
             .as_array()
             .is_some_and(|labels| labels.iter().any(|label| label == &json!(clause.value))),
+        named if names_a_property(named) => false,
         _ => false,
     }
 }
@@ -1413,6 +1573,34 @@ fn names_an_issue(path: &str) -> bool {
 fn issue_key(path: &str) -> Option<&str> {
     let key = path.strip_prefix(ISSUE_ROUTE)?;
     (!key.is_empty() && !key.contains('/')).then_some(key)
+}
+
+fn issue_property(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix(ISSUE_ROUTE)?;
+    let (key, named) = rest.split_once("/properties/")?;
+    (!key.is_empty() && !key.contains('/') && !named.is_empty() && !named.contains('/'))
+        .then_some((key, named))
+}
+
+fn claimed_properties(sent: &Value) -> Result<serde_json::Map<String, Value>, String> {
+    let mut claimed = serde_json::Map::new();
+    let listed = &sent["properties"];
+    if listed.is_null() {
+        return Ok(claimed);
+    }
+    let Some(listed) = listed.as_array() else {
+        return Err("properties on a create is an array of {key, value} objects".to_string());
+    };
+    for entry in listed {
+        let Some(named) = entry["key"].as_str() else {
+            return Err("every entry in properties names its key".to_string());
+        };
+        if entry["value"].is_null() {
+            return Err(format!("the property {named} carries no value"));
+        }
+        claimed.insert(named.to_string(), entry["value"].clone());
+    }
+    Ok(claimed)
 }
 
 fn issue_sub<'p>(path: &'p str, leaf: &str) -> Option<&'p str> {
