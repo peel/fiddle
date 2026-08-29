@@ -388,6 +388,145 @@ run "a"
 assert_exit "unaccepted mode → exit 2" 2 "$EXIT_CODE"
 assert_contains "names the value it got" "evidence_only" "$ERR"
 
+echo "Test 17: a spec_defect that is not null and not an object -> exit 2"
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": { "general": { "dimensions": { "correctness": { "score": 8, "threshold": 7, "evidence": "e1" } } } },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" }
+  ],
+  "spec_defect": true
+}
+EOF
+run "a"
+assert_exit "a boolean spec_defect → exit 2" 2 "$EXIT_CODE"
+assert_contains "names the type it got" "got boolean" "$ERR"
+
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": { "general": { "dimensions": { "correctness": { "score": 8, "threshold": 7, "evidence": "e1" } } } },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" }
+  ],
+  "spec_defect": "unknown"
+}
+EOF
+run "a"
+assert_exit "a string spec_defect → exit 2" 2 "$EXIT_CODE"
+assert_contains "names the type it got" "got string" "$ERR"
+
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": { "general": { "dimensions": { "correctness": { "score": 8, "threshold": 7, "evidence": "e1" } } } },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" }
+  ],
+  "spec_defect": ["detected"]
+}
+EOF
+run "a"
+assert_exit "a array spec_defect → exit 2" 2 "$EXIT_CODE"
+assert_contains "names the type it got" "got array" "$ERR"
+
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": { "general": { "dimensions": { "correctness": { "score": 8, "threshold": 7, "evidence": "e1" } } } },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" }
+  ],
+  "spec_defect": 0
+}
+EOF
+run "a"
+assert_exit "a number spec_defect → exit 2" 2 "$EXIT_CODE"
+assert_contains "names the type it got" "got number" "$ERR"
+
+echo "Test 17e: a spec_defect object whose detected is not a boolean → exit 2"
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": { "general": { "dimensions": { "correctness": { "score": 8, "threshold": 7, "evidence": "e1" } } } },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" }
+  ],
+  "spec_defect": { "detected": "true" }
+}
+EOF
+run "a"
+assert_exit "a stringly-typed detected → exit 2" 2 "$EXIT_CODE"
+assert_contains "names detected" "detected" "$ERR"
+
+echo "Test 17f: a spec_defect object carrying no detected → exit 2"
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": { "general": { "dimensions": { "correctness": { "score": 8, "threshold": 7, "evidence": "e1" } } } },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" }
+  ],
+  "spec_defect": {}
+}
+EOF
+run "a"
+assert_exit "an empty spec_defect object → exit 2" 2 "$EXIT_CODE"
+assert_contains "names detected" "detected" "$ERR"
+
+echo "Test 17g: null and both boolean verdicts still pass, so the refusal is not vacuous"
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": { "general": { "dimensions": { "correctness": { "score": 8, "threshold": 7, "evidence": "e1" } } } },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" }
+  ],
+  "spec_defect": null
+}
+EOF
+run "a"
+assert_exit "a null spec_defect → exit 0" 0 "$EXIT_CODE"
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": { "general": { "dimensions": { "correctness": { "score": 8, "threshold": 7, "evidence": "e1" } } } },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" }
+  ],
+  "spec_defect": { "detected": false }
+}
+EOF
+run "a"
+assert_exit "detected false → exit 0" 0 "$EXIT_CODE"
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": { "general": { "dimensions": { "correctness": { "score": 8, "threshold": 7, "evidence": "e1" } } } },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" }
+  ],
+  "spec_defect": { "detected": true, "reason": "the spec names a dropped table" }
+}
+EOF
+run "a"
+assert_exit "detected true with a reason → exit 0" 0 "$EXIT_CODE"
+
+echo "Test 17h: a card that leaves spec_defect out is still accepted here, and the merge names it"
+cat > "$SC" << 'EOF'
+{
+  "provider": "claude",
+  "domains": { "general": { "dimensions": { "correctness": { "score": 8, "threshold": 7, "evidence": "e1" } } } },
+  "criteria": [
+    { "id": "a", "pass": true, "evidence": "e1" }
+  ]
+}
+EOF
+run "a"
+assert_exit "an absent spec_defect → exit 0" 0 "$EXIT_CODE"
+
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

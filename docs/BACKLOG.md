@@ -1977,3 +1977,50 @@ the coercion is guarded upstream rather than absent here.
 
 Origin: implementation (bean `fiddle-d3br`, envelope sweep 2026-08-29)
 Tags: #debt #evaluation
+
+### 2026-08-29 — four more merge fields where a wrong type reads as a clean result
+
+Found while fixing `fiddle-cveg`, by feeding one wrong type to every field
+`scripts/merge-scorecards.sh` reads and recording what came back. Thirty probes.
+Three refuse with a reason and exit 2, seven abort as a jq type error and exit 5,
+two classify the wrong type in-band as `not_reported`, and eighteen let it through
+silently. Of those eighteen, `scripts/validate-scorecard.sh` refuses eight upstream
+and accepts ten.
+
+This entry names the four of those ten whose silence points the same way as
+`fiddle-cveg` — a flagged thing reads as clean. It acts on **2026-08-29 — three more
+fields the scorecard merge drops or coerces**, which swept the same script for dropped
+and coerced values; the three fields that entry names are not repeated here.
+
+1. **`antipatterns_detected` as a string merges to `[]`.** Measured: a card carrying
+   `"antipatterns_detected": "shell-injection"` merges to `[]`, so a reported
+   antipattern reads as none found. `check-thresholds.sh` carries the merged array
+   into its verdict as `findings`, which is what `check-convergence.sh` compares, so
+   two iterations both losing the same finding compare as converged. The same card
+   carrying an object rather than an array is worse than empty: measured,
+   `{"id": "shell-injection", "severity": "high", "evidence": "line 4"}` merges to
+   `["high", "line 4", "shell-injection"]`, three findings from one. `.[]?` iterates an
+   object's values and suppresses nothing.
+
+2. **`spec_coverage_matrix` as a string merges to `[]`.** Measured: a holistic card
+   carrying `"spec_coverage_matrix": "scm"` merges to `[]` while `has(...)` is still
+   true, so the merged card states an empty coverage matrix rather than a missing one.
+
+3. **`remediation_beans` as a string merges to `[]`,** for the same reason and with the
+   same shape.
+
+4. **An unrecognised `coverage` value ranks better than `Full`.** `min_by` ranks
+   `Missing` 0, `Weak` 1, `Full` 2 and everything else 3, and picks the lowest, so a
+   value outside the three never becomes the conservative pick. Measured: claude
+   `"Partial"` beside codex `"Full"` resolves to `"Full"`. The merge is meant to take the
+   least-covered claim and here it takes the better one. This is a value-domain hole,
+   not only a type hole — `"Partial"` is a plausible word for an evaluator to choose.
+
+`validate-scorecard.sh` checks none of these four. The remaining six of the ten decide
+nothing: `dispatch_count`, `task_id`, `iteration` and `timestamp` are carried for the
+eval log rather than graded, a wrong-typed `spec_coverage_matrix[].requirement` only
+groups under its own key, and `remediation_beans[].description` reaches
+`(. // "") | length`, which jq answers for a number as its absolute value.
+
+Origin: implementation (bean `fiddle-cveg`, wrong-type sweep 2026-08-29)
+Tags: #debt #evaluation
