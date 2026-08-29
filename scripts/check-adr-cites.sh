@@ -24,7 +24,9 @@ if [ -n "$DUPES" ]; then
 fi
 
 LEAVES=$(mktemp "${TMPDIR:-/tmp}/adr-cites-XXXXXX") || exit 2
-trap 'rm -f "$LEAVES"' EXIT INT TERM
+GONE=$(mktemp "${TMPDIR:-/tmp}/adr-gone-XXXXXX") || exit 2
+NAMES=$(mktemp "${TMPDIR:-/tmp}/adr-body-XXXXXX") || exit 2
+trap 'rm -f "$LEAVES" "$GONE" "$NAMES"' EXIT INT TERM
 
 names_a_path() {
   case "$1" in
@@ -52,8 +54,28 @@ resolves_in_tree() {
     -- "$1" "$ROOT"
 }
 
+split_entries() {
+  printf '%s' "${1#*:}" | tr ',' '\n' \
+    | sed -e 's/^[[:blank:]]*//' -e 's/[[:blank:]]*$//' \
+    | grep -v '^$'
+}
+
+prose_of() {
+  grep -v '^Cites:' "$1" | grep -v '^Retired:'
+}
+
+body_names_of() {
+  prose_of "$1" \
+    | grep -ohE '`[a-z][a-z0-9_]*`' \
+    | tr -d '`' \
+    | awk -F_ 'NF>=4' \
+    | sort -u
+}
+
 adrs=0
 entries=0
+bodies=0
+gones=0
 violations=0
 
 for adr in "$DECISIONS"/[0-9][0-9][0-9]-*.md; do
@@ -62,6 +84,33 @@ for adr in "$DECISIONS"/[0-9][0-9][0-9]-*.md; do
   base=$(basename "$adr")
   number=$((10#${base:0:3}))
   line=$(grep -m1 '^Cites:' "$adr")
+  retired=$(grep -m1 '^Retired:' "$adr")
+
+  : > "$GONE"
+  if [ -n "$retired" ]; then
+    split_entries "$retired" > "$GONE"
+    while IFS= read -r entry; do
+      gones=$((gones + 1))
+      if resolves_in_tree "$entry"; then
+        printf '%s: Retired: %s still resolves in the repository\n' "$base" "$entry"
+        violations=$((violations + 1))
+      fi
+      if ! prose_of "$adr" | grep -qF -- "\`$entry\`"; then
+        printf '%s: Retired: %s is named nowhere in the body\n' "$base" "$entry"
+        violations=$((violations + 1))
+      fi
+    done < "$GONE"
+  fi
+
+  body_names_of "$adr" > "$NAMES"
+  while IFS= read -r name; do
+    grep -qxF -- "$name" "$GONE" && continue
+    bodies=$((bodies + 1))
+    if ! resolves_in_tree "$name"; then
+      printf '%s: the body cites %s, which resolves to nothing in the repository\n' "$base" "$name"
+      violations=$((violations + 1))
+    fi
+  done < "$NAMES"
 
   if [ -z "$line" ]; then
     if [ "$number" -ge "$FLOOR" ]; then
@@ -71,9 +120,7 @@ for adr in "$DECISIONS"/[0-9][0-9][0-9]-*.md; do
     continue
   fi
 
-  printf '%s' "${line#Cites:}" | tr ',' '\n' \
-    | sed -e 's/^[[:blank:]]*//' -e 's/[[:blank:]]*$//' \
-    | grep -v '^$' > "$LEAVES"
+  split_entries "$line" > "$LEAVES"
 
   while IFS= read -r entry; do
     [ "$entry" = "none" ] && continue
@@ -103,5 +150,6 @@ if [ "$entries" -eq 0 ]; then
   exit 2
 fi
 
-printf '%d ADRs, %d cited symbols, %d unresolved\n' "$adrs" "$entries" "$violations"
+printf '%d ADRs, %d cited symbols, %d body names, %d retired names, %d unresolved\n' \
+  "$adrs" "$entries" "$bodies" "$gones" "$violations"
 [ "$violations" -eq 0 ]

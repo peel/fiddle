@@ -29,6 +29,8 @@ template, the `Cites:` line the gate enforces, and the amendment convention.
    gate on a symbol no file under `crates/` contains, on a path that names no file, and
    on an ADR numbered 021 or above that omits the line.
    Write `Cites: none` when the decision genuinely turns on no symbol, as ADR 024 does.
+   The check reads the body too: a backticked name of four or more underscore-separated
+   words must resolve. Name one the tree no longer holds on a `Retired:` line.
 5. Verify with `scripts/check-adr-cites.sh` before showing the user.
 6. Show the user the file content. Write after confirmation, creating `docs/technical/decisions/` if it does not exist.
 

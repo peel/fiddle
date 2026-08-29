@@ -2,6 +2,7 @@
 
 Status: accepted; amended in M4b by the note below, which records that a failed attempt is now published and names the decision that publishes it
 Cites: cve/attempts.rs, capability/mitigate.rs, capability/cve.rs::land, Landed::CommittedForJudgement, AttemptsError::Unreadable, bound_reached, max_capability_attempts, fiddle-attempts:start, tests/cve_feedback.rs, an_attempt_that_lands_no_fix_raises_the_count_the_commit_log_cannot_show, a_count_that_cannot_be_read_makes_no_attempt, ATTEMPT_BOUND_DECISION, RunDisposition::attempt_bound, crates/fiddle-acceptance/tests/config_check.rs::config_check_reports_the_attempt_bound_it_enforces_and_where_the_count_lives
+Retired: an_attempt_that_reverts_raises_the_count_the_commit_log_cannot_show
 
 `crates/fiddle-cli/src/render.rs` holds this file's stem in `ATTEMPT_BOUND_DECISION`. Renaming the file breaks the `config check` payload.
 

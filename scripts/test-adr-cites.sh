@@ -47,6 +47,17 @@ adr() {
   } > "$WORK/tree/docs/technical/decisions/$name.md"
 }
 
+adr_body() {
+  local name="$1" cites="$2" retired="$3" body="$4"
+  {
+    printf '# %s\n\n' "$name"
+    printf 'Status: accepted\n'
+    [ -n "$cites" ] && printf 'Cites: %s\n' "$cites"
+    [ -n "$retired" ] && printf 'Retired: %s\n' "$retired"
+    printf '\n## Decision\n\n%s\n' "$body"
+  } > "$WORK/tree/docs/technical/decisions/$name.md"
+}
+
 run() { "$SCRIPT_DIR/check-adr-cites.sh" --root "$WORK/tree" "$@"; }
 
 echo "=== Test 1: every cited symbol resolves under crates/ ==="
@@ -55,7 +66,7 @@ adr "021-a-decision" "fiddle_core::selected, Severities"
 EXIT_CODE=0
 OUT=$(run 2>&1) || EXIT_CODE=$?
 assert_exit "resolving Cites → exit 0" 0 "$EXIT_CODE"
-assert_contains "reports what it measured" "2 cited symbols, 0 unresolved" "$OUT"
+assert_contains "reports what it measured" "2 cited symbols, 0 body names, 0 retired names, 0 unresolved" "$OUT"
 
 echo ""
 echo "=== Test 2: a cited symbol that resolves to nothing fails ==="
@@ -273,11 +284,106 @@ OUT=$(run 2>&1) || EXIT_CODE=$?
 assert_exit "a neighbouring ADR is not evidence → exit 1" 1 "$EXIT_CODE"
 
 echo ""
-echo "=== Test 16: the repository's own ADRs pass ==="
+echo "=== Test 17: a test name the body cites must resolve ==="
+fresh
+printf 'fn a_run_that_reads_the_claim_files_no_second_issue() {}\n' \
+  > "$WORK/tree/crates/fiddle-acceptance/tests/claims.rs"
+adr_body "021-a-decision" "selected" "" \
+  'The bound is held by `a_run_that_reads_the_claim_files_no_second_issue`.'
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a body name the tree holds → exit 0" 0 "$EXIT_CODE"
+assert_contains "the body is measured and its count reported" "1 body names" "$OUT"
+
+fresh
+adr_body "021-a-decision" "selected" "" \
+  'The bound is held by `a_run_that_reads_the_claim_files_no_second_issue`.'
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a body name nothing holds → exit 1" 1 "$EXIT_CODE"
+assert_contains "names the ADR and the dangling name" \
+  "021-a-decision.md: the body cites a_run_that_reads_the_claim_files_no_second_issue" "$OUT"
+
+fresh
+adr_body "021-a-decision" "selected" "" \
+  'Held by `a_run_that_reads_the_claim_files_no_second_issue`.'
+adr_body "022-another" "selected" "" \
+  'The neighbour names `a_run_that_reads_the_claim_files_no_second_issue` too.'
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a neighbouring ADR is not evidence for a body name → exit 1" 1 "$EXIT_CODE"
+assert_contains "both ADRs are reported, not one" "022-another.md: the body cites" "$OUT"
+
+echo ""
+echo "=== Test 18: the body rule counts test-shaped names and nothing else ==="
+fresh
+printf 'pub fn selected() {}\n' > "$WORK/tree/crates/fiddle-core/src/finding.rs"
+adr_body "021-a-decision" "selected" "" \
+  'A `Filing` carrying `effect_id` and `two_word` and `three_word_name`, beside `a_name_of_four_words`.'
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "short backticked names are not body citations → exit 1" 1 "$EXIT_CODE"
+assert_contains "only the four-part name was measured" "1 body names" "$OUT"
+assert_contains "and it is the one reported" "the body cites a_name_of_four_words" "$OUT"
+
+fresh
+adr_body "021-a-decision" "selected" "" \
+  'Neither `a_name_of_four_words` nor `another_name_of_four_words` resolves.'
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "two dangling names → exit 1" 1 "$EXIT_CODE"
+assert_contains "the denominator counts both" "2 body names" "$OUT"
+assert_contains "and the unresolved count is not one" "2 unresolved" "$OUT"
+
+echo ""
+echo "=== Test 19: Retired: names what the tree no longer holds, and is policed ==="
+fresh
+adr_body "021-a-decision" "selected" "a_name_of_four_words" \
+  'The helper `a_name_of_four_words` is gone.'
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a retired body name → exit 0" 0 "$EXIT_CODE"
+assert_contains "it is counted as retired, not as a body citation" "0 body names, 1 retired names" "$OUT"
+
+fresh
+printf 'fn a_name_of_four_words() {}\n' > "$WORK/tree/crates/fiddle-acceptance/tests/claims.rs"
+adr_body "021-a-decision" "selected" "a_name_of_four_words" \
+  'The helper `a_name_of_four_words` is gone.'
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "retiring a name the tree still holds → exit 1" 1 "$EXIT_CODE"
+assert_contains "says the retirement is false" \
+  "Retired: a_name_of_four_words still resolves" "$OUT"
+
+fresh
+adr_body "021-a-decision" "selected" "a_name_of_four_words" \
+  'This record names no such thing.'
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "retiring a name the body never cites → exit 1" 1 "$EXIT_CODE"
+assert_contains "says the entry is dead" \
+  "Retired: a_name_of_four_words is named nowhere in the body" "$OUT"
+
+fresh
+adr_body "021-a-decision" "selected" "a_name_of_four_words" \
+  'The helper `a_name_of_four_words` is gone, and `another_name_of_four_words` is not.'
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a retirement exempts one name and not its neighbour → exit 1" 1 "$EXIT_CODE"
+assert_contains "the neighbour is still measured" \
+  "the body cites another_name_of_four_words" "$OUT"
+
+echo ""
+echo "=== Test 20: the repository's own ADRs pass ==="
 EXIT_CODE=0
 OUT=$("$SCRIPT_DIR/check-adr-cites.sh" --root "$SCRIPT_DIR/.." 2>&1) || EXIT_CODE=$?
 assert_exit "this tree's decisions/ → exit 0" 0 "$EXIT_CODE"
 assert_contains "nothing unresolved" "0 unresolved" "$OUT"
+if printf '%s' "$OUT" | grep -qE '[1-9][0-9]* body names'; then
+  PASS=$((PASS+1)); echo "  PASS: the bodies of this tree's ADRs were measured, not skipped"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: 0 body names means the body rule measured nothing: $OUT"
+fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
