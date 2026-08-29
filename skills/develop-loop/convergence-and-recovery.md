@@ -4,15 +4,40 @@
 
 Normalize each domain's scorecard and merge across domains following: `skills/develop-loop/scorecard-merge.md`
 
-That protocol runs a pre-merge Spec-Defect Check, so its result is known once the merge completes. If any domain's evaluator flagged `spec_defect.detected == true`, the bean takes the spec-defect exit rather than the threshold path:
+### The Spec-Defect Check reads the merged card
+
+Run it on `scorecard.json`, the cross-domain merged card that 1h produced. That is the same card
+every step after this one reads, so the check does not depend on anyone opening a raw
+`scorecard-{domain}-{provider}.json` first. Both merges carry `spec_defect` through and state which
+of three things happened:
+
+```bash
+jq -r '.spec_defect.state // "not_reported"' scorecard.json
+```
+
+- **`detected`** — take the spec-defect exit below. `.spec_defect.reason` names each source as
+  `{domain}/{provider}`.
+- **`clear`** — every source card carried the field and none flagged it. Continue to 1i.
+- **`not_reported`** — at least one source card never carried the field, or carried one stating no
+  boolean `detected`. `.spec_defect.missing_from` names it. This is not a clear result and is not a failing one. Re-dispatch that
+  evaluator with `skills/develop/scorecard-envelope.md` in its context, or read its raw card, before
+  continuing. A merged card with no `spec_defect` key at all predates this rule and reads the same
+  way.
+
+A `null` here used to mean either of the first two and could not be told apart, because
+`merge-scorecards.sh` dropped the field. `fiddle-2690` was flagged by its evaluator, merged to
+`null`, and passed `check-thresholds.sh` and `check-convergence.sh` on that card. A human caught it
+by reading the source card, which is a habit and not a control. `scripts/test-merge-scorecards.sh`
+and `scripts/test-scorecard-merge-doc.sh` now hold the case that fails if the two states produce one
+output.
+
+The spec-defect exit:
 
 1. Run 1l now with the merged scorecard, so `append-eval-log.sh` records the iteration (the merged scorecard satisfies its `--scorecard` requirement).
 2. Route to `needs-attention` per the scorecard-merge Spec-Defect Check: record the defect reason and `fiddle:define` re-entry pointer, escalate to human, do not re-dispatch.
 3. `rm -f .fiddle/active-bean`
 4. Skip 1i, 1j, 1k, and 1m for this bean.
 5. Return to the orchestrator for the next bean.
-
-Otherwise continue to 1i.
 
 ### Precondition for 1j: the merged card must be gradeable
 

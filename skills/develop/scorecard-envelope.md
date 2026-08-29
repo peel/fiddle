@@ -97,8 +97,10 @@ says nothing about whether a criterion id matches the bean.
   `"dimensions": {}` beside three valid criteria was accepted by all three tools, and the bean
   would have converged with no scores at all. Absent and empty are different, so the intent is
   declared rather than inferred.
-- `spec_defect` — `null`, absent, or `{"detected": true, "reason": "<non-empty>"}`. Flags
-  spec-vs-reality, not implementation-vs-spec; see `skills/evaluate/SKILL.md`.
+- `spec_defect` — `null`, or `{"detected": true|false, "reason": "<non-empty when detected>"}`.
+  Flags spec-vs-reality, not implementation-vs-spec; see `skills/evaluate/SKILL.md`. `null` is a
+  statement: the evaluator looked and the spec is sound. Leaving the key out is not that statement,
+  and the merge tells the two apart — see the `merge-scorecards.sh` row below. Emit the key.
 - `guidance` — actionable fix instructions; empty string when every dimension passes.
 - `dispatch_count` — always `1`; the orchestrator accumulates.
 - `task_id`, `iteration`, `timestamp` — carried for the eval log, not read by the graders.
@@ -109,6 +111,20 @@ says nothing about whether a criterion id matches the bean.
 | --- | --- | --- |
 | `scripts/validate-scorecard.sh` | one raw per-provider card, plus `--criteria-ids` | any field above missing or mistyped, criteria ids not matching the bean in both directions, one id twice, empty evidence, a `spec_defect` with no reason, zero scored dimensions with no `mode` declaration |
 | `scripts/merge-scorecards.sh` | a JSON array of validated cards | — |
+
+`merge-scorecards.sh` emits `spec_defect` on every merged card, as one of three states, so a
+dropped field cannot read as a clean evaluation:
+
+| `.spec_defect` | when | carries |
+| --- | --- | --- |
+| `{"state": "detected", "detected": true, ...}` | any source card set `detected: true` | `reason` as `{domain}/{provider}: {reason}` per source, and `sources` |
+| `{"state": "clear", "detected": false, ...}` | every source card carried the key and none flagged | `reported_by` |
+| `{"state": "not_reported", ...}` | at least one source card left the key out, or carried a `spec_defect` whose `detected` is not a boolean | `missing_from`, and **no `detected` key** |
+
+A `detected` source outranks a silent one, and `missing_from` still names the silent card. The
+cross-domain merge in `skills/develop-loop/scorecard-merge.md` applies the same three states across
+domains, naming a source by its domain. Before M5b the merge dropped `spec_defect` entirely, so
+a flagged bean and a clean one produced the same `null`.
 | `scripts/check-thresholds.sh` | `--scorecard` the merged card, `--criteria` its graded `criteria` array, `--tree-sha` the tree graded | a dimension with no numeric `score` or `threshold`, a criterion with no string `id` or boolean `pass`, one id twice, zero dimensions and zero criteria, zero scored dimensions with no `mode` declaration |
 
 `check-thresholds.sh` also stamps whatever `--tree-sha` it is given onto the verdict it emits, as
