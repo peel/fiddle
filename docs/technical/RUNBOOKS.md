@@ -335,16 +335,18 @@ a second read. The claim is removed from the ledger issue. The ledger issue
 itself is never closed, and the lane refuses if the close list names it. When a
 close does not take, the lane names the keys on stderr and fails.
 
-**It does not drive `fiddle`.** `ticket_proposals` in
-`crates/fiddle-runtime/src/cve/verdict.rs` builds `TicketProposal` values and no
-run path calls it, which `fiddle-zlc4` holds. `human::publish`, the other route a
-Jira write could take, has no caller outside tests either. So no `fiddle` binary
-performs a Jira write at all, this lane measures the site rather than the build,
-and the credential census in
-`crates/fiddle-acceptance/tests/jira_credential.rs` has no new stdout surface to
-search: every Jira surface a binary writes is still a read's. When `fiddle-zlc4`
-lands, the lane should drive the binary as `scripts/live-jira-observe.sh` does and
-the census should grow a write scenario.
+**It does not drive `fiddle`.** It sends the requests by hand, so it measures the
+site rather than the build. Since M5b a `fiddle` binary does perform this write:
+`CveMitigate` calls `ticket_proposals` and executes each `FileVerdict` when
+`[jira.filing]` names a project, an issue type and a ledger issue (ADR 080).
+`human::publish`, the other route a Jira write could take, still has no caller
+outside tests. No acceptance scenario drives the filing path through the command
+line, so the credential census in
+`crates/fiddle-acceptance/tests/jira_credential.rs` has no write scenario in it.
+`the_credential_never_reaches_the_filing_report_through_a_quoted_refusal` holds the
+one new surface the filing path writes, which is `filings.json` on the disk. The
+lane should drive the binary as `scripts/live-jira-observe.sh` does, and the census
+should grow a write scenario.
 
 **The rewritten lane has not been run.** It is a human gate and the operator runs
 it; no run of this version has touched a site. `scripts/test-live-jira-lanes.sh`

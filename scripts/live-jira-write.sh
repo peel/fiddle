@@ -357,7 +357,7 @@ esac
 echo
 note "NOT MEASURED: whether a page boundary shifts under a walk. Forcing it needs an issue indexed between two pages of one walk, which one process cannot arrange."
 note "NOT MEASURED: concurrent duplicate invocations. The design scopes exactly-once to interruptions only, and one process cannot race itself."
-note "NOT DRIVEN THROUGH FIDDLE: ticket_proposals in cve/verdict.rs reaches no run path (fiddle-zlc4), so no fiddle binary can file a verdict yet. This lane sends the claim-then-create requests FileVerdict sends and measures the site, not the build. A green run here is evidence about Atlassian and not about FileVerdict."
+note "NOT DRIVEN THROUGH FIDDLE: a mitigate run does call ticket_proposals and does execute FileVerdict when [jira.filing] is configured (ADR 080), and this lane still sends the claim-then-create requests by hand. So it measures the site, not the build. A green run here is evidence about Atlassian and not about FileVerdict."
 
 if [ "$creates" -ne 1 ]; then
   fail "two runs sent $creates creates, and exactly-once across an interruption means exactly one"

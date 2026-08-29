@@ -1,9 +1,9 @@
 # 079 — A ticket is deduplicated by a marker it carries
 
-Status: accepted; amended in M5b by the note "What one live run measured", and
-superseded in part by "The claim ledger, which is what exactly-once now rests
-on". The marker stands as identity. It is no longer what a run reads to decide
-whether to file.
+Status: accepted; amended in M5b by the note "What one live run measured", by
+080, and superseded in part by "The claim ledger, which is what exactly-once now
+rests on". The marker stands as identity. It is no longer what a run reads to
+decide whether to file.
 
 Cites: FileVerdict, a_start_at_offset_is_refused_because_this_endpoint_pages_by_token, FiledIssue, ticket_proposals, TicketProposal, Filing, TICKET_MARKER_PREFIX, TICKET_LABEL_PREFIX, effect_id, JIRA_ISSUE_FILED, JiraError::Ambiguous, JiraError::Malformed, JiraError::NotSent, EffectError::DuplicateState, EffectError::Unresolved, EffectOutcome::Unknown, PAGE_WALK_BOUND, RULE_KEYS, VariantCount, two_marker_matches_refuse_the_write_and_create_nothing, a_marker_matching_across_more_than_one_search_page_is_still_ambiguous, the_marker_is_written_in_the_create_and_never_in_a_second_edit, an_issue_that_already_carries_the_marker_is_answered_by_a_read_and_no_write, an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_one_issue, a_fresh_process_inside_the_lag_window_reads_the_claim_and_files_no_second_issue, a_claim_with_no_key_inside_the_lag_window_is_unresolved_and_never_a_second_create, the_search_then_create_protocol_files_a_second_issue_where_the_claim_ledger_files_one, a_search_answers_an_id_and_no_key_unless_the_caller_asks_for_the_key_field, an_issue_property_is_readable_the_moment_it_is_written_and_the_search_never_sees_it, a_jql_naming_an_issue_property_answers_no_issue_rather_than_every_issue, a_create_that_names_no_issue_type_is_refused_and_stores_nothing, the_search_asks_for_the_key_field_because_the_site_answers_an_id_alone, the_create_names_the_issue_type_the_project_requires, the_claim_is_written_before_the_create_and_carries_the_key_after_it, a_create_the_site_refuses_releases_the_claim_so_the_next_run_is_not_wedged, a_ledger_issue_the_site_does_not_hold_is_named_and_no_create_is_sent, JiraError::Claimed, Filing, a_count_taken_from_one_search_page_is_a_floor_and_never_a_total, crates/fiddle-runtime/src/jira/file_verdict.rs, crates/fiddle-runtime/src/cve/verdict.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-runtime/tests/jira_effects.rs, scripts/live-jira-write.sh, scripts/live-jira-search-shape.sh, scripts/gate.sh, docs/technical/RUNBOOKS.md
 
@@ -176,6 +176,8 @@ records why the step is not retired.
 `fiddle-0lcc` is high. `fiddle-zlc4`, `fiddle-4bul`, `fiddle-y4zt` and
 `fiddle-nry2` carry the rest.
 
+> Amended by 080. `fiddle-zlc4` is closed: filing reaches the mitigate run path.
+
 ## The claim ledger, which is what exactly-once now rests on — 2026-08-29
 
 Probed against `snplow.atlassian.net` with the operator's token on 2026-08-28.
@@ -276,6 +278,12 @@ it made, so a future run measures it or says it did not.
 Not verified: none of this has been driven against a real site. `fiddle-zlc4`
 still holds the run path and the `[jira]` configuration that would name the issue
 type and the ledger issue in a deployment.
+
+> Amended by 080. The run path and the `[jira.filing]` table now exist: a
+> mitigate run calls `ticket_proposals` and executes each `FileVerdict` through
+> the executor. The first sentence stands. `crates/fiddle-runtime/tests/cve_filing.rs`
+> measures the claim ledger against the loopback stub and nothing against a real
+> site, so this record's grading of the milestone's central claim is unchanged.
 
 ### The sweep the bean asked for, with its denominator
 
