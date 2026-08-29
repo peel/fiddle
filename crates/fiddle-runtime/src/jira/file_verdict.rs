@@ -1,6 +1,6 @@
 use crate::effect::{
-    AuthorizedEffect, Effect, EffectContext, EffectError, Executor, FromStepParams, ObservedState,
-    StepParams,
+    AdapterError, AuthorizedEffect, Effect, EffectContext, EffectError, EffectOutcome, EffectPhase,
+    Executor, FromStepParams, ObservedState, StepParams,
 };
 use crate::jira::JiraError;
 use fiddle_core::{EffectName, JIRA_ISSUE_FILED};
@@ -8,6 +8,9 @@ use serde_json::{json, Value};
 
 const SEARCH: &str = "/rest/api/3/search/jql";
 const CREATE: &str = "/rest/api/3/issue";
+const ISSUE: &str = "/rest/api/3/issue/";
+const KEY_FIELD: &str = "key";
+const FILED: &str = "filed";
 const PAGE_WALK_BOUND: usize = 1000;
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -52,6 +55,8 @@ pub struct FileVerdict {
     #[payload]
     label: String,
     project_key: String,
+    issue_type: String,
+    anchor: String,
     marker: String,
 }
 
@@ -75,6 +80,8 @@ impl FileVerdict {
         rationale: String,
         label: String,
         project_key: String,
+        issue_type: String,
+        anchor: String,
         marker: String,
     ) -> Self {
         Self {
@@ -84,12 +91,33 @@ impl FileVerdict {
             rationale,
             label,
             project_key,
+            issue_type,
+            anchor,
             marker,
         }
     }
 
     pub fn marker(&self) -> &str {
         &self.marker
+    }
+
+    pub fn anchor(&self) -> &str {
+        &self.anchor
+    }
+
+    fn claim_path(&self) -> String {
+        format!(
+            "{ISSUE}{}/properties/{}",
+            encoded(&self.anchor),
+            encoded(&self.marker)
+        )
+    }
+
+    fn claim(&self, filed: Option<&str>) -> Value {
+        match filed {
+            None => json!({"marker": self.marker}),
+            Some(key) => json!({"marker": self.marker, FILED: key}),
+        }
     }
 
     fn jql(&self) -> String {
@@ -107,10 +135,12 @@ impl FileVerdict {
         json!({
             "fields": {
                 "project": {"key": self.project_key},
+                "issuetype": {"name": self.issue_type},
                 "summary": self.summary(),
                 "labels": [self.label.clone(), self.marker.clone()],
                 "description": described(&self.rationale),
-            }
+            },
+            "properties": [{"key": self.marker, "value": self.claim(None)}],
         })
     }
 
@@ -159,6 +189,39 @@ impl FileVerdict {
         )))
     }
 
+    async fn claimed(&self, ctx: &EffectContext) -> Result<Option<Value>, JiraError> {
+        let client = ctx.jira_client()?;
+        let answered = client
+            .api("GET", &self.claim_path(), None, &ctx.cancel)
+            .await?;
+        match answered.status {
+            404 => Ok(None),
+            200 => match answered.body.get("value") {
+                Some(value) if !value.is_null() => Ok(Some(value.clone())),
+                _ => Err(JiraError::Malformed(format!(
+                    "the ledger issue `{}` answered 200 for the claim `{}` and no `value`",
+                    self.anchor, self.marker
+                ))),
+            },
+            status => Err(refused(status, client.quoted(&answered.body).as_deref())),
+        }
+    }
+
+    async fn one_issue_carrying_the_marker(
+        &self,
+        ctx: &EffectContext,
+    ) -> Result<Option<FiledIssue>, JiraError> {
+        let mut found = self.every_issue_carrying_the_marker(ctx).await?;
+        match found.len() {
+            0 => Ok(None),
+            1 => Ok(found.pop()),
+            count => Err(JiraError::Ambiguous {
+                marker: self.marker.clone(),
+                count,
+            }),
+        }
+    }
+
     fn filed(&self, issue: &Value) -> Result<FiledIssue, JiraError> {
         match issue["key"].as_str() {
             Some(key) => Ok(FiledIssue {
@@ -173,13 +236,20 @@ impl FileVerdict {
     }
 
     async fn inspect(&self, ctx: &EffectContext) -> Result<Option<FiledIssue>, JiraError> {
-        let mut found = self.every_issue_carrying_the_marker(ctx).await?;
-        match found.len() {
-            0 => Ok(None),
-            1 => Ok(found.pop()),
-            count => Err(JiraError::Ambiguous {
+        let Some(claim) = self.claimed(ctx).await? else {
+            return self.one_issue_carrying_the_marker(ctx).await;
+        };
+        if let Some(key) = claim[FILED].as_str() {
+            return Ok(Some(FiledIssue {
+                key: key.to_string(),
                 marker: self.marker.clone(),
-                count,
+            }));
+        }
+        match self.one_issue_carrying_the_marker(ctx).await? {
+            Some(found) => Ok(Some(found)),
+            None => Err(JiraError::Claimed {
+                anchor: self.anchor.clone(),
+                marker: self.marker.clone(),
             }),
         }
     }
@@ -190,18 +260,67 @@ impl FileVerdict {
         _authorized: &AuthorizedEffect<Self>,
     ) -> Result<(), JiraError> {
         let client = ctx.jira_client()?;
+        let claimed = client
+            .api(
+                "PUT",
+                &self.claim_path(),
+                Some(&self.claim(None)),
+                &ctx.cancel,
+            )
+            .await?;
+        if !(200..300).contains(&claimed.status) {
+            return Err(self.unclaimable(claimed.status, client.quoted(&claimed.body).as_deref()));
+        }
+
         let answered = client
             .api("POST", CREATE, Some(&self.body()), &ctx.cancel)
             .await?;
-        match answered.status {
-            201 => Ok(()),
-            status => Err(refused(status, client.quoted(&answered.body).as_deref())),
+        if answered.status != 201 {
+            let refusal = refused(answered.status, client.quoted(&answered.body).as_deref());
+            if refusal.outcome(EffectPhase::Apply) == EffectOutcome::NotCommitted {
+                let _ = client
+                    .api("DELETE", &self.claim_path(), None, &ctx.cancel)
+                    .await;
+            }
+            return Err(refusal);
+        }
+
+        let Some(key) = answered.body[KEY_FIELD].as_str().map(String::from) else {
+            return Err(JiraError::Malformed(format!(
+                "a create in `{}` answered 201 and no `key`, so the claim on `{}` names no issue",
+                self.project_key, self.anchor
+            )));
+        };
+        let recorded = client
+            .api(
+                "PUT",
+                &self.claim_path(),
+                Some(&self.claim(Some(&key))),
+                &ctx.cancel,
+            )
+            .await?;
+        match (200..300).contains(&recorded.status) {
+            true => Ok(()),
+            false => Err(JiraError::Malformed(format!(
+                "issue {key} was created and the claim on `{}` could not be given its key: \
+                 HTTP {}",
+                self.anchor, recorded.status
+            ))),
+        }
+    }
+
+    fn unclaimable(&self, status: u16, quoted: Option<&str>) -> JiraError {
+        match status {
+            404 => JiraError::Absent {
+                key: self.anchor.clone(),
+            },
+            status => refused(status, quoted),
         }
     }
 }
 
 fn search_path(jql: &str, token: Option<&str>) -> String {
-    let mut path = format!("{SEARCH}?jql={}", encoded(jql));
+    let mut path = format!("{SEARCH}?jql={}&fields={KEY_FIELD}", encoded(jql));
     if let Some(token) = token {
         path.push_str(&format!("&nextPageToken={}", encoded(token)));
     }
@@ -258,6 +377,8 @@ mod tests {
             "the advisory reaches this build".to_string(),
             "security".to_string(),
             "IDENT".to_string(),
+            "Task".to_string(),
+            "IDENT-1".to_string(),
             "fx-abc123".to_string(),
         )
     }
@@ -292,7 +413,8 @@ mod tests {
         let path = search_path("project = IDENT AND labels = fx-abc123", None);
         assert_eq!(
             path,
-            "/rest/api/3/search/jql?jql=project%20%3D%20IDENT%20AND%20labels%20%3D%20fx-abc123"
+            "/rest/api/3/search/jql?jql=project%20%3D%20IDENT%20AND%20labels%20%3D%20fx-abc123\
+             &fields=key"
         );
         assert!(
             !path.contains(' '),
@@ -306,7 +428,41 @@ mod tests {
         let path = search_path("labels = fx-abc123", Some("tok-1"));
         assert_eq!(
             path,
-            "/rest/api/3/search/jql?jql=labels%20%3D%20fx-abc123&nextPageToken=tok-1"
+            "/rest/api/3/search/jql?jql=labels%20%3D%20fx-abc123&fields=key&nextPageToken=tok-1"
+        );
+    }
+
+    #[test]
+    fn every_page_of_the_walk_asks_for_the_key_the_site_answers_only_when_asked() {
+        for path in [
+            search_path("labels = fx-abc123", None),
+            search_path("labels = fx-abc123", Some("tok-1")),
+        ] {
+            assert!(
+                path.contains("&fields=key"),
+                "MEASURED 2026-08-28 against snplow.atlassian.net: a search naming no fields \
+                 answers each issue carrying an id alone. Page two is read the same way as \
+                 page one, so a parameter set on the first request and dropped on the next \
+                 refuses on the first match of page two: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_claim_names_the_marker_and_takes_the_key_only_once_the_create_answered_one() {
+        let verdict = verdict();
+        assert_eq!(verdict.claim(None), json!({"marker": "fx-abc123"}));
+        assert_eq!(
+            verdict.claim(Some("IDENT-7")),
+            json!({"marker": "fx-abc123", "filed": "IDENT-7"}),
+            "a claim carrying no key is an unresolved outcome and a claim carrying one is a \
+             filed ticket, so the two must not read the same"
+        );
+        assert_eq!(
+            verdict.claim_path(),
+            "/rest/api/3/issue/IDENT-1/properties/fx-abc123",
+            "the claim is read off the ledger issue by a direct read, which MEASURED \
+             2026-08-28 is immediately consistent, and never through the lagging index"
         );
     }
 
@@ -320,6 +476,17 @@ mod tests {
             body["fields"]["description"]["content"][0]["content"][0]["text"],
             "the advisory reaches this build",
             "the rationale reaches a person as a document the site renders"
+        );
+        assert_eq!(
+            body["fields"]["issuetype"]["name"], "Task",
+            "MEASURED 2026-08-28: createmeta for ISP and Task names issuetype required, so a \
+             create that omits it is refused before it files anything: {body}"
+        );
+        assert_eq!(
+            body["properties"],
+            json!([{"key": "fx-abc123", "value": {"marker": "fx-abc123"}}]),
+            "the create stamps the claim on the issue it makes, so a candidate a later search \
+             offers can be confirmed by a direct read rather than trusted from the index"
         );
     }
 

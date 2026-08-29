@@ -233,6 +233,7 @@ impl World {
             report_dir: self.reports.path().to_path_buf(),
             today: TODAY.to_string(),
             settle: Duration::ZERO,
+            filing: None,
             cancel: CancellationToken::new(),
         }
     }

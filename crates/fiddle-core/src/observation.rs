@@ -49,7 +49,9 @@ impl<T> Observation<T> {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, fiddle_macros::VariantCount,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkState {
     Ready,
@@ -58,6 +60,17 @@ pub enum WorkState {
     Blocked,
     Done,
     Unknown,
+}
+
+impl WorkState {
+    pub const ALL: [WorkState; WorkState::VARIANT_COUNT] = [
+        WorkState::Ready,
+        WorkState::InProgress,
+        WorkState::InReview,
+        WorkState::Blocked,
+        WorkState::Done,
+        WorkState::Unknown,
+    ];
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]

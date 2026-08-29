@@ -1,6 +1,6 @@
 use crate::published::Published;
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, fiddle_macros::VariantCount)]
 #[serde(rename_all = "snake_case")]
 pub enum RunOutcome {
     Completed,
@@ -12,7 +12,9 @@ pub enum RunOutcome {
     Failed { error: Published },
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, fiddle_macros::VariantCount,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     #[default]
@@ -29,9 +31,9 @@ impl Mode {
         }
     }
 
-    pub const ALL: [Mode; 2] = [Mode::Attended, Mode::Unattended];
+    pub const ALL: [Mode; Mode::VARIANT_COUNT] = [Mode::Attended, Mode::Unattended];
 
-    pub const NAMES: [&'static str; 2] = ["attended", "unattended"];
+    pub const NAMES: [&'static str; Mode::VARIANT_COUNT] = ["attended", "unattended"];
 }
 
 impl std::fmt::Display for Mode {

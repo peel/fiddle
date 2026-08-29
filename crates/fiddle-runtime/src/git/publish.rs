@@ -16,7 +16,7 @@ pub struct PublishedBranch {
     pub sha: String,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, crate::effect::VariantCount)]
 pub enum GitError {
     #[error("branch name {branch:?} was refused: {reason}")]
     InvalidBranch { branch: String, reason: String },
@@ -478,7 +478,7 @@ mod outcome {
     use super::*;
     use crate::effect::{AdapterError, EffectPhase};
 
-    const GIT_VARIANTS: usize = 11;
+    const GIT_VARIANTS: usize = GitError::VARIANT_COUNT;
 
     fn ordinal(error: &GitError) -> usize {
         match error {

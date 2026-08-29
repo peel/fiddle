@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, fiddle_macros::VariantCount)]
 #[serde(rename_all = "snake_case")]
 pub enum InvocationScheme {
     Beans,
@@ -21,7 +21,7 @@ impl InvocationScheme {
         }
     }
 
-    pub const ALL: [InvocationScheme; 5] = [
+    pub const ALL: [InvocationScheme; InvocationScheme::VARIANT_COUNT] = [
         InvocationScheme::Beans,
         InvocationScheme::Jira,
         InvocationScheme::Scheduled,
@@ -103,7 +103,7 @@ pub struct InvocationRef {
     value: String,
 }
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error, PartialEq, Eq, fiddle_macros::VariantCount)]
 pub enum InvocationRefError {
     #[error(
         "`{0}` is not an invocation reference: it is neither a scheme followed by \
@@ -207,16 +207,28 @@ mod tests {
 
     #[test]
     fn parses_every_known_scheme() {
-        for (text, expected) in [
+        let examples = [
             ("beans:fiddle-m0-demo", InvocationScheme::Beans),
             ("jira:ICE-1", InvocationScheme::Jira),
             ("scheduled:nightly", InvocationScheme::Scheduled),
             ("scanner:cve-2026-1", InvocationScheme::Scanner),
-        ] {
+            ("cve", InvocationScheme::Cve),
+        ];
+        for (text, expected) in examples {
             let parsed: InvocationRef = text.parse().unwrap();
             assert_eq!(parsed.scheme(), expected);
             assert_eq!(parsed.as_str(), text);
         }
+        let unexampled: Vec<InvocationScheme> = InvocationScheme::ALL
+            .into_iter()
+            .filter(|scheme| !examples.iter().any(|(_, listed)| listed == scheme))
+            .collect();
+        assert!(
+            unexampled.is_empty(),
+            "the name of this test claims every scheme parses, and {unexampled:?} is \
+             a scheme it never parses; the list above is written by hand and this line \
+             is the only thing that holds it to `InvocationScheme::ALL`"
+        );
     }
 
     #[test]
@@ -235,30 +247,41 @@ mod tests {
 
     #[test]
     fn rejects_each_malformed_shape_with_its_own_defect() {
+        let shapes = [
+            ("bogus", InvocationRefError::Malformed("bogus".to_string())),
+            (
+                "mystery:x",
+                InvocationRefError::UnknownScheme("mystery".to_string()),
+            ),
+            (
+                "beans:",
+                InvocationRefError::EmptyValue {
+                    scheme: Some(InvocationScheme::Beans),
+                },
+            ),
+            ("mystery:", InvocationRefError::EmptyValue { scheme: None }),
+            (
+                "beans:../../../pwned",
+                InvocationRefError::IllegalValueCharacter {
+                    value: "../../../pwned".to_string(),
+                    character: '.',
+                },
+            ),
+        ];
+        let mut reached = std::collections::HashSet::new();
+        for (text, expected) in shapes {
+            let got = text
+                .parse::<InvocationRef>()
+                .expect_err("a malformed reference is refused");
+            assert_eq!(got, expected, "`{text}` was refused as {got:?}");
+            reached.insert(std::mem::discriminant(&got));
+        }
         assert_eq!(
-            "bogus".parse::<InvocationRef>(),
-            Err(InvocationRefError::Malformed("bogus".to_string()))
-        );
-        assert_eq!(
-            "mystery:x".parse::<InvocationRef>(),
-            Err(InvocationRefError::UnknownScheme("mystery".to_string()))
-        );
-        assert_eq!(
-            "beans:".parse::<InvocationRef>(),
-            Err(InvocationRefError::EmptyValue {
-                scheme: Some(InvocationScheme::Beans)
-            })
-        );
-        assert_eq!(
-            "mystery:".parse::<InvocationRef>(),
-            Err(InvocationRefError::EmptyValue { scheme: None })
-        );
-        assert_eq!(
-            "beans:../../../pwned".parse::<InvocationRef>(),
-            Err(InvocationRefError::IllegalValueCharacter {
-                value: "../../../pwned".to_string(),
-                character: '.',
-            })
+            reached.len(),
+            InvocationRefError::VARIANT_COUNT,
+            "the name of this test claims each defect has its own shape, and the \
+             list above is written by hand; a defect this parser can return and no \
+             line here provokes would leave its wording unread"
         );
     }
 

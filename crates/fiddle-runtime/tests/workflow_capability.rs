@@ -596,6 +596,12 @@ fn no_effect_failure_a_workflow_can_meet_is_a_wait() {
                 kind: kind.clone(),
                 count: 2,
             },
+            EffectError::IdentityDiverged {
+                kind: kind.clone(),
+                part: "target",
+                proposed: "a".to_string(),
+                performing: "b".to_string(),
+            },
             EffectError::Adapter {
                 kind: kind.clone(),
                 source: Box::new(GhError::Auth),
@@ -605,8 +611,10 @@ fn no_effect_failure_a_workflow_can_meet_is_a_wait() {
 
     assert_eq!(
         failures().len(),
-        8,
-        "an effect failure was added without a case here"
+        EffectError::VARIANT_COUNT,
+        "an effect failure was added without a case here: the list above is written \
+         by hand and the name of this test claims it holds every failure a workflow \
+         can meet, so a variant missing from it is a claim this test never checked"
     );
     assert_eq!(
         failures()

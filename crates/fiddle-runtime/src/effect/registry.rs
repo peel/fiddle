@@ -228,6 +228,8 @@ mod tests {
             "no upstream fix".to_string(),
             "legacy".to_string(),
             "ACME".to_string(),
+            "Task".to_string(),
+            "ACME-1".to_string(),
             "fx-abc123".to_string(),
         )
     }

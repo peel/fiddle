@@ -4,6 +4,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SHAPE="$SCRIPT_DIR/live-jira-search-shape.sh"
 WRITE="$SCRIPT_DIR/live-jira-write.sh"
+FILING="$SCRIPT_DIR/live-jira-file-verdict.sh"
+FILING_TEST="$SCRIPT_DIR/../crates/fiddle-runtime/tests/live_jira_filing.rs"
 
 UNREACHABLE="https://127.0.0.1:1"
 FAILED=0
@@ -40,12 +42,13 @@ for absent in JIRA_USER_EMAIL JIRA_API_TOKEN JIRA_SITE JIRA_SEARCH_PROJECT; do
   refuses_without "$SHAPE" "$absent" "${args[@]}"
 done
 
-for absent in JIRA_USER_EMAIL JIRA_API_TOKEN JIRA_SITE JIRA_WRITE_PROJECT; do
+for absent in JIRA_USER_EMAIL JIRA_API_TOKEN JIRA_SITE JIRA_WRITE_PROJECT JIRA_LEDGER_ISSUE; do
   args=()
   [ "$absent" = JIRA_USER_EMAIL ] || args+=("JIRA_USER_EMAIL=bot@example.invalid")
   [ "$absent" = JIRA_API_TOKEN ] || args+=("JIRA_API_TOKEN=not-a-real-token")
   [ "$absent" = JIRA_SITE ] || args+=("JIRA_SITE=$UNREACHABLE")
   [ "$absent" = JIRA_WRITE_PROJECT ] || args+=("JIRA_WRITE_PROJECT=DISPOSABLE")
+  [ "$absent" = JIRA_LEDGER_ISSUE ] || args+=("JIRA_LEDGER_ISSUE=DISPOSABLE-1")
   refuses_without "$WRITE" "$absent" "${args[@]}"
 done
 
@@ -55,21 +58,52 @@ ran "$SHAPE" JIRA_USER_EMAIL=bot@example.invalid JIRA_API_TOKEN=not-a-real-token
 case "$OUT" in *"must be an https origin"*) ;; *) fail "the shape lane refused a plaintext origin without saying why: $OUT" ;; esac
 
 ran "$WRITE" JIRA_USER_EMAIL=bot@example.invalid JIRA_API_TOKEN=not-a-real-token \
-  JIRA_SITE="$UNREACHABLE" JIRA_WRITE_PROJECT=ISP JIRA_ISSUE=ISP-1
+  JIRA_SITE="$UNREACHABLE" JIRA_WRITE_PROJECT=ISP JIRA_LEDGER_ISSUE=ISP-1 JIRA_ISSUE=ISP-1
 [ "$CODE" -ne 0 ] || fail "the write lane accepted the project its read lane observes as a disposable one"
 case "$OUT" in *"is not the project a read lane observes"*) ;; *) fail "the write lane refused a non-disposable project without saying why: $OUT" ;; esac
 
 ran "$WRITE" JIRA_USER_EMAIL=bot@example.invalid JIRA_API_TOKEN=not-a-real-token \
-  JIRA_SITE="$UNREACHABLE" JIRA_WRITE_PROJECT="not a key"
+  JIRA_SITE="$UNREACHABLE" JIRA_WRITE_PROJECT="not a key" JIRA_LEDGER_ISSUE=DISPOSABLE-1
 [ "$CODE" -ne 0 ] || fail "the write lane accepted a project key that is not one"
 case "$OUT" in *"must be a bare project key"*) ;; *) fail "the write lane refused a malformed key without saying why: $OUT" ;; esac
+
+ran "$WRITE" JIRA_USER_EMAIL=bot@example.invalid JIRA_API_TOKEN=not-a-real-token \
+  JIRA_SITE="$UNREACHABLE" JIRA_WRITE_PROJECT=DISPOSABLE JIRA_LEDGER_ISSUE=OTHER-1
+[ "$CODE" -ne 0 ] || fail "the write lane accepted a ledger issue in another project, and a claim read there says nothing about the project it writes to"
+case "$OUT" in *"The ledger is read with the same credential in the same project"*) ;; *) fail "the write lane refused a foreign ledger issue without saying why: $OUT" ;; esac
+
+DELETES=$(grep -c 'DELETE' "$WRITE" || true)
+PROPERTY_DELETES=$(grep 'DELETE' "$WRITE" | grep -c 'ROUTE' || true)
+CLAIM_DELETES=$(grep 'DELETE' "$WRITE" | grep -c -E 'CLAIM_ROUTE|PROBE_ROUTE' || true)
+if [ "$DELETES" -ne "$CLAIM_DELETES" ]; then
+  fail "the write lane sends $DELETES deletes and only $CLAIM_DELETES of them name a property route, so at least one deletes something else. The operator ruled on 2026-08-28 that cleanup is a close and never a delete: ISP refuses a delete by policy, so a lane that deletes an issue leaves residue on every run. Deletes found: $(grep -n 'DELETE' "$WRITE" | tr '\n' ' ')"
+fi
+[ "$DELETES" -gt 0 ] || fail "the write lane sends no delete at all, so the count above compares nothing and would pass for a lane that deleted every issue through a helper this check cannot see"
+[ "$PROPERTY_DELETES" -eq "$DELETES" ] || fail "a delete in the write lane names no route variable, so this check cannot say what it removes"
+CHECKED=$((CHECKED + 1))
+
+if grep -q -F "delete them by hand" "$WRITE"; then
+  fail "the write lane still advises a reader to delete its residue by hand, which the operator cannot do in ISP"
+fi
+CHECKED=$((CHECKED + 1))
+
+if ! grep -q -F 'select(.to.name == $wanted)' "$WRITE"; then
+  fail "the write lane must resolve its closing transition by name to exactly one id. fiddle-pu2c MEASURED that a closing transition and Done share the category done, so a category match picks the wrong transition."
+fi
+CHECKED=$((CHECKED + 1))
+
+if ! grep -q -F 'statusCategory != Done' "$WRITE"; then
+  fail "the write lane must exclude closed issues from its marker search, or each run inherits the last run's closed ticket as an ambiguous match"
+fi
+CHECKED=$((CHECKED + 1))
 
 for lane in "$SHAPE" "$WRITE"; do
   case "$lane" in
     "$SHAPE") ran "$lane" JIRA_USER_EMAIL=bot@example.invalid JIRA_API_TOKEN=not-a-real-token \
                  JIRA_SITE="$UNREACHABLE" JIRA_SEARCH_PROJECT=IDENT ;;
     *)        ran "$lane" JIRA_USER_EMAIL=bot@example.invalid JIRA_API_TOKEN=not-a-real-token \
-                 JIRA_SITE="$UNREACHABLE" JIRA_WRITE_PROJECT=DISPOSABLE ;;
+                 JIRA_SITE="$UNREACHABLE" JIRA_WRITE_PROJECT=DISPOSABLE \
+                 JIRA_LEDGER_ISSUE=DISPOSABLE-1 ;;
   esac
   [ "$CODE" -ne 0 ] || fail "$(basename "$lane") exited 0 against a site that answers nothing, so it reported a measurement it never took"
   case "$OUT" in
@@ -80,6 +114,46 @@ for lane in "$SHAPE" "$WRITE"; do
     *) fail "$(basename "$lane") gave every variable and an unreachable site, and said neither: $OUT" ;;
   esac
 done
+
+for absent in JIRA_USER_EMAIL JIRA_API_TOKEN JIRA_SITE JIRA_WRITE_PROJECT JIRA_LEDGER_ISSUE; do
+  args=()
+  [ "$absent" = JIRA_USER_EMAIL ] || args+=("JIRA_USER_EMAIL=bot@example.invalid")
+  [ "$absent" = JIRA_API_TOKEN ] || args+=("JIRA_API_TOKEN=not-a-real-token")
+  [ "$absent" = JIRA_SITE ] || args+=("JIRA_SITE=$UNREACHABLE")
+  [ "$absent" = JIRA_WRITE_PROJECT ] || args+=("JIRA_WRITE_PROJECT=DISPOSABLE")
+  [ "$absent" = JIRA_LEDGER_ISSUE ] || args+=("JIRA_LEDGER_ISSUE=DISPOSABLE-1")
+  refuses_without "$FILING" "$absent" "${args[@]}"
+done
+
+ran "$FILING" JIRA_USER_EMAIL=bot@example.invalid JIRA_API_TOKEN=not-a-real-token \
+  JIRA_SITE="$UNREACHABLE" JIRA_WRITE_PROJECT=ISP JIRA_LEDGER_ISSUE=ISP-1 JIRA_ISSUE=ISP-1
+[ "$CODE" -ne 0 ] || fail "the filing lane accepted the project its read lane observes as a disposable one"
+case "$OUT" in *"is not the project a read lane observes"*) ;; *) fail "the filing lane refused a non-disposable project without saying why: $OUT" ;; esac
+
+[ -f "$FILING_TEST" ] || fail "the filing lane names a test binary this repository does not hold: $FILING_TEST"
+CHECKED=$((CHECKED + 1))
+
+NAMED=$(grep -o 'a_ticket_file_verdict_filed_is_found_by_a_later_inspect_against_the_real_site' "$FILING" | head -1)
+[ -n "$NAMED" ] || fail "the filing lane must name the case it runs, or --exact selects nothing and cargo reports 0 tests as a pass"
+grep -q "async fn $NAMED" "$FILING_TEST" \
+  || fail "the filing lane runs \`$NAMED\` and $FILING_TEST declares no such case, so the lane would report 0 tests run as a pass"
+CHECKED=$((CHECKED + 1))
+
+grep -q -F '#[ignore' "$FILING_TEST" \
+  || fail "the filing lane's case writes to a real site and must be #[ignore]d, or scripts/gate.sh would file a ticket on every run"
+CHECKED=$((CHECKED + 1))
+
+FILING_DELETES=$(grep -c '"DELETE"' "$FILING_TEST")
+FILING_PROPERTY_DELETES=$(grep '"DELETE"' "$FILING_TEST" | grep -c -E 'claim_route|&probe')
+[ "$FILING_DELETES" -gt 0 ] \
+  || fail "the filing lane sends no delete at all, so the comparison below counts nothing and would pass for a lane that deleted every issue it filed"
+[ "$FILING_DELETES" -eq "$FILING_PROPERTY_DELETES" ] \
+  || fail "the filing lane sends $FILING_DELETES deletes and only $FILING_PROPERTY_DELETES of them name a property route. The operator ruled on 2026-08-28 that cleanup is a close and never a delete: ISP refuses a delete by policy, so a lane that deletes an issue leaves residue on every run. Deletes found: $(grep -n '"DELETE"' "$FILING_TEST" | tr '\n' ' ')"
+for built in 'fn claim_route' 'let probe = format!'; do
+  grep -A2 -F "$built" "$FILING_TEST" | grep -q -F '/properties/' \
+    || fail "the filing lane's deletes name \`$built\` and that route is not built from /properties/, so the count above says nothing about what the deletes remove"
+done
+CHECKED=$((CHECKED + 1))
 
 printf 'test-live-jira-lanes: %d cases run, %d failed\n' "$CHECKED" "$FAILED"
 [ "$FAILED" -eq 0 ] || exit 1
