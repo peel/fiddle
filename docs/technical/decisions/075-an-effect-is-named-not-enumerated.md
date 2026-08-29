@@ -1,7 +1,7 @@
 # 075 — An effect is named, not enumerated
 
 Status: accepted
-Cites: EffectName, EffectDescriptor, BUILT_IN, RegistryError, ENSURE_BRANCH_PUBLISHED, JIRA_ISSUE_FILED, JIRA_COMMENT_ADDED, JIRA_ISSUE_TRANSITIONED, JIRA_PULL_REQUEST_LINKED, PolicyTable, PolicyDocument, UnknownEffect, effect_id, branch_name, ProposedEffect, IntegrationOperation, AdapterError, EffectPhase, FromStepParams, resolve, describe
+Cites: EffectName, EffectDescriptor, BUILT_IN, PINNED_MINIMUMS, HumanDecisionRequirement, FileVerdict, RegistryError, ENSURE_BRANCH_PUBLISHED, JIRA_ISSUE_FILED, JIRA_COMMENT_ADDED, JIRA_ISSUE_TRANSITIONED, JIRA_PULL_REQUEST_LINKED, PolicyTable, PolicyDocument, UnknownEffect, effect_id, branch_name, ProposedEffect, IntegrationOperation, AdapterError, EffectPhase, FromStepParams, resolve, describe
 
 ## Context
 
@@ -32,6 +32,25 @@ Both comments rest on the same argument. The type rejects an unknown name, so no
 **The ten wire spellings are frozen.** `ensure_branch_published`, `ensure_pull_request`, `ensure_check_requested`, `publish_decision_request`, `ensure_pull_request_ready`, `ensure_pull_request_body`, `jira.issue_filed`, `jira.comment_added`, `jira.issue_transitioned` and `jira.pull_request_linked` are constants in `fiddle-core`.
 
 M5b added the last four. They were written as `pub const` in their own operation modules while three lanes built them in parallel, so that no two lanes edited `fiddle-core/src/effect.rs` at once. That reason expired when the lanes merged. A shipped spelling belongs in `fiddle-core` because the consequence below is about the spelling and not about the module that happens to hold the operation.
+
+**A hand-written table pins the minimums, because the derive writes both sides.**
+
+`#[derive(Effect)]` generates `descriptor()`. It also generates `minimum()` as
+`Self::descriptor().minimum`. `BUILT_IN` holds `FileVerdict::descriptor()`. So for a derived
+operation both sides of `no_operation_declares_a_minimum_its_descriptor_does_not` read one
+attribute. Measured at `8934c10`: setting `minimum = "human"` on `FileVerdict` left that test
+green, and only `the_registry_holds_exactly_the_ten_this_build_ships` went red. Five of the ten
+operations carry the attribute. Five write `minimum()` by hand and still exercise the check.
+
+`PINNED_MINIMUMS`, in the registry test module, holds the ten spellings and the ten minimums as
+literal data. No attribute writes it. `the_registry_holds_exactly_the_ten_this_build_ships`
+compares `BUILT_IN` to it. `no_operation_declares_a_minimum_its_descriptor_does_not` compares each
+operation's `minimum()` to it, and each descriptor's `minimum` to it. A later milestone can convert
+the remaining five, and neither test becomes vacuous.
+
+An enumeration of effects would make a divergence a compile error. This record rejects an
+enumeration, so a hand-written pin replaces it. `HumanDecisionRequirement::Human` says a person must
+approve the effect. A person who edits a pin changes who may act without that approval.
 
 **`jira.transition` is not a spelling this build ships.** It is the suite's example of a name no descriptor holds. Registering it as an alias was measured: it reds six tests that depend on the name staying unregistered, in four files.
 
