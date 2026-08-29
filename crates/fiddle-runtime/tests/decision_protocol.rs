@@ -532,6 +532,14 @@ async fn every_refusal_names_what_actually_moved() {
         with_moved_head().resolve().await,
         Err(DecisionError::HeadMoved { .. })
     ));
+    assert!(matches!(
+        with_a_widened_payload().resolve().await,
+        Err(DecisionError::ForeignPayload { .. })
+    ));
+    assert!(matches!(
+        with_an_unreadable_conversation().resolve().await,
+        Err(DecisionError::Unreadable(_))
+    ));
 }
 
 #[tokio::test]
@@ -565,6 +573,13 @@ async fn no_two_refusals_read_the_same_to_a_person() {
             );
         }
     }
+    assert_eq!(
+        refusals.len(),
+        DecisionError::VARIANT_COUNT,
+        "the worlds above are written by hand and each reaches its own variant, so \
+         this line is what makes them every refusal rather than the ones somebody \
+         remembered; a refusal no world here provokes is read by nobody"
+    );
     let messages: Vec<String> = refusals
         .iter()
         .map(|refusal| without_numbers(&refusal.to_string()))

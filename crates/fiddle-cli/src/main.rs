@@ -182,7 +182,7 @@ struct Unconfigured {
     path: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, fiddle_runtime::effect::VariantCount)]
 enum CredentialPurpose {
     Model,
     Forge,
@@ -191,7 +191,7 @@ enum CredentialPurpose {
 
 impl CredentialPurpose {
     #[cfg(test)]
-    const ALL: [CredentialPurpose; 3] = [
+    const ALL: [CredentialPurpose; CredentialPurpose::VARIANT_COUNT] = [
         CredentialPurpose::Model,
         CredentialPurpose::Forge,
         CredentialPurpose::Jira,
@@ -414,16 +414,30 @@ fn port_kind_for(scheme: InvocationScheme) -> PortKind {
     }
 }
 
-fn jira_work_items(jira: &config::Jira, config_path: &Path) -> Result<JiraWorkItemPort, CliError> {
+fn jira_http(jira: &config::Jira, config_path: &Path) -> Result<JiraHttp, CliError> {
     let user = resolve_credential(CredentialPurpose::Jira, &jira.user.env)?;
     let token = resolve_credential(CredentialPurpose::Jira, &jira.token.env)?;
-    let http = JiraHttp::new(
+    JiraHttp::new(
         jira.base_url.as_deref().unwrap_or(&jira.site),
         &user,
         &token,
         jira.timeout.as_duration(),
     )
-    .map_err(|error| CliError::Jira(JiraUnusable(error, config_path.display().to_string())))?;
+    .map_err(|error| CliError::Jira(JiraUnusable(error, config_path.display().to_string())))
+}
+
+fn filing_client(
+    config: &config::Config,
+    config_path: &Path,
+) -> Result<Option<JiraHttp>, CliError> {
+    match config.jira.as_ref().filter(|jira| jira.filing.is_some()) {
+        Some(jira) => Ok(Some(jira_http(jira, config_path)?)),
+        None => Ok(None),
+    }
+}
+
+fn jira_work_items(jira: &config::Jira, config_path: &Path) -> Result<JiraWorkItemPort, CliError> {
+    let http = jira_http(jira, config_path)?;
     Ok(JiraWorkItemPort::new(
         http,
         ConfiguredNames::new(
@@ -628,8 +642,14 @@ async fn resolve_forge(
         None => None,
     };
 
+    let ctx = EffectContext::new(gh, git, work, cancel.clone());
+    let ctx = match filing_client(config, config_path)? {
+        Some(client) => ctx.with_jira(client),
+        None => ctx,
+    };
+
     Ok(Forge {
-        ctx: EffectContext::new(gh, git, work, cancel.clone()),
+        ctx,
         trace: AttemptTrace::new(),
         publishing,
     })
@@ -934,6 +954,15 @@ fn build_capability<'a>(
                     max_attempts: u32::try_from(agent.max_capability_attempts).unwrap_or(u32::MAX),
                     report_dir: config.report.dir.clone(),
                     today: fiddle_runtime::capability::cve::today_utc(),
+                    filing: config.jira.as_ref().and_then(|jira| {
+                        jira.filing.as_ref().map(|filing| {
+                            fiddle_runtime::cve::verdict::TicketFiling {
+                                project_key: filing.project.clone(),
+                                issue_type: filing.issue_type.clone(),
+                                ledger_issue: filing.ledger_issue.clone(),
+                            }
+                        })
+                    }),
                     cancel: cancel.clone(),
                 },
             )))
@@ -1122,7 +1151,7 @@ mod tests {
 
     #[test]
     fn every_outcome_maps_to_the_row_the_table_documents() {
-        let rows: [(RunOutcome, u8); 4] = [
+        let rows: [(RunOutcome, u8); RunOutcome::VARIANT_COUNT] = [
             (RunOutcome::Completed, 0),
             (
                 RunOutcome::Suspended {
@@ -1812,6 +1841,60 @@ mod tests {
                 assert_eq!(absent.variable, "FIDDLE_A_JIRA_USER_NOTHING_EXPORTS");
             }
             other => panic!("with the table present the credential is next, got {other:?}"),
+        }
+    }
+
+    fn a_tracker_document(dir: &Path, filing: &str) -> PathBuf {
+        let path = dir.join("fiddle.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
+                 [jira]\nsite=\"https://icecube.atlassian.net\"\nproject=\"IDENT\"\n\
+                 user={{env=\"FIDDLE_A_JIRA_USER_NOTHING_EXPORTS\"}}\n\
+                 token={{env=\"FIDDLE_A_JIRA_TOKEN_NOTHING_EXPORTS\"}}\n{filing}"
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn a_tracker_that_files_nothing_asks_for_no_credential_to_file_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = a_tracker_document(dir.path(), "");
+        let config = config::load(&path).unwrap();
+
+        assert!(
+            filing_client(&config, &path)
+                .expect("a deployment that files nowhere needs no client")
+                .is_none(),
+            "nothing exports either variable, and a run that files nothing must not be \
+             refused for a credential it never sends"
+        );
+    }
+
+    #[test]
+    fn a_tracker_that_files_is_refused_when_nothing_exports_its_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = a_tracker_document(
+            dir.path(),
+            "[jira.filing]\nproject=\"SEC\"\nissue_type=\"Task\"\nledger_issue=\"SEC-1\"\n",
+        );
+        let config = config::load(&path).unwrap();
+
+        let Err(error) = filing_client(&config, &path) else {
+            panic!(
+                "a deployment that asked to file and exported no credential would file \
+                 nothing on every run and say so only in the filing report"
+            )
+        };
+        match error {
+            CliError::CredentialAbsent(absent) => {
+                assert_eq!(absent.purpose, CredentialPurpose::Jira);
+                assert_eq!(absent.variable, "FIDDLE_A_JIRA_USER_NOTHING_EXPORTS");
+            }
+            other => panic!("the missing variable is what a person fixes, got {other:?}"),
         }
     }
 }

@@ -7,7 +7,7 @@ use fiddle_core::decision::{
 };
 use fiddle_core::{effect_id, payload_hash, EffectId, EffectName, PayloadHash};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, crate::effect::VariantCount)]
 pub enum DecisionStep {
     RecomputeIdentity,
     FindRequest,
@@ -38,7 +38,7 @@ pub trait DecisionTrace: Send + Sync {
     fn step(&self, step: DecisionStep);
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, crate::effect::VariantCount)]
 pub enum DecisionError {
     #[error("{count} comments name request {request:?}, expected at most one")]
     DuplicateRequest {
@@ -65,7 +65,7 @@ pub enum DecisionError {
     Unreadable(String),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, crate::effect::VariantCount)]
 #[serde(rename_all = "snake_case")]
 pub enum Ignored {
     RequestComment,
@@ -405,13 +405,12 @@ mod tests {
 
     #[test]
     fn every_reason_a_reply_was_declined_has_exactly_one_spelling() {
-        let spellings = [
+        let spellings: [&str; Ignored::VARIANT_COUNT] = [
             Ignored::RequestComment,
             Ignored::NotAPerson,
             Ignored::ActorNotAuthorized,
         ]
         .map(|reason| reason.as_str());
-        assert_eq!(spellings.len(), 3);
         for (at, reason) in spellings.iter().enumerate() {
             assert!(!reason.is_empty());
             assert!(
@@ -423,7 +422,7 @@ mod tests {
 
     #[test]
     fn every_step_of_the_order_has_its_own_stable_name() {
-        let names = [
+        let names: [&str; DecisionStep::VARIANT_COUNT] = [
             DecisionStep::RecomputeIdentity,
             DecisionStep::FindRequest,
             DecisionStep::ParseBinding,

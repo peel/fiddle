@@ -9,7 +9,7 @@ use fiddle_core::{
 };
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, crate::effect::VariantCount)]
 pub enum CheckState {
     Absent,
     Queued,

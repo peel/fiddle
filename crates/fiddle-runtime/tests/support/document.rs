@@ -159,7 +159,7 @@ fn as_json(packages: &[Package]) -> serde_json::Value {
     )
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, fiddle_macros::VariantCount)]
 pub enum ReportVariant {
     Plain(Libraries, OsPackages),
     OsAbsent,
@@ -169,7 +169,7 @@ pub enum ReportVariant {
     AdvisoryDescription(String),
 }
 
-const REPORT_VARIANTS: usize = 6;
+const REPORT_VARIANTS: usize = ReportVariant::VARIANT_COUNT;
 
 impl ReportVariant {
     pub fn index(&self) -> usize {

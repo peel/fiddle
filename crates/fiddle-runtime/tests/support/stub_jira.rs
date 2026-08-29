@@ -750,6 +750,16 @@ impl StubJira {
         .expect("the stub answers the property read")
     }
 
+    pub async fn delete_issue_property(&self, key: &str, named: &str) -> Answered {
+        self.attempt(
+            "DELETE",
+            &format!("{ISSUE_ROUTE}{key}/properties/{named}"),
+            None,
+        )
+        .await
+        .expect("the stub answers the property delete")
+    }
+
     pub async fn property_writes(&self) -> usize {
         self.state.lock().await.wrote(WriteRoute::SetIssueProperty)
     }
