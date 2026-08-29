@@ -790,17 +790,9 @@ mod tests {
 
     #[test]
     fn every_typed_state_reaches_the_human_line_in_a_word_of_its_own() {
-        let cases = [
-            WorkState::Ready,
-            WorkState::InProgress,
-            WorkState::InReview,
-            WorkState::Blocked,
-            WorkState::Done,
-            WorkState::Unknown,
-        ];
         let mut seen: Vec<String> = Vec::new();
 
-        for state in cases {
+        for state in WorkState::ALL {
             let word = work_state_word(&state);
             assert!(
                 !word.is_empty(),

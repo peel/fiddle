@@ -104,8 +104,8 @@ fn open_pr_covers_it() -> Run {
     run
 }
 
-fn every_row() -> Vec<Row> {
-    vec![
+fn every_row() -> [Row; Row::VARIANT_COUNT] {
+    [
         Row::NothingToDo,
         Row::AlreadyInProgress,
         Row::AlreadyFixed,
@@ -1226,8 +1226,8 @@ fn every_row_answers_whether_it_carries_a_legacy_label() {
     let rows = every_row();
     assert_eq!(
         rows.len(),
-        8,
-        "the eight rows, and every one of them answers"
+        Row::VARIANT_COUNT,
+        "every row answers, and this line is what makes `every_row` every row"
     );
 
     for row in &rows {
@@ -1615,9 +1615,9 @@ fn a_row_without_a_legacy_label_files_no_ticket() {
     let rows = every_row();
     assert_eq!(
         rows.iter().map(discriminant).collect::<HashSet<_>>().len(),
-        8,
-        "the eight rows, each named once, and `label_the_host_closes` is the \
-         match a ninth row would fail to compile against"
+        Row::VARIANT_COUNT,
+        "each row named once, and `label_the_host_closes` is the match a further \
+         row would fail to compile against"
     );
 
     let mut filed = Vec::new();

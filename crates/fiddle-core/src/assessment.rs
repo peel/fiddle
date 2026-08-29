@@ -354,14 +354,7 @@ mod tests {
 
     #[test]
     fn no_projected_work_state_moves_the_assessment_or_the_next_action() {
-        for state in [
-            WorkState::Ready,
-            WorkState::InProgress,
-            WorkState::InReview,
-            WorkState::Blocked,
-            WorkState::Done,
-            WorkState::Unknown,
-        ] {
+        for state in WorkState::ALL {
             for marker in [None, Some("aaaa"), Some("bbbb")] {
                 let projected = view(work_projecting(state.clone()), changes_with(marker));
                 let unprojected = view(avail_work(), changes_with(marker));

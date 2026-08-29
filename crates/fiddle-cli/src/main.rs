@@ -182,7 +182,7 @@ struct Unconfigured {
     path: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, fiddle_runtime::effect::VariantCount)]
 enum CredentialPurpose {
     Model,
     Forge,
@@ -191,7 +191,7 @@ enum CredentialPurpose {
 
 impl CredentialPurpose {
     #[cfg(test)]
-    const ALL: [CredentialPurpose; 3] = [
+    const ALL: [CredentialPurpose; CredentialPurpose::VARIANT_COUNT] = [
         CredentialPurpose::Model,
         CredentialPurpose::Forge,
         CredentialPurpose::Jira,
@@ -1122,7 +1122,7 @@ mod tests {
 
     #[test]
     fn every_outcome_maps_to_the_row_the_table_documents() {
-        let rows: [(RunOutcome, u8); 4] = [
+        let rows: [(RunOutcome, u8); RunOutcome::VARIANT_COUNT] = [
             (RunOutcome::Completed, 0),
             (
                 RunOutcome::Suspended {

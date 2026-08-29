@@ -31,7 +31,7 @@ pub enum Recurrence {
     Awaiting,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, crate::effect::VariantCount)]
 pub enum EffectError {
     #[error("`{kind}` is not an effect this build performs")]
     UnknownEffect { kind: EffectName },
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn every_effect_failure_declares_which_exit_row_it_belongs_in() {
-        let cases: [(&str, EffectError, Recurrence); 9] = [
+        let cases: [(&str, EffectError, Recurrence); EffectError::VARIANT_COUNT] = [
             (
                 "no descriptor in this build holds the name",
                 EffectError::UnknownEffect {

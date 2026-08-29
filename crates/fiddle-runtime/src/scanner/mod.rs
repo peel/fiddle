@@ -29,7 +29,7 @@ impl ScanReport {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, crate::effect::VariantCount)]
 pub enum ScanError {
     #[error("the scanner {} could not be started: {reason}", program.display())]
     Missing { program: PathBuf, reason: String },

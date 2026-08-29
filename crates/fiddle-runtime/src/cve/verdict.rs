@@ -78,7 +78,7 @@ impl CompleteFindings {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, crate::effect::VariantCount)]
 pub enum Row {
     NothingToDo,
 

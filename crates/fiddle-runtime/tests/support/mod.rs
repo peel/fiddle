@@ -28,7 +28,7 @@ pub const INVOCATION_REF: &str = "beans:w-1";
 pub const TARGET: &str = "refs/heads/fiddle/abc";
 pub const PAYLOAD: &str = r#"{"sha":"deadbeef"}"#;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, fiddle_macros::VariantCount)]
 pub enum Script {
     AlreadySatisfied,
     AbsentThenWritten,
@@ -43,7 +43,7 @@ pub enum Script {
 }
 
 impl Script {
-    pub const ALL: [Script; 10] = [
+    pub const ALL: [Script; Script::VARIANT_COUNT] = [
         Script::AlreadySatisfied,
         Script::AbsentThenWritten,
         Script::WriteLandsAnswerLost,

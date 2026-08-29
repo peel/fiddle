@@ -62,7 +62,7 @@ async fn a_non_zero_exit_that_wrote_a_parseable_file_is_a_success() {
 
 #[tokio::test]
 async fn every_unsuccessful_arm_is_its_own_error() {
-    let cases = [
+    let cases: [(&str, ScanError); ScanError::VARIANT_COUNT - 1] = [
         (
             "exit-nonzero-no-file",
             ScanError::Failed {
@@ -98,6 +98,7 @@ async fn every_unsuccessful_arm_is_its_own_error() {
         ),
     ];
 
+    let cases_len = cases.len();
     let mut variants = HashSet::new();
     let mut messages = BTreeSet::new();
     for (arm, want) in cases {
@@ -121,13 +122,15 @@ async fn every_unsuccessful_arm_is_its_own_error() {
     }
     assert_eq!(
         variants.len(),
-        5,
-        "five causes, five distinguishable classifications"
+        cases_len,
+        "one distinguishable classification per cause; the causes are the arms a \
+         present scanner can take, and `ScanError::Missing` is the one variant no \
+         stub can reach, so it is tested where the scanner is absent"
     );
     assert_eq!(
         messages.len(),
-        5,
-        "five causes, five distinguishable reasons: {messages:?}"
+        cases_len,
+        "one distinguishable reason per cause: {messages:?}"
     );
 }
 
