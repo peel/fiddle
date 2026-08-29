@@ -1943,3 +1943,37 @@ fill it in, together with the ledger issue the same effect now needs.
 
 Origin: implementation (bean `fiddle-pu2c`, live measurement 2026-08-28)
 Tags: #bug #jira #operations
+
+### 2026-08-29 — three more fields the scorecard merge drops or coerces
+
+Found while fixing `spec_defect` in `fiddle-d3br`, by sweeping every field
+`skills/develop/scorecard-envelope.md` defines through `scripts/merge-scorecards.sh`.
+Twenty envelope fields were checked. `spec_defect` was fixed by that bean. Three others
+still lose or contradict what the source cards said. Each is measured.
+
+1. **`domains.<d>.dimensions.<k>.evidence` is dropped.** The merged dimension carries
+   `score`, `threshold` and `provider_scores` and no `evidence`. Measured: a card carrying
+   `"evidence": "claude-evidence"` merges to a dimension where `has("evidence")` is false.
+   `check-thresholds.sh` does not require it, so the merged card that every later step reads
+   carries a score with no justification, and the eval log records it that way.
+
+2. **`criteria[].evidence` can contradict `criteria[].pass`.** `pass` is `all(.pass)` across
+   the providers and `evidence` is `.[0].evidence` from the first card. Measured: claude
+   `{"pass": true, "evidence": "claude says it passes"}` and codex
+   `{"pass": false, "evidence": "codex says it fails"}` merge to
+   `{"pass": false, "evidence": "claude says it passes"}`. The verdict is the failing one and
+   the evidence is the passing one.
+
+3. **`threshold` takes the first card's value.** Two providers scoring the same dimension
+   against different thresholds resolve to whichever card came first, silently. Measured:
+   thresholds 7 and 9 merge to 7. The bean sets the threshold, so a disagreement means one
+   card is wrong, and the merge should refuse rather than pick by order.
+
+`criteria[].pass` also still reads `all(.pass)`, where a card with no `pass` key becomes a
+failure — the `fiddle-qcch` instance that `docs/antipatterns-general.md` records under
+**assertion-weaker-than-its-message**. Measured: a criterion carrying only `id` and
+`evidence` merges to `pass: false`. `validate-scorecard.sh` refuses such a card at 1g, so
+the coercion is guarded upstream rather than absent here.
+
+Origin: implementation (bean `fiddle-d3br`, envelope sweep 2026-08-29)
+Tags: #debt #evaluation

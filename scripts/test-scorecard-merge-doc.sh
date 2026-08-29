@@ -290,6 +290,74 @@ OUT=$(line_of "$MARKER" "$ONE_MARKER" 2>/dev/null) || RC=$?
 assert_exit "removing only the second marker makes the same lookup succeed, so Test 8 refused for the count and not for another fault" 0 "$RC"
 assert_equal "the successful lookup returns the line the marker is on" "1" "$OUT"
 
+write_domain_card() {
+  local path="$1" domain="$2" state="$3"
+  jq -n --arg domain "$domain" --arg state "$state" '
+    {
+      task_id: "bean-x4z8",
+      iteration: 1,
+      timestamp: "2026-01-01T00:00:00Z",
+      domains: { ($domain): { dimensions: { correctness: { score: 8, threshold: 7 } } } },
+      criteria: [{ id: ("criterion-" + $domain), pass: true, evidence: "the evaluator recorded evidence" }]
+    }
+    | if $state == "detected" then
+        .spec_defect = { state: "detected", detected: true,
+                         reason: ($domain + "/claude: the spec names a table that was dropped"),
+                         sources: [{ provider: "claude", domain: $domain,
+                                     reason: "the spec names a table that was dropped" }],
+                         reported_by: ["claude"], missing_from: [] }
+      elif $state == "clear" then
+        .spec_defect = { state: "clear", detected: false, sources: [],
+                         reported_by: ["claude"], missing_from: [] }
+      elif $state == "not_reported" then
+        .spec_defect = { state: "not_reported", sources: [],
+                         reported_by: [], missing_from: ["claude"] }
+      else . end' > "$path"
+}
+
+echo "=== Test 9: a spec defect raised in one domain survives the cross-domain merge ==="
+write_domain_card "$TMPDIR/scorecard-general.json" general detected
+write_domain_card "$TMPDIR/scorecard-frontend.json" frontend clear
+merge_cards "$TMPDIR/scorecard-general.json" "$TMPDIR/scorecard-frontend.json"
+assert_json "the documented merge carries the flag across domains, which the previous block dropped" \
+  '.spec_defect.detected' "true" "$MERGED"
+assert_json "the merged state is named rather than inferred from a missing key" \
+  '.spec_defect.state' "detected" "$MERGED"
+assert_json "the reason names the domain that raised it" \
+  '.spec_defect.reason' "general/claude: the spec names a table that was dropped" "$MERGED"
+assert_json "the domain that raised nothing is not a source" \
+  '[.spec_defect.sources[].domain] | join(",")' "general" "$MERGED"
+
+echo "=== Test 10: every domain reporting no defect merges to a clear card ==="
+write_domain_card "$TMPDIR/scorecard-general.json" general clear
+write_domain_card "$TMPDIR/scorecard-frontend.json" frontend clear
+merge_cards "$TMPDIR/scorecard-general.json" "$TMPDIR/scorecard-frontend.json"
+CLEAR_DEFECT=$(printf '%s' "$MERGED" | jq -c '.spec_defect')
+assert_json "a merge that flagged every card would fail here" '.spec_defect.detected' "false" "$MERGED"
+assert_json "the clear state is named" '.spec_defect.state' "clear" "$MERGED"
+assert_json "the clear card carries the whole state and no reason to route on" \
+  '.spec_defect | keys | join(",")' "detected,missing_from,reported_by,sources,state" "$MERGED"
+
+echo "=== Test 11: one domain that never reported withholds the clear verdict ==="
+write_domain_card "$TMPDIR/scorecard-general.json" general clear
+write_domain_card "$TMPDIR/scorecard-frontend.json" frontend not_reported
+merge_cards "$TMPDIR/scorecard-general.json" "$TMPDIR/scorecard-frontend.json"
+assert_json "one silent domain is enough to withhold the clear verdict" \
+  '.spec_defect.state' "not_reported" "$MERGED"
+assert_json "the silent card carries no detected key, so no reader sees a false there" \
+  '.spec_defect | keys | join(",")' "missing_from,reported_by,sources,state" "$MERGED"
+assert_equal "a silent domain and a cleared one are different outputs" "different" \
+  "$(if [ "$(printf '%s' "$MERGED" | jq -c '.spec_defect')" = "$CLEAR_DEFECT" ]; then echo same; else echo different; fi)"
+
+echo "=== Test 12: a domain card with no spec_defect at all is named by its domain ==="
+write_domain_card "$TMPDIR/scorecard-general.json" general clear
+write_card "$TMPDIR/scorecard-frontend.json" frontend a-card-without-the-field false
+merge_cards "$TMPDIR/scorecard-general.json" "$TMPDIR/scorecard-frontend.json"
+assert_json "a card produced before this rule does not read as clean" \
+  '.spec_defect.state' "not_reported" "$MERGED"
+assert_json "the merge names the domain whose card carried nothing" \
+  '.spec_defect.missing_from | join(",")' "frontend" "$MERGED"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed of $((PASS + FAIL))"
 [ "$FAIL" -eq 0 ] || exit 1

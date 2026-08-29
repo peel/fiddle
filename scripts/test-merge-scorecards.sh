@@ -15,7 +15,16 @@ assert_exit() {
 assert_json() {
   local desc="$1" field="$2" expected="$3" json="$4"
   local actual
-  actual=$(echo "$json" | jq -r "$field")
+  actual=$(printf '%s' "$json" | jq -r "$field" 2>&1) || actual="jq refused: $actual"
+  if [ "$expected" = "$actual" ]; then
+    PASS=$((PASS+1)); echo "  PASS: $desc"
+  else
+    FAIL=$((FAIL+1)); echo "  FAIL: $desc (expected '$expected', got '$actual')"
+  fi
+}
+
+assert_equal() {
+  local desc="$1" expected="$2" actual="$3"
   if [ "$expected" = "$actual" ]; then
     PASS=$((PASS+1)); echo "  PASS: $desc"
   else
@@ -477,5 +486,199 @@ assert_json "merged card claims no declaration" ".mode" "null" "$OUT"
 assert_json "the scored dimension survives the merge" '.domains.general.dimensions.correctness.score' "8" "$OUT"
 
 echo ""
-echo "Results: $PASS passed, $FAIL failed"
+echo "=== Test 16: a flagged spec defect survives the merge and names its source ==="
+INPUT='[
+  {
+    "task_id": "bean-16",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": {"detected": true, "reason": "the spec asks for a batch call the API does not have"}
+  }
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "the merged card carries the flag, which the dropped field could not" '.spec_defect.detected' "true" "$OUT"
+assert_json "the merged card names the state, so the reader does not infer it from a missing key" '.spec_defect.state' "detected" "$OUT"
+assert_json "the reason survives the merge" '.spec_defect.reason | contains("batch call the API does not have")' "true" "$OUT"
+assert_json "the reason names the domain and the provider that raised it" '.spec_defect.reason | startswith("general/codex: ")' "true" "$OUT"
+assert_json "one source raised it" '.spec_defect.sources | length' "1" "$OUT"
+assert_json "the source names its provider" '.spec_defect.sources[0].provider' "codex" "$OUT"
+assert_json "the source names its domain" '.spec_defect.sources[0].domain' "general" "$OUT"
+
+echo ""
+echo "=== Test 17: one domain flags and one does not, and only the flagging reason survives ==="
+INPUT='[
+  {
+    "task_id": "bean-17",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": {"detected": true, "reason": "the premise about resolveIdentity is false"}
+  },
+  {
+    "task_id": "bean-17",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": {"detected": false, "reason": "the spec reads sound"}
+  }
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "one flag among cards that agree otherwise still flags the merge" '.spec_defect.detected' "true" "$OUT"
+assert_json "the surviving reason is the flagging one" '.spec_defect.reason' "general/claude: the premise about resolveIdentity is false" "$OUT"
+assert_json "the card that reported no defect is not listed as a source" '[.spec_defect.sources[].provider] | join(",")' "claude" "$OUT"
+assert_json "the reason does not carry the text of the card that flagged nothing" '.spec_defect.reason | contains("reads sound")' "false" "$OUT"
+
+echo ""
+echo "=== Test 18: every source reporting no defect merges to a clear card, not a flagged one ==="
+INPUT='[
+  {
+    "task_id": "bean-18",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": null
+  },
+  {
+    "task_id": "bean-18",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": null
+  }
+]'
+CLEAR=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "a merge that flagged every card would fail here" '.spec_defect.detected' "false" "$CLEAR"
+assert_json "the clear state is named" '.spec_defect.state' "clear" "$CLEAR"
+assert_json "the clear card names the cards that reported" '.spec_defect.reported_by | join(",")' "claude,codex" "$CLEAR"
+assert_json "the clear card carries the whole state and no reason to route on" '.spec_defect | keys | join(",")' "detected,missing_from,reported_by,sources,state" "$CLEAR"
+
+echo ""
+echo "=== Test 19: a field that never arrived does not read as a clean evaluation ==="
+INPUT='[
+  {
+    "task_id": "bean-19",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}]
+  },
+  {
+    "task_id": "bean-19",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}]
+  }
+]'
+ABSENT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "the merged card always carries the key, so a reader never reads a dropped field as null" 'has("spec_defect")' "true" "$ABSENT"
+assert_json "the state says the field never arrived" '.spec_defect.state' "not_reported" "$ABSENT"
+assert_json "the unreported card carries no detected key, so no reader sees a false there" '.spec_defect | keys | join(",")' "missing_from,reported_by,sources,state" "$ABSENT"
+assert_json "the card names who did not report" '.spec_defect.missing_from | join(",")' "claude,codex" "$ABSENT"
+assert_equal "an unreported field and a cleared spec are different outputs" \
+  "different" \
+  "$(if [ "$(echo "$CLEAR" | jq -c .spec_defect)" = "$(echo "$ABSENT" | jq -c .spec_defect)" ]; then echo same; else echo different; fi)"
+
+echo ""
+echo "=== Test 20: one card omitting the field makes the whole merge unreported ==="
+INPUT='[
+  {
+    "task_id": "bean-20",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": null
+  },
+  {
+    "task_id": "bean-20",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}]
+  }
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "one silent card is enough to withhold the clear verdict" '.spec_defect.state' "not_reported" "$OUT"
+assert_json "only the silent card is named" '.spec_defect.missing_from | join(",")' "codex" "$OUT"
+assert_json "the card that did report is still named" '.spec_defect.reported_by | join(",")' "claude" "$OUT"
+
+echo ""
+echo "=== Test 21: a flag outranks a card that never reported ==="
+INPUT='[
+  {
+    "task_id": "bean-21",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "domains": { "frontend": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": {"detected": true, "reason": "the spec names a component that was deleted"}
+  },
+  {
+    "task_id": "bean-21",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "domains": { "frontend": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}]
+  }
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "the flag wins over the silence" '.spec_defect.state' "detected" "$OUT"
+assert_json "the flagged domain is named" '.spec_defect.sources[0].domain' "frontend" "$OUT"
+assert_json "the silent card is still named, so the flag does not hide it" '.spec_defect.missing_from | join(",")' "codex" "$OUT"
+
+echo ""
+echo "=== Test 22: a spec_defect that states nothing is not a clear one ==="
+INPUT='[
+  {
+    "task_id": "bean-22",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": {"detected": "true"}
+  }
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "a string where the boolean belongs is not read as a flag" '.spec_defect.state' "not_reported" "$OUT"
+assert_json "the card that stated nothing is named" '.spec_defect.missing_from | join(",")' "claude" "$OUT"
+assert_json "and it is not counted as having reported" '.spec_defect.reported_by | length' "0" "$OUT"
+
+echo ""
+echo "=== Test 23: an empty spec_defect object states nothing either ==="
+INPUT='[
+  {
+    "task_id": "bean-23",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": {}
+  }
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "an object carrying no verdict is not read as clear" '.spec_defect.state' "not_reported" "$OUT"
+assert_json "the card that carried it is named as silent" '.spec_defect.missing_from | join(",")' "codex" "$OUT"
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed of $((PASS + FAIL))"
 [ "$FAIL" -eq 0 ] || exit 1
