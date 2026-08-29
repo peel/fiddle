@@ -1066,6 +1066,34 @@ fn config_check_echoes_the_project_a_deployment_files_advisories_into() {
 }
 
 #[test]
+fn the_human_reading_names_the_three_values_a_filing_table_resolves_to() {
+    let out = check(&format!("{AGENTIC}{TRACKER}{TRACKER_FILING}"));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    for line in [
+        "jira.filing.project = SEC",
+        "jira.filing.issue_type = Task",
+        "jira.filing.ledger_issue = SEC-1",
+    ] {
+        assert!(
+            said.contains(line),
+            "an operator who does not ask for JSON still has to read back every value a \
+             sweep files with, and `{line}` is not in what the command said: {said}"
+        );
+    }
+    assert!(
+        said.contains("jira.project = IDENT"),
+        "beside the project it reads work items from, which the filing table does not \
+         change: {said}"
+    );
+}
+
+#[test]
 fn a_document_naming_no_filing_table_files_nothing_and_says_so() {
     assert_eq!(
         checked(&format!("{AGENTIC}{TRACKER}"))["jira"]["filing"],

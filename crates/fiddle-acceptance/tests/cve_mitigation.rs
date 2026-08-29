@@ -3854,3 +3854,239 @@ fn no_credential_the_sweep_was_given_reaches_a_path_in_the_project() {
          a tree the run never wrote to and would pass with the credential leaking"
     );
 }
+
+const FILING_PROJECT: &str = "SEC";
+
+const FILING_ISSUE_TYPE: &str = "Task";
+
+const FILING_LEDGER: &str = "SEC-1";
+
+const FILING_USER_CREDENTIAL: &str = "JIRA_USER_EMAIL";
+
+const FILING_TOKEN_CREDENTIAL: &str = "JIRA_API_TOKEN";
+
+const FILING_USER: &str = "bot@example.com";
+
+const SENTINEL_FILING_TOKEN: &str = "jira-sentinel-the-sweep-must-not-print";
+
+impl Sweep {
+    fn filing_into(&self, project: &str, issue_type: &str, ledger: &str, base_url: &str) {
+        self.scenario.append_config(&format!(
+            "\n[jira]\n\
+             site = \"https://icecube.atlassian.net\"\n\
+             project = \"IDENT\"\n\
+             user = {{ env = \"{FILING_USER_CREDENTIAL}\" }}\n\
+             token = {{ env = \"{FILING_TOKEN_CREDENTIAL}\" }}\n\
+             base_url = \"{base_url}\"\n\
+             timeout = \"30s\"\n\
+             \n\
+             [jira.filing]\n\
+             project = \"{project}\"\n\
+             issue_type = \"{issue_type}\"\n\
+             ledger_issue = \"{ledger}\"\n"
+        ));
+    }
+
+    fn run_filing(&self) -> Output {
+        self.command_selecting(&["--capability", "cve_mitigate"], &[])
+            .arg("--json")
+            .env(FILING_USER_CREDENTIAL, FILING_USER)
+            .env(FILING_TOKEN_CREDENTIAL, SENTINEL_FILING_TOKEN)
+            .output()
+            .unwrap()
+    }
+
+    fn filings(&self) -> serde_json::Value {
+        let path = self.scenario.report_dir().join("filings.json");
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|e| panic!("no filing report at {} ({e})", path.display()));
+        serde_json::from_slice(&bytes).unwrap()
+    }
+}
+
+fn a_sweep_with_one_unfixable_advisory() -> Sweep {
+    Sweep::scanning_rescanning(
+        VULNERABLE,
+        SCAN_ONLY_ADVISORY_HAS_NO_PUBLISHED_FIX,
+        SCAN_ONLY_ADVISORY_HAS_NO_PUBLISHED_FIX,
+        2,
+        a_script_declining_the_only_advisory(),
+    )
+}
+
+const FILED_ISSUE: &str = "SEC-42";
+
+#[test]
+fn the_filing_table_in_the_document_reaches_the_ticket_the_binary_files() {
+    let site = support::StubJira::filing_as(FILED_ISSUE);
+    let sweep = a_sweep_with_one_unfixable_advisory();
+    sweep.filing_into(
+        FILING_PROJECT,
+        FILING_ISSUE_TYPE,
+        FILING_LEDGER,
+        &site.base_url(),
+    );
+
+    let run = sweep.run_filing();
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the sweep has to reach the filing, or nothing below is about a ticket - stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let marker = support::expected_ticket_marker(
+        support::PROJECT_NAME,
+        SWEEP_REF,
+        FILING_PROJECT,
+        LIBRARY_CVE,
+    );
+    assert_eq!(
+        sweep.filings(),
+        serde_json::json!({
+            "filing": "attempted",
+            "tickets": [{
+                "state": "filed",
+                "cve": LIBRARY_CVE,
+                "marker": marker,
+                "issue": FILED_ISSUE,
+            }],
+        }),
+        "a `[jira.filing]` table in the document has to make the binary file the advisory          it could not repair, and the marker is derived from the project key that table          names"
+    );
+
+    let created: Vec<serde_json::Value> = site
+        .request_bodies()
+        .iter()
+        .filter_map(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+        .filter(|body| body.get("fields").is_some())
+        .collect();
+    assert_eq!(
+        created.len(),
+        1,
+        "one advisory was unrepaired, so the site received one create: {:?}",
+        site.request_lines()
+    );
+    assert_eq!(
+        created[0]["fields"]["project"]["key"],
+        serde_json::json!(FILING_PROJECT),
+        "the create names the project `[jira.filing]` names and not the one `[jira]` reads          work items from: {}",
+        created[0]
+    );
+    assert_eq!(
+        created[0]["fields"]["issuetype"]["name"],
+        serde_json::json!(FILING_ISSUE_TYPE),
+        "and the issue type that table names, which reaches no other surface: {}",
+        created[0]
+    );
+
+    let asked = site.request_lines();
+    let claims: Vec<&String> = asked
+        .iter()
+        .filter(|line| line.contains("/properties/"))
+        .collect();
+    assert!(
+        !claims.is_empty(),
+        "the ledger claim is what the binary asks the site for first: {asked:?}"
+    );
+    let claim_path = format!("/rest/api/3/issue/{FILING_LEDGER}/properties/{marker}");
+    for line in &claims {
+        assert!(
+            line.contains(&claim_path),
+            "every claim is read on the ledger issue the document names, under the marker \
+             the project key derives, and this one is not: {line}"
+        );
+    }
+}
+
+#[test]
+fn a_sweep_that_files_prints_no_jira_credential_on_any_surface_it_writes() {
+    let site = support::StubJira::filing_as(FILED_ISSUE);
+    let sweep = a_sweep_with_one_unfixable_advisory();
+    sweep.filing_into(
+        FILING_PROJECT,
+        FILING_ISSUE_TYPE,
+        FILING_LEDGER,
+        &site.base_url(),
+    );
+
+    let run = sweep.run_filing();
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the run has to file for these surfaces to be a filing run's - stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        sweep.filings()["tickets"][0]["state"],
+        serde_json::json!("filed"),
+        "and the credential has to have been sent, or the search below is looking for \
+         something that never travelled"
+    );
+
+    let header = site
+        .the_only_authorization()
+        .trim_start_matches("Basic ")
+        .to_string();
+    assert!(
+        !header.is_empty() && !header.contains(SENTINEL_FILING_TOKEN),
+        "the header the site received has to be derived from the token and not be the \
+         token, or searching for one stands in for searching for the other: {header}"
+    );
+
+    let mut searched = vec![
+        (
+            "what the run printed on stdout".to_string(),
+            String::from_utf8_lossy(&run.stdout).into_owned(),
+        ),
+        (
+            "the diagnostic the run printed on stderr".to_string(),
+            String::from_utf8_lossy(&run.stderr).into_owned(),
+        ),
+    ];
+    for path in walkdir_files(sweep.scenario.report_dir()) {
+        let named = path
+            .strip_prefix(sweep.scenario.report_dir())
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        searched.push((
+            format!("the file `{named}` the run published"),
+            String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned(),
+        ));
+    }
+    assert!(
+        searched
+            .iter()
+            .any(|(what, _)| what.contains("filings.json")),
+        "the filing report is the surface a filing run writes that no other run does, \
+         and it has to be one of the searched: {:?}",
+        searched.iter().map(|(what, _)| what).collect::<Vec<_>>()
+    );
+    assert!(
+        searched.len() >= 6,
+        "too few surfaces for this to be evidence of anything: {:?}",
+        searched.iter().map(|(what, _)| what).collect::<Vec<_>>()
+    );
+    let empty: Vec<&String> = searched
+        .iter()
+        .filter(|(what, text)| text.is_empty() && !what.contains("stderr"))
+        .map(|(what, _)| what)
+        .collect();
+    assert!(
+        empty.is_empty(),
+        "a surface that holds nothing carries no credential and witnesses nothing about \
+         one, so searching it would pass for a reason that has nothing to do with the \
+         token: {empty:?}"
+    );
+
+    let leaking: Vec<&String> = searched
+        .iter()
+        .filter(|(_, text)| text.contains(SENTINEL_FILING_TOKEN) || text.contains(&header))
+        .map(|(what, _)| what)
+        .collect();
+    assert!(
+        leaking.is_empty(),
+        "the jira credential reached a surface a reader sees: {leaking:?}"
+    );
+}
