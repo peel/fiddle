@@ -120,9 +120,9 @@ JIRA_SITE=https://snplow.atlassian.net JIRA_ISSUE=ISP-267 \
 JIRA_SITE=https://snplow.atlassian.net JIRA_SEARCH_PROJECT=ISP \
   scripts/live-jira-search-shape.sh
 
-# the live Jira write lane; it CREATES an issue, so the project must be disposable
-JIRA_SITE=https://snplow.atlassian.net JIRA_WRITE_PROJECT=<disposable> \
-  scripts/live-jira-write.sh
+# the live Jira write lane; it CREATES an issue and then CLOSES it, never deletes
+JIRA_SITE=https://snplow.atlassian.net JIRA_WRITE_PROJECT=ISP \
+  JIRA_LEDGER_ISSUE=ISP-<anchor> scripts/live-jira-write.sh
 ```
 
 Read the gate's coverage off its `TOTALS` line. It says `N of M binaries`, and
@@ -292,39 +292,48 @@ blocked has to name it in `[jira.workflow]`. The category cannot tell them apart
 
 ### The live Jira write lane
 
-`scripts/live-jira-write.sh` **creates an issue on a real site.** It refuses when
-`JIRA_WRITE_PROJECT` is absent, when the key is not a bare project key, and when
-that key is the project `JIRA_ISSUE` is read from, because a disposable project is
-not the project a read lane observes.
+`scripts/live-jira-write.sh` **creates an issue on a real site and then closes
+it.** It never deletes. Deletion is refused in `ISP` by project policy, so a
+cleanup that depends on it leaves residue on every run.
 
-It sends the same search-then-create requests `FileVerdict` sends: it walks
-`/rest/api/3/search/jql` for `project = KEY AND labels = MARKER` following
-`nextPageToken`, and creates only when the walk matched nothing. It runs that
-twice with no wait between them, which is the interruption case exactly-once is
-scoped to, then polls until the marker becomes searchable and reports how many
-seconds that took. That number is the bound on the exactly-once claim: a re-run
-inside it files a duplicate.
+**Six preconditions, all asserted before anything is written.** The four
+variables, the https origin and the bare project key, as before. Then:
+`JIRA_LEDGER_ISSUE` must exist, must live in `JIRA_WRITE_PROJECT`, and must be
+the issue type the lane files, because a Jira workflow is per issue type and a
+transition resolved on an issue of another type says nothing about the ticket
+the lane creates. The closing transition must resolve to **exactly one id** from
+that issue's state; the lane refuses on any other count and prints every
+transition it was offered. And the token must be able to write, read back and
+remove a property on the ledger issue. Discovering any of these after a create
+is what left `ISP-272` and `ISP-273` behind.
 
-**What it leaves behind.** One issue, labelled `fiddle-live-lane` and this run's
-marker. The lane deletes every issue carrying the marker before it exits. When the
-site refuses a delete, the lane names the keys on stderr and says they remain;
-delete them by hand, because the next run's ambiguity check reads them.
+**The closing transition is named, never matched by category.** `Won't Do` by
+default, `Done` as the declared fallback, `JIRA_CLOSING_TRANSITION` to spell it
+otherwise. ADR 077 measured that `Won't Do` and `Done` share the category `done`,
+so a category match would pick the wrong transition. The category **is** used to
+exclude closed issues from the marker search, which is what the category means
+and is a different question.
 
-**That cleanup is wrong, and the operator ruled on it on 2026-08-28.** The lane
-closes its ticket to `Won't Do`, or at worst to `Done`, and never deletes.
-Deletion is refused in `ISP` by project policy, so the advice to delete by hand
-cannot be followed there. Resolve the closing transition to a single id and
-refuse before writing when the token cannot close. The lane still deletes; bean
-`fiddle-jh1z` carries the correction, and ADR 079 carries the ruling.
+**It sends the claim-then-create requests `FileVerdict` sends.** It reads
+`/rest/api/3/issue/{ledger}/properties/{marker}` first. A claim naming an issue
+means the ticket exists and it creates nothing. A claim naming none is an
+unknown outcome, and the lane refuses rather than repeating the write. No claim
+means it writes one, creates, and gives the claim the key. It runs that twice
+with no wait, which is the interruption case exactly-once is scoped to. Its
+searches carry `fields=key` and refuse an answer that omits the key.
 
-**Now a measurement: a create this build sends would be refused.** The shape lane
-reads `/rest/api/3/issue/createmeta/ISP/issuetypes/10002` and reports the required
-fields of a `Task` in `ISP` as `issuetype`, `project` and `summary`.
-`FileVerdict::body` sends `project`, `summary`, `labels` and `description` and no
-`issuetype`, so `jira.issue_filed` cannot land against this site as written. The
-create stub requires `fields.project.key` alone, so no hermetic lane reds it.
-`docs/BACKLOG.md` carries it, and the fix needs the same missing `[jira]`
-configuration `fiddle-zlc4` needs.
+**The lag it reports agrees with its own observations.** It waits until the
+search shows exactly as many issues as the run created **and** shows the key it
+filed. Until both hold, the number would be taken from a stale index. If neither
+holds within 300 seconds it says the lag is unmeasured rather than printing a
+number. The 2026-08-28 run printed `0 seconds` while reporting one issue where
+two existed; that number is unsound and must not be quoted.
+
+**What it leaves behind.** Nothing, when it passes. Every issue it wrote or
+matched is closed through the resolved transition and each close is verified by
+a second read. The claim is removed from the ledger issue. The ledger issue
+itself is never closed, and the lane refuses if the close list names it. When a
+close does not take, the lane names the keys on stderr and fails.
 
 **It does not drive `fiddle`.** `ticket_proposals` in
 `crates/fiddle-runtime/src/cve/verdict.rs` builds `TicketProposal` values and no
@@ -337,13 +346,17 @@ search: every Jira surface a binary writes is still a read's. When `fiddle-zlc4`
 lands, the lane should drive the binary as `scripts/live-jira-observe.sh` does and
 the census should grow a write scenario.
 
-**Run twice against `ISP` on 2026-08-28.** It filed `ISP-272` and `ISP-273`, so
-two runs left two issues rather than one. Both were closed to `Won't Do` by hand.
-The lane reported the indexing lag as `0 seconds` and, in the same run, reported
-one issue where two existed, so its lag computation is unsound and the real lag
-stays unmeasured. Do not quote that number. ADR 079 records what the run measured
-and what it refutes. `scripts/test-live-jira-lanes.sh` holds that a refusal is a
-refusal and not a silent skip.
+**The rewritten lane has not been run.** It is a human gate and the operator runs
+it; no run of this version has touched a site. `scripts/test-live-jira-lanes.sh`
+holds that it refuses rather than skips, that it sends no delete against an
+issue, that it resolves its closing transition by name, and that its marker
+search excludes closed issues. Those are checks on the text of the lane, not on
+Atlassian.
+
+**Run twice against `ISP` on 2026-08-28, before this rewrite.** It filed
+`ISP-272` and `ISP-273`, so two runs left two issues rather than one. Both were
+closed to `Won't Do` by hand through transition `id=51`. ADR 079 records what the
+run measured and what it refutes.
 
 **Out of reach and not claimed by either lane.** Concurrent duplicate
 invocations. The design scopes exactly-once to interruptions, and one process

@@ -1,10 +1,11 @@
 # 079 — A ticket is deduplicated by a marker it carries
 
-Status: accepted; amended in M5b by the note "What one live run measured", which
-leaves the mechanism standing and refutes the claim made for it against a real
-site
+Status: accepted; amended in M5b by the note "What one live run measured", and
+superseded in part by "The claim ledger, which is what exactly-once now rests
+on". The marker stands as identity. It is no longer what a run reads to decide
+whether to file.
 
-Cites: FileVerdict, FiledIssue, ticket_proposals, TicketProposal, Filing, TICKET_MARKER_PREFIX, TICKET_LABEL_PREFIX, effect_id, JIRA_ISSUE_FILED, JiraError::Ambiguous, JiraError::Malformed, JiraError::NotSent, EffectError::DuplicateState, EffectError::Unresolved, EffectOutcome::Unknown, PAGE_WALK_BOUND, RULE_KEYS, VariantCount, two_marker_matches_refuse_the_write_and_create_nothing, a_marker_matching_across_more_than_one_search_page_is_still_ambiguous, the_marker_is_written_in_the_create_and_never_in_a_second_edit, an_issue_that_already_carries_the_marker_is_answered_by_a_read_and_no_write, an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_one_issue, a_fresh_process_inside_the_lag_window_files_a_second_issue_and_the_next_read_refuses_both, a_count_taken_from_one_search_page_is_a_floor_and_never_a_total, crates/fiddle-runtime/src/jira/file_verdict.rs, crates/fiddle-runtime/src/cve/verdict.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-runtime/tests/jira_effects.rs, scripts/live-jira-write.sh, scripts/live-jira-search-shape.sh, scripts/gate.sh, docs/technical/RUNBOOKS.md
+Cites: FileVerdict, FiledIssue, ticket_proposals, TicketProposal, Filing, TICKET_MARKER_PREFIX, TICKET_LABEL_PREFIX, effect_id, JIRA_ISSUE_FILED, JiraError::Ambiguous, JiraError::Malformed, JiraError::NotSent, EffectError::DuplicateState, EffectError::Unresolved, EffectOutcome::Unknown, PAGE_WALK_BOUND, RULE_KEYS, VariantCount, two_marker_matches_refuse_the_write_and_create_nothing, a_marker_matching_across_more_than_one_search_page_is_still_ambiguous, the_marker_is_written_in_the_create_and_never_in_a_second_edit, an_issue_that_already_carries_the_marker_is_answered_by_a_read_and_no_write, an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_one_issue, a_fresh_process_inside_the_lag_window_reads_the_claim_and_files_no_second_issue, a_claim_with_no_key_inside_the_lag_window_is_unresolved_and_never_a_second_create, the_search_then_create_protocol_files_a_second_issue_where_the_claim_ledger_files_one, a_search_answers_an_id_and_no_key_unless_the_caller_asks_for_the_key_field, an_issue_property_is_readable_the_moment_it_is_written_and_the_search_never_sees_it, a_jql_naming_an_issue_property_answers_no_issue_rather_than_every_issue, a_create_that_names_no_issue_type_is_refused_and_stores_nothing, the_search_asks_for_the_key_field_because_the_site_answers_an_id_alone, the_create_names_the_issue_type_the_project_requires, the_claim_is_written_before_the_create_and_carries_the_key_after_it, a_create_the_site_refuses_releases_the_claim_so_the_next_run_is_not_wedged, a_ledger_issue_the_site_does_not_hold_is_named_and_no_create_is_sent, JiraError::Claimed, Filing, a_count_taken_from_one_search_page_is_a_floor_and_never_a_total, crates/fiddle-runtime/src/jira/file_verdict.rs, crates/fiddle-runtime/src/cve/verdict.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-runtime/tests/jira_effects.rs, scripts/live-jira-write.sh, scripts/live-jira-search-shape.sh, scripts/gate.sh, docs/technical/RUNBOOKS.md
 
 ## Context
 
@@ -174,3 +175,104 @@ records why the step is not retired.
 **Follow-up.** `fiddle-jh1z` is critical and carries the four defects above.
 `fiddle-0lcc` is high. `fiddle-zlc4`, `fiddle-4bul`, `fiddle-y4zt` and
 `fiddle-nry2` carry the rest.
+
+## The claim ledger, which is what exactly-once now rests on — 2026-08-29
+
+Probed against `snplow.atlassian.net` with the operator's token on 2026-08-28.
+
+    PUT    /rest/api/3/issue/ISP-272/properties/fiddle-dedup-probe   201
+    GET    same, immediately, no delay                               200
+           {"key":"fiddle-dedup-probe","value":{...}}
+    JQL    issue.property[fiddle-dedup-probe].marker = "probe"       0 issues
+    DELETE same                                                      204
+
+**An issue property is immediately consistent on a direct read and invisible to
+JQL.** The lag lives in the index; a property read does not touch it. Project
+properties were tried first and need admin: `PUT` answered `403`.
+
+### The decision
+
+`FileVerdict` carries a **ledger issue**, and the claim for a marker is a
+property on it.
+
+1. `GET /rest/api/3/issue/{ledger}/properties/{marker}`. Direct, immediate.
+2. A claim carrying `filed` is the ticket. Create nothing.
+3. A claim carrying none is an unknown outcome. Resolve it by searching for the
+   marker: one match answers it, none answers `JiraError::Claimed`, which the
+   executor reports as unresolved. Never a second create.
+4. No claim: write the claim, create, then give the claim the key.
+
+The claim is written **before** the create, or a process that dies between them
+orphans an issue no later run can recognise. A create the site definitely
+refused releases the claim, so a create that never happened does not wedge every
+later run.
+
+### Where the ledger issue comes from: configuration, and it is never created
+
+It is named by the deployment and must exist before a run. `Filing` carries it
+and `TicketProposal` passes it to `FileVerdict`.
+
+Creating it on demand was rejected. Creating the anchor is itself a create that
+needs exactly-once, and finding it again after an interruption needs a search —
+the lagging read the ledger exists to escape. Recording it outside Jira moves
+the problem to a second store. A configured issue has neither problem, and it is
+never a ticket the lane closes.
+
+A ledger issue the site does not hold is named and refused **before** the create.
+`a_ledger_issue_the_site_does_not_hold_is_named_and_no_create_is_sent` pins it.
+
+### On the anchor or in the create call: both, and they do different work
+
+`POST /rest/api/3/issue` accepts a `properties` array, so the marker can be
+atomic with the create. That cannot replace the ledger, because it cannot be read
+before the issue exists, which is exactly when the decision is made.
+
+So the claim on the ledger is the mechanism, and the create also stamps the same
+claim on the issue it makes. The second one lets a candidate a later search
+offers be confirmed by a direct read rather than trusted from a lagging index.
+
+### What this buys, stated exactly
+
+It closes the **interruption** window and nothing wider. A run arriving after an
+interrupted one reads a claim that was written before the create and files
+nothing.
+
+Two **concurrent** processes can still both read absent and both claim. There is
+no compare-and-set on a Jira issue property. The scope in "What the marker does
+not promise" is unchanged: exactly-once across an interruption, not across
+concurrent invocations.
+
+One window remains inside the interruption case. A process that dies between the
+claim and the create leaves a claim naming no issue and nothing to find. That is
+honestly unknown: a search answering nothing cannot tell "never created" from
+"created and not yet indexed", and the lag is unmeasured, so no wait resolves it.
+The effect refuses and names the ledger issue and the claim for a person. The old
+design's answer to the same interruption was a duplicate ticket. This is a
+refusal instead, and a refusal stops the work where a duplicate does not.
+
+### The stub can now tell the two designs apart
+
+`crates/fiddle-runtime/tests/support/stub_jira.rs` answers `id` alone from a
+search unless `fields=key` is asked, models issue properties as immediately
+consistent on a direct read and absent from JQL, and refuses a create carrying no
+`fields.issuetype`. Its lost-answer control names the route it loses, so the
+claim written before a create is not lost with it.
+
+`the_search_then_create_protocol_files_a_second_issue_where_the_claim_ledger_files_one`
+drives both protocols against one stub inside one lag window and counts two
+creates against one. Before these three changes the stub answered the same for
+both.
+
+### What is fixed and what is not
+
+Fixed, and pinned by hermetic tests: the search asks `fields=key` on every page;
+the create names `fields.issuetype`; a run inside the lag window reads a claim
+instead of a stale index.
+
+Not fixed: the indexing lag is still unmeasured. `scripts/live-jira-write.sh` now
+refuses to print a lag unless the search it read agrees with the number of creates
+it made, so a future run measures it or says it did not.
+
+Not verified: none of this has been driven against a real site. `fiddle-zlc4`
+still holds the run path and the `[jira]` configuration that would name the issue
+type and the ledger issue in a deployment.
