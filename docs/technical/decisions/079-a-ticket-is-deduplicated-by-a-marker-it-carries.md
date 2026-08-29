@@ -5,7 +5,7 @@ superseded in part by "The claim ledger, which is what exactly-once now rests
 on". The marker stands as identity. It is no longer what a run reads to decide
 whether to file.
 
-Cites: FileVerdict, FiledIssue, ticket_proposals, TicketProposal, Filing, TICKET_MARKER_PREFIX, TICKET_LABEL_PREFIX, effect_id, JIRA_ISSUE_FILED, JiraError::Ambiguous, JiraError::Malformed, JiraError::NotSent, EffectError::DuplicateState, EffectError::Unresolved, EffectOutcome::Unknown, PAGE_WALK_BOUND, RULE_KEYS, VariantCount, two_marker_matches_refuse_the_write_and_create_nothing, a_marker_matching_across_more_than_one_search_page_is_still_ambiguous, the_marker_is_written_in_the_create_and_never_in_a_second_edit, an_issue_that_already_carries_the_marker_is_answered_by_a_read_and_no_write, an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_one_issue, a_fresh_process_inside_the_lag_window_reads_the_claim_and_files_no_second_issue, a_claim_with_no_key_inside_the_lag_window_is_unresolved_and_never_a_second_create, the_search_then_create_protocol_files_a_second_issue_where_the_claim_ledger_files_one, a_search_answers_an_id_and_no_key_unless_the_caller_asks_for_the_key_field, an_issue_property_is_readable_the_moment_it_is_written_and_the_search_never_sees_it, a_jql_naming_an_issue_property_answers_no_issue_rather_than_every_issue, a_create_that_names_no_issue_type_is_refused_and_stores_nothing, the_search_asks_for_the_key_field_because_the_site_answers_an_id_alone, the_create_names_the_issue_type_the_project_requires, the_claim_is_written_before_the_create_and_carries_the_key_after_it, a_create_the_site_refuses_releases_the_claim_so_the_next_run_is_not_wedged, a_ledger_issue_the_site_does_not_hold_is_named_and_no_create_is_sent, JiraError::Claimed, Filing, a_count_taken_from_one_search_page_is_a_floor_and_never_a_total, crates/fiddle-runtime/src/jira/file_verdict.rs, crates/fiddle-runtime/src/cve/verdict.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-runtime/tests/jira_effects.rs, scripts/live-jira-write.sh, scripts/live-jira-search-shape.sh, scripts/gate.sh, docs/technical/RUNBOOKS.md
+Cites: FileVerdict, a_start_at_offset_is_refused_because_this_endpoint_pages_by_token, FiledIssue, ticket_proposals, TicketProposal, Filing, TICKET_MARKER_PREFIX, TICKET_LABEL_PREFIX, effect_id, JIRA_ISSUE_FILED, JiraError::Ambiguous, JiraError::Malformed, JiraError::NotSent, EffectError::DuplicateState, EffectError::Unresolved, EffectOutcome::Unknown, PAGE_WALK_BOUND, RULE_KEYS, VariantCount, two_marker_matches_refuse_the_write_and_create_nothing, a_marker_matching_across_more_than_one_search_page_is_still_ambiguous, the_marker_is_written_in_the_create_and_never_in_a_second_edit, an_issue_that_already_carries_the_marker_is_answered_by_a_read_and_no_write, an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_one_issue, a_fresh_process_inside_the_lag_window_reads_the_claim_and_files_no_second_issue, a_claim_with_no_key_inside_the_lag_window_is_unresolved_and_never_a_second_create, the_search_then_create_protocol_files_a_second_issue_where_the_claim_ledger_files_one, a_search_answers_an_id_and_no_key_unless_the_caller_asks_for_the_key_field, an_issue_property_is_readable_the_moment_it_is_written_and_the_search_never_sees_it, a_jql_naming_an_issue_property_answers_no_issue_rather_than_every_issue, a_create_that_names_no_issue_type_is_refused_and_stores_nothing, the_search_asks_for_the_key_field_because_the_site_answers_an_id_alone, the_create_names_the_issue_type_the_project_requires, the_claim_is_written_before_the_create_and_carries_the_key_after_it, a_create_the_site_refuses_releases_the_claim_so_the_next_run_is_not_wedged, a_ledger_issue_the_site_does_not_hold_is_named_and_no_create_is_sent, JiraError::Claimed, Filing, a_count_taken_from_one_search_page_is_a_floor_and_never_a_total, crates/fiddle-runtime/src/jira/file_verdict.rs, crates/fiddle-runtime/src/cve/verdict.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-runtime/tests/jira_effects.rs, scripts/live-jira-write.sh, scripts/live-jira-search-shape.sh, scripts/gate.sh, docs/technical/RUNBOOKS.md
 
 ## Context
 
@@ -276,3 +276,29 @@ it made, so a future run measures it or says it did not.
 Not verified: none of this has been driven against a real site. `fiddle-zlc4`
 still holds the run path and the `[jira]` configuration that would name the issue
 type and the ledger issue in a deployment.
+
+### The sweep the bean asked for, with its denominator
+
+`routed` in `crates/fiddle-runtime/tests/support/stub_jira.rs` serves **eleven**
+method-and-route pairs. The denominator is a count of the branches in that
+function and not a hand-written list.
+
+| Route | Compared with `snplow.atlassian.net` |
+| --- | --- |
+| `GET /rest/api/3/myself` | yes, 2026-08-27: 200 and 401 tell a bad credential from an absent issue |
+| `GET /rest/api/3/search/jql` | yes, 2026-08-28: `isLast`, `issues`, `id` alone, `fields=key` |
+| `POST /rest/api/3/issue` | partly: 201 with a `key` measured; `createmeta` measured the required fields; the `properties` array on a create is **not** measured |
+| `GET /rest/api/3/issue/{key}` | yes, 2026-08-26: ISP-267, including the `updated` offset with no colon |
+| `PUT /rest/api/3/issue/{key}` | **no** |
+| `POST /rest/api/3/issue/{key}/comment` | **no** |
+| `GET /rest/api/3/issue/{key}/transitions` | yes, 2026-08-28: ids, `to.name`, `to.statusCategory` |
+| `POST /rest/api/3/issue/{key}/transitions` | yes, 2026-08-28: 204 on ISP-272 and ISP-273 |
+| `GET /rest/api/3/issue/{key}/properties/{name}` | yes, 2026-08-28: 200 with `{key, value}` |
+| `PUT /rest/api/3/issue/{key}/properties/{name}` | partly: 201 on a new property measured; 200 on a replacement is **not** |
+| `DELETE /rest/api/3/issue/{key}/properties/{name}` | yes, 2026-08-28: 204 |
+
+**Seven of eleven compared, two compared in part, two never. 7 + 2 + 2 = 11.** The issue edit and
+the add-comment routes carry `jira.comment_added` and the work-item port, and no
+live run has touched either. One divergence is deliberate and recorded in
+`a_start_at_offset_is_refused_because_this_endpoint_pages_by_token`: the site
+answers 200 to `startAt` and ignores it, and the stub refuses.
