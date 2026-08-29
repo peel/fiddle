@@ -131,8 +131,8 @@ pub fn config_check_json(config: &Config) -> String {
                 "blocked": jira.workflow.blocked,
                 "done": jira.workflow.done,
             },
-            "filing": jira.filing.as_ref().map(|filing| serde_json::json!({
-                "project": filing.project,
+            "filing": jira.filing.as_ref().map(|filing| filing.resolved()).map(|filing| serde_json::json!({
+                "project": filing.project_key,
                 "issue_type": filing.issue_type,
                 "ledger_issue": filing.ledger_issue,
             })),
@@ -360,12 +360,20 @@ pub fn config_check_human(config: &Config) -> String {
             optional(jira.workflow.in_review.clone()),
             optional(jira.workflow.blocked.clone()),
             optional(jira.workflow.done.clone()),
-            optional(jira.filing.as_ref().map(|filing| filing.project.clone())),
-            optional(jira.filing.as_ref().map(|filing| filing.issue_type.clone())),
             optional(
                 jira.filing
                     .as_ref()
-                    .map(|filing| filing.ledger_issue.clone())
+                    .map(|filing| filing.resolved().project_key)
+            ),
+            optional(
+                jira.filing
+                    .as_ref()
+                    .map(|filing| filing.resolved().issue_type)
+            ),
+            optional(
+                jira.filing
+                    .as_ref()
+                    .map(|filing| filing.resolved().ledger_issue)
             ),
         ));
     }

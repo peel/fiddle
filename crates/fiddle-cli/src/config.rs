@@ -617,6 +617,16 @@ pub struct JiraFiling {
     pub ledger_issue: String,
 }
 
+impl JiraFiling {
+    pub fn resolved(&self) -> fiddle_runtime::cve::verdict::TicketFiling {
+        fiddle_runtime::cve::verdict::TicketFiling {
+            project_key: self.project.clone(),
+            issue_type: self.issue_type.clone(),
+            ledger_issue: self.ledger_issue.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct JiraFilingDocument {

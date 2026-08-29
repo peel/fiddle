@@ -954,15 +954,10 @@ fn build_capability<'a>(
                     max_attempts: u32::try_from(agent.max_capability_attempts).unwrap_or(u32::MAX),
                     report_dir: config.report.dir.clone(),
                     today: fiddle_runtime::capability::cve::today_utc(),
-                    filing: config.jira.as_ref().and_then(|jira| {
-                        jira.filing.as_ref().map(|filing| {
-                            fiddle_runtime::cve::verdict::TicketFiling {
-                                project_key: filing.project.clone(),
-                                issue_type: filing.issue_type.clone(),
-                                ledger_issue: filing.ledger_issue.clone(),
-                            }
-                        })
-                    }),
+                    filing: config
+                        .jira
+                        .as_ref()
+                        .and_then(|jira| jira.filing.as_ref().map(config::JiraFiling::resolved)),
                     cancel: cancel.clone(),
                 },
             )))

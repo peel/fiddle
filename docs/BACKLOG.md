@@ -1977,3 +1977,27 @@ the coercion is guarded upstream rather than absent here.
 
 Origin: implementation (bean `fiddle-d3br`, envelope sweep 2026-08-29)
 Tags: #debt #evaluation
+
+### 2026-08-29 — a binary-driven filing run against a real site is still untaken
+
+`fiddle-lple` closed the deployment route through the binary against a loopback stub.
+`the_filing_table_in_the_document_reaches_the_ticket_the_binary_files` in
+`crates/fiddle-acceptance/tests/cve_mitigation.rs` drives `fiddle run cve --capability
+cve_mitigate` over a `fiddle.toml` carrying `[jira.filing]` and reads the project, the
+issue type and the ledger issue back off the create body, the ledger claim path and the
+marker in `filings.json`. Each of the three was proved falsifiable by changing that one
+field in the document and watching the run report the changed value.
+
+The lane did not take the live run, and the bean said not to. Driving the binary against
+`snplow.atlassian.net` needs a real project, a real ledger issue and a cleanup this
+operator cannot perform: `ISP` answers `HTTP 403` to a delete by project policy, so every
+unrun cleanup leaves residue and the next run refuses as `Ambiguous` (`fiddle-jh1z`,
+ADR 079). That is a lane with an operator step in it, not a test.
+
+What stays unmeasured: no `fiddle` binary has written to a real Jira site, so the
+agreement between the loopback stub's routes and Atlassian's is argued from the four live
+lanes of M5b and not measured through the binary. That sentence lives in
+`docs/technical/SYSTEM.md`, in the bullet beginning "A `fiddle` binary files a verdict".
+
+Origin: implementation (bean `fiddle-lple`, deferral recorded 2026-08-29)
+Tags: #debt #jira #evidence

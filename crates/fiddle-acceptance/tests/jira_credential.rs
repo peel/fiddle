@@ -21,10 +21,16 @@ const UNREACHABLE: &str = "http://127.0.0.1:9";
 
 const ATTEMPT: &str = "<attempt>";
 
-const CENSUS: [&str; 26] = [
+const CENSUS: [&str; 32] = [
     "half a credential / inspect --json / a diagnostic on stderr",
     "half a credential / inspect --json / nothing on stdout",
     "half a credential / inspect --json / the file `fiddle.toml`",
+    "the deployment files / config check --json / nothing on stderr",
+    "the deployment files / config check --json / the file `fiddle.toml`",
+    "the deployment files / config check --json / what it printed on stdout",
+    "the deployment files / config check / nothing on stderr",
+    "the deployment files / config check / the file `fiddle.toml`",
+    "the deployment files / config check / what it printed on stdout",
     "the document is read back / config check --json / nothing on stderr",
     "the document is read back / config check --json / the file `fiddle.toml`",
     "the document is read back / config check --json / what it printed on stdout",
@@ -50,7 +56,13 @@ const CENSUS: [&str; 26] = [
     "the site refuses the credential / inspect --json / what it printed on stdout",
 ];
 
-const PROJECTS: usize = 5;
+const PROJECTS: usize = 6;
+
+const FILING_PROJECT: &str = "SEC";
+
+const FILING_ISSUE_TYPE: &str = "Task";
+
+const FILING_LEDGER: &str = "SEC-1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Presence {
@@ -384,6 +396,7 @@ fn surfaces_of_every_jira_invocation() -> Searched {
         UNREACHABLE.to_string(),
         UNREACHABLE.to_string(),
         UNREACHABLE.to_string(),
+        UNREACHABLE.to_string(),
     ];
     for (project, base_url) in projects.iter().zip(&sited) {
         project.append_config(&jira_table(base_url));
@@ -395,6 +408,8 @@ fn surfaces_of_every_jira_invocation() -> Searched {
     let unreachable = &projects[2];
     let halved = &projects[3];
     let echoed = &projects[4];
+    let filing = &projects[5];
+    filing.append_config(&filing_table());
 
     for (command, args) in [
         ("inspect --json", vec!["inspect", REFERENCE, "--json"]),
@@ -496,6 +511,28 @@ fn surfaces_of_every_jira_invocation() -> Searched {
         );
         surfaces.extend(said.streams("the document is read back", command));
         surfaces.extend(files_of("the document is read back", command, echoed.dir()));
+    }
+
+    for (command, args) in [
+        ("config check", vec!["config", "check"]),
+        ("config check --json", vec!["config", "check", "--json"]),
+    ] {
+        let said = ask(filing, &args, &credentials);
+        assert_eq!(
+            said.code,
+            Some(0),
+            "`{command}` must read a document that files back: {}",
+            said.stderr
+        );
+        assert!(
+            said.stdout.contains(FILING_LEDGER) && said.stdout.contains(FILING_ISSUE_TYPE),
+            "`{command}` must echo the ledger issue and the issue type the filing table \
+             names, or the surface below is a tracker read's and says nothing about the \
+             path that writes: {}",
+            said.stdout
+        );
+        surfaces.extend(said.streams("the deployment files", command));
+        surfaces.extend(files_of("the deployment files", command, filing.dir()));
     }
 
     let needles = vec![
@@ -603,6 +640,15 @@ fn jira_table(base_url: &str) -> String {
          token = {{ env = \"{TOKEN_CREDENTIAL}\" }}\n\
          base_url = \"{base_url}\"\n\
          timeout = \"30s\"\n"
+    )
+}
+
+fn filing_table() -> String {
+    format!(
+        "\n[jira.filing]\n\
+         project = \"{FILING_PROJECT}\"\n\
+         issue_type = \"{FILING_ISSUE_TYPE}\"\n\
+         ledger_issue = \"{FILING_LEDGER}\"\n"
     )
 }
 
