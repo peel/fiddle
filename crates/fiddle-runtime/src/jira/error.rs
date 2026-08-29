@@ -32,6 +32,13 @@ pub enum JiraError {
     #[error("{count} objects carry the marker `{marker}`, and this write acts on one or none")]
     Ambiguous { marker: String, count: usize },
 
+    #[error(
+        "the ledger issue `{anchor}` holds a claim for `{marker}` and no issue carrying that \
+         marker can be read yet, so a create may have committed and the index may not have \
+         admitted it"
+    )]
+    Claimed { anchor: String, marker: String },
+
     #[error("no request was sent: {0}")]
     NotSent(String),
 }
@@ -49,7 +56,9 @@ impl AdapterError for JiraError {
                 | JiraError::Unconfigured
                 | JiraError::Ambiguous { .. }
                 | JiraError::NotSent(_) => EffectOutcome::NotCommitted,
-                JiraError::Malformed(_) | JiraError::Unreachable(_) => EffectOutcome::Unknown,
+                JiraError::Claimed { .. } | JiraError::Malformed(_) | JiraError::Unreachable(_) => {
+                    EffectOutcome::Unknown
+                }
             },
         }
     }
@@ -65,6 +74,7 @@ impl AdapterError for JiraError {
             | JiraError::Unreachable(_)
             | JiraError::Unconfigured
             | JiraError::Ambiguous { .. }
+            | JiraError::Claimed { .. }
             | JiraError::NotSent(_) => RetryAdvice::default(),
         }
     }
@@ -73,6 +83,7 @@ impl AdapterError for JiraError {
         match self {
             JiraError::AbsentOrRefused { .. }
             | JiraError::RateLimited(_)
+            | JiraError::Claimed { .. }
             | JiraError::Unreachable(_) => true,
             JiraError::Unauthorized { .. }
             | JiraError::Forbidden { .. }
@@ -95,6 +106,7 @@ impl AdapterError for JiraError {
             | JiraError::Malformed(_)
             | JiraError::Unreachable(_)
             | JiraError::Unconfigured
+            | JiraError::Claimed { .. }
             | JiraError::NotSent(_) => None,
         }
     }
@@ -119,6 +131,7 @@ mod tests {
             JiraError::Unconfigured => "unconfigured",
             JiraError::Ambiguous { .. } => "ambiguous",
             JiraError::NotSent(_) => "not sent",
+            JiraError::Claimed { .. } => "claimed",
         }
     }
 
@@ -142,6 +155,10 @@ mod tests {
                 count: 2,
             },
             JiraError::NotSent("the lookup resolved nothing to send".into()),
+            JiraError::Claimed {
+                anchor: "IDENT-1".into(),
+                marker: "fx-abc123".into(),
+            },
         ];
         assert_eq!(
             listed.len(),
@@ -171,6 +188,10 @@ mod tests {
                 count: 2,
             },
             JiraError::NotSent(planted.into()),
+            JiraError::Claimed {
+                anchor: planted.into(),
+                marker: planted.into(),
+            },
         ]
     }
 
@@ -234,6 +255,15 @@ mod tests {
                 JiraError::NotSent("the lookup resolved nothing to send".into()),
                 "no request was sent: the lookup resolved nothing to send",
             ),
+            (
+                JiraError::Claimed {
+                    anchor: "IDENT-1".into(),
+                    marker: "fx-abc123".into(),
+                },
+                "the ledger issue `IDENT-1` holds a claim for `fx-abc123` and no issue carrying \
+                 that marker can be read yet, so a create may have committed and the \
+                 index may not have admitted it",
+            ),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
         let all: Vec<&str> = cases().iter().map(variant).collect();
@@ -272,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ten_jira_failures_read_as_ten_failures() {
+    fn the_eleven_jira_failures_read_as_eleven_failures() {
         let cases = cases();
         let mut named: Vec<&str> = cases.iter().map(variant).collect();
         named.sort_unstable();
@@ -282,6 +312,7 @@ mod tests {
                 "absent",
                 "absent or refused",
                 "ambiguous",
+                "claimed",
                 "forbidden",
                 "malformed",
                 "not sent",
@@ -347,6 +378,13 @@ mod tests {
                 JiraError::NotSent("the lookup resolved nothing to send".into()),
                 EffectOutcome::NotCommitted,
             ),
+            (
+                JiraError::Claimed {
+                    anchor: "IDENT-1".into(),
+                    marker: "fx-abc123".into(),
+                },
+                EffectOutcome::Unknown,
+            ),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
         let all: Vec<&str> = cases().iter().map(variant).collect();
@@ -370,7 +408,7 @@ mod tests {
             .collect();
         assert_eq!(
             lost,
-            ["malformed", "unreachable"],
+            ["malformed", "unreachable", "claimed"],
             "the site may have written and could not say so in exactly these failures"
         );
     }
@@ -464,6 +502,13 @@ mod tests {
                 JiraError::NotSent("the lookup resolved nothing to send".into()),
                 false,
             ),
+            (
+                JiraError::Claimed {
+                    anchor: "IDENT-1".into(),
+                    marker: "fx-abc123".into(),
+                },
+                true,
+            ),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
         let all: Vec<&str> = cases().iter().map(variant).collect();
@@ -492,7 +537,12 @@ mod tests {
             .collect();
         assert_eq!(
             again,
-            ["absent or refused", "rate limited", "unreachable"],
+            [
+                "absent or refused",
+                "rate limited",
+                "unreachable",
+                "claimed"
+            ],
             "a later read settles exactly these, so an adapter that reads every failure \
              again fails here"
         );
@@ -546,6 +596,13 @@ mod tests {
             ),
             (
                 JiraError::NotSent("the lookup resolved nothing to send".into()),
+                None,
+            ),
+            (
+                JiraError::Claimed {
+                    anchor: "IDENT-1".into(),
+                    marker: "fx-abc123".into(),
+                },
                 None,
             ),
         ];

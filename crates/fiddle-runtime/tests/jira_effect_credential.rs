@@ -28,6 +28,10 @@ const ECHOED: &str = "the-site-spoke-these-words";
 
 const MARKER: &str = "fx-abc123";
 
+const ISSUE_TYPE: &str = "Task";
+
+const ANCHOR: &str = "IDENT-900";
+
 const WORK_ID: &str = "fiddle-m0-demo";
 const ATTEMPT_REF: &str = "beans:fiddle-m0-demo";
 
@@ -174,6 +178,8 @@ fn verdict() -> FileVerdict {
         "the advisory reaches this build".to_string(),
         "security".to_string(),
         SEEDED_PROJECT.to_string(),
+        ISSUE_TYPE.to_string(),
+        ANCHOR.to_string(),
         MARKER.to_string(),
     )
 }
@@ -356,6 +362,7 @@ async fn a_revision_field_that_carries_the_credential_reaches_no_diagnostic() {
 #[tokio::test]
 async fn a_write_carries_the_credential_in_its_header_and_in_no_payload_it_sends() {
     let server = StubJira::start().await;
+    server.holds_anchor_issue(ANCHOR).await;
     let ctx = credentialled(&server);
     let trace = Recorded::default();
 

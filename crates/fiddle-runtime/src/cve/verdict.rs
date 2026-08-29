@@ -567,6 +567,10 @@ pub fn report_of(run: &Run) -> serde_json::Value {
 pub struct Filing<'a> {
     pub project_key: &'a str,
 
+    pub issue_type: &'a str,
+
+    pub ledger_issue: &'a str,
+
     pub project: &'a str,
 
     pub invocation_ref: &'a str,
@@ -586,6 +590,10 @@ pub struct TicketProposal {
 
     project_key: String,
 
+    issue_type: String,
+
+    ledger_issue: String,
+
     marker: String,
 }
 
@@ -598,6 +606,10 @@ impl TicketProposal {
         &self.project_key
     }
 
+    pub fn ledger_issue(&self) -> &str {
+        &self.ledger_issue
+    }
+
     pub fn operation(&self) -> FileVerdict {
         FileVerdict::new(
             self.cve.as_str().to_string(),
@@ -606,6 +618,8 @@ impl TicketProposal {
             self.rationale.clone(),
             self.label.clone(),
             self.project_key.clone(),
+            self.issue_type.clone(),
+            self.ledger_issue.clone(),
             self.marker.clone(),
         )
     }
@@ -629,6 +643,8 @@ pub fn ticket_proposals(verdicts: &[Verdict], filing: &Filing<'_>) -> Vec<Ticket
             rationale: verdict.rationale.clone(),
             label: format!("{TICKET_LABEL_PREFIX}{legacy_label}"),
             project_key: filing.project_key.to_string(),
+            issue_type: filing.issue_type.to_string(),
+            ledger_issue: filing.ledger_issue.to_string(),
             marker: ticket_marker(filing, &verdict.cve),
         });
     }

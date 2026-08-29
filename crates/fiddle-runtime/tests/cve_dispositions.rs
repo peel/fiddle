@@ -1577,9 +1577,15 @@ const FILING_INVOCATION: &str = "beans:fiddle-3rfe";
 
 const TRACKER_PROJECT: &str = "IDENT";
 
+const TRACKER_ISSUE_TYPE: &str = "Task";
+
+const TRACKER_LEDGER_ISSUE: &str = "IDENT-1";
+
 fn filing() -> Filing<'static> {
     Filing {
         project_key: TRACKER_PROJECT,
+        issue_type: TRACKER_ISSUE_TYPE,
+        ledger_issue: TRACKER_LEDGER_ISSUE,
         project: FILING_PROJECT,
         invocation_ref: FILING_INVOCATION,
     }

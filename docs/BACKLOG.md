@@ -1931,13 +1931,15 @@ Measured 2026-08-28 by `scripts/live-jira-search-shape.sh` against
 `issuetype`, `project` and `summary`. So a create this build sends would be refused, and
 `jira.issue_filed` cannot land against a real site as written.
 
-No hermetic lane can red this. `created` in
-`crates/fiddle-runtime/tests/support/stub_jira.rs` requires `fields.project.key` alone,
-and it is the only definition of the create shape this repository holds.
+Resolved 2026-08-29 by `fiddle-jh1z`. `created` in
+`crates/fiddle-runtime/tests/support/stub_jira.rs` now refuses a create carrying no
+`fields.issuetype` and no `fields.summary`, which is what `createmeta` says is required,
+and `a_create_that_names_no_issue_type_is_refused_and_stores_nothing` pins it with the
+accepted create beside the refused one. `FileVerdict` names the type it was built with.
 
-An issue type is a deployment's choice, so the fix needs a configured name in the same
-place `fiddle-zlc4` needs a filing project key. Both are the same missing `[jira]`
-configuration and should land together.
+The type is still a constant at every construction site rather than a deployment's
+choice. `Filing` carries it and `fiddle-zlc4` holds the `[jira]` configuration that would
+fill it in, together with the ledger issue the same effect now needs.
 
 Origin: implementation (bean `fiddle-pu2c`, live measurement 2026-08-28)
 Tags: #bug #jira #operations

@@ -12,7 +12,13 @@ needs() {
 needs JIRA_USER_EMAIL "It is the account the writes are made as."
 needs JIRA_API_TOKEN "It is the credential, and it is read from the environment and never written to a file this lane generates."
 needs JIRA_SITE "It is the site origin, as in JIRA_SITE=https://snplow.atlassian.net."
-needs JIRA_WRITE_PROJECT "It is a DISPOSABLE project key this lane may create an issue in and then delete. This lane writes to a real site and must never be pointed at a project whose contents matter."
+needs JIRA_WRITE_PROJECT "It is the project key this lane files a test ticket in and then CLOSES. It never deletes: deletion is refused by policy in ISP, and a cleanup that depends on a permission the operator does not have leaves residue on every run."
+needs JIRA_LEDGER_ISSUE "It is an existing issue in JIRA_WRITE_PROJECT that holds the claim ledger. This lane reads and writes properties on it and never closes it, so it must not be a ticket any run of this lane created."
+
+JIRA_ISSUE_TYPE="${JIRA_ISSUE_TYPE:-Task}"
+JIRA_CLOSING_TRANSITION="${JIRA_CLOSING_TRANSITION-}"
+[ -n "$JIRA_CLOSING_TRANSITION" ] || JIRA_CLOSING_TRANSITION="Won't Do"
+JIRA_CLOSING_FALLBACK="${JIRA_CLOSING_FALLBACK:-Done}"
 
 command -v curl >/dev/null 2>&1 || fail "curl must be on PATH"
 command -v jq >/dev/null 2>&1 || fail "jq must be on PATH"
@@ -26,16 +32,20 @@ case "$JIRA_WRITE_PROJECT" in
   *[!A-Za-z0-9_]*) fail "JIRA_WRITE_PROJECT must be a bare project key and this is not one: $JIRA_WRITE_PROJECT" ;;
 esac
 
+if [ "${JIRA_LEDGER_ISSUE%%-*}" != "$JIRA_WRITE_PROJECT" ]; then
+  fail "JIRA_LEDGER_ISSUE is $JIRA_LEDGER_ISSUE and JIRA_WRITE_PROJECT is $JIRA_WRITE_PROJECT. The ledger is read with the same credential in the same project, and one that names another project measures a workflow this lane never writes to."
+fi
+
 if [ -n "${JIRA_ISSUE:-}" ] && [ "${JIRA_ISSUE%%-*}" = "$JIRA_WRITE_PROJECT" ]; then
-  fail "JIRA_WRITE_PROJECT is $JIRA_WRITE_PROJECT, the project JIRA_ISSUE ($JIRA_ISSUE) is read from. A disposable project is not the project a read lane observes."
+  fail "JIRA_WRITE_PROJECT is $JIRA_WRITE_PROJECT, the project JIRA_ISSUE ($JIRA_ISSUE) is read from. A project this lane writes to is not the project a read lane observes."
 fi
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/fiddle-live-jira-write-XXXXXX")
-LEFT_BEHIND=""
+LEFT_OPEN=""
 report_litter() {
-  if [ -n "$LEFT_BEHIND" ]; then
-    echo "live-jira-write: LEFT BEHIND in $JIRA_WRITE_PROJECT and not deleted:$LEFT_BEHIND" >&2
-    echo "live-jira-write: delete them by hand, or this lane's next run will read them as an ambiguous marker" >&2
+  if [ -n "$LEFT_OPEN" ]; then
+    echo "live-jira-write: LEFT OPEN in $JIRA_WRITE_PROJECT and not closed:$LEFT_OPEN" >&2
+    echo "live-jira-write: close each by hand through the $JIRA_CLOSING_TRANSITION transition. Do not delete them: this project refuses a delete by policy, and a run that inherits an open ticket carrying a live marker reads it as an ambiguous match." >&2
   fi
   rm -rf "$TMP"
 }
@@ -76,8 +86,10 @@ note "the generated configuration names JIRA_API_TOKEN and carries no value of i
 
 SEARCH_ROUTE="/rest/api/3/search/jql"
 CREATE_ROUTE="/rest/api/3/issue"
+LEDGER_ROUTE="/rest/api/3/issue/$JIRA_LEDGER_ISSUE"
 MARKER="fx-live-$(date -u +%Y%m%d%H%M%S)-$$"
-JQL="project = $JIRA_WRITE_PROJECT AND labels = $MARKER"
+CLAIM_ROUTE="$LEDGER_ROUTE/properties/$MARKER"
+JQL="project = $JIRA_WRITE_PROJECT AND labels = $MARKER AND statusCategory != Done"
 note "this run's marker is $MARKER, and it selects nothing that existed before this run"
 
 creates=0
@@ -137,6 +149,10 @@ every_match() {
   while [ "$page" -lt 1000 ]; do
     searched "page" "$token"
     [ "$CODE" = 200 ] || fail "a search for the marker answered HTTP $CODE: $(cat "$TMP/page")"
+    jq -e '.issues | type == "array"' "$TMP/page" >/dev/null \
+      || fail "a search answered no issues array, so a count taken from it would be a count of nothing: $(cat "$TMP/page")"
+    jq -e 'all(.issues[]; has("key"))' "$TMP/page" >/dev/null \
+      || fail "a search answered an issue with no key while fields=key was asked, so the shape this lane and FileVerdict both rely on has changed: $(cat "$TMP/page")"
     jq -r '.issues[].key' "$TMP/page" >> "$TMP/matched"
     token=$(jq -r '.nextPageToken // empty' "$TMP/page")
     [ -n "$token" ] || { sort -u "$TMP/matched" -o "$TMP/matched"; return 0; }
@@ -147,92 +163,206 @@ every_match() {
 
 matched_count() { wc -l < "$TMP/matched" | tr -d ' '; }
 
+echo "=== the preconditions, all of them asserted before anything is written ==="
+
+sent ledger GET "$LEDGER_ROUTE"
+[ "$CODE" = 200 ] || fail "the ledger issue $JIRA_LEDGER_ISSUE answered HTTP $CODE. It must exist before this lane runs, because a claim cannot be written on an issue the site does not hold."
+LEDGER_TYPE=$(jq -r '.fields.issuetype.name // "absent"' "$TMP/ledger")
+[ "$LEDGER_TYPE" = "$JIRA_ISSUE_TYPE" ] || fail "the ledger issue $JIRA_LEDGER_ISSUE is a $LEDGER_TYPE and this lane files a $JIRA_ISSUE_TYPE. A Jira workflow is per issue type, so a closing transition resolved on the ledger would say nothing about the ticket this lane creates."
+note "the ledger issue $JIRA_LEDGER_ISSUE exists and is a $LEDGER_TYPE, the type this lane files"
+
+sent transitions GET "$LEDGER_ROUTE/transitions"
+[ "$CODE" = 200 ] || fail "the transitions of $JIRA_LEDGER_ISSUE answered HTTP $CODE, so this lane cannot say whether it is able to close what it is about to write"
+CLOSING_NAME="$JIRA_CLOSING_TRANSITION"
+resolve_closing() {
+  local wanted="$1"
+  jq -r --arg wanted "$wanted" '[.transitions[] | select(.to.name == $wanted) | .id] | join(" ")' "$TMP/transitions"
+}
+CLOSING_IDS=$(resolve_closing "$CLOSING_NAME")
+if [ -z "$CLOSING_IDS" ]; then
+  note "the workflow offers no transition reaching $CLOSING_NAME, so this lane falls back to $JIRA_CLOSING_FALLBACK and the record must say so"
+  CLOSING_NAME="$JIRA_CLOSING_FALLBACK"
+  CLOSING_IDS=$(resolve_closing "$CLOSING_NAME")
+fi
+CLOSING_COUNT=$(printf '%s' "$CLOSING_IDS" | wc -w | tr -d ' ')
+if [ "$CLOSING_COUNT" -ne 1 ]; then
+  fail "$CLOSING_COUNT transitions reach $CLOSING_NAME from the ledger issue's state, and a close is sent as one id and never matched by category: fiddle-pu2c MEASURED that Won't Do and Done share the category done, so a category match cannot tell them apart. Offered: $(jq -r '[.transitions[] | "\(.id)->\(.to.name)"] | join(", ")' "$TMP/transitions")"
+fi
+note "the closing transition resolves to exactly one id on this workflow: $CLOSING_IDS -> $CLOSING_NAME"
+
+PROBE_ROUTE="$LEDGER_ROUTE/properties/fiddle-write-lane-probe"
+sent probe PUT "$PROBE_ROUTE" '{"probe":"the token can write a property on the ledger"}'
+case "$CODE" in
+  200|201) ;;
+  *) fail "a property write on $JIRA_LEDGER_ISSUE answered HTTP $CODE. The claim ledger is the whole exactly-once mechanism, and a run that discovers it cannot write one after it has filed a ticket is the run that left ISP-272 and ISP-273 behind." ;;
+esac
+sent probe GET "$PROBE_ROUTE"
+[ "$CODE" = 200 ] || fail "a property written on $JIRA_LEDGER_ISSUE read back HTTP $CODE with no wait, so this site does not offer the immediate consistency the ledger rests on"
+sent probe DELETE "$PROBE_ROUTE"
+[ "$CODE" = 204 ] || note "the probe property on $JIRA_LEDGER_ISSUE answered HTTP $CODE to a delete and remains"
+note "MEASURED a property on $JIRA_LEDGER_ISSUE written, read back immediately and removed"
+
+sent claim GET "$CLAIM_ROUTE"
+[ "$CODE" = 404 ] || fail "the claim $MARKER already exists on $JIRA_LEDGER_ISSUE (HTTP $CODE), so this run's marker is not unique to this run"
+
+every_match
+[ "$(matched_count)" = 0 ] || fail "the marker $MARKER already matches $(tr '\n' ' ' < "$TMP/matched"), so this run's marker is not unique to this run"
+note "the marker matches nothing and the ledger holds no claim for it, so every count below is this run's"
+
 file_once() {
   local phase="$1"
   CREATED_KEY=""
-  every_match
-  local held
-  held=$(matched_count)
-  case "$held" in
-    0)
-      local body
-      body=$(jq -nc \
-        --arg project "$JIRA_WRITE_PROJECT" \
-        --arg marker "$MARKER" \
-        --arg summary "fiddle live write lane $MARKER" \
-        '{fields: {project: {key: $project}, issuetype: {name: "Task"}, summary: $summary, labels: ["fiddle-live-lane", $marker]}}')
-      sent created POST "$CREATE_ROUTE" "$body"
-      [ "$CODE" = 201 ] || fail "$phase: a create answered HTTP $CODE: $(cat "$TMP/created")"
-      CREATED_KEY=$(jq -r '.key' "$TMP/created")
-      CREATED_AT=$(date +%s)
-      creates=$((creates + 1))
-      LEFT_BEHIND="$LEFT_BEHIND $CREATED_KEY"
-      note "$phase: the marker matched nothing, so this run created $CREATED_KEY"
+  sent claim GET "$CLAIM_ROUTE"
+  case "$CODE" in
+    200)
+      local held
+      held=$(jq -r '.value.filed // "unsettled"' "$TMP/claim")
+      case "$held" in
+        unsettled)
+          fail "$phase: the ledger holds a claim for $MARKER that names no issue. A create may have committed and this lane must not repeat it: read $JIRA_WRITE_PROJECT for the marker by hand and settle the claim before running again."
+          ;;
+        *)
+          note "$phase: the ledger already claims $held for this marker, so nothing was created"
+          ;;
+      esac
+      return 0
       ;;
-    1)
-      note "$phase: the marker already matches $(cat "$TMP/matched"), so nothing was created"
-      ;;
-    *)
-      fail "$phase: $held issues carry the marker $MARKER, and this write acts on one or none: $(tr '\n' ' ' < "$TMP/matched")"
-      ;;
+    404) ;;
+    *) fail "$phase: the claim read answered HTTP $CODE: $(cat "$TMP/claim")" ;;
   esac
+
+  sent claimed PUT "$CLAIM_ROUTE" "$(jq -nc --arg marker "$MARKER" '{marker: $marker}')"
+  case "$CODE" in
+    200|201) ;;
+    *) fail "$phase: the claim write answered HTTP $CODE and nothing was created: $(cat "$TMP/claimed")" ;;
+  esac
+
+  local body
+  body=$(jq -nc \
+    --arg project "$JIRA_WRITE_PROJECT" \
+    --arg type "$JIRA_ISSUE_TYPE" \
+    --arg marker "$MARKER" \
+    --arg summary "fiddle live write lane $MARKER" \
+    '{fields: {project: {key: $project}, issuetype: {name: $type}, summary: $summary, labels: ["fiddle-live-lane", $marker]},
+      properties: [{key: $marker, value: {marker: $marker}}]}')
+  sent created POST "$CREATE_ROUTE" "$body"
+  local create_code="$CODE"
+  if [ "$create_code" != 201 ]; then
+    local refused
+    refused=$(cat "$TMP/created")
+    sent released DELETE "$CLAIM_ROUTE"
+    fail "$phase: a create answered HTTP $create_code and the claim was released with HTTP $CODE, so the next run reads no claim and is not wedged on a create that never happened: $refused"
+  fi
+  CREATED_KEY=$(jq -r '.key' "$TMP/created")
+  CREATED_AT=$(date +%s)
+  creates=$((creates + 1))
+  LEFT_OPEN="$LEFT_OPEN $CREATED_KEY"
+  sent settled PUT "$CLAIM_ROUTE" "$(jq -nc --arg marker "$MARKER" --arg filed "$CREATED_KEY" '{marker: $marker, filed: $filed}')"
+  case "$CODE" in
+    200|201) ;;
+    *) fail "$phase: $CREATED_KEY was created and the claim could not be given its key (HTTP $CODE), so the ledger names no issue and the next run cannot settle it by reading" ;;
+  esac
+  note "$phase: the ledger held no claim, so this run created $CREATED_KEY and the claim now names it"
 }
 
-echo "=== the first run, which finds nothing and files ==="
+echo "=== the first run, which finds no claim and files ==="
 file_once "run one"
 [ -n "$CREATED_KEY" ] || fail "the first run created nothing, so the marker was not unique to this run"
+FILED_KEY="$CREATED_KEY"
 
 echo "=== the second run, sent immediately, which is the interruption case ==="
 file_once "run two"
 note "MEASURED runs that created an issue: $creates of 2"
 
+echo "=== what the search index says while the claim already knows ==="
+every_match
+note "MEASURED issues the index shows for this marker immediately after the create: $(matched_count) of $creates created"
+
 echo "=== how long the index took to admit the new issue ==="
 LAG=unmeasured
-for _ in $(seq 1 120); do
+WAITED=0
+for _ in $(seq 1 300); do
   every_match
-  if [ "$(matched_count)" -ge 1 ]; then
+  if [ "$(matched_count)" -eq "$creates" ] && grep -qx "$FILED_KEY" "$TMP/matched"; then
     LAG=$(( $(date +%s) - CREATED_AT ))
     break
   fi
+  WAITED=$((WAITED + 1))
   sleep 1
 done
 if [ "$LAG" = unmeasured ]; then
-  note "MEASURED the indexing lag: the marker was still unsearchable 120 seconds after the create was accepted, so the exactly-once window is longer than any wait this lane holds"
+  note "MEASURED the indexing lag: after $WAITED seconds the search still did not show exactly the $creates issue this run filed, so the lag is longer than any wait this lane holds and remains unmeasured"
 else
-  note "MEASURED the indexing lag: the marker became searchable $LAG seconds after the create was accepted. The exactly-once claim is bounded by exactly this duration: a re-run inside it files a duplicate."
+  note "MEASURED the indexing lag: $LAG seconds after the create was accepted, the search showed exactly $creates issue and it was $FILED_KEY. This number is taken from a search whose count agrees with the number of creates; a number taken from a search that disagreed with it would be a number about a stale index."
 fi
 
 echo "=== what the site holds now ==="
 every_match
 HELD=$(matched_count)
-note "MEASURED issues carrying $MARKER after two runs: $HELD"
+note "MEASURED open issues carrying $MARKER after two runs: $HELD"
 note "MEASURED searches sent: $searches; creates accepted: $creates"
 
-echo "=== removing what this lane wrote ==="
-printf '%s\n' $LEFT_BEHIND > "$TMP/to-delete"
-cat "$TMP/matched" >> "$TMP/to-delete"
-sort -u "$TMP/to-delete" -o "$TMP/to-delete"
-REMAINING=""
-DELETED=0
+echo "=== closing what this lane wrote, because this project does not delete ==="
+: > "$TMP/to-close"
+printf '%s\n' $LEFT_OPEN >> "$TMP/to-close"
+cat "$TMP/matched" >> "$TMP/to-close"
+sort -u "$TMP/to-close" -o "$TMP/to-close"
+if grep -qx "$JIRA_LEDGER_ISSUE" "$TMP/to-close"; then
+  fail "the close list names the ledger issue $JIRA_LEDGER_ISSUE. The ledger outlives every run and is never closed by one."
+fi
+STILL_OPEN=""
+CLOSED=0
 ASKED=0
 while read -r key; do
   [ -n "$key" ] || continue
   ASKED=$((ASKED + 1))
-  sent deleted DELETE "/rest/api/3/issue/$key"
-  case "$CODE" in
-    204) DELETED=$((DELETED + 1)); note "deleted $key" ;;
-    *) note "the site would not delete $key: HTTP $CODE"; REMAINING="$REMAINING $key" ;;
-  esac
-done < "$TMP/to-delete"
-note "deleted $DELETED of $ASKED issues this lane knows it wrote or matched"
-LEFT_BEHIND="$REMAINING"
+  sent offered GET "/rest/api/3/issue/$key/transitions"
+  if [ "$CODE" != 200 ]; then
+    note "the transitions of $key answered HTTP $CODE"
+    STILL_OPEN="$STILL_OPEN $key"
+    continue
+  fi
+  ids=$(jq -r --arg wanted "$CLOSING_NAME" '[.transitions[] | select(.to.name == $wanted) | .id] | join(" ")' "$TMP/offered")
+  count=$(printf '%s' "$ids" | wc -w | tr -d ' ')
+  if [ "$count" -ne 1 ]; then
+    note "$count transitions on $key reach $CLOSING_NAME, and a close is sent as one id and never chosen from several"
+    STILL_OPEN="$STILL_OPEN $key"
+    continue
+  fi
+  sent closed POST "/rest/api/3/issue/$key/transitions" "$(jq -nc --arg id "$ids" '{transition: {id: $id}}')"
+  if [ "$CODE" != 204 ]; then
+    note "the site would not close $key through transition $ids: HTTP $CODE"
+    STILL_OPEN="$STILL_OPEN $key"
+    continue
+  fi
+  sent verify GET "/rest/api/3/issue/$key"
+  reached=$(jq -r '.fields.status.name // "unreadable"' "$TMP/verify")
+  if [ "$reached" != "$CLOSING_NAME" ]; then
+    note "$key answered 204 to the close and reads back as $reached, not $CLOSING_NAME"
+    STILL_OPEN="$STILL_OPEN $key"
+    continue
+  fi
+  CLOSED=$((CLOSED + 1))
+  note "closed $key as $CLOSING_NAME through transition $ids, verified by a second read"
+done < "$TMP/to-close"
+note "closed $CLOSED of $ASKED issues this lane knows it wrote or matched"
+LEFT_OPEN="$STILL_OPEN"
+
+sent released DELETE "$CLAIM_ROUTE"
+case "$CODE" in
+  204) note "the claim for $MARKER was removed from $JIRA_LEDGER_ISSUE" ;;
+  *) note "the claim for $MARKER answered HTTP $CODE to a delete and remains on $JIRA_LEDGER_ISSUE" ;;
+esac
 
 echo
 note "NOT MEASURED: whether a page boundary shifts under a walk. Forcing it needs an issue indexed between two pages of one walk, which one process cannot arrange."
 note "NOT MEASURED: concurrent duplicate invocations. The design scopes exactly-once to interruptions only, and one process cannot race itself."
-note "NOT DRIVEN THROUGH FIDDLE: ticket_proposals in cve/verdict.rs reaches no run path (fiddle-zlc4), so no fiddle binary can file a verdict yet. This lane sends the same search-then-create requests FileVerdict sends and measures the site, not the build."
+note "NOT DRIVEN THROUGH FIDDLE: ticket_proposals in cve/verdict.rs reaches no run path (fiddle-zlc4), so no fiddle binary can file a verdict yet. This lane sends the claim-then-create requests FileVerdict sends and measures the site, not the build. A green run here is evidence about Atlassian and not about FileVerdict."
 
-if [ "$creates" -ne 1 ] || [ "$HELD" -ne 1 ]; then
-  fail "two runs left $HELD issues carrying the marker after $creates creates, and exactly-once means exactly one"
+if [ "$creates" -ne 1 ]; then
+  fail "two runs sent $creates creates, and exactly-once across an interruption means exactly one"
 fi
-note "PASS: two runs of the search-then-create protocol left exactly one issue, and the credential reached none of $((searches + creates + 1)) answers this lane read"
+if [ -n "$LEFT_OPEN" ]; then
+  fail "the cleanup left$LEFT_OPEN open, and an open ticket carrying a live marker is the ambiguous match the next run inherits"
+fi
+note "PASS: two runs of the claim-then-create protocol left exactly one issue, it was closed as $CLOSING_NAME, and the credential reached none of $((searches + ASKED + creates + 6)) answers this lane read"
