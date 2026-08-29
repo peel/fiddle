@@ -5,7 +5,7 @@ Status: accepted; amended in M5b by the note "What one live run measured", by
 rests on". The marker stands as identity. It is no longer what a run reads to
 decide whether to file.
 
-Cites: FileVerdict, a_start_at_offset_is_refused_because_this_endpoint_pages_by_token, FiledIssue, ticket_proposals, TicketProposal, Filing, TICKET_MARKER_PREFIX, TICKET_LABEL_PREFIX, effect_id, JIRA_ISSUE_FILED, JiraError::Ambiguous, JiraError::Malformed, JiraError::NotSent, EffectError::DuplicateState, EffectError::Unresolved, EffectOutcome::Unknown, PAGE_WALK_BOUND, RULE_KEYS, VariantCount, two_marker_matches_refuse_the_write_and_create_nothing, a_marker_matching_across_more_than_one_search_page_is_still_ambiguous, the_marker_is_written_in_the_create_and_never_in_a_second_edit, an_issue_that_already_carries_the_marker_is_answered_by_a_read_and_no_write, an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_one_issue, a_fresh_process_inside_the_lag_window_reads_the_claim_and_files_no_second_issue, a_claim_with_no_key_inside_the_lag_window_is_unresolved_and_never_a_second_create, the_search_then_create_protocol_files_a_second_issue_where_the_claim_ledger_files_one, a_search_answers_an_id_and_no_key_unless_the_caller_asks_for_the_key_field, an_issue_property_is_readable_the_moment_it_is_written_and_the_search_never_sees_it, a_jql_naming_an_issue_property_answers_no_issue_rather_than_every_issue, a_create_that_names_no_issue_type_is_refused_and_stores_nothing, the_search_asks_for_the_key_field_because_the_site_answers_an_id_alone, the_create_names_the_issue_type_the_project_requires, the_claim_is_written_before_the_create_and_carries_the_key_after_it, a_create_the_site_refuses_releases_the_claim_so_the_next_run_is_not_wedged, a_ledger_issue_the_site_does_not_hold_is_named_and_no_create_is_sent, JiraError::Claimed, Filing, a_count_taken_from_one_search_page_is_a_floor_and_never_a_total, crates/fiddle-runtime/src/jira/file_verdict.rs, crates/fiddle-runtime/src/cve/verdict.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-runtime/tests/jira_effects.rs, scripts/live-jira-write.sh, scripts/live-jira-search-shape.sh, scripts/gate.sh, docs/technical/RUNBOOKS.md
+Cites: FileVerdict, a_start_at_offset_is_refused_because_this_endpoint_pages_by_token, FiledIssue, ticket_proposals, TicketProposal, Filing, TICKET_MARKER_PREFIX, TICKET_LABEL_PREFIX, effect_id, JIRA_ISSUE_FILED, JiraError::Ambiguous, JiraError::Malformed, JiraError::NotSent, EffectError::DuplicateState, EffectError::Unresolved, EffectOutcome::Unknown, PAGE_WALK_BOUND, RULE_KEYS, VariantCount, two_marker_matches_refuse_the_write_and_create_nothing, a_marker_matching_across_more_than_one_search_page_is_still_ambiguous, the_marker_is_written_in_the_create_and_never_in_a_second_edit, an_issue_that_already_carries_the_marker_is_answered_by_a_read_and_no_write, an_interrupted_create_and_a_fresh_process_after_the_lag_leave_exactly_one_issue, a_fresh_process_inside_the_lag_window_reads_the_claim_and_files_no_second_issue, a_claim_with_no_key_inside_the_lag_window_is_unresolved_and_never_a_second_create, the_search_then_create_protocol_files_a_second_issue_where_the_claim_ledger_files_one, a_search_answers_an_id_and_no_key_unless_the_caller_asks_for_the_key_field, an_issue_property_is_readable_the_moment_it_is_written_and_the_search_never_sees_it, a_jql_naming_an_issue_property_answers_no_issue_rather_than_every_issue, a_create_that_names_no_issue_type_is_refused_and_stores_nothing, the_search_asks_for_the_key_field_because_the_site_answers_an_id_alone, the_create_names_the_issue_type_the_project_requires, the_claim_is_written_before_the_create_and_carries_the_key_after_it, a_create_the_site_refuses_releases_the_claim_so_the_next_run_is_not_wedged, a_ledger_issue_the_site_does_not_hold_is_named_and_no_create_is_sent, JiraError::Claimed, Filing, a_count_taken_from_one_search_page_is_a_floor_and_never_a_total, crates/fiddle-runtime/src/jira/file_verdict.rs, crates/fiddle-runtime/src/cve/verdict.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-runtime/tests/jira_effects.rs, a_ticket_file_verdict_filed_is_found_by_a_later_inspect_against_the_real_site, crates/fiddle-runtime/tests/live_jira_filing.rs, scripts/live-jira-write.sh, scripts/live-jira-file-verdict.sh, scripts/live-jira-search-shape.sh, scripts/gate.sh, docs/technical/RUNBOOKS.md
 
 ## Context
 
@@ -275,9 +275,9 @@ Not fixed: the indexing lag is still unmeasured. `scripts/live-jira-write.sh` no
 refuses to print a lag unless the search it read agrees with the number of creates
 it made, so a future run measures it or says it did not.
 
-Not verified: none of this has been driven against a real site. `fiddle-zlc4`
-still holds the run path and the `[jira]` configuration that would name the issue
-type and the ledger issue in a deployment.
+Not verified at the time of writing: none of this had been driven against a real
+site. That changed on 2026-08-29; see "FileVerdict has now reached a real site"
+below.
 
 > Amended by 080. The run path and the `[jira.filing]` table now exist: a
 > mitigate run calls `ticket_proposals` and executes each `FileVerdict` through
@@ -295,18 +295,70 @@ function and not a hand-written list.
 | --- | --- |
 | `GET /rest/api/3/myself` | yes, 2026-08-27: 200 and 401 tell a bad credential from an absent issue |
 | `GET /rest/api/3/search/jql` | yes, 2026-08-28: `isLast`, `issues`, `id` alone, `fields=key` |
-| `POST /rest/api/3/issue` | partly: 201 with a `key` measured; `createmeta` measured the required fields; the `properties` array on a create is **not** measured |
+| `POST /rest/api/3/issue` | yes, 2026-08-29: 201 with a `key`, `createmeta` for the required fields, and a `properties` array accepted on the create and readable on the new issue |
 | `GET /rest/api/3/issue/{key}` | yes, 2026-08-26: ISP-267, including the `updated` offset with no colon |
 | `PUT /rest/api/3/issue/{key}` | **no** |
 | `POST /rest/api/3/issue/{key}/comment` | **no** |
 | `GET /rest/api/3/issue/{key}/transitions` | yes, 2026-08-28: ids, `to.name`, `to.statusCategory` |
 | `POST /rest/api/3/issue/{key}/transitions` | yes, 2026-08-28: 204 on ISP-272 and ISP-273 |
 | `GET /rest/api/3/issue/{key}/properties/{name}` | yes, 2026-08-28: 200 with `{key, value}` |
-| `PUT /rest/api/3/issue/{key}/properties/{name}` | partly: 201 on a new property measured; 200 on a replacement is **not** |
+| `PUT /rest/api/3/issue/{key}/properties/{name}` | yes, 2026-08-29: 201 on a new property and 200 on a replacement, which is the pair the stub answers |
 | `DELETE /rest/api/3/issue/{key}/properties/{name}` | yes, 2026-08-28: 204 |
 
-**Seven of eleven compared, two compared in part, two never. 7 + 2 + 2 = 11.** The issue edit and
+**Nine of eleven compared, none in part, two never. 9 + 0 + 2 = 11**, corrected on 2026-08-29 when the live filing lane drove a create carrying a `properties` array and a replacement property write. The issue edit and
 the add-comment routes carry `jira.comment_added` and the work-item port, and no
 live run has touched either. One divergence is deliberate and recorded in
 `a_start_at_offset_is_refused_because_this_endpoint_pages_by_token`: the site
 answers 200 to `startAt` and ignores it, and the stub refuses.
+
+## FileVerdict has now reached a real site — MEASURED 2026-08-29
+
+`crates/fiddle-runtime/tests/live_jira_filing.rs` is an `#[ignore]`d case run by
+`scripts/live-jira-file-verdict.sh`. It drives this build and writes no request
+of its own in the filing path: `ticket_proposals` builds the proposal,
+`TicketProposal::operation` builds the `FileVerdict`, and the same `Executor`
+`CveMitigate::file` uses executes it. It ran against `snplow.atlassian.net`,
+project `ISP`, ledger `ISP-272`.
+
+MEASURED, about `FileVerdict`, the executor and Atlassian together:
+
+- Run one filed `ISP-276`. Run two, over the same invocation reference and sent
+  immediately, answered `ISP-276` from the executor's `inspect` and created
+  nothing. **One create over two runs**, where the search-then-create protocol
+  filed two on 2026-08-28.
+- The claim was then removed from the ledger and `FileVerdict::inspect` was
+  called again. With nothing to read on the ledger it fell through to the
+  search, asked `fields=key`, and read `ISP-276` off the site. The `fields=key`
+  repair is measured against Atlassian and no longer against the stub alone.
+- The create carried `fields.issuetype` and a `properties` array, and the site
+  answered 201.
+- The indexing lag is **more than 634 ms and at most 1940 ms**: the search at
+  634 ms disagreed with the number of creates this run had made and the search
+  at 1940 ms agreed. A first search that already agrees gives an upper bound
+  only, and the lane now says which of the two it holds rather than printing the
+  resolution of its own polling as a lag.
+- `ISP-272` reads as `Won't Do` and answered a property write, an immediate read
+  and a delete. A closed issue holds properties, so a ticket an earlier run
+  filed and closed is usable as a ledger.
+
+NOT MEASURED, and the run says nothing about these:
+
+- The deployment route. `filing_client` reading `[jira.filing]` and
+  `CveMitigate::file_tickets` are not driven by this lane, which builds a
+  `TicketFiling` directly. The mapping from `fiddle.toml` to `TicketFiling` is
+  measured against the loopback stub only.
+- A `fiddle` binary writing to a real site. The only run path to `FileVerdict`
+  through the binary is a full CVE sweep, which needs a scanner, an agent and a
+  GitHub repository and which opens a pull request.
+- Concurrent duplicate invocations, and a page boundary shifting under a walk.
+  One process cannot arrange either.
+- A genuinely fresh process. The two runs are two executions in one process,
+  each rebuilding the proposal from the configuration. `effect_id` digests four
+  strings the process holds none of, so the marker cannot depend on process
+  state, but that is argued from the derivation and measured only hermetically.
+
+Cleanup, to the operator's ruling of 2026-08-28: `ISP-275` and `ISP-276` were
+closed as `Won't Do` through transition 51, each verified by a second read, and
+the claims were released. A read this lane did not make afterwards confirms both
+are `Won't Do`, the ledger holds no claim, and a JQL for either marker with
+`statusCategory != Done` returns 0 issues.

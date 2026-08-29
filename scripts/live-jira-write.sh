@@ -13,7 +13,7 @@ needs JIRA_USER_EMAIL "It is the account the writes are made as."
 needs JIRA_API_TOKEN "It is the credential, and it is read from the environment and never written to a file this lane generates."
 needs JIRA_SITE "It is the site origin, as in JIRA_SITE=https://snplow.atlassian.net."
 needs JIRA_WRITE_PROJECT "It is the project key this lane files a test ticket in and then CLOSES. It never deletes: deletion is refused by policy in ISP, and a cleanup that depends on a permission the operator does not have leaves residue on every run."
-needs JIRA_LEDGER_ISSUE "It is an existing issue in JIRA_WRITE_PROJECT that holds the claim ledger. This lane reads and writes properties on it and never closes it, so it must not be a ticket any run of this lane created."
+needs JIRA_LEDGER_ISSUE "It is an existing issue in JIRA_WRITE_PROJECT that holds the claim ledger. This lane reads and writes properties on it and never closes it. Two rules bound it and only the first is enforced in code: it must name JIRA_WRITE_PROJECT, which this lane checks, and it must outlive every run, which no lane can check by reading one issue. A ticket an earlier run filed and closed satisfies the second, because a closed issue still answers a property read and the close list below refuses to name the ledger. What is forbidden is a ticket this run will file, because closing that ticket would take the ledger with it. The property probe below is the enforced half: a ledger that cannot hold a claim is refused before anything is written."
 
 JIRA_ISSUE_TYPE="${JIRA_ISSUE_TYPE:-Task}"
 JIRA_CLOSING_TRANSITION="${JIRA_CLOSING_TRANSITION-}"
@@ -357,7 +357,7 @@ esac
 echo
 note "NOT MEASURED: whether a page boundary shifts under a walk. Forcing it needs an issue indexed between two pages of one walk, which one process cannot arrange."
 note "NOT MEASURED: concurrent duplicate invocations. The design scopes exactly-once to interruptions only, and one process cannot race itself."
-note "NOT DRIVEN THROUGH FIDDLE: a mitigate run does call ticket_proposals and does execute FileVerdict when [jira.filing] is configured (ADR 080), and this lane still sends the claim-then-create requests by hand. So it measures the site, not the build. A green run here is evidence about Atlassian and not about FileVerdict."
+note "NOT DRIVEN THROUGH FIDDLE: this lane sends the claim-then-create requests by hand, so it measures the site and not the build. A green run here is evidence about Atlassian and not about FileVerdict. scripts/live-jira-file-verdict.sh is the lane that drives FileVerdict itself."
 
 if [ "$creates" -ne 1 ]; then
   fail "two runs sent $creates creates, and exactly-once across an interruption means exactly one"

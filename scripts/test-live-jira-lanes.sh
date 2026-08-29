@@ -4,6 +4,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SHAPE="$SCRIPT_DIR/live-jira-search-shape.sh"
 WRITE="$SCRIPT_DIR/live-jira-write.sh"
+FILING="$SCRIPT_DIR/live-jira-file-verdict.sh"
+FILING_TEST="$SCRIPT_DIR/../crates/fiddle-runtime/tests/live_jira_filing.rs"
 
 UNREACHABLE="https://127.0.0.1:1"
 FAILED=0
@@ -112,6 +114,46 @@ for lane in "$SHAPE" "$WRITE"; do
     *) fail "$(basename "$lane") gave every variable and an unreachable site, and said neither: $OUT" ;;
   esac
 done
+
+for absent in JIRA_USER_EMAIL JIRA_API_TOKEN JIRA_SITE JIRA_WRITE_PROJECT JIRA_LEDGER_ISSUE; do
+  args=()
+  [ "$absent" = JIRA_USER_EMAIL ] || args+=("JIRA_USER_EMAIL=bot@example.invalid")
+  [ "$absent" = JIRA_API_TOKEN ] || args+=("JIRA_API_TOKEN=not-a-real-token")
+  [ "$absent" = JIRA_SITE ] || args+=("JIRA_SITE=$UNREACHABLE")
+  [ "$absent" = JIRA_WRITE_PROJECT ] || args+=("JIRA_WRITE_PROJECT=DISPOSABLE")
+  [ "$absent" = JIRA_LEDGER_ISSUE ] || args+=("JIRA_LEDGER_ISSUE=DISPOSABLE-1")
+  refuses_without "$FILING" "$absent" "${args[@]}"
+done
+
+ran "$FILING" JIRA_USER_EMAIL=bot@example.invalid JIRA_API_TOKEN=not-a-real-token \
+  JIRA_SITE="$UNREACHABLE" JIRA_WRITE_PROJECT=ISP JIRA_LEDGER_ISSUE=ISP-1 JIRA_ISSUE=ISP-1
+[ "$CODE" -ne 0 ] || fail "the filing lane accepted the project its read lane observes as a disposable one"
+case "$OUT" in *"is not the project a read lane observes"*) ;; *) fail "the filing lane refused a non-disposable project without saying why: $OUT" ;; esac
+
+[ -f "$FILING_TEST" ] || fail "the filing lane names a test binary this repository does not hold: $FILING_TEST"
+CHECKED=$((CHECKED + 1))
+
+NAMED=$(grep -o 'a_ticket_file_verdict_filed_is_found_by_a_later_inspect_against_the_real_site' "$FILING" | head -1)
+[ -n "$NAMED" ] || fail "the filing lane must name the case it runs, or --exact selects nothing and cargo reports 0 tests as a pass"
+grep -q "async fn $NAMED" "$FILING_TEST" \
+  || fail "the filing lane runs \`$NAMED\` and $FILING_TEST declares no such case, so the lane would report 0 tests run as a pass"
+CHECKED=$((CHECKED + 1))
+
+grep -q -F '#[ignore' "$FILING_TEST" \
+  || fail "the filing lane's case writes to a real site and must be #[ignore]d, or scripts/gate.sh would file a ticket on every run"
+CHECKED=$((CHECKED + 1))
+
+FILING_DELETES=$(grep -c '"DELETE"' "$FILING_TEST")
+FILING_PROPERTY_DELETES=$(grep '"DELETE"' "$FILING_TEST" | grep -c -E 'claim_route|&probe')
+[ "$FILING_DELETES" -gt 0 ] \
+  || fail "the filing lane sends no delete at all, so the comparison below counts nothing and would pass for a lane that deleted every issue it filed"
+[ "$FILING_DELETES" -eq "$FILING_PROPERTY_DELETES" ] \
+  || fail "the filing lane sends $FILING_DELETES deletes and only $FILING_PROPERTY_DELETES of them name a property route. The operator ruled on 2026-08-28 that cleanup is a close and never a delete: ISP refuses a delete by policy, so a lane that deletes an issue leaves residue on every run. Deletes found: $(grep -n '"DELETE"' "$FILING_TEST" | tr '\n' ' ')"
+for built in 'fn claim_route' 'let probe = format!'; do
+  grep -A2 -F "$built" "$FILING_TEST" | grep -q -F '/properties/' \
+    || fail "the filing lane's deletes name \`$built\` and that route is not built from /properties/, so the count above says nothing about what the deletes remove"
+done
+CHECKED=$((CHECKED + 1))
 
 printf 'test-live-jira-lanes: %d cases run, %d failed\n' "$CHECKED" "$FAILED"
 [ "$FAILED" -eq 0 ] || exit 1
