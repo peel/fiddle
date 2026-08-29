@@ -2479,3 +2479,45 @@ fn comment_from(value: &serde_json::Value) -> Comment {
         is_bot: value["user"]["type"].as_str() == Some("Bot"),
     }
 }
+
+pub fn fixture(name: &str) -> PathBuf {
+    repo_root().join("tests/fixtures").join(name)
+}
+
+pub fn tracked_files(tree: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "-z", "--"])
+        .arg(tree)
+        .current_dir(repo_root())
+        .output()
+        .expect("git is on PATH");
+    assert!(
+        out.status.success(),
+        "git ls-files failed for {}: {}",
+        tree.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let listing = String::from_utf8(out.stdout).expect("git prints paths as UTF-8 here");
+    let prefix = tree
+        .strip_prefix(repo_root())
+        .expect("a fixture tree is inside the repository")
+        .to_str()
+        .expect("the fixture path is UTF-8");
+
+    let mut files = std::collections::BTreeMap::new();
+    for path in listing.split('\0').filter(|entry| !entry.is_empty()) {
+        let relative = path
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .unwrap_or_else(|| panic!("git listed {path}, which is not under {prefix}"));
+        let bytes = std::fs::read(repo_root().join(path))
+            .unwrap_or_else(|source| panic!("git tracks {path} but it does not read: {source}"));
+        files.insert(relative.to_string(), bytes);
+    }
+    assert!(
+        !files.is_empty(),
+        "{} tracks no files: the fixture is absent, or it was never committed",
+        tree.display()
+    );
+    files
+}

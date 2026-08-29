@@ -151,9 +151,11 @@ yet. This adapter inherits that sentence.
 The redaction claim is measured, and three tests keep the measurement from
 being vacuous. `no_surface_a_reader_sees_carries_the_jira_credential` searches
 every surface a Jira invocation writes or says, and it pins that set as a
-26-name census, so a surface this build starts writing cannot join the tree
+42-name census, so a surface this build starts writing cannot join the tree
 unsearched and a surface it stops writing cannot leave the search passing on an
-absent file. `the_same_search_finds_the_credential_when_a_surface_does_carry_it`
+absent file. Ten of those names are surfaces of a run that filed a ticket into a
+loopback stub, so the census covers the path that writes and not only the paths
+that read. `the_same_search_finds_the_credential_when_a_surface_does_carry_it`
 plants the credential on a surface, so the search cannot pass by finding nothing
 anywhere. `every_surface_searched_is_output_of_a_jira_read` requires at least six
 of the searched surfaces to name both the site and the issue key, so a surface

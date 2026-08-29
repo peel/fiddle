@@ -1,7 +1,7 @@
 mod support;
 
 use std::path::{Path, PathBuf};
-use support::{Scenario, StubJira};
+use support::{Reply, Scenario, StubGateway, StubJira};
 
 const TOKEN_CREDENTIAL: &str = "JIRA_API_TOKEN";
 
@@ -21,22 +21,32 @@ const UNREACHABLE: &str = "http://127.0.0.1:9";
 
 const ATTEMPT: &str = "<attempt>";
 
-const CENSUS: [&str; 32] = [
+const CENSUS: [&str; 42] = [
+    "a sweep files a ticket / run cve --json / nothing on stderr",
+    "a sweep files a ticket / run cve --json / the file `reports/cve/<attempt>/report.json`",
+    "a sweep files a ticket / run cve --json / the file `reports/filings.json`",
+    "a sweep files a ticket / run cve --json / the file `reports/findings.json`",
+    "a sweep files a ticket / run cve --json / the file `reports/rescan/child.json`",
+    "a sweep files a ticket / run cve --json / the file `reports/rescan/scan.json`",
+    "a sweep files a ticket / run cve --json / the file `reports/scan/child.json`",
+    "a sweep files a ticket / run cve --json / the file `reports/scan/scan.json`",
+    "a sweep files a ticket / run cve --json / the file `reports/verdicts.json`",
+    "a sweep files a ticket / run cve --json / what it printed on stdout",
     "half a credential / inspect --json / a diagnostic on stderr",
     "half a credential / inspect --json / nothing on stdout",
     "half a credential / inspect --json / the file `fiddle.toml`",
-    "the deployment files / config check --json / nothing on stderr",
-    "the deployment files / config check --json / the file `fiddle.toml`",
-    "the deployment files / config check --json / what it printed on stdout",
-    "the deployment files / config check / nothing on stderr",
-    "the deployment files / config check / the file `fiddle.toml`",
-    "the deployment files / config check / what it printed on stdout",
     "the document is read back / config check --json / nothing on stderr",
     "the document is read back / config check --json / the file `fiddle.toml`",
     "the document is read back / config check --json / what it printed on stdout",
     "the document is read back / config check / nothing on stderr",
     "the document is read back / config check / the file `fiddle.toml`",
     "the document is read back / config check / what it printed on stdout",
+    "the filing table is read back / config check --json / nothing on stderr",
+    "the filing table is read back / config check --json / the file `fiddle.toml`",
+    "the filing table is read back / config check --json / what it printed on stdout",
+    "the filing table is read back / config check / nothing on stderr",
+    "the filing table is read back / config check / the file `fiddle.toml`",
+    "the filing table is read back / config check / what it printed on stdout",
     "the site answers / inspect --json / nothing on stderr",
     "the site answers / inspect --json / what it printed on stdout",
     "the site answers / inspect / nothing on stderr",
@@ -57,6 +67,34 @@ const CENSUS: [&str; 32] = [
 ];
 
 const PROJECTS: usize = 6;
+
+const SWEEP_REF: &str = "cve";
+
+const SWEEP_REPO: &str = "acme/r";
+
+const SWEEP_BASE: &str = "main";
+
+const SWEEP_IMAGE: &str = "ghcr.io/acme/icecube:latest";
+
+const SWEEP_FIXTURE: &str = "cve-vulnerable";
+
+const SWEEP_SCAN: &str = "no-published-fix";
+
+const SWEEP_RESCAN: &str = "library-clean";
+
+const SWEEP_CVE: &str = "CVE-2026-0001";
+
+const SWEEP_DECLINED: &str = "no published fix I can apply without a registry";
+
+const FILED_ISSUE: &str = "SEC-42";
+
+const FORGE_TOKEN: &str = "FIDDLE_GITHUB_TOKEN";
+
+const MODEL_KEY: &str = "LITELLM_API_KEY";
+
+const WIZ_ID: &str = "WIZ_CLIENT_ID";
+
+const WIZ_SECRET: &str = "WIZ_CLIENT_SECRET";
 
 const FILING_PROJECT: &str = "SEC";
 
@@ -140,6 +178,7 @@ struct Searched {
     needles: Vec<Needle>,
     projects: Vec<Scenario>,
     sites: Vec<StubJira>,
+    filed: Filed,
 }
 
 impl Searched {
@@ -270,6 +309,27 @@ fn every_surface_searched_is_output_of_a_jira_read() {
         "the credential must be looked for in what the process wrote and not only in \
          what it said, and only {published:?} are files"
     );
+
+    let filing: Vec<&String> = searched
+        .surfaces
+        .iter()
+        .filter(|surface| surface.what.starts_with("a sweep files a ticket / "))
+        .map(|surface| &surface.what)
+        .collect();
+    assert!(
+        filing.iter().any(|what| what.contains("filings.json"))
+            && filing.iter().any(|what| what.ends_with("on stdout")),
+        "the census has to name both what the filing run said and the filing report it \
+         wrote, which is the file such a run publishes and no reading run does; these \
+         are the surfaces it named: {filing:?}"
+    );
+    assert_eq!(
+        searched.filed.filings()["tickets"][0]["issue"],
+        serde_json::json!(FILED_ISSUE),
+        "and that report has to name the issue the site created, or the run those \
+         surfaces came from took the filing path and filed nothing, which is what a \
+         run that only reads a tracker also does"
+    );
 }
 
 #[test]
@@ -388,6 +448,7 @@ fn surfaces_of_every_jira_invocation() -> Searched {
     let sites = vec![
         StubJira::holding_the_issue(),
         StubJira::refusing_the_credential(),
+        StubJira::filing_as(FILED_ISSUE),
     ];
     let projects: Vec<Scenario> = (0..PROJECTS).map(|_| Scenario::new()).collect();
     let sited = [
@@ -403,6 +464,7 @@ fn surfaces_of_every_jira_invocation() -> Searched {
     }
     let answering = &sites[0];
     let refusing = &sites[1];
+    let filed_into = &sites[2];
     let answered = &projects[0];
     let refused = &projects[1];
     let unreachable = &projects[2];
@@ -531,9 +593,57 @@ fn surfaces_of_every_jira_invocation() -> Searched {
              path that writes: {}",
             said.stdout
         );
-        surfaces.extend(said.streams("the deployment files", command));
-        surfaces.extend(files_of("the deployment files", command, filing.dir()));
+        surfaces.extend(said.streams("the filing table is read back", command));
+        surfaces.extend(files_of(
+            "the filing table is read back",
+            command,
+            filing.dir(),
+        ));
     }
+
+    let filed = a_sweep_that_files(filed_into, &credentials);
+    assert_eq!(
+        filed.said.code,
+        Some(0),
+        "the sweep has to succeed, or the surfaces below are a failed run's and the \
+         filing path is not what wrote them: {}",
+        filed.said.stderr
+    );
+    assert_eq!(
+        filed.filings()["tickets"][0]["state"],
+        serde_json::json!("filed"),
+        "the run has to have filed a ticket, or no jira credential travelled and \
+         searching what it wrote proves nothing: {}",
+        filed.filings()
+    );
+    let created: Vec<String> = filed_into
+        .request_lines()
+        .into_iter()
+        .filter(|line| line.starts_with("POST /rest/api/3/issue "))
+        .collect();
+    assert_eq!(
+        created.len(),
+        1,
+        "one advisory went unrepaired, so the site received exactly one create; more or \
+         fewer and the run below did not take the filing path once: {created:?}"
+    );
+    assert_eq!(
+        filed_into.the_only_authorization(),
+        answering.the_only_authorization(),
+        "the needle this lane searches for is the header the site that answers \
+         received, so the site that was filed into has to have received that same \
+         header or the search of a filing run's surfaces is blind"
+    );
+    surfaces.extend(
+        filed
+            .said
+            .streams("a sweep files a ticket", "run cve --json"),
+    );
+    surfaces.extend(files_under(
+        "a sweep files a ticket / run cve --json",
+        &filed.scenario.report_dir(),
+        filed.scenario.dir(),
+    ));
 
     let needles = vec![
         Needle {
@@ -554,6 +664,7 @@ fn surfaces_of_every_jira_invocation() -> Searched {
         needles,
         projects,
         sites,
+        filed,
     }
 }
 
@@ -649,6 +760,183 @@ fn filing_table() -> String {
          project = \"{FILING_PROJECT}\"\n\
          issue_type = \"{FILING_ISSUE_TYPE}\"\n\
          ledger_issue = \"{FILING_LEDGER}\"\n"
+    )
+}
+
+struct Filed {
+    scenario: Scenario,
+    said: Said,
+}
+
+impl Filed {
+    fn filings(&self) -> serde_json::Value {
+        let path = self.scenario.report_dir().join("filings.json");
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|e| panic!("no filing report at {} ({e})", path.display()));
+        serde_json::from_slice(&bytes).unwrap()
+    }
+}
+
+fn a_sweep_that_files(site: &StubJira, credentials: &[(&str, &str)]) -> Filed {
+    let scenario = Scenario::new();
+    let stub = scenario.dir().join("gh-stub");
+    std::fs::create_dir_all(stub.join("script")).unwrap();
+    std::fs::create_dir_all(stub.join("config")).unwrap();
+    let remote = stub.join("remote.git");
+    std::fs::create_dir_all(&remote).unwrap();
+    support::git(&remote, &["init", "-q", "--bare", "-b", SWEEP_BASE, "."]);
+
+    let tree = seed_repository(scenario.dir(), &remote);
+    let gateway = StubGateway::serving(a_script_declining_the_only_advisory());
+    let login = support::caller_logged_in();
+
+    scenario.append_config(&sweep_tables(
+        &stub,
+        &tree,
+        &scenario.dir().join("workspaces"),
+        &gateway.base_url(),
+    ));
+    scenario.append_config(&jira_table(&site.base_url()));
+    scenario.append_config(&filing_table());
+
+    let mut command = std::process::Command::new(support::fiddle_binary());
+    for name in support::CREDENTIAL_VARS
+        .iter()
+        .chain([USER_CREDENTIAL, FORGE_TOKEN, MODEL_KEY, WIZ_ID, WIZ_SECRET].iter())
+    {
+        command.env_remove(name);
+    }
+    command
+        .args(["run", SWEEP_REF])
+        .args(["--capability", "cve_mitigate"])
+        .args(["--config", scenario.config_path().to_str().unwrap()])
+        .arg("--json")
+        .env(FORGE_TOKEN, "ghp_forge_token_for_the_sweep")
+        .env(MODEL_KEY, "sk-model-key-for-the-sweep")
+        .env(WIZ_ID, "wiz-client-id-for-the-sweep")
+        .env(WIZ_SECRET, "wiz-client-secret-for-the-sweep")
+        .env(support::WIZ_CONFIG_DIR, login.path());
+    for (name, value) in credentials {
+        command.env(name, value);
+    }
+    let out = command.output().unwrap();
+    assert!(
+        gateway.served() >= 1,
+        "the agent was never consulted, so no advisory was dispositioned and the run \
+         below reached no filing verdict"
+    );
+
+    Filed {
+        scenario,
+        said: Said {
+            code: out.status.code(),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        },
+    }
+}
+
+fn seed_repository(root: &Path, remote: &Path) -> PathBuf {
+    let tree = root.join("tree");
+    std::fs::create_dir_all(&tree).unwrap();
+    for (path, bytes) in support::tracked_files(&support::fixture(SWEEP_FIXTURE)) {
+        let destination = tree.join(&path);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(destination, bytes).unwrap();
+    }
+    support::git(&tree, &["init", "-q", "-b", SWEEP_BASE, "."]);
+    support::git(&tree, &["add", "-A"]);
+    support::git(
+        &tree,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "the fixture under remediation",
+        ],
+    );
+    support::git(
+        &tree,
+        &["remote", "add", "origin", &remote.display().to_string()],
+    );
+    support::git(&tree, &["push", "-q", "origin", SWEEP_BASE]);
+    tree
+}
+
+fn a_script_declining_the_only_advisory() -> Vec<Reply> {
+    vec![support::accepted(support::completion(
+        serde_json::json!({
+            "role": "assistant",
+            "content": serde_json::json!({
+                "changed_files": [],
+                "summary": SWEEP_DECLINED,
+                "claimed_complete": false,
+                "findings": [{
+                    "cve": SWEEP_CVE,
+                    "attempted": false,
+                    "note": SWEEP_DECLINED,
+                }],
+            }).to_string(),
+        }),
+        "stop",
+    ))]
+}
+
+fn sweep_tables(stub: &Path, tree: &Path, workspaces: &Path, base_url: &str) -> String {
+    format!(
+        "[github]\n\
+         repo = \"{SWEEP_REPO}\"\n\
+         base = \"{SWEEP_BASE}\"\n\
+         token = {{ env = \"{FORGE_TOKEN}\" }}\n\
+         cli = {{ program = {gh}, args = [\"--stub-dir\", {stub}] }}\n\
+         git = \"git\"\n\
+         config_dir = {config_dir}\n\
+         timeout = \"120s\"\n\
+         \n\
+         [agent]\n\
+         model = \"a-model\"\n\
+         base_url = \"{base_url}\"\n\
+         api_key = {{ env = \"{MODEL_KEY}\" }}\n\
+         max_turns = 6\n\
+         max_tokens = 512\n\
+         max_changed_files = 4\n\
+         deadline = \"300s\"\n\
+         tool_timeout = \"300s\"\n\
+         \n\
+         [scanner]\n\
+         cli = {{ program = {wiz}, args = [\"{SWEEP_SCAN}\"] }}\n\
+         timeout = \"300s\"\n\
+         \n\
+         [orchestration.cve]\n\
+         image = \"{SWEEP_IMAGE}\"\n\
+         max_findings = 2\n\
+         \n\
+         [workspace]\n\
+         root = {workspaces}\n\
+         fixture = {tree}\n\
+         command_timeout = \"300s\"\n\
+         \n\
+         [[workspace.checks]]\n\
+         program = {check}\n\
+         args = []\n\
+         success = \"exit-zero\"\n\
+         \n\
+         [[workspace.checks]]\n\
+         program = {wiz}\n\
+         args = [\"{SWEEP_RESCAN}\"]\n\
+         success = \"artefact-written\"\n",
+        gh = support::toml_string(support::gh_stub_binary()),
+        wiz = support::toml_string(support::wiz_stub_binary()),
+        check = support::toml_string(support::check_stub_binary()),
+        stub = support::toml_string(stub),
+        config_dir = support::toml_string(&stub.join("config")),
+        workspaces = support::toml_string(workspaces),
+        tree = support::toml_string(tree),
     )
 }
 

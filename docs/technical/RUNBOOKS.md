@@ -344,9 +344,13 @@ close does not take, the lane names the keys on stderr and fails.
 **It does not drive `fiddle`.** It sends the requests by hand, so it measures the
 site rather than the build. `scripts/live-jira-file-verdict.sh` is the lane that
 drives the build; see below. `human::publish`, the other route a Jira write could
-take, still has no caller outside tests. No acceptance scenario drives the filing
-path through the command line, so the credential census in
-`crates/fiddle-acceptance/tests/jira_credential.rs` has no write scenario in it.
+take, still has no caller outside tests. The credential census in
+`crates/fiddle-acceptance/tests/jira_credential.rs` now carries a write scenario:
+`a_sweep_that_files` drives `fiddle run cve --capability cve_mitigate` over a
+document carrying `[jira.filing]`, and the site it files into is a loopback stub.
+Ten of the census's 42 surfaces are that run's, and `reports/filings.json` is one
+of them. No acceptance scenario drives the filing path against Atlassian, and
+none is meant to: `scripts/live-jira-file-verdict.sh` is the lane that does.
 `the_credential_never_reaches_the_filing_report_through_a_quoted_refusal` holds the
 one new surface the filing path writes, which is `filings.json` on the disk.
 

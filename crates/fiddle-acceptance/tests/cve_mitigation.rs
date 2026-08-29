@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use support::{
-    accepted, body_of, calls, check_stub_binary, completion, gh_stub_binary, git, git_says,
-    reports, toml_string, walkdir_files, wiz_stub_binary, Reply, Scenario, StubGateway,
-    CREDENTIAL_VARS,
+    accepted, body_of, calls, check_stub_binary, completion, fixture, gh_stub_binary, git,
+    git_says, reports, toml_string, tracked_files, walkdir_files, wiz_stub_binary, Reply, Scenario,
+    StubGateway, CREDENTIAL_VARS,
 };
 use tempfile::TempDir;
 
@@ -101,48 +101,6 @@ fn repo_root() -> PathBuf {
         .join("../..")
         .canonicalize()
         .expect("the manifest directory is two levels below the repository root")
-}
-
-fn fixture(name: &str) -> PathBuf {
-    repo_root().join("tests/fixtures").join(name)
-}
-
-fn tracked_files(tree: &Path) -> BTreeMap<String, Vec<u8>> {
-    let out = Command::new("git")
-        .args(["ls-files", "-z", "--"])
-        .arg(tree)
-        .current_dir(repo_root())
-        .output()
-        .expect("git is on PATH");
-    assert!(
-        out.status.success(),
-        "git ls-files failed for {}: {}",
-        tree.display(),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let listing = String::from_utf8(out.stdout).expect("git prints paths as UTF-8 here");
-    let prefix = tree
-        .strip_prefix(repo_root())
-        .expect("a fixture tree is inside the repository")
-        .to_str()
-        .expect("the fixture path is UTF-8");
-
-    let mut files = BTreeMap::new();
-    for path in listing.split('\0').filter(|entry| !entry.is_empty()) {
-        let relative = path
-            .strip_prefix(prefix)
-            .and_then(|rest| rest.strip_prefix('/'))
-            .unwrap_or_else(|| panic!("git listed {path}, which is not under {prefix}"));
-        let bytes = std::fs::read(repo_root().join(path))
-            .unwrap_or_else(|source| panic!("git tracks {path} but it does not read: {source}"));
-        files.insert(relative.to_string(), bytes);
-    }
-    assert!(
-        !files.is_empty(),
-        "{} tracks no files: the fixture is absent, or it was never committed",
-        tree.display()
-    );
-    files
 }
 
 fn changed_paths(a: &BTreeMap<String, Vec<u8>>, b: &BTreeMap<String, Vec<u8>>) -> Vec<String> {
@@ -3981,15 +3939,18 @@ fn the_filing_table_in_the_document_reaches_the_ticket_the_binary_files() {
     );
 
     let asked = site.request_lines();
+    let claim_path = format!("/rest/api/3/issue/{FILING_LEDGER}/properties/{marker}");
+    let first = asked.first().map(String::as_str).unwrap_or("");
+    assert!(
+        first.starts_with("GET ") && first.contains(&claim_path),
+        "the ledger claim is what the binary asks the site for first, because a create \
+         sent before the claim is read files a second ticket for an advisory already \
+         filed; the first request was {first:?} and the order was {asked:?}"
+    );
     let claims: Vec<&String> = asked
         .iter()
         .filter(|line| line.contains("/properties/"))
         .collect();
-    assert!(
-        !claims.is_empty(),
-        "the ledger claim is what the binary asks the site for first: {asked:?}"
-    );
-    let claim_path = format!("/rest/api/3/issue/{FILING_LEDGER}/properties/{marker}");
     for line in &claims {
         assert!(
             line.contains(&claim_path),
