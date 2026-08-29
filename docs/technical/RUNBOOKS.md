@@ -123,6 +123,12 @@ JIRA_SITE=https://snplow.atlassian.net JIRA_SEARCH_PROJECT=ISP \
 # the live Jira write lane; it CREATES an issue and then CLOSES it, never deletes
 JIRA_SITE=https://snplow.atlassian.net JIRA_WRITE_PROJECT=ISP \
   JIRA_LEDGER_ISSUE=ISP-<anchor> scripts/live-jira-write.sh
+
+# the live Jira filing lane; the same write, driven through FileVerdict itself.
+# JIRA_ISSUE belongs to the read lane and both write lanes refuse while it names
+# JIRA_WRITE_PROJECT, so unset it for the invocation.
+env -u JIRA_ISSUE JIRA_SITE=https://snplow.atlassian.net JIRA_WRITE_PROJECT=ISP \
+  JIRA_LEDGER_ISSUE=ISP-<anchor> scripts/live-jira-file-verdict.sh
 ```
 
 Read the gate's coverage off its `TOTALS` line. It says `N of M binaries`, and
@@ -336,20 +342,17 @@ itself is never closed, and the lane refuses if the close list names it. When a
 close does not take, the lane names the keys on stderr and fails.
 
 **It does not drive `fiddle`.** It sends the requests by hand, so it measures the
-site rather than the build. Since M5b a `fiddle` binary does perform this write:
-`CveMitigate` calls `ticket_proposals` and executes each `FileVerdict` when
-`[jira.filing]` names a project, an issue type and a ledger issue (ADR 080).
-`human::publish`, the other route a Jira write could take, still has no caller
-outside tests. No acceptance scenario drives the filing path through the command
-line, so the credential census in
+site rather than the build. `scripts/live-jira-file-verdict.sh` is the lane that
+drives the build; see below. `human::publish`, the other route a Jira write could
+take, still has no caller outside tests. No acceptance scenario drives the filing
+path through the command line, so the credential census in
 `crates/fiddle-acceptance/tests/jira_credential.rs` has no write scenario in it.
 `the_credential_never_reaches_the_filing_report_through_a_quoted_refusal` holds the
-one new surface the filing path writes, which is `filings.json` on the disk. The
-lane should drive the binary as `scripts/live-jira-observe.sh` does, and the census
-should grow a write scenario.
+one new surface the filing path writes, which is `filings.json` on the disk.
 
-**The rewritten lane has not been run.** It is a human gate and the operator runs
-it; no run of this version has touched a site. `scripts/test-live-jira-lanes.sh`
+**It is a human gate and the operator runs it.** It does not gate CI. The
+rewritten lane ran against `ISP` on 2026-08-29 with ledger `ISP-272`: two runs,
+one create, the ticket closed as `Won't Do` and the claim released. `scripts/test-live-jira-lanes.sh`
 holds that it refuses rather than skips, that it sends no delete against an
 issue, that it resolves its closing transition by name, and that its marker
 search excludes closed issues. Those are checks on the text of the lane, not on
@@ -360,7 +363,47 @@ Atlassian.
 closed to `Won't Do` by hand through transition `id=51`. ADR 079 records what the
 run measured and what it refutes.
 
-**Out of reach and not claimed by either lane.** Concurrent duplicate
+### The live Jira filing lane
+
+`scripts/live-jira-file-verdict.sh` **drives `FileVerdict` itself against a real
+site.** It runs `crates/fiddle-runtime/tests/live_jira_filing.rs`, an `#[ignore]`d
+case, so `scripts/gate.sh` never files a ticket. Nothing in its filing path is a
+request the lane writes: `ticket_proposals` builds the proposal,
+`TicketProposal::operation` builds the `FileVerdict`, and the same `Executor`
+`CveMitigate::file` uses executes it.
+
+**It takes the same five variables as the write lane and refuses the same way.**
+`JIRA_ISSUE` names the read lane's issue and is set in the operator environment;
+unset it for the invocation rather than weakening the guard.
+
+**It proves the two inspects separately.** Run one files. Run two, over the same
+invocation reference, is answered by the executor's `inspect` reading the claim
+on the ledger. The claim is then removed and `FileVerdict::inspect` is called
+once more, which falls through to the search, asks `fields=key`, and must read
+the same key back. The first inspect measures the ledger; the second measures the
+search.
+
+**Its lag carries the bound it actually observed.** A search that disagrees with
+the run's own create count is a lower bound; the first search that agrees is an
+upper bound. When the first search already agrees the lane says `at most N ms`
+and refuses to call it zero, because it observed no search that disagreed.
+
+**What it leaves behind.** Nothing, when it passes. The ticket is closed through
+the resolved transition and verified by a second read, the claim is removed, and
+the lane refuses if the close list names the ledger. Keys it could not close are
+printed and the case fails.
+
+**Run against `ISP` on 2026-08-29** with ledger `ISP-272`. It filed `ISP-275`
+and, after a correction to its lag reporting, `ISP-276`. Both are closed as
+`Won't Do`. ADR 079 records what the run measured and what it does not reach.
+
+**It does not drive a `fiddle` binary.** It builds a `TicketFiling` itself, so
+the mapping from `fiddle.toml` to `TicketFiling` and `CveMitigate::file_tickets`
+are still measured against the loopback stub alone. The only run path to
+`FileVerdict` through the binary is a full CVE sweep, which needs a scanner, an
+agent and a GitHub repository and which opens a pull request.
+
+**Out of reach and claimed by none of these lanes.** Concurrent duplicate
 invocations. The design scopes exactly-once to interruptions, and one process
 cannot race itself. Whether a page boundary shifts under a walk is also
 unmeasured: it needs an issue indexed between two pages of one walk, which

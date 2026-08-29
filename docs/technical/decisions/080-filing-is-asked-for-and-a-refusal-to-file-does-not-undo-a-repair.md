@@ -1,7 +1,7 @@
 # 080 — Filing is asked for, and a refusal to file does not undo a repair
 
 Status: accepted
-Cites: TicketFiling, FiledTickets, TicketFiled, FILINGS_FILE, ticket_proposals, TicketProposal, FileVerdict, MitigateConfig, JiraFiling, filing_client, JiraError, CapabilityError::Write, JIRA_ISSUE_FILED, a_verdict_carrying_a_legacy_label_files_one_ticket_and_a_second_run_files_none, the_claim_is_the_only_thing_standing_between_one_ticket_and_two, a_deployment_with_no_jira_table_completes_the_run_and_files_nothing, a_reachable_site_with_no_filing_configured_files_nothing, a_create_the_site_refuses_is_named_as_a_filing_refusal_and_the_repair_still_lands, a_ledger_the_site_does_not_hold_is_named_and_no_create_is_sent, the_filing_table_names_its_own_project_and_never_borrows_the_observed_one, a_ledger_issue_in_another_project_is_refused, a_tracker_that_files_nothing_asks_for_no_credential_to_file_with, a_tracker_that_files_is_refused_when_nothing_exports_its_credential, a_deployment_that_configured_no_filing_does_not_read_as_one_that_filed_nothing, crates/fiddle-runtime/src/capability/mitigate.rs, crates/fiddle-runtime/src/cve/verdict.rs, crates/fiddle-runtime/tests/cve_filing.rs, docs/technical/decisions/079-a-ticket-is-deduplicated-by-a-marker-it-carries.md
+Cites: TicketFiling, FiledTickets, TicketFiled, FILINGS_FILE, ticket_proposals, TicketProposal, FileVerdict, MitigateConfig, JiraFiling, filing_client, JiraError, CapabilityError::Write, JIRA_ISSUE_FILED, a_verdict_carrying_a_legacy_label_files_one_ticket_and_a_second_run_files_none, the_claim_is_the_only_thing_standing_between_one_ticket_and_two, a_deployment_with_no_jira_table_completes_the_run_and_files_nothing, a_reachable_site_with_no_filing_configured_files_nothing, a_create_the_site_refuses_is_named_as_a_filing_refusal_and_the_repair_still_lands, a_ledger_the_site_does_not_hold_is_named_and_no_create_is_sent, the_filing_table_names_its_own_project_and_never_borrows_the_observed_one, a_ledger_issue_in_another_project_is_refused, a_tracker_that_files_nothing_asks_for_no_credential_to_file_with, a_tracker_that_files_is_refused_when_nothing_exports_its_credential, a_deployment_that_configured_no_filing_does_not_read_as_one_that_filed_nothing, crates/fiddle-runtime/src/capability/mitigate.rs, crates/fiddle-runtime/src/cve/verdict.rs, crates/fiddle-runtime/tests/cve_filing.rs, crates/fiddle-runtime/tests/live_jira_filing.rs, docs/technical/decisions/079-a-ticket-is-deduplicated-by-a-marker-it-carries.md
 
 ## Context
 
@@ -72,3 +72,11 @@ to file are different facts.
   driven against a real site, and ADR 079's grading of the milestone's central
   claim is unchanged by it. A green stub run is evidence about this code and
   not about Atlassian.
+
+> Amended 2026-08-29. `FileVerdict` has since been driven against
+> `snplow.atlassian.net` by `crates/fiddle-runtime/tests/live_jira_filing.rs`,
+> and ADR 079 carries that record. It does not change the paragraph above. That
+> lane builds a `TicketFiling` itself and calls `ticket_proposals` and the
+> executor the way `CveMitigate::file` does; it never reads a `fiddle.toml`, so
+> `JiraFiling`, `filing_client` and `CveMitigate::file_tickets` remain measured
+> against the loopback stub and against nothing else.
