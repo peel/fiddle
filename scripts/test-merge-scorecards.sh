@@ -680,5 +680,180 @@ assert_json "an object carrying no verdict is not read as clear" '.spec_defect.s
 assert_json "the card that carried it is named as silent" '.spec_defect.missing_from | join(",")' "codex" "$OUT"
 
 echo ""
+echo "=== Test 24: a boolean where the spec_defect object belongs states nothing ==="
+INPUT='[
+  {
+    "task_id": "bean-24",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": true
+  },
+  {
+    "task_id": "bean-24",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": null
+  }
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "a boolean is not read as a clear verdict" '.spec_defect.state' "not_reported" "$OUT"
+assert_json "the merged card states no detected verdict" '.spec_defect | has("detected")' "false" "$OUT"
+assert_json "the card carrying a boolean is named as silent" '.spec_defect.missing_from | join(",")' "claude" "$OUT"
+assert_json "the card that did report is still named" '.spec_defect.reported_by | join(",")' "codex" "$OUT"
+
+echo ""
+echo "=== Test 25: a string where the spec_defect object belongs states nothing ==="
+INPUT='[
+  {
+    "task_id": "bean-25",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": "unknown"
+  },
+  {
+    "task_id": "bean-25",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": null
+  }
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "a string is not read as a clear verdict" '.spec_defect.state' "not_reported" "$OUT"
+assert_json "the merged card states no detected verdict" '.spec_defect | has("detected")' "false" "$OUT"
+assert_json "the card carrying a string is named as silent" '.spec_defect.missing_from | join(",")' "claude" "$OUT"
+assert_json "the card that did report is still named" '.spec_defect.reported_by | join(",")' "codex" "$OUT"
+
+echo ""
+echo "=== Test 26: an array where the spec_defect object belongs states nothing ==="
+INPUT='[
+  {
+    "task_id": "bean-26",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": ["detected"]
+  },
+  {
+    "task_id": "bean-26",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": null
+  }
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "an array is not read as a clear verdict" '.spec_defect.state' "not_reported" "$OUT"
+assert_json "the merged card states no detected verdict" '.spec_defect | has("detected")' "false" "$OUT"
+assert_json "the card carrying an array is named as silent" '.spec_defect.missing_from | join(",")' "claude" "$OUT"
+assert_json "the card that did report is still named" '.spec_defect.reported_by | join(",")' "codex" "$OUT"
+
+echo ""
+echo "=== Test 27: a number where the spec_defect object belongs states nothing ==="
+INPUT='[
+  {
+    "task_id": "bean-27",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": 0
+  },
+  {
+    "task_id": "bean-27",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": null
+  }
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "a number is not read as a clear verdict" '.spec_defect.state' "not_reported" "$OUT"
+assert_json "the merged card states no detected verdict" '.spec_defect | has("detected")' "false" "$OUT"
+assert_json "the card carrying a number is named as silent" '.spec_defect.missing_from | join(",")' "claude" "$OUT"
+assert_json "the card that did report is still named" '.spec_defect.reported_by | join(",")' "codex" "$OUT"
+
+echo ""
+echo "=== Test 28: every card reporting properly still merges to clear, so the type check is not vacuous ==="
+INPUT='[
+  {
+    "task_id": "bean-28",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "claude",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": {"detected": false}
+  },
+  {
+    "task_id": "bean-28",
+    "iteration": 1,
+    "timestamp": "2026-01-01T00:00:00Z",
+    "provider": "codex",
+    "domains": { "general": { "dimensions": {"correctness": {"score": 8, "threshold": 7, "evidence": "e"}} } },
+    "criteria": [{"id": "c1", "pass": true, "evidence": "e"}],
+    "spec_defect": null
+  }
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "both reporting shapes still reach clear" '.spec_defect.state' "clear" "$OUT"
+assert_json "and both are named as having reported" '.spec_defect.reported_by | join(",")' "claude,codex" "$OUT"
+assert_json "with nothing left silent" '.spec_defect.missing_from | length' "0" "$OUT"
+
+echo ""
+echo "=== Test 29: every card is counted exactly once, whatever shape it carried ==="
+INPUT='[
+  {"task_id":"bean-29","iteration":1,"timestamp":"2026-01-01T00:00:00Z","provider":"p-absent",
+   "domains":{"general":{"dimensions":{"correctness":{"score":8,"threshold":7,"evidence":"e"}}}},
+   "criteria":[{"id":"c1","pass":true,"evidence":"e"}]},
+  {"task_id":"bean-29","iteration":1,"timestamp":"2026-01-01T00:00:00Z","provider":"p-null",
+   "domains":{"general":{"dimensions":{"correctness":{"score":8,"threshold":7,"evidence":"e"}}}},
+   "criteria":[{"id":"c1","pass":true,"evidence":"e"}],"spec_defect":null},
+  {"task_id":"bean-29","iteration":1,"timestamp":"2026-01-01T00:00:00Z","provider":"p-object",
+   "domains":{"general":{"dimensions":{"correctness":{"score":8,"threshold":7,"evidence":"e"}}}},
+   "criteria":[{"id":"c1","pass":true,"evidence":"e"}],"spec_defect":{"detected":false}},
+  {"task_id":"bean-29","iteration":1,"timestamp":"2026-01-01T00:00:00Z","provider":"p-empty-object",
+   "domains":{"general":{"dimensions":{"correctness":{"score":8,"threshold":7,"evidence":"e"}}}},
+   "criteria":[{"id":"c1","pass":true,"evidence":"e"}],"spec_defect":{}},
+  {"task_id":"bean-29","iteration":1,"timestamp":"2026-01-01T00:00:00Z","provider":"p-boolean",
+   "domains":{"general":{"dimensions":{"correctness":{"score":8,"threshold":7,"evidence":"e"}}}},
+   "criteria":[{"id":"c1","pass":true,"evidence":"e"}],"spec_defect":true},
+  {"task_id":"bean-29","iteration":1,"timestamp":"2026-01-01T00:00:00Z","provider":"p-string",
+   "domains":{"general":{"dimensions":{"correctness":{"score":8,"threshold":7,"evidence":"e"}}}},
+   "criteria":[{"id":"c1","pass":true,"evidence":"e"}],"spec_defect":"unknown"},
+  {"task_id":"bean-29","iteration":1,"timestamp":"2026-01-01T00:00:00Z","provider":"p-array",
+   "domains":{"general":{"dimensions":{"correctness":{"score":8,"threshold":7,"evidence":"e"}}}},
+   "criteria":[{"id":"c1","pass":true,"evidence":"e"}],"spec_defect":["detected"]},
+  {"task_id":"bean-29","iteration":1,"timestamp":"2026-01-01T00:00:00Z","provider":"p-number",
+   "domains":{"general":{"dimensions":{"correctness":{"score":8,"threshold":7,"evidence":"e"}}}},
+   "criteria":[{"id":"c1","pass":true,"evidence":"e"}],"spec_defect":0}
+]'
+OUT=$(echo "$INPUT" | "$SCRIPT_DIR/merge-scorecards.sh" 2>/dev/null)
+assert_json "eight cards land in exactly eight slots" \
+  '(.spec_defect.reported_by | length) + (.spec_defect.missing_from | length)' "8" "$OUT"
+assert_json "the two reporting shapes are the only ones counted as reporting" \
+  '.spec_defect.reported_by | sort | join(",")' "p-null,p-object" "$OUT"
+assert_json "every other shape is named as silent" \
+  '.spec_defect.missing_from | sort | join(",")' "p-absent,p-array,p-boolean,p-empty-object,p-number,p-string" "$OUT"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed of $((PASS + FAIL))"
 [ "$FAIL" -eq 0 ] || exit 1

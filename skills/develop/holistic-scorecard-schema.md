@@ -1,5 +1,43 @@
 # Holistic Scorecard Schema
 
+## What the Verdict Is Made Of
+
+A holistic card states its verdict in exactly three places:
+
+1. `domains.holistic.dimensions` — each score against its threshold.
+2. `spec_coverage_matrix` — every design requirement classified Full, Weak, or Missing.
+3. `remediation_beans` — one per Missing requirement, one per dimension below threshold.
+
+Nothing else decides a holistic verdict.
+
+### The top-level `criteria` array is empty
+
+Emit `"criteria": []` on every holistic card.
+
+The envelope carries the array because a per-task evaluator grades the criteria its bean
+wrote. A holistic review has no bean, so it has no criteria to grade. The only `criteria`
+a holistic card may carry sit inside `remediation_beans[].eval`, and those belong to the
+bean being created, not to this review.
+
+A finding belongs in `remediation_beans`. Its severity belongs in a dimension score.
+
+`scripts/check-thresholds.sh` refuses a holistic card whose top-level `criteria` is
+non-empty. It exits 2 and names the entries. Exit 2 is a refusal, not a FAIL: repair the
+card and grade it again, and do not pass the result to `check-convergence.sh`.
+
+### A review instruction is not a criterion
+
+Your dispatch may tell you where to look: read wider than one lineage, re-derive a count,
+check a document against the code. Follow it. It shapes the evidence you gather and the
+dimension scores you give. It never becomes an entry in `criteria`. You never author a
+pass or fail rule and then grade yourself against it.
+
+A self-authored rule of this kind fails whenever the reviewer finds a defect, so silence
+is its only passing state and the review cannot converge while it is doing its job. Epic
+`fiddle-yby8` ran that way for three iterations on a self-authored
+`defect_search_outside_the_reviewed_lineage`. It failed iterations 4 and 5 while every
+dimension met its threshold.
+
 ## Spec Coverage Matrix Protocol
 
 After scoring all dimensions, produce a spec coverage matrix. Extract every

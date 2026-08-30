@@ -141,9 +141,14 @@ FAILURES=$(jq -n \
       (($actual - $expected)[] | "unexpected criterion id: \(.)"),
       (($expected - $actual)[] | "missing criterion id: \(.)")),
 
-    (if ($c.spec_defect | type) == "object" and ($c.spec_defect.detected == true) then
-       if ($c.spec_defect.reason | nonempty) then empty
-       else "spec_defect detected but reason is empty" end
+    (($c.spec_defect) as $defect |
+     if $defect == null then empty
+     elif ($defect | type) != "object" then
+       "spec_defect must be null or an object stating `detected`, got \($defect | type)"
+     elif ($defect.detected | type) != "boolean" then
+       "spec_defect: `detected` must be a boolean, got \($defect.detected | type)"
+     elif $defect.detected == true and (($defect.reason | nonempty) | not) then
+       "spec_defect detected but reason is empty"
      else empty end)
   ]
 ')
