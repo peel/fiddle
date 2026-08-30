@@ -616,6 +616,95 @@ OUTPUT=$(cat "$OUTFILE")
 assert_exit "a partly scored card still grades -> exit 0" 0 "$EXIT_CODE"
 assert_json "the scored dimension is graded" '.dimensions["general.correctness"]' "8" "$OUTPUT"
 assert_json "the unscored domain contributes nothing" '.dimensions | length' "1" "$OUTPUT"
+
+echo "Test 22: A holistic card carrying top-level criteria is refused, not graded (fiddle-9vpj)"
+# The recorded holistic-review card for epic fiddle-yby8, iteration 5: real dimension
+# scores and the five criteria the reviewer wrote for itself. Every dimension meets its
+# threshold. Before this refusal, one self-authored criterion decided the epic's verdict.
+cat > "$TMPDIR/yby8-i5.json" << 'EOF'
+{
+  "provider": "claude",
+  "task_id": "fiddle-yby8",
+  "iteration": 5,
+  "domains": {
+    "holistic": {
+      "dimensions": {
+        "integration": {"score": 7, "threshold": 7, "evidence": "The Jira product path joins cleanly end to end."},
+        "coherence": {"score": 7, "threshold": 7, "evidence": "The load-bearing boundary is spelled the same way everywhere."},
+        "holistic_spec_fidelity": {"score": 8, "threshold": 8, "evidence": "All three named properties hold."},
+        "polish": {"score": 7, "threshold": 6, "evidence": "Refusals name the key and the value."},
+        "runtime_health": {"score": 9, "threshold": 9, "evidence": "No runtimes are configured; the gate stands in for them."}
+      }
+    }
+  },
+  "criteria": [
+    {"id": "hn2r_table_row_restored", "pass": true},
+    {"id": "no_other_orphaned_table_row", "pass": true},
+    {"id": "gate_80_of_80_binaries", "pass": true},
+    {"id": "boundary_stated_consistently", "pass": true},
+    {"id": "defect_search_outside_the_reviewed_lineage", "pass": false}
+  ]
+}
+EOF
+jq '.criteria' "$TMPDIR/yby8-i5.json" > "$TMPDIR/yby8-i5-criteria.json"
+
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/yby8-i5.json" --criteria "$TMPDIR/yby8-i5-criteria.json" --tree-sha 1ba8240 > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+ERRTEXT=$(cat "$ERRFILE")
+assert_exit "holistic card with top-level criteria -> exit 2" 2 "$EXIT_CODE"
+assert_json "no verdict is computed" ".verdict" "null" "$OUTPUT"
+assert_json "no tree_sha is stamped on a refusal" ".tree_sha" "null" "$OUTPUT"
+assert_json "stdout names the refusal" ".error" \
+  "holistic scorecard carries a top-level criteria array, which its contract does not define" "$OUTPUT"
+assert_json "stdout cites the holistic contract" ".schema" "skills/develop/holistic-scorecard-schema.md" "$OUTPUT"
+assert_contains "stderr counts the entries it will not grade" "top-level \`criteria\` carries 5 entries" "$ERRTEXT"
+assert_contains "stderr names the self-authored criterion" "defect_search_outside_the_reviewed_lineage" "$ERRTEXT"
+assert_contains "stderr says where a finding belongs" "remediation_beans" "$ERRTEXT"
+assert_contains "stderr says where severity belongs" "a dimension score" "$ERRTEXT"
+assert_contains "stderr cites the holistic contract" "skills/develop/holistic-scorecard-schema.md" "$ERRTEXT"
+
+echo "Test 22b: The same card conforming grades on its dimensions alone"
+jq '.criteria = []' "$TMPDIR/yby8-i5.json" > "$TMPDIR/yby8-i5-conforming.json"
+echo '[]' > "$TMPDIR/yby8-i5-empty.json"
+
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/yby8-i5-conforming.json" --criteria "$TMPDIR/yby8-i5-empty.json" --tree-sha 1ba8240 > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+assert_exit "a conforming holistic card still grades -> exit 0" 0 "$EXIT_CODE"
+assert_json "verdict is PASS on dimensions alone" ".verdict" "PASS" "$OUTPUT"
+assert_json "integration is graded" '.dimensions["holistic.integration"]' "7" "$OUTPUT"
+assert_json "runtime_health is graded" '.dimensions["holistic.runtime_health"]' "9" "$OUTPUT"
+assert_json "no dimension fails" ".failing_dimensions | tojson" "[]" "$OUTPUT"
+
+echo "Test 22c: The same criteria under a per-task domain are still graded"
+# The refusal is keyed on the holistic domain, not on criteria being present. Without this
+# case the check would pass while refusing every card that carries a criterion at all.
+jq '{domains: {general: .domains.holistic}, criteria: .criteria}' "$TMPDIR/yby8-i5.json" > "$TMPDIR/yby8-i5-as-task.json"
+jq '.criteria' "$TMPDIR/yby8-i5-as-task.json" > "$TMPDIR/yby8-i5-as-task-criteria.json"
+
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/yby8-i5-as-task.json" --criteria "$TMPDIR/yby8-i5-as-task-criteria.json" > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+assert_exit "a per-task card with criteria still grades -> exit 1" 1 "$EXIT_CODE"
+assert_json "verdict is FAIL, not a refusal" ".verdict" "FAIL" "$OUTPUT"
+assert_json "the failing criterion is named" ".failing_criteria[0]" "defect_search_outside_the_reviewed_lineage" "$OUTPUT"
+
+echo "Test 22d: Criteria reaching the grader only through --criteria are refused too"
+EXIT_CODE=0
+"$SCRIPT_DIR/check-thresholds.sh" --scorecard "$TMPDIR/yby8-i5-conforming.json" --criteria "$TMPDIR/yby8-i5-criteria.json" > "$OUTFILE" 2> "$ERRFILE" || EXIT_CODE=$?
+OUTPUT=$(cat "$OUTFILE")
+ERRTEXT=$(cat "$ERRFILE")
+assert_exit "a holistic card graded against a non-empty array -> exit 2" 2 "$EXIT_CODE"
+assert_json "no verdict is computed" ".verdict" "null" "$OUTPUT"
+assert_contains "stderr names the array it was handed" "--criteria: the graded array carries 5 entries" "$ERRTEXT"
+CARD_LINE=$(echo "$ERRTEXT" | grep -c 'top-level `criteria` carries' || true)
+if [ "$CARD_LINE" = "0" ]; then
+  PASS=$((PASS+1)); echo "  PASS: the empty array on the card is not reported as an offender"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: the empty array on the card was reported as an offender"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
