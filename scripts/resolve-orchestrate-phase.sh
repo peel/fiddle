@@ -30,7 +30,7 @@ EPIC_TYPE=$(jq -r '.type' "$EPIC_FILE")
 PLANNING_COUNT=$(jq '[.[] | select((.tags // []) | index("planning"))] | length' "$CHILDREN_FILE")
 SEED_ID=$(jq -r '[.[] | select((.tags // []) | index("planning"))][0].id // empty' "$CHILDREN_FILE")
 SEED_STATUS=$(jq -r '[.[] | select((.tags // []) | index("planning"))][0].status // empty' "$CHILDREN_FILE")
-IMPLEMENTATION_COUNT=$(jq '[.[] | select(((.tags // []) | index("planning")) | not)] | length' "$CHILDREN_FILE")
+IMPLEMENTATION_COUNT=$(jq '[.[] | select(((.tags // []) | index("planning")) | not) | select(.status != "scrapped")] | length' "$CHILDREN_FILE")
 PREDECESSOR_COUNT=$(jq '(.blocked_by // []) | length' "$EPIC_FILE")
 PREDECESSOR_ID=$(jq -r '(.blocked_by // [])[0] // empty' "$EPIC_FILE")
 
