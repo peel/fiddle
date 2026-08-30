@@ -149,6 +149,17 @@ silent and reporting both required an object, so a card that was neither was cou
 fell through to `clear`. The merge now sorts every card by one predicate and its negation, so a card
 lands in exactly one of the two lists whatever it carried.
 
+`spec_defect` is the only field the merge classifies in band. `scripts/test-merge-type-sweep.sh`
+measures where every other wrong type lands: it feeds one wrong type to each position the merge
+reads and prints the partition with its denominator. At 34 probes, three refuse with a reason,
+ten die on a jq type error, two — `spec_defect` and its `detected` — are classified in band as
+`not_reported`, and nineteen are admitted silently. `validate-scorecard.sh` refuses seven of the
+nineteen and accepts twelve. The twelve are the standing hazard, and `docs/BACKLOG.md` names the
+four whose silence points the same way as this one. The sweep runs in the gate and fails if a
+probe changes partition, so the count above is measured on every run rather than asserted here.
+
+    sweep: 34 probes = 3 refuses + 10 aborts + 2 in-band + 19 silent (7 refused upstream + 12 accepted)
+
 A `detected` source outranks a silent one, and `missing_from` still names the silent card. The
 cross-domain merge in `skills/develop-loop/scorecard-merge.md` applies the same three states across
 domains, naming a source by its domain. Before M5b the merge dropped `spec_defect` entirely, so
