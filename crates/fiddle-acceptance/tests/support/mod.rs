@@ -883,6 +883,13 @@ pub const JIRA_ISSUE_UPDATED: &str = "2026-08-26T01:30:00.000+0530";
 
 const JIRA_ISSUE_ROUTE: &str = "/rest/api/3/issue/";
 
+const JIRA_CREATE_ROUTE: &str = "/rest/api/3/issue";
+
+const JIRA_SEARCH_ROUTE: &str = "/rest/api/3/search/jql";
+
+const JIRA_UNCLAIMED: &str =
+    r#"{"errorMessages":["the issue carries no property with that key"],"errors":{}}"#;
+
 const JIRA_UNROUTED: &str =
     r#"{"errorMessages":["the site serves no resource at that path"],"errors":{}}"#;
 
@@ -893,13 +900,24 @@ const JIRA_UNPARSED: &str =
     r#"{"errorMessages":["the request line could not be parsed"],"errors":{}}"#;
 
 enum Answer {
-    Issue { path: String, body: String },
-    Refusal { status: u16, body: String },
+    Issue {
+        path: String,
+        body: String,
+    },
+    Refusal {
+        status: u16,
+        body: String,
+    },
+    Filing {
+        key: String,
+        properties: std::collections::HashMap<String, String>,
+    },
 }
 
 struct Recorded {
     authorizations: Vec<String>,
     request_lines: Vec<String>,
+    request_bodies: Vec<String>,
     answer: Answer,
 }
 
@@ -943,6 +961,13 @@ impl StubJira {
         })
     }
 
+    pub fn filing_as(key: &str) -> Self {
+        StubJira::serving(Answer::Filing {
+            key: key.to_string(),
+            properties: std::collections::HashMap::new(),
+        })
+    }
+
     fn serving(answer: Answer) -> Self {
         use std::sync::{Arc, Mutex};
 
@@ -951,6 +976,7 @@ impl StubJira {
         let state = Arc::new(Mutex::new(Recorded {
             authorizations: Vec::new(),
             request_lines: Vec::new(),
+            request_bodies: Vec::new(),
             answer,
         }));
         let serving = Arc::clone(&state);
@@ -980,6 +1006,10 @@ impl StubJira {
         self.held().request_lines.clone()
     }
 
+    pub fn request_bodies(&self) -> Vec<String> {
+        self.held().request_bodies.clone()
+    }
+
     pub fn the_only_authorization(&self) -> String {
         let held = self.held();
         let mut distinct = held.authorizations.clone();
@@ -1003,15 +1033,28 @@ fn answer_recording(
 
     let mut request = Vec::new();
     let mut chunk = [0u8; 4096];
-    while find(&request, b"\r\n\r\n").is_none() {
+    let boundary = loop {
+        if let Some(at) = find(&request, b"\r\n\r\n") {
+            break at + 4;
+        }
         let read = stream.read(&mut chunk)?;
         if read == 0 {
             return Ok(());
         }
         request.extend_from_slice(&chunk[..read]);
-    }
+    };
 
-    let head = String::from_utf8_lossy(&request).into_owned();
+    let length = content_length(&request[..boundary]);
+    while request.len() < boundary + length {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&chunk[..read]);
+    }
+    let sent = String::from_utf8_lossy(&request[boundary..]).into_owned();
+
+    let head = String::from_utf8_lossy(&request[..boundary]).into_owned();
     let request_line = head.lines().next().unwrap_or_default().to_string();
     let authorization = head
         .lines()
@@ -1026,7 +1069,8 @@ fn answer_recording(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         held.authorizations.push(authorization);
         held.request_lines.push(request_line.clone());
-        routed(&request_line, &held.answer)
+        held.request_bodies.push(sent.clone());
+        routed(&request_line, &sent, &mut held.answer)
     };
 
     stream.write_all(
@@ -1043,7 +1087,7 @@ fn answer_recording(
     Ok(())
 }
 
-fn routed(request_line: &str, answer: &Answer) -> (u16, String) {
+fn routed(request_line: &str, sent: &str, answer: &mut Answer) -> (u16, String) {
     let mut parts = request_line.split_whitespace();
     let (Some(method), Some(target), Some(version), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
@@ -1053,16 +1097,50 @@ fn routed(request_line: &str, answer: &Answer) -> (u16, String) {
     if !version.starts_with("HTTP/") || !target.starts_with('/') {
         return (400, JIRA_UNPARSED.to_string());
     }
+    let path = target.split('?').next().unwrap_or(target);
+    if let Answer::Filing { key, properties } = answer {
+        return filed(method, path, sent, key, properties);
+    }
     if method != "GET" {
         return (405, JIRA_NOT_ALLOWED.to_string());
     }
-    let path = target.split('?').next().unwrap_or(target);
     match answer {
         Answer::Refusal { status, body } => (*status, body.clone()),
         Answer::Issue { path: held, body } => match path == held {
             true => (200, body.clone()),
             false => (404, JIRA_UNROUTED.to_string()),
         },
+        Answer::Filing { .. } => unreachable!("a filing site answers above"),
+    }
+}
+
+fn filed(
+    method: &str,
+    path: &str,
+    sent: &str,
+    key: &str,
+    properties: &mut std::collections::HashMap<String, String>,
+) -> (u16, String) {
+    let claim = path.starts_with(JIRA_ISSUE_ROUTE) && path.contains("/properties/");
+    match (method, path) {
+        ("GET", _) if claim => match properties.get(path) {
+            Some(held) => (200, format!(r#"{{"key":"{path}","value":{held}}}"#)),
+            None => (404, JIRA_UNCLAIMED.to_string()),
+        },
+        ("PUT", _) if claim => {
+            properties.insert(path.to_string(), sent.to_string());
+            (200, "{}".to_string())
+        }
+        ("DELETE", _) if claim => {
+            properties.remove(path);
+            (200, "{}".to_string())
+        }
+        ("GET", JIRA_SEARCH_ROUTE) => (200, r#"{"issues":[]}"#.to_string()),
+        ("POST", JIRA_CREATE_ROUTE) => (
+            201,
+            serde_json::json!({ "id": "10100", "key": key }).to_string(),
+        ),
+        _ => (404, JIRA_UNROUTED.to_string()),
     }
 }
 
@@ -1350,6 +1428,22 @@ pub fn expected_request_id(
 ) -> String {
     let effect = expected_effect_id(project, invocation_ref, repo, pr, head_sha);
     truncated_digest(&length_prefixed([project, invocation_ref, &effect]))
+}
+
+pub fn expected_ticket_marker(
+    project: &str,
+    invocation_ref: &str,
+    project_key: &str,
+    cve: &str,
+) -> String {
+    let target = format!("{project_key}/{cve}");
+    let identity = truncated_digest(&length_prefixed([
+        project,
+        invocation_ref,
+        "jira.issue_filed",
+        &target,
+    ]));
+    format!("fiddle-cve-{identity}")
 }
 
 fn length_prefixed<const N: usize>(fields: [&str; N]) -> String {
@@ -2384,4 +2478,46 @@ fn comment_from(value: &serde_json::Value) -> Comment {
         author: value["user"]["id"].as_u64().unwrap_or_default(),
         is_bot: value["user"]["type"].as_str() == Some("Bot"),
     }
+}
+
+pub fn fixture(name: &str) -> PathBuf {
+    repo_root().join("tests/fixtures").join(name)
+}
+
+pub fn tracked_files(tree: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "-z", "--"])
+        .arg(tree)
+        .current_dir(repo_root())
+        .output()
+        .expect("git is on PATH");
+    assert!(
+        out.status.success(),
+        "git ls-files failed for {}: {}",
+        tree.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let listing = String::from_utf8(out.stdout).expect("git prints paths as UTF-8 here");
+    let prefix = tree
+        .strip_prefix(repo_root())
+        .expect("a fixture tree is inside the repository")
+        .to_str()
+        .expect("the fixture path is UTF-8");
+
+    let mut files = std::collections::BTreeMap::new();
+    for path in listing.split('\0').filter(|entry| !entry.is_empty()) {
+        let relative = path
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .unwrap_or_else(|| panic!("git listed {path}, which is not under {prefix}"));
+        let bytes = std::fs::read(repo_root().join(path))
+            .unwrap_or_else(|source| panic!("git tracks {path} but it does not read: {source}"));
+        files.insert(relative.to_string(), bytes);
+    }
+    assert!(
+        !files.is_empty(),
+        "{} tracks no files: the fixture is absent, or it was never committed",
+        tree.display()
+    );
+    files
 }

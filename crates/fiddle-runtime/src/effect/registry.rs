@@ -280,45 +280,55 @@ mod tests {
         assert_eq!(seen.len(), BUILT_IN.len());
     }
 
+    const PINNED_MINIMUMS: &[(&str, HumanDecisionRequirement)] = &[
+        (
+            "ensure_branch_published",
+            HumanDecisionRequirement::Automatic,
+        ),
+        ("ensure_pull_request", HumanDecisionRequirement::Automatic),
+        (
+            "ensure_check_requested",
+            HumanDecisionRequirement::Automatic,
+        ),
+        (
+            "publish_decision_request",
+            HumanDecisionRequirement::Automatic,
+        ),
+        ("ensure_pull_request_ready", HumanDecisionRequirement::Human),
+        (
+            "ensure_pull_request_body",
+            HumanDecisionRequirement::Automatic,
+        ),
+        ("jira.issue_filed", HumanDecisionRequirement::Automatic),
+        ("jira.comment_added", HumanDecisionRequirement::Automatic),
+        (
+            "jira.issue_transitioned",
+            HumanDecisionRequirement::Automatic,
+        ),
+        (
+            "jira.pull_request_linked",
+            HumanDecisionRequirement::Automatic,
+        ),
+    ];
+
+    fn pinned(name: &str) -> HumanDecisionRequirement {
+        PINNED_MINIMUMS
+            .iter()
+            .find(|(spelled, _)| *spelled == name)
+            .map(|(_, minimum)| *minimum)
+            .unwrap_or_else(|| panic!("`{name}` is a spelling PINNED_MINIMUMS does not hold"))
+    }
+
     #[test]
     fn the_registry_holds_exactly_the_ten_this_build_ships() {
         let held: Vec<(&str, HumanDecisionRequirement)> =
             BUILT_IN.iter().map(|d| (d.name, d.minimum)).collect();
         assert_eq!(
             held,
-            vec![
-                (
-                    "ensure_branch_published",
-                    HumanDecisionRequirement::Automatic
-                ),
-                ("ensure_pull_request", HumanDecisionRequirement::Automatic),
-                (
-                    "ensure_check_requested",
-                    HumanDecisionRequirement::Automatic
-                ),
-                (
-                    "publish_decision_request",
-                    HumanDecisionRequirement::Automatic
-                ),
-                ("ensure_pull_request_ready", HumanDecisionRequirement::Human),
-                (
-                    "ensure_pull_request_body",
-                    HumanDecisionRequirement::Automatic
-                ),
-                ("jira.issue_filed", HumanDecisionRequirement::Automatic),
-                ("jira.comment_added", HumanDecisionRequirement::Automatic),
-                (
-                    "jira.issue_transitioned",
-                    HumanDecisionRequirement::Automatic
-                ),
-                (
-                    "jira.pull_request_linked",
-                    HumanDecisionRequirement::Automatic
-                ),
-            ],
-            "the spelling and the judgment are written here as literal data and nowhere near the \
-             `#[effect(...)]` attribute that generates both, so a changed attribute reds here \
-             rather than migrating an identity in silence"
+            PINNED_MINIMUMS.to_vec(),
+            "the spelling and the judgment are written as literal data in PINNED_MINIMUMS and \
+             nowhere near the `#[effect(...)]` attribute that generates both, so a changed \
+             attribute reds here rather than migrating an identity in silence"
         );
     }
 
@@ -435,12 +445,25 @@ mod tests {
             BUILT_IN.len(),
             "an effect was added without a case here"
         );
+        assert_eq!(
+            PINNED_MINIMUMS.len(),
+            BUILT_IN.len(),
+            "an effect was added without a pinned minimum"
+        );
         for (name, declared) in cases {
             let descriptor =
                 describe(&EffectName::parse(name).unwrap()).expect("a shipped name is registered");
+            let pinned = pinned(name);
             assert_eq!(
-                descriptor.minimum, declared,
-                "{name} disagrees with its descriptor"
+                declared, pinned,
+                "{name} answers a minimum PINNED_MINIMUMS does not hold. PINNED_MINIMUMS is \
+                 hand-written, and no `#[effect(...)]` attribute writes it. A derived operation \
+                 answers `Self::descriptor().minimum`, so it cannot pass this line by agreeing \
+                 with itself."
+            );
+            assert_eq!(
+                descriptor.minimum, pinned,
+                "{name} has a descriptor minimum PINNED_MINIMUMS does not hold"
             );
         }
     }

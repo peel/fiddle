@@ -85,5 +85,13 @@ assert_state "missing predecessor handoff needs context" NEEDS_CONTEXT "$PREDECE
 assert_state "missing predecessor bean needs context" NEEDS_CONTEXT "$PREDECESSOR_EPIC" "$SEED_TODO"
 
 echo
+SEED_ONLY_INPROGRESS=$(write_json seed_only_inprogress '[{"id":"seed-1","type":"task","status":"in-progress","tags":["planning"]}]')
+SEED_PLUS_SCRAPPED=$(write_json seed_plus_scrapped '[{"id":"seed-1","type":"task","status":"in-progress","tags":["planning"]},{"id":"impl-1","type":"task","status":"scrapped","tags":["generated-by:seed-1","plan-task:1"]}]')
+SEED_PLUS_TODO=$(write_json seed_plus_todo '[{"id":"seed-1","type":"task","status":"in-progress","tags":["planning"]},{"id":"impl-1","type":"task","status":"todo","tags":["generated-by:seed-1","plan-task:1"]}]')
+
+assert_state "a reopened seed with no implementation beans plans" SEED "$EPIC" "$SEED_ONLY_INPROGRESS"
+assert_state "a scrapped implementation bean does not block a replan" SEED "$EPIC" "$SEED_PLUS_SCRAPPED"
+assert_state "a live implementation bean before seed completion is invalid" INVALID "$EPIC" "$SEED_PLUS_TODO"
+
 echo "$PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
