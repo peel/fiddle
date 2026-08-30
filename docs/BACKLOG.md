@@ -2068,3 +2068,70 @@ number beats a short string as the most specific description.
 Origin: implementation (bean `fiddle-cveg`, wrong-type sweep 2026-08-29, re-measured
 under `scripts/test-merge-type-sweep.sh` 2026-08-30)
 Tags: #debt #evaluation
+
+### 2026-08-30 — the merged scorecard decides by card order, and nothing fails on a silent spec defect
+
+`fiddle-cveg` fixed one wrong-type hole in `scripts/merge-scorecards.sh` and
+`scripts/test-merge-type-sweep.sh` now measures the rest: 34 probes, of which 19
+are admitted silently and `validate-scorecard.sh` accepts 12. Four of those point
+the same way as the defect that was fixed.
+
+`criteria[].evidence` can contradict `criteria[].pass`. Measured: claude
+`{"pass":true,"evidence":"claude says it passes"}` beside codex
+`{"pass":false,"evidence":"codex says it fails"}` merges to
+`{"pass":false,"evidence":"claude says it passes"}`, and the eval log keeps that
+pair as the durable record of why a bean failed. `threshold` takes `first`, so 7
+beside 9 merges to 7 by card order. `domains.<d>.dimensions.<k>.evidence` is
+dropped, so a merged score carries no justification. `criteria[].pass` is still
+`all(.pass)`, which is the `fiddle-qcch` null-coercion instance the antipattern
+entry already names, still live and guarded upstream rather than absent.
+
+None of these has surfaced because every merge in M5b had exactly one source card.
+They become reachable the first time a domain runs two providers, which
+`evaluators.domains.<d>.providers` permits and `evaluators.holistic.providers`
+does by design.
+
+Separately, the merged card now always carries `spec_defect`, and no script exits
+non-zero on `state: "not_reported"`. The original drop was caught because a human
+read the source card before the merged one, which is a habit and not a control.
+
+Origin: implementation (bean `fiddle-lmfr`, measured 2026-08-29)
+Tags: #debt #tooling #evaluation
+
+### 2026-08-30 — two records cite a test that only a backlog entry keeps alive
+
+`an_unusable_scanner_exits_eleven_and_reaches_no_forge` is cited on ADR 020's
+`Cites:` line and in its body, and in ADR 066's body. No Rust file defines it; ADR
+066 records that the test was renamed. It resolves because `check-adr-cites.sh`
+excludes `decisions/` from the search and not `docs/` generally, and
+`docs/BACKLOG.md` quotes the name, so a prose mention satisfies a test citation.
+
+Measured by `fiddle-ogt1`: with `docs/` excluded from the body rule, 6 of 110 body
+names fail rather than 4. Excluding `docs/` from the `Cites:` rule as well would
+falsely fail `FIDDLE_SHA256` in ADR 036 and `non-patchable.json` in ADR 038, which
+legitimately live only in `docs/technical/host-workflow-m4b.patch`. One false pass
+traded for two false failures, which is why the stricter rule was not adopted.
+
+ADR 013 is stale beyond its citation: its body shows `"enforced": 1` and status
+`accepted-not-enforced`, while the test that exists asserts the shape ADR 037 set.
+
+Origin: implementation (bean `fiddle-2l4t`, measured 2026-08-29)
+Tags: #debt #docs #evidence
+
+### 2026-08-30 — a line count over src is wrong by the share of it that is test code
+
+Test code and production code share a file in 54 files under `crates/*/src`, so a
+counter cannot tell them apart. Measured on `plan/agentic-factory-m5b` at
+`e4abc58`, counting from each first `#[cfg(test)]` to end of file: `fiddle-core`
+3693 lines of which 2482 are test, 67.2%; `fiddle-cli` 5334 of which 3384, 63.4%;
+`fiddle-runtime` 27170 of which 10511, 38.7%; total 36581 of which 16377, 44.8%.
+
+`scc crates/fiddle-core/src` reports about 3693 lines of production code where the
+figure is about 1211, an error of a factor of three.
+
+The count is close and not exact: it assumes a test module runs to end of file,
+which is the convention here, so real code after a `#[cfg(test)]` module is counted
+as test.
+
+Origin: discovery (bean `fiddle-vaob`, measured 2026-08-29)
+Tags: #debt #tooling #metrics

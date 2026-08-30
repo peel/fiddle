@@ -194,4 +194,19 @@ alone; gemini was removed after two consecutive authentication failures.
 - **The fine-grained credential the epic specifies has never been shown to work.** `scripts/live-cve-steering.sh` produced M5a's standing forge result with the operator's `gh` keyring token, whose scopes are `repo` and `workflow` and which reaches every repository that account can push to. `FIDDLE_GITHUB_TOKEN`, scoped to one repository, still answers the dispatch endpoint with 403 and `x-accepted-github-permissions: actions=write`. Both credentials issue the same API calls, so the forge behaviour is measured and the credential scope is not. An evaluator scored that gap 5 against a threshold of 7; the operator waived the dimension on 2026-08-27 rather than regenerate the token, so the lane's result stands and the specified credential stays unproven. `docs/technical/RUNBOOKS.md` records it.
 
 ---
-Last reviewed: 2026-08-29
+- **The decision channel is never named, so a human cannot steer a run through the tracker it
+  came from.** `DecisionChannel` has a `GitHubPullRequest` arm and a `JiraIssue` arm,
+  `authoritative` refuses none and refuses many, `publish` dispatches to the port for the chosen
+  arm, and both `HumanInteractionPort` implementations exist
+  (`crates/fiddle-runtime/src/human/mod.rs:370`, `crates/fiddle-runtime/src/jira/conversation.rs:145`).
+  READ OFF THE BUILD at `32f16ef`: no file outside `crates/fiddle-runtime/src/human/mod.rs`
+  constructs a `DecisionChannel`, so `authoritative` never receives a list and `publish` has no
+  caller. The GitHub route works because `ProposeChange::ask`
+  (`crates/fiddle-runtime/src/capability/propose.rs:477`) builds a `PublishDecisionRequest`
+  naming a repo and a pull request and proposes the effect itself. A run invoked as `jira:KEY-1`
+  that stops for a decision therefore asks on a pull request or asks nowhere, and the person who
+  filed the ticket never sees the question. This is not a mechanism awaiting a capability nobody
+  wrote; it is the mechanism, bypassed by the only caller that asks a human anything
+  (`fiddle-yk74`).
+
+Last reviewed: 2026-08-30
