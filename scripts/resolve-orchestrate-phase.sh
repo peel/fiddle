@@ -76,7 +76,7 @@ fi
 
 if [[ "$IMPLEMENTATION_COUNT" -gt 0 ]]; then
   if ! jq -e --arg seed_id "$SEED_ID" '
-    [.[] | select((((.tags // []) | index("planning")) or ((.tags // []) | index("remediation"))) | not)]
+    [.[] | select((((.tags // []) | index("planning")) or ((.tags // []) | index("remediation"))) | not) | select(.status != "scrapped")]
     | all(.[];
         ([.tags[]? | select(startswith("generated-by:"))] | length) == 1
         and ([.tags[]? | select(startswith("plan-task:"))] | length) == 1
@@ -87,6 +87,7 @@ if [[ "$IMPLEMENTATION_COUNT" -gt 0 ]]; then
   if jq -e '
     [.[]
       | select((((.tags // []) | index("planning")) or ((.tags // []) | index("remediation"))) | not)
+      | select(.status != "scrapped")
       | (([.tags[] | select(startswith("generated-by:"))][0]) + "|" + ([.tags[] | select(startswith("plan-task:"))][0]))]
     | group_by(.)
     | any(.[]; length > 1)

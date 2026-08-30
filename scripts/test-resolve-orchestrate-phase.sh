@@ -93,5 +93,13 @@ assert_state "a reopened seed with no implementation beans plans" SEED "$EPIC" "
 assert_state "a scrapped implementation bean does not block a replan" SEED "$EPIC" "$SEED_PLUS_SCRAPPED"
 assert_state "a live implementation bean before seed completion is invalid" INVALID "$EPIC" "$SEED_PLUS_TODO"
 
+SCRAPPED_SHARES_A_POSITION=$(write_json scrapped_shares_a_position '[{"id":"seed-1","type":"task","status":"completed","tags":["planning"]},{"id":"old-1","type":"task","status":"scrapped","tags":["generated-by:seed-1","plan-task:1"]},{"id":"new-1","type":"task","status":"todo","tags":["generated-by:seed-1","plan-task:1"]}]')
+SCRAPPED_HAS_NO_IDENTITY=$(write_json scrapped_has_no_identity '[{"id":"seed-1","type":"task","status":"completed","tags":["planning"]},{"id":"old-1","type":"task","status":"scrapped","tags":[]},{"id":"new-1","type":"task","status":"todo","tags":["generated-by:seed-1","plan-task:1"]}]')
+TWO_LIVE_SHARE_A_POSITION=$(write_json two_live_share_a_position '[{"id":"seed-1","type":"task","status":"completed","tags":["planning"]},{"id":"a","type":"task","status":"todo","tags":["generated-by:seed-1","plan-task:1"]},{"id":"b","type":"task","status":"todo","tags":["generated-by:seed-1","plan-task:1"]}]')
+
+assert_state "a scrapped bean does not collide with the position that replaced it" DEVELOP "$EPIC" "$SCRAPPED_SHARES_A_POSITION"
+assert_state "a scrapped bean without a generation identity does not invalidate the epic" DEVELOP "$EPIC" "$SCRAPPED_HAS_NO_IDENTITY"
+assert_state "two live beans sharing a position is still invalid" INVALID "$EPIC" "$TWO_LIVE_SHARE_A_POSITION"
+
 echo "$PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
