@@ -98,9 +98,12 @@ says nothing about whether a criterion id matches the bean.
   would have converged with no scores at all. Absent and empty are different, so the intent is
   declared rather than inferred.
 - `spec_defect` — `null`, or `{"detected": true|false, "reason": "<non-empty when detected>"}`.
-  Flags spec-vs-reality, not implementation-vs-spec; see `skills/evaluate/SKILL.md`. `null` is a
-  statement: the evaluator looked and the spec is sound. Leaving the key out is not that statement,
-  and the merge tells the two apart — see the `merge-scorecards.sh` row below. Emit the key.
+  Those two are the only accepted shapes. Flags spec-vs-reality, not implementation-vs-spec; see
+  `skills/evaluate/SKILL.md`. `null` is a statement: the evaluator looked and the spec is sound.
+  Leaving the key out is not that statement, and the merge tells the two apart — see the
+  `merge-scorecards.sh` row below. Emit the key. `"spec_defect": true` is not the same statement as
+  `{"detected": true}` and is refused, not translated — see **A wrong-typed `spec_defect` is
+  refused, and the merge still defaults safely** below.
 - `guidance` — actionable fix instructions; empty string when every dimension passes.
 - `dispatch_count` — always `1`; the orchestrator accumulates.
 - `task_id`, `iteration`, `timestamp` — carried for the eval log, not read by the graders.
@@ -109,7 +112,7 @@ says nothing about whether a criterion id matches the bean.
 
 | Script | Reads | Refuses |
 | --- | --- | --- |
-| `scripts/validate-scorecard.sh` | one raw per-provider card, plus `--criteria-ids` | any field above missing or mistyped, criteria ids not matching the bean in both directions, one id twice, empty evidence, a `spec_defect` with no reason, zero scored dimensions with no `mode` declaration |
+| `scripts/validate-scorecard.sh` | one raw per-provider card, plus `--criteria-ids` | any field above missing or mistyped, criteria ids not matching the bean in both directions, one id twice, empty evidence, a `spec_defect` that is neither `null` nor an object, a `spec_defect` object whose `detected` is not a boolean, a `spec_defect` with no reason, zero scored dimensions with no `mode` declaration |
 | `scripts/merge-scorecards.sh` | a JSON array of validated cards | — |
 | `scripts/check-thresholds.sh` | `--scorecard` the merged card, `--criteria` its graded `criteria` array, `--tree-sha` the tree graded | a dimension with no numeric `score` or `threshold`, a criterion with no string `id` or boolean `pass`, one id twice, zero dimensions and zero criteria, zero scored dimensions with no `mode` declaration |
 
@@ -120,7 +123,42 @@ dropped field cannot read as a clean evaluation:
 | --- | --- | --- |
 | `{"state": "detected", "detected": true, ...}` | any source card set `detected: true` | `reason` as `{domain}/{provider}: {reason}` per source, and `sources` |
 | `{"state": "clear", "detected": false, ...}` | every source card carried the key and none flagged | `reported_by` |
-| `{"state": "not_reported", ...}` | at least one source card left the key out, or carried a `spec_defect` whose `detected` is not a boolean | `missing_from`, and **no `detected` key** |
+| `{"state": "not_reported", ...}` | at least one source card left the key out, carried a `spec_defect` that is neither `null` nor an object, or carried a `spec_defect` object whose `detected` is not a boolean | `missing_from`, and **no `detected` key** |
+
+### A wrong-typed `spec_defect` is refused, and the merge still defaults safely
+
+`validate-scorecard.sh` refuses a `spec_defect` that is not `null` and not an object, and refuses an
+object whose `detected` is not a boolean. `merge-scorecards.sh` also classifies both as
+`not_reported`. Both boundaries hold the rule, and each is there for a different reason.
+
+Validation is the stronger control and is where the fault is named. It sees one card and can say
+which provider produced the wrong shape, so the answer is to re-dispatch that evaluator. The merge
+sees an array and can only say the merged verdict is unreported.
+
+The merge keeps its own default because it must not depend on validation having run. The
+cross-domain merge in `skills/develop-loop/scorecard-merge.md` takes already-merged cards, and a
+card carried from an earlier run never met this rule. A merge that assumed validation had refused
+the shape would read an unvalidated card as `clear`.
+
+The direction is what makes this worth two checks. `"spec_defect": true` is a plausible slip for
+`{"detected": true}`, and a claude evaluator subagent is not schema-constrained — see **The envelope
+as a response schema** above. Before this rule the slip turned a flagged spec defect into a `clear`
+one: measured on a single card at `598d9e4`, `"spec_defect": true`, `"unknown"`, `["detected"]` and
+`0` each merged to `{"state": "clear", "detected": false}`. The two clauses that sorted cards into
+silent and reporting both required an object, so a card that was neither was counted in neither and
+fell through to `clear`. The merge now sorts every card by one predicate and its negation, so a card
+lands in exactly one of the two lists whatever it carried.
+
+`spec_defect` is the only field the merge classifies in band. `scripts/test-merge-type-sweep.sh`
+measures where every other wrong type lands: it feeds one wrong type to each position the merge
+reads and prints the partition with its denominator. At 34 probes, three refuse with a reason,
+ten die on a jq type error, two — `spec_defect` and its `detected` — are classified in band as
+`not_reported`, and nineteen are admitted silently. `validate-scorecard.sh` refuses seven of the
+nineteen and accepts twelve. The twelve are the standing hazard, and `docs/BACKLOG.md` names the
+four whose silence points the same way as this one. The sweep runs in the gate and fails if a
+probe changes partition, so the count above is measured on every run rather than asserted here.
+
+    sweep: 34 probes = 3 refuses + 10 aborts + 2 in-band + 19 silent (7 refused upstream + 12 accepted)
 
 A `detected` source outranks a silent one, and `missing_from` still names the silent card. The
 cross-domain merge in `skills/develop-loop/scorecard-merge.md` applies the same three states across

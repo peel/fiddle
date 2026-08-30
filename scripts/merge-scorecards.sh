@@ -26,6 +26,13 @@ if ! echo "$INPUT" | jq -e 'all(.[]; type == "object" and (.criteria | type == "
 fi
 
 echo "$INPUT" | jq -c '
+  def reports_spec_defect:
+    if (has("spec_defect") | not) then false
+    elif .spec_defect == null then true
+    elif (.spec_defect | type) == "object" then (.spec_defect.detected | type) == "boolean"
+    else false
+    end;
+
   . as $cards |
 
   [.[] | .domains | keys[]] | unique as $all_domains |
@@ -103,19 +110,13 @@ echo "$INPUT" | jq -c '
 
   ([
     $cards[] |
-    select(
-      (.spec_defect == null and (has("spec_defect") | not)) or
-      ((.spec_defect | type) == "object" and (.spec_defect.detected | type) != "boolean")
-    ) |
+    select(reports_spec_defect | not) |
     (.provider // "unnamed")
   ]) as $spec_defect_silent |
 
   ([
     $cards[] |
-    select(
-      (.spec_defect == null and has("spec_defect")) or
-      ((.spec_defect | type) == "object" and (.spec_defect.detected | type) == "boolean")
-    ) |
+    select(reports_spec_defect) |
     (.provider // "unnamed")
   ]) as $spec_defect_reported |
 

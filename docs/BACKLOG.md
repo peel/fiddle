@@ -2001,3 +2001,70 @@ lanes of M5b and not measured through the binary. That sentence lives in
 
 Origin: implementation (bean `fiddle-lple`, deferral recorded 2026-08-29)
 Tags: #debt #jira #evidence
+
+### 2026-08-29 — four more merge fields where a wrong type reads as a clean result
+
+Found while fixing `fiddle-cveg`, by feeding one wrong type to every position
+`scripts/merge-scorecards.sh` reads and recording what came back. The sweep is
+`scripts/test-merge-type-sweep.sh` and runs in the gate's shell suites. It derives
+its denominator from a fixture card rather than carrying a count, refuses before
+counting if the merge reads a field the fixture does not carry, and fails when a
+probe changes partition.
+
+Measured at 34 probes: three refuse with a reason and exit 2, ten abort as a jq
+type error and exit 5, two classify the wrong type in-band as `not_reported`, and
+nineteen let it through silently. Of those nineteen,
+`scripts/validate-scorecard.sh` refuses seven upstream and accepts twelve.
+
+    sweep: 34 probes = 3 refuses + 10 aborts + 2 in-band + 19 silent (7 refused upstream + 12 accepted)
+
+This entry first read thirty probes, split 3/7/2/18 with eight refused upstream and
+ten accepted. The harness moved every number but the refusals and the in-band pair.
+Three of the added aborts are array-element positions the first pass did not probe:
+an element of `criteria`, of `spec_coverage_matrix` and of `remediation_beans`. One
+change is a correction, not a wider net. `dispatch_count` was listed below as
+silently admitted, and it is not. A wrong-typed `dispatch_count` reaches
+`[$cards[].dispatch_count // 0] | add`, and jq answers `string ("one") and number
+(1) cannot be added`, exit 5. The merge dies rather than merging.
+
+This entry names the four of those ten whose silence points the same way as
+`fiddle-cveg` — a flagged thing reads as clean. It acts on **2026-08-29 — three more
+fields the scorecard merge drops or coerces**, which swept the same script for dropped
+and coerced values; the three fields that entry names are not repeated here.
+
+1. **`antipatterns_detected` as a string merges to `[]`.** Measured: a card carrying
+   `"antipatterns_detected": "shell-injection"` merges to `[]`, so a reported
+   antipattern reads as none found. `check-thresholds.sh` carries the merged array
+   into its verdict as `findings`, which is what `check-convergence.sh` compares, so
+   two iterations both losing the same finding compare as converged. The same card
+   carrying an object rather than an array is worse than empty: measured,
+   `{"id": "shell-injection", "severity": "high", "evidence": "line 4"}` merges to
+   `["high", "line 4", "shell-injection"]`, three findings from one. `.[]?` iterates an
+   object's values and suppresses nothing.
+
+2. **`spec_coverage_matrix` as a string merges to `[]`.** Measured: a holistic card
+   carrying `"spec_coverage_matrix": "scm"` merges to `[]` while `has(...)` is still
+   true, so the merged card states an empty coverage matrix rather than a missing one.
+
+3. **`remediation_beans` as a string merges to `[]`,** for the same reason and with the
+   same shape.
+
+4. **An unrecognised `coverage` value ranks better than `Full`.** `min_by` ranks
+   `Missing` 0, `Weak` 1, `Full` 2 and everything else 3, and picks the lowest, so a
+   value outside the three never becomes the conservative pick. Measured: claude
+   `"Partial"` beside codex `"Full"` resolves to `"Full"`. The merge is meant to take the
+   least-covered claim and here it takes the better one. This is a value-domain hole,
+   not only a type hole — `"Partial"` is a plausible word for an evaluator to choose.
+
+`validate-scorecard.sh` checks none of these four. The remaining eight of the twelve
+decide nothing. `task_id`, `iteration` and `timestamp` are carried for the eval log
+rather than graded. `guidance` is joined, and jq renders a number into the joined
+string. A wrong-typed `spec_coverage_matrix[].requirement` or
+`remediation_beans[].requirement` only groups under its own key, and an element of
+`antipatterns_detected` only sorts under its own value. `remediation_beans[].description`
+reaches `(. // "") | length`, which jq answers for a number as its absolute value, so a
+number beats a short string as the most specific description.
+
+Origin: implementation (bean `fiddle-cveg`, wrong-type sweep 2026-08-29, re-measured
+under `scripts/test-merge-type-sweep.sh` 2026-08-30)
+Tags: #debt #evaluation
