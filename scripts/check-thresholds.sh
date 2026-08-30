@@ -121,18 +121,50 @@ MODE=$(jq -r '.mode // "" | tostring' "$SCORECARD")
 DIM_TOTAL=$(jq '[(.domains // {}) | .[] | (.dimensions // {}) | length] | add // 0' "$SCORECARD")
 CRIT_TOTAL=$(jq 'length' "$CRITERIA")
 
-refuse() {
-  local error="$1"; shift
+refuse_against() {
+  local schema="$1" error="$2"; shift 2
   {
     echo "$error"
     printf '%s\n' "$@"
-    echo "schema: $SCHEMA_DOC"
+    echo "schema: $schema"
   } >&2
   printf '%s\n' "$@" | jq -Rs 'split("\n") | map(select(length > 0))' | \
-    jq --arg error "$error" --arg schema "$SCHEMA_DOC" \
+    jq --arg error "$error" --arg schema "$schema" \
       '{error: $error, schema: $schema, problems: .}'
   exit 2
 }
+
+refuse() {
+  refuse_against "$SCHEMA_DOC" "$@"
+}
+
+HOLISTIC_DOC="skills/develop/holistic-scorecard-schema.md"
+IS_HOLISTIC=$(jq -r '(.domains // {}) | if type == "object" then has("holistic") else false end' "$SCORECARD")
+CARD_CRIT_TOTAL=$(jq '.criteria | if type == "array" then length else 0 end' "$SCORECARD")
+
+if [[ "$IS_HOLISTIC" == "true" && ( "$CARD_CRIT_TOTAL" -gt 0 || "$CRIT_TOTAL" -gt 0 ) ]]; then
+  HOLISTIC_PROBLEMS=$(jq -rn --slurpfile card "$SCORECARD" --slurpfile crit "$CRITERIA" '
+    def labels:
+      [.[]? | if (type == "object" and (.id | type) == "string") then .id else "<no id>" end];
+    ($card[0].criteria) as $cc |
+    ($crit[0]) as $kk |
+    [
+      (if ($cc | type) == "array" and ($cc | length) > 0 then
+         "scorecard: top-level `criteria` carries \($cc | length) entries: `\($cc | labels | join("`, `"))`"
+       else empty end),
+      (if ($kk | type) == "array" and ($kk | length) > 0 then
+         "--criteria: the graded array carries \($kk | length) entries: `\($kk | labels | join("`, `"))`"
+       else empty end),
+      "a holistic card states its verdict in `domains.holistic.dimensions` against their thresholds, in `spec_coverage_matrix`, and in `remediation_beans`",
+      "the contract defines no top-level `criteria` for a holistic card, so every entry here is a rule the reviewer wrote for itself and then graded itself against",
+      "a finding belongs in `remediation_beans` and its severity in a dimension score; emit `\"criteria\": []`",
+      "this is refused rather than ignored: ignoring the field would drop the drift, and a verdict read off it is a verdict nobody specified"
+    ] | .[]
+  ')
+  refuse_against "$HOLISTIC_DOC" \
+    "holistic scorecard carries a top-level criteria array, which its contract does not define" \
+    "$HOLISTIC_PROBLEMS"
+fi
 
 if [[ "$DIM_TOTAL" -eq 0 && "$CRIT_TOTAL" -eq 0 ]]; then
   refuse "scorecard has nothing to grade" \

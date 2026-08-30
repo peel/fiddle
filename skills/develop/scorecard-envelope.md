@@ -114,7 +114,13 @@ says nothing about whether a criterion id matches the bean.
 | --- | --- | --- |
 | `scripts/validate-scorecard.sh` | one raw per-provider card, plus `--criteria-ids` | any field above missing or mistyped, criteria ids not matching the bean in both directions, one id twice, empty evidence, a `spec_defect` that is neither `null` nor an object, a `spec_defect` object whose `detected` is not a boolean, a `spec_defect` with no reason, zero scored dimensions with no `mode` declaration |
 | `scripts/merge-scorecards.sh` | a JSON array of validated cards | — |
-| `scripts/check-thresholds.sh` | `--scorecard` the merged card, `--criteria` its graded `criteria` array, `--tree-sha` the tree graded | a dimension with no numeric `score` or `threshold`, a criterion with no string `id` or boolean `pass`, one id twice, zero dimensions and zero criteria, zero scored dimensions with no `mode` declaration |
+| `scripts/check-thresholds.sh` | `--scorecard` the merged card, `--criteria` its graded `criteria` array, `--tree-sha` the tree graded | a dimension with no numeric `score` or `threshold`, a criterion with no string `id` or boolean `pass`, one id twice, zero dimensions and zero criteria, zero scored dimensions with no `mode` declaration, a card carrying the `holistic` domain with a non-empty top-level `criteria` |
+
+A card carrying the `holistic` domain states its verdict in `domains.holistic.dimensions`,
+`spec_coverage_matrix`, and `remediation_beans`. Its top-level `criteria` is `[]`, and
+`check-thresholds.sh` refuses a non-empty one rather than grading on it — see
+`skills/develop/holistic-scorecard-schema.md`. A field the contract does not define must
+not decide a verdict, for the same reason a field it does define must not go missing.
 
 `merge-scorecards.sh` emits `spec_defect` on every merged card, as one of three states, so a
 dropped field cannot read as a clean evaluation:

@@ -81,7 +81,7 @@ Every holistic reviewer, claude or external, gets the same context:
 - All task bean bodies for their spec requirements: `beans list --parent <epic-id> --json`
 - Runtime state for every domain (ports, domain names, ready status)
 
-Each reviewer returns one canonical JSON scorecard envelope with `provider`, `task_id`, `iteration`, `timestamp`, `domains.holistic.dimensions`, `criteria`, and the usual evaluator metadata. The holistic dimensions are `integration`, `coherence`, `holistic_spec_fidelity`, `polish`, and `runtime_health`; `spec_coverage_matrix` classifies every requirement as Full/Weak/Missing, and `remediation_beans` carries gaps keyed by `requirement`. Save each scorecard separately:
+Each reviewer returns one canonical JSON scorecard envelope with `provider`, `task_id`, `iteration`, `timestamp`, `domains.holistic.dimensions`, `"criteria": []`, and the usual evaluator metadata. The holistic dimensions are `integration`, `coherence`, `holistic_spec_fidelity`, `polish`, and `runtime_health`; `spec_coverage_matrix` classifies every requirement as Full/Weak/Missing, and `remediation_beans` carries gaps keyed by `requirement`. The verdict comes from those three, and a holistic card's top-level `criteria` is empty — see `skills/develop/holistic-scorecard-schema.md`. Save each scorecard separately:
 
 ```bash
 cat > scorecard-holistic-{provider}.json   # ← holistic reviewer output for this provider
@@ -119,7 +119,7 @@ Disagreements (spread >= 3 between providers on a dimension) land in `disagreeme
 
 Run both scripts on the merged scorecard and act on their verdicts:
 
-`--criteria` wants the reviewer's *graded* criteria, not the briefing file written for them: `criteria-holistic.json` carries `id` and `description`, and only the merged scorecard carries `pass`. The envelope both scripts read is `skills/develop/scorecard-envelope.md`.
+`--criteria` wants the card's own top-level array, which on a conforming holistic card is `[]`. Extract it anyway rather than writing `[]` by hand: that is the seam where a reviewer that invented criteria becomes visible instead of being graded on them. The envelope both scripts read is `skills/develop/scorecard-envelope.md`.
 
 ```bash
 jq '.criteria' scorecard-holistic.json > crit-graded-holistic.json
@@ -129,6 +129,8 @@ scripts/check-convergence.sh --current {verdict_file} --history {holistic_histor
 ```
 
 `check-thresholds.sh` exits 2 rather than grading when a dimension carries no `threshold` or a criterion no `pass` — the shape a mis-spelled envelope produces, `criterion`/`met` being the one asked for most often. Its stderr names the schema it wanted along with each missing field and the dimension or criterion it belongs to; repair the scorecard against `skills/develop/scorecard-envelope.md` or re-dispatch, and do not pass an exit-2 result to `check-convergence.sh`.
+
+It exits 2 on a holistic card whose top-level `criteria` is non-empty for the same reason, naming the entries and citing `skills/develop/holistic-scorecard-schema.md`. The holistic contract defines no such array, so grading on it decides the epic by a rule the reviewer wrote for itself. Do not repair the card by re-grading those entries and do not delete them silently: re-dispatch, and give the reviewer the instruction that its findings go to `remediation_beans` and their severity to a dimension score. On epic `fiddle-yby8` this drift failed holistic iterations 3, 4 and 5 while every dimension met its threshold.
 
 Holistic thresholds default to those in `skills/develop/holistic-dimensions.md`:
 - Integration: 7

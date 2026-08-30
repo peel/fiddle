@@ -48,3 +48,23 @@ Dimensions and default thresholds:
 Produce output following: `skills/develop/holistic-scorecard-schema.md`
 
 This includes the spec coverage matrix, remediation beans, and scorecard JSON.
+
+### Your verdict is three things, and `criteria` is empty
+
+Your card states its verdict in `domains.holistic.dimensions` against their thresholds, in
+`spec_coverage_matrix`, and in `remediation_beans`. Emit `"criteria": []`.
+
+You have no criteria to grade. A per-task evaluator grades the criteria its bean wrote;
+you review an epic, and no bean wrote any for you. Put each finding in `remediation_beans`
+and put its severity in a dimension score. The only `criteria` your card may carry sit
+inside `remediation_beans[].eval`, belonging to the bean you are asking for.
+
+Your dispatch may tell you where to look — read wider than one lineage, re-derive a count,
+check a document against the code. Follow it. That instruction shapes the evidence you
+gather and the dimension scores you give. Do not turn it into a criterion. A rule you
+write for yourself and then grade yourself against fails whenever you find a defect, which
+is you succeeding, so its only passing state is silence.
+
+`scripts/check-thresholds.sh` refuses a holistic card whose top-level `criteria` is
+non-empty rather than grading on it. Such a card produces no verdict at all: it is
+repaired or re-dispatched.
