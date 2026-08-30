@@ -2048,4 +2048,3 @@ groups under its own key, and `remediation_beans[].description` reaches
 
 Origin: implementation (bean `fiddle-cveg`, wrong-type sweep 2026-08-29)
 Tags: #debt #evaluation
-||||||| 598d9e4
