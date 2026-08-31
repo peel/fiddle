@@ -203,6 +203,9 @@ pub enum CapabilityError {
 
     #[error("this executor is bound to `{bound}` and the run is `{asked}`")]
     Misbound { bound: String, asked: String },
+
+    #[error("{0}")]
+    Output(#[from] crate::effect::OutputRefusal),
 }
 
 impl CapabilityError {
@@ -217,6 +220,7 @@ impl CapabilityError {
 
             CapabilityError::NotAuthorised { .. }
             | CapabilityError::Misbound { .. }
+            | CapabilityError::Output(_)
             | CapabilityError::WouldWait { .. }
             | CapabilityError::PublishesElsewhere { .. } => Recurrence::Permanent,
 

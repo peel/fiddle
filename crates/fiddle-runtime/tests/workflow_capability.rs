@@ -2,8 +2,9 @@ mod fixture;
 mod support;
 
 use fiddle_core::{
-    AttemptId, DeploymentRule, EffectName, HumanDecisionRequirement, NextAction, PayloadHash,
-    ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_READY, STUB_MARK,
+    AttemptId, DeploymentRule, EffectId, EffectName, HumanDecisionRequirement, NextAction,
+    PayloadHash, WorkItemState, ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_READY,
+    JIRA_PULL_REQUEST_LINKED, STUB_MARK,
 };
 use fiddle_runtime::agent::{AgentBudget, ToolHost, ToolReceipts};
 use fiddle_runtime::capability::workflow::{
@@ -11,8 +12,8 @@ use fiddle_runtime::capability::workflow::{
 };
 use fiddle_runtime::capability::{Capability, CapabilityError, ExecutionGrant, ExecutionInput};
 use fiddle_runtime::effect::{
-    registry, EffectContext, EffectError, EffectTrace, ExecutionStep, Executor, ReadRetry,
-    Recurrence, StepParams,
+    registry, EffectContext, EffectError, EffectOutcome, EffectTrace, ErasedReceipt, ExecutionStep,
+    Executor, OutputRefusal, ReadRetry, Recurrence, StepOutputs, StepParams,
 };
 use fiddle_runtime::workspace::{Workspace, WorkspaceCommand};
 use fiddle_runtime::{GhCli, GhError, Redaction};
@@ -21,6 +22,7 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use support::stub_jira::{client_for, StubJira, WriteRoute};
 use support::{unreachable_git, Deployment, INVOCATION_REF, PROJECT};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -41,6 +43,14 @@ const HEAD_SHA: &str = "deadbeef";
 
 const PR: u64 = 7;
 
+const STALE_PULL_REQUEST: u64 = 9001;
+
+const ISSUE: &str = "IDENT-1";
+
+const AT_SEVEN: &str = "2026-08-26T07:00:00.000+0000";
+
+const AT_EIGHT: &str = "2026-08-26T08:00:00.000+0000";
+
 const PATIENT: Duration = Duration::from_secs(60);
 
 const TRACE: &str = "trace";
@@ -49,6 +59,7 @@ struct World {
     dir: TempDir,
     workspace: Arc<Workspace>,
     steps: Mutex<Vec<&'static str>>,
+    jira: Option<StubJira>,
 }
 
 impl EffectTrace for World {
@@ -78,11 +89,90 @@ fn world() -> World {
         dir,
         workspace: Arc::new(workspace),
         steps: Mutex::new(Vec::new()),
+        jira: None,
+    }
+}
+
+async fn world_holding(issue: &str) -> World {
+    let server = StubJira::start().await;
+    server.holds_issue_labelled(issue, &[]).await;
+    World {
+        jira: Some(server),
+        ..world()
     }
 }
 
 impl World {
     fn context(&self) -> EffectContext {
+        let ctx = self.plain_context();
+        match &self.jira {
+            Some(server) => ctx.with_jira(client_for(server)),
+            None => ctx,
+        }
+    }
+
+    fn jira(&self) -> &StubJira {
+        self.jira
+            .as_ref()
+            .expect("this world was built with a Jira the run can reach")
+    }
+
+    async fn opened_pull_request_number(&self) -> u64 {
+        let ctx = self.plain_context();
+        let listed = ctx
+            .gh
+            .api(
+                "GET",
+                &format!("/repos/{REPO}/pulls?head={OWNER}%3A{BRANCH}&base={BASE}&state=open"),
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("the forge answers the pull request lookup")
+            .body;
+        let listed = listed.as_array().expect("a list of pull requests").clone();
+        assert_eq!(
+            listed.len(),
+            1,
+            "one pull request is open on this branch, so the number below is not a choice"
+        );
+        listed[0]["number"]
+            .as_u64()
+            .expect("the forge names the pull request it holds")
+    }
+
+    fn the_forge_now_holds_only(&self, number: u64) {
+        std::fs::write(self.dir.path().join("world"), "").unwrap();
+        std::fs::write(
+            self.dir.path().join("pulls_seed"),
+            json!([{
+                "number": number,
+                "head": format!("{OWNER}:{BRANCH}"),
+                "base": BASE,
+                "state": "open",
+                "title": "the same branch under another number",
+            }])
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    async fn linked_pull_requests(&self) -> Vec<u64> {
+        self.jira()
+            .writes()
+            .await
+            .iter()
+            .filter(|write| write.route == WriteRoute::AddComment)
+            .filter_map(|write| {
+                write.body["body"]["content"][0]["content"][0]["text"]
+                    .as_str()
+                    .and_then(|text| text.rsplit_once('/'))
+                    .and_then(|(_, number)| number.parse::<u64>().ok())
+            })
+            .collect()
+    }
+
+    fn plain_context(&self) -> EffectContext {
         EffectContext::new(
             GhCli::new(
                 PathBuf::from(env!("CARGO_BIN_EXE_gh_stub")),
@@ -224,6 +314,26 @@ fn canonical() -> Workflow {
         check_step("check"),
         effect_step(ENSURE_PULL_REQUEST),
     ])
+}
+
+fn observed_issue() -> WorkItemState {
+    observed_issue_at(AT_SEVEN)
+}
+
+fn observed_issue_at(updated: &str) -> WorkItemState {
+    WorkItemState {
+        id: ISSUE.to_string(),
+        status: "In Progress".to_string(),
+        projected_status: None,
+        revision: Some(updated.to_string()),
+    }
+}
+
+fn params_naming_a_stale_pull_request() -> StepParams {
+    StepParams {
+        pull_request: Some(STALE_PULL_REQUEST),
+        ..params()
+    }
 }
 
 fn params() -> StepParams {
@@ -853,5 +963,339 @@ fn the_identity_a_workflow_is_filed_under_is_not_one_of_the_five_the_cli_selects
             "propose_change",
             "cve_mitigate"
         ]
+    );
+}
+
+#[tokio::test]
+async fn a_pull_request_one_step_opens_reaches_the_step_that_links_it() {
+    let world = world_holding(ISSUE).await;
+    let ctx = world.context();
+    let deployment = allowing();
+    let capability = WorkflowCapability::new(
+        WORKFLOW,
+        STAGE,
+        workflow(vec![
+            effect_step(ENSURE_PULL_REQUEST),
+            effect_step(JIRA_PULL_REQUEST_LINKED),
+        ]),
+        executor(&world, &ctx, &deployment),
+        params_naming_a_stale_pull_request(),
+        world.ports(silent()),
+    )
+    .expect("a workflow this build can run");
+    let observed = observed_issue();
+
+    capability
+        .execute(ExecutionInput::observed(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+            Some(&observed),
+        ))
+        .await
+        .expect("both steps run");
+
+    assert_eq!(
+        world.mutations(),
+        1,
+        "the earlier step opened the pull request rather than finding one already there"
+    );
+    let opened = world.opened_pull_request_number().await;
+    assert_eq!(
+        world.linked_pull_requests().await,
+        vec![opened],
+        "the link names the pull request the earlier step opened"
+    );
+    assert_ne!(
+        opened, STALE_PULL_REQUEST,
+        "and the step parameters name another number, so the comparison above could not \
+         have been satisfied by configuration"
+    );
+    assert_eq!(
+        capability.receipts().len(),
+        2,
+        "both effect steps left a receipt"
+    );
+}
+
+fn receipt_naming(kind: &str, external_ref: Option<&str>) -> ErasedReceipt {
+    ErasedReceipt {
+        kind: EffectName::parse(kind).unwrap(),
+        effect_id: EffectId("0000000000000000".to_string()),
+        payload_hash: PayloadHash("0000000000000000".to_string()),
+        target: pull_request_target(),
+        outcome: EffectOutcome::Committed,
+        postcondition: "a pull request".to_string(),
+        external_ref: external_ref.map(str::to_string),
+    }
+}
+
+fn pull_request_target() -> String {
+    format!("{REPO}/pulls/{BASE}...{OWNER}:{BRANCH}")
+}
+
+fn opening_then_linking() -> Workflow {
+    workflow(vec![
+        effect_step(ENSURE_PULL_REQUEST),
+        effect_step(JIRA_PULL_REQUEST_LINKED),
+    ])
+}
+
+fn opened() -> EffectName {
+    EffectName::parse(ENSURE_PULL_REQUEST).unwrap()
+}
+
+#[tokio::test]
+async fn a_link_step_reached_before_any_pull_request_is_opened_refuses_rather_than_reading_the_parameters(
+) {
+    let world = world();
+    let ctx = world.context();
+    let deployment = allowing();
+    let capability = WorkflowCapability::new(
+        WORKFLOW,
+        STAGE,
+        workflow(vec![effect_step(JIRA_PULL_REQUEST_LINKED)]),
+        executor(&world, &ctx, &deployment),
+        params_naming_a_stale_pull_request(),
+        world.ports(silent()),
+    )
+    .expect("a workflow this build can run");
+    let observed = observed_issue();
+
+    let refusal = capability
+        .execute(ExecutionInput::observed(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+            Some(&observed),
+        ))
+        .await
+        .expect_err("a link step earns its number from a step and not from configuration");
+
+    assert!(
+        format!("{refusal}").contains("no step before this one in this run opened a pull request"),
+        "got {refusal}"
+    );
+    assert!(
+        !format!("{refusal}").contains("fields.updated"),
+        "the observed issue did reach the step, so this refusal is about the pull request \
+         and not about the issue: {refusal}"
+    );
+    assert_eq!(world.calls(), 0, "and no adapter was reached");
+
+    let unobserved = capability
+        .execute(ExecutionInput::unobserved(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+        ))
+        .await
+        .expect_err("a run that observed no issue builds no issue-acting effect");
+
+    assert!(
+        format!("{unobserved}").contains("fields.updated"),
+        "a run that observed no work item refuses for the issue and not for the pull \
+         request, so the two refusals above are told apart: {unobserved}"
+    );
+}
+
+#[test]
+fn a_receipt_whose_external_reference_is_not_a_number_refuses_and_names_the_step() {
+    let mut outputs = StepOutputs::default();
+
+    let refusal = outputs
+        .record(&receipt_naming(ENSURE_PULL_REQUEST, Some("PR_kwDOabcdef")))
+        .expect_err("an external reference that is not a number names no pull request");
+
+    assert_eq!(
+        refusal,
+        OutputRefusal::Unreadable {
+            step: opened(),
+            answered: "PR_kwDOabcdef".to_string()
+        }
+    );
+    assert!(
+        format!("{refusal}").contains(ENSURE_PULL_REQUEST),
+        "the reason names the step that answered: {refusal}"
+    );
+    assert_eq!(
+        outputs.pull_request(),
+        None,
+        "and no number was put in its place"
+    );
+
+    let carried = CapabilityError::from(refusal.clone());
+    assert_eq!(
+        format!("{carried}"),
+        format!("{refusal}"),
+        "a workflow carries the reason to its caller unchanged"
+    );
+    assert_eq!(
+        carried.recurrence(),
+        Recurrence::Permanent,
+        "and a receipt this build cannot read is not a wait"
+    );
+
+    let mut corrected = StepOutputs::default();
+    corrected
+        .record(&receipt_naming(ENSURE_PULL_REQUEST, Some("4242")))
+        .expect("a receipt that differs only in a readable reference is recorded");
+    assert_eq!(
+        corrected.pull_request(),
+        Some(4242),
+        "so the refusal above answers the reference and not the receipt around it"
+    );
+}
+
+#[test]
+fn a_receipt_that_names_no_pull_request_is_refused_for_another_reason_than_one_that_cannot_be_read()
+{
+    let mut absent = StepOutputs::default();
+    let unnamed = absent
+        .record(&receipt_naming(ENSURE_PULL_REQUEST, None))
+        .expect_err("a receipt with no external reference names no pull request");
+
+    let mut empty = StepOutputs::default();
+    let unreadable = empty
+        .record(&receipt_naming(ENSURE_PULL_REQUEST, Some("")))
+        .expect_err("an empty external reference is not a pull request number");
+
+    assert_eq!(unnamed, OutputRefusal::Unnamed { step: opened() });
+    assert_eq!(
+        unreadable,
+        OutputRefusal::Unreadable {
+            step: opened(),
+            answered: String::new()
+        }
+    );
+    assert_ne!(
+        format!("{unnamed}"),
+        format!("{unreadable}"),
+        "an absent reference and one this build cannot read are two faults, and a reader \
+         is told which one happened"
+    );
+    assert_eq!(absent.pull_request(), None);
+    assert_eq!(empty.pull_request(), None);
+}
+
+#[test]
+fn a_receipt_from_a_step_that_opens_no_pull_request_earns_nothing_and_refuses_nothing() {
+    let mut outputs = StepOutputs::default();
+
+    outputs
+        .record(&receipt_naming(JIRA_PULL_REQUEST_LINKED, Some("10001")))
+        .expect("a comment receipt carries no pull request output");
+    assert_eq!(
+        outputs.pull_request(),
+        None,
+        "a comment id is not a pull request number"
+    );
+
+    outputs
+        .record(&receipt_naming(
+            JIRA_PULL_REQUEST_LINKED,
+            Some("not a number"),
+        ))
+        .expect("and a reference this build reads no output from is not refused here");
+    assert_eq!(outputs.pull_request(), None);
+}
+
+#[test]
+fn one_run_that_earns_two_different_pull_requests_refuses_and_earning_one_twice_does_not() {
+    let mut outputs = StepOutputs::default();
+
+    outputs
+        .record(&receipt_naming(ENSURE_PULL_REQUEST, Some("7")))
+        .expect("the first pull request is recorded");
+    outputs
+        .record(&receipt_naming(ENSURE_PULL_REQUEST, Some("7")))
+        .expect("the same pull request twice is one pull request");
+    assert_eq!(outputs.pull_request(), Some(7));
+
+    let refusal = outputs
+        .record(&receipt_naming(ENSURE_PULL_REQUEST, Some("4242")))
+        .expect_err("two different pull requests in one run leave a later step no answer");
+
+    assert_eq!(
+        refusal,
+        OutputRefusal::Diverged {
+            step: opened(),
+            held: 7,
+            answered: 4242
+        }
+    );
+    assert_eq!(
+        outputs.pull_request(),
+        Some(7),
+        "and the number the run earned first is unchanged"
+    );
+}
+
+#[tokio::test]
+async fn a_second_run_does_not_inherit_the_pull_request_the_first_run_earned() {
+    let world = world_holding(ISSUE).await;
+    let ctx = world.context();
+    let deployment = allowing();
+    let capability = WorkflowCapability::new(
+        WORKFLOW,
+        STAGE,
+        opening_then_linking(),
+        executor(&world, &ctx, &deployment),
+        params_naming_a_stale_pull_request(),
+        world.ports(silent()),
+    )
+    .expect("a workflow this build can run");
+    let earlier = observed_issue_at(AT_SEVEN);
+    let later = observed_issue_at(AT_EIGHT);
+
+    capability
+        .execute(ExecutionInput::observed(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+            Some(&earlier),
+        ))
+        .await
+        .expect("the first run opens and links");
+    let first = world.opened_pull_request_number().await;
+    world.the_forge_now_holds_only(4242);
+    capability
+        .execute(ExecutionInput::observed(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+            Some(&later),
+        ))
+        .await
+        .expect("the second run links what it finds");
+    let second = world.opened_pull_request_number().await;
+
+    assert_ne!(
+        first, second,
+        "the forge answers a different pull request to the second run"
+    );
+    assert_eq!(
+        world.linked_pull_requests().await,
+        vec![first, second],
+        "each run linked the pull request its own steps earned"
+    );
+
+    let mut carried = StepOutputs::default();
+    carried
+        .record(&receipt_naming(
+            ENSURE_PULL_REQUEST,
+            Some(&first.to_string()),
+        ))
+        .expect("the first run's number records into an empty outputs");
+    assert!(
+        matches!(
+            carried.record(&receipt_naming(
+                ENSURE_PULL_REQUEST,
+                Some(&second.to_string())
+            )),
+            Err(OutputRefusal::Diverged { .. })
+        ),
+        "outputs still holding the first run's number refuse the second run's, so the \
+         second run above started holding none"
     );
 }

@@ -13,7 +13,8 @@ use crate::jira::{JiraError, JiraHttp};
 use fiddle_core::{
     combine, effect_id, payload_hash, CapabilityId, DecisionBinding, DeploymentRule, EffectId,
     EffectName, HumanDecisionRequest, HumanDecisionRequirement, InterpretedHumanDecision,
-    Observation, PayloadHash, PolicyDecision, ProposedEffect, VerificationState,
+    Observation, PayloadHash, PolicyDecision, ProposedEffect, VerificationState, WorkItemState,
+    ENSURE_PULL_REQUEST,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -257,6 +258,9 @@ pub struct StepParams {
     pub pull_request: Option<u64>,
     pub check_workflow: Option<String>,
     pub decision_request: Option<HumanDecisionRequest>,
+    pub issue_key: Option<String>,
+    pub issue_updated: Option<String>,
+    pub earned: StepOutputs,
 }
 
 impl StepParams {
@@ -274,6 +278,97 @@ impl StepParams {
             pull_request: None,
             check_workflow: None,
             decision_request: None,
+            issue_key: None,
+            issue_updated: None,
+            earned: StepOutputs::default(),
+        }
+    }
+
+    pub fn observing(mut self, work_item: Option<&WorkItemState>) -> Self {
+        if let Some(work_item) = work_item {
+            self.issue_key = Some(work_item.id.clone());
+            self.issue_updated = work_item.revision.clone();
+        }
+        self
+    }
+
+    pub fn earned_pull_request(&self, kind: &EffectName) -> Result<u64, EffectError> {
+        self.earned
+            .pull_request()
+            .ok_or_else(|| EffectError::Unbuildable {
+                kind: kind.clone(),
+                reason: "no step before this one in this run opened a pull request, and a \
+                         later step is given what a step earned rather than a number from \
+                         the step parameters"
+                    .to_string(),
+            })
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StepOutputs {
+    pull_request: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum OutputRefusal {
+    #[error(
+        "the `{step}` step answered with the external reference `{answered}`, which is not \
+         a pull request number, and a later step is given no guess in its place"
+    )]
+    Unreadable { step: EffectName, answered: String },
+
+    #[error(
+        "the `{step}` step named no pull request, and a later step is given no guess in \
+         its place"
+    )]
+    Unnamed { step: EffectName },
+
+    #[error(
+        "the `{step}` step names pull request {answered} and this run already earned \
+         {held}, so no later step can be told which one it acts on"
+    )]
+    Diverged {
+        step: EffectName,
+        held: u64,
+        answered: u64,
+    },
+}
+
+impl StepOutputs {
+    pub fn pull_request(&self) -> Option<u64> {
+        self.pull_request
+    }
+
+    pub fn record(&mut self, receipt: &ErasedReceipt) -> Result<(), OutputRefusal> {
+        match receipt.kind.as_str() {
+            ENSURE_PULL_REQUEST => self.record_pull_request(receipt),
+            _ => Ok(()),
+        }
+    }
+
+    fn record_pull_request(&mut self, receipt: &ErasedReceipt) -> Result<(), OutputRefusal> {
+        let step = receipt.kind.clone();
+        let answered = receipt
+            .external_ref
+            .as_deref()
+            .ok_or_else(|| OutputRefusal::Unnamed { step: step.clone() })?;
+        let number = answered
+            .parse::<u64>()
+            .map_err(|_| OutputRefusal::Unreadable {
+                step: step.clone(),
+                answered: answered.to_string(),
+            })?;
+        match self.pull_request {
+            Some(held) if held != number => Err(OutputRefusal::Diverged {
+                step,
+                held,
+                answered: number,
+            }),
+            _ => {
+                self.pull_request = Some(number);
+                Ok(())
+            }
         }
     }
 }

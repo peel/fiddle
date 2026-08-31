@@ -4,7 +4,7 @@ use crate::agent::{
 };
 use crate::effect::{
     registry, Construct, EffectError, EffectOutcome, ErasedReceipt, Executor, Recurrence,
-    StepParams,
+    StepOutputs, StepParams,
 };
 use crate::gateway::Redaction;
 use crate::workspace::WorkspaceCommand;
@@ -305,12 +305,17 @@ where
         }
     }
 
-    async fn effect(&self, construct: Construct) -> Result<(), CapabilityError> {
-        let receipt = construct(&self.executor, &self.params)
+    async fn effect(
+        &self,
+        construct: Construct,
+        params: &mut StepParams,
+    ) -> Result<(), CapabilityError> {
+        let receipt = construct(&self.executor, params)
             .map_err(without_waiting)?
-            .run(&self.executor, &self.params)
+            .run(&self.executor, params)
             .await
             .map_err(without_waiting)?;
+        params.earned.record(&receipt)?;
         self.receipts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -336,6 +341,7 @@ where
         let ExecutionInput {
             grant,
             invocation_ref,
+            work_item,
             ..
         } = input;
         if grant.capability_id() != self.id() {
@@ -350,11 +356,16 @@ where
                 asked: invocation_ref.to_string(),
             });
         }
+        let mut params = StepParams {
+            earned: StepOutputs::default(),
+            ..self.params.clone()
+        }
+        .observing(work_item);
         for step in &self.steps {
             match step {
                 Ready::Agent { task, max_turns } => self.attempt(task, *max_turns).await?,
                 Ready::Check { command } => self.check(command).await?,
-                Ready::Effect { construct } => self.effect(*construct).await?,
+                Ready::Effect { construct } => self.effect(*construct, &mut params).await?,
             }
         }
         Ok(EvidenceRef(format!(
