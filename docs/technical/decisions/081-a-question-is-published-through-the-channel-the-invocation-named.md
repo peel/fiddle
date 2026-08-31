@@ -97,14 +97,19 @@ is neither. Each claim below carries its class.
   one issue. `a_run_that_re_reads_the_issue_after_the_write_asks_a_second_time`
   runs it. `StubJira` advances `fields.updated` on a write.
 - **Unmeasured.** That Jira Cloud advances `fields.updated` when a comment is
-  added. No test in this tree reads a live site, so this record observes that
-  behaviour on the stub only. It is expected because `fields.updated` names the
-  time the issue last changed and a comment changes the issue. The duplicate
-  the expectation predicts has not been observed on Jira Cloud.
+  added. No test in this tree reads a live site's `fields.updated` after a
+  comment is added, so this record observes that behaviour on the stub only. It
+  is expected because `fields.updated` names the time the issue last changed and
+  a comment changes the issue. The duplicate the expectation predicts has not
+  been observed on Jira Cloud.
 - **Counted on the tree.** One of six capabilities asks a person anything, and
-  it reaches `publish`. Counted by `impl Capability for` under `crates/*/src`
-  and by which of those files construct a `HumanDecisionRequest`. The instrument
-  is a search of the source. Nothing runs.
+  it reaches `publish`. Counted by `impl Capability for` under `crates/*/src`.
+  That search answers ten: six production capabilities, and four test doubles in
+  the `#[cfg(test)]` module `crates/fiddle-runtime/src/orchestration.rs` opens
+  at line 418. The six are the denominator. Of the six, only `ProposeChange`
+  constructs a `HumanDecisionRequest`, at
+  `crates/fiddle-runtime/src/capability/propose.rs:218`. The instrument is a
+  search of the source. Nothing runs.
 - **Measured by an executing test.** `named_by` names one channel or none across
   all 42 combinations `no_invocation_names_two_channels` enumerates, distributed
   4, 15 and 23. The test builds every input and reads every answer.
@@ -128,12 +133,14 @@ every invocation rather than interpreting a comment. Reading the reply from the
 issue is the next step and is not in this record.
 
 **Idempotence holds for a retry, and does not hold for a fresh observation.**
-`AddComment` builds its marker identity from the issue revision the run carries,
-so a run that carries the revision it started with recognises the marker it
-already wrote and posts nothing further.
+
+*Measured against stubs.* `AddComment` builds its marker identity from the issue
+revision the run carries, so a run that carries the revision it started with
+recognises the marker it already wrote and posts nothing further.
 `a_second_run_carrying_the_snapshot_it_started_with_recognises_its_own_question`
-runs that case. A fresh invocation is not that case, and the evidence for it
-splits in three.
+runs that case against `StubJira` and counts one comment on the issue.
+
+A fresh invocation is not that case, and the evidence for it splits in three.
 
 *Measured against stubs.*
 `a_run_that_re_reads_the_issue_after_the_write_asks_a_second_time` calls
