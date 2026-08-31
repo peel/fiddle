@@ -1,6 +1,7 @@
 use super::{Capability, CapabilityError, ExecutionInput};
 use crate::agent::{
-    attempt_briefed, AgentBudget, Brief, Declarations, Held, ToolHost, Transcripts, PREAMBLE,
+    attempt_briefed, judge_briefed, AgentBudget, Brief, Declarations, Held, ToolHost, Transcripts,
+    JUDGE_PREAMBLE, PREAMBLE,
 };
 use crate::effect::{
     registry, Construct, EffectError, EffectOutcome, ErasedReceipt, Executor, Recurrence,
@@ -20,6 +21,10 @@ pub const WORKFLOW_VERSION: u32 = 1;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Step {
     Agent {
+        prompt: PathBuf,
+        max_turns: u32,
+    },
+    Evaluate {
         prompt: PathBuf,
         max_turns: u32,
     },
@@ -143,6 +148,7 @@ pub struct WorkflowPorts<M> {
 
 enum Ready {
     Agent { task: String, max_turns: usize },
+    Evaluate { task: String, max_turns: usize },
     Check { command: WorkspaceCommand },
     Effect { construct: Construct },
 }
@@ -159,23 +165,28 @@ pub struct WorkflowCapability<'a, M> {
     entered: Mutex<Vec<StepOutputs>>,
 }
 
+fn task_in(prompt: &Path, prompts: &Path) -> Result<String, WorkflowRefusal> {
+    let path = prompts.join(prompt);
+    let task = std::fs::read_to_string(&path).map_err(|source| WorkflowRefusal::Unreadable {
+        path: path.clone(),
+        reason: source.to_string(),
+    })?;
+    match task.trim().is_empty() {
+        true => Err(WorkflowRefusal::Taskless { path }),
+        false => Ok(task),
+    }
+}
+
 fn ready(step: &Step, prompts: &Path) -> Result<Ready, WorkflowRefusal> {
     match step {
-        Step::Agent { prompt, max_turns } => {
-            let path = prompts.join(prompt);
-            let task =
-                std::fs::read_to_string(&path).map_err(|source| WorkflowRefusal::Unreadable {
-                    path: path.clone(),
-                    reason: source.to_string(),
-                })?;
-            match task.trim().is_empty() {
-                true => Err(WorkflowRefusal::Taskless { path }),
-                false => Ok(Ready::Agent {
-                    task,
-                    max_turns: *max_turns as usize,
-                }),
-            }
-        }
+        Step::Agent { prompt, max_turns } => Ok(Ready::Agent {
+            task: task_in(prompt, prompts)?,
+            max_turns: *max_turns as usize,
+        }),
+        Step::Evaluate { prompt, max_turns } => Ok(Ready::Evaluate {
+            task: task_in(prompt, prompts)?,
+            max_turns: *max_turns as usize,
+        }),
         Step::Check {
             program,
             args,
@@ -302,6 +313,31 @@ where
         Ok(())
     }
 
+    async fn evaluate(
+        &self,
+        task: &str,
+        max_turns: usize,
+        params: &mut StepParams,
+    ) -> Result<(), CapabilityError> {
+        let verdict = judge_briefed(
+            self.ports.model.clone(),
+            &self.ports.redaction,
+            self.ports.host.clone(),
+            AgentBudget {
+                max_turns,
+                ..self.ports.budget.clone()
+            },
+            Brief {
+                preamble: JUDGE_PREAMBLE,
+                task,
+            },
+            self.ports.transcripts.as_ref(),
+        )
+        .await?;
+        params.earned.record_verdict(verdict)?;
+        Ok(())
+    }
+
     async fn check(&self, command: &WorkspaceCommand) -> Result<(), CapabilityError> {
         let result = self.ports.host.workspace.run(command).await?;
         match result.exit_code {
@@ -377,6 +413,9 @@ where
                 .push(params.earned.clone());
             match step {
                 Ready::Agent { task, max_turns } => self.attempt(task, *max_turns).await?,
+                Ready::Evaluate { task, max_turns } => {
+                    self.evaluate(task, *max_turns, &mut params).await?
+                }
                 Ready::Check { command } => self.check(command).await?,
                 Ready::Effect { construct } => self.effect(*construct, &mut params).await?,
             }

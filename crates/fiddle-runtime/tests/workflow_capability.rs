@@ -6,7 +6,7 @@ use fiddle_core::{
     PayloadHash, WorkItemState, ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_READY,
     JIRA_PULL_REQUEST_LINKED, STUB_MARK,
 };
-use fiddle_runtime::agent::{AgentBudget, ToolHost, ToolReceipts};
+use fiddle_runtime::agent::{AgentBudget, ToolHost, ToolReceipts, Verdict};
 use fiddle_runtime::capability::workflow::{
     without_waiting, Step, Workflow, WorkflowCapability, WorkflowPorts, WorkflowRefusal, WORKFLOW,
 };
@@ -55,6 +55,14 @@ const PATIENT: Duration = Duration::from_secs(60);
 
 const TRACE: &str = "trace";
 
+const CHANGE_EVALUATE: &str = "change_evaluate.md";
+
+const A_SIGNATURE: &str = "crates/fiddle-runtime/src/effect/mod.rs changes a public signature \
+                           the ticket did not name";
+
+const A_SECOND_FAULT: &str = "crates/fiddle-runtime/src/jira/link.rs fixes a second fault, and \
+                              the ticket asked only for the first";
+
 struct World {
     dir: TempDir,
     workspace: Arc<Workspace>,
@@ -77,6 +85,11 @@ fn world() -> World {
         "Triage this project.\n",
     )
     .unwrap();
+    std::fs::copy(
+        shipped_prompts().join(CHANGE_EVALUATE),
+        dir.path().join("prompts").join(CHANGE_EVALUATE),
+    )
+    .expect("this repository ships the evaluation prompt as a file");
     let repo = fixture::trivial_repo(dir.path());
     let workspace = Workspace::create(
         &repo,
@@ -313,6 +326,17 @@ fn agent_step() -> Step {
     }
 }
 
+fn shipped_prompts() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workflows/prompts")
+}
+
+fn evaluate_step() -> Step {
+    Step::Evaluate {
+        prompt: PathBuf::from(CHANGE_EVALUATE),
+        max_turns: 8,
+    }
+}
+
 fn effect_step(name: &str) -> Step {
     Step::Effect {
         name: EffectName::parse(name).unwrap(),
@@ -414,6 +438,84 @@ fn reporting() -> MockCompletionModel {
 
 fn silent() -> MockCompletionModel {
     MockCompletionModel::new([])
+}
+
+fn answering(verdict: serde_json::Value) -> MockTurn {
+    MockTurn::text(verdict.to_string())
+}
+
+fn rejecting() -> MockCompletionModel {
+    MockCompletionModel::new([answering(
+        json!({"verdict": "rejected", "findings": [A_SIGNATURE, A_SECOND_FAULT]}),
+    )])
+}
+
+fn accepting() -> MockCompletionModel {
+    MockCompletionModel::new([answering(json!({"verdict": "accepted"}))])
+}
+
+fn offered_to(model: &MockCompletionModel) -> Vec<String> {
+    let requests = model.requests();
+    assert!(
+        !requests.is_empty(),
+        "no request reached the model, so the tool names below are the names of nothing"
+    );
+    let mut names: Vec<String> = requests
+        .iter()
+        .flat_map(|request| request.tools.iter().map(|tool| tool.name.clone()))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+async fn ran_with(world: &World, steps: Vec<Step>, model: MockCompletionModel) -> Vec<StepOutputs> {
+    let ctx = world.context();
+    let deployment = allowing();
+    let capability = WorkflowCapability::new(
+        WORKFLOW,
+        STAGE,
+        workflow(steps),
+        executor(world, &ctx, &deployment),
+        params(),
+        world.ports(model),
+    )
+    .expect("a workflow this build can run");
+    capability
+        .execute(ExecutionInput::unobserved(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+        ))
+        .await
+        .expect("a completed workflow");
+    capability.earned_on_entering_each_step()
+}
+
+async fn refused_by(
+    world: &World,
+    steps: Vec<Step>,
+    model: MockCompletionModel,
+) -> CapabilityError {
+    let ctx = world.context();
+    let deployment = allowing();
+    let capability = WorkflowCapability::new(
+        WORKFLOW,
+        STAGE,
+        workflow(steps),
+        executor(world, &ctx, &deployment),
+        params(),
+        world.ports(model),
+    )
+    .expect("a workflow this build can run");
+    capability
+        .execute(ExecutionInput::unobserved(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+        ))
+        .await
+        .expect_err("this run was not expected to complete")
 }
 
 #[tokio::test]
@@ -1371,5 +1473,233 @@ async fn a_run_starts_holding_no_pull_request_when_the_step_parameters_carry_one
     assert!(
         format!("{refusal}").contains("no step before this one in this run opened a pull request"),
         "got {refusal}"
+    );
+}
+
+#[tokio::test]
+async fn the_step_after_an_evaluation_reads_the_rejection_the_model_answered() {
+    let world = world();
+    let entered = ran_with(
+        &world,
+        vec![evaluate_step(), check_step("after")],
+        rejecting(),
+    )
+    .await;
+
+    assert_eq!(
+        entered.len(),
+        2,
+        "the run entered two steps, so the second reading below is the reading of a later step"
+    );
+    assert_eq!(
+        entered[0].verdict(),
+        None,
+        "the run entered the evaluation step holding no verdict"
+    );
+    let read = entered[1]
+        .verdict()
+        .expect("the step after the evaluation is given the verdict the evaluation earned");
+    assert_eq!(
+        read,
+        &Verdict::Rejected {
+            findings: vec![A_SIGNATURE.to_string(), A_SECOND_FAULT.to_string()],
+        },
+        "the run reads back the sentences the model wrote, in the order it wrote them"
+    );
+    assert_ne!(
+        read,
+        &Verdict::Accepted {},
+        "the model rejected the change and the run read it as an acceptance"
+    );
+    assert_eq!(
+        world.ran(),
+        ["after"],
+        "the evaluation step ran no command of its own, and the step after it did"
+    );
+}
+
+#[tokio::test]
+async fn the_step_after_an_evaluation_reads_the_acceptance_the_model_answered() {
+    let world = world();
+    let entered = ran_with(
+        &world,
+        vec![evaluate_step(), check_step("after")],
+        accepting(),
+    )
+    .await;
+
+    let read = entered[1]
+        .verdict()
+        .expect("the step after the evaluation is given the verdict the evaluation earned");
+    assert_eq!(
+        read,
+        &Verdict::Accepted {},
+        "the model accepted the change, so the same reading that answered a rejection above \
+         answers an acceptance here"
+    );
+}
+
+#[tokio::test]
+async fn an_evaluation_step_is_offered_no_tool_that_changes_the_project() {
+    let judged = world();
+    let judge = accepting();
+    ran_with(&judged, vec![evaluate_step()], judge.clone()).await;
+
+    let repaired = world();
+    let repairer = reporting();
+    ran_with(&repaired, vec![agent_step()], repairer.clone()).await;
+
+    assert_eq!(
+        offered_to(&judge),
+        ["list_files", "read_file", "search_files"],
+        "an evaluation step is offered the three tools that read the project and no other"
+    );
+    assert_eq!(
+        offered_to(&repairer),
+        [
+            "edit_file",
+            "list_files",
+            "read_file",
+            "run_check",
+            "search_files",
+            "write_file"
+        ],
+        "the same reading shows a repair step being offered the tools that change the \
+         project, so the reading above is not the reading of a list nothing fills"
+    );
+    assert_eq!(
+        judged.ran(),
+        Vec::<String>::new(),
+        "the evaluation ran no check, and this world's check writes a file when it runs"
+    );
+    assert_eq!(
+        repaired.ran(),
+        ["agent"],
+        "the repair step did run this world's check, so the line above is not vacuous"
+    );
+}
+
+#[tokio::test]
+async fn a_second_evaluation_that_answers_otherwise_refuses_rather_than_replacing_the_verdict() {
+    let disagreed = world();
+    let refusal = refused_by(
+        &disagreed,
+        vec![evaluate_step(), evaluate_step()],
+        MockCompletionModel::new([
+            answering(json!({"verdict": "rejected", "findings": [A_SIGNATURE]})),
+            answering(json!({"verdict": "accepted"})),
+        ]),
+    )
+    .await;
+
+    assert_eq!(
+        refusal.to_string(),
+        OutputRefusal::Reconsidered {
+            held: "rejected",
+            answered: "accepted",
+        }
+        .to_string(),
+        "got {refusal:?}"
+    );
+    assert_eq!(
+        refusal.recurrence(),
+        Recurrence::Permanent,
+        "a run that cannot say which verdict it holds does not improve by being run again"
+    );
+
+    let agreed = world();
+    let entered = ran_with(
+        &agreed,
+        vec![evaluate_step(), evaluate_step(), check_step("after")],
+        MockCompletionModel::new([
+            answering(json!({"verdict": "rejected", "findings": [A_SIGNATURE]})),
+            answering(json!({"verdict": "rejected", "findings": [A_SIGNATURE]})),
+        ]),
+    )
+    .await;
+    assert_eq!(
+        entered[2].verdict(),
+        Some(&Verdict::Rejected {
+            findings: vec![A_SIGNATURE.to_string()],
+        }),
+        "two evaluations that answer the same thing are one verdict, so the refusal above \
+         names the disagreement and not the second step"
+    );
+}
+
+#[tokio::test]
+async fn a_rejection_that_names_nothing_it_read_is_refused_rather_than_carried() {
+    let world = world();
+    let refusal = refused_by(
+        &world,
+        vec![evaluate_step(), check_step("after")],
+        MockCompletionModel::new([answering(json!({"verdict": "rejected", "findings": []}))]),
+    )
+    .await;
+
+    assert!(
+        refusal.to_string().contains("named nothing it read"),
+        "got {refusal:?}"
+    );
+    assert_eq!(
+        world.ran(),
+        Vec::<String>::new(),
+        "the step after the evaluation did not run"
+    );
+}
+
+#[test]
+fn an_answer_that_does_not_say_which_verdict_it_is_is_not_read_as_an_acceptance() {
+    for text in [
+        "{}",
+        r#"{"findings": ["a finding"]}"#,
+        r#"{"verdict": "unclear"}"#,
+        r#"{"verdict": "rejected"}"#,
+        r#"{"verdict": "accepted", "findings": ["a finding"]}"#,
+    ] {
+        let read = serde_json::from_str::<Verdict>(text);
+        assert!(
+            read.is_err(),
+            "`{text}` was read as {read:?} rather than refused"
+        );
+    }
+    assert_eq!(
+        serde_json::from_str::<Verdict>(r#"{"verdict": "accepted"}"#).unwrap(),
+        Verdict::Accepted {},
+        "the one shape that does name an acceptance is read as one, so the refusals above \
+         are not the refusals of a type nothing deserializes"
+    );
+    assert_eq!(
+        serde_json::from_str::<Verdict>(r#"{"verdict": "rejected", "findings": ["a finding"]}"#)
+            .unwrap(),
+        Verdict::Rejected {
+            findings: vec!["a finding".to_string()],
+        },
+        "and so is the one shape that names a rejection"
+    );
+}
+
+#[tokio::test]
+async fn the_evaluation_step_sends_the_prompt_this_repository_ships() {
+    let world = world();
+    let model = accepting();
+    ran_with(&world, vec![evaluate_step()], model.clone()).await;
+
+    let shipped = std::fs::read_to_string(shipped_prompts().join(CHANGE_EVALUATE))
+        .expect("this repository ships the evaluation prompt as a file");
+    let sent = serde_json::to_string(&model.requests()[0].chat_history)
+        .expect("the messages the model received serialize");
+    let mut compared = 0;
+    for line in shipped.lines().filter(|line| line.len() > 40) {
+        assert!(
+            sent.contains(line),
+            "the shipped prompt says `{line}` and the model was not told it"
+        );
+        compared += 1;
+    }
+    assert!(
+        compared > 8,
+        "only {compared} lines of the shipped prompt were long enough to compare, so this \
+         test compared almost nothing"
     );
 }

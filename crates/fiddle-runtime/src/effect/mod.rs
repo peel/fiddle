@@ -7,6 +7,7 @@ pub use registry::{
     describe, install, registered, resolve, Construct, EffectDescriptor, RegistryError, BUILT_IN,
 };
 
+use crate::agent::Verdict;
 use crate::git::GitCli;
 use crate::github::GhCli;
 use crate::jira::{JiraError, JiraHttp};
@@ -308,6 +309,7 @@ impl StepParams {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StepOutputs {
     pull_request: Option<u64>,
+    verdict: Option<Verdict>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -333,11 +335,37 @@ pub enum OutputRefusal {
         held: u64,
         answered: u64,
     },
+
+    #[error(
+        "an evaluation step answered `{answered}` and this run already earned the verdict \
+         `{held}`, so no later step can be told which one it acts on"
+    )]
+    Reconsidered {
+        held: &'static str,
+        answered: &'static str,
+    },
 }
 
 impl StepOutputs {
     pub fn pull_request(&self) -> Option<u64> {
         self.pull_request
+    }
+
+    pub fn verdict(&self) -> Option<&Verdict> {
+        self.verdict.as_ref()
+    }
+
+    pub fn record_verdict(&mut self, answered: Verdict) -> Result<(), OutputRefusal> {
+        match &self.verdict {
+            Some(held) if *held != answered => Err(OutputRefusal::Reconsidered {
+                held: held.as_str(),
+                answered: answered.as_str(),
+            }),
+            _ => {
+                self.verdict = Some(answered);
+                Ok(())
+            }
+        }
     }
 
     pub fn record(&mut self, receipt: &ErasedReceipt) -> Result<(), OutputRefusal> {
