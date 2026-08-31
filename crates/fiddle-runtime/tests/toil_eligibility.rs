@@ -238,7 +238,7 @@ fn pairs() -> Vec<Pair> {
                 description: Some(sentinel_text.clone()),
                 ..eligible_ticket()
             },
-            review: Answers::of(Verdict::AsksForAChange, SENTINEL, 0.9),
+            review: plain_change(),
             quotes: None,
         },
         Pair {
@@ -253,7 +253,7 @@ fn pairs() -> Vec<Pair> {
                 description: Some(sentinel_text.clone()),
                 ..eligible_ticket()
             },
-            review: Answers::of(Verdict::AsksForAChange, SENTINEL, 0.9),
+            review: plain_change(),
             quotes: None,
         },
         Pair {
@@ -268,7 +268,7 @@ fn pairs() -> Vec<Pair> {
                 description: Some(sentinel_text.clone()),
                 ..eligible_ticket()
             },
-            review: Answers::of(Verdict::AsksForAChange, SENTINEL, 0.9),
+            review: plain_change(),
             quotes: Some("IGNORE-ALL-P"),
         },
         Pair {
@@ -309,6 +309,15 @@ fn pairs() -> Vec<Pair> {
             quotes: Some(SENTINEL),
         },
     ]
+}
+
+fn a_review_fault(rule: &str) -> bool {
+    matches!(
+        rule,
+        "the ambiguity review answered"
+            | "a judgement quotes the ticket text it rests on"
+            | "the ticket asks for a change and not a product decision"
+    )
 }
 
 fn corrected_review(pair: &Pair) -> Answers {
@@ -384,10 +393,10 @@ async fn a_refused_ticket_and_its_corrected_twin_differ_in_one_field_only() {
         .into_iter()
         .filter(|changed| *changed)
         .count();
-        assert!(
-            differing <= 1,
-            "{}: a pair must differ in the named fault and nothing else, and {differing} fields \
-             differ",
+        let wanted = usize::from(!a_review_fault(pair.failed_rule));
+        assert_eq!(
+            differing, wanted,
+            "{}: a pair must differ in the named fault and nothing else",
             pair.named_fault
         );
     }
