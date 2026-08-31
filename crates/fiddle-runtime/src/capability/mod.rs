@@ -222,6 +222,9 @@ pub enum CapabilityError {
 
     #[error("{0}")]
     Output(#[from] crate::effect::OutputRefusal),
+
+    #[error("the question reached no human: {0}")]
+    Unasked(#[from] crate::human::PublishError),
 }
 
 impl CapabilityError {
@@ -239,6 +242,12 @@ impl CapabilityError {
             | CapabilityError::Output(_)
             | CapabilityError::WouldWait { .. }
             | CapabilityError::PublishesElsewhere { .. } => Recurrence::Permanent,
+
+            CapabilityError::Unasked(error) => match error {
+                crate::human::PublishError::Channel(_)
+                | crate::human::PublishError::Unaddressable(_) => Recurrence::Permanent,
+                crate::human::PublishError::Unpublished(source) => source.recurrence(),
+            },
 
             CapabilityError::DecisionRejected { .. } => Recurrence::Permanent,
 

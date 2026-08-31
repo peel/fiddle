@@ -51,7 +51,7 @@ pub use github::{GhCli, GhError, GhResponse, RetryAdvice};
 pub use human::{
     authoritative, decision_request_target, publish, render_request, ChannelError, DecisionChannel,
     GitHubConversation, HumanInteractionPort, InteractionRef, PublishDecisionRequest, PublishError,
-    PublishedRequest,
+    PublishedAsk, PublishedRequest,
 };
 pub use jira::{
     project, ConfiguredNames, ConversationError, JiraActor, JiraConversation, JiraError, JiraHttp,

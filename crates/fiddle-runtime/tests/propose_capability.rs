@@ -3,9 +3,9 @@ mod support;
 
 use fiddle_core::{
     effect_id, parse_marker, payload_hash, DecisionBinding, DeploymentRule, EffectName,
-    EvidenceRef, NextAction, Observation, ProposedEffect, ENSURE_BRANCH_PUBLISHED,
-    ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_READY, PROPOSE_CHANGE, PUBLISH_CHANGE,
-    PUBLISH_DECISION_REQUEST,
+    EvidenceRef, NextAction, Observation, ProposedEffect, WorkItemState, ENSURE_BRANCH_PUBLISHED,
+    ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_READY, JIRA_COMMENT_ADDED, PROPOSE_CHANGE,
+    PUBLISH_CHANGE, PUBLISH_DECISION_REQUEST,
 };
 use fiddle_runtime::agent::AgentBudget;
 use fiddle_runtime::capability::{
@@ -29,6 +29,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
+use support::stub_jira::{client_for, StubJira};
 use support::{unreachable_git, Deployment, INVOCATION_REF, PROJECT};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -44,6 +45,10 @@ const WORK_ID: &str = "w-1";
 const ATTEMPT: &str = "01JQZX0000000000000000000";
 
 const PR: u64 = 7;
+
+const ISSUE: &str = "IDENT-1";
+
+const JIRA_INVOCATION: &str = "jira:IDENT-1";
 
 const PATIENT: Duration = Duration::from_secs(180);
 
@@ -80,6 +85,7 @@ struct World {
     fixture: PathBuf,
     steps: Mutex<Vec<(EffectName, &'static str)>>,
     decisions: Mutex<Vec<&'static str>>,
+    jira: Option<StubJira>,
 }
 
 impl EffectTrace for World {
@@ -119,7 +125,34 @@ impl World {
             fixture,
             steps: Mutex::new(Vec::new()),
             decisions: Mutex::new(Vec::new()),
+            jira: None,
         }
+    }
+
+    async fn reachable_jira_site() -> Self {
+        let jira = StubJira::start().await;
+        jira.holds_issue_labelled(ISSUE, &[]).await;
+        World {
+            jira: Some(jira),
+            ..World::fresh()
+        }
+    }
+
+    fn jira(&self) -> &StubJira {
+        self.jira
+            .as_ref()
+            .expect("this world was built with a jira site")
+    }
+
+    async fn jira_comments_on(&self, issue: &str) -> usize {
+        self.jira().comment_requests_on(issue).await
+    }
+
+    async fn revision_the_site_holds(&self) -> String {
+        self.jira().get_issue(ISSUE).await.body["fields"]["updated"]
+            .as_str()
+            .expect("the stub holds a `fields.updated`")
+            .to_string()
     }
 
     fn workspace_root(&self) -> PathBuf {
@@ -151,7 +184,11 @@ impl World {
     }
 
     fn work(&self) -> PathBuf {
-        attempt_worktree(&self.workspace_root(), PROJECT, INVOCATION_REF)
+        self.work_for(INVOCATION_REF)
+    }
+
+    fn work_for(&self, invocation_ref: &str) -> PathBuf {
+        attempt_worktree(&self.workspace_root(), PROJECT, invocation_ref)
     }
 
     fn ctx(&self) -> EffectContext {
@@ -175,6 +212,14 @@ impl World {
     }
 
     fn ctx_with(&self, work: PathBuf, git: GitCli) -> EffectContext {
+        let ctx = self.ctx_reaching_github_only(work, git);
+        match &self.jira {
+            Some(site) => ctx.with_jira(client_for(site)),
+            None => ctx,
+        }
+    }
+
+    fn ctx_reaching_github_only(&self, work: PathBuf, git: GitCli) -> EffectContext {
         EffectContext::new(
             GhCli::new(
                 PathBuf::from(env!("CARGO_BIN_EXE_gh_stub")),
@@ -2104,4 +2149,211 @@ fn widened(payload: &str) -> String {
         serde_json::from_str(payload).expect("the payload is an object");
     asked.insert("merge".to_string(), json!(true));
     Value::Object(asked).to_string()
+}
+
+fn observed_issue(revision: Option<&str>) -> WorkItemState {
+    WorkItemState {
+        id: ISSUE.to_string(),
+        status: "In Progress".to_string(),
+        projected_status: None,
+        revision: revision.map(str::to_string),
+    }
+}
+
+async fn steered_by(
+    world: &World,
+    invocation_ref: &str,
+    work_item: Option<&WorkItemState>,
+) -> (Result<Executed, CapabilityError>, Vec<EvidenceRef>) {
+    let ctx = world.ctx_publishing_from(world.work_for(invocation_ref));
+    let deployment = Deployment(DeploymentRule::Allow);
+    let executor = Executor::new(
+        PROPOSE_CHANGE,
+        PROJECT.to_string(),
+        invocation_ref.to_string(),
+        &deployment,
+        &ctx,
+        world,
+        ReadRetry::none(),
+    );
+    let capability = ProposeChange::new(
+        executor,
+        &ctx,
+        world,
+        MockCompletionModel::new(repairs()),
+        config(world, the_projects_own_check()),
+    );
+    let outcome = capability
+        .execute(ExecutionInput::observed(
+            grant_for(PROPOSE_CHANGE),
+            WORK_ID,
+            invocation_ref,
+            work_item,
+        ))
+        .await;
+    (outcome, capability.receipts())
+}
+
+#[tokio::test]
+async fn a_jira_run_asks_on_the_issue_and_leaves_the_pull_request_unwritten() {
+    let world = World::reachable_jira_site().await;
+    let held = world.revision_the_site_holds().await;
+    let observed = observed_issue(Some(&held));
+
+    let (outcome, receipts) = steered_by(&world, JIRA_INVOCATION, Some(&observed)).await;
+
+    let error = outcome.expect_err("a run that asked a question earned no evidence");
+    match &error {
+        CapabilityError::AwaitingDecision {
+            interaction: InteractionRef::JiraIssueComment { issue, .. },
+            ..
+        } => assert_eq!(issue, ISSUE),
+        other => panic!("a jira run waits on a jira comment, got {other:?}"),
+    }
+    assert_eq!(
+        world.jira_comments_on(ISSUE).await,
+        1,
+        "the question reached the issue the run was invoked for"
+    );
+    assert_eq!(
+        world.posted_comments().len(),
+        0,
+        "and the pull request carries none; this zero is the counter-case that keeps the count          above from passing on a run that writes to both"
+    );
+    assert!(
+        world
+            .effects_performed()
+            .contains(&EffectName::shipped(JIRA_COMMENT_ADDED)),
+        "{:?}",
+        world.effects_performed()
+    );
+    assert!(
+        !world
+            .effects_performed()
+            .contains(&EffectName::shipped(PUBLISH_DECISION_REQUEST)),
+        "{:?}",
+        world.effects_performed()
+    );
+    assert_eq!(
+        effect_kinds(&receipts),
+        [
+            "ensure_branch_published",
+            "ensure_pull_request",
+            JIRA_COMMENT_ADDED
+        ],
+        "the evidence line spells the effect the chosen channel performed, and the selector \
+         does not hide it: {receipts:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_pull_request_run_asks_on_the_pull_request_and_leaves_the_issue_unwritten() {
+    let world = World::reachable_jira_site().await;
+    let held = world.revision_the_site_holds().await;
+    let observed = observed_issue(Some(&held));
+
+    let (outcome, receipts) = steered_by(&world, INVOCATION_REF, Some(&observed)).await;
+
+    let error = outcome.expect_err("a run that asked a question earned no evidence");
+    match &error {
+        CapabilityError::AwaitingDecision {
+            interaction: InteractionRef::GitHubPullRequestComment { repo, .. },
+            ..
+        } => assert_eq!(repo, REPO),
+        other => panic!("a pull-request run waits on a github comment, got {other:?}"),
+    }
+    assert_eq!(
+        world.posted_comments().len(),
+        1,
+        "the question reached the pull request the run opened"
+    );
+    assert_eq!(
+        world.jira_comments_on(ISSUE).await,
+        0,
+        "and the issue carries none, although this run observed that issue; the channel          follows the invocation and not the observation"
+    );
+    assert!(
+        world
+            .effects_performed()
+            .contains(&EffectName::shipped(PUBLISH_DECISION_REQUEST)),
+        "{:?}",
+        world.effects_performed()
+    );
+    assert!(
+        !world
+            .effects_performed()
+            .contains(&EffectName::shipped(JIRA_COMMENT_ADDED)),
+        "{:?}",
+        world.effects_performed()
+    );
+    assert_eq!(
+        effect_kinds(&receipts),
+        [
+            "ensure_branch_published",
+            "ensure_pull_request",
+            PUBLISH_DECISION_REQUEST
+        ],
+        "the github evidence line still spells the name it spelled before the selector \
+         carried the question: {receipts:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_jira_run_that_observed_no_revision_asks_nobody_and_names_the_rule() {
+    let world = World::reachable_jira_site().await;
+    let observed = observed_issue(None);
+
+    let (outcome, _) = steered_by(&world, JIRA_INVOCATION, Some(&observed)).await;
+
+    let error = outcome.expect_err("a run that named no channel asked nobody");
+    assert!(
+        matches!(&error, CapabilityError::Unasked(_)),
+        "got {error:?}"
+    );
+    assert_eq!(
+        error.recurrence(),
+        Recurrence::Permanent,
+        "a run that observed no revision observes none on a retry either"
+    );
+    let said = error.to_string();
+    assert!(
+        said.contains("no channel is named"),
+        "the refusal names the rule it holds: {said}"
+    );
+    assert_eq!(world.jira_comments_on(ISSUE).await, 0);
+    assert_eq!(world.posted_comments().len(), 0);
+}
+
+#[tokio::test]
+async fn a_jira_run_whose_revision_is_not_a_time_asks_nobody_and_names_the_issue() {
+    let world = World::reachable_jira_site().await;
+    let observed = observed_issue(Some("yesterday"));
+
+    let (outcome, _) = steered_by(&world, JIRA_INVOCATION, Some(&observed)).await;
+
+    let error = outcome.expect_err("a run that could build no identity asked nobody");
+    assert!(
+        matches!(&error, CapabilityError::Unasked(_)),
+        "got {error:?}"
+    );
+    let said = error.to_string();
+    assert!(
+        said.contains("carries no revision this run can build an identity from"),
+        "the refusal says why the issue could not be addressed: {said}"
+    );
+    assert!(
+        !said.contains("no channel is named"),
+        "and it is not the refusal a run that named nothing gets: {said}"
+    );
+    assert_eq!(world.jira_comments_on(ISSUE).await, 0);
+    assert_eq!(world.posted_comments().len(), 0);
+}
+
+fn effect_kinds(receipts: &[EvidenceRef]) -> Vec<String> {
+    receipts
+        .iter()
+        .map(|entry| entry.0.as_str())
+        .filter(|entry| entry.starts_with("effect:"))
+        .map(|entry| entry.split(':').nth(1).unwrap_or_default().to_string())
+        .collect()
 }

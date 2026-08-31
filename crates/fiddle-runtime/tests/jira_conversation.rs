@@ -3,16 +3,16 @@ mod support;
 use fiddle_core::{
     decision_request_id, effect_id, payload_hash, DecisionBinding, DeploymentRule, EffectName,
     EvidenceRef, HumanDecisionRequest, ProposedEffect, WorkRef, ENSURE_PULL_REQUEST_READY,
-    FIXTURE_REPAIR, JIRA_COMMENT_ADDED, PUBLISH_CHANGE,
+    FIXTURE_REPAIR, JIRA_COMMENT_ADDED, PUBLISH_CHANGE, PUBLISH_DECISION_REQUEST,
 };
 use fiddle_runtime::effect::{
-    describe, EffectContext, EffectError, EffectReceipt, EffectTrace, ExecutionStep, Executor,
+    describe, EffectContext, EffectError, EffectTrace, ExecutionStep, Executor,
     IntegrationOperation, ReadRetry,
 };
 use fiddle_runtime::human::validate::Ignored;
 use fiddle_runtime::human::{
     authoritative, publish, ChannelError, DecisionChannel, GitHubConversation,
-    HumanInteractionPort, InteractionRef, PublishError,
+    HumanInteractionPort, InteractionRef, PublishError, PublishedAsk,
 };
 use fiddle_runtime::jira::conversation::{ConversationError, JiraConversation};
 use fiddle_runtime::GhCli;
@@ -163,10 +163,7 @@ impl World {
             .to_string()
     }
 
-    async fn ask_on(
-        &self,
-        named: &[DecisionChannel],
-    ) -> Result<EffectReceipt<InteractionRef>, PublishError> {
+    async fn ask_on(&self, named: &[DecisionChannel]) -> Result<PublishedAsk, PublishError> {
         let ctx = self.ctx();
         let deployment = Deployment(DeploymentRule::Allow);
         let trace = Silent;
@@ -244,7 +241,7 @@ async fn a_request_named_for_jira_alone_reaches_jira_and_leaves_github_unwritten
     let world = World::holding_the_issue_and_an_empty_pull_request().await;
     let updated = world.held_revision().await;
 
-    let receipt = world
+    let asked = world
         .ask_on(&[on_jira(&updated)])
         .await
         .expect("one channel is published to");
@@ -257,9 +254,14 @@ async fn a_request_named_for_jira_alone_reaches_jira_and_leaves_github_unwritten
          that keeps the two-channel refusal from passing on a run that writes nowhere"
     );
     assert!(
-        matches!(receipt.value, InteractionRef::JiraIssueComment { .. }),
+        matches!(asked.receipt.value, InteractionRef::JiraIssueComment { .. }),
         "got {:?}",
-        receipt.value
+        asked.receipt.value
+    );
+    assert_eq!(
+        asked.asked_by.as_str(),
+        JIRA_COMMENT_ADDED,
+        "the selector answers the name the receipt evidence line spells rather than hiding it"
     );
     let posted = world.jira.last_comment_on(ISSUE).await.to_string();
     assert!(
@@ -272,7 +274,7 @@ async fn a_request_named_for_jira_alone_reaches_jira_and_leaves_github_unwritten
 async fn a_request_named_for_github_alone_reaches_github_and_leaves_jira_unwritten() {
     let world = World::holding_the_issue_and_an_empty_pull_request().await;
 
-    let receipt = world
+    let asked = world
         .ask_on(&[on_github()])
         .await
         .expect("one channel is published to");
@@ -285,11 +287,16 @@ async fn a_request_named_for_github_alone_reaches_github_and_leaves_jira_unwritt
     );
     assert!(
         matches!(
-            receipt.value,
+            asked.receipt.value,
             InteractionRef::GitHubPullRequestComment { .. }
         ),
         "got {:?}",
-        receipt.value
+        asked.receipt.value
+    );
+    assert_eq!(
+        asked.asked_by.as_str(),
+        PUBLISH_DECISION_REQUEST,
+        "and it answers the other name for the other channel"
     );
 }
 
@@ -308,6 +315,48 @@ async fn a_request_named_for_no_channel_is_published_nowhere() {
         format!("{refused}").contains("exactly one channel is authoritative"),
         "{refused}"
     );
+}
+
+#[tokio::test]
+async fn the_two_refusals_the_channel_rule_gives_are_not_one_refusal() {
+    let world = World::holding_the_issue_and_an_empty_pull_request().await;
+    let updated = world.held_revision().await;
+
+    let none = world
+        .ask_on(&[])
+        .await
+        .expect_err("a request with no channel is asked of nobody");
+    let many = world
+        .ask_on(&[on_github(), on_jira(&updated)])
+        .await
+        .expect_err("two channels for one request are refused");
+
+    assert!(
+        matches!(none, PublishError::Channel(ChannelError::NoneNamed)),
+        "got {none}"
+    );
+    assert!(
+        matches!(
+            many,
+            PublishError::Channel(ChannelError::NotOne { named: 2, .. })
+        ),
+        "got {many}"
+    );
+    assert!(
+        none.to_string().contains("no channel is named"),
+        "the empty request says nothing was named: {none}"
+    );
+    assert!(
+        !many.to_string().contains("no channel is named"),
+        "and the crowded request does not say the same thing; a check that only looked for the \
+         shared clause would pass on one reason serving both: {many}"
+    );
+    assert!(
+        many.to_string().contains("2 channels are named"),
+        "the crowded request counts what it refused: {many}"
+    );
+    assert_eq!(world.github_comments(), 0);
+    assert_eq!(world.jira_comments().await, 0);
 }
 
 #[test]
@@ -344,8 +393,8 @@ async fn a_second_run_carrying_the_snapshot_it_started_with_recognises_its_own_q
         "the snapshot is captured once per invocation and carried, so a retry looks for the \
          marker it wrote rather than building a second identity"
     );
-    assert_eq!(first.value, second.value);
-    assert_eq!(first.effect_id, second.effect_id);
+    assert_eq!(first.receipt.value, second.receipt.value);
+    assert_eq!(first.receipt.effect_id, second.receipt.effect_id);
 }
 
 #[tokio::test]
@@ -397,13 +446,13 @@ async fn the_port_and_the_channel_router_name_one_comment_and_write_it_once() {
         .await
         .expect("the router asks");
     let seen = port
-        .responses(&ctx, &published.value)
+        .responses(&ctx, &published.receipt.value)
         .await
         .expect("the port reads the issue it asked on");
 
     assert_eq!(world.jira_comments().await, 1);
     assert_eq!(
-        published.target,
+        published.receipt.target,
         IntegrationOperation::target(&ask),
         "the port and the router name one target, so the port cannot ask a question the router \
          would not recognise"
@@ -430,6 +479,7 @@ async fn a_reply_is_data_and_never_direction() {
         .ask_on(&[on_jira(&updated)])
         .await
         .expect("it asks")
+        .receipt
         .value;
     let marker = port
         .asking(&request(), PROJECT, INVOCATION_REF)

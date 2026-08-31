@@ -15,14 +15,16 @@ use crate::human::validate::{
     resolve, DecisionError, DecisionResolution, DecisionTrace, DecisionWalk, HumanAnswer,
     IgnoredReply,
 };
-use crate::human::{InteractionRef, PublishDecisionRequest, CONVERSATION_PAGES};
+use crate::human::{
+    publish, DecisionChannel, InteractionRef, PublishDecisionRequest, CONVERSATION_PAGES,
+};
 use crate::workspace::{DeclaredCommand, Workspace, WorkspaceCommand, WorkspacePath};
 use fiddle_core::{
     correlation_key, decision_request_id, effect_id, payload_hash, AttemptId, CapabilityId,
     ChangeSetState, DecisionBinding, EffectName, EvidenceRef, HumanDecisionRequest,
     InterpretedHumanDecision, Observation, ProposedEffect, Publication, Published, ReviewState,
-    SourceRef, WorkRef, ENSURE_BRANCH_PUBLISHED, ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_READY,
-    PUBLISH_DECISION_REQUEST,
+    SourceRef, WorkItemState, WorkRef, ENSURE_BRANCH_PUBLISHED, ENSURE_PULL_REQUEST,
+    ENSURE_PULL_REQUEST_READY, PUBLISH_DECISION_REQUEST,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -472,21 +474,23 @@ where
         work_id: &str,
         pr: u64,
         head_sha: &str,
+        work_item: Option<&WorkItemState>,
     ) -> Result<EvidenceRef, CapabilityError> {
         let request = self.question_about(work_id, pr, head_sha);
-        let ask = PublishDecisionRequest::new(self.config.repo.clone(), pr, request.clone());
-        let receipt = self
-            .propose(
-                EffectName::shipped(PUBLISH_DECISION_REQUEST),
-                ask.target(),
-                ask.payload(),
-                ask,
-            )
-            .await?;
+        let named = DecisionChannel::named_by(
+            self.executor.invocation_ref(),
+            work_item,
+            Some((self.config.repo.as_str(), pr)),
+        );
+        let asked = publish(&self.executor, &named, &request).await?;
+        self.receipts
+            .lock()
+            .unwrap()
+            .push(receipt_evidence(&asked.asked_by, &asked.receipt));
 
         Err(CapabilityError::AwaitingDecision {
             request: request.binding.request,
-            interaction: receipt.value,
+            interaction: asked.receipt.value,
             question: request.question,
         })
     }
@@ -498,6 +502,7 @@ where
         pr: u64,
         head_sha: &str,
         work_id: &str,
+        work_item: Option<&WorkItemState>,
     ) -> Result<EvidenceRef, CapabilityError> {
         let gated = self.gated(pr, head_sha);
         let target = gated.target();
@@ -563,8 +568,15 @@ where
                 })
             }
             (None, InterpretedHumanDecision::Redirect { instruction }) => {
-                self.redirect(work_id, head_sha, instruction, acted_on.comment, &ignored)
-                    .await
+                self.redirect(
+                    work_id,
+                    head_sha,
+                    instruction,
+                    acted_on.comment,
+                    &ignored,
+                    work_item,
+                )
+                .await
             }
             (None, InterpretedHumanDecision::Unclear) => Err(self.awaiting(
                 &request,
@@ -593,6 +605,7 @@ where
         instruction: &Published,
         comment: u64,
         declined: &[IgnoredReply],
+        work_item: Option<&WorkItemState>,
     ) -> Result<EvidenceRef, CapabilityError> {
         self.receipts.lock().unwrap().push(EvidenceRef(format!(
             "{REDIRECT_ORIGIN}:{comment}:{}{}",
@@ -608,7 +621,7 @@ where
             "{PROPOSE_ORIGIN}:{}",
             produced.changed
         )));
-        let asked = self.ask(work_id, published, &produced.sha).await;
+        let asked = self.ask(work_id, published, &produced.sha, work_item).await;
         drop(produced.workspace);
         asked
     }
@@ -761,6 +774,7 @@ where
         &self,
         grant: &ExecutionGrant,
         work_id: &str,
+        work_item: Option<&WorkItemState>,
     ) -> Result<EvidenceRef, CapabilityError> {
         let branch = self.branch();
 
@@ -799,12 +813,16 @@ where
                             pull_request.number,
                             &head_sha,
                             work_id,
+                            work_item,
                         )
                         .await?;
                     self.record_change_set(work_id)?;
                     Ok(evidence)
                 }
-                None => self.ask(work_id, pull_request.number, &head_sha).await,
+                None => {
+                    self.ask(work_id, pull_request.number, &head_sha, work_item)
+                        .await
+                }
             };
         }
 
@@ -818,7 +836,9 @@ where
                 grant.attempt_id().0
             )),
         );
-        let asked = self.ask(work_id, pull_request, &produced.sha).await;
+        let asked = self
+            .ask(work_id, pull_request, &produced.sha, work_item)
+            .await;
         drop(produced.workspace);
         asked
     }
@@ -842,7 +862,7 @@ where
             grant,
             work_id,
             invocation_ref,
-            ..
+            work_item,
         } = input;
         if grant.capability_id() != self.id() {
             return Err(CapabilityError::NotAuthorised {
@@ -870,7 +890,7 @@ where
             });
         }
 
-        let outcome = self.walk(&grant, work_id).await;
+        let outcome = self.walk(&grant, work_id, work_item).await;
         if let Err(error) = &outcome {
             self.observed.lock().unwrap().failure = Some(error.to_string());
         }
