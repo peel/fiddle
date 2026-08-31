@@ -1457,13 +1457,19 @@ async fn a_run_starts_holding_no_pull_request_when_the_step_parameters_carry_one
     let world = world_holding(ISSUE).await;
     let ctx = world.context();
     let deployment = allowing();
+    let seeded = outputs_holding(STALE_PULL_REQUEST);
+    assert_eq!(
+        seeded.pull_request(),
+        Some(STALE_PULL_REQUEST),
+        "the step parameters hand the run a pull request, which is what the run must not read"
+    );
     let capability = WorkflowCapability::new(
         WORKFLOW,
         STAGE,
         workflow(vec![effect_step(JIRA_PULL_REQUEST_LINKED)]),
         executor(&world, &ctx, &deployment),
         StepParams {
-            earned: outputs_holding(STALE_PULL_REQUEST),
+            earned: seeded,
             ..params_naming_a_stale_pull_request()
         },
         world.ports(silent()),
