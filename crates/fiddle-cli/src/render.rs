@@ -759,6 +759,7 @@ mod tests {
                 jira_status_name: VERBATIM_STATUS.to_string(),
                 jira_status_category: "In Progress".to_string(),
             }),
+            revision: None,
         }
     }
 
@@ -796,6 +797,7 @@ mod tests {
             id: "IDENT-1".to_string(),
             status: VERBATIM_STATUS.to_string(),
             projected_status: None,
+            revision: None,
         });
 
         assert_eq!(

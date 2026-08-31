@@ -1,4 +1,4 @@
-use crate::capability::{Capability, ExecutionGrant};
+use crate::capability::{Capability, ExecutionGrant, ExecutionInput};
 use crate::effect::Recurrence;
 use crate::evidence::{mint_attempt_id, publish, EvidenceError};
 use crate::journal::{AttemptJournal, AttemptTrace, FileJournal};
@@ -176,11 +176,12 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
     let capability_id = authorised.capability_id();
     match ctx
         .capability
-        .execute(
+        .execute(ExecutionInput::observed(
             authorised.grant,
             ctx.addressed.change_set(),
             ctx.invocation_ref,
-        )
+            view.work_item.value(),
+        ))
         .await
     {
         Ok(evidence) => {
@@ -452,9 +453,7 @@ mod tests {
 
         async fn execute(
             &self,
-            _grant: ExecutionGrant,
-            _work_id: &str,
-            _invocation_ref: &str,
+            _input: ExecutionInput<'_>,
         ) -> Result<EvidenceRef, CapabilityError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.log.record("execute");
@@ -477,14 +476,9 @@ mod tests {
             self.inner.stage()
         }
 
-        async fn execute(
-            &self,
-            grant: ExecutionGrant,
-            work_id: &str,
-            invocation_ref: &str,
-        ) -> Result<EvidenceRef, CapabilityError> {
+        async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
             self.log.record("execute");
-            self.inner.execute(grant, work_id, invocation_ref).await
+            self.inner.execute(input).await
         }
     }
 
@@ -899,9 +893,7 @@ mod tests {
 
         async fn execute(
             &self,
-            _grant: ExecutionGrant,
-            _work_id: &str,
-            _invocation_ref: &str,
+            _input: ExecutionInput<'_>,
         ) -> Result<EvidenceRef, CapabilityError> {
             self.log.record("execute");
             let kind = fiddle_core::EffectName::shipped(fiddle_core::ENSURE_PULL_REQUEST);

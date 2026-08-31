@@ -87,6 +87,8 @@ pub struct WorkItemState {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projected_status: Option<ProjectedStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -184,6 +186,7 @@ mod tests {
             id: "fiddle-m0-demo".to_string(),
             status: "open".to_string(),
             projected_status: None,
+            revision: None,
         }
     }
 

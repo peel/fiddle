@@ -25,7 +25,7 @@ use crate::human::validate::DecisionError;
 use crate::human::InteractionRef;
 use fiddle_core::{
     AttemptId, CapabilityId, DecisionRequestId, EvidenceRef, NextAction, Publication, Published,
-    RunDisposition, TreeObservation,
+    RunDisposition, TreeObservation, WorkItemState,
 };
 use std::path::PathBuf;
 
@@ -63,18 +63,40 @@ impl ExecutionGrant {
     }
 }
 
+pub struct ExecutionInput<'a> {
+    pub grant: ExecutionGrant,
+    pub work_id: &'a str,
+    pub invocation_ref: &'a str,
+    pub work_item: Option<&'a WorkItemState>,
+}
+
+impl<'a> ExecutionInput<'a> {
+    pub fn observed(
+        grant: ExecutionGrant,
+        work_id: &'a str,
+        invocation_ref: &'a str,
+        work_item: Option<&'a WorkItemState>,
+    ) -> Self {
+        ExecutionInput {
+            grant,
+            work_id,
+            invocation_ref,
+            work_item,
+        }
+    }
+
+    pub fn unobserved(grant: ExecutionGrant, work_id: &'a str, invocation_ref: &'a str) -> Self {
+        ExecutionInput::observed(grant, work_id, invocation_ref, None)
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Capability: Send + Sync {
     fn id(&self) -> CapabilityId;
 
     fn stage(&self) -> &'static str;
 
-    async fn execute(
-        &self,
-        grant: ExecutionGrant,
-        work_id: &str,
-        invocation_ref: &str,
-    ) -> Result<EvidenceRef, CapabilityError>;
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError>;
 
     fn receipts(&self) -> Vec<EvidenceRef> {
         Vec::new()
@@ -264,7 +286,7 @@ mod tests {
         let capability: &dyn Capability = &marking;
         assert_eq!(capability.id(), STUB_MARK);
         assert!(capability
-            .execute(grant(), WORK_ID, INVOCATION_REF)
+            .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
             .await
             .is_ok());
     }

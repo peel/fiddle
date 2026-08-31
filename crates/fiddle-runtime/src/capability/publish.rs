@@ -1,5 +1,5 @@
 use super::stub::write_atomically;
-use super::{Capability, CapabilityError, ExecutionGrant};
+use super::{Capability, CapabilityError, ExecutionInput};
 use crate::effect::{EffectOutcome, EffectReceipt, Executor, IntegrationOperation, ObservedState};
 use crate::github::{branch_name, EnsureBranchPublished, EnsureCheckRequested, EnsurePullRequest};
 use fiddle_core::{
@@ -239,12 +239,13 @@ impl Capability for PublishChange<'_> {
         "publish"
     }
 
-    async fn execute(
-        &self,
-        grant: ExecutionGrant,
-        work_id: &str,
-        invocation_ref: &str,
-    ) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
+        let ExecutionInput {
+            grant,
+            work_id,
+            invocation_ref,
+            ..
+        } = input;
         if grant.capability_id() != self.id() {
             return Err(CapabilityError::NotAuthorised {
                 granted: grant.capability_id(),

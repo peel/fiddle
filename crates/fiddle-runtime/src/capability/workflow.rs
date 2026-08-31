@@ -1,4 +1,4 @@
-use super::{Capability, CapabilityError, ExecutionGrant};
+use super::{Capability, CapabilityError, ExecutionInput};
 use crate::agent::{
     attempt_briefed, AgentBudget, Brief, Declarations, Held, ToolHost, Transcripts, PREAMBLE,
 };
@@ -332,12 +332,12 @@ where
         self.stage
     }
 
-    async fn execute(
-        &self,
-        grant: ExecutionGrant,
-        _work_id: &str,
-        invocation_ref: &str,
-    ) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
+        let ExecutionInput {
+            grant,
+            invocation_ref,
+            ..
+        } = input;
         if grant.capability_id() != self.id() {
             return Err(CapabilityError::NotAuthorised {
                 granted: grant.capability_id(),

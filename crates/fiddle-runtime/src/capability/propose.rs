@@ -1,5 +1,5 @@
 use super::stub::write_atomically;
-use super::{Capability, CapabilityError, ExecutionGrant};
+use super::{Capability, CapabilityError, ExecutionGrant, ExecutionInput};
 use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts, Transcripts};
 use crate::effect::{
     AdapterError, EffectContext, EffectOutcome, EffectReceipt, Executor, IntegrationOperation,
@@ -837,12 +837,13 @@ where
         "propose"
     }
 
-    async fn execute(
-        &self,
-        grant: ExecutionGrant,
-        work_id: &str,
-        invocation_ref: &str,
-    ) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
+        let ExecutionInput {
+            grant,
+            work_id,
+            invocation_ref,
+            ..
+        } = input;
         if grant.capability_id() != self.id() {
             return Err(CapabilityError::NotAuthorised {
                 granted: grant.capability_id(),

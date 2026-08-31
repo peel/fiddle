@@ -1,4 +1,4 @@
-use super::{Capability, CapabilityError, ExecutionGrant};
+use super::{Capability, CapabilityError, ExecutionInput};
 use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts, Transcripts};
 use crate::gateway::Redaction;
 use crate::workspace::{DeclaredCommand, Workspace, WorkspaceCommand};
@@ -123,12 +123,13 @@ where
         )
     }
 
-    async fn execute(
-        &self,
-        grant: ExecutionGrant,
-        work_id: &str,
-        invocation_ref: &str,
-    ) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
+        let ExecutionInput {
+            grant,
+            work_id,
+            invocation_ref,
+            ..
+        } = input;
         if grant.capability_id() != self.id() {
             return Err(CapabilityError::NotAuthorised {
                 granted: grant.capability_id(),
@@ -187,6 +188,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capability::ExecutionGrant;
     use fiddle_core::{AttemptId, NextAction};
     use rig_core::test_utils::{MockCompletionModel, MockTurn};
     use serde_json::json;
@@ -345,7 +347,7 @@ mod tests {
     async fn a_model_that_lies_about_success_does_not_earn_the_marker() {
         let f = broken_fixture();
         let error = FixtureRepair::new(MockCompletionModel::new(lies()), f.config())
-            .execute(grant(), WORK_ID, INVOCATION_REF)
+            .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
             .await
             .unwrap_err();
 
@@ -377,7 +379,7 @@ mod tests {
         ));
 
         FixtureRepair::new(MockCompletionModel::new(script), f.config())
-            .execute(grant(), WORK_ID, INVOCATION_REF)
+            .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
             .await
             .expect("the check passed, so the outcome is decided");
 
@@ -391,7 +393,7 @@ mod tests {
     async fn a_real_repair_passes_the_check_and_records_the_marker() {
         let f = broken_fixture();
         let evidence = FixtureRepair::new(MockCompletionModel::new(repairs()), f.config())
-            .execute(grant(), WORK_ID, INVOCATION_REF)
+            .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
             .await
             .unwrap();
 
@@ -420,7 +422,7 @@ mod tests {
         ] {
             let f = broken_fixture();
             let _ = FixtureRepair::new(MockCompletionModel::new(script), f.config())
-                .execute(grant(), WORK_ID, INVOCATION_REF)
+                .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
                 .await;
 
             assert!(
@@ -446,7 +448,7 @@ mod tests {
             MockCompletionModel::new(nothing_but_malformed_calls()),
             f.config(),
         )
-        .execute(grant(), WORK_ID, INVOCATION_REF)
+        .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
         .await
         .unwrap_err();
 
@@ -461,7 +463,7 @@ mod tests {
     async fn a_failed_attempt_is_reported_as_the_agents_failure_and_earns_nothing() {
         let f = broken_fixture();
         let error = FixtureRepair::new(MockCompletionModel::new(malformed()), f.config())
-            .execute(grant(), WORK_ID, INVOCATION_REF)
+            .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
             .await
             .unwrap_err();
 
@@ -487,7 +489,7 @@ mod tests {
         .unwrap();
 
         let error = FixtureRepair::new(MockCompletionModel::new(repairs()), f.config())
-            .execute(foreign, WORK_ID, INVOCATION_REF)
+            .execute(ExecutionInput::unobserved(foreign, WORK_ID, INVOCATION_REF))
             .await
             .unwrap_err();
 

@@ -9,7 +9,8 @@ use fiddle_core::{
 };
 use fiddle_runtime::agent::AgentBudget;
 use fiddle_runtime::capability::{
-    attempt_worktree, Capability, CapabilityError, ExecutionGrant, ProposeChange, ProposeConfig,
+    attempt_worktree, Capability, CapabilityError, ExecutionGrant, ExecutionInput, ProposeChange,
+    ProposeConfig,
 };
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectTrace, ExecutionStep, Executor,
@@ -610,7 +611,11 @@ async fn execute_against(
     let capability = ProposeChange::new(executor, ctx, world, model, config(world, check));
 
     let outcome = capability
-        .execute(grant_for(PROPOSE_CHANGE), WORK_ID, INVOCATION_REF)
+        .execute(ExecutionInput::unobserved(
+            grant_for(PROPOSE_CHANGE),
+            WORK_ID,
+            INVOCATION_REF,
+        ))
         .await;
     (outcome, capability.receipts(), capability.publication())
 }

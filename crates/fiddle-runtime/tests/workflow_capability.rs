@@ -9,7 +9,7 @@ use fiddle_runtime::agent::{AgentBudget, ToolHost, ToolReceipts};
 use fiddle_runtime::capability::workflow::{
     without_waiting, Step, Workflow, WorkflowCapability, WorkflowPorts, WorkflowRefusal, WORKFLOW,
 };
-use fiddle_runtime::capability::{Capability, CapabilityError, ExecutionGrant};
+use fiddle_runtime::capability::{Capability, CapabilityError, ExecutionGrant, ExecutionInput};
 use fiddle_runtime::effect::{
     registry, EffectContext, EffectError, EffectTrace, ExecutionStep, Executor, ReadRetry,
     Recurrence, StepParams,
@@ -307,7 +307,11 @@ async fn a_workflow_runs_its_steps_in_the_order_the_document_names_them() {
     .expect("a workflow this build can run");
 
     let evidence = capability
-        .execute(grant(), "fiddle-demo", INVOCATION_REF)
+        .execute(ExecutionInput::unobserved(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+        ))
         .await
         .expect("a completed workflow");
 
@@ -354,7 +358,11 @@ async fn a_step_that_fails_stops_every_step_after_it() {
     .expect("a workflow this build can run");
 
     let refusal = capability
-        .execute(grant(), "fiddle-demo", INVOCATION_REF)
+        .execute(ExecutionInput::unobserved(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+        ))
         .await
         .expect_err("a workflow whose check exits 3 did not complete");
 
@@ -391,7 +399,11 @@ async fn a_grant_for_another_capability_runs_no_step() {
     .expect("a workflow this build can run");
 
     let refusal = capability
-        .execute(grant_for(STUB_MARK), "fiddle-demo", INVOCATION_REF)
+        .execute(ExecutionInput::unobserved(
+            grant_for(STUB_MARK),
+            "fiddle-demo",
+            INVOCATION_REF,
+        ))
         .await
         .expect_err("a grant for another capability is not evidence");
 
@@ -419,7 +431,11 @@ async fn a_run_asked_for_another_invocation_runs_no_step() {
     .expect("a workflow this build can run");
 
     let refusal = capability
-        .execute(grant(), "fiddle-demo", "beans:somebody-else")
+        .execute(ExecutionInput::unobserved(
+            grant(),
+            "fiddle-demo",
+            "beans:somebody-else",
+        ))
         .await
         .expect_err("an executor bound elsewhere is not evidence");
 
@@ -544,7 +560,11 @@ async fn an_effect_a_deployment_rule_gates_fails_the_run_rather_than_waiting_for
     .expect("no minimum in this build gates this effect, so the workflow is built");
 
     let refusal = capability
-        .execute(grant(), "fiddle-demo", INVOCATION_REF)
+        .execute(ExecutionInput::unobserved(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+        ))
         .await
         .expect_err("a workflow that cannot finish is not evidence");
 

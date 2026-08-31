@@ -1,4 +1,4 @@
-use super::{Capability, CapabilityError, ExecutionGrant};
+use super::{Capability, CapabilityError, ExecutionInput};
 use crate::stub::STUB_ORIGIN;
 use fiddle_core::{correlation_key, CapabilityId, ChangeSetState, EvidenceRef};
 use std::path::{Path, PathBuf};
@@ -27,12 +27,13 @@ impl Capability for StubMark {
         "mark"
     }
 
-    async fn execute(
-        &self,
-        grant: ExecutionGrant,
-        work_id: &str,
-        invocation_ref: &str,
-    ) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
+        let ExecutionInput {
+            grant,
+            work_id,
+            invocation_ref,
+            ..
+        } = input;
         if grant.capability_id() != self.id() {
             return Err(CapabilityError::NotAuthorised {
                 granted: grant.capability_id(),
@@ -78,6 +79,7 @@ pub(super) fn write_atomically(destination: &Path, state: &ChangeSetState) -> st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capability::ExecutionGrant;
     use crate::ports::ChangePort;
     use crate::stub::StubChangePort;
     use fiddle_core::{AttemptId, NextAction, Observation, STUB_MARK};
@@ -103,7 +105,7 @@ mod tests {
         let capability = StubMark::new(root, "icecube");
 
         let evidence = capability
-            .execute(grant(), WORK_ID, INVOCATION_REF)
+            .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
             .await
             .unwrap();
         assert_eq!(evidence.0, "stub:changes/fiddle-m0-demo.json");
@@ -127,12 +129,12 @@ mod tests {
         let capability = StubMark::new(dir.path(), "icecube");
 
         capability
-            .execute(grant(), WORK_ID, INVOCATION_REF)
+            .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
             .await
             .unwrap();
         let first = std::fs::read(&path).unwrap();
         capability
-            .execute(grant(), WORK_ID, INVOCATION_REF)
+            .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
             .await
             .unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), first);
@@ -143,7 +145,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let capability = StubMark::new(dir.path(), "icecube");
         capability
-            .execute(grant(), WORK_ID, INVOCATION_REF)
+            .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
             .await
             .unwrap();
 
@@ -168,7 +170,7 @@ mod tests {
         .unwrap();
 
         let error = StubMark::new(dir.path(), "icecube")
-            .execute(foreign, WORK_ID, INVOCATION_REF)
+            .execute(ExecutionInput::unobserved(foreign, WORK_ID, INVOCATION_REF))
             .await
             .unwrap_err();
 
@@ -188,7 +190,7 @@ mod tests {
         std::fs::write(dir.path().join("changes"), "not a directory").unwrap();
 
         let error = StubMark::new(dir.path(), "icecube")
-            .execute(grant(), WORK_ID, INVOCATION_REF)
+            .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
             .await
             .unwrap_err();
 

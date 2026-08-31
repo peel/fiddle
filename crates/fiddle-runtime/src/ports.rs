@@ -209,6 +209,7 @@ mod tests {
                     id: work_id.to_string(),
                     status: format!("read-{read}"),
                     projected_status: None,
+                    revision: None,
                 },
                 source: SourceRef(format!("test:{work_id}")),
                 revision: None,

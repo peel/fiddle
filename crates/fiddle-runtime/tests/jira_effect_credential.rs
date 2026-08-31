@@ -13,7 +13,7 @@ use fiddle_runtime::effect::{
 use fiddle_runtime::jira::file_verdict::FileVerdict;
 use fiddle_runtime::jira::{AddComment, JiraHttp, LinkPullRequest, TransitionIssue};
 use fiddle_runtime::{
-    attempt, AttemptContext, Capability, CapabilityError, ExecutionGrant, StubChangePort,
+    attempt, AttemptContext, Capability, CapabilityError, ExecutionInput, StubChangePort,
     StubWorkItemPort, BUNDLE_FILE,
 };
 use serde_json::json;
@@ -411,12 +411,7 @@ impl Capability for WritesToJira {
         "filed"
     }
 
-    async fn execute(
-        &self,
-        _grant: ExecutionGrant,
-        _work_id: &str,
-        _invocation_ref: &str,
-    ) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, _input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
         let ctx = unreachable_context()
             .with_jira(JiraHttp::new(&self.base_url, USER, SENTINEL, PATIENT).expect("a client"));
         let receipt = run(&ctx, &Recorded::default(), verdict()).await?;

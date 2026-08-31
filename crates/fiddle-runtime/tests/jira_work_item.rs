@@ -523,6 +523,31 @@ async fn the_port_reports_the_status_verbatim_and_the_updated_time_as_the_revisi
 }
 
 #[tokio::test]
+async fn the_state_carries_the_one_revision_the_observation_was_read_at() {
+    let server = StubJira::start().await;
+    server
+        .holds_issue_updated_at(KEY, "10001", "Ready", "To Do", ZONED)
+        .await;
+
+    match observe_from(&server).await {
+        Observation::Available {
+            value, revision, ..
+        } => {
+            assert_eq!(
+                value.revision, revision,
+                "one read answers one revision, and a state whose own revision differed from                  the observation's would give one issue two identities"
+            );
+            assert_eq!(
+                value.revision.as_deref(),
+                Some(AS_UTC),
+                "the state carries the canonicalised time, so the raw offset jira sends never                  reaches a caller that names a target by it"
+            );
+        }
+        other => panic!("a readable issue must be Available, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn the_contract_holds_over_http() {
     let worlds = JiraWorlds::start().await;
     work_item_port_contract(&worlds).await;
