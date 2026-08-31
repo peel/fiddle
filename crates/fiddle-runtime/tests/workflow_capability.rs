@@ -1678,6 +1678,64 @@ fn two_rejections_are_one_verdict_only_when_they_name_the_same_findings() {
     );
 }
 
+#[test]
+fn an_acceptance_after_a_rejection_is_refused_rather_than_replacing_the_rejection() {
+    let rejection = Verdict::Rejected {
+        findings: vec![A_SIGNATURE.to_string()],
+    };
+    let mut outputs = StepOutputs::default();
+    outputs
+        .record_verdict(rejection.clone())
+        .expect("a first rejection is recorded");
+
+    let refusal = outputs
+        .record_verdict(Verdict::Accepted {})
+        .expect_err("an acceptance answers otherwise than the rejection this run holds");
+
+    assert_eq!(
+        refusal,
+        OutputRefusal::Reconsidered {
+            held: "rejected",
+            answered: "accepted",
+        },
+        "the refusal names the rejection it holds and the acceptance it was answered"
+    );
+    assert_eq!(
+        outputs.verdict(),
+        Some(&rejection),
+        "and the run still holds the rejection, so the acceptance replaced nothing"
+    );
+}
+
+#[test]
+fn a_rejection_after_an_acceptance_is_refused_rather_than_replacing_the_acceptance() {
+    let acceptance = Verdict::Accepted {};
+    let mut outputs = StepOutputs::default();
+    outputs
+        .record_verdict(acceptance.clone())
+        .expect("a first acceptance is recorded");
+
+    let refusal = outputs
+        .record_verdict(Verdict::Rejected {
+            findings: vec![A_SIGNATURE.to_string()],
+        })
+        .expect_err("a rejection answers otherwise than the acceptance this run holds");
+
+    assert_eq!(
+        refusal,
+        OutputRefusal::Reconsidered {
+            held: "accepted",
+            answered: "rejected",
+        },
+        "the refusal names the acceptance it holds and the rejection it was answered"
+    );
+    assert_eq!(
+        outputs.verdict(),
+        Some(&acceptance),
+        "and the run still holds the acceptance, so the rejection replaced nothing"
+    );
+}
+
 #[tokio::test]
 async fn a_rejection_that_names_nothing_it_read_is_refused_rather_than_carried() {
     let world = world();
