@@ -4,7 +4,7 @@ mod support;
 use fiddle_core::{
     AttemptId, DeploymentRule, EffectId, EffectName, EvidenceRef, HumanDecisionRequirement,
     NextAction, PayloadHash, Published, WorkItemState, ENSURE_PULL_REQUEST,
-    ENSURE_PULL_REQUEST_READY, JIRA_PULL_REQUEST_LINKED, STUB_MARK,
+    ENSURE_PULL_REQUEST_READY, JIRA_PULL_REQUEST_LINKED, STUB_MARK, TOIL,
 };
 use fiddle_runtime::agent::{AgentBudget, ToolHost, ToolReceipts, Verdict};
 use fiddle_runtime::capability::workflow::{
@@ -1084,14 +1084,22 @@ fn a_workflow_proposing_under_another_capability_is_refused_when_it_is_built() {
 }
 
 #[test]
-fn the_identity_a_workflow_is_filed_under_is_not_one_of_the_five_the_cli_selects() {
+fn the_bare_workflow_identity_is_not_selectable_and_a_named_document_is() {
     let selectable: Vec<&str> = fiddle_runtime::CAPABILITIES
         .iter()
         .map(|capability| capability.0)
         .collect();
     assert!(
         !selectable.contains(&WORKFLOW.0),
-        "a workflow needs a document, so naming it on the command line would select nothing"
+        "a workflow needs a document, and `{}` names no document, so selecting it \
+         on the command line would select nothing",
+        WORKFLOW.0
+    );
+    assert!(
+        selectable.contains(&TOIL.0),
+        "`{}` names one document this build knows where to look for, so it is \
+         selectable where the bare identity is not",
+        TOIL.0
     );
     assert_eq!(
         selectable,
@@ -1100,7 +1108,8 @@ fn the_identity_a_workflow_is_filed_under_is_not_one_of_the_five_the_cli_selects
             "fixture_repair",
             "publish_change",
             "propose_change",
-            "cve_mitigate"
+            "cve_mitigate",
+            "toil"
         ]
     );
 }

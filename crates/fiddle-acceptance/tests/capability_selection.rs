@@ -756,3 +756,369 @@ fn an_absent_forge_credential_names_the_forge_and_not_the_model() {
         "the forge credential must not be described as the model's: {stderr}"
     );
 }
+
+const TOIL_DOCUMENT: &str = "workflows/toil.toml";
+
+const ONE_CHECK: &str = "version = 1\n\
+                         name = \"toil\"\n\
+                         stage = \"toil\"\n\
+                         \n\
+                         [[steps]]\n\
+                         kind = \"check\"\n\
+                         program = \"true\"\n\
+                         args = []\n\
+                         timeout_secs = 30\n";
+
+fn toiling_tables(scenario: &Scenario, base_url: &str) -> String {
+    let fixture = scenario.write_fixture_repo();
+    format!(
+        "[agent]\n\
+         model = \"a-model\"\n\
+         base_url = \"{base_url}\"\n\
+         api_key = {{ env = \"{CREDENTIAL}\" }}\n\
+         max_turns = 1\n\
+         max_tokens = 64\n\
+         deadline = \"30s\"\n\
+         tool_timeout = \"30s\"\n\
+         \n\
+         [github]\n\
+         repo = \"acme/icecube\"\n\
+         base = \"main\"\n\
+         token = {{ env = \"{FORGE_TOKEN}\" }}\n\
+         config_dir = {config_dir}\n\
+         timeout = \"30s\"\n\
+         \n\
+         [workspace]\n\
+         root = {root}\n\
+         fixture = {fixture}\n\
+         check = {{ program = \"true\" }}\n\
+         command_timeout = \"30s\"\n",
+        config_dir = support::toml_string(&scenario.dir().join("gh-config")),
+        root = support::toml_string(&scenario.dir().join("workspaces")),
+        fixture = support::toml_string(&fixture),
+    )
+}
+
+fn toiling() -> Scenario {
+    toiling_against(UNREACHABLE_GATEWAY)
+}
+
+fn toiling_against(base_url: &str) -> Scenario {
+    let scenario = Scenario::new();
+    scenario.write_work_item(WORK_ID, "open");
+    let tables = toiling_tables(&scenario, base_url);
+    scenario.append_config(&tables);
+    scenario
+}
+
+fn write_toil_prompt(scenario: &Scenario, name: &str, text: &str) {
+    let path = scenario.dir().join("workflows/prompts").join(name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+fn document_path(scenario: &Scenario) -> std::path::PathBuf {
+    scenario.dir().join(TOIL_DOCUMENT)
+}
+
+fn write_toil_document(scenario: &Scenario, text: &str) -> std::path::PathBuf {
+    let path = document_path(scenario);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+fn run_toil(scenario: &Scenario) -> std::process::Output {
+    scenario
+        .run_command(INVOCATION_REF)
+        .args(["--capability", "toil", "--json"])
+        .env(CREDENTIAL, SENTINEL)
+        .env(FORGE_TOKEN, "ghp-a-token-no-forge-would-honour")
+        .output()
+        .unwrap()
+}
+
+fn payload_of(out: &std::process::Output) -> serde_json::Value {
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not JSON ({e}): {stdout}\nstderr = {stderr}"))
+}
+
+fn squeezed(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace() && *c != '\u{2502}')
+        .collect()
+}
+
+fn refused_nothing_else_ran(scenario: &Scenario, out: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a document this build cannot run is invalid input; stderr = {stderr}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "",
+        "a refused run reports no payload: {stderr}"
+    );
+    assert_eq!(
+        scenario.read_change_marker(WORK_ID),
+        None,
+        "no built-in capability may run in the document's place, and `stub_mark` \
+         is the one that would leave a marker: {stderr}"
+    );
+    assert!(
+        !scenario.report_dir().exists(),
+        "a refused run publishes no bundle: {stderr}"
+    );
+    stderr
+}
+
+#[test]
+fn an_absent_workflow_document_refuses_with_the_path_it_looked_for() {
+    let s = toiling();
+    let looked_for = document_path(&s);
+    assert!(
+        !looked_for.exists(),
+        "this scenario is about a document that is not there"
+    );
+
+    let out = run_toil(&s);
+
+    let stderr = refused_nothing_else_ran(&s, &out);
+    assert!(
+        squeezed(&stderr).contains(&squeezed(&looked_for.display().to_string())),
+        "the refusal must name the path it looked for, so an operator can write \
+         the document there: {stderr}"
+    );
+}
+
+#[test]
+fn a_workflow_document_that_is_there_reaches_the_capability_the_command_line_named() {
+    let s = toiling();
+    write_toil_document(&s, ONE_CHECK);
+
+    let out = run_toil(&s);
+    let payload = payload_of(&out);
+
+    assert_eq!(
+        payload["capability_executions"][0]["capability_id"], "toil",
+        "the run must execute the capability the flag named, and no built-in in \
+         its place: {payload}"
+    );
+    assert_eq!(
+        payload["capability_executions"][0]["status"], "completed",
+        "the document names one check that exits zero, so the workflow ran to its \
+         end: {payload}"
+    );
+    assert_eq!(
+        payload["progress"][0]["stage"], "toil",
+        "a toil run files its progress under its own stage: {payload}"
+    );
+}
+
+#[test]
+fn the_step_the_document_names_is_the_step_that_runs() {
+    let passing = toiling();
+    write_toil_document(&passing, ONE_CHECK);
+    let completed = payload_of(&run_toil(&passing));
+
+    let failing = toiling();
+    write_toil_document(&failing, &ONE_CHECK.replace("\"true\"", "\"false\""));
+    let out = run_toil(&failing);
+    let failed = payload_of(&out);
+
+    assert_eq!(
+        completed["capability_executions"][0]["status"], "completed",
+        "{completed}"
+    );
+    assert_eq!(
+        failed["capability_executions"][0]["status"], "failed",
+        "the only difference between the two documents is the program the check \
+         step names, so a build that never reads the step reports the same status \
+         twice: {failed}"
+    );
+    assert_eq!(
+        failed["capability_executions"][0]["capability_id"], "toil",
+        "the failing run is the workflow failing, not something else running: {failed}"
+    );
+}
+
+#[test]
+fn a_workflow_document_this_build_does_not_read_refuses_with_its_version() {
+    let s = toiling();
+    let path = write_toil_document(&s, &ONE_CHECK.replace("version = 1", "version = 2"));
+
+    let out = run_toil(&s);
+
+    let stderr = refused_nothing_else_ran(&s, &out);
+    assert!(
+        squeezed(&stderr).contains(&squeezed(&path.display().to_string())) && stderr.contains('2'),
+        "the refusal must name the document and the version it carries: {stderr}"
+    );
+}
+
+#[test]
+fn a_workflow_document_with_no_step_refuses_rather_than_doing_no_work() {
+    let s = toiling();
+    let path = write_toil_document(
+        &s,
+        "version = 1\nname = \"toil\"\nstage = \"toil\"\nsteps = []\n",
+    );
+
+    let out = run_toil(&s);
+
+    let stderr = refused_nothing_else_ran(&s, &out);
+    assert!(
+        squeezed(&stderr).contains(&squeezed(&path.display().to_string())),
+        "the refusal must name the document: {stderr}"
+    );
+}
+
+#[test]
+fn a_step_whose_prompt_is_absent_refuses_with_the_prompt_path() {
+    let s = toiling();
+    let document = write_toil_document(
+        &s,
+        "version = 1\n\
+         name = \"toil\"\n\
+         stage = \"toil\"\n\
+         \n\
+         [[steps]]\n\
+         kind = \"agent\"\n\
+         prompt = \"nothing_wrote_this.md\"\n\
+         max_turns = 1\n",
+    );
+    let prompt = s.dir().join("workflows/prompts/nothing_wrote_this.md");
+
+    let out = run_toil(&s);
+
+    let stderr = refused_nothing_else_ran(&s, &out);
+    assert!(
+        squeezed(&stderr).contains(&squeezed(&prompt.display().to_string())),
+        "the refusal must name the prompt it could not read: {stderr}"
+    );
+    assert!(
+        squeezed(&stderr).contains(&squeezed(&document.display().to_string())),
+        "and the document that named it: {stderr}"
+    );
+}
+
+#[test]
+fn a_jira_invocation_defaults_to_toil_and_a_cve_invocation_still_defaults_to_mitigate() {
+    let jira = support::StubJira::holding_the_issue();
+    let s = toiling();
+    s.append_config(&format!(
+        "\n[jira]\n\
+         site = \"https://icecube.atlassian.net\"\n\
+         project = \"IDENT\"\n\
+         user = {{ env = \"JIRA_USER_EMAIL\" }}\n\
+         token = {{ env = \"JIRA_API_TOKEN\" }}\n\
+         base_url = \"{}\"\n\
+         timeout = \"30s\"\n",
+        jira.base_url()
+    ));
+
+    let out = s
+        .command()
+        .args([
+            "inspect",
+            &format!("jira:{}", support::JIRA_ISSUE_KEY),
+            "--json",
+            "--config",
+        ])
+        .arg(s.config_path())
+        .env("JIRA_USER_EMAIL", "nobody@example.com")
+        .env("JIRA_API_TOKEN", "a-token-no-site-would-honour")
+        .output()
+        .unwrap();
+    let inspected = payload_of(&out);
+
+    assert_eq!(
+        inspected["next_action"]["execute"]["capability_id"], "toil",
+        "an unqualified jira invocation plans the toil workflow: {inspected}"
+    );
+
+    let sweeping = mitigating();
+    let swept = sweeping.inspect_json_with(&[], "cve");
+    assert_eq!(
+        swept["next_action"]["execute"]["capability_id"], "cve_mitigate",
+        "a cve invocation still plans the sweep: {swept}"
+    );
+}
+
+const ONE_EVALUATION: &str = "version = 1\n\
+                              name = \"toil\"\n\
+                              stage = \"toil\"\n\
+                              \n\
+                              [[steps]]\n\
+                              kind = \"evaluate\"\n\
+                              prompt = \"change_evaluate.md\"\n\
+                              max_turns = 2\n";
+
+const A_FINDING: &str = "the diff changes a public signature the ticket did not name";
+
+fn verdict_of(finding: Option<&str>) -> serde_json::Value {
+    match finding {
+        Some(finding) => serde_json::json!({ "verdict": "rejected", "findings": [finding] }),
+        None => serde_json::json!({ "verdict": "accepted" }),
+    }
+}
+
+fn a_run_the_judge(finding: Option<&str>) -> (support::StubGateway, serde_json::Value, i32) {
+    let gateway = support::StubGateway::serving(vec![support::accepted(support::reports(
+        verdict_of(finding),
+    ))]);
+    let s = toiling_against(&gateway.base_url());
+    write_toil_document(&s, ONE_EVALUATION);
+    write_toil_prompt(
+        &s,
+        "change_evaluate.md",
+        "Judge the change this run found, and reply with the structured verdict.\n",
+    );
+
+    let out = run_toil(&s);
+    let code = out.status.code().expect("the binary exited");
+    (gateway, payload_of(&out), code)
+}
+
+#[test]
+fn a_workflow_the_judge_rejects_exits_twelve_and_a_workflow_it_accepts_does_not() {
+    let (rejecting, rejected, rejected_code) = a_run_the_judge(Some(A_FINDING));
+    assert_eq!(
+        rejecting.served(),
+        1,
+        "the verdict below has to have come off the wire: {rejected}"
+    );
+    assert_eq!(
+        rejected["capability_executions"][0]["capability_id"], "toil",
+        "{rejected}"
+    );
+    assert_eq!(
+        rejected["capability_executions"][0]["status"], "rejected",
+        "a judge that rejects stops the run as a rejection: {rejected}"
+    );
+    assert_eq!(
+        rejected["outcome"]["rejected"]["findings"][0], A_FINDING,
+        "the finding the judge named reaches the bundle: {rejected}"
+    );
+    assert_eq!(
+        rejected_code, 12,
+        "a rejected run exits 12, which is neither a failure at 20 nor a retry \
+         at 11: {rejected}"
+    );
+
+    let (accepting, accepted, accepted_code) = a_run_the_judge(None);
+    assert_eq!(accepting.served(), 1, "{accepted}");
+    assert_eq!(
+        accepted["capability_executions"][0]["status"], "completed",
+        "the same document and the same steps, and only the verdict differs, so a \
+         build that exits 12 whatever the judge said reds here: {accepted}"
+    );
+    assert_ne!(
+        accepted_code, 12,
+        "an accepted run is not a rejected one: {accepted}"
+    );
+}

@@ -11,7 +11,7 @@ pub mod report;
 
 pub use assessment::{
     assess, correlation_key, derive_next, CapabilityAssessment, NextAction, CVE_MITIGATE,
-    FIXTURE_REPAIR, PROPOSE_CHANGE, PUBLISH_CHANGE, STUB_MARK,
+    FIXTURE_REPAIR, PROPOSE_CHANGE, PUBLISH_CHANGE, STUB_MARK, TOIL,
 };
 pub use decision::{
     decision_request_id, parse_marker, render_marker, ActorRef, DecisionBinding, DecisionRequestId,

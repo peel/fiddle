@@ -12,6 +12,8 @@ pub const PROPOSE_CHANGE: CapabilityId = CapabilityId("propose_change");
 
 pub const CVE_MITIGATE: CapabilityId = CapabilityId("cve_mitigate");
 
+pub const TOIL: CapabilityId = CapabilityId("toil");
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityAssessment {

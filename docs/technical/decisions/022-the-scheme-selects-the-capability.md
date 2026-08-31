@@ -1,7 +1,7 @@
 # 022 — An absent `--capability` resolves through the scheme
 
 Status: accepted
-Cites: Selection::resolve, Selection::default_for, InvocationScheme, crates/fiddle-acceptance/tests/capability_selection.rs, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_reference_that_is_not_cve_still_selects_the_deterministic_capability, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_run_over_a_trackerless_reference_is_not_a_failed_run
+Cites: Selection::resolve, Selection::default_for, Selection::Toil, InvocationScheme, crates/fiddle-acceptance/tests/capability_selection.rs, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_reference_that_is_not_cve_still_selects_the_deterministic_capability, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_run_over_a_trackerless_reference_is_not_a_failed_run
 
 It replaces an invariant nobody had written down: absent means `stub_mark`. Two call sites in `fiddle-cli` implemented it, and every capability ADR since M0 assumed it.
 
@@ -64,3 +64,23 @@ Making the host pass the flag, and correcting the documents, keeps this ADR unwr
 M0's invariant was true by construction while the default was a constant, and is now true by a match arm, so `a_reference_that_is_not_cve_still_selects_the_deterministic_capability` asserts it directly. It drives a `beans` reference with no flag and reads `stub_mark` off the payload and the marker off the fixture. M0's own acceptance lane is unmodified, which is the point of that lane.
 
 `a_run_over_a_trackerless_reference_is_not_a_failed_run` is about the assessment of a reference naming no work item, upstream of every capability, and it reached that assessment by running `cve` unqualified in an M0-shaped world. Under this decision that world is asked for a scanner and a forge it does not describe, so the lane now passes `--capability stub_mark`. Any lane that reads the default while being about something else has the same fix.
+
+
+## Amended 2026-08-31: `jira` selects `toil`
+
+M5c registered a sixth capability, `toil`, and moved one row of the table above.
+An absent `--capability` over a `jira` reference now selects `toil` and no longer
+selects `stub_mark`. Every other row is unchanged, and the rule the record decided
+is unchanged: absent means what the scheme implies.
+
+`toil` is a workflow document rather than a Rust capability. It reads
+`workflows/toil.toml`, resolved beside the configuration document, and it refuses
+by naming that path when the document is not there. It never falls back to a
+built-in capability, so the failure mode this record was written about cannot
+recur through the new row: a deployment with no document is told so and exits 2.
+
+The cost the record predicted is the cost paid. A lane that read the `jira`
+default while being about something else now reads a different capability, and
+the fix is the one this record already gives. Three lanes in
+`crates/fiddle-acceptance/tests/jira_credential.rs` pass `--capability stub_mark`
+for that reason.
