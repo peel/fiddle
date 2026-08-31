@@ -881,6 +881,14 @@ pub const JIRA_ISSUE_CATEGORY: &str = "In Progress";
 
 pub const JIRA_ISSUE_UPDATED: &str = "2026-08-26T01:30:00.000+0530";
 
+pub const JIRA_ISSUE_LABEL: &str = "fiddle/toil";
+
+pub const JIRA_ISSUE_DESCRIPTION: &str = "Rename the deprecated helper";
+
+pub const JIRA_ISSUE_COMMENT: &str = "the caller in workspace.rs also needs it";
+
+pub const JIRA_ISSUE_COMMENTER: &str = "70121:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
 const JIRA_ISSUE_ROUTE: &str = "/rest/api/3/issue/";
 
 const JIRA_CREATE_ROUTE: &str = "/rest/api/3/issue";
@@ -943,6 +951,39 @@ impl StubJira {
                             "key": "indeterminate",
                             "name": JIRA_ISSUE_CATEGORY,
                         },
+                    },
+                    "labels": [JIRA_ISSUE_LABEL],
+                    "description": {
+                        "type": "doc",
+                        "version": 1,
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": JIRA_ISSUE_DESCRIPTION}],
+                        }],
+                    },
+                    "comment": {
+                        "comments": [{
+                            "id": "30001",
+                            "author": {
+                                "accountId": JIRA_ISSUE_COMMENTER,
+                                "displayName": "a person",
+                            },
+                            "body": {
+                                "type": "doc",
+                                "version": 1,
+                                "content": [{
+                                    "type": "paragraph",
+                                    "content": [
+                                        {"type": "text", "text": JIRA_ISSUE_COMMENT},
+                                    ],
+                                }],
+                            },
+                            "created": JIRA_ISSUE_UPDATED,
+                            "updated": JIRA_ISSUE_UPDATED,
+                        }],
+                        "total": 1,
+                        "maxResults": 1,
+                        "startAt": 0,
                     },
                 },
             })

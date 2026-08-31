@@ -1,13 +1,15 @@
 mod support;
 
-use fiddle_core::{Observation, WorkItemState, WorkState};
+use fiddle_core::{Observation, WorkItemComment, WorkItemState, WorkState};
 use fiddle_runtime::jira::http::CLAMP;
 use fiddle_runtime::jira::{ConfiguredNames, JiraWorkItemPort};
 use fiddle_runtime::ports::contract::{work_item_port_contract, WorkItemWorlds};
 use fiddle_runtime::ports::WorkItemPort;
 use fiddle_runtime::REDACTED;
 use std::time::{Duration, Instant};
-use support::stub_jira::{client_for, client_waiting, StubJira, ENCODED, ISSUE, MYSELF, TOKEN};
+use support::stub_jira::{
+    client_for, client_waiting, said, StubJira, ENCODED, ISSUE, MYSELF, TOKEN,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
@@ -742,7 +744,7 @@ async fn a_read_the_site_answers_asks_the_site_nothing_further() {
     );
     assert_eq!(
         server.request_lines().await,
-        vec![format!("GET {ISSUE}?fields=status,updated HTTP/1.1")],
+        vec![format!("GET {ISSUE}?fields={ASKED_FOR} HTTP/1.1")],
         "the credential check costs a request, so it must reach the site only when the \
          site answered 404 and not on every read"
     );
@@ -758,7 +760,7 @@ async fn a_status_other_than_404_names_its_own_cause_and_costs_no_credential_che
 
         assert_eq!(
             server.request_lines().await,
-            vec![format!("GET {ISSUE}?fields=status,updated HTTP/1.1")],
+            vec![format!("GET {ISSUE}?fields={ASKED_FOR} HTTP/1.1")],
             "a {status} names its own cause, so nothing is asked twice: {reason}"
         );
     }
@@ -1153,5 +1155,319 @@ async fn a_read_the_run_cancels_stops_before_the_sites_timeout() {
         server.request_lines().await.len(),
         1,
         "the request reached the site, so the read was in flight when the run was cancelled"
+    );
+}
+
+const ASKED_FOR: &str = "status,updated,labels,description,comment";
+
+const AUTHOR: &str = "70121:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+fn commented(id: &str, account_id: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "author": {"accountId": account_id, "displayName": "a person"},
+        "body": said(text),
+        "created": "2026-08-26T07:00:00.000+0000",
+        "updated": "2026-08-26T07:00:00.000+0000",
+    })
+}
+
+fn conversation(comments: Vec<serde_json::Value>) -> serde_json::Value {
+    let total = comments.len();
+    serde_json::json!({
+        "comments": comments,
+        "total": total,
+        "maxResults": total,
+        "startAt": 0,
+    })
+}
+
+fn adf(paragraphs: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "type": "doc",
+        "version": 1,
+        "content": paragraphs
+            .iter()
+            .map(|text| serde_json::json!({
+                "type": "paragraph",
+                "content": [{"type": "text", "text": text}],
+            }))
+            .collect::<Vec<serde_json::Value>>(),
+    })
+}
+
+async fn observed_carrying(fields: serde_json::Value) -> Observation<WorkItemState> {
+    let server = StubJira::start().await;
+    server.holds_issue_carrying(KEY, fields).await;
+    observe_from(&server).await
+}
+
+async fn qualified_by(fields: serde_json::Value) -> WorkItemState {
+    match observed_carrying(fields).await {
+        Observation::Available { value, .. } => value,
+        other => panic!("a readable issue must be Available, got {other:?}"),
+    }
+}
+
+async fn refused_by(fields: serde_json::Value) -> String {
+    reason_of(&observed_carrying(fields).await)
+}
+
+#[tokio::test]
+async fn a_work_item_read_asks_the_site_for_every_field_a_gate_weighs() {
+    let server = StubJira::start().await;
+    server
+        .holds_issue(KEY, "10001", "In Review", "In Progress", 7)
+        .await;
+
+    observe_from(&server).await;
+
+    assert_eq!(
+        server.requested_fields().await.as_deref(),
+        Some("status,updated,labels,description,comment"),
+        "the read asks the site for one exact list of fields; a list that carries more or \
+         fewer changes what a gate can weigh, so the list is pinned and not searched"
+    );
+}
+
+#[tokio::test]
+async fn a_work_item_read_carries_the_labels_the_text_and_the_comments_a_gate_needs() {
+    let observed = qualified_by(serde_json::json!({
+        "labels": ["fiddle/toil", "backend"],
+        "description": adf(&["Rename the deprecated helper", "and its two callers"]),
+        "comment": conversation(vec![commented(
+            "30001",
+            AUTHOR,
+            "the caller in workspace.rs also needs it",
+        )]),
+    }))
+    .await;
+
+    assert_eq!(
+        observed.labels,
+        Some(vec!["fiddle/toil".to_string(), "backend".to_string()]),
+        "the read carries every label the site holds, in the order the site holds them"
+    );
+    assert_eq!(
+        observed.description.as_deref(),
+        Some("Rename the deprecated helper\nand its two callers"),
+        "the site holds the description as a document and a gate weighs text, so the read \
+         carries the text the document spells"
+    );
+    assert_eq!(
+        observed.comments,
+        Some(vec![WorkItemComment {
+            author: AUTHOR.to_string(),
+            text: "the caller in workspace.rs also needs it".to_string(),
+        }]),
+        "a gate that cannot read the comments cannot see the question a person already asked"
+    );
+}
+
+#[tokio::test]
+async fn an_issue_that_holds_no_labels_and_a_read_that_carried_none_are_told_apart() {
+    let empty = qualified_by(serde_json::json!({"labels": []})).await;
+    let unread = qualified_by(serde_json::json!({})).await;
+
+    assert_eq!(
+        empty.labels,
+        Some(Vec::new()),
+        "the site said this issue holds no labels, which is an answer"
+    );
+    assert_eq!(
+        unread.labels, None,
+        "a read that carried no `fields.labels` says nothing about labels, which is not \
+         an answer"
+    );
+    assert_ne!(
+        empty.labels, unread.labels,
+        "a gate refuses an unlabelled ticket and must not refuse a ticket nobody read the \
+         labels of for the same reason"
+    );
+}
+
+#[tokio::test]
+async fn a_description_that_says_nothing_and_a_description_nobody_wrote_are_told_apart() {
+    let blank = qualified_by(serde_json::json!({
+        "description": {"type": "doc", "version": 1, "content": []},
+    }))
+    .await;
+    let unwritten = qualified_by(serde_json::json!({"description": null})).await;
+
+    assert_eq!(
+        blank.description.as_deref(),
+        Some(""),
+        "a document that spells no text is a description that says nothing"
+    );
+    assert_eq!(
+        unwritten.description, None,
+        "an issue nobody described carries no description at all"
+    );
+    assert_ne!(
+        blank.description, unwritten.description,
+        "an empty description and an absent one are different facts about a ticket"
+    );
+}
+
+#[tokio::test]
+async fn a_conversation_nobody_joined_and_a_read_that_carried_none_are_told_apart() {
+    let quiet = qualified_by(serde_json::json!({"comment": conversation(Vec::new())})).await;
+    let unread = qualified_by(serde_json::json!({})).await;
+
+    assert_eq!(
+        quiet.comments,
+        Some(Vec::new()),
+        "the site said this issue holds no comments, which is an answer"
+    );
+    assert_eq!(
+        unread.comments, None,
+        "a read that carried no `fields.comment` says nothing about the conversation"
+    );
+    assert_ne!(
+        quiet.comments, unread.comments,
+        "a ticket nobody has spoken on and a ticket nobody read are different facts"
+    );
+}
+
+#[tokio::test]
+async fn a_labels_field_the_port_cannot_read_refuses_and_the_same_read_corrected_answers() {
+    for held in [
+        serde_json::json!("fiddle/toil"),
+        serde_json::json!({"0": "fiddle/toil"}),
+        serde_json::json!(["fiddle/toil", 7]),
+        serde_json::json!(["fiddle/toil", null]),
+    ] {
+        let refused = refused_by(serde_json::json!({"labels": held.clone()})).await;
+        assert!(
+            refused.contains("fields.labels"),
+            "a labels field the port cannot read must name itself, or a gate is told the \
+             ticket carries no label: {held} read as {refused}"
+        );
+    }
+
+    let corrected = qualified_by(serde_json::json!({"labels": ["fiddle/toil"]})).await;
+    assert_eq!(
+        corrected.labels,
+        Some(vec!["fiddle/toil".to_string()]),
+        "correcting only the labels field turns every one of those refusals into an answer"
+    );
+}
+
+#[tokio::test]
+async fn a_description_that_is_not_text_refuses_and_the_same_read_corrected_answers() {
+    for held in [
+        serde_json::json!(7),
+        serde_json::json!(true),
+        serde_json::json!(["Rename the deprecated helper"]),
+    ] {
+        let refused = refused_by(serde_json::json!({"description": held.clone()})).await;
+        assert!(
+            refused.contains("fields.description"),
+            "a description the port cannot read must name itself, or a gate is told the \
+             ticket describes nothing: {held} read as {refused}"
+        );
+    }
+
+    let planted = "a sentence no refusal may quote";
+    let refused = refused_by(serde_json::json!({"description": [planted]})).await;
+    assert!(
+        !refused.contains(planted),
+        "a refusal names the shape it could not read and never the ticket's own words, \
+         or a description the port rejected reaches every surface the reason does: {refused}"
+    );
+
+    let corrected = qualified_by(serde_json::json!({
+        "description": "Rename the deprecated helper",
+    }))
+    .await;
+    assert_eq!(
+        corrected.description.as_deref(),
+        Some("Rename the deprecated helper"),
+        "a site that spells the description as plain text is read, not refused"
+    );
+}
+
+#[tokio::test]
+async fn a_comment_list_shorter_than_the_total_refuses_rather_than_reading_as_the_whole() {
+    let refused = refused_by(serde_json::json!({
+        "comment": {
+            "comments": [commented("30001", AUTHOR, "the first of three")],
+            "total": 3,
+            "maxResults": 1,
+            "startAt": 0,
+        },
+    }))
+    .await;
+
+    assert!(
+        refused.contains("1 of 3"),
+        "a page of a conversation must not read as the conversation, and the refusal says \
+         how much of it arrived: {refused}"
+    );
+
+    let whole = qualified_by(serde_json::json!({
+        "comment": conversation(vec![
+            commented("30001", AUTHOR, "the first of three"),
+            commented("30002", AUTHOR, "the second"),
+            commented("30003", AUTHOR, "the third"),
+        ]),
+    }))
+    .await;
+    assert_eq!(
+        whole.comments.map(|held| held.len()),
+        Some(3),
+        "correcting only how much of the conversation arrived turns the refusal into an answer"
+    );
+}
+
+#[tokio::test]
+async fn a_comment_container_the_port_cannot_read_refuses() {
+    for held in [
+        serde_json::json!({"total": 0}),
+        serde_json::json!({"comments": [], "maxResults": 0}),
+        serde_json::json!({"comments": [{"id": "30001"}], "total": 1}),
+    ] {
+        let refused = refused_by(serde_json::json!({"comment": held.clone()})).await;
+        assert!(
+            !refused.is_empty() && refused.contains(KEY),
+            "a comment container the port cannot read must refuse and name the issue: \
+             {held} read as {refused}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_work_item_nobody_qualified_carries_none_of_the_new_keys() {
+    let unqualified = qualified_by(serde_json::json!({})).await;
+    let written = serde_json::to_value(&unqualified).expect("a work item serializes");
+
+    for key in ["labels", "description", "comments"] {
+        assert!(
+            written.get(key).is_none(),
+            "a report of an item the site said nothing about must not grow the key {key}: \
+             {written}"
+        );
+    }
+
+    let qualified = qualified_by(serde_json::json!({
+        "labels": ["fiddle/toil"],
+        "description": adf(&["Rename the deprecated helper"]),
+        "comment": conversation(vec![commented("30001", AUTHOR, "one reply")]),
+    }))
+    .await;
+    let written = serde_json::to_value(&qualified).expect("a work item serializes");
+    assert_eq!(written["labels"], serde_json::json!(["fiddle/toil"]));
+    assert_eq!(
+        written["description"],
+        serde_json::json!("Rename the deprecated helper")
+    );
+    assert_eq!(
+        written["comments"],
+        serde_json::json!([{"author": AUTHOR, "text": "one reply"}])
+    );
+    assert_eq!(
+        serde_json::from_value::<WorkItemState>(written).expect("and reads back"),
+        qualified,
+        "what a report writes about a qualified item is what a reader gets back"
     );
 }

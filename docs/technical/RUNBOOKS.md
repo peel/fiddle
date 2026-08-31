@@ -235,9 +235,15 @@ The lane records evidence and does not gate. `scripts/gate.sh` references no
 disposable target; do not point it at an issue whose `status` you mind being
 printed to your terminal.
 
-The lane prints the issue it read. It requests `fields=status,updated` and no
-other field, so no ticket prose crosses the boundary, and nothing it prints is
-committed here.
+The lane prints the issue its own `curl` read, and that call requests
+`fields=status,updated` and no other field, so no ticket prose reaches the
+terminal. `fiddle inspect` on the same issue requests
+`status,updated,labels,description,comment`, because eligibility weighs the
+label, the summary text and the conversation
+(`crates/fiddle-runtime/src/jira/work_item.rs`). The lane writes that answer to a
+temporary file, reads a status, a projection and a revision off it, and prints
+none of it. Ticket prose therefore stays inside the run directory, and nothing
+the lane prints is committed here.
 
 ### The live Jira search shape lane
 

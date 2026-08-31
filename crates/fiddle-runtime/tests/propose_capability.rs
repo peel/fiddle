@@ -2157,6 +2157,9 @@ fn observed_issue(revision: Option<&str>) -> WorkItemState {
         status: "In Progress".to_string(),
         projected_status: None,
         revision: revision.map(str::to_string),
+        labels: None,
+        description: None,
+        comments: None,
     }
 }
 

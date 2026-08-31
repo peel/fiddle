@@ -82,6 +82,12 @@ pub struct ProjectedStatus {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WorkItemComment {
+    pub author: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WorkItemState {
     pub id: String,
     pub status: String,
@@ -89,6 +95,12 @@ pub struct WorkItemState {
     pub projected_status: Option<ProjectedStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comments: Option<Vec<WorkItemComment>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -187,6 +199,9 @@ mod tests {
             status: "open".to_string(),
             projected_status: None,
             revision: None,
+            labels: None,
+            description: None,
+            comments: None,
         }
     }
 
