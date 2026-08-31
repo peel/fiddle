@@ -998,6 +998,26 @@ fn a_workflow_document_with_no_step_refuses_rather_than_doing_no_work() {
 }
 
 #[test]
+fn a_document_naming_another_stage_refuses_rather_than_filing_progress_under_a_third() {
+    let s = toiling();
+    let path = write_toil_document(
+        &s,
+        &ONE_CHECK.replace("stage = \"toil\"", "stage = \"triage\""),
+    );
+
+    let out = run_toil(&s);
+
+    let stderr = refused_nothing_else_ran(&s, &out);
+    assert!(
+        squeezed(&stderr).contains(&squeezed(&path.display().to_string()))
+            && stderr.contains("triage")
+            && stderr.contains("toil"),
+        "the refusal must name the document, the stage it declares and the stage \
+         this build files a toil run under: {stderr}"
+    );
+}
+
+#[test]
 fn a_step_whose_prompt_is_absent_refuses_with_the_prompt_path() {
     let s = toiling();
     let document = write_toil_document(
