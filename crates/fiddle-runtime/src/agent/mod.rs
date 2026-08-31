@@ -354,14 +354,6 @@ impl Offer {
     }
 }
 
-pub fn offered(offer: Offer, declares_commands: bool) -> Vec<&'static str> {
-    offer
-        .abilities(declares_commands)
-        .into_iter()
-        .map(Ability::name)
-        .collect()
-}
-
 fn attaching<M>(
     builder: AgentBuilder<M, WithBuilderTools>,
     ability: Ability,
