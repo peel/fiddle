@@ -920,6 +920,26 @@ fn a_workflow_document_that_is_there_reaches_the_capability_the_command_line_nam
 }
 
 #[test]
+fn inspect_and_run_agree_that_toil_is_the_capability_a_toil_run_executes() {
+    let s = toiling();
+    write_toil_document(&s, ONE_CHECK);
+
+    let foreseen = s.inspect_json_with(&["--capability", "toil"], INVOCATION_REF);
+    let ran = payload_of(&run_toil(&s));
+
+    assert_eq!(
+        foreseen["next_action"]["execute"]["capability_id"], "toil",
+        "inspect must foresee the capability it was asked about: {foreseen}"
+    );
+    assert_eq!(
+        foreseen["next_action"]["execute"]["capability_id"],
+        ran["capability_executions"][0]["capability_id"],
+        "the capability inspect foresaw and the capability run executed must be \
+         the same one: inspect said {foreseen}, run did {ran}"
+    );
+}
+
+#[test]
 fn the_step_the_document_names_is_the_step_that_runs() {
     let passing = toiling();
     write_toil_document(&passing, ONE_CHECK);
