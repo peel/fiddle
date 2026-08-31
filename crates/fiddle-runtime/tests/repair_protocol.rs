@@ -698,6 +698,7 @@ impl Capability for RecordsItsInput {
 struct JiraWorld {
     server: StubJira,
     dir: tempfile::TempDir,
+    key: String,
 }
 
 impl JiraWorld {
@@ -709,7 +710,11 @@ impl JiraWorld {
         let dir = tempfile::tempdir().expect("a temporary directory");
         std::fs::create_dir_all(dir.path().join("stub-state/changes"))
             .expect("a change set directory the run can read and find empty");
-        JiraWorld { server, dir }
+        JiraWorld {
+            server,
+            dir,
+            key: key.to_string(),
+        }
     }
 
     async fn run(&self, capability: &dyn Capability) -> RunReport {
@@ -723,7 +728,7 @@ impl JiraWorld {
         orchestration::run(&RunContext {
             project: PROJECT,
             invocation_ref: INVOCATION_REF,
-            addressed: Addressed::WorkItem(ISSUE_KEY),
+            addressed: Addressed::WorkItem(&self.key),
             attempt: &attempt,
             work_items: &JiraWorkItemPort::new(
                 client_for(&self.server),
@@ -739,7 +744,7 @@ impl JiraWorld {
     }
 
     async fn issue_reads(&self) -> usize {
-        let asked = format!("GET /rest/api/3/issue/{ISSUE_KEY}");
+        let asked = format!("GET /rest/api/3/issue/{}", self.key);
         self.server
             .request_lines()
             .await
