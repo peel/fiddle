@@ -568,6 +568,7 @@ mod tests {
             Some(observed("IDENT-1", None)),
             None,
         ];
+        let (mut jira, mut github, mut none) = (0, 0, 0);
         for invocation in [
             "jira:IDENT-1",
             "jira:IDENT-1:sub",
@@ -580,13 +581,32 @@ mod tests {
             for item in &items {
                 for pull_request in [Some(("acme/widget", 7)), None] {
                     let named = DecisionChannel::named_by(invocation, item.as_ref(), pull_request);
-                    assert!(
-                        named.len() <= 1,
-                        "`{invocation}` named {named:?}, and `authoritative` refuses two"
-                    );
+                    match named.as_slice() {
+                        [] => none += 1,
+                        [DecisionChannel::JiraIssue { .. }] => jira += 1,
+                        [DecisionChannel::GitHubPullRequest { .. }] => github += 1,
+                        two_or_more => panic!(
+                            "`{invocation}` named {two_or_more:?}, and `authoritative` refuses two"
+                        ),
+                    }
                 }
             }
         }
+
+        assert_eq!(
+            jira + github + none,
+            42,
+            "seven invocations against three observations against two pull-request states is \
+             the denominator this sweep reports against"
+        );
+        assert_eq!(
+            (jira, github, none),
+            (4, 15, 23),
+            "the bound alone passes on a `named_by` that answers nothing, so the sweep counts \
+             what it names: the two jira references name the issue only when the observation \
+             carries a revision, the five other references name the pull request only when the \
+             run holds one, and the remaining cases name nobody"
+        );
     }
 
     #[test]
