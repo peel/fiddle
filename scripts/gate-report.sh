@@ -14,6 +14,10 @@ if [ ! -f "$TEST_LOG" ]; then
   echo "REPORT UNRELIABLE: no test log at $TEST_LOG, so this step measured nothing." >&2
   exit 3
 fi
+PLAIN_LOG="$LOG_DIR/test.plain.log"
+sed $'s/\033\[[0-9;]*[A-Za-z]//g' "$TEST_LOG" > "$PLAIN_LOG" || cp "$TEST_LOG" "$PLAIN_LOG"
+TEST_LOG="$PLAIN_LOG"
+
 EXPECTED_LANES="$LOG_DIR/expected-lanes"
 OBSERVED_LANES="$LOG_DIR/observed-lanes"
 

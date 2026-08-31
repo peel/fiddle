@@ -190,6 +190,41 @@ DIR="$WORK/does-not-exist"
 run
 assert_exit "missing log dir -> exit 2" 2 "$RC"
 
+echo "Test 10: a coloured log reports exactly what the same log without colour reports"
+fixture plain-lanes
+enumerate fiddle_core-1111 binary_repair-2222
+doctest_packages fiddle_core
+lane "unittests src/lib.rs" fiddle_core-1111; result_ok 40
+lane "tests/binary_repair.rs" binary_repair-2222; result_ok 12
+doc_lane fiddle_core; result_ok 2
+run
+PLAIN_OUT="$OUT"; PLAIN_RC="$RC"
+
+fixture coloured-lanes
+enumerate fiddle_core-1111 binary_repair-2222
+doctest_packages fiddle_core
+printf '\033[1m\033[92m     Running\033[0m unittests src/lib.rs (target/debug/deps/fiddle_core-1111)\n' >> "$DIR/test.log"
+result_ok 40
+printf '\033[1m\033[92m     Running\033[0m tests/binary_repair.rs (target/debug/deps/binary_repair-2222)\n' >> "$DIR/test.log"
+result_ok 12
+printf '\033[1m\033[92m   Doc-tests\033[0m fiddle_core\n' >> "$DIR/test.log"
+result_ok 2
+run
+
+assert_exit "coloured lanes -> exit 0" 0 "$RC"
+assert_exit "the plain control also passes" 0 "$PLAIN_RC"
+assert_contains "TOTALS counts every lane" "TOTALS: 54 passed, 0 failed, 0 ignored, 3 of 3 binaries" "$OUT"
+assert_contains "names the unit lane, not a question mark" "  unit:src/lib" "$OUT"
+assert_contains "names the integration lane" "  binary_repair" "$OUT"
+assert_absent "no orphan row survives" "?" "$OUT"
+assert_absent "the report is not refused" "REPORT UNRELIABLE" "$OUT"
+if [ "$OUT" = "$PLAIN_OUT" ]; then
+  PASS=$((PASS+1)); echo "  PASS: colour changes nothing in the report"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: colour changes the report"
+  printf 'coloured:\n%s\nplain:\n%s\n' "$OUT" "$PLAIN_OUT" | sed 's/^/    /'
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
