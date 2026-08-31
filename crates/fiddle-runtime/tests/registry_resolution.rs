@@ -507,8 +507,12 @@ fn the_four_jira_names_resolve_and_jira_transition_still_does_not() {
          `no_other_permanent_refusal_became_a_wait` (`src/effect/receipt.rs`) and \
          `no_effect_failure_a_workflow_can_meet_is_a_wait` \
          (`tests/workflow_capability.rs`) build an `EffectError` value and ask the registry \
-         nothing. Bean `fiddle-cphb` adds a seventh dependent case that has not landed: a \
-         toil document naming `jira.transition` must refuse at load"
+         nothing. `fiddle-xc0u` delivers the seventh dependent case: \
+         `the_shipped_document_is_admitted_and_a_document_naming_an_unknown_effect_is_not` \
+         (`tests/toil_document.rs`) substitutes `jira.transition` into the shipped toil \
+         document and asserts `WorkflowRefusal::Unperformable`, so a toil document naming \
+         this effect refuses at load. The file arrives with the bean, so a tree without \
+         `tests/toil_document.rs` does not hold this case yet"
     );
 }
 
