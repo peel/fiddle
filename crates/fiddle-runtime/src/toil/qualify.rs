@@ -348,7 +348,7 @@ pub async fn qualify(
                 remedy: "qualify the key the tracker assigned, which is an upper case project \
                          code, a hyphen, and a number"
                     .to_string(),
-                quoted: Some(Quoted::of(key)),
+                quoted: (!key.trim().is_empty()).then(|| Quoted::of(key)),
             },
         );
     }

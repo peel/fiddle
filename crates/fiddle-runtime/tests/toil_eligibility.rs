@@ -1081,7 +1081,6 @@ async fn the_gate_qualifies_a_tracker_issue_key_and_refuses_any_other_text() {
     }
     for named in [
         SENTINEL,
-        "",
         "ISP",
         "ISP-",
         "-43",
@@ -1091,6 +1090,11 @@ async fn the_gate_qualifies_a_tracker_issue_key_and_refuses_any_other_text() {
         "ISP 43",
         "1SP-43",
     ] {
+        assert!(
+            !named.is_empty(),
+            "every case here must carry text, because a refusal contains the empty string \
+             whatever it says"
+        );
         let ticket = TicketFacts {
             id: named.into(),
             ..eligible_ticket()
@@ -1104,12 +1108,12 @@ async fn the_gate_qualifies_a_tracker_issue_key_and_refuses_any_other_text() {
             "`{named}` is not a tracker issue key: {refusal:?}"
         );
         assert!(
-            !refusal.found.contains(named) || named.is_empty(),
+            !refusal.found.contains(named),
             "the text the read named reaches the refusal only inside a fence: {}",
             refusal.found
         );
         assert!(
-            !refusal.remedy.contains(named) || named.is_empty(),
+            !refusal.remedy.contains(named),
             "the text the read named reaches the remedy never: {}",
             refusal.remedy
         );
@@ -1119,6 +1123,25 @@ async fn the_gate_qualifies_a_tracker_issue_key_and_refuses_any_other_text() {
             .expect("the refusal quotes the text the read named");
         assert_eq!(quoted.text(), named);
         assert_eq!(quoted.source(), Source::Ticket);
+    }
+    for named in ["", " ", "\n\t  "] {
+        let ticket = TicketFacts {
+            id: named.into(),
+            ..eligible_ticket()
+        };
+        let outcome = qualify(&ticket, &bounds(), &NeverAsked).await;
+        let refusal = outcome
+            .refused()
+            .unwrap_or_else(|| panic!("a read that named {named:?} is refused: {outcome:?}"));
+        assert_eq!(
+            refusal.failed_rule, "the read names a tracker issue key",
+            "a read that named {named:?} named no tracker issue key: {refusal:?}"
+        );
+        assert_eq!(
+            refusal.quoted, None,
+            "a read that named no text has nothing to quote, and an empty fence is not a \
+             quotation: {refusal:?}"
+        );
     }
 }
 
