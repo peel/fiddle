@@ -377,6 +377,7 @@ fn exit_code_for(termination: &Termination) -> u8 {
         Termination::Ran(RunOutcome::Completed) => 0,
         Termination::Ran(RunOutcome::Suspended { .. }) => 10,
         Termination::Ran(RunOutcome::Retryable { .. }) => 11,
+        Termination::Ran(RunOutcome::Rejected { .. }) => 12,
         Termination::Ran(RunOutcome::Failed { .. }) => 20,
         Termination::Rejected(
             CliError::Config(ConfigError::NotFound(_) | ConfigError::Invalid(_))
@@ -1159,6 +1160,12 @@ mod tests {
                     reason: Published::of("try again"),
                 },
                 11,
+            ),
+            (
+                RunOutcome::Rejected {
+                    findings: vec![Published::of("the diff changes a signature")],
+                },
+                12,
             ),
             (
                 RunOutcome::Failed {

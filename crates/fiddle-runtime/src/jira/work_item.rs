@@ -149,6 +149,7 @@ impl WorkItemPort for JiraWorkItemPort {
                     &issue.status_name,
                     &issue.status_category,
                 )),
+                revision: Some(revision.clone()),
             },
             source,
             revision: Some(revision),

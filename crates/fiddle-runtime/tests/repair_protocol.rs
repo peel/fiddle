@@ -1,17 +1,28 @@
 mod fixture;
+mod support;
 
 use fiddle_runtime::agent::AgentBudget;
-use fiddle_runtime::capability::{Capability, ExecutionGrant, FixtureRepair, RepairConfig};
-use fiddle_runtime::core::{correlation_key, AttemptId, NextAction, RunOutcome, FIXTURE_REPAIR};
+use fiddle_runtime::capability::{
+    Capability, CapabilityError, Executed, ExecutionGrant, ExecutionInput, FixtureRepair,
+    RepairConfig,
+};
+use fiddle_runtime::core::{
+    correlation_key, AttemptId, CapabilityId, EvidenceRef, NextAction, RunOutcome, WorkItemState,
+    FIXTURE_REPAIR,
+};
 use fiddle_runtime::journal::FileJournal;
 use fiddle_runtime::orchestration::{self, Addressed, RunContext, RunReport};
 use fiddle_runtime::workspace::WorkspaceCommand;
 use fiddle_runtime::Redaction;
+use fiddle_runtime::{ConfiguredNames, JiraWorkItemPort};
 use fiddle_runtime::{StubChangePort, StubWorkItemPort};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
+use support::stub_jira::{client_for, StubJira};
+use tokio_util::sync::CancellationToken;
 
 const WORK_ID: &str = "fiddle-m1-demo";
 const INVOCATION_REF: &str = "beans:fiddle-m1-demo";
@@ -46,13 +57,13 @@ fn the_fixture_starts_broken_and_is_repairable_offline() {
 async fn the_success_path_is_proven_without_any_model_dependence() {
     let f = broken_fixture();
     let evidence = FixtureRepair::new(MockCompletionModel::new(repairs()), f.config())
-        .execute(grant(), WORK_ID, INVOCATION_REF)
+        .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
         .await
         .expect("the shell's own check must pass after the repair");
 
     assert_eq!(
-        evidence.0,
-        format!("repair:1:{ATTEMPT}"),
+        evidence,
+        Executed::Earned(EvidenceRef(format!("repair:1:{ATTEMPT}"))),
         "git saw exactly one file change, which with a passing check can only be the source"
     );
     assert_eq!(
@@ -628,5 +639,173 @@ fn assert_no_workspace_survived(f: &Fixture) {
     assert!(
         leftovers.is_empty(),
         "the attempt left a workspace behind: {leftovers:?}"
+    );
+}
+
+const ISSUE_KEY: &str = "ISP-42";
+const ISSUE_UPDATED: &str = "2026-08-30T09:00:00.000+0000";
+const ISSUE_REVISION: &str = "2026-08-30T09:00:00Z";
+
+struct RecordsItsInput {
+    seen: Mutex<Vec<Option<WorkItemState>>>,
+    refuses: bool,
+}
+
+impl RecordsItsInput {
+    fn succeeding() -> Self {
+        RecordsItsInput {
+            seen: Mutex::new(Vec::new()),
+            refuses: false,
+        }
+    }
+
+    fn refusing() -> Self {
+        RecordsItsInput {
+            seen: Mutex::new(Vec::new()),
+            refuses: true,
+        }
+    }
+
+    fn only_input(&self) -> Option<WorkItemState> {
+        let seen = self.seen.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            1,
+            "the run executed the capability once: {seen:?}"
+        );
+        seen[0].clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl Capability for RecordsItsInput {
+    fn id(&self) -> CapabilityId {
+        FIXTURE_REPAIR
+    }
+
+    fn stage(&self) -> &'static str {
+        "records"
+    }
+
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
+        self.seen.lock().unwrap().push(input.work_item.cloned());
+        if self.refuses {
+            return Err(CapabilityError::NothingProposed);
+        }
+        Ok(Executed::Earned(EvidenceRef(
+            "records:executed".to_string(),
+        )))
+    }
+}
+
+struct JiraWorld {
+    server: StubJira,
+    dir: tempfile::TempDir,
+    key: String,
+}
+
+impl JiraWorld {
+    async fn holding(key: &str, updated: &str) -> Self {
+        let server = StubJira::start().await;
+        server
+            .holds_issue_updated_at(key, "10001", "In Review", "In Progress", updated)
+            .await;
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        std::fs::create_dir_all(dir.path().join("stub-state/changes"))
+            .expect("a change set directory the run can read and find empty");
+        JiraWorld {
+            server,
+            dir,
+            key: key.to_string(),
+        }
+    }
+
+    async fn run(&self, capability: &dyn Capability) -> RunReport {
+        let attempt = AttemptId(ATTEMPT.to_string());
+        let journal = FileJournal::new(
+            &self.dir.path().join("reports"),
+            SLUG,
+            &attempt,
+            INVOCATION_REF,
+        );
+        orchestration::run(&RunContext {
+            project: PROJECT,
+            invocation_ref: INVOCATION_REF,
+            addressed: Addressed::WorkItem(&self.key),
+            attempt: &attempt,
+            work_items: &JiraWorkItemPort::new(
+                client_for(&self.server),
+                ConfiguredNames::new(None, None, None, None, None),
+                self.server.site(),
+            ),
+            changes: &StubChangePort::new(self.dir.path().join("stub-state")),
+            capability,
+            journal: &journal,
+            cancel: &CancellationToken::new(),
+        })
+        .await
+    }
+
+    async fn issue_reads(&self) -> usize {
+        let asked = format!("GET /rest/api/3/issue/{}", self.key);
+        self.server
+            .request_lines()
+            .await
+            .iter()
+            .filter(|line| line.starts_with(&asked))
+            .count()
+    }
+}
+
+#[tokio::test]
+async fn a_capability_receives_the_work_item_the_run_observed() {
+    let world = JiraWorld::holding(ISSUE_KEY, ISSUE_UPDATED).await;
+    let capability = RecordsItsInput::succeeding();
+
+    world.run(&capability).await;
+
+    let observed = capability
+        .only_input()
+        .expect("the run observed a work item before executing");
+    assert_eq!(observed.id, ISSUE_KEY);
+    assert_eq!(
+        observed.status, "In Review",
+        "the state reaching the capability is the one the site answered"
+    );
+    assert_eq!(
+        observed.revision.as_deref(),
+        Some(ISSUE_REVISION),
+        "the capability receives the revision the run read, not one it fetches itself"
+    );
+}
+
+#[tokio::test]
+async fn the_run_reads_the_issue_once_to_execute_and_once_more_to_confirm() {
+    let refused = JiraWorld::holding(ISSUE_KEY, ISSUE_UPDATED).await;
+    let report = refused.run(&RecordsItsInput::refusing()).await;
+
+    assert_eq!(
+        report.executions[0].status, "failed",
+        "the capability refused, so this run never reached its confirming observation"
+    );
+    assert_eq!(
+        refused.issue_reads().await,
+        1,
+        "the capability is handed the work item the run already observed, so reaching it \
+         costs no second issue read"
+    );
+
+    let completed = JiraWorld::holding(ISSUE_KEY, ISSUE_UPDATED).await;
+    let report = completed.run(&RecordsItsInput::succeeding()).await;
+
+    assert_eq!(
+        report.executions[0].status, "completed",
+        "this capability earned its evidence, so the run observed the world it left behind"
+    );
+    assert_eq!(
+        completed.issue_reads().await,
+        2,
+        "the confirming observation is the only further read a run makes, so a third read \
+         here is one the execution hop introduced"
     );
 }

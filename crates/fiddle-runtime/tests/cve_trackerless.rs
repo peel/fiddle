@@ -5,7 +5,9 @@ use fiddle_core::{
     TreeObservation, CVE_MITIGATE,
 };
 use fiddle_runtime::agent::AgentBudget;
-use fiddle_runtime::capability::{attempt_worktree, Capability, ExecutionGrant};
+use fiddle_runtime::capability::{
+    attempt_worktree, Capability, Executed, ExecutionGrant, ExecutionInput,
+};
 use fiddle_runtime::cve::verdict::Budget;
 use fiddle_runtime::effect::{EffectContext, EffectTrace, ExecutionStep, Executor, ReadRetry};
 use fiddle_runtime::evaluate::{Check, Success};
@@ -66,7 +68,7 @@ enum WithJira {
 
 #[derive(Debug, Eq, PartialEq)]
 struct Outcome {
-    evidence: Result<EvidenceRef, String>,
+    evidence: Result<Executed, String>,
     disposition: Option<RunDisposition>,
     tree: Option<TreeObservation>,
     receipts: Vec<EvidenceRef>,
@@ -421,7 +423,9 @@ async fn run_scripted(seed: &Path, jira: WithJira, script: Vec<MockTurn>) -> Ran
     )
     .expect("an execute action authorises the capability it names");
 
-    let evidence = capability.execute(grant, WORK_ID, INVOCATION_REF).await;
+    let evidence = capability
+        .execute(ExecutionInput::unobserved(grant, WORK_ID, INVOCATION_REF))
+        .await;
 
     Ran {
         outcome: Outcome {

@@ -18,6 +18,7 @@ pub use transcript::{TranscriptHook, TranscriptModel, Transcripts};
 use crate::gateway::Redaction;
 use crate::workspace::{declared, DeclaredCommand};
 use rig_agent::agent::OutputMode;
+use rig_agent::agent::{NoToolConfig, WithBuilderTools};
 use rig_agent::completion::{PromptError, StructuredOutputError, TypedPrompt};
 use rig_agent::tool::{Tool, ToolContext};
 use rig_agent::AgentBuilder;
@@ -297,18 +298,92 @@ where
 
 const TOOL_CHOICE: &str = "required";
 
-fn offered(declares_commands: bool) -> Vec<&'static str> {
-    let mut tools = vec![
-        ReadFile::NAME,
-        EditFile::NAME,
-        WriteFile::NAME,
-        ListFiles::NAME,
-        RunCheck::NAME,
-    ];
-    if declares_commands {
-        tools.push(RunCommand::NAME);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ability {
+    Read,
+    List,
+    Search,
+    Edit,
+    Write,
+    Check,
+    Command,
+}
+
+impl Ability {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Ability::Read => ReadFile::NAME,
+            Ability::List => ListFiles::NAME,
+            Ability::Search => SearchFiles::NAME,
+            Ability::Edit => EditFile::NAME,
+            Ability::Write => WriteFile::NAME,
+            Ability::Check => RunCheck::NAME,
+            Ability::Command => RunCommand::NAME,
+        }
     }
-    tools
+
+    pub const fn changes_the_project(self) -> bool {
+        match self {
+            Ability::Read | Ability::List | Ability::Search => false,
+            Ability::Edit | Ability::Write | Ability::Check | Ability::Command => true,
+        }
+    }
+}
+
+const READING: [Ability; 3] = [Ability::Read, Ability::List, Ability::Search];
+
+const CHANGING: [Ability; 3] = [Ability::Edit, Ability::Write, Ability::Check];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Offer {
+    Repair,
+    Judge,
+}
+
+impl Offer {
+    pub fn abilities(self, declares_commands: bool) -> Vec<Ability> {
+        let mut abilities = READING.to_vec();
+        if self == Offer::Judge {
+            return abilities;
+        }
+        abilities.extend(CHANGING);
+        if declares_commands {
+            abilities.push(Ability::Command);
+        }
+        abilities
+    }
+}
+
+fn attaching<M>(
+    builder: AgentBuilder<M, WithBuilderTools>,
+    ability: Ability,
+) -> AgentBuilder<M, WithBuilderTools>
+where
+    M: rig_core::completion::CompletionModel,
+{
+    match ability {
+        Ability::Read => builder.tool(ReadFile),
+        Ability::List => builder.tool(ListFiles),
+        Ability::Search => builder.tool(SearchFiles),
+        Ability::Edit => builder.tool(EditFile),
+        Ability::Write => builder.tool(WriteFile),
+        Ability::Check => builder.tool(RunCheck),
+        Ability::Command => builder.tool(RunCommand),
+    }
+}
+
+fn offering<M>(
+    builder: AgentBuilder<M, NoToolConfig>,
+    abilities: &[Ability],
+) -> AgentBuilder<M, WithBuilderTools>
+where
+    M: rig_core::completion::CompletionModel,
+{
+    abilities
+        .iter()
+        .fold(builder.dynamic_tools(Vec::new()), |builder, ability| {
+            attaching(builder, *ability)
+        })
 }
 
 pub async fn attempt_briefed<M>(
@@ -324,40 +399,29 @@ where
     M: rig_core::completion::CompletionModel + 'static,
 {
     let declares_commands = !host.commands.is_empty();
+    let abilities = Offer::Repair.abilities(declares_commands);
     let preamble = briefed(brief.preamble, &host.commands);
-    if let Some(transcripts) = transcripts {
-        transcripts.append(
-            redaction,
-            transcript::Record::of(transcript::BRIEF)
-                .number("max_turns", budget.max_turns as u64)
-                .number("max_tokens", budget.max_tokens)
-                .number("deadline_ms", budget.deadline.as_millis() as u64)
-                .number("max_retries", RETRIES as u64)
-                .text("preamble", &preamble)
-                .text("task", brief.task)
-                .text("tools", &offered(declares_commands).join(", "))
-                .text("tool_choice", TOOL_CHOICE),
-        );
-    }
+    announced(
+        redaction,
+        &budget,
+        &preamble,
+        brief.task,
+        &abilities,
+        transcripts,
+    );
     let hook = transcripts
         .map(|transcripts| TranscriptHook::recording(transcripts.clone(), redaction.clone()));
     let retrying = RetryingModel::bounded(model, RETRIES, redaction, transcripts);
-    let mut builder = AgentBuilder::new(TranscriptModel::wrapping(retrying, hook.clone()))
-        .preamble(&preamble)
-        .max_tokens(budget.max_tokens)
-        .default_max_turns(budget.max_turns)
-        .output_schema::<RepairReport>()
-        .output_mode(OutputMode::Tool)
-        .tool_choice(rig_core::completion::message::ToolChoice::Required)
-        .tool(ReadFile)
-        .tool(EditFile)
-        .tool(WriteFile)
-        .tool(ListFiles)
-        .tool(SearchFiles)
-        .tool(RunCheck);
-    if declares_commands {
-        builder = builder.tool(RunCommand);
-    }
+    let builder = offering(
+        AgentBuilder::new(TranscriptModel::wrapping(retrying, hook.clone()))
+            .preamble(&preamble)
+            .max_tokens(budget.max_tokens)
+            .default_max_turns(budget.max_turns)
+            .output_schema::<RepairReport>()
+            .output_mode(OutputMode::Tool)
+            .tool_choice(rig_core::completion::message::ToolChoice::Required),
+        &abilities,
+    );
     let mut builder = builder.add_hook(AuditHook::for_host(&host));
     if let Some(hook) = hook {
         builder = builder.add_hook(hook);
@@ -403,6 +467,142 @@ where
         });
     }
     Ok(report)
+}
+
+fn announced(
+    redaction: &Redaction,
+    budget: &AgentBudget,
+    preamble: &str,
+    task: &str,
+    abilities: &[Ability],
+    transcripts: Option<&Transcripts>,
+) {
+    let Some(transcripts) = transcripts else {
+        return;
+    };
+    let named: Vec<&'static str> = abilities.iter().copied().map(Ability::name).collect();
+    transcripts.append(
+        redaction,
+        transcript::Record::of(transcript::BRIEF)
+            .number("max_turns", budget.max_turns as u64)
+            .number("max_tokens", budget.max_tokens)
+            .number("deadline_ms", budget.deadline.as_millis() as u64)
+            .number("max_retries", RETRIES as u64)
+            .text("preamble", preamble)
+            .text("task", task)
+            .text("tools", &named.join(", "))
+            .text("tool_choice", TOOL_CHOICE),
+    );
+}
+
+pub(crate) const JUDGE_PREAMBLE: &str = "\
+You are reading one project to judge one change against the ticket that asked \
+for it. Use the tools this run offers you, and name only paths inside the \
+project.\n\
+\n\
+This run offers you `read_file`, `list_files` and `search_files`. No tool here \
+writes a file or runs a program, so you are judging the project as you find it \
+and you are not repairing it.\n\
+\n\
+Read before you judge. Find the files the change touched, read them, and read \
+what the ticket asked for. When you are done, reply with only the structured \
+verdict.\n\
+\n\
+Accept the change when it does what the ticket asked and nothing the ticket did \
+not ask for. Reject it otherwise, and reject it when what you read does not tell \
+you which of those two it is. Every finding is one sentence naming one thing you \
+read, and a rejection carries at least one.";
+
+#[derive(
+    Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(tag = "verdict", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Verdict {
+    Accepted {},
+
+    Rejected { findings: Vec<String> },
+}
+
+impl Verdict {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Verdict::Accepted {} => "accepted",
+            Verdict::Rejected { .. } => "rejected",
+        }
+    }
+}
+
+pub async fn judge_briefed<M>(
+    model: M,
+    redaction: &Redaction,
+    host: ToolHost,
+    budget: AgentBudget,
+    brief: Brief<'_>,
+    transcripts: Option<&Transcripts>,
+) -> Result<Verdict, AgentError>
+where
+    M: rig_core::completion::CompletionModel + 'static,
+{
+    let abilities = Offer::Judge.abilities(!host.commands.is_empty());
+    announced(
+        redaction,
+        &budget,
+        brief.preamble,
+        brief.task,
+        &abilities,
+        transcripts,
+    );
+    let hook = transcripts
+        .map(|transcripts| TranscriptHook::recording(transcripts.clone(), redaction.clone()));
+    let retrying = RetryingModel::bounded(model, RETRIES, redaction, transcripts);
+    let builder = offering(
+        AgentBuilder::new(TranscriptModel::wrapping(retrying, hook.clone()))
+            .preamble(brief.preamble)
+            .max_tokens(budget.max_tokens)
+            .default_max_turns(budget.max_turns)
+            .output_schema::<Verdict>()
+            .output_mode(OutputMode::Tool)
+            .tool_choice(rig_core::completion::message::ToolChoice::Required),
+        &abilities,
+    );
+    let mut builder = builder.add_hook(AuditHook::for_host(&host));
+    if let Some(hook) = hook {
+        builder = builder.add_hook(hook);
+    }
+    let agent = builder.build();
+
+    let mut bounded = host.clone();
+    bounded.check.timeout = bounded.check.timeout.min(budget.tool_timeout);
+    bounded.command_timeout = bounded.command_timeout.min(budget.tool_timeout);
+    let mut ctx = ToolContext::new();
+    ctx.insert(bounded);
+
+    let run = agent
+        .prompt_typed::<Verdict>(brief.task.to_string())
+        .tool_context(ctx)
+        .max_turns(budget.max_turns)
+        .into_future();
+
+    let verdict = tokio::select! {
+        biased;
+        _ = host.cancel.cancelled() => return Err(AgentError::Cancelled),
+        _ = tokio::time::sleep(budget.deadline) => return Err(AgentError::Bounded {
+            reason: format!("the deadline of {:?} elapsed", budget.deadline),
+        }),
+        result = run => result
+            .map_err(|error| classify(error, redaction, &Spent::default(), budget.max_tokens))?,
+    };
+
+    match &verdict {
+        Verdict::Rejected { findings } if findings.iter().all(|f| f.trim().is_empty()) => {
+            Err(AgentError::Protocol {
+                reason: "the evaluation rejected the change and named nothing it read, and a \
+                         rejection nobody can act on is not a verdict"
+                    .to_string(),
+            })
+        }
+        _ => Ok(verdict),
+    }
 }
 
 fn unanswered(max_tokens: u64) -> String {
@@ -601,6 +801,61 @@ mod tests {
                           contents, and run the project's check. You cannot do \
                           anything else, and there is nothing outside the \
                           project you can reach.";
+
+    #[test]
+    fn a_judge_is_offered_no_ability_that_changes_the_project_and_a_repairer_is() {
+        for declares_commands in [false, true] {
+            let judging: Vec<Ability> = Offer::Judge.abilities(declares_commands);
+            assert!(
+                !judging.iter().copied().any(Ability::changes_the_project),
+                "a judge was offered {:?}",
+                judging
+                    .iter()
+                    .copied()
+                    .filter(|a| a.changes_the_project())
+                    .collect::<Vec<Ability>>()
+            );
+            assert_eq!(
+                judging,
+                vec![Ability::Read, Ability::List, Ability::Search],
+                "a judge reads, lists and searches, and a deployment declaring \
+                 {declares_commands} does not widen that"
+            );
+
+            let repairing: Vec<Ability> = Offer::Repair.abilities(declares_commands);
+            assert!(
+                repairing.iter().copied().any(Ability::changes_the_project),
+                "a repairer that changes nothing repairs nothing, so the judge \
+                 assertion above is not the assertion of an empty offer"
+            );
+            assert_eq!(
+                repairing.contains(&Ability::Command),
+                declares_commands,
+                "the declared-command tool is the one the deployment decides"
+            );
+        }
+    }
+
+    #[test]
+    fn the_judge_brief_names_the_tools_the_judge_is_offered_and_no_other() {
+        for ability in Offer::Judge.abilities(true) {
+            assert!(
+                JUDGE_PREAMBLE.contains(ability.name()),
+                "the judge is offered `{}` and its brief never names it",
+                ability.name()
+            );
+        }
+        for ability in Offer::Repair.abilities(true) {
+            if !ability.changes_the_project() {
+                continue;
+            }
+            assert!(
+                !JUDGE_PREAMBLE.contains(ability.name()),
+                "the judge brief names `{}`, and this run installs no such tool",
+                ability.name()
+            );
+        }
+    }
 
     #[test]
     fn no_brief_denies_an_ability_the_tool_set_gives() {

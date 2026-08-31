@@ -11,6 +11,10 @@ fn canonical() -> Workflow {
                 prompt: PathBuf::from("prompts/triage.md"),
                 max_turns: 8,
             },
+            Step::Evaluate {
+                prompt: PathBuf::from("prompts/change_evaluate.md"),
+                max_turns: 8,
+            },
             Step::Check {
                 program: "true".into(),
                 args: vec![],
@@ -83,6 +87,12 @@ fn every_malformed_document_is_refused_for_the_reason_its_label_claims() {
             Refused::NoSteps,
         ),
         (
+            "an evaluation step that names no turn bound",
+            "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"evaluate\"\nprompt = \"change_evaluate.md\"\n",
+            "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"evaluate\"\nprompt = \"change_evaluate.md\"\nmax_turns = 8\n",
+            Refused::Reading,
+        ),
+        (
             "unspellable name",
             "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"effect\"\nname = \"Ensure_PR\"\n",
             "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"effect\"\nname = \"ensure_pull_request\"\n",
@@ -117,12 +127,13 @@ fn the_rust_constructor_refuses_what_the_file_path_refuses() {
 }
 
 #[test]
-fn a_step_is_one_of_exactly_three_kinds() {
+fn a_step_is_one_of_exactly_four_kinds() {
     let named = |step: &Step| match step {
         Step::Agent { .. } => "agent",
+        Step::Evaluate { .. } => "evaluate",
         Step::Check { .. } => "check",
         Step::Effect { .. } => "effect",
     };
     let kinds: Vec<&str> = canonical().to_file().steps.iter().map(named).collect();
-    assert_eq!(kinds, ["agent", "check", "effect"]);
+    assert_eq!(kinds, ["agent", "evaluate", "check", "effect"]);
 }

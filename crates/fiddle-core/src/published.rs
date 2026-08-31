@@ -23,6 +23,14 @@ impl Published {
     }
 }
 
+pub fn joined(texts: &[Published]) -> String {
+    texts
+        .iter()
+        .map(Published::to_string)
+        .collect::<Vec<String>>()
+        .join("; ")
+}
+
 impl std::fmt::Display for Published {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)

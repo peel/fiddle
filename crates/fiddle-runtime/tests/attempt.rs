@@ -4,7 +4,7 @@ use fiddle_core::{
 };
 use fiddle_runtime::{
     attempt, journal, AttemptContext, AttemptJournal, Capability, CapabilityError, ChangePort,
-    ExecutionGrant, StubChangePort, StubMark, StubWorkItemPort, BUNDLE_FILE,
+    Executed, ExecutionInput, StubChangePort, StubMark, StubWorkItemPort, BUNDLE_FILE,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -143,14 +143,9 @@ impl Capability for Spy {
         "spied"
     }
 
-    async fn execute(
-        &self,
-        _grant: ExecutionGrant,
-        _work_id: &str,
-        _invocation_ref: &str,
-    ) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, _input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        Ok(EvidenceRef("spy:executed".to_string()))
+        Ok(Executed::Earned(EvidenceRef("spy:executed".to_string())))
     }
 }
 
@@ -166,16 +161,8 @@ impl Capability for MutateThenDie {
         self.0.stage()
     }
 
-    async fn execute(
-        &self,
-        grant: ExecutionGrant,
-        work_id: &str,
-        invocation_ref: &str,
-    ) -> Result<EvidenceRef, CapabilityError> {
-        self.0
-            .execute(grant, work_id, invocation_ref)
-            .await
-            .unwrap();
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
+        self.0.execute(input).await.unwrap();
         panic!("the process died after the effect landed");
     }
 }

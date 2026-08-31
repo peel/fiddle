@@ -25,7 +25,7 @@ use crate::human::validate::DecisionError;
 use crate::human::InteractionRef;
 use fiddle_core::{
     AttemptId, CapabilityId, DecisionRequestId, EvidenceRef, NextAction, Publication, Published,
-    RunDisposition, TreeObservation,
+    RunDisposition, TreeObservation, WorkItemState,
 };
 use std::path::PathBuf;
 
@@ -63,18 +63,56 @@ impl ExecutionGrant {
     }
 }
 
+pub struct ExecutionInput<'a> {
+    pub grant: ExecutionGrant,
+    pub work_id: &'a str,
+    pub invocation_ref: &'a str,
+    pub work_item: Option<&'a WorkItemState>,
+}
+
+impl<'a> ExecutionInput<'a> {
+    pub fn observed(
+        grant: ExecutionGrant,
+        work_id: &'a str,
+        invocation_ref: &'a str,
+        work_item: Option<&'a WorkItemState>,
+    ) -> Self {
+        ExecutionInput {
+            grant,
+            work_id,
+            invocation_ref,
+            work_item,
+        }
+    }
+
+    pub fn unobserved(grant: ExecutionGrant, work_id: &'a str, invocation_ref: &'a str) -> Self {
+        ExecutionInput::observed(grant, work_id, invocation_ref, None)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Executed {
+    Earned(EvidenceRef),
+
+    Rejected { findings: Vec<Published> },
+}
+
+impl Executed {
+    pub fn earned(&self) -> Option<&EvidenceRef> {
+        match self {
+            Executed::Earned(evidence) => Some(evidence),
+            Executed::Rejected { .. } => None,
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Capability: Send + Sync {
     fn id(&self) -> CapabilityId;
 
     fn stage(&self) -> &'static str;
 
-    async fn execute(
-        &self,
-        grant: ExecutionGrant,
-        work_id: &str,
-        invocation_ref: &str,
-    ) -> Result<EvidenceRef, CapabilityError>;
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError>;
 
     fn receipts(&self) -> Vec<EvidenceRef> {
         Vec::new()
@@ -181,6 +219,12 @@ pub enum CapabilityError {
 
     #[error("this executor is bound to `{bound}` and the run is `{asked}`")]
     Misbound { bound: String, asked: String },
+
+    #[error("{0}")]
+    Output(#[from] crate::effect::OutputRefusal),
+
+    #[error("the question reached no human: {0}")]
+    Unasked(#[from] crate::human::PublishError),
 }
 
 impl CapabilityError {
@@ -195,8 +239,15 @@ impl CapabilityError {
 
             CapabilityError::NotAuthorised { .. }
             | CapabilityError::Misbound { .. }
+            | CapabilityError::Output(_)
             | CapabilityError::WouldWait { .. }
             | CapabilityError::PublishesElsewhere { .. } => Recurrence::Permanent,
+
+            CapabilityError::Unasked(error) => match error {
+                crate::human::PublishError::Channel(_)
+                | crate::human::PublishError::Unaddressable(_) => Recurrence::Permanent,
+                crate::human::PublishError::Unpublished(source) => source.recurrence(),
+            },
 
             CapabilityError::DecisionRejected { .. } => Recurrence::Permanent,
 
@@ -264,7 +315,7 @@ mod tests {
         let capability: &dyn Capability = &marking;
         assert_eq!(capability.id(), STUB_MARK);
         assert!(capability
-            .execute(grant(), WORK_ID, INVOCATION_REF)
+            .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
             .await
             .is_ok());
     }

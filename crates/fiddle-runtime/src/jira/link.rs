@@ -1,5 +1,6 @@
 use crate::effect::{
-    AuthorizedEffect, Effect, EffectContext, EffectError, Executor, FromStepParams, StepParams,
+    required, AuthorizedEffect, Effect, EffectContext, EffectError, Executor, FromStepParams,
+    StepParams,
 };
 use crate::jira::comment::{
     agreed, canonical_updated, marker_for, post_marked_comment, read_marked_comment, MarkedComment,
@@ -39,14 +40,40 @@ pub struct LinkPullRequest {
     effect_id: EffectId,
 }
 
+fn from_a_step_alone(kind: &EffectName) -> EffectError {
+    EffectError::Unbuildable {
+        kind: kind.clone(),
+        reason: "a step names no issue key and no `fields.updated`, and this operation's \
+                 identity is built from both, so it is constructed from a read of the issue \
+                 and never from a step alone"
+            .to_string(),
+    }
+}
+
 impl FromStepParams for LinkPullRequest {
-    fn from_params(_executor: &Executor<'_>, _params: &StepParams) -> Result<Self, EffectError> {
-        Err(EffectError::Unbuildable {
-            kind: EffectName::shipped(JIRA_PULL_REQUEST_LINKED),
-            reason: "a step names no issue key and no `fields.updated`, and this operation's \
-                     identity is built from both, so it is constructed from a read of the issue \
-                     and never from a step alone"
-                .to_string(),
+    fn from_params(executor: &Executor<'_>, params: &StepParams) -> Result<Self, EffectError> {
+        let kind = EffectName::shipped(JIRA_PULL_REQUEST_LINKED);
+        let issue_key = params
+            .issue_key
+            .clone()
+            .ok_or_else(|| from_a_step_alone(&kind))?;
+        let issue_updated = params
+            .issue_updated
+            .clone()
+            .ok_or_else(|| from_a_step_alone(&kind))?;
+        let repo = required(&params.repo, &kind, "repo")?;
+        let number = params.earned_pull_request(&kind)?;
+        Self::new(
+            issue_key,
+            &issue_updated,
+            repo,
+            number,
+            executor.project(),
+            executor.invocation_ref(),
+        )
+        .map_err(|source| EffectError::Adapter {
+            kind,
+            source: Box::new(source),
         })
     }
 }

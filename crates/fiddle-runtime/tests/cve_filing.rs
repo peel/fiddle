@@ -4,7 +4,9 @@ use fiddle_core::{
     AttemptId, DeploymentRule, EffectName, EvidenceRef, NextAction, CVE_MITIGATE, JIRA_ISSUE_FILED,
 };
 use fiddle_runtime::agent::AgentBudget;
-use fiddle_runtime::capability::{attempt_worktree, Capability, ExecutionGrant};
+use fiddle_runtime::capability::{
+    attempt_worktree, Capability, Executed, ExecutionGrant, ExecutionInput,
+};
 use fiddle_runtime::cve::verdict::{Budget, TicketFiling, FILINGS_FILE};
 use fiddle_runtime::effect::{EffectContext, EffectTrace, ExecutionStep, Executor, ReadRetry};
 use fiddle_runtime::evaluate::{Check, Success};
@@ -67,7 +69,7 @@ impl EffectTrace for Silent {
 }
 
 struct Ran {
-    evidence: Result<EvidenceRef, String>,
+    evidence: Result<Executed, String>,
     receipts: Vec<EvidenceRef>,
     filings: Value,
     verdicts: Value,
@@ -376,7 +378,9 @@ async fn run(seed: &Path, site: Option<&StubJira>, filing: Option<TicketFiling>)
     )
     .expect("an execute action authorises the capability it names");
 
-    let evidence = capability.execute(grant, WORK_ID, INVOCATION_REF).await;
+    let evidence = capability
+        .execute(ExecutionInput::unobserved(grant, WORK_ID, INVOCATION_REF))
+        .await;
 
     Ran {
         evidence: evidence.map_err(|why| why.to_string()),

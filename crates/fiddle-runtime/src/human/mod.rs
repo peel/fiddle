@@ -10,7 +10,8 @@ use crate::jira::comment::AddComment;
 use crate::jira::JiraError;
 use fiddle_core::{
     parse_marker, render_marker, EffectName, HumanDecisionRequest, HumanDecisionRequirement,
-    MarkerError, ProposedEffect, PUBLISH_DECISION_REQUEST,
+    InvocationRef, InvocationScheme, MarkerError, ProposedEffect, WorkItemState,
+    JIRA_COMMENT_ADDED, PUBLISH_DECISION_REQUEST,
 };
 
 pub use crate::github::HumanResponse;
@@ -62,6 +63,50 @@ impl DecisionChannel {
             DecisionChannel::JiraIssue { .. } => JIRA,
         }
     }
+
+    pub fn asked_by(&self) -> EffectName {
+        match self {
+            DecisionChannel::GitHubPullRequest { .. } => {
+                EffectName::shipped(PUBLISH_DECISION_REQUEST)
+            }
+            DecisionChannel::JiraIssue { .. } => EffectName::shipped(JIRA_COMMENT_ADDED),
+        }
+    }
+
+    pub fn named_by(
+        invocation_ref: &str,
+        work_item: Option<&WorkItemState>,
+        pull_request: Option<(&str, u64)>,
+    ) -> Vec<DecisionChannel> {
+        let scheme = invocation_ref
+            .parse::<InvocationRef>()
+            .ok()
+            .map(|reference| reference.scheme());
+        let named = match scheme {
+            Some(InvocationScheme::Jira) => work_item.and_then(DecisionChannel::for_issue),
+            Some(
+                InvocationScheme::Beans
+                | InvocationScheme::Scheduled
+                | InvocationScheme::Scanner
+                | InvocationScheme::Cve,
+            )
+            | None => pull_request.map(|(repo, pr)| DecisionChannel::GitHubPullRequest {
+                repo: repo.to_string(),
+                pr,
+            }),
+        };
+        named.into_iter().collect()
+    }
+
+    fn for_issue(work_item: &WorkItemState) -> Option<DecisionChannel> {
+        work_item
+            .revision
+            .as_ref()
+            .map(|updated| DecisionChannel::JiraIssue {
+                issue: work_item.id.clone(),
+                updated: updated.clone(),
+            })
+    }
 }
 
 impl std::fmt::Display for DecisionChannel {
@@ -106,23 +151,41 @@ pub fn authoritative(named: &[DecisionChannel]) -> Result<&DecisionChannel, Chan
 
 #[derive(Debug, thiserror::Error)]
 pub enum PublishError {
-    #[error("{0}")]
+    #[error(
+        "{0} (a run that names its channel from a github pull request alone never reaches this \
+         arm, and a run steered by a jira reference reaches it whenever nothing observed the \
+         issue; ADR 081 records the trade)"
+    )]
     Channel(#[from] ChannelError),
     #[error("{0}")]
     Unpublished(#[from] EffectError),
-    #[error("the named jira issue carries no revision this run can build an identity from: {0}")]
+    #[error(
+        "the named jira issue carries no revision this run can build an identity from: {0} (a \
+         github channel never reaches this arm; ADR 081 records the trade)"
+    )]
     Unaddressable(#[from] JiraError),
+}
+
+#[derive(Debug)]
+pub struct PublishedAsk {
+    pub asked_by: EffectName,
+    pub receipt: EffectReceipt<InteractionRef>,
 }
 
 pub async fn publish(
     executor: &Executor<'_>,
     named: &[DecisionChannel],
     request: &HumanDecisionRequest,
-) -> Result<EffectReceipt<InteractionRef>, PublishError> {
-    match authoritative(named)? {
+) -> Result<PublishedAsk, PublishError> {
+    let channel = authoritative(named)?;
+    let asked_by = channel.asked_by();
+    match channel {
         DecisionChannel::GitHubPullRequest { repo, pr } => {
             let ask = PublishDecisionRequest::new(repo.clone(), *pr, request.clone());
-            Ok(executor.execute(proposing(executor, &ask), ask).await?)
+            Ok(PublishedAsk {
+                asked_by,
+                receipt: executor.execute(proposing(executor, &ask), ask).await?,
+            })
         }
         DecisionChannel::JiraIssue { issue, updated } => {
             let ask = AddComment::new(
@@ -133,16 +196,19 @@ pub async fn publish(
                 executor.invocation_ref(),
             )?;
             let receipt = executor.execute(proposing(executor, &ask), ask).await?;
-            Ok(EffectReceipt {
-                effect_id: receipt.effect_id,
-                payload_hash: receipt.payload_hash,
-                target: receipt.target,
-                outcome: receipt.outcome,
-                postcondition: receipt.postcondition,
-                external_ref: receipt.external_ref,
-                value: InteractionRef::JiraIssueComment {
-                    issue: receipt.value.issue,
-                    comment: receipt.value.comment_id,
+            Ok(PublishedAsk {
+                asked_by,
+                receipt: EffectReceipt {
+                    effect_id: receipt.effect_id,
+                    payload_hash: receipt.payload_hash,
+                    target: receipt.target,
+                    outcome: receipt.outcome,
+                    postcondition: receipt.postcondition,
+                    external_ref: receipt.external_ref,
+                    value: InteractionRef::JiraIssueComment {
+                        issue: receipt.value.issue,
+                        comment: receipt.value.comment_id,
+                    },
                 },
             })
         }
@@ -417,6 +483,137 @@ impl HumanInteractionPort for GitHubConversation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fiddle_core::JIRA_COMMENT_ADDED;
+
+    const HELD: &str = "2026-08-26T10:00:00.000+0000";
+
+    fn observed(id: &str, revision: Option<&str>) -> WorkItemState {
+        WorkItemState {
+            id: id.to_string(),
+            status: "In Progress".to_string(),
+            projected_status: None,
+            revision: revision.map(str::to_string),
+        }
+    }
+
+    fn on_jira() -> DecisionChannel {
+        DecisionChannel::JiraIssue {
+            issue: "IDENT-1".to_string(),
+            updated: HELD.to_string(),
+        }
+    }
+
+    fn on_github() -> DecisionChannel {
+        DecisionChannel::GitHubPullRequest {
+            repo: "acme/widget".to_string(),
+            pr: 7,
+        }
+    }
+
+    #[test]
+    fn a_jira_invocation_asks_on_the_issue_the_run_observed() {
+        let item = observed("IDENT-1", Some(HELD));
+
+        assert_eq!(
+            DecisionChannel::named_by("jira:IDENT-1", Some(&item), Some(("acme/widget", 7))),
+            vec![on_jira()]
+        );
+    }
+
+    #[test]
+    fn a_pull_request_run_asks_on_the_pull_request_although_it_observed_an_issue() {
+        let item = observed("IDENT-1", Some(HELD));
+
+        assert_eq!(
+            DecisionChannel::named_by("beans:w-1", Some(&item), Some(("acme/widget", 7))),
+            vec![on_github()],
+            "the channel follows the invocation; an observation the run holds for another \
+             reason does not redirect the question"
+        );
+    }
+
+    #[test]
+    fn a_jira_invocation_that_observed_no_revision_names_no_channel() {
+        let unrevised = observed("IDENT-1", None);
+
+        assert!(
+            DecisionChannel::named_by("jira:IDENT-1", Some(&unrevised), Some(("acme/widget", 7)))
+                .is_empty(),
+            "a comment on an issue builds its identity from the revision the issue was read \
+             at, so an unrevised observation addresses nothing"
+        );
+        assert!(
+            DecisionChannel::named_by("jira:IDENT-1", None, Some(("acme/widget", 7))).is_empty(),
+            "and a run that observed nothing addresses nothing either"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_invocation_asks_on_the_pull_request_the_run_holds() {
+        assert_eq!(
+            DecisionChannel::named_by("this is not a reference", None, Some(("acme/widget", 7))),
+            vec![on_github()]
+        );
+    }
+
+    #[test]
+    fn a_run_that_opened_no_pull_request_and_names_no_issue_names_no_channel() {
+        assert!(DecisionChannel::named_by("beans:w-1", None, None).is_empty());
+    }
+
+    #[test]
+    fn no_invocation_names_two_channels() {
+        let items = [
+            Some(observed("IDENT-1", Some(HELD))),
+            Some(observed("IDENT-1", None)),
+            None,
+        ];
+        let (mut jira, mut github, mut none) = (0, 0, 0);
+        for invocation in [
+            "jira:IDENT-1",
+            "jira:IDENT-1:sub",
+            "beans:w-1",
+            "scanner:s-1",
+            "scheduled:nightly",
+            "cve",
+            "this is not a reference",
+        ] {
+            for item in &items {
+                for pull_request in [Some(("acme/widget", 7)), None] {
+                    let named = DecisionChannel::named_by(invocation, item.as_ref(), pull_request);
+                    match named.as_slice() {
+                        [] => none += 1,
+                        [DecisionChannel::JiraIssue { .. }] => jira += 1,
+                        [DecisionChannel::GitHubPullRequest { .. }] => github += 1,
+                        two_or_more => panic!(
+                            "`{invocation}` named {two_or_more:?}, and `authoritative` refuses two"
+                        ),
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            jira + github + none,
+            42,
+            "seven invocations against three observations against two pull-request states is \
+             the denominator this sweep reports against"
+        );
+        assert_eq!(
+            (jira, github, none),
+            (4, 15, 23),
+            "the bound alone passes on a `named_by` that answers nothing, so the sweep counts \
+             what it names: the two jira references name the issue only when the observation \
+             carries a revision, the five other references name the pull request only when the \
+             run holds one, and the remaining cases name nobody"
+        );
+    }
+
+    #[test]
+    fn the_effect_name_the_evidence_line_spells_follows_the_channel() {
+        assert_eq!(on_github().asked_by().as_str(), PUBLISH_DECISION_REQUEST);
+        assert_eq!(on_jira().asked_by().as_str(), JIRA_COMMENT_ADDED);
+    }
 
     fn conversation() -> InteractionRef {
         InteractionRef::GitHubPullRequestComment {

@@ -1,10 +1,11 @@
-use super::{Capability, CapabilityError, ExecutionGrant};
+use super::{Capability, CapabilityError, Executed, ExecutionInput};
 use crate::agent::{
-    attempt_briefed, AgentBudget, Brief, Declarations, Held, ToolHost, Transcripts, PREAMBLE,
+    attempt_briefed, judge_briefed, AgentBudget, Brief, Declarations, Held, ToolHost, Transcripts,
+    Verdict, JUDGE_PREAMBLE, PREAMBLE,
 };
 use crate::effect::{
     registry, Construct, EffectError, EffectOutcome, ErasedReceipt, Executor, Recurrence,
-    StepParams,
+    StepOutputs, StepParams,
 };
 use crate::gateway::Redaction;
 use crate::workspace::WorkspaceCommand;
@@ -20,6 +21,10 @@ pub const WORKFLOW_VERSION: u32 = 1;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Step {
     Agent {
+        prompt: PathBuf,
+        max_turns: u32,
+    },
+    Evaluate {
         prompt: PathBuf,
         max_turns: u32,
     },
@@ -143,6 +148,7 @@ pub struct WorkflowPorts<M> {
 
 enum Ready {
     Agent { task: String, max_turns: usize },
+    Evaluate { task: String, max_turns: usize },
     Check { command: WorkspaceCommand },
     Effect { construct: Construct },
 }
@@ -156,25 +162,31 @@ pub struct WorkflowCapability<'a, M> {
     params: StepParams,
     ports: WorkflowPorts<M>,
     receipts: Mutex<Vec<EvidenceRef>>,
+    entered: Mutex<Vec<StepOutputs>>,
+}
+
+fn task_in(prompt: &Path, prompts: &Path) -> Result<String, WorkflowRefusal> {
+    let path = prompts.join(prompt);
+    let task = std::fs::read_to_string(&path).map_err(|source| WorkflowRefusal::Unreadable {
+        path: path.clone(),
+        reason: source.to_string(),
+    })?;
+    match task.trim().is_empty() {
+        true => Err(WorkflowRefusal::Taskless { path }),
+        false => Ok(task),
+    }
 }
 
 fn ready(step: &Step, prompts: &Path) -> Result<Ready, WorkflowRefusal> {
     match step {
-        Step::Agent { prompt, max_turns } => {
-            let path = prompts.join(prompt);
-            let task =
-                std::fs::read_to_string(&path).map_err(|source| WorkflowRefusal::Unreadable {
-                    path: path.clone(),
-                    reason: source.to_string(),
-                })?;
-            match task.trim().is_empty() {
-                true => Err(WorkflowRefusal::Taskless { path }),
-                false => Ok(Ready::Agent {
-                    task,
-                    max_turns: *max_turns as usize,
-                }),
-            }
-        }
+        Step::Agent { prompt, max_turns } => Ok(Ready::Agent {
+            task: task_in(prompt, prompts)?,
+            max_turns: *max_turns as usize,
+        }),
+        Step::Evaluate { prompt, max_turns } => Ok(Ready::Evaluate {
+            task: task_in(prompt, prompts)?,
+            max_turns: *max_turns as usize,
+        }),
         Step::Check {
             program,
             args,
@@ -263,11 +275,19 @@ where
             params,
             ports,
             receipts: Mutex::new(Vec::new()),
+            entered: Mutex::new(Vec::new()),
         })
     }
 
     pub fn workflow(&self) -> &Workflow {
         &self.workflow
+    }
+
+    pub fn earned_on_entering_each_step(&self) -> Vec<StepOutputs> {
+        self.entered
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     async fn attempt(&self, task: &str, max_turns: usize) -> Result<(), CapabilityError> {
@@ -293,6 +313,31 @@ where
         Ok(())
     }
 
+    async fn evaluate(
+        &self,
+        task: &str,
+        max_turns: usize,
+        params: &mut StepParams,
+    ) -> Result<(), CapabilityError> {
+        let verdict = judge_briefed(
+            self.ports.model.clone(),
+            &self.ports.redaction,
+            self.ports.host.clone(),
+            AgentBudget {
+                max_turns,
+                ..self.ports.budget.clone()
+            },
+            Brief {
+                preamble: JUDGE_PREAMBLE,
+                task,
+            },
+            self.ports.transcripts.as_ref(),
+        )
+        .await?;
+        params.earned.record_verdict(verdict)?;
+        Ok(())
+    }
+
     async fn check(&self, command: &WorkspaceCommand) -> Result<(), CapabilityError> {
         let result = self.ports.host.workspace.run(command).await?;
         match result.exit_code {
@@ -305,12 +350,17 @@ where
         }
     }
 
-    async fn effect(&self, construct: Construct) -> Result<(), CapabilityError> {
-        let receipt = construct(&self.executor, &self.params)
+    async fn effect(
+        &self,
+        construct: Construct,
+        params: &mut StepParams,
+    ) -> Result<(), CapabilityError> {
+        let receipt = construct(&self.executor, params)
             .map_err(without_waiting)?
-            .run(&self.executor, &self.params)
+            .run(&self.executor, params)
             .await
             .map_err(without_waiting)?;
+        params.earned.record(&receipt)?;
         self.receipts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -332,12 +382,13 @@ where
         self.stage
     }
 
-    async fn execute(
-        &self,
-        grant: ExecutionGrant,
-        _work_id: &str,
-        invocation_ref: &str,
-    ) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
+        let ExecutionInput {
+            grant,
+            invocation_ref,
+            work_item,
+            ..
+        } = input;
         if grant.capability_id() != self.id() {
             return Err(CapabilityError::NotAuthorised {
                 granted: grant.capability_id(),
@@ -350,18 +401,38 @@ where
                 asked: invocation_ref.to_string(),
             });
         }
+        let mut params = StepParams {
+            earned: StepOutputs::default(),
+            ..self.params.clone()
+        }
+        .observing(work_item);
         for step in &self.steps {
+            self.entered
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(params.earned.clone());
             match step {
                 Ready::Agent { task, max_turns } => self.attempt(task, *max_turns).await?,
+                Ready::Evaluate { task, max_turns } => {
+                    self.evaluate(task, *max_turns, &mut params).await?
+                }
                 Ready::Check { command } => self.check(command).await?,
-                Ready::Effect { construct } => self.effect(*construct).await?,
+                Ready::Effect { construct } => self.effect(*construct, &mut params).await?,
+            }
+            if matches!(params.earned.verdict(), Some(Verdict::Rejected { .. })) {
+                break;
             }
         }
-        Ok(EvidenceRef(format!(
-            "workflow:{}:{}",
-            self.workflow.name(),
-            grant.attempt_id().0
-        )))
+        match params.earned.verdict() {
+            Some(Verdict::Rejected { findings }) => Ok(Executed::Rejected {
+                findings: findings.iter().map(Published::of).collect(),
+            }),
+            Some(Verdict::Accepted {}) | None => Ok(Executed::Earned(EvidenceRef(format!(
+                "workflow:{}:{}",
+                self.workflow.name(),
+                grant.attempt_id().0
+            )))),
+        }
     }
 
     fn receipts(&self) -> Vec<EvidenceRef> {

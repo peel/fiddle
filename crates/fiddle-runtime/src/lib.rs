@@ -29,9 +29,9 @@ pub use agent::{
     AgentBudget, Direction, ToolHost, ToolReceipt, ToolReceipts, TranscriptHook, Transcripts,
 };
 pub use capability::{
-    attempt_worktree, Capability, CapabilityError, CveMitigate, ExecutionGrant, FixtureRepair,
-    MitigateConfig, ProposeChange, ProposeConfig, PublishChange, PublishConfig, RepairConfig,
-    StubMark, CAPABILITIES,
+    attempt_worktree, Capability, CapabilityError, CveMitigate, Executed, ExecutionGrant,
+    ExecutionInput, FixtureRepair, MitigateConfig, ProposeChange, ProposeConfig, PublishChange,
+    PublishConfig, RepairConfig, StubMark, CAPABILITIES,
 };
 pub use effect::{
     AdapterError, AuthorizedEffect, DeploymentPolicy, EffectContext, EffectError, EffectOutcome,
@@ -51,7 +51,7 @@ pub use github::{GhCli, GhError, GhResponse, RetryAdvice};
 pub use human::{
     authoritative, decision_request_target, publish, render_request, ChannelError, DecisionChannel,
     GitHubConversation, HumanInteractionPort, InteractionRef, PublishDecisionRequest, PublishError,
-    PublishedRequest,
+    PublishedAsk, PublishedRequest,
 };
 pub use jira::{
     project, ConfiguredNames, ConversationError, JiraActor, JiraConversation, JiraError, JiraHttp,

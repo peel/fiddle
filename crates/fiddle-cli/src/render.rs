@@ -615,6 +615,9 @@ fn outcome_line(outcome: &fiddle_core::RunOutcome) -> String {
         fiddle_core::RunOutcome::Completed => "completed".to_string(),
         fiddle_core::RunOutcome::Suspended { reason } => format!("suspended — {reason}"),
         fiddle_core::RunOutcome::Retryable { reason } => format!("retryable — {reason}"),
+        fiddle_core::RunOutcome::Rejected { findings } => {
+            format!("rejected — {}", fiddle_core::joined(findings))
+        }
         fiddle_core::RunOutcome::Failed { error } => format!("failed — {error}"),
     }
 }
@@ -759,6 +762,7 @@ mod tests {
                 jira_status_name: VERBATIM_STATUS.to_string(),
                 jira_status_category: "In Progress".to_string(),
             }),
+            revision: None,
         }
     }
 
@@ -796,6 +800,7 @@ mod tests {
             id: "IDENT-1".to_string(),
             status: VERBATIM_STATUS.to_string(),
             projected_status: None,
+            revision: None,
         });
 
         assert_eq!(

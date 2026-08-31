@@ -36,7 +36,7 @@ pub use observation::{
 };
 pub use outcome::{Mode, RunOutcome, UnknownMode};
 pub use policy::{combine, DeploymentRule, HumanDecisionRequirement, PolicyDecision};
-pub use published::{Published, PUBLISHED_TEXT_LIMIT};
+pub use published::{joined, Published, PUBLISHED_TEXT_LIMIT};
 pub use report::{
     AttemptBound, AttemptOutcome, CapabilityExecution, DeferredFinding, DisposedFinding,
     EvidenceRef, FiddleBuild, ProgressEntry, ReportBundle, RunDisposition, CONFIG_CHECK_SCHEMA,

@@ -4,7 +4,7 @@ use super::cve::{
     GroupMigration, GroupStatus, HumanSaid, InRepository, InWorktree, Landed, MigrationConfig,
     PlanError, Publication, SharedWork, Unproved, CVE_LABEL, UNPROVED_LABEL,
 };
-use super::{Capability, CapabilityError, ExecutionGrant};
+use super::{Capability, CapabilityError, Executed, ExecutionInput};
 use crate::agent::{AgentBudget, Transcripts};
 use crate::cve::attempts;
 use crate::cve::dedup::commit_log_dedup;
@@ -798,12 +798,13 @@ where
         "mitigate"
     }
 
-    async fn execute(
-        &self,
-        grant: ExecutionGrant,
-        work_id: &str,
-        invocation_ref: &str,
-    ) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
+        let ExecutionInput {
+            grant,
+            work_id,
+            invocation_ref,
+            ..
+        } = input;
         if grant.capability_id() != self.id() {
             return Err(CapabilityError::NotAuthorised {
                 granted: grant.capability_id(),
@@ -845,11 +846,11 @@ where
         }
 
         self.record_change_set(work_id)?;
-        Ok(EvidenceRef(format!(
+        Ok(Executed::Earned(EvidenceRef(format!(
             "{CVE_ORIGIN}:{}:{}",
             concluded.verdicts().len(),
             grant.attempt_id().0
-        )))
+        ))))
     }
 
     fn receipts(&self) -> Vec<EvidenceRef> {
