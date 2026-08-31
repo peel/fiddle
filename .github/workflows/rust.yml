@@ -9,7 +9,28 @@ jobs:
         with: { toolchain: "1.97.1", components: "rustfmt, clippy" }
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --all-features
+      - name: Test every binary and report N of M, never a bare count
+        shell: bash
+        run: |
+          set -uo pipefail
+          command -v jq >/dev/null 2>&1 || { echo "CANNOT RUN: jq is not on the PATH, so no denominator can be derived"; exit 2; }
+          LOG_DIR="${RUNNER_TEMP:-/tmp}/fiddle-gate"
+          mkdir -p "$LOG_DIR"
+          if cargo test --workspace --all-features --no-run --message-format=json > "$LOG_DIR/targets.json" 2> "$LOG_DIR/targets.log" \
+             && cargo metadata --no-deps --format-version 1 > "$LOG_DIR/metadata.json" 2> "$LOG_DIR/metadata.log"; then
+            : > "$LOG_DIR/enumerated"
+          else
+            tail -20 "$LOG_DIR/targets.log" "$LOG_DIR/metadata.log"
+          fi
+          if cargo test --workspace --all-features --no-fail-fast 2>&1 | tee "$LOG_DIR/test.log"; then
+            TEST_RC=0
+          else
+            TEST_RC=1
+          fi
+          REPORT=0
+          scripts/gate-report.sh "$LOG_DIR" || REPORT=$?
+          if [ "$REPORT" -ne 0 ]; then exit "$REPORT"; fi
+          exit "$TEST_RC"
       - name: M0 acceptance scenario (credential-free black-box)
         run: cargo test -p fiddle-acceptance --test m0_skeleton -- --nocapture
       - run: cargo build --release

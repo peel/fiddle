@@ -182,7 +182,7 @@ struct Unconfigured {
     path: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, fiddle_runtime::effect::VariantCount)]
 enum CredentialPurpose {
     Model,
     Forge,
@@ -191,7 +191,7 @@ enum CredentialPurpose {
 
 impl CredentialPurpose {
     #[cfg(test)]
-    const ALL: [CredentialPurpose; 3] = [
+    const ALL: [CredentialPurpose; CredentialPurpose::VARIANT_COUNT] = [
         CredentialPurpose::Model,
         CredentialPurpose::Forge,
         CredentialPurpose::Jira,
@@ -414,16 +414,30 @@ fn port_kind_for(scheme: InvocationScheme) -> PortKind {
     }
 }
 
-fn jira_work_items(jira: &config::Jira, config_path: &Path) -> Result<JiraWorkItemPort, CliError> {
+fn jira_http(jira: &config::Jira, config_path: &Path) -> Result<JiraHttp, CliError> {
     let user = resolve_credential(CredentialPurpose::Jira, &jira.user.env)?;
     let token = resolve_credential(CredentialPurpose::Jira, &jira.token.env)?;
-    let http = JiraHttp::new(
+    JiraHttp::new(
         jira.base_url.as_deref().unwrap_or(&jira.site),
         &user,
         &token,
         jira.timeout.as_duration(),
     )
-    .map_err(|error| CliError::Jira(JiraUnusable(error, config_path.display().to_string())))?;
+    .map_err(|error| CliError::Jira(JiraUnusable(error, config_path.display().to_string())))
+}
+
+fn filing_client(
+    config: &config::Config,
+    config_path: &Path,
+) -> Result<Option<JiraHttp>, CliError> {
+    match config.jira.as_ref().filter(|jira| jira.filing.is_some()) {
+        Some(jira) => Ok(Some(jira_http(jira, config_path)?)),
+        None => Ok(None),
+    }
+}
+
+fn jira_work_items(jira: &config::Jira, config_path: &Path) -> Result<JiraWorkItemPort, CliError> {
+    let http = jira_http(jira, config_path)?;
     Ok(JiraWorkItemPort::new(
         http,
         ConfiguredNames::new(
@@ -460,12 +474,14 @@ async fn observe(
     config: &config::Config,
     config_path: &Path,
     reference: &InvocationRef,
+    cancel: &CancellationToken,
 ) -> Result<WorkStateView, CliError> {
     let (work_items, changes) = ports(config, config_path, reference)?;
     Ok(fiddle_runtime::observe(
         work_items.as_ref(),
         changes.as_ref(),
         Addressed::of(reference),
+        cancel,
     )
     .await)
 }
@@ -626,8 +642,14 @@ async fn resolve_forge(
         None => None,
     };
 
+    let ctx = EffectContext::new(gh, git, work, cancel.clone());
+    let ctx = match filing_client(config, config_path)? {
+        Some(client) => ctx.with_jira(client),
+        None => ctx,
+    };
+
     Ok(Forge {
-        ctx: EffectContext::new(gh, git, work, cancel.clone()),
+        ctx,
         trace: AttemptTrace::new(),
         publishing,
     })
@@ -660,8 +682,6 @@ fn build_capability<'a>(
                 .publishing
                 .as_ref()
                 .ok_or_else(|| missing("github.work"))?;
-
-            cancel_on_interrupt(cancel);
 
             let executor = Executor::new(
                 fiddle_core::PUBLISH_CHANGE,
@@ -713,8 +733,6 @@ fn build_capability<'a>(
                 .ok_or_else(|| missing("workspace.check"))?;
 
             let gateway = model_client(agent)?;
-
-            cancel_on_interrupt(cancel);
 
             let config::Isolation::GitWorktree = workspace.isolation;
             let config::Cleanup::Always = workspace.cleanup;
@@ -769,8 +787,6 @@ fn build_capability<'a>(
             let forge = forge.ok_or_else(|| missing("[github]"))?;
 
             let gateway = model_client(agent)?;
-
-            cancel_on_interrupt(cancel);
 
             let config::Isolation::GitWorktree = workspace.isolation;
             let config::Cleanup::Always = workspace.cleanup;
@@ -855,8 +871,6 @@ fn build_capability<'a>(
 
             let gateway = model_client(agent)?;
 
-            cancel_on_interrupt(cancel);
-
             let config::Isolation::GitWorktree = workspace.isolation;
             let config::Cleanup::Always = workspace.cleanup;
 
@@ -940,6 +954,10 @@ fn build_capability<'a>(
                     max_attempts: u32::try_from(agent.max_capability_attempts).unwrap_or(u32::MAX),
                     report_dir: config.report.dir.clone(),
                     today: fiddle_runtime::capability::cve::today_utc(),
+                    filing: config
+                        .jira
+                        .as_ref()
+                        .and_then(|jira| jira.filing.as_ref().map(config::JiraFiling::resolved)),
                     cancel: cancel.clone(),
                 },
             )))
@@ -1031,7 +1049,9 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             let reference = reference_from(invocation_ref)?;
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
-            let observed = observe(&config, &cli.config, &reference).await?;
+            let cancel = CancellationToken::new();
+            cancel_on_interrupt(&cancel);
+            let observed = observe(&config, &cli.config, &reference, &cancel).await?;
             let expected_marker =
                 fiddle_core::correlation_key(&config.project.name, &reference.as_str());
             let assessment = fiddle_core::assess(&observed, &expected_marker);
@@ -1062,8 +1082,9 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
 
             let recording = transcripts(&config.report.dir, &reference)?;
 
-            let (work_items, changes) = ports(&config, &cli.config, &reference)?;
             let cancel = CancellationToken::new();
+            cancel_on_interrupt(&cancel);
+            let (work_items, changes) = ports(&config, &cli.config, &reference)?;
             let forge = match selection {
                 Selection::Publish | Selection::Propose | Selection::Mitigate => {
                     Some(resolve_forge(&config, &cli.config, &cancel, selection, &reference).await?)
@@ -1089,6 +1110,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 changes: changes.as_ref(),
                 capability: selected.as_ref(),
                 trace: forge.as_ref().map(|forge| &forge.trace),
+                cancel: &cancel,
             })
             .await;
 
@@ -1124,7 +1146,7 @@ mod tests {
 
     #[test]
     fn every_outcome_maps_to_the_row_the_table_documents() {
-        let rows: [(RunOutcome, u8); 4] = [
+        let rows: [(RunOutcome, u8); RunOutcome::VARIANT_COUNT] = [
             (RunOutcome::Completed, 0),
             (
                 RunOutcome::Suspended {
@@ -1673,6 +1695,7 @@ mod tests {
             changes: &changes,
             capability: &marking as &dyn Capability,
             trace: None,
+            cancel: &CancellationToken::new(),
         })
         .await;
 
@@ -1702,11 +1725,15 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ChangePort for OvertakenAfterTheFirstLook {
-        async fn observe(&self, work_id: &str) -> Observation<ChangeSetState> {
+        async fn observe(
+            &self,
+            work_id: &str,
+            cancel: &CancellationToken,
+        ) -> Observation<ChangeSetState> {
             if self.looks.fetch_add(1, Ordering::Relaxed) == 1 {
                 std::fs::write(&self.change_set, r#"{"marker":"0123456789abcdef"}"#).unwrap();
             }
-            self.inner.observe(work_id).await
+            self.inner.observe(work_id, cancel).await
         }
     }
 
@@ -1809,6 +1836,60 @@ mod tests {
                 assert_eq!(absent.variable, "FIDDLE_A_JIRA_USER_NOTHING_EXPORTS");
             }
             other => panic!("with the table present the credential is next, got {other:?}"),
+        }
+    }
+
+    fn a_tracker_document(dir: &Path, filing: &str) -> PathBuf {
+        let path = dir.join("fiddle.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "[project]\nname=\"icecube\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
+                 [jira]\nsite=\"https://icecube.atlassian.net\"\nproject=\"IDENT\"\n\
+                 user={{env=\"FIDDLE_A_JIRA_USER_NOTHING_EXPORTS\"}}\n\
+                 token={{env=\"FIDDLE_A_JIRA_TOKEN_NOTHING_EXPORTS\"}}\n{filing}"
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn a_tracker_that_files_nothing_asks_for_no_credential_to_file_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = a_tracker_document(dir.path(), "");
+        let config = config::load(&path).unwrap();
+
+        assert!(
+            filing_client(&config, &path)
+                .expect("a deployment that files nowhere needs no client")
+                .is_none(),
+            "nothing exports either variable, and a run that files nothing must not be \
+             refused for a credential it never sends"
+        );
+    }
+
+    #[test]
+    fn a_tracker_that_files_is_refused_when_nothing_exports_its_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = a_tracker_document(
+            dir.path(),
+            "[jira.filing]\nproject=\"SEC\"\nissue_type=\"Task\"\nledger_issue=\"SEC-1\"\n",
+        );
+        let config = config::load(&path).unwrap();
+
+        let Err(error) = filing_client(&config, &path) else {
+            panic!(
+                "a deployment that asked to file and exported no credential would file \
+                 nothing on every run and say so only in the filing report"
+            )
+        };
+        match error {
+            CliError::CredentialAbsent(absent) => {
+                assert_eq!(absent.purpose, CredentialPurpose::Jira);
+                assert_eq!(absent.variable, "FIDDLE_A_JIRA_USER_NOTHING_EXPORTS");
+            }
+            other => panic!("the missing variable is what a person fixes, got {other:?}"),
         }
     }
 }

@@ -123,6 +123,7 @@ async fn run_attempt_observing(
         changes,
         capability,
         trace: None,
+        cancel: &tokio_util::sync::CancellationToken::new(),
     })
     .await
 }
@@ -199,7 +200,11 @@ impl ForeignWriterBetweenObservations {
 
 #[async_trait::async_trait]
 impl ChangePort for ForeignWriterBetweenObservations {
-    async fn observe(&self, work_id: &str) -> Observation<ChangeSetState> {
+    async fn observe(
+        &self,
+        work_id: &str,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Observation<ChangeSetState> {
         if self.observations.fetch_add(1, Ordering::Relaxed) == 1 {
             std::fs::write(
                 &self.change_set,
@@ -207,7 +212,7 @@ impl ChangePort for ForeignWriterBetweenObservations {
             )
             .unwrap();
         }
-        self.inner.observe(work_id).await
+        self.inner.observe(work_id, cancel).await
     }
 }
 

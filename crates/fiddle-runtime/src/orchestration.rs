@@ -9,19 +9,21 @@ use fiddle_core::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 pub async fn observe(
     work_items: &dyn WorkItemPort,
     changes: &dyn ChangePort,
     addressed: Addressed<'_>,
+    cancel: &CancellationToken,
 ) -> WorkStateView {
     let work_item = match addressed {
-        Addressed::WorkItem(work_id) => work_items.observe(work_id).await,
+        Addressed::WorkItem(work_id) => work_items.observe(work_id, cancel).await,
         Addressed::NoWorkItem { .. } => fiddle_core::Observation::NotApplicable {
             reason: "this invocation names no work item, so no tracker was consulted".to_string(),
         },
     };
-    let change_set = changes.observe(addressed.change_set()).await;
+    let change_set = changes.observe(addressed.change_set(), cancel).await;
     WorkStateView::without_publication(work_item, change_set)
 }
 
@@ -59,11 +61,12 @@ pub struct RunContext<'a> {
     pub changes: &'a dyn ChangePort,
     pub capability: &'a dyn Capability,
     pub journal: &'a dyn AttemptJournal,
+    pub cancel: &'a CancellationToken,
 }
 
 impl RunContext<'_> {
     pub async fn observe(&self) -> WorkStateView {
-        observe(self.work_items, self.changes, self.addressed).await
+        observe(self.work_items, self.changes, self.addressed, self.cancel).await
     }
 
     async fn observe_with(&self, capability: &dyn Capability) -> WorkStateView {
@@ -257,6 +260,7 @@ pub struct AttemptContext<'a> {
     pub changes: &'a dyn ChangePort,
     pub capability: &'a dyn Capability,
     pub trace: Option<&'a AttemptTrace>,
+    pub cancel: &'a CancellationToken,
 }
 
 pub struct AttemptRecord {
@@ -295,6 +299,7 @@ pub async fn attempt(ctx: &AttemptContext<'_>) -> AttemptRecord {
         changes: ctx.changes,
         capability: ctx.capability,
         journal: journal.as_ref(),
+        cancel: ctx.cancel,
     })
     .await;
 
@@ -396,6 +401,7 @@ mod tests {
     use crate::stub::{StubChangePort, StubWorkItemPort};
     use fiddle_core::{CapabilityId, STUB_MARK};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::OnceLock;
 
     const WORK_ID: &str = "fiddle-m0-demo";
     const INVOCATION_REF: &str = "beans:fiddle-m0-demo";
@@ -534,6 +540,11 @@ mod tests {
         }
     }
 
+    fn running() -> &'static CancellationToken {
+        static RUNNING: OnceLock<CancellationToken> = OnceLock::new();
+        RUNNING.get_or_init(CancellationToken::new)
+    }
+
     fn context<'a>(
         capability: &'a dyn Capability,
         work_items: &'a StubWorkItemPort,
@@ -550,6 +561,7 @@ mod tests {
             changes,
             capability,
             journal,
+            cancel: running(),
         }
     }
 
@@ -567,6 +579,53 @@ mod tests {
         )
         .unwrap();
         dir
+    }
+
+    async fn attempt_reading_against(dir: &Path, cancel: &CancellationToken) -> WorkStateView {
+        let reference: InvocationRef = INVOCATION_REF.parse().unwrap();
+        attempt(&AttemptContext {
+            project: PROJECT,
+            reference: &reference,
+            mode: Mode::Unattended,
+            build: FiddleBuild::new("0.1.0", fiddle_core::UNKNOWN_REVISION),
+            report_dir: &dir.join("reports"),
+            work_items: &StubWorkItemPort::new(dir),
+            changes: &StubChangePort::new(dir),
+            capability: &StubMark::new(dir, PROJECT),
+            trace: None,
+            cancel,
+        })
+        .await
+        .bundle
+        .observations
+    }
+
+    #[tokio::test]
+    async fn the_token_an_attempt_holds_is_the_token_its_ports_read_against() {
+        let dir = fixture_root();
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+
+        let running = attempt_reading_against(dir.path(), &CancellationToken::new()).await;
+        let stopped = attempt_reading_against(dir.path(), &cancelled).await;
+
+        assert!(
+            running.work_item.value().is_some(),
+            "the same world answers a running attempt, so the read below stopped for the \
+             cancellation and not for an unreadable source: {:?}",
+            running.work_item
+        );
+        assert!(
+            stopped.work_item.is_unavailable(),
+            "the attempt's own token must reach the work item port, or cancelling a run \
+             leaves its reads running: {:?}",
+            stopped.work_item
+        );
+        assert!(
+            stopped.changes.is_unavailable(),
+            "the attempt's own token must reach the change port too: {:?}",
+            stopped.changes
+        );
     }
 
     #[tokio::test]

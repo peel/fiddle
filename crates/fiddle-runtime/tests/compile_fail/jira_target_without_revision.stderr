@@ -1,0 +1,5 @@
+error: `JiraTargetWithoutRevision`: `target` reads `{issue_updated}` and `JiraTargetWithoutRevision` has no field `issue_updated`
+ --> tests/compile_fail/jira_target_without_revision.rs:7:14
+  |
+7 |     target = "{issue_key}@{issue_updated}",
+  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

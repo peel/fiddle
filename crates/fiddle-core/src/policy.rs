@@ -1,10 +1,10 @@
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, fiddle_macros::VariantCount)]
 pub enum HumanDecisionRequirement {
     Automatic,
     Human,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, fiddle_macros::VariantCount)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeploymentRule {
     Allow,
@@ -72,13 +72,21 @@ mod tests {
     fn every_non_allow_decision_explains_itself() {
         use DeploymentRule::*;
         use HumanDecisionRequirement::*;
-        for (cap, dep) in [
+        let pairs = [
             (Automatic, RequireHuman),
             (Automatic, Deny),
             (Human, Allow),
             (Human, RequireHuman),
             (Human, Deny),
-        ] {
+        ];
+        assert_eq!(
+            pairs.len(),
+            HumanDecisionRequirement::VARIANT_COUNT * DeploymentRule::VARIANT_COUNT - 1,
+            "the pairs above are written by hand and the name of this test claims every \
+             decision that is not Allow; exactly one pair of the cross product is Allow, \
+             so a requirement or a rule added to either enum must appear here"
+        );
+        for (cap, dep) in pairs {
             let reason = match combine(cap, dep) {
                 PolicyDecision::Allow => panic!("{cap:?}/{dep:?} must not be Allow"),
                 PolicyDecision::Deny { reason }

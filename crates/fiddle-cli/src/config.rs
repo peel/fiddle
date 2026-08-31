@@ -602,6 +602,80 @@ pub struct Jira {
 
     #[serde(default)]
     pub workflow: JiraWorkflow,
+
+    #[serde(default)]
+    pub filing: Option<JiraFiling>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "JiraFilingDocument")]
+pub struct JiraFiling {
+    pub project: String,
+
+    pub issue_type: String,
+
+    pub ledger_issue: String,
+}
+
+impl JiraFiling {
+    pub fn resolved(&self) -> fiddle_runtime::cve::verdict::TicketFiling {
+        fiddle_runtime::cve::verdict::TicketFiling {
+            project_key: self.project.clone(),
+            issue_type: self.issue_type.clone(),
+            ledger_issue: self.ledger_issue.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JiraFilingDocument {
+    project: String,
+
+    issue_type: String,
+
+    ledger_issue: String,
+}
+
+impl TryFrom<JiraFilingDocument> for JiraFiling {
+    type Error = String;
+
+    fn try_from(document: JiraFilingDocument) -> Result<Self, String> {
+        if document.project.is_empty()
+            || !document
+                .project
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            return Err(format!(
+                "`project = \"{}\"` is not a bare Jira project key. This table names the \
+                 project fiddle files advisories into, which is a key such as `SEC`, and never \
+                 a name or a URL",
+                document.project
+            ));
+        }
+        if document.issue_type.trim().is_empty() {
+            return Err(
+                "`issue_type` names the type a created issue is given, such as `Task`. \
+                        A create that omits it is refused by the site before it files anything"
+                    .to_string(),
+            );
+        }
+        if document.ledger_issue.split_once('-').map(|(key, _)| key) != Some(&document.project) {
+            return Err(format!(
+                "`ledger_issue = \"{}\"` is not an issue in `{}`. The claim ledger holds one \
+                 property for every ticket this deployment files, and it is read with the same \
+                 credential in the same project. One naming another project would hold the \
+                 claims for tickets nobody files there",
+                document.ledger_issue, document.project
+            ));
+        }
+        Ok(JiraFiling {
+            project: document.project,
+            issue_type: document.issue_type,
+            ledger_issue: document.ledger_issue,
+        })
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -849,7 +923,8 @@ mod tests {
     use super::*;
     use fiddle_core::{
         ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
-        ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, PUBLISH_DECISION_REQUEST,
+        ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, JIRA_COMMENT_ADDED, JIRA_ISSUE_FILED,
+        JIRA_ISSUE_TRANSITIONED, JIRA_PULL_REQUEST_LINKED, PUBLISH_DECISION_REQUEST,
     };
 
     const VALID: &str = r#"
@@ -1781,14 +1856,36 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
         );
     }
 
-    const RULE_KEYS: [&str; 6] = [
+    const RULE_KEYS: [&str; 10] = [
         ENSURE_BRANCH_PUBLISHED,
         ENSURE_PULL_REQUEST,
         ENSURE_CHECK_REQUESTED,
         PUBLISH_DECISION_REQUEST,
         ENSURE_PULL_REQUEST_READY,
         ENSURE_PULL_REQUEST_BODY,
+        JIRA_ISSUE_FILED,
+        JIRA_COMMENT_ADDED,
+        JIRA_ISSUE_TRANSITIONED,
+        JIRA_PULL_REQUEST_LINKED,
     ];
+
+    fn row(key: &str, rule: &str) -> String {
+        format!("\"{key}\" = \"{rule}\"\n")
+    }
+
+    #[test]
+    fn every_effect_this_build_performs_has_a_rule_key_here() {
+        let held: Vec<&str> = fiddle_runtime::effect::registry::registered()
+            .iter()
+            .map(|descriptor| descriptor.name)
+            .collect();
+        assert_eq!(
+            RULE_KEYS.to_vec(),
+            held,
+            "a registered effect absent from RULE_KEYS is gated by no case below, so a rule an \
+             operator writes for it is covered by nothing"
+        );
+    }
 
     #[test]
     fn every_rule_key_is_a_distinct_name_a_document_can_spell() {
@@ -1800,8 +1897,11 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
                 "{key} is not a name the grammar admits"
             );
             assert!(
-                toml::from_str::<Config>(&format!("{FORGE}\n[github.policy]\n{key} = \"deny\"\n"))
-                    .is_ok(),
+                toml::from_str::<Config>(&format!(
+                    "{FORGE}\n[github.policy]\n{}",
+                    row(key, "deny")
+                ))
+                .is_ok(),
                 "{key} names no field of the policy table, so no document can gate it"
             );
         }
@@ -1810,7 +1910,7 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
     #[test]
     fn every_rule_key_governs_the_effect_name_it_is_named_after() {
         for key in RULE_KEYS {
-            let table = github(&format!("{FORGE}\n[github.policy]\n{key} = \"deny\"\n")).policy;
+            let table = github(&format!("{FORGE}\n[github.policy]\n{}", row(key, "deny"))).policy;
             for other_key in RULE_KEYS {
                 let expected = match other_key == key {
                     true => DeploymentRule::Deny,
@@ -1823,6 +1923,33 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_dotted_effect_name_is_gated_only_when_the_document_quotes_it() {
+        let quoted = github(&format!(
+            "{FORGE}\n[github.policy]\n\"jira.issue_filed\" = \"deny\"\n"
+        ))
+        .policy;
+        assert_eq!(
+            quoted.rule_for(&EffectName::shipped(JIRA_ISSUE_FILED)),
+            DeploymentRule::Deny,
+            "a quoted key is one toml key, so it names the effect it spells"
+        );
+        let refusal = toml::from_str::<Config>(&format!(
+            "{FORGE}\n[github.policy]\njira.issue_filed = \"deny\"\n"
+        ))
+        .expect_err("an unquoted dotted key is a `jira` table and not a rule")
+        .message()
+        .to_string();
+        assert_eq!(
+            refusal,
+            "unknown variant `issue_filed`, expected one of `allow`, `require_human`, `deny`",
+            "an unquoted dotted key becomes a `jira` table, so toml offers `issue_filed` where \
+             a rule belongs. The document is refused, which is what matters: no effect is left \
+             ungated in silence. The refusal names the value and not the key, so it reads as a \
+             misspelled rule rather than a misspelled name"
+        );
     }
 
     #[test]
@@ -1899,11 +2026,12 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
 
     #[test]
     fn the_rules_a_document_may_write_are_the_three_that_exist() {
-        for (written, expected) in [
+        let written: [(&str, DeploymentRule); DeploymentRule::VARIANT_COUNT] = [
             ("allow", DeploymentRule::Allow),
             ("require_human", DeploymentRule::RequireHuman),
             ("deny", DeploymentRule::Deny),
-        ] {
+        ];
+        for (written, expected) in written {
             let policy = github(&format!(
                 "{FORGE}\n[github.policy]\nensure_pull_request = \"{written}\"\n"
             ))
@@ -1929,7 +2057,7 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
             "{FORGE}\n[github.policy]\n{}",
             RULE_KEYS
                 .iter()
-                .map(|key| format!("{key} = \"allow\"\n"))
+                .map(|key| row(key, "allow"))
                 .collect::<String>()
         ))
         .policy;
@@ -2241,6 +2369,108 @@ token = { env = "JIRA_API_TOKEN" }
                 .message()
                 .contains("in_flight"),
             "an unknown key in [jira.workflow] would silently map no status"
+        );
+    }
+
+    const FILES_INTO: &str = "\n[jira.filing]\nproject = \"SEC\"\nissue_type = \"Task\"\n\
+                              ledger_issue = \"SEC-1\"\n";
+
+    #[test]
+    fn a_tracker_that_names_no_filing_table_files_nothing() {
+        assert!(
+            jira(TRACKER).filing.is_none(),
+            "a deployment observes work items in [jira].project. Filing advisories is a \
+             write it has to ask for, and a table that never asked must not start creating \
+             tickets"
+        );
+        assert!(jira(&format!("{TRACKER}{FILES_INTO}")).filing.is_some());
+    }
+
+    #[test]
+    fn the_filing_table_names_its_own_project_and_never_borrows_the_observed_one() {
+        let jira = jira(&format!("{TRACKER}{FILES_INTO}"));
+        assert_eq!(
+            jira.project, "IDENT",
+            "the project work items are read from"
+        );
+        let filing = jira.filing.expect("this deployment files");
+        assert_eq!(
+            filing.project, "SEC",
+            "and the project advisories are filed into, which is a separate key"
+        );
+        assert_eq!(filing.issue_type, "Task");
+        assert_eq!(filing.ledger_issue, "SEC-1");
+    }
+
+    #[test]
+    fn a_ledger_issue_in_another_project_is_refused() {
+        let bad = format!(
+            "{TRACKER}\n[jira.filing]\nproject = \"SEC\"\nissue_type = \"Task\"\n\
+             ledger_issue = \"IDENT-1\"\n"
+        );
+        let refusal = toml::from_str::<Config>(&bad)
+            .expect_err("a ledger outside the filing project is refused")
+            .message()
+            .to_string();
+        assert!(
+            refusal.contains("IDENT-1") && refusal.contains("SEC"),
+            "the refusal names both keys, because a reader has to see which one is wrong: \
+             {refusal}"
+        );
+        assert!(
+            toml::from_str::<Config>(&format!("{TRACKER}{FILES_INTO}")).is_ok(),
+            "and the same document with the ledger inside the filing project is accepted, \
+             so this case cannot be passing because every filing table is refused"
+        );
+    }
+
+    #[test]
+    fn a_filing_table_missing_a_key_is_refused_rather_than_defaulted() {
+        for (omitted, remainder) in [
+            (
+                "project",
+                "issue_type = \"Task\"\nledger_issue = \"SEC-1\"\n",
+            ),
+            (
+                "issue_type",
+                "project = \"SEC\"\nledger_issue = \"SEC-1\"\n",
+            ),
+            ("ledger_issue", "project = \"SEC\"\nissue_type = \"Task\"\n"),
+        ] {
+            let bad = format!("{TRACKER}\n[jira.filing]\n{remainder}");
+            assert!(
+                toml::from_str::<Config>(&bad).is_err(),
+                "`{omitted}` has no answer this build could invent: a default project would \
+                 file into a project nobody named, a default issue type is refused by the \
+                 site, and a default ledger issue does not exist"
+            );
+        }
+    }
+
+    #[test]
+    fn a_project_written_as_a_name_or_a_url_is_refused() {
+        for written in ["", "SEC-1", "https://example.atlassian.net/browse/SEC"] {
+            let bad = format!(
+                "{TRACKER}\n[jira.filing]\nproject = \"{written}\"\nissue_type = \"Task\"\n\
+                 ledger_issue = \"SEC-1\"\n"
+            );
+            assert!(
+                toml::from_str::<Config>(&bad).is_err(),
+                "`{written}` is not a bare project key, and a create naming one is refused by \
+                 the site after the claim has already been written"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_key_inside_the_filing_table_is_refused() {
+        let bad = format!("{TRACKER}{FILES_INTO}anchor = \"SEC-2\"\n");
+        assert!(
+            toml::from_str::<Config>(&bad)
+                .unwrap_err()
+                .message()
+                .contains("anchor"),
+            "an unknown key in [jira.filing] would name a ledger nothing reads"
         );
     }
 }

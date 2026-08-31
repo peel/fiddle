@@ -171,11 +171,20 @@ Both provider paths use that same file. Assembling by hand is how calibration go
 hooks/dispatch-provider.sh <provider> \
   --role evaluator \
   --topic "Evaluate domain: {domain}" \
+  --domain {domain} \
+  --dimensions "<comma-separated dimension names from the bean's eval block>" \
   --instructions "$(cat context-{domain}.txt)" \
   --diff-file <diff-file> \
   --design-doc-file <design-doc-file> \
   --evidence-file evidence-{domain}.txt
 ```
+
+`--domain` and `--dimensions` build the response schema, so they name the exact
+domain key and dimension keys the card must carry. Pass `--dimensions ""` when the
+bean's eval block sets no thresholds; the schema then admits an empty `dimensions`
+object and requires the `"mode": "evidence-only"` declaration beside it. Omitting
+`--dimensions` altogether is refused rather than read as empty, because a dropped
+flag and a deliberate evidence-only card must not look the same.
 
 Then add the run-state sections the script cannot know about (positions 4 through 7 of the loading order): runtime state for runtime-configured domains, the bean's task criteria, and on iteration 2+ the diff since BASE_SHA with the prior scorecard and its guidance. An external provider's whole reply is the scorecard JSON — see `skills/develop/provider-context.md` for the prompt and `skills/develop/scorecard-envelope.md` for the field names the graders accept.
 
@@ -186,7 +195,9 @@ hooks/dispatch-provider.sh <provider> ... > scorecard-{domain}-{provider}.json
 dispatch_count=$((dispatch_count + 1))
 ```
 
-Redirect the hook's stdout straight to the file; never hand-copy a scorecard out of provider output. The hook emits the reply already extracted from whatever transport the CLI uses — a provider whose CLI streams structured events declares an `extract` mode in `orchestrate.json` (codex sets `codex-jsonl`, for the JSONL stream `codex exec --json` produces). When it finds no reply it exits non-zero with the raw stream on stderr, so an empty or truncated scorecard fails loudly instead of reaching the merge. Reading a scorecard out of an event stream by eye is how one arrives a closing brace short, or with `criteria` nested under `.domains`.
+Redirect the hook's stdout straight to the file; never hand-copy a scorecard out of provider output. The hook reads the reply from the file the CLI writes it to rather than from the CLI's own stdout — a provider that offers such a file declares an `extract` mode in `orchestrate.json` (codex sets `codex-last-message`, for the file `codex exec -o` writes). The hook also declares, per role, which reply shape the provider must be constrained to: `schema_roles` maps a role to a scorecard schema profile, and `scripts/build-scorecard-schema.sh` builds that schema for `--output-schema`. A role absent from that map, such as a research or plan-critic role that answers in prose, is dispatched without a schema.
+
+The hook exits 2 with the reason on stderr when the message file is absent, when it is empty, and when a role dispatched under a schema answers with text that is not one JSON value. It prints nothing to stdout in those cases, so a partial scorecard cannot reach the merge. This is what replaced scraping the JSONL event stream for the last `agent_message`: that path discarded any line it could not parse and assumed the final message was the wanted one, and it returned a card one closing brace short three times in M5a.
 
 Dispatch accounting: one implementer + one evaluator per domain per iteration (2 domains = 3 dispatches). PASS_PENDING re-evaluation reuses the provider recorded in `selected-provider-{domain}.json`.
 

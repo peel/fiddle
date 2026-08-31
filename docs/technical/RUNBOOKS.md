@@ -115,6 +115,20 @@ gh workflow run github-effects.yml --repo peel/fiddle \
 # the live Jira read lane; one issue, read only
 JIRA_SITE=https://snplow.atlassian.net JIRA_ISSUE=ISP-267 \
   FIDDLE_BIN="$PWD/target/release/fiddle" scripts/live-jira-observe.sh
+
+# the live Jira search shape lane; searches and workflow statuses, read only
+JIRA_SITE=https://snplow.atlassian.net JIRA_SEARCH_PROJECT=ISP \
+  scripts/live-jira-search-shape.sh
+
+# the live Jira write lane; it CREATES an issue and then CLOSES it, never deletes
+JIRA_SITE=https://snplow.atlassian.net JIRA_WRITE_PROJECT=ISP \
+  JIRA_LEDGER_ISSUE=ISP-<anchor> scripts/live-jira-write.sh
+
+# the live Jira filing lane; the same write, driven through FileVerdict itself.
+# JIRA_ISSUE belongs to the read lane and both write lanes refuse while it names
+# JIRA_WRITE_PROJECT, so unset it for the invocation.
+env -u JIRA_ISSUE JIRA_SITE=https://snplow.atlassian.net JIRA_WRITE_PROJECT=ISP \
+  JIRA_LEDGER_ISSUE=ISP-<anchor> scripts/live-jira-file-verdict.sh
 ```
 
 Read the gate's coverage off its `TOTALS` line. It says `N of M binaries`, and
@@ -224,6 +238,180 @@ printed to your terminal.
 The lane prints the issue it read. It requests `fields=status,updated` and no
 other field, so no ticket prose crosses the boundary, and nothing it prints is
 committed here.
+
+### The live Jira search shape lane
+
+`scripts/live-jira-search-shape.sh` sends six GET requests and writes nothing. It
+settles what `crates/fiddle-runtime/tests/support/stub_jira.rs` assumed about
+`/rest/api/3/search/jql`, which until now was the only definition in this
+repository of that endpoint's shape. It refuses when `JIRA_SITE`,
+`JIRA_SEARCH_PROJECT`, `JIRA_USER_EMAIL` or `JIRA_API_TOKEN` is absent, and it
+exits 2 with a reason.
+
+Before it measures anything it plants the credential in a file of its own and
+greps for it. A grep that cannot find a planted credential proves nothing by
+finding none elsewhere, so the lane refuses when the planted case does not bite.
+
+**Measured 2026-08-28 against `snplow.atlassian.net`, project `ISP`.**
+
+| what | the stub assumed | the site answered |
+| --- | --- | --- |
+| top level members | `issues`, `isLast`, `nextPageToken` | `isLast, issues, nextPageToken` |
+| `isLast` | emitted, never depended on | present, `false` on a page that is not the last |
+| `total`, `startAt`, `maxResults` in an answer | absent | absent |
+| default page size | 50, graded medium confidence | 50 |
+| `nextPageToken` | present until the last page, and it advances | present, and it advances |
+| `startAt` in a request | refused with 400 | **200, and silently ignored** |
+| `maxResults=500` | capped at the stub's page cap | 265 matches in one page, no further token |
+
+Two of those need reading rather than glancing at.
+
+**`startAt`.** The stub refuses it with 400 and the site answers 200. That is not
+a defect in the stub. The site returns the same first key as an unparameterised
+page, so it accepts the parameter and does nothing with it: a caller that asked
+for page two is handed page one and cannot tell. The stub's 400 is a deliberate
+divergence toward strictness and it stands. `all_search_matches` and
+`every_issue_carrying_the_marker` page by `nextPageToken` and send no `startAt`,
+so nothing in this build depends on either behaviour.
+
+**The page cap.** `a_page_larger_than_the_cap_is_still_capped_and_still_says_there_is_more`
+holds of the stub and is not a fact about a real site. `ISP` holds 265 issues and
+the site served all 265 to `maxResults=500`. A caller must still follow pages,
+because 265 is not a bound the site published — it is how many matched.
+
+**Now a measurement: real `[jira.workflow]` status names.** ADR 077 recorded this
+as the one item its live read left open. Every issue type in `ISP` — Task, Story,
+Bug, Epic, Spike, Sub-task — offers the same six statuses:
+
+| status | category |
+| --- | --- |
+| To Do | new |
+| In Progress | indeterminate |
+| In Review | indeterminate |
+| Blocked | indeterminate |
+| Done | done |
+| Won't Do | done |
+
+`Blocked` is the one that matters. Its category is `indeterminate`, the same as
+`In Progress` and `In Review`, so a deployment that wants blocked work to read as
+blocked has to name it in `[jira.workflow]`. The category cannot tell them apart.
+
+### The live Jira write lane
+
+`scripts/live-jira-write.sh` **creates an issue on a real site and then closes
+it.** It never deletes. Deletion is refused in `ISP` by project policy, so a
+cleanup that depends on it leaves residue on every run.
+
+**Six preconditions, all asserted before anything is written.** The four
+variables, the https origin and the bare project key, as before. Then:
+`JIRA_LEDGER_ISSUE` must exist, must live in `JIRA_WRITE_PROJECT`, and must be
+the issue type the lane files, because a Jira workflow is per issue type and a
+transition resolved on an issue of another type says nothing about the ticket
+the lane creates. The closing transition must resolve to **exactly one id** from
+that issue's state; the lane refuses on any other count and prints every
+transition it was offered. And the token must be able to write, read back and
+remove a property on the ledger issue. Discovering any of these after a create
+is what left `ISP-272` and `ISP-273` behind.
+
+**The closing transition is named, never matched by category.** `Won't Do` by
+default, `Done` as the declared fallback, `JIRA_CLOSING_TRANSITION` to spell it
+otherwise. ADR 077 measured that `Won't Do` and `Done` share the category `done`,
+so a category match would pick the wrong transition. The category **is** used to
+exclude closed issues from the marker search, which is what the category means
+and is a different question.
+
+**It sends the claim-then-create requests `FileVerdict` sends.** It reads
+`/rest/api/3/issue/{ledger}/properties/{marker}` first. A claim naming an issue
+means the ticket exists and it creates nothing. A claim naming none is an
+unknown outcome, and the lane refuses rather than repeating the write. No claim
+means it writes one, creates, and gives the claim the key. It runs that twice
+with no wait, which is the interruption case exactly-once is scoped to. Its
+searches carry `fields=key` and refuse an answer that omits the key.
+
+**The lag it reports agrees with its own observations.** It waits until the
+search shows exactly as many issues as the run created **and** shows the key it
+filed. Until both hold, the number would be taken from a stale index. If neither
+holds within 300 seconds it says the lag is unmeasured rather than printing a
+number. The 2026-08-28 run printed `0 seconds` while reporting one issue where
+two existed; that number is unsound and must not be quoted.
+
+**What it leaves behind.** Nothing, when it passes. Every issue it wrote or
+matched is closed through the resolved transition and each close is verified by
+a second read. The claim is removed from the ledger issue. The ledger issue
+itself is never closed, and the lane refuses if the close list names it. When a
+close does not take, the lane names the keys on stderr and fails.
+
+**It does not drive `fiddle`.** It sends the requests by hand, so it measures the
+site rather than the build. `scripts/live-jira-file-verdict.sh` is the lane that
+drives the build; see below. `human::publish`, the other route a Jira write could
+take, still has no caller outside tests. The credential census in
+`crates/fiddle-acceptance/tests/jira_credential.rs` now carries a write scenario:
+`a_sweep_that_files` drives `fiddle run cve --capability cve_mitigate` over a
+document carrying `[jira.filing]`, and the site it files into is a loopback stub.
+Ten of the census's 42 surfaces are that run's, and `reports/filings.json` is one
+of them. No acceptance scenario drives the filing path against Atlassian, and
+none is meant to: `scripts/live-jira-file-verdict.sh` is the lane that does.
+`the_credential_never_reaches_the_filing_report_through_a_quoted_refusal` holds the
+one new surface the filing path writes, which is `filings.json` on the disk.
+
+**It is a human gate and the operator runs it.** It does not gate CI. The
+rewritten lane ran against `ISP` on 2026-08-29 with ledger `ISP-272`: two runs,
+one create, the ticket closed as `Won't Do` and the claim released. `scripts/test-live-jira-lanes.sh`
+holds that it refuses rather than skips, that it sends no delete against an
+issue, that it resolves its closing transition by name, and that its marker
+search excludes closed issues. Those are checks on the text of the lane, not on
+Atlassian.
+
+**Run twice against `ISP` on 2026-08-28, before this rewrite.** It filed
+`ISP-272` and `ISP-273`, so two runs left two issues rather than one. Both were
+closed to `Won't Do` by hand through transition `id=51`. ADR 079 records what the
+run measured and what it refutes.
+
+### The live Jira filing lane
+
+`scripts/live-jira-file-verdict.sh` **drives `FileVerdict` itself against a real
+site.** It runs `crates/fiddle-runtime/tests/live_jira_filing.rs`, an `#[ignore]`d
+case, so `scripts/gate.sh` never files a ticket. Nothing in its filing path is a
+request the lane writes: `ticket_proposals` builds the proposal,
+`TicketProposal::operation` builds the `FileVerdict`, and the same `Executor`
+`CveMitigate::file` uses executes it.
+
+**It takes the same five variables as the write lane and refuses the same way.**
+`JIRA_ISSUE` names the read lane's issue and is set in the operator environment;
+unset it for the invocation rather than weakening the guard.
+
+**It proves the two inspects separately.** Run one files. Run two, over the same
+invocation reference, is answered by the executor's `inspect` reading the claim
+on the ledger. The claim is then removed and `FileVerdict::inspect` is called
+once more, which falls through to the search, asks `fields=key`, and must read
+the same key back. The first inspect measures the ledger; the second measures the
+search.
+
+**Its lag carries the bound it actually observed.** A search that disagrees with
+the run's own create count is a lower bound; the first search that agrees is an
+upper bound. When the first search already agrees the lane says `at most N ms`
+and refuses to call it zero, because it observed no search that disagreed.
+
+**What it leaves behind.** Nothing, when it passes. The ticket is closed through
+the resolved transition and verified by a second read, the claim is removed, and
+the lane refuses if the close list names the ledger. Keys it could not close are
+printed and the case fails.
+
+**Run against `ISP` on 2026-08-29** with ledger `ISP-272`. It filed `ISP-275`
+and, after a correction to its lag reporting, `ISP-276`. Both are closed as
+`Won't Do`. ADR 079 records what the run measured and what it does not reach.
+
+**It does not drive a `fiddle` binary.** It builds a `TicketFiling` itself, so
+the mapping from `fiddle.toml` to `TicketFiling` and `CveMitigate::file_tickets`
+are still measured against the loopback stub alone. The only run path to
+`FileVerdict` through the binary is a full CVE sweep, which needs a scanner, an
+agent and a GitHub repository and which opens a pull request.
+
+**Out of reach and claimed by none of these lanes.** Concurrent duplicate
+invocations. The design scopes exactly-once to interruptions, and one process
+cannot race itself. Whether a page boundary shifts under a walk is also
+unmeasured: it needs an issue indexed between two pages of one walk, which
+nothing here can arrange.
 
 ## Cut a release
 

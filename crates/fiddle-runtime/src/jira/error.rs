@@ -1,4 +1,6 @@
-#[derive(Debug, thiserror::Error)]
+use crate::effect::{AdapterError, EffectOutcome, EffectPhase, RetryAdvice};
+
+#[derive(Debug, thiserror::Error, crate::effect::VariantCount)]
 pub enum JiraError {
     #[error("the site refused the credential with {status}")]
     Unauthorized { status: u16 },
@@ -23,6 +25,91 @@ pub enum JiraError {
 
     #[error("the site could not be reached: {0}")]
     Unreachable(String),
+
+    #[error("this deployment holds no `[jira]` configuration, so no request was sent")]
+    Unconfigured,
+
+    #[error("{count} objects carry the marker `{marker}`, and this write acts on one or none")]
+    Ambiguous { marker: String, count: usize },
+
+    #[error(
+        "the ledger issue `{anchor}` holds a claim for `{marker}` and no issue carrying that \
+         marker can be read yet, so a create may have committed and the index may not have \
+         admitted it"
+    )]
+    Claimed { anchor: String, marker: String },
+
+    #[error("no request was sent: {0}")]
+    NotSent(String),
+}
+
+impl AdapterError for JiraError {
+    fn outcome(&self, phase: EffectPhase) -> EffectOutcome {
+        match phase {
+            EffectPhase::Inspect => EffectOutcome::NotCommitted,
+            EffectPhase::Apply => match self {
+                JiraError::Unauthorized { .. }
+                | JiraError::Forbidden { .. }
+                | JiraError::Absent { .. }
+                | JiraError::AbsentOrRefused { .. }
+                | JiraError::RateLimited(_)
+                | JiraError::Unconfigured
+                | JiraError::Ambiguous { .. }
+                | JiraError::NotSent(_) => EffectOutcome::NotCommitted,
+                JiraError::Claimed { .. } | JiraError::Malformed(_) | JiraError::Unreachable(_) => {
+                    EffectOutcome::Unknown
+                }
+            },
+        }
+    }
+
+    fn advice(&self) -> RetryAdvice {
+        match self {
+            JiraError::Unauthorized { .. }
+            | JiraError::Forbidden { .. }
+            | JiraError::Absent { .. }
+            | JiraError::AbsentOrRefused { .. }
+            | JiraError::RateLimited(_)
+            | JiraError::Malformed(_)
+            | JiraError::Unreachable(_)
+            | JiraError::Unconfigured
+            | JiraError::Ambiguous { .. }
+            | JiraError::Claimed { .. }
+            | JiraError::NotSent(_) => RetryAdvice::default(),
+        }
+    }
+
+    fn is_worth_reading_again(&self) -> bool {
+        match self {
+            JiraError::AbsentOrRefused { .. }
+            | JiraError::RateLimited(_)
+            | JiraError::Claimed { .. }
+            | JiraError::Unreachable(_) => true,
+            JiraError::Unauthorized { .. }
+            | JiraError::Forbidden { .. }
+            | JiraError::Absent { .. }
+            | JiraError::Malformed(_)
+            | JiraError::Unconfigured
+            | JiraError::Ambiguous { .. }
+            | JiraError::NotSent(_) => false,
+        }
+    }
+
+    fn duplicates(&self) -> Option<usize> {
+        match self {
+            JiraError::Ambiguous { count, .. } => Some(*count),
+            JiraError::Unauthorized { .. }
+            | JiraError::Forbidden { .. }
+            | JiraError::Absent { .. }
+            | JiraError::AbsentOrRefused { .. }
+            | JiraError::RateLimited(_)
+            | JiraError::Malformed(_)
+            | JiraError::Unreachable(_)
+            | JiraError::Unconfigured
+            | JiraError::Claimed { .. }
+            | JiraError::NotSent(_) => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -41,11 +128,15 @@ mod tests {
             JiraError::RateLimited(_) => "rate limited",
             JiraError::Malformed(_) => "malformed",
             JiraError::Unreachable(_) => "unreachable",
+            JiraError::Unconfigured => "unconfigured",
+            JiraError::Ambiguous { .. } => "ambiguous",
+            JiraError::NotSent(_) => "not sent",
+            JiraError::Claimed { .. } => "claimed",
         }
     }
 
     fn cases() -> Vec<JiraError> {
-        vec![
+        let listed = vec![
             JiraError::Unauthorized { status: 401 },
             JiraError::Forbidden { status: 403 },
             JiraError::Absent {
@@ -58,7 +149,26 @@ mod tests {
             JiraError::RateLimited("HTTP 429".into()),
             JiraError::Malformed("the body is not an issue".into()),
             JiraError::Unreachable("connection refused".into()),
-        ]
+            JiraError::Unconfigured,
+            JiraError::Ambiguous {
+                marker: "fx-abc123".into(),
+                count: 2,
+            },
+            JiraError::NotSent("the lookup resolved nothing to send".into()),
+            JiraError::Claimed {
+                anchor: "IDENT-1".into(),
+                marker: "fx-abc123".into(),
+            },
+        ];
+        assert_eq!(
+            listed.len(),
+            JiraError::VARIANT_COUNT,
+            "this list is written by hand and every claim below that reads `every variant \
+             of JiraError` rests on it holding one case per variant; a variant added to the \
+             enum and to the matches that must name it, and not added here, arrives as a \
+             shorter list and fails on this line"
+        );
+        listed
     }
 
     fn carrying(planted: &str) -> Vec<JiraError> {
@@ -73,6 +183,15 @@ mod tests {
             JiraError::RateLimited(planted.into()),
             JiraError::Malformed(planted.into()),
             JiraError::Unreachable(planted.into()),
+            JiraError::Ambiguous {
+                marker: planted.into(),
+                count: 2,
+            },
+            JiraError::NotSent(planted.into()),
+            JiraError::Claimed {
+                anchor: planted.into(),
+                marker: planted.into(),
+            },
         ]
     }
 
@@ -80,11 +199,12 @@ mod tests {
         vec![
             JiraError::Unauthorized { status: 401 },
             JiraError::Forbidden { status: 403 },
+            JiraError::Unconfigured,
         ]
     }
 
     #[test]
-    fn every_read_failure_explains_itself_in_exactly_these_words() {
+    fn every_jira_failure_explains_itself_in_exactly_these_words() {
         let pinned = [
             (
                 JiraError::Unauthorized { status: 401 },
@@ -119,6 +239,30 @@ mod tests {
             (
                 JiraError::Unreachable("connection refused".into()),
                 "the site could not be reached: connection refused",
+            ),
+            (
+                JiraError::Unconfigured,
+                "this deployment holds no `[jira]` configuration, so no request was sent",
+            ),
+            (
+                JiraError::Ambiguous {
+                    marker: "fx-abc123".into(),
+                    count: 2,
+                },
+                "2 objects carry the marker `fx-abc123`, and this write acts on one or none",
+            ),
+            (
+                JiraError::NotSent("the lookup resolved nothing to send".into()),
+                "no request was sent: the lookup resolved nothing to send",
+            ),
+            (
+                JiraError::Claimed {
+                    anchor: "IDENT-1".into(),
+                    marker: "fx-abc123".into(),
+                },
+                "the ledger issue `IDENT-1` holds a claim for `fx-abc123` and no issue carrying \
+                 that marker can be read yet, so a create may have committed and the \
+                 index may not have admitted it",
             ),
         ];
         let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
@@ -158,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn the_seven_read_failures_read_as_seven_failures() {
+    fn the_eleven_jira_failures_read_as_eleven_failures() {
         let cases = cases();
         let mut named: Vec<&str> = cases.iter().map(variant).collect();
         named.sort_unstable();
@@ -167,10 +311,14 @@ mod tests {
             [
                 "absent",
                 "absent or refused",
+                "ambiguous",
+                "claimed",
                 "forbidden",
                 "malformed",
+                "not sent",
                 "rate limited",
                 "unauthorized",
+                "unconfigured",
                 "unreachable"
             ],
             "every variant of JiraError has a case here"
@@ -180,5 +328,377 @@ mod tests {
         let spoken = said.len();
         said.dedup();
         assert_eq!(said.len(), spoken, "two failures read the same: {said:?}");
+    }
+
+    #[test]
+    fn every_failure_names_what_a_write_that_ended_this_way_did() {
+        let pinned = [
+            (
+                JiraError::Unauthorized { status: 401 },
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                JiraError::Forbidden { status: 403 },
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                JiraError::Absent {
+                    key: "IDENT-1".into(),
+                },
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                JiraError::AbsentOrRefused {
+                    key: "IDENT-1".into(),
+                    why: "HTTP 503".into(),
+                },
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                JiraError::RateLimited("HTTP 429".into()),
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                JiraError::Malformed("the body is not an issue".into()),
+                EffectOutcome::Unknown,
+            ),
+            (
+                JiraError::Unreachable("connection refused".into()),
+                EffectOutcome::Unknown,
+            ),
+            (JiraError::Unconfigured, EffectOutcome::NotCommitted),
+            (
+                JiraError::Ambiguous {
+                    marker: "fx-abc123".into(),
+                    count: 2,
+                },
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                JiraError::NotSent("the lookup resolved nothing to send".into()),
+                EffectOutcome::NotCommitted,
+            ),
+            (
+                JiraError::Claimed {
+                    anchor: "IDENT-1".into(),
+                    marker: "fx-abc123".into(),
+                },
+                EffectOutcome::Unknown,
+            ),
+        ];
+        let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
+        let all: Vec<&str> = cases().iter().map(variant).collect();
+        assert_eq!(named, all, "every variant of JiraError is pinned here");
+        for (case, expected) in pinned {
+            let named = variant(&case);
+            assert_eq!(
+                case.outcome(EffectPhase::Apply),
+                expected,
+                "{named} during a write means this and nothing weaker"
+            );
+        }
+    }
+
+    #[test]
+    fn a_lost_answer_during_apply_is_unknown_and_never_not_committed() {
+        let lost: Vec<&str> = cases()
+            .iter()
+            .filter(|case| case.outcome(EffectPhase::Apply) == EffectOutcome::Unknown)
+            .map(variant)
+            .collect();
+        assert_eq!(
+            lost,
+            ["malformed", "unreachable", "claimed"],
+            "the site may have written and could not say so in exactly these failures"
+        );
+    }
+
+    #[test]
+    fn a_refusal_that_sent_nothing_is_not_committed_during_apply_and_never_unknown() {
+        let settled: Vec<&str> = cases()
+            .iter()
+            .filter(|case| case.outcome(EffectPhase::Apply) == EffectOutcome::NotCommitted)
+            .map(variant)
+            .collect();
+        assert_eq!(
+            settled,
+            [
+                "unauthorized",
+                "forbidden",
+                "absent",
+                "absent or refused",
+                "rate limited",
+                "unconfigured",
+                "ambiguous",
+                "not sent"
+            ],
+            "a write that ended in exactly these failures reached no site or was refused by \
+             one, so the executor reports a definite adapter failure; a variant that lands \
+             here instead of among the lost answers, or the other way, fails this line"
+        );
+    }
+
+    #[test]
+    fn the_phase_changes_the_answer_so_a_read_reports_no_write() {
+        for case in cases() {
+            assert_eq!(
+                case.outcome(EffectPhase::Inspect),
+                EffectOutcome::NotCommitted,
+                "{} during a read changed nothing",
+                variant(&case)
+            );
+        }
+        let lost = JiraError::Unreachable("timed out".into());
+        assert_ne!(
+            lost.outcome(EffectPhase::Inspect),
+            lost.outcome(EffectPhase::Apply),
+            "an implementation that ignores the phase fails here"
+        );
+    }
+
+    #[test]
+    fn a_jira_failure_stands_where_the_executor_holds_an_adapter_error() {
+        let held: Box<dyn AdapterError> = Box::new(JiraError::Unreachable("timed out".into()));
+        assert_eq!(
+            held.outcome(EffectPhase::Apply),
+            EffectOutcome::Unknown,
+            "the executor boxes an adapter failure and asks it what a write did"
+        );
+    }
+
+    #[test]
+    fn every_failure_says_whether_a_second_read_can_settle_it() {
+        let pinned = [
+            (JiraError::Unauthorized { status: 401 }, false),
+            (JiraError::Forbidden { status: 403 }, false),
+            (
+                JiraError::Absent {
+                    key: "IDENT-1".into(),
+                },
+                false,
+            ),
+            (
+                JiraError::AbsentOrRefused {
+                    key: "IDENT-1".into(),
+                    why: "HTTP 503".into(),
+                },
+                true,
+            ),
+            (JiraError::RateLimited("HTTP 429".into()), true),
+            (
+                JiraError::Malformed("the body is not an issue".into()),
+                false,
+            ),
+            (JiraError::Unreachable("connection refused".into()), true),
+            (JiraError::Unconfigured, false),
+            (
+                JiraError::Ambiguous {
+                    marker: "fx-abc123".into(),
+                    count: 2,
+                },
+                false,
+            ),
+            (
+                JiraError::NotSent("the lookup resolved nothing to send".into()),
+                false,
+            ),
+            (
+                JiraError::Claimed {
+                    anchor: "IDENT-1".into(),
+                    marker: "fx-abc123".into(),
+                },
+                true,
+            ),
+        ];
+        let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
+        let all: Vec<&str> = cases().iter().map(variant).collect();
+        assert_eq!(named, all, "every variant of JiraError is pinned here");
+        for (case, expected) in pinned {
+            let named = variant(&case);
+            assert_eq!(
+                case.is_worth_reading_again(),
+                expected,
+                "{named} answers whether a later read can settle it, and nothing weaker"
+            );
+        }
+    }
+
+    #[test]
+    fn a_later_read_settles_these_failures_and_the_rest_stand_as_they_are() {
+        let again: Vec<&str> = cases()
+            .iter()
+            .filter(|case| case.is_worth_reading_again())
+            .map(variant)
+            .collect();
+        let standing: Vec<&str> = cases()
+            .iter()
+            .filter(|case| !case.is_worth_reading_again())
+            .map(variant)
+            .collect();
+        assert_eq!(
+            again,
+            [
+                "absent or refused",
+                "rate limited",
+                "unreachable",
+                "claimed"
+            ],
+            "a later read settles exactly these, so an adapter that reads every failure \
+             again fails here"
+        );
+        assert_eq!(
+            standing,
+            [
+                "unauthorized",
+                "forbidden",
+                "absent",
+                "malformed",
+                "unconfigured",
+                "ambiguous",
+                "not sent"
+            ],
+            "these answers do not change by asking twice, so an adapter that reads no \
+             failure again fails here"
+        );
+    }
+
+    #[test]
+    fn every_failure_says_how_many_objects_it_read_where_at_most_one_was_expected() {
+        let pinned = [
+            (JiraError::Unauthorized { status: 401 }, None),
+            (JiraError::Forbidden { status: 403 }, None),
+            (
+                JiraError::Absent {
+                    key: "IDENT-1".into(),
+                },
+                None,
+            ),
+            (
+                JiraError::AbsentOrRefused {
+                    key: "IDENT-1".into(),
+                    why: "HTTP 503".into(),
+                },
+                None,
+            ),
+            (JiraError::RateLimited("HTTP 429".into()), None),
+            (
+                JiraError::Malformed("the body is not an issue".into()),
+                None,
+            ),
+            (JiraError::Unreachable("connection refused".into()), None),
+            (JiraError::Unconfigured, None),
+            (
+                JiraError::Ambiguous {
+                    marker: "fx-abc123".into(),
+                    count: 2,
+                },
+                Some(2),
+            ),
+            (
+                JiraError::NotSent("the lookup resolved nothing to send".into()),
+                None,
+            ),
+            (
+                JiraError::Claimed {
+                    anchor: "IDENT-1".into(),
+                    marker: "fx-abc123".into(),
+                },
+                None,
+            ),
+        ];
+        let named: Vec<&str> = pinned.iter().map(|(case, _)| variant(case)).collect();
+        let all: Vec<&str> = cases().iter().map(variant).collect();
+        assert_eq!(named, all, "every variant of JiraError is pinned here");
+        for (case, expected) in pinned {
+            let named = variant(&case);
+            assert_eq!(
+                case.duplicates(),
+                expected,
+                "{named} names how many objects it read, and the executor turns exactly the \
+                 named ones into DuplicateState"
+            );
+        }
+    }
+
+    #[test]
+    fn exactly_one_failure_names_a_count_and_it_is_the_one_whose_words_carry_that_count() {
+        let counted: Vec<&str> = cases()
+            .iter()
+            .filter(|case| case.duplicates().is_some())
+            .map(variant)
+            .collect();
+        assert_eq!(
+            counted,
+            ["ambiguous"],
+            "an adapter that named every failure a duplicate observation, or none, fails here"
+        );
+        let ambiguous = JiraError::Ambiguous {
+            marker: "fx-abc123".into(),
+            count: 3,
+        };
+        assert_eq!(ambiguous.duplicates(), Some(3));
+        assert!(
+            format!("{ambiguous}").contains('3'),
+            "the count the executor reads is the count the reader reads: {ambiguous}"
+        );
+    }
+
+    #[test]
+    fn the_failure_whose_words_promise_another_attempt_is_the_one_read_again() {
+        let limited = JiraError::RateLimited("HTTP 429".into());
+        let refused = JiraError::Forbidden { status: 403 };
+        assert!(
+            format!("{limited}").contains("can be sent again"),
+            "the rate limited failure promises another attempt in its own words: {limited}"
+        );
+        assert!(
+            limited.is_worth_reading_again(),
+            "and the adapter keeps that promise, or the text and the behaviour disagree"
+        );
+        assert!(
+            !format!("{refused}").contains("can be sent again"),
+            "a refused credential promises no other attempt: {refused}"
+        );
+        assert!(
+            !refused.is_worth_reading_again(),
+            "and the adapter makes none"
+        );
+    }
+
+    #[test]
+    fn no_failure_advises_a_wait_because_no_header_reaches_this_type() {
+        for case in cases() {
+            assert_eq!(
+                case.advice(),
+                RetryAdvice::default(),
+                "{} holds a status and the site's words and no header, so it advises no \
+                 measured wait",
+                variant(&case)
+            );
+            assert!(
+                !case.advice().wants_a_wait(),
+                "{} must not ask for a wait no response supplied",
+                variant(&case)
+            );
+        }
+        let limited = JiraError::RateLimited("HTTP 429".into());
+        assert!(
+            limited.is_worth_reading_again(),
+            "a jira 429 is read again because its status says so"
+        );
+        assert!(
+            !limited.advice().wants_a_wait(),
+            "and never because a Retry-After header reached it, because none does"
+        );
+    }
+
+    #[test]
+    fn a_boxed_jira_failure_answers_for_itself_and_not_from_the_trait_default() {
+        let limited: Box<dyn AdapterError> = Box::new(JiraError::RateLimited("HTTP 429".into()));
+        assert!(
+            limited.is_worth_reading_again(),
+            "the executor boxes an adapter failure and asks whether to read again, and the \
+             trait default answers false"
+        );
     }
 }

@@ -341,6 +341,19 @@ fn every_check_lifecycle_state_stays_distinct() {
         assert_eq!(unknown, CheckState::Unrecognized);
         assert!(!unknown.is_passed());
     }
+    let mut named: Vec<CheckState> = states.clone();
+    for extra in [CheckState::Unrecognized, CheckState::Absent] {
+        if !named.contains(&extra) {
+            named.push(extra);
+        }
+    }
+    assert_eq!(
+        named.len(),
+        CheckState::VARIANT_COUNT,
+        "the table above is written by hand and this test claims every lifecycle state \
+         stays distinct; a state no row and no line below names is a state whose \
+         distinctness nothing here checks"
+    );
     assert!(!states.contains(&CheckState::Absent));
     assert!(!CheckState::Absent.is_passed());
     assert!(!CheckState::Neutral.is_passed() && !CheckState::Skipped.is_passed());

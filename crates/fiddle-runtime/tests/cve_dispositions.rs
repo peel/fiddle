@@ -5,9 +5,11 @@ use fiddle_runtime::agent::{FindingDisposition, RepairReport};
 use fiddle_runtime::capability::{GroupStatus, MigrationAttempt, NeedsWork};
 use fiddle_runtime::cve::project::{project, Projection};
 use fiddle_runtime::cve::verdict::{
-    disposition, report_of, Attempted, BoundReached, Budget, InProgress, Judgement, Landed, Row,
-    Run, Verdict, FINDINGS_FILE, REPORT_FILE,
+    disposition, report_of, ticket_proposals, Attempted, BoundReached, Budget, FiledTickets,
+    Filing, InProgress, Judgement, Landed, Row, Run, TicketFiled, TicketFiling, TicketProposal,
+    Verdict, FILINGS_FILE, FINDINGS_FILE, REPORT_FILE,
 };
+use fiddle_runtime::effect::IntegrationOperation;
 use fiddle_runtime::evaluate::{evaluate, Evaluation, RescanVerdict};
 use fiddle_runtime::scanner::Scanner;
 use fiddle_runtime::workspace::WorkspacePath;
@@ -103,8 +105,8 @@ fn open_pr_covers_it() -> Run {
     run
 }
 
-fn every_row() -> Vec<Row> {
-    vec![
+fn every_row() -> [Row; Row::VARIANT_COUNT] {
+    [
         Row::NothingToDo,
         Row::AlreadyInProgress,
         Row::AlreadyFixed,
@@ -1225,8 +1227,8 @@ fn every_row_answers_whether_it_carries_a_legacy_label() {
     let rows = every_row();
     assert_eq!(
         rows.len(),
-        8,
-        "the eight rows, and every one of them answers"
+        Row::VARIANT_COUNT,
+        "every row answers, and this line is what makes `every_row` every row"
     );
 
     for row in &rows {
@@ -1567,5 +1569,407 @@ fn the_published_findings_are_the_grades_the_deployment_acts_on() {
         "this file publishes the projection whole, and the projection is the \
          grades the document named. A deployment that wants MEDIUM names it in \
          severities: {below}"
+    );
+}
+
+const FILING_PROJECT: &str = "acme/widget";
+
+const FILING_INVOCATION: &str = "beans:fiddle-3rfe";
+
+const TRACKER_PROJECT: &str = "IDENT";
+
+const TRACKER_ISSUE_TYPE: &str = "Task";
+
+const TRACKER_LEDGER_ISSUE: &str = "IDENT-1";
+
+fn filing() -> Filing<'static> {
+    Filing {
+        project_key: TRACKER_PROJECT,
+        issue_type: TRACKER_ISSUE_TYPE,
+        ledger_issue: TRACKER_LEDGER_ISSUE,
+        project: FILING_PROJECT,
+        invocation_ref: FILING_INVOCATION,
+    }
+}
+
+fn a_verdict(cve: &str, package: &str, label: Option<&'static str>) -> Verdict {
+    Verdict {
+        cve: advisory(cve),
+        package: package.to_string(),
+        rationale: DECLINED.to_string(),
+        severity: Severity::High,
+        verdict: Judgement::NeedsWork,
+        legacy_label: label,
+        disposed: None,
+    }
+}
+
+async fn a_run_reaching(row: &Row) -> Run {
+    match row {
+        Row::NothingToDo => clean_scan_no_findings(),
+        Row::AlreadyInProgress => open_pr_covers_it(),
+        Row::AlreadyFixed => fixed_in_the_tree(),
+        Row::PullRequest => one_group_clean().await,
+        Row::UnsafeWithoutDirection => every_group_needs_work().await,
+        Row::AttemptBoundReached => a_reused_pull_request_at_the_bound(),
+        Row::ScanUnusable { .. } => scanner_unusable().await,
+        Row::ChecksUnreadable { .. } => the_check_read_was_refused(),
+    }
+}
+
+#[test]
+fn a_row_without_a_legacy_label_files_no_ticket() {
+    let rows = every_row();
+    assert_eq!(
+        rows.iter().map(discriminant).collect::<HashSet<_>>().len(),
+        Row::VARIANT_COUNT,
+        "each row named once, and `label_the_host_closes` is the match a further \
+         row would fail to compile against"
+    );
+
+    let mut filed = Vec::new();
+    let mut silent = Vec::new();
+    for row in &rows {
+        let proposals = ticket_proposals(
+            &[a_verdict(BLOCKED_CVE, "acme-parser", row.legacy_label())],
+            &filing(),
+        );
+        match label_the_host_closes(row) {
+            None => {
+                assert!(
+                    proposals.is_empty(),
+                    "{} carries no label, and a ticket labelled `cve-null` is \
+                     one nothing in the host's query ever closes, got {proposals:?}",
+                    row.row()
+                );
+                silent.push(row.row());
+            }
+            Some(label) => {
+                assert_eq!(
+                    proposals.len(),
+                    1,
+                    "{} carries `{label}`, so the row a person must read files \
+                     exactly one ticket",
+                    row.row()
+                );
+                assert_eq!(
+                    proposals[0].label,
+                    format!("cve-{label}"),
+                    "the Jira step builds the label as `cve-<verdict>`"
+                );
+                filed.push(row.row());
+            }
+        }
+    }
+
+    assert_eq!(
+        silent.len(),
+        6,
+        "six of eight rows carry no label and file nothing, got {silent:?}"
+    );
+    assert_eq!(
+        filed,
+        vec!["pull_request", "unsafe_without_direction"],
+        "and only these two have a meaning in the tracker"
+    );
+}
+
+#[test]
+fn one_cve_in_two_packages_files_one_ticket() {
+    let verdicts = vec![
+        a_verdict(BLOCKED_CVE, "acme-parser", Some("upstream-blocked")),
+        a_verdict(BLOCKED_CVE, "acme-server", Some("upstream-blocked")),
+        a_verdict(SECOND_CVE, "acme-parser", Some("upstream-blocked")),
+    ];
+    let proposals = ticket_proposals(&verdicts, &filing());
+
+    assert_eq!(
+        proposals.len(),
+        2,
+        "the host step spelled this unique_by(.cve), and three rows over two \
+         advisories are two tickets: {proposals:?}"
+    );
+    assert_eq!(
+        proposals
+            .iter()
+            .map(|proposal| proposal.cve.as_str())
+            .collect::<Vec<_>>(),
+        vec![BLOCKED_CVE, SECOND_CVE]
+    );
+    assert_eq!(
+        proposals[0].package, "acme-parser",
+        "the row that survives is the first the report carried, so the ticket \
+         names a package the report also names"
+    );
+    assert_ne!(
+        proposals[0].marker(),
+        proposals[1].marker(),
+        "two advisories are two tickets, so one marker cannot answer the \
+         search for both"
+    );
+}
+
+#[tokio::test]
+async fn the_ticket_carries_the_legacy_label_and_never_fiddles_own_verdict() {
+    let reached = disposition(&a_run_reaching(&Row::PullRequest).await);
+    assert_eq!(
+        discriminant(reached.reason()),
+        discriminant(&Row::PullRequest),
+        "this world's premise is the row that opens a pull request for one \
+         group and leaves the other needing work"
+    );
+
+    let proposals = ticket_proposals(reached.verdicts(), &filing());
+    let proposal = &proposals[0];
+    let json = serde_json::to_value(&reached.verdicts()[0]).expect("a verdict serializes");
+    let own = json["verdict"]
+        .as_str()
+        .expect("fiddle's own verdict is a name");
+
+    assert_eq!(proposal.label, "cve-needs-work");
+    assert_ne!(
+        proposal.label, "cve-needs_work",
+        "the JQL that closes tickets reads the hyphen form"
+    );
+    assert_eq!(own, "needs_work", "fiddle's own name for the same outcome");
+    assert_ne!(
+        proposal.label,
+        format!("cve-{own}"),
+        "the label is read from `legacy_label`, and a label built from \
+         fiddle's own `verdict` field closes nothing and stays open forever"
+    );
+
+    let blocked = disposition(&a_run_reaching(&Row::UnsafeWithoutDirection).await);
+    assert_eq!(
+        ticket_proposals(blocked.verdicts(), &filing())[0].label,
+        "cve-upstream-blocked",
+        "the two rows that carry verdicts carry two labels, so a label built \
+         from fiddle's own verdict would make one row of both"
+    );
+}
+
+#[tokio::test]
+async fn the_rationale_is_carried_verbatim() {
+    let rationale = "upstream has published no fix for this advisory";
+    let proposal = &ticket_proposals(
+        &[Verdict {
+            rationale: rationale.to_string(),
+            ..a_verdict(BLOCKED_CVE, "acme-parser", Some("upstream-blocked"))
+        }],
+        &filing(),
+    )[0];
+    assert_eq!(
+        proposal.rationale, rationale,
+        "a person reads this in the ticket"
+    );
+
+    let reached = disposition(&the_attempt_declined_a_finding_with_no_published_fix().await);
+    let carried = ticket_proposals(reached.verdicts(), &filing());
+    assert_eq!(
+        carried[0].rationale,
+        reached.verdicts()[0].rationale,
+        "and the sentence the ticket shows is the one the report wrote, \
+         unedited between them"
+    );
+}
+
+#[test]
+fn a_proposal_builds_the_operation_that_files_it() {
+    let proposal = &ticket_proposals(
+        &[a_verdict(
+            BLOCKED_CVE,
+            "acme-parser",
+            Some("upstream-blocked"),
+        )],
+        &filing(),
+    )[0];
+    let operation = proposal.operation();
+
+    assert_eq!(
+        IntegrationOperation::payload(&operation),
+        r#"{"cve":"CVE-2026-3002","label":"cve-upstream-blocked","package":"acme-parser","rationale":"no fix I can apply to this project without reading a registry","severity":"HIGH"}"#,
+        "the payload a human decides on is the five fields the contract names"
+    );
+    assert_eq!(
+        proposal.project_key(),
+        TRACKER_PROJECT,
+        "the ticket is filed in the project the run was told to file into"
+    );
+    assert_eq!(
+        IntegrationOperation::target(&operation),
+        format!("{}/{}", proposal.project_key(), proposal.marker()),
+        "the search that decides whether this ticket already exists selects on \
+         the project and the marker together"
+    );
+    assert_eq!(
+        proposal.marker(),
+        "fiddle-cve-c2574ccbe0a624fd",
+        "the marker is a digest over the project, the invocation and the \
+         advisory, so a rebuild of the same run looks for the ticket the run \
+         already filed"
+    );
+    assert!(
+        proposal
+            .marker()
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-'),
+        "the marker is interpolated into a JQL value unquoted, so a character \
+         JQL reads as an operator would make the search a parse of something \
+         else: {}",
+        proposal.marker()
+    );
+}
+
+#[tokio::test]
+async fn the_same_advisory_filed_twice_in_one_invocation_is_one_marker() {
+    let once = ticket_proposals(
+        disposition(&a_run_reaching(&Row::UnsafeWithoutDirection).await).verdicts(),
+        &filing(),
+    );
+    let again = ticket_proposals(
+        disposition(&a_run_reaching(&Row::UnsafeWithoutDirection).await).verdicts(),
+        &filing(),
+    );
+    assert_eq!(
+        once.iter().map(TicketProposal::marker).collect::<Vec<_>>(),
+        again.iter().map(TicketProposal::marker).collect::<Vec<_>>(),
+        "the marker is the search key, so a second pass over one invocation \
+         has to look for the ticket the first pass filed"
+    );
+}
+
+fn a_ticket_filing() -> TicketFiling {
+    TicketFiling {
+        project_key: TRACKER_PROJECT.to_string(),
+        issue_type: TRACKER_ISSUE_TYPE.to_string(),
+        ledger_issue: TRACKER_LEDGER_ISSUE.to_string(),
+    }
+}
+
+fn every_filed_state() -> [TicketFiled; TicketFiled::VARIANT_COUNT] {
+    [
+        TicketFiled::Filed {
+            cve: advisory(BLOCKED_CVE),
+            marker: "fiddle-cve-c2574ccbe0a624fd".to_string(),
+            issue: "IDENT-7".to_string(),
+        },
+        TicketFiled::Refused {
+            cve: advisory(BLOCKED_CVE),
+            marker: "fiddle-cve-c2574ccbe0a624fd".to_string(),
+            why: "the credential may not read this issue: 403".to_string(),
+        },
+    ]
+}
+
+#[tokio::test]
+async fn a_configured_filing_names_the_same_identity_as_the_filing_it_stands_for() {
+    let verdicts = disposition(&a_run_reaching(&Row::UnsafeWithoutDirection).await);
+    let configured = a_ticket_filing();
+    let over = configured.over(FILING_PROJECT, FILING_INVOCATION);
+    assert_eq!(
+        ticket_proposals(verdicts.verdicts(), &over),
+        ticket_proposals(verdicts.verdicts(), &filing()),
+        "a deployment names the project key, the issue type and the ledger issue, and the \
+         run supplies the project and the invocation reference. A configuration that \
+         reordered the two would derive a different marker and file a second ticket"
+    );
+    assert!(
+        !ticket_proposals(verdicts.verdicts(), &over).is_empty(),
+        "and this comparison is over proposals that exist, not two empty lists"
+    );
+}
+
+#[test]
+fn a_filing_that_was_refused_is_a_state_of_its_own_and_never_an_absent_ticket() {
+    let states = every_filed_state();
+    assert_eq!(
+        states
+            .iter()
+            .map(discriminant)
+            .collect::<HashSet<_>>()
+            .len(),
+        TicketFiled::VARIANT_COUNT,
+        "each state named once, and the matches below are what a further state would fail \
+         to compile against"
+    );
+    for state in &states {
+        match state {
+            TicketFiled::Filed { issue, .. } => {
+                assert_eq!(state.issue(), Some(issue.as_str()));
+                assert_eq!(
+                    state.refusal(),
+                    None,
+                    "a filed ticket carries no reason it was not filed"
+                );
+            }
+            TicketFiled::Refused { why, .. } => {
+                assert_eq!(state.refusal(), Some(why.as_str()));
+                assert_eq!(
+                    state.issue(),
+                    None,
+                    "a refused filing names no issue, because none exists to name"
+                );
+            }
+        }
+        assert_eq!(state.cve().as_str(), BLOCKED_CVE);
+    }
+}
+
+#[test]
+fn a_refusal_is_written_beside_the_advisory_it_refused_and_not_as_a_write_error() {
+    let written = serde_json::to_value(FiledTickets::Attempted {
+        tickets: every_filed_state().to_vec(),
+    })
+    .expect("a filing report serializes");
+    assert_eq!(
+        written["tickets"][0],
+        serde_json::json!({
+            "state": "filed",
+            "cve": BLOCKED_CVE,
+            "marker": "fiddle-cve-c2574ccbe0a624fd",
+            "issue": "IDENT-7",
+        })
+    );
+    assert_eq!(
+        written["tickets"][1],
+        serde_json::json!({
+            "state": "refused",
+            "cve": BLOCKED_CVE,
+            "marker": "fiddle-cve-c2574ccbe0a624fd",
+            "why": "the credential may not read this issue: 403",
+        }),
+        "the refusal carries the site's own words. It names no path and no io::Error, so it \
+         cannot be read as a failure to write {FILINGS_FILE}"
+    );
+}
+
+#[test]
+fn a_deployment_that_configured_no_filing_does_not_read_as_one_that_filed_nothing() {
+    let unconfigured =
+        serde_json::to_value(FiledTickets::NotConfigured).expect("a filing report serializes");
+    let empty = serde_json::to_value(FiledTickets::Attempted {
+        tickets: Vec::new(),
+    })
+    .expect("a filing report serializes");
+    assert_eq!(
+        unconfigured,
+        serde_json::json!({"filing": "not_configured"})
+    );
+    assert_eq!(
+        empty,
+        serde_json::json!({"filing": "attempted", "tickets": []})
+    );
+    assert_ne!(
+        unconfigured, empty,
+        "a deployment that files nowhere and a run that had nothing to file are different \
+         facts, and a reader counting tickets in both would call them the same"
+    );
+    assert_eq!(FiledTickets::NotConfigured.attempted(), None);
+    assert_eq!(
+        FiledTickets::Attempted {
+            tickets: Vec::new()
+        }
+        .attempted(),
+        Some(&[][..])
     );
 }

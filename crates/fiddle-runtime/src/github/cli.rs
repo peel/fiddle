@@ -16,7 +16,7 @@ pub struct GhResponse {
     pub link: Option<String>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, crate::effect::VariantCount)]
 pub enum GhError {
     #[error("gh could not authenticate (exit 4)")]
     Auth,
@@ -465,7 +465,7 @@ mod outcome {
     use super::*;
     use crate::effect::{AdapterError, EffectPhase};
 
-    const GH_VARIANTS: usize = 11;
+    const GH_VARIANTS: usize = GhError::VARIANT_COUNT;
 
     fn ordinal(error: &GhError) -> usize {
         match error {

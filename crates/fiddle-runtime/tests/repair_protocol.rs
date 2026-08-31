@@ -459,6 +459,7 @@ impl Fixture {
             changes: &StubChangePort::new(self.stub_root()),
             capability: &capability,
             journal: &journal,
+            cancel: &tokio_util::sync::CancellationToken::new(),
         })
         .await
     }

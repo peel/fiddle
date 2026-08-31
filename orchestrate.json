@@ -2,8 +2,12 @@
   "providers": {
     "codex": {
       "command": "codex exec",
-      "flags": "--json -s read-only",
-      "extract": "codex-jsonl"
+      "flags": "-s read-only",
+      "extract": "codex-last-message",
+      "schema_roles": {
+        "evaluator": "evaluator",
+        "holistic-reviewer": "holistic"
+      }
     },
     "phases": {
       "discover": [

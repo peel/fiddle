@@ -1,10 +1,11 @@
 use fiddle_core::{
     DeploymentRule, EffectName, HumanDecisionRequirement, ProposedEffect, FIXTURE_REPAIR,
+    JIRA_ISSUE_TRANSITIONED,
 };
 use fiddle_runtime::effect::{
-    install, AdapterError, AuthorizedEffect, DeploymentPolicy, DynEffect, EffectContext,
-    EffectDescriptor, EffectError, EffectOutcome, EffectPhase, EffectTrace, ExecutionStep,
-    Executor, IntegrationOperation, ObservedState, ReadRetry, StepParams,
+    describe, AdapterError, AuthorizedEffect, DeploymentPolicy, EffectContext, EffectError,
+    EffectOutcome, EffectPhase, EffectTrace, ExecutionStep, Executor, IntegrationOperation,
+    ObservedState, ReadRetry,
 };
 use fiddle_runtime::git::GitCli;
 use fiddle_runtime::{GhCli, GhError};
@@ -17,27 +18,11 @@ const PROJECT: &str = "acme/widget";
 
 const INVOCATION_REF: &str = "beans:w-1";
 
-const TRANSITION: &str = "jira.issue_transitioned";
+const TRANSITION: &str = JIRA_ISSUE_TRANSITIONED;
 
 const ISSUE: &str = "ACME-7";
 
 const PAYLOAD: &str = r#"{"to":"In Review"}"#;
-
-const JIRA: &[EffectDescriptor] = &[EffectDescriptor {
-    name: TRANSITION,
-    minimum: HumanDecisionRequirement::Automatic,
-    construct: unshipped,
-}];
-
-fn unshipped(
-    _executor: &Executor<'_>,
-    _params: &StepParams,
-) -> Result<Box<dyn DynEffect>, EffectError> {
-    Err(EffectError::Unbuildable {
-        kind: EffectName::parse(TRANSITION).expect("the tracker's effect name parses"),
-        reason: "this fixture is executed directly and never resolved from a name".to_string(),
-    })
-}
 
 #[derive(Debug, thiserror::Error)]
 enum JiraError {
@@ -179,10 +164,12 @@ fn proposed() -> ProposedEffect {
 }
 
 fn registered() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        install(JIRA).expect("the tracker's effect is installed once for this binary");
-    });
+    assert!(
+        describe(&EffectName::shipped(TRANSITION)).is_some(),
+        "`walk` refuses an unregistered name before its first traced step, so this fixture \
+         would never reach the adapter; {TRANSITION} is a built-in of this build and this \
+         binary installs nothing"
+    );
 }
 
 async fn transition(

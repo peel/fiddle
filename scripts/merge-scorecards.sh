@@ -26,6 +26,13 @@ if ! echo "$INPUT" | jq -e 'all(.[]; type == "object" and (.criteria | type == "
 fi
 
 echo "$INPUT" | jq -c '
+  def reports_spec_defect:
+    if (has("spec_defect") | not) then false
+    elif .spec_defect == null then true
+    elif (.spec_defect | type) == "object" then (.spec_defect.detected | type) == "boolean"
+    else false
+    end;
+
   . as $cards |
 
   [.[] | .domains | keys[]] | unique as $all_domains |
@@ -101,6 +108,45 @@ echo "$INPUT" | jq -c '
     }) | del(.source_provider)
   )) as $merged_remediation |
 
+  ([
+    $cards[] |
+    select(reports_spec_defect | not) |
+    (.provider // "unnamed")
+  ]) as $spec_defect_silent |
+
+  ([
+    $cards[] |
+    select(reports_spec_defect) |
+    (.provider // "unnamed")
+  ]) as $spec_defect_reported |
+
+  ([
+    $cards[] |
+    select((.spec_defect | type) == "object" and .spec_defect.detected == true) |
+    {
+      "provider": (.provider // "unnamed"),
+      "domain": (.domains | keys | join(",")),
+      "reason": (.spec_defect.reason // "")
+    }
+  ]) as $spec_defect_sources |
+
+  ({
+    "sources": $spec_defect_sources,
+    "reported_by": $spec_defect_reported,
+    "missing_from": $spec_defect_silent
+  } |
+  if ($spec_defect_sources | length) > 0 then
+    . + {
+      "state": "detected",
+      "detected": true,
+      "reason": ([$spec_defect_sources[] | "\(.domain)/\(.provider): \(.reason)"] | join(" | "))
+    }
+  elif ($spec_defect_silent | length) > 0 then
+    . + { "state": "not_reported" }
+  else
+    . + { "state": "clear", "detected": false }
+  end) as $merged_spec_defect |
+
   {
     "task_id": $cards[0].task_id,
     "iteration": $cards[0].iteration,
@@ -108,6 +154,7 @@ echo "$INPUT" | jq -c '
     "domains": $merged_domains,
     "criteria": $merged_criteria,
     "antipatterns_detected": ([$cards[].antipatterns_detected[]?] | unique),
+    "spec_defect": $merged_spec_defect,
     "guidance": ([$cards[].guidance // empty] | join("\n---\n")),
     "dispatch_count": ([$cards[].dispatch_count // 0] | add)
   } |
@@ -118,7 +165,7 @@ echo "$INPUT" | jq -c '
   if ($cards | any(.[]; has("remediation_beans"))) then
     .remediation_beans = $merged_remediation
   else . end
-' 2>/dev/null
+'
 
 echo "$INPUT" | jq -c '
   . as $cards |

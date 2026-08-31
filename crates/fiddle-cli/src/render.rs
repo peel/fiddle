@@ -131,6 +131,11 @@ pub fn config_check_json(config: &Config) -> String {
                 "blocked": jira.workflow.blocked,
                 "done": jira.workflow.done,
             },
+            "filing": jira.filing.as_ref().map(|filing| filing.resolved()).map(|filing| serde_json::json!({
+                "project": filing.project_key,
+                "issue_type": filing.issue_type,
+                "ledger_issue": filing.ledger_issue,
+            })),
         });
     }
     if let Some(scanner) = &config.scanner {
@@ -340,7 +345,10 @@ pub fn config_check_human(config: &Config) -> String {
              \n  jira.workflow.in_progress = {}\
              \n  jira.workflow.in_review = {}\
              \n  jira.workflow.blocked = {}\
-             \n  jira.workflow.done = {}",
+             \n  jira.workflow.done = {}\
+             \n  jira.filing.project = {}\
+             \n  jira.filing.issue_type = {}\
+             \n  jira.filing.ledger_issue = {}",
             jira.site,
             jira.project,
             jira.user.env,
@@ -352,6 +360,21 @@ pub fn config_check_human(config: &Config) -> String {
             optional(jira.workflow.in_review.clone()),
             optional(jira.workflow.blocked.clone()),
             optional(jira.workflow.done.clone()),
+            optional(
+                jira.filing
+                    .as_ref()
+                    .map(|filing| filing.resolved().project_key)
+            ),
+            optional(
+                jira.filing
+                    .as_ref()
+                    .map(|filing| filing.resolved().issue_type)
+            ),
+            optional(
+                jira.filing
+                    .as_ref()
+                    .map(|filing| filing.resolved().ledger_issue)
+            ),
         ));
     }
     if let Some(scanner) = &config.scanner {
@@ -790,17 +813,9 @@ mod tests {
 
     #[test]
     fn every_typed_state_reaches_the_human_line_in_a_word_of_its_own() {
-        let cases = [
-            WorkState::Ready,
-            WorkState::InProgress,
-            WorkState::InReview,
-            WorkState::Blocked,
-            WorkState::Done,
-            WorkState::Unknown,
-        ];
         let mut seen: Vec<String> = Vec::new();
 
-        for state in cases {
+        for state in WorkState::ALL {
             let word = work_state_word(&state);
             assert!(
                 !word.is_empty(),

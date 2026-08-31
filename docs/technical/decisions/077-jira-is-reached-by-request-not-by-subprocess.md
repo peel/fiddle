@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Cites: JiraHttp, JiraHttp::api, JiraError::Unauthorized, JiraError::Forbidden, JiraError::Absent, JiraError::AbsentOrRefused, JiraWorkItemPort::read, JiraWorkItemPort, WorkItemPort, EnvRef, CREDENTIAL_MUST_BE_NAMED, CLAMP, REDACTED, port_kind_for, the_jira_client_can_be_neither_printed_nor_serialized, no_surface_a_reader_sees_carries_the_jira_credential, the_same_search_finds_the_credential_when_a_surface_does_carry_it, every_surface_searched_is_output_of_a_jira_read, a_written_jira_token_is_refused, a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts, JiraHttp::quoted, a_credential_planted_in_the_sites_error_body_is_redacted_before_a_reader_sees_it, no_workspace_crate_pulls_openssl_into_its_closure, crates/fiddle-runtime/src/jira/http.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_printable.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_serializable.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-acceptance/tests/jira_credential.rs, scripts/live-jira-observe.sh, issue_from, read_instant, canonical_revision, ConfiguredNames, state_for, WorkState, ProjectedStatus, projected_status, assess, derive_next, no_projected_work_state_moves_the_assessment_or_the_next_action, crates/fiddle-core/src/assessment.rs, crates/fiddle-runtime/src/jira/work_item.rs, a_refused_credential_and_a_missing_issue_do_not_read_alike, the_stub_answers_a_refused_credential_the_way_the_measured_site_answers_it, a_read_the_site_answers_asks_the_site_nothing_further, a_status_other_than_404_names_its_own_cause_and_costs_no_credential_check, crates/fiddle-runtime/tests/jira_work_item.rs
+Cites: JiraHttp, JiraHttp::api, JiraError::Unauthorized, JiraError::Forbidden, JiraError::Absent, JiraError::AbsentOrRefused, JiraWorkItemPort::read, JiraWorkItemPort, WorkItemPort, EnvRef, CREDENTIAL_MUST_BE_NAMED, CLAMP, REDACTED, port_kind_for, the_jira_client_can_be_neither_printed_nor_serialized, no_surface_a_reader_sees_carries_the_jira_credential, the_same_search_finds_the_credential_when_a_surface_does_carry_it, every_surface_searched_is_output_of_a_jira_read, a_written_jira_token_is_refused, a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts, JiraHttp::quoted, a_credential_planted_in_the_sites_error_body_is_redacted_before_a_reader_sees_it, no_workspace_crate_pulls_openssl_into_its_closure, crates/fiddle-runtime/src/jira/http.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_printable.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_serializable.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-acceptance/tests/jira_credential.rs, scripts/live-jira-observe.sh, scripts/live-jira-search-shape.sh, scripts/live-jira-write.sh, scripts/test-live-jira-lanes.sh, crates/fiddle-runtime/tests/jira_effect_credential.rs, a_body_that_parses_and_echoes_the_token_is_handed_to_the_caller_with_it_replaced, a_token_a_json_body_must_escape_is_replaced_in_the_value_the_caller_reads, a_workflow_name_that_carries_the_credential_reaches_no_diagnostic, a_revision_field_that_carries_the_credential_reaches_no_diagnostic, an_issue_key_that_carries_the_credential_reaches_no_receipt, a_credential_the_site_echoes_reaches_no_published_report_bundle, issue_from, read_instant, canonical_revision, ConfiguredNames, state_for, WorkState, ProjectedStatus, projected_status, assess, derive_next, no_projected_work_state_moves_the_assessment_or_the_next_action, crates/fiddle-core/src/assessment.rs, crates/fiddle-runtime/src/jira/work_item.rs, a_refused_credential_and_a_missing_issue_do_not_read_alike, the_stub_answers_a_refused_credential_the_way_the_measured_site_answers_it, a_read_the_site_answers_asks_the_site_nothing_further, a_status_other_than_404_names_its_own_cause_and_costs_no_credential_check, crates/fiddle-runtime/tests/jira_work_item.rs
 
 ## Context
 
@@ -63,7 +63,20 @@ the resolved graph through `rig-core` before this milestone.
   fails the case. `JiraResponse` derives `Debug` and holds no credential.
 - **Redaction, then a bound.** Every error text `JiraHttp` builds passes the
   encoded credential and the raw token through a replacement with `REDACTED`,
-  then a clamp at `CLAMP` bytes on a character boundary. `JiraError` itself
+  then a clamp at `CLAMP` bytes on a character boundary. Since M5b the body
+  `JiraHttp::api` hands back is scrubbed too: `JiraResponse::body` is walked
+  member by member and the credential is replaced in every string and every
+  member name. Redacting only error text held while Jira was read-only, because
+  a read that succeeded put nothing on a reader's surface. A write puts the
+  site's own words into a receipt and into a published bundle, and those are
+  built from a 2xx body that no error path ever touches. Three effect-level
+  cases reded before the scrub landed:
+  `a_workflow_name_that_carries_the_credential_reaches_no_diagnostic`,
+  `a_revision_field_that_carries_the_credential_reaches_no_diagnostic` and
+  `an_issue_key_that_carries_the_credential_reaches_no_receipt`, all in
+  `crates/fiddle-runtime/tests/jira_effect_credential.rs`. The invariant is now
+  statable in one sentence: no string derived from the site reaches a reader
+  without passing the client's redaction. `JiraError` itself
   redacts nothing:
   `a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts` asserts
   that it prints a caller's payload word for word, so the obligation stays where
@@ -138,9 +151,11 @@ yet. This adapter inherits that sentence.
 The redaction claim is measured, and three tests keep the measurement from
 being vacuous. `no_surface_a_reader_sees_carries_the_jira_credential` searches
 every surface a Jira invocation writes or says, and it pins that set as a
-26-name census, so a surface this build starts writing cannot join the tree
+42-name census, so a surface this build starts writing cannot join the tree
 unsearched and a surface it stops writing cannot leave the search passing on an
-absent file. `the_same_search_finds_the_credential_when_a_surface_does_carry_it`
+absent file. Ten of those names are surfaces of a run that filed a ticket into a
+loopback stub, so the census covers the path that writes and not only the paths
+that read. `the_same_search_finds_the_credential_when_a_surface_does_carry_it`
 plants the credential on a surface, so the search cannot pass by finding nothing
 anywhere. `every_surface_searched_is_output_of_a_jira_read` requires at least six
 of the searched surfaces to name both the site and the issue key, so a surface
@@ -201,11 +216,17 @@ two and leaves the third.
   **colonless** offset. That is not RFC 3339, so `read_instant` needs the two
   further format descriptions it carries after `Rfc3339`. Without them
   `canonical_revision` answers `None` and the port reports `Unavailable`.
-- **Still an argument: real `[jira.workflow]` status names.** The lane generates
-  a `[jira]` table with no `[jira.workflow]` under it. `ConfiguredNames`
-  therefore held no name, `state_for` answered nothing, and `project` used the
-  status category instead. The configured-name path a deployment uses was not
-  exercised, so no real status name has been compared with a configured one.
+- **Now a measurement: real `[jira.workflow]` status names.** M5b's
+  `scripts/live-jira-search-shape.sh` read `/rest/api/3/project/ISP/statuses` on
+  2026-08-28. Every issue type in `ISP` — Task, Story, Bug, Epic, Spike and
+  Sub-task — offers the same six statuses: `To Do` in category `new`,
+  `In Progress`, `In Review` and `Blocked` all in category `indeterminate`, and
+  `Done` and `Won't Do` both in category `done`. So the category cannot separate
+  blocked work from work in flight, and a deployment that wants `Blocked` to read
+  as blocked has to name it in `[jira.workflow]`; `ConfiguredNames` and
+  `state_for` are what carry that, and `project` falling back to the category
+  would answer the same state for three different situations. This is one project
+  on one site: a second workflow is still unmeasured.
 
 The measurement is one issue on one site. A second project, a second workflow
 and a second issue type are unmeasured, and so is every failure arm but the 404

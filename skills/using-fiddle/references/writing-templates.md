@@ -18,6 +18,8 @@ Decision: <= 3 sentences, imperative
 Consequences: <= 5 bullets, <= 2 lines each, one naming what was given up
 ```
 
+`scripts/check-adr-cites.sh` also reads the body. A backticked identifier of four or more underscore-separated words is a test name, and it must resolve outside `decisions/`. A record that deliberately names a test the tree no longer holds lists it on an optional `Retired:` line, in the shape of `Cites:`. An entry there that still resolves, or that the body never names, fails the gate, so the line cannot become a blanket.
+
 `Status:` and `Cites:` are plain lines, not bold ones. Thirteen ADRs use a bold `**Status:**` beside a `**Date:**` line, most recently 024; they are left alone, and `docs/technical/decisions/` carries no second template offering that form.
 
 Reasoning lives here and nowhere else. If SYSTEM.md or a commit body is explaining why, it belongs in an ADR instead.

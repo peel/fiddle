@@ -1919,3 +1919,219 @@ the lane.
 
 Origin: delivery (epic `fiddle-gyyo`, live measurement 2026-08-27)
 Tags: #debt #operations
+
+### 2026-08-28 — `FileVerdict` sends no `fields.issuetype` and a real create requires one
+
+`FileVerdict::body` in `crates/fiddle-runtime/src/jira/file_verdict.rs` sends
+`fields.project`, `fields.summary`, `fields.labels` and `fields.description`.
+
+Measured 2026-08-28 by `scripts/live-jira-search-shape.sh` against
+`snplow.atlassian.net`, project `ISP`, issue type `Task` (id 10002):
+`/rest/api/3/issue/createmeta/ISP/issuetypes/10002` reports the required fields as
+`issuetype`, `project` and `summary`. So a create this build sends would be refused, and
+`jira.issue_filed` cannot land against a real site as written.
+
+Resolved 2026-08-29 by `fiddle-jh1z`. `created` in
+`crates/fiddle-runtime/tests/support/stub_jira.rs` now refuses a create carrying no
+`fields.issuetype` and no `fields.summary`, which is what `createmeta` says is required,
+and `a_create_that_names_no_issue_type_is_refused_and_stores_nothing` pins it with the
+accepted create beside the refused one. `FileVerdict` names the type it was built with.
+
+The type is still a constant at every construction site rather than a deployment's
+choice. `Filing` carries it and `fiddle-zlc4` holds the `[jira]` configuration that would
+fill it in, together with the ledger issue the same effect now needs.
+
+Origin: implementation (bean `fiddle-pu2c`, live measurement 2026-08-28)
+Tags: #bug #jira #operations
+
+### 2026-08-29 — three more fields the scorecard merge drops or coerces
+
+Found while fixing `spec_defect` in `fiddle-d3br`, by sweeping every field
+`skills/develop/scorecard-envelope.md` defines through `scripts/merge-scorecards.sh`.
+Twenty envelope fields were checked. `spec_defect` was fixed by that bean. Three others
+still lose or contradict what the source cards said. Each is measured.
+
+1. **`domains.<d>.dimensions.<k>.evidence` is dropped.** The merged dimension carries
+   `score`, `threshold` and `provider_scores` and no `evidence`. Measured: a card carrying
+   `"evidence": "claude-evidence"` merges to a dimension where `has("evidence")` is false.
+   `check-thresholds.sh` does not require it, so the merged card that every later step reads
+   carries a score with no justification, and the eval log records it that way.
+
+2. **`criteria[].evidence` can contradict `criteria[].pass`.** `pass` is `all(.pass)` across
+   the providers and `evidence` is `.[0].evidence` from the first card. Measured: claude
+   `{"pass": true, "evidence": "claude says it passes"}` and codex
+   `{"pass": false, "evidence": "codex says it fails"}` merge to
+   `{"pass": false, "evidence": "claude says it passes"}`. The verdict is the failing one and
+   the evidence is the passing one.
+
+3. **`threshold` takes the first card's value.** Two providers scoring the same dimension
+   against different thresholds resolve to whichever card came first, silently. Measured:
+   thresholds 7 and 9 merge to 7. The bean sets the threshold, so a disagreement means one
+   card is wrong, and the merge should refuse rather than pick by order.
+
+`criteria[].pass` also still reads `all(.pass)`, where a card with no `pass` key becomes a
+failure — the `fiddle-qcch` instance that `docs/antipatterns-general.md` records under
+**assertion-weaker-than-its-message**. Measured: a criterion carrying only `id` and
+`evidence` merges to `pass: false`. `validate-scorecard.sh` refuses such a card at 1g, so
+the coercion is guarded upstream rather than absent here.
+
+Origin: implementation (bean `fiddle-d3br`, envelope sweep 2026-08-29)
+Tags: #debt #evaluation
+
+### 2026-08-29 — a binary-driven filing run against a real site is still untaken
+
+`fiddle-lple` closed the deployment route through the binary against a loopback stub.
+`the_filing_table_in_the_document_reaches_the_ticket_the_binary_files` in
+`crates/fiddle-acceptance/tests/cve_mitigation.rs` drives `fiddle run cve --capability
+cve_mitigate` over a `fiddle.toml` carrying `[jira.filing]` and reads the project, the
+issue type and the ledger issue back off the create body, the ledger claim path and the
+marker in `filings.json`. Each of the three was proved falsifiable by changing that one
+field in the document and watching the run report the changed value.
+
+The lane did not take the live run, and the bean said not to. Driving the binary against
+`snplow.atlassian.net` needs a real project, a real ledger issue and a cleanup this
+operator cannot perform: `ISP` answers `HTTP 403` to a delete by project policy, so every
+unrun cleanup leaves residue and the next run refuses as `Ambiguous` (`fiddle-jh1z`,
+ADR 079). That is a lane with an operator step in it, not a test.
+
+What stays unmeasured: no `fiddle` binary has written to a real Jira site, so the
+agreement between the loopback stub's routes and Atlassian's is argued from the four live
+lanes of M5b and not measured through the binary. That sentence lives in
+`docs/technical/SYSTEM.md`, in the bullet beginning "A `fiddle` binary files a verdict".
+
+Origin: implementation (bean `fiddle-lple`, deferral recorded 2026-08-29)
+Tags: #debt #jira #evidence
+
+### 2026-08-29 — four more merge fields where a wrong type reads as a clean result
+
+Found while fixing `fiddle-cveg`, by feeding one wrong type to every position
+`scripts/merge-scorecards.sh` reads and recording what came back. The sweep is
+`scripts/test-merge-type-sweep.sh` and runs in the gate's shell suites. It derives
+its denominator from a fixture card rather than carrying a count, refuses before
+counting if the merge reads a field the fixture does not carry, and fails when a
+probe changes partition.
+
+Measured at 34 probes: three refuse with a reason and exit 2, ten abort as a jq
+type error and exit 5, two classify the wrong type in-band as `not_reported`, and
+nineteen let it through silently. Of those nineteen,
+`scripts/validate-scorecard.sh` refuses seven upstream and accepts twelve.
+
+    sweep: 34 probes = 3 refuses + 10 aborts + 2 in-band + 19 silent (7 refused upstream + 12 accepted)
+
+This entry first read thirty probes, split 3/7/2/18 with eight refused upstream and
+ten accepted. The harness moved every number but the refusals and the in-band pair.
+Three of the added aborts are array-element positions the first pass did not probe:
+an element of `criteria`, of `spec_coverage_matrix` and of `remediation_beans`. One
+change is a correction, not a wider net. `dispatch_count` was listed below as
+silently admitted, and it is not. A wrong-typed `dispatch_count` reaches
+`[$cards[].dispatch_count // 0] | add`, and jq answers `string ("one") and number
+(1) cannot be added`, exit 5. The merge dies rather than merging.
+
+This entry names the four of those ten whose silence points the same way as
+`fiddle-cveg` — a flagged thing reads as clean. It acts on **2026-08-29 — three more
+fields the scorecard merge drops or coerces**, which swept the same script for dropped
+and coerced values; the three fields that entry names are not repeated here.
+
+1. **`antipatterns_detected` as a string merges to `[]`.** Measured: a card carrying
+   `"antipatterns_detected": "shell-injection"` merges to `[]`, so a reported
+   antipattern reads as none found. `check-thresholds.sh` carries the merged array
+   into its verdict as `findings`, which is what `check-convergence.sh` compares, so
+   two iterations both losing the same finding compare as converged. The same card
+   carrying an object rather than an array is worse than empty: measured,
+   `{"id": "shell-injection", "severity": "high", "evidence": "line 4"}` merges to
+   `["high", "line 4", "shell-injection"]`, three findings from one. `.[]?` iterates an
+   object's values and suppresses nothing.
+
+2. **`spec_coverage_matrix` as a string merges to `[]`.** Measured: a holistic card
+   carrying `"spec_coverage_matrix": "scm"` merges to `[]` while `has(...)` is still
+   true, so the merged card states an empty coverage matrix rather than a missing one.
+
+3. **`remediation_beans` as a string merges to `[]`,** for the same reason and with the
+   same shape.
+
+4. **An unrecognised `coverage` value ranks better than `Full`.** `min_by` ranks
+   `Missing` 0, `Weak` 1, `Full` 2 and everything else 3, and picks the lowest, so a
+   value outside the three never becomes the conservative pick. Measured: claude
+   `"Partial"` beside codex `"Full"` resolves to `"Full"`. The merge is meant to take the
+   least-covered claim and here it takes the better one. This is a value-domain hole,
+   not only a type hole — `"Partial"` is a plausible word for an evaluator to choose.
+
+`validate-scorecard.sh` checks none of these four. The remaining eight of the twelve
+decide nothing. `task_id`, `iteration` and `timestamp` are carried for the eval log
+rather than graded. `guidance` is joined, and jq renders a number into the joined
+string. A wrong-typed `spec_coverage_matrix[].requirement` or
+`remediation_beans[].requirement` only groups under its own key, and an element of
+`antipatterns_detected` only sorts under its own value. `remediation_beans[].description`
+reaches `(. // "") | length`, which jq answers for a number as its absolute value, so a
+number beats a short string as the most specific description.
+
+Origin: implementation (bean `fiddle-cveg`, wrong-type sweep 2026-08-29, re-measured
+under `scripts/test-merge-type-sweep.sh` 2026-08-30)
+Tags: #debt #evaluation
+
+### 2026-08-30 — the merged scorecard decides by card order, and nothing fails on a silent spec defect
+
+`fiddle-cveg` fixed one wrong-type hole in `scripts/merge-scorecards.sh` and
+`scripts/test-merge-type-sweep.sh` now measures the rest: 34 probes, of which 19
+are admitted silently and `validate-scorecard.sh` accepts 12. Four of those point
+the same way as the defect that was fixed.
+
+`criteria[].evidence` can contradict `criteria[].pass`. Measured: claude
+`{"pass":true,"evidence":"claude says it passes"}` beside codex
+`{"pass":false,"evidence":"codex says it fails"}` merges to
+`{"pass":false,"evidence":"claude says it passes"}`, and the eval log keeps that
+pair as the durable record of why a bean failed. `threshold` takes `first`, so 7
+beside 9 merges to 7 by card order. `domains.<d>.dimensions.<k>.evidence` is
+dropped, so a merged score carries no justification. `criteria[].pass` is still
+`all(.pass)`, which is the `fiddle-qcch` null-coercion instance the antipattern
+entry already names, still live and guarded upstream rather than absent.
+
+None of these has surfaced because every merge in M5b had exactly one source card.
+They become reachable the first time a domain runs two providers, which
+`evaluators.domains.<d>.providers` permits and `evaluators.holistic.providers`
+does by design.
+
+Separately, the merged card now always carries `spec_defect`, and no script exits
+non-zero on `state: "not_reported"`. The original drop was caught because a human
+read the source card before the merged one, which is a habit and not a control.
+
+Origin: implementation (bean `fiddle-lmfr`, measured 2026-08-29)
+Tags: #debt #tooling #evaluation
+
+### 2026-08-30 — two records cite a test that only a backlog entry keeps alive
+
+`an_unusable_scanner_exits_eleven_and_reaches_no_forge` is cited on ADR 020's
+`Cites:` line and in its body, and in ADR 066's body. No Rust file defines it; ADR
+066 records that the test was renamed. It resolves because `check-adr-cites.sh`
+excludes `decisions/` from the search and not `docs/` generally, and
+`docs/BACKLOG.md` quotes the name, so a prose mention satisfies a test citation.
+
+Measured by `fiddle-ogt1`: with `docs/` excluded from the body rule, 6 of 110 body
+names fail rather than 4. Excluding `docs/` from the `Cites:` rule as well would
+falsely fail `FIDDLE_SHA256` in ADR 036 and `non-patchable.json` in ADR 038, which
+legitimately live only in `docs/technical/host-workflow-m4b.patch`. One false pass
+traded for two false failures, which is why the stricter rule was not adopted.
+
+ADR 013 is stale beyond its citation: its body shows `"enforced": 1` and status
+`accepted-not-enforced`, while the test that exists asserts the shape ADR 037 set.
+
+Origin: implementation (bean `fiddle-2l4t`, measured 2026-08-29)
+Tags: #debt #docs #evidence
+
+### 2026-08-30 — a line count over src is wrong by the share of it that is test code
+
+Test code and production code share a file in 54 files under `crates/*/src`, so a
+counter cannot tell them apart. Measured on `plan/agentic-factory-m5b` at
+`e4abc58`, counting from each first `#[cfg(test)]` to end of file: `fiddle-core`
+3693 lines of which 2482 are test, 67.2%; `fiddle-cli` 5334 of which 3384, 63.4%;
+`fiddle-runtime` 27170 of which 10511, 38.7%; total 36581 of which 16377, 44.8%.
+
+`scc crates/fiddle-core/src` reports about 3693 lines of production code where the
+figure is about 1211, an error of a factor of three.
+
+The count is close and not exact: it assumes a test module runs to end of file,
+which is the convention here, so real code after a `#[cfg(test)]` module is counted
+as test.
+
+Origin: discovery (bean `fiddle-vaob`, measured 2026-08-29)
+Tags: #debt #tooling #metrics

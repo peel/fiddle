@@ -4,16 +4,16 @@ use fiddle_core::{
     decision_request_id, effect_id, payload_hash, DecisionBinding, DeploymentRule, EffectId,
     EffectName, HumanDecisionRequirement, InterpretedHumanDecision, PayloadHash, ProposedEffect,
     Published, ENSURE_BRANCH_PUBLISHED, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
-    ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, FIXTURE_REPAIR, PUBLISH_DECISION_REQUEST,
-    STUB_MARK,
+    FIXTURE_REPAIR, STUB_MARK,
 };
 use fiddle_runtime::effect::{
     AdapterError, EffectContext, EffectError, EffectOutcome, EffectPhase, EffectReceipt,
     EffectTrace, ExecutionStep, Executor, IntegrationOperation, ObservedState, ReadRetry,
-    Recurrence, ResolvedDecision,
+    Recurrence, ResolvedDecision, BUILT_IN,
 };
 use fiddle_runtime::git::{GitCli, GitError};
 use fiddle_runtime::github::{branch_name, EnsureBranchPublished};
+use fiddle_runtime::jira::JiraHttp;
 use fiddle_runtime::{GhCli, GhError, RetryAdvice};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -1799,6 +1799,7 @@ async fn publish_attempt(
         changes: &changes,
         capability: &capability,
         trace: None,
+        cancel: &tokio_util::sync::CancellationToken::new(),
     })
     .await;
     serde_json::to_value(&record.bundle).unwrap()
@@ -2155,6 +2156,7 @@ async fn a_capability_cannot_publish_through_another_capabilitys_executor() {
         changes: &changes,
         capability: &capability,
         trace: None,
+        cancel: &tokio_util::sync::CancellationToken::new(),
     })
     .await;
 
@@ -2228,14 +2230,9 @@ async fn an_unregistered_name_is_refused_ahead_of_the_capability_it_names() {
 
 #[tokio::test]
 async fn every_name_this_build_ships_survives_the_registry_check() {
-    for shipped in [
-        ENSURE_BRANCH_PUBLISHED,
-        ENSURE_PULL_REQUEST,
-        ENSURE_CHECK_REQUESTED,
-        PUBLISH_DECISION_REQUEST,
-        ENSURE_PULL_REQUEST_READY,
-        ENSURE_PULL_REQUEST_BODY,
-    ] {
+    let mut asked = 0;
+    for descriptor in BUILT_IN {
+        let shipped = descriptor.name;
         let harness = Harness::new(Script::AlreadySatisfied);
         let proposed = ProposedEffect {
             kind: EffectName::shipped(shipped),
@@ -2246,7 +2243,15 @@ async fn every_name_this_build_ships_survives_the_registry_check() {
             .execute(proposed, harness.operation_performing(shipped))
             .await
             .unwrap_or_else(|error| panic!("{shipped} is registered and was refused: {error}"));
+        asked += 1;
     }
+    assert_eq!(
+        asked,
+        BUILT_IN.len(),
+        "the names are read from the registry rather than listed here, so an effect added \
+         without a line in this file is still asked"
+    );
+    assert!(asked > 0, "an empty registry satisfies the loop vacuously");
 }
 
 fn unregistered_effect(capability: fiddle_core::CapabilityId) -> ProposedEffect {
@@ -2256,4 +2261,74 @@ fn unregistered_effect(capability: fiddle_core::CapabilityId) -> ProposedEffect 
         target: TARGET.to_string(),
         payload: PAYLOAD.to_string(),
     }
+}
+
+fn a_client_for_a_site_no_test_reaches() -> JiraHttp {
+    JiraHttp::new(
+        "http://127.0.0.1:1",
+        "bot@example.com",
+        "s3cr3t",
+        Duration::from_secs(1),
+    )
+    .expect("a client is built without reaching the site")
+}
+
+#[test]
+fn a_context_built_from_four_arguments_holds_no_jira_client_and_refuses_in_these_words() {
+    let ctx = support::unreachable_context();
+    assert!(
+        ctx.jira.is_none(),
+        "a deployment with no `[jira]` table holds no client"
+    );
+    let refused = ctx
+        .jira_client()
+        .err()
+        .expect("a context holding no client hands one to nobody");
+    assert_eq!(
+        format!("{refused}"),
+        "this deployment holds no `[jira]` configuration, so no request was sent",
+        "every later jira operation reports this refusal, so its words are fixed here"
+    );
+    assert_eq!(
+        refused.outcome(EffectPhase::Apply),
+        EffectOutcome::NotCommitted,
+        "no request left the process, so a write that refused this way committed nothing"
+    );
+    assert!(
+        !refused.is_worth_reading_again(),
+        "no later read supplies a client this deployment never configured"
+    );
+}
+
+#[test]
+fn with_jira_hands_out_the_client_and_carries_the_other_four_fields_unchanged() {
+    let before = support::unreachable_context();
+    let gh = format!("{:?}", before.gh);
+    let git = format!("{:?}", before.git);
+    let work = before.work.clone();
+    let cancel = before.cancel.clone();
+
+    let after = before.with_jira(a_client_for_a_site_no_test_reaches());
+
+    assert!(
+        after.jira_client().is_ok(),
+        "a context given a client refuses nothing"
+    );
+    assert_eq!(
+        format!("{:?}", after.gh),
+        gh,
+        "with_jira hands back the gh client it was given, by every field GhCli prints"
+    );
+    assert_eq!(
+        format!("{:?}", after.git),
+        git,
+        "with_jira hands back the git client it was given, by every field GitCli prints"
+    );
+    assert_eq!(after.work, work, "with_jira replaces no working directory");
+    cancel.cancel();
+    assert!(
+        after.cancel.is_cancelled(),
+        "with_jira keeps the run's own token, and a context holding a second token \
+         would never learn the run was cancelled"
+    );
 }

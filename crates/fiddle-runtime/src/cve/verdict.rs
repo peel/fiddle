@@ -1,12 +1,20 @@
 use crate::agent::FindingDisposition;
 use crate::capability::cve::{GroupStatus, MigrationAttempt};
 use crate::cve::project::{Arm, Projection};
-use fiddle_core::{AdvisoryId, Published, RunOutcome, Severity};
+use crate::jira::file_verdict::FileVerdict;
+use fiddle_core::{effect_id, AdvisoryId, Published, RunOutcome, Severity, JIRA_ISSUE_FILED};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub const REPORT_FILE: &str = "verdicts.json";
 
+pub const TICKET_LABEL_PREFIX: &str = "cve-";
+
+pub const TICKET_MARKER_PREFIX: &str = "fiddle-cve-";
+
 pub const FINDINGS_FILE: &str = "findings.json";
+
+pub const FILINGS_FILE: &str = "filings.json";
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -72,7 +80,7 @@ impl CompleteFindings {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, crate::effect::VariantCount)]
 pub enum Row {
     NothingToDo,
 
@@ -555,6 +563,197 @@ pub fn disposition(run: &Run) -> Disposition {
 
 pub fn report_of(run: &Run) -> serde_json::Value {
     disposition(run).report()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Filing<'a> {
+    pub project_key: &'a str,
+
+    pub issue_type: &'a str,
+
+    pub ledger_issue: &'a str,
+
+    pub project: &'a str,
+
+    pub invocation_ref: &'a str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketProposal {
+    pub cve: AdvisoryId,
+
+    pub severity: Severity,
+
+    pub package: String,
+
+    pub rationale: String,
+
+    pub label: String,
+
+    project_key: String,
+
+    issue_type: String,
+
+    ledger_issue: String,
+
+    marker: String,
+}
+
+impl TicketProposal {
+    pub fn marker(&self) -> &str {
+        &self.marker
+    }
+
+    pub fn project_key(&self) -> &str {
+        &self.project_key
+    }
+
+    pub fn ledger_issue(&self) -> &str {
+        &self.ledger_issue
+    }
+
+    pub fn operation(&self) -> FileVerdict {
+        FileVerdict::new(
+            self.cve.as_str().to_string(),
+            self.severity.as_str().to_string(),
+            self.package.clone(),
+            self.rationale.clone(),
+            self.label.clone(),
+            self.project_key.clone(),
+            self.issue_type.clone(),
+            self.ledger_issue.clone(),
+            self.marker.clone(),
+        )
+    }
+}
+
+pub fn ticket_proposals(verdicts: &[Verdict], filing: &Filing<'_>) -> Vec<TicketProposal> {
+    let mut filed: Vec<TicketProposal> = Vec::new();
+    let mut named: HashSet<&str> = HashSet::new();
+
+    for verdict in verdicts {
+        let Some(legacy_label) = verdict.legacy_label else {
+            continue;
+        };
+        if !named.insert(verdict.cve.as_str()) {
+            continue;
+        }
+        filed.push(TicketProposal {
+            cve: verdict.cve.clone(),
+            severity: verdict.severity,
+            package: verdict.package.clone(),
+            rationale: verdict.rationale.clone(),
+            label: format!("{TICKET_LABEL_PREFIX}{legacy_label}"),
+            project_key: filing.project_key.to_string(),
+            issue_type: filing.issue_type.to_string(),
+            ledger_issue: filing.ledger_issue.to_string(),
+            marker: ticket_marker(filing, &verdict.cve),
+        });
+    }
+
+    filed
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketFiling {
+    pub project_key: String,
+
+    pub issue_type: String,
+
+    pub ledger_issue: String,
+}
+
+impl TicketFiling {
+    pub fn over<'a>(&'a self, project: &'a str, invocation_ref: &'a str) -> Filing<'a> {
+        Filing {
+            project_key: &self.project_key,
+            issue_type: &self.issue_type,
+            ledger_issue: &self.ledger_issue,
+            project,
+            invocation_ref,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, crate::effect::VariantCount)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum TicketFiled {
+    Filed {
+        cve: AdvisoryId,
+        marker: String,
+        issue: String,
+    },
+
+    Refused {
+        cve: AdvisoryId,
+        marker: String,
+        why: String,
+    },
+}
+
+impl TicketFiled {
+    pub fn cve(&self) -> &AdvisoryId {
+        match self {
+            TicketFiled::Filed { cve, .. } | TicketFiled::Refused { cve, .. } => cve,
+        }
+    }
+
+    pub fn marker(&self) -> &str {
+        match self {
+            TicketFiled::Filed { marker, .. } | TicketFiled::Refused { marker, .. } => marker,
+        }
+    }
+
+    pub fn issue(&self) -> Option<&str> {
+        match self {
+            TicketFiled::Filed { issue, .. } => Some(issue),
+            TicketFiled::Refused { .. } => None,
+        }
+    }
+
+    pub fn refusal(&self) -> Option<&str> {
+        match self {
+            TicketFiled::Filed { .. } => None,
+            TicketFiled::Refused { why, .. } => Some(why),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, crate::effect::VariantCount)]
+#[serde(rename_all = "snake_case", tag = "filing")]
+pub enum FiledTickets {
+    NotConfigured,
+
+    Attempted { tickets: Vec<TicketFiled> },
+}
+
+impl FiledTickets {
+    pub fn attempted(&self) -> Option<&[TicketFiled]> {
+        match self {
+            FiledTickets::NotConfigured => None,
+            FiledTickets::Attempted { tickets } => Some(tickets),
+        }
+    }
+
+    pub fn write(&self, dir: &Path) -> Result<PathBuf, std::io::Error> {
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join(FILINGS_FILE);
+        let mut document =
+            serde_json::to_vec_pretty(self).expect("a filing holds no value serde can refuse");
+        document.push(b'\n');
+        std::fs::write(&path, document)?;
+        Ok(path)
+    }
+}
+
+fn ticket_marker(filing: &Filing<'_>, cve: &AdvisoryId) -> String {
+    let identity = effect_id(
+        filing.project,
+        filing.invocation_ref,
+        JIRA_ISSUE_FILED,
+        &format!("{}/{}", filing.project_key, cve.as_str()),
+    );
+    format!("{TICKET_MARKER_PREFIX}{}", identity.0)
 }
 
 fn verdicts_of(run: &Run) -> Vec<Verdict> {

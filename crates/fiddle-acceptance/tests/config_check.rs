@@ -613,9 +613,13 @@ fn config_check_reports_the_github_table_it_accepted() {
     assert_eq!(github["policy"]["publish_decision_request"], "allow");
     assert_eq!(github["policy"]["ensure_pull_request_ready"], "allow");
     assert_eq!(github["policy"]["ensure_pull_request_body"], "allow");
+    assert_eq!(github["policy"]["jira.issue_filed"], "allow");
+    assert_eq!(github["policy"]["jira.comment_added"], "allow");
+    assert_eq!(github["policy"]["jira.issue_transitioned"], "allow");
+    assert_eq!(github["policy"]["jira.pull_request_linked"], "allow");
     assert_eq!(
         github["policy"].as_object().unwrap().len(),
-        6,
+        10,
         "one row per effect this build performs, and no more: {github}"
     );
     assert_eq!(github["decision"], serde_json::Value::Null, "{github}");
@@ -1014,7 +1018,7 @@ fn check_with_env(text: &str, extra: &[&str], env: &[(&str, &str)]) -> std::proc
 
 fn every_table() -> String {
     let forge = FORGE.split_once("[github]").expect("FORGE names a forge").1;
-    format!("{AGENTIC}{CHECK_LIST}{COMMAND_LIST}\n[github]{forge}{SWEEP}{TRACKER}")
+    format!("{AGENTIC}{CHECK_LIST}{COMMAND_LIST}\n[github]{forge}{SWEEP}{TRACKER}{TRACKER_FILING}")
 }
 
 const TRACKER: &str = r#"
@@ -1032,7 +1036,72 @@ blocked = "Blocked"
 done = "Done"
 "#;
 
+const TRACKER_FILING: &str = r#"
+[jira.filing]
+project = "SEC"
+issue_type = "Task"
+ledger_issue = "SEC-1"
+"#;
+
 const TRACKER_CREDENTIAL: &str = "JIRA_API_TOKEN";
+
+#[test]
+fn config_check_echoes_the_project_a_deployment_files_advisories_into() {
+    let filing = checked(&format!("{AGENTIC}{TRACKER}{TRACKER_FILING}"))["jira"]["filing"].clone();
+    assert_eq!(
+        filing,
+        serde_json::json!({
+            "project": "SEC",
+            "issue_type": "Task",
+            "ledger_issue": "SEC-1",
+        }),
+        "the project a deployment files into is not the project it reads work \
+         items from, and an operator has to be able to read back which is which"
+    );
+    assert_eq!(
+        checked(&format!("{AGENTIC}{TRACKER}{TRACKER_FILING}"))["jira"]["project"],
+        "IDENT",
+        "the observed project is untouched by the filing table"
+    );
+}
+
+#[test]
+fn the_human_reading_names_the_three_values_a_filing_table_resolves_to() {
+    let out = check(&format!("{AGENTIC}{TRACKER}{TRACKER_FILING}"));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    for line in [
+        "jira.filing.project = SEC",
+        "jira.filing.issue_type = Task",
+        "jira.filing.ledger_issue = SEC-1",
+    ] {
+        assert!(
+            said.contains(line),
+            "an operator who does not ask for JSON still has to read back every value a \
+             sweep files with, and `{line}` is not in what the command said: {said}"
+        );
+    }
+    assert!(
+        said.contains("jira.project = IDENT"),
+        "beside the project it reads work items from, which the filing table does not \
+         change: {said}"
+    );
+}
+
+#[test]
+fn a_document_naming_no_filing_table_files_nothing_and_says_so() {
+    assert_eq!(
+        checked(&format!("{AGENTIC}{TRACKER}"))["jira"]["filing"],
+        serde_json::Value::Null,
+        "a tracker read for work items files no advisory until a deployment asks \
+         it to, and `config check` is where an operator confirms that"
+    );
+}
 
 #[test]
 fn config_check_echoes_the_tracker_and_names_its_credential_without_resolving_it() {
@@ -1053,9 +1122,11 @@ fn config_check_echoes_the_tracker_and_names_its_credential_without_resolving_it
                 "blocked": "Blocked",
                 "done": "Done",
             },
+            "filing": null,
         }),
         "an operator must read back the site, the project, the bound and the \
-         variables the document names"
+         variables the document names, and a tracker this deployment files no \
+         advisory into echoes that absence rather than omitting the key"
     );
 
     let dir = tempfile::tempdir().unwrap();

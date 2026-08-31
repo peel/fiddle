@@ -254,6 +254,153 @@ Which of those the host declares is the host's decision. This lane cannot make
 that decision correctly, so it does not write the document.
 
 `[github] base` replaces `CVE_BASE_BRANCH`. The deleted step read the default
+
+M5B RETIRES THE VERDICT MAPPING STEP, AND THE JIRA STEP LOSES ITS CREATE
+
+Recorded 2026-08-29 by bean fiddle-2690, the M5b record. It replaces a record
+this file carried earlier the same day, which said neither step retires and gave
+four reasons. Every one of those reasons is now stale or superseded, and the last
+section names each with what replaced it.
+
+The answer is in two parts. The verdict mapping step is removed. The Jira step is
+not removed, because it does one thing besides the create and fiddle does not do
+that thing.
+
+WHAT GOES, AND WHAT STAYS
+
+The step `Map fiddle's verdicts to the Jira contract` goes, and it goes whole.
+Its only output is `non-patchable.json`, and the only reader of that file is the
+create the Jira step performs. fiddle performs that create now.
+
+The diff below is M4b's and still adds that step. It is left as it was written,
+because this repository does not hold the file the patch applies to and cannot
+show that an edited patch still applies. So the diff is what M4b sent and this
+section is what M5b concludes. An operator applying the patch today drops the
+`Map fiddle's verdicts to the Jira contract` step. The other three steps and the
+`checks: read` line apply as written, and `persist-credentials: false` is added
+by hand as the section above directs. Everything the sections above say about the deleted model step, the checksum, the
+image, the declared programs and the fourth permission is unchanged by M5b.
+
+The Jira step loses the create and keeps the work that does not read
+`non-patchable.json`. It links the run's pull request on a ticket for a CVE that
+left the verdict list, and it reads `to-fix.json` to do that. fiddle does not do
+that work. `jira.comment_added` and `jira.pull_request_linked` are registered
+effects and no capability constructs either: `JIRA_ISSUE_FILED` is the only Jira
+effect name that appears under `crates/fiddle-runtime/src/capability/`, and
+`human::publish`, which builds an `AddComment`, still has no caller outside
+tests. Verified at HEAD. What the linking step does is recorded here at M4b and
+is not re-verified, because this repository does not hold the workflow file. So
+the `cve-lists` download stays, for the reason "THE CHECKOUT MUST PERSIST NO
+CREDENTIAL" already gives.
+
+This record cannot write the Jira step's edit as a hunk. It holds that step as
+context and not as text, and a fabricated context produces a patch that does not
+apply. The section "THE CHECKOUT MUST PERSIST NO CREDENTIAL" is prose for the
+same reason. What the edit must leave true is written here instead. The step must
+not exit on an absent `non-patchable.json`, because that file is now never
+written, and the section "THE VERDICT MAPPING" above records that today it does
+exit.
+
+WHAT FILES THE TICKET NOW, AND WHAT EACH CLAIM RESTS ON
+
+MEASURED against Atlassian, on 2026-08-29. `FileVerdict`, the `Executor` and
+`snplow.atlassian.net` filed `ISP-276`. A second execution over the same
+invocation reference answered `ISP-276` from `inspect` and created nothing. With
+the claim removed from the ledger, `inspect` reached the search, asked
+`fields=key` and read `ISP-276` back. The create carried `fields.issuetype` and a
+`properties` array, and the site answered 201.
+`crates/fiddle-runtime/tests/live_jira_filing.rs` is that lane, and ADR 079
+carries the record.
+
+MEASURED against the loopback stub, and against nothing else. The run path.
+`CveMitigate::execute` calls `file_tickets`, which calls `ticket_proposals` and
+executes each `FileVerdict` through the same `Executor`, and it does so only when
+`[jira.filing]` names a project, an issue type and a ledger issue.
+`crates/fiddle-runtime/tests/cve_filing.rs` holds this. `filing_client` in
+`crates/fiddle-cli/src/main.rs` reads that table and attaches the client. ADR 080
+carries the decisions.
+
+NOT REACHED. No run of a `fiddle` binary has written to a real site. The live
+lane builds a `TicketFiling` itself and reads no `fiddle.toml`, so the route from
+the document to the effect is measured against the stub alone. The only run path
+to `FileVerdict` through the binary is a full CVE sweep, which needs a scanner,
+an agent and a GitHub repository, and which opens a pull request.
+
+ARGUED, by reading two programs. The jq program above and `ticket_proposals` in
+`crates/fiddle-runtime/src/cve/verdict.rs` select the same rows and build the
+same label. `ticket_proposals` skips a verdict whose `legacy_label` is `None`,
+which is `select(.legacy_label != null)`. It keeps the first row for each CVE and
+skips the rest, which is `unique_by(.cve)`. It writes the label
+`cve-<legacy_label>` from `TICKET_LABEL_PREFIX`, which is the `cve-<verdict>` the
+Jira step builds. `cve`, `severity` and `package` reach the summary, and
+`rationale` reaches the description. Nothing has run the jq program and a fiddle filing over
+one verdict list and compared the two sets of tickets, so this is a reading of
+two programs and not a measurement.
+
+So the retirement rests on a measured effect, a stub-measured run path and an
+argued contract. It does not rest on a binary that has filed a real ticket,
+because none has. What would settle that gap is one run of a `fiddle` binary
+against a real site, reading a `fiddle.toml` that carries `[jira.filing]`.
+M5b did not take it, and this record does not claim it.
+
+WHAT THE HOST MUST ADD BEFORE IT REMOVES THE MAPPING STEP
+
+Read off the schema in `crates/fiddle-cli/src/config.rs` at HEAD.
+
+  - `[jira.filing]` in `fiddle.toml`, naming `project`, `issue_type` and
+    `ledger_issue`. A deployment that names no such table files nothing, writes
+    `{"filing": "not_configured"}` into `filings.json`, and sends no request. The
+    run still succeeds. A host that removes the mapping step and forgets this
+    table stops filing tickets and reports that only in a file nobody reads
+    (ADR 080).
+  - `[jira]`, the table `[jira.filing]` sits under. It requires `site`,
+    `project`, `user` and `token`. `[jira] project` names the project work items
+    are read from, and the schema requires it even though a `cve:` invocation
+    reads its work items from the stub port.
+  - The two variables `[jira] user` and `[jira] token` name, exported on the
+    `Run fiddle for CVE remediation` step. That step exports four variables
+    today and none of them is Jira's. A deployment that asks to file and exports
+    no credential is refused before the run rather than filing nothing on every
+    run.
+  - The ledger issue. It must exist before the first run and it must live in
+    `[jira.filing] project`. fiddle never creates it. A ledger issue the site
+    does not hold is named, and no create is sent.
+
+WHAT DOES NOT CHANGE
+
+`verdicts.json` keeps being written. `write_report` is its only writer, the Slack
+step is M9's and still reads it, and the report bundle is retained evidence in
+its own right. Removing the verdict mapping step removes a reader of
+`verdicts.json` and not its writer.
+
+`non-patchable.json` is no longer written. Its five fields were how a verdict row
+reached a ticket, and fiddle now builds the ticket from the verdict row itself.
+The create carries the label the `scan` job's JQL closes, so that job closes a
+ticket fiddle files exactly as it closes a ticket the Jira step files.
+
+`legacy_label` stays in `verdicts.json`. ADR 038 gave that field the end date
+"when M5 owns the Jira step", and the date has not arrived. fiddle owns the
+create and the host still owns the close, and the close is a JQL on
+`cve-upstream-blocked` and `cve-needs-work` in the `scan` job, which this patch
+does not touch. The field is what fiddle builds its own label from.
+
+THE FOUR REASONS THE EARLIER RECORD GAVE, AND WHAT EACH IS NOW
+
+  1. "No fiddle binary performs a Jira write." Stale. `CveMitigate::file_tickets`
+     calls `ticket_proposals`, and `CveMitigate::execute` calls `file_tickets`.
+     Verified at HEAD.
+  2. "The create would be refused." Stale. `FileVerdict::body` names
+     `fields.issuetype`, and a create carrying it answered 201 on 2026-08-29.
+  3. "The effect cannot recognise a ticket it filed." Stale. `search_path` writes
+     `&fields=key` on every page, and the live run of 2026-08-29 read `ISP-276`
+     back through it.
+  4. "Two runs against a real site filed two tickets." Superseded, and not
+     contradicted. Both tickets were filed on 2026-08-28 by the search-then-create
+     protocol. The claim ledger replaced that protocol, and two executions on
+     2026-08-29 made one create. Those two executions were one process, so a
+     fresh process is argued from the derivation of the marker and is measured
+     hermetically alone.
+
 diff --git a/.github/workflows/cve-remediation.yml b/.github/workflows/cve-remediation.yml
 index f8d9b8b..4b92f5d 100644
 --- a/.github/workflows/cve-remediation.yml

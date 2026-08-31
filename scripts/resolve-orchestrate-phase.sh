@@ -30,7 +30,7 @@ EPIC_TYPE=$(jq -r '.type' "$EPIC_FILE")
 PLANNING_COUNT=$(jq '[.[] | select((.tags // []) | index("planning"))] | length' "$CHILDREN_FILE")
 SEED_ID=$(jq -r '[.[] | select((.tags // []) | index("planning"))][0].id // empty' "$CHILDREN_FILE")
 SEED_STATUS=$(jq -r '[.[] | select((.tags // []) | index("planning"))][0].status // empty' "$CHILDREN_FILE")
-IMPLEMENTATION_COUNT=$(jq '[.[] | select(((.tags // []) | index("planning")) | not)] | length' "$CHILDREN_FILE")
+IMPLEMENTATION_COUNT=$(jq '[.[] | select(((.tags // []) | index("planning")) | not) | select(.status != "scrapped")] | length' "$CHILDREN_FILE")
 PREDECESSOR_COUNT=$(jq '(.blocked_by // []) | length' "$EPIC_FILE")
 PREDECESSOR_ID=$(jq -r '(.blocked_by // [])[0] // empty' "$EPIC_FILE")
 
@@ -76,7 +76,7 @@ fi
 
 if [[ "$IMPLEMENTATION_COUNT" -gt 0 ]]; then
   if ! jq -e --arg seed_id "$SEED_ID" '
-    [.[] | select((((.tags // []) | index("planning")) or ((.tags // []) | index("remediation"))) | not)]
+    [.[] | select((((.tags // []) | index("planning")) or ((.tags // []) | index("remediation"))) | not) | select(.status != "scrapped")]
     | all(.[];
         ([.tags[]? | select(startswith("generated-by:"))] | length) == 1
         and ([.tags[]? | select(startswith("plan-task:"))] | length) == 1
@@ -87,6 +87,7 @@ if [[ "$IMPLEMENTATION_COUNT" -gt 0 ]]; then
   if jq -e '
     [.[]
       | select((((.tags // []) | index("planning")) or ((.tags // []) | index("remediation"))) | not)
+      | select(.status != "scrapped")
       | (([.tags[] | select(startswith("generated-by:"))][0]) + "|" + ([.tags[] | select(startswith("plan-task:"))][0]))]
     | group_by(.)
     | any(.[]; length > 1)

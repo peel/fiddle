@@ -42,11 +42,15 @@ For each task/bug bean under the epic, run `scripts/validate-bean-body.sh --body
 
 ## Step 2: Per-Task Loop
 
-Process each task bean sequentially, skipping any already marked `completed`:
+Process the epic's task beans, skipping any already marked `completed`.
 
 Use the `fiddle:develop-loop` skill with `--bean <bean-id> --epic <epic-id>`.
 
 The develop-loop sub-skill runs the full cycle for one bean — implementer, evaluators, scorecard merge, convergence — and returns the bean as either `completed` or `needs-attention`.
+
+Beans with no dependency edge between them and no file in common run at the same time, each in its own worktree. Follow [parallel lanes](parallel-lanes.md) for how to group a wave, what a lane agent must be told, and why a lane's own gate does not speak for the merged result. Beans that share a file, or that the tracker marks `blocked_by`, still run one after another.
+
+A lane's evaluation is unchanged: every bean initialises its eval log against its own base commit and converges on its own criteria.
 
 ## Step 3: Live Acceptance
 

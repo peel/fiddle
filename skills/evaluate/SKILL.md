@@ -90,7 +90,7 @@ Return this JSON structure to stdout, with no markdown fences and no commentary 
 }
 ```
 
-`spec_defect` is optional. Omit it or set it to `null` when the spec is sound. Set it only when the implementation faithfully matches the spec but the spec itself is wrong — contradictory, or based on a false premise about the codebase:
+`spec_defect` is required. Set it to `null` when the spec is sound. Leaving the key out is not the same statement: `merge-scorecards.sh` reports a card that never carried it as `not_reported` rather than clear, because a dropped field must not read as a sound spec. Set it only when the implementation faithfully matches the spec but the spec itself is wrong — contradictory, or based on a false premise about the codebase:
 
 ```json
 "spec_defect": { "detected": true, "reason": "Spec requires calling resolveIdentity() with a batch arg, but that function is single-record only; the batch path is a different API. Faithful implementation would break resolution." }
@@ -125,7 +125,7 @@ beside scored dimensions contradicts itself.
 - `criteria[].pass`: boolean, not a string
 - `criteria[].evidence`: required string citing the evidence artifact behind the verdict (file name plus the relevant line or excerpt). A criterion the pack cannot support is `pass: false` with evidence "no evidence"
 - `antipatterns_detected`: array (empty if none found)
-- `spec_defect`: optional object `{"detected": true, "reason": "..."}`, or `null`/absent when the spec is sound. This is not a low `domain_spec_fidelity` score: fidelity measures implementation-vs-spec (did the implementer build what the spec asked), while `spec_defect` flags spec-vs-reality (is what the spec asked for correct at all). Score fidelity honestly on its own scale — a faithful implementation of a defective spec scores high fidelity and carries a `spec_defect` flag. The reason cites concrete codebase evidence for why the spec is wrong
+- `spec_defect`: object `{"detected": true, "reason": "..."}`, or `null` when the spec is sound. Emit the key either way; an absent key states nothing and the merge reports it as `not_reported`. This is not a low `domain_spec_fidelity` score: fidelity measures implementation-vs-spec (did the implementer build what the spec asked), while `spec_defect` flags spec-vs-reality (is what the spec asked for correct at all). Score fidelity honestly on its own scale — a faithful implementation of a defective spec scores high fidelity and carries a `spec_defect` flag. The reason cites concrete codebase evidence for why the spec is wrong
 - `guidance`: actionable fix instructions when any dimension is below threshold; empty string if all pass
 - `dispatch_count`: always 1 (the orchestrator tracks cumulative dispatches)
 

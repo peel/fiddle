@@ -1,7 +1,7 @@
 # 075 — An effect is named, not enumerated
 
 Status: accepted
-Cites: EffectName, EffectDescriptor, BUILT_IN, RegistryError, ENSURE_BRANCH_PUBLISHED, PolicyTable, PolicyDocument, UnknownEffect, effect_id, branch_name, ProposedEffect, IntegrationOperation, AdapterError, EffectPhase
+Cites: EffectName, EffectDescriptor, BUILT_IN, PINNED_MINIMUMS, HumanDecisionRequirement, FileVerdict, RegistryError, ENSURE_BRANCH_PUBLISHED, JIRA_ISSUE_FILED, JIRA_COMMENT_ADDED, JIRA_ISSUE_TRANSITIONED, JIRA_PULL_REQUEST_LINKED, PolicyTable, PolicyDocument, UnknownEffect, effect_id, branch_name, ProposedEffect, IntegrationOperation, AdapterError, EffectPhase, FromStepParams, resolve, describe
 
 ## Context
 
@@ -29,7 +29,36 @@ Both comments rest on the same argument. The type rejects an unknown name, so no
 
 **The execution check is not redundant with the config check.** `ProposedEffect` has four public fields, and a capability constructs its own. No constructor and no type stands between a capability and a proposal. The executor check is therefore the only guard at that moment, and it must stay even though the config check exists.
 
-**The six wire spellings are frozen.** `ensure_branch_published`, `ensure_pull_request`, `ensure_check_requested`, `publish_decision_request`, `ensure_pull_request_ready` and `ensure_pull_request_body` are constants in `fiddle-core`.
+**The ten wire spellings are frozen.** `ensure_branch_published`, `ensure_pull_request`, `ensure_check_requested`, `publish_decision_request`, `ensure_pull_request_ready`, `ensure_pull_request_body`, `jira.issue_filed`, `jira.comment_added`, `jira.issue_transitioned` and `jira.pull_request_linked` are constants in `fiddle-core`.
+
+M5b added the last four. They were written as `pub const` in their own operation modules while three lanes built them in parallel, so that no two lanes edited `fiddle-core/src/effect.rs` at once. That reason expired when the lanes merged. A shipped spelling belongs in `fiddle-core` because the consequence below is about the spelling and not about the module that happens to hold the operation.
+
+**A hand-written table pins the minimums, because the derive writes both sides.**
+
+`#[derive(Effect)]` generates `descriptor()`. It also generates `minimum()` as
+`Self::descriptor().minimum`. `BUILT_IN` holds `FileVerdict::descriptor()`. So for a derived
+operation both sides of `no_operation_declares_a_minimum_its_descriptor_does_not` read one
+attribute. Measured at `8934c10`: setting `minimum = "human"` on `FileVerdict` left that test
+green, and only `the_registry_holds_exactly_the_ten_this_build_ships` went red. Five of the ten
+operations carry the attribute. Five write `minimum()` by hand and still exercise the check.
+
+`PINNED_MINIMUMS`, in the registry test module, holds the ten spellings and the ten minimums as
+literal data. No attribute writes it. `the_registry_holds_exactly_the_ten_this_build_ships`
+compares `BUILT_IN` to it. `no_operation_declares_a_minimum_its_descriptor_does_not` compares each
+operation's `minimum()` to it, and each descriptor's `minimum` to it. A later milestone can convert
+the remaining five, and neither test becomes vacuous.
+
+An enumeration of effects would make a divergence a compile error. This record rejects an
+enumeration, so a hand-written pin replaces it. `HumanDecisionRequirement::Human` says a person must
+approve the effect. A person who edits a pin changes who may act without that approval.
+
+**`jira.transition` is not a spelling this build ships.** It is the suite's example of a name no descriptor holds. Registering it as an alias was measured: it reds six tests that depend on the name staying unregistered, in four files.
+
+Four of the six reach the registry through `describe`: `lookup_refuses_a_name_no_descriptor_holds`, `an_unregistered_proposal_is_refused_before_an_identity_is_derived` and `an_unregistered_name_is_refused_ahead_of_the_capability_it_names` through `Executor::walk`, and `an_effect_this_build_does_not_perform_is_refused_when_the_workflow_is_built` through `WorkflowCapability::new`. One reaches it through `resolve`: `a_name_no_descriptor_holds_resolves_to_no_constructor`. One reads `BUILT_IN` directly: `an_admissible_extension_is_answered_beside_the_built_ins` installs a test extension that claims the name, so a built-in of the same name makes `admissible` answer `Duplicate`.
+
+**Five further tests spell the name and are not evidence for this.** They stay green whether or not the name is registered, so a reader must not count them. `a_name_no_rule_key_spells_is_left_ungated` (`fiddle-cli/src/config.rs`) tests that `rule_for` allows a row no document wrote, which holds for a registered name too. `a_name_outside_the_grammar_is_refused` (`fiddle-core/src/effect.rs`) tests the grammar. `every_effect_failure_declares_which_exit_row_it_belongs_in`, `no_other_permanent_refusal_became_a_wait` and `no_effect_failure_a_workflow_can_meet_is_a_wait` build an `EffectError` value and ask the registry nothing.
+
+Bean `fiddle-cphb` adds a seventh dependent case that has not landed: a toil document naming `jira.transition` must refuse at load.
 
 ## Consequences
 
@@ -41,8 +70,16 @@ The identity is written into the world. `branch_name` builds the published branc
 
 A person's approval stops answering. `walk` compares `binding.effect` to the derived identity and refuses a decision that does not match. An approval issued before a rename answers the old identity, so it no longer authorizes the effect it was granted for.
 
-A rename therefore needs a migration that maps old identities to new ones, or it needs every in-flight run to be drained first. Neither is free, and neither is implemented. Treat the six spellings as a wire format.
+A rename therefore needs a migration that maps old identities to new ones, or it needs every in-flight run to be drained first. Neither is free, and neither is implemented. Treat the ten spellings as a wire format.
 
 **An adapter reports the outcome, and it knows the phase.** `IntegrationOperation` carries an associated `Error: AdapterError`, and `AdapterError::outcome` takes an `EffectPhase` of `Inspect` or `Apply`. The same transport failure means different things in the two phases. A failure while inspecting mutated nothing. A failure while applying may have mutated the world, and it reports `Unknown` rather than a guess.
+
+**Registration says this build performs the effect. It does not say a step can name it.**
+
+`resolve` is `describe(name).map(|descriptor| descriptor.construct)`, so every descriptor carries a `Construct`. Six built-ins build an operation from a `StepParams`. The four Jira effects refuse one, and the refusal is the correct answer rather than an unfinished constructor.
+
+Each Jira target carries an observed revision of an issue, or a scan verdict. `TransitionIssue`, `AddComment` and `LinkPullRequest` put the issue's `fields.updated` into the target, so the identity names one state of one issue. `FromStepParams::from_params` is synchronous and takes no adapter, so it cannot read that field. Putting a snapshot of the issue into `StepParams` would not help: a snapshot taken earlier derives an identity for a state the issue has left, which is the failure the revision was added to prevent. `FileVerdict` needs an advisory, a package and a rationale, which exist in a scan verdict and not in a workflow step; a constructor built from defaults would file a real ticket made of them.
+
+So the four are registered because `Executor::walk` refuses an unregistered name before its first traced step, and because `PolicyTable` gates only a registered name. They are constructed by the capability that holds the observation. `every_registered_descriptor_builds_the_operation_its_name_means_or_refuses_in_its_name` measures both lists by asking every descriptor, and a Jira effect that moved into the building list gained a constructor made of defaults.
 
 **A downstream effect gets the same treatment as a built-in one.** `install` validates a name before the registry accepts it, and both rejection moments read the registry rather than a compiled list. What the two removed comments protected is now enforced by code that runs, not by a type that cannot be extended.

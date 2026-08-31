@@ -63,7 +63,15 @@
             pkgs.gh
             pkgs.jq
             pkgs.go
+            pkgs.sccache
           ];
+
+          env = {
+            RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
+            CARGO_INCREMENTAL = "0";
+            SCCACHE_CACHE_SIZE = "40G";
+          };
+
           difftastic.enable = true;
           git-hooks.hooks = {
             alejandra.enable = true;

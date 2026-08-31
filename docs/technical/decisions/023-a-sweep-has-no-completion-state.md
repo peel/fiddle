@@ -3,6 +3,7 @@
 Status: accepted
 Amends 019, which gave `cve` a reference that stands alone and left open what its change set means.
 Cites: WorkStateView::has_completion_state, fiddle_core::assess, fiddle_core::correlation_key, fiddle_core::derive_next, orchestration::concluded, Observation::NotApplicable, Reason::AlreadyInProgress, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_marker_against_a_trackerless_reference_does_not_account_the_sweep_as_done
+Retired: forget_that_the_last_run_happened
 
 It closes the half of ADR 022's defect that decision explicitly does not: 022 prevents a new stub marker against a sweep's reference, and repairs no marker already on disk.
 

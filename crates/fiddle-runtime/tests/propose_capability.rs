@@ -1059,6 +1059,11 @@ async fn the_suspended_run_waits_on_the_question_the_comment_carries() {
             assert_eq!(pr, PR);
             assert_ne!(comment, 0, "a comment id nobody sent names no comment");
         }
+        named => panic!(
+            "this capability publishes to the github channel it was configured with and to no \
+             other; exactly one channel is authoritative for one request, and this run named \
+             {named}"
+        ),
     }
 }
 
