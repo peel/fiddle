@@ -17,6 +17,7 @@ pub mod ports;
 pub(crate) mod process;
 pub mod scanner;
 pub mod stub;
+pub mod toil;
 pub mod workspace;
 
 #[doc(hidden)]
