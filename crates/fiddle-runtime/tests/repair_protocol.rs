@@ -3,7 +3,8 @@ mod support;
 
 use fiddle_runtime::agent::AgentBudget;
 use fiddle_runtime::capability::{
-    Capability, CapabilityError, ExecutionGrant, ExecutionInput, FixtureRepair, RepairConfig,
+    Capability, CapabilityError, Executed, ExecutionGrant, ExecutionInput, FixtureRepair,
+    RepairConfig,
 };
 use fiddle_runtime::core::{
     correlation_key, AttemptId, CapabilityId, EvidenceRef, NextAction, RunOutcome, WorkItemState,
@@ -61,8 +62,8 @@ async fn the_success_path_is_proven_without_any_model_dependence() {
         .expect("the shell's own check must pass after the repair");
 
     assert_eq!(
-        evidence.0,
-        format!("repair:1:{ATTEMPT}"),
+        evidence,
+        Executed::Earned(EvidenceRef(format!("repair:1:{ATTEMPT}"))),
         "git saw exactly one file change, which with a passing check can only be the source"
     );
     assert_eq!(
@@ -686,12 +687,14 @@ impl Capability for RecordsItsInput {
         "records"
     }
 
-    async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
         self.seen.lock().unwrap().push(input.work_item.cloned());
         if self.refuses {
             return Err(CapabilityError::NothingProposed);
         }
-        Ok(EvidenceRef("records:executed".to_string()))
+        Ok(Executed::Earned(EvidenceRef(
+            "records:executed".to_string(),
+        )))
     }
 }
 

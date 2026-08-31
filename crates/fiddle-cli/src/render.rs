@@ -615,6 +615,9 @@ fn outcome_line(outcome: &fiddle_core::RunOutcome) -> String {
         fiddle_core::RunOutcome::Completed => "completed".to_string(),
         fiddle_core::RunOutcome::Suspended { reason } => format!("suspended — {reason}"),
         fiddle_core::RunOutcome::Retryable { reason } => format!("retryable — {reason}"),
+        fiddle_core::RunOutcome::Rejected { findings } => {
+            format!("rejected — {}", fiddle_core::joined(findings))
+        }
         fiddle_core::RunOutcome::Failed { error } => format!("failed — {error}"),
     }
 }

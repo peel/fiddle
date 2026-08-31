@@ -1,4 +1,4 @@
-use super::{Capability, CapabilityError, ExecutionInput};
+use super::{Capability, CapabilityError, Executed, ExecutionInput};
 use crate::stub::STUB_ORIGIN;
 use fiddle_core::{correlation_key, CapabilityId, ChangeSetState, EvidenceRef};
 use std::path::{Path, PathBuf};
@@ -27,7 +27,7 @@ impl Capability for StubMark {
         "mark"
     }
 
-    async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
         let ExecutionInput {
             grant,
             work_id,
@@ -50,7 +50,9 @@ impl Capability for StubMark {
             path: destination.clone(),
             source,
         })?;
-        Ok(EvidenceRef(format!("{STUB_ORIGIN}:{relative}")))
+        Ok(Executed::Earned(EvidenceRef(format!(
+            "{STUB_ORIGIN}:{relative}"
+        ))))
     }
 }
 
@@ -108,7 +110,10 @@ mod tests {
             .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
             .await
             .unwrap();
-        assert_eq!(evidence.0, "stub:changes/fiddle-m0-demo.json");
+        assert_eq!(
+            evidence,
+            Executed::Earned(EvidenceRef("stub:changes/fiddle-m0-demo.json".to_string()))
+        );
 
         match StubChangePort::new(root)
             .observe(WORK_ID, &tokio_util::sync::CancellationToken::new())

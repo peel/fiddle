@@ -1,5 +1,5 @@
 use super::stub::write_atomically;
-use super::{Capability, CapabilityError, ExecutionInput};
+use super::{Capability, CapabilityError, Executed, ExecutionInput};
 use crate::effect::{EffectOutcome, EffectReceipt, Executor, IntegrationOperation, ObservedState};
 use crate::github::{branch_name, EnsureBranchPublished, EnsureCheckRequested, EnsurePullRequest};
 use fiddle_core::{
@@ -239,7 +239,7 @@ impl Capability for PublishChange<'_> {
         "publish"
     }
 
-    async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
         let ExecutionInput {
             grant,
             work_id,
@@ -274,10 +274,10 @@ impl Capability for PublishChange<'_> {
         let number = published?;
 
         self.record_change_set(work_id)?;
-        Ok(EvidenceRef(format!(
+        Ok(Executed::Earned(EvidenceRef(format!(
             "{PUBLISH_ORIGIN}:{}/pull/{number}",
             self.config.repo
-        )))
+        ))))
     }
 
     fn receipts(&self) -> Vec<EvidenceRef> {

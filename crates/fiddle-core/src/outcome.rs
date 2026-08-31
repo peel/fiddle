@@ -9,6 +9,8 @@ pub enum RunOutcome {
 
     Retryable { reason: Published },
 
+    Rejected { findings: Vec<Published> },
+
     Failed { error: Published },
 }
 
@@ -80,6 +82,15 @@ mod tests {
             })
             .unwrap(),
             serde_json::json!({ "retryable": { "reason": "disk full" } })
+        );
+        assert_eq!(
+            serde_json::to_value(RunOutcome::Rejected {
+                findings: vec![Published::of("a public signature the ticket did not name")]
+            })
+            .unwrap(),
+            serde_json::json!({
+                "rejected": { "findings": ["a public signature the ticket did not name"] }
+            })
         );
         assert_eq!(
             serde_json::to_value(RunOutcome::Failed {

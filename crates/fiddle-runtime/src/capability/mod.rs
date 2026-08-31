@@ -90,13 +90,29 @@ impl<'a> ExecutionInput<'a> {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Executed {
+    Earned(EvidenceRef),
+
+    Rejected { findings: Vec<Published> },
+}
+
+impl Executed {
+    pub fn earned(&self) -> Option<&EvidenceRef> {
+        match self {
+            Executed::Earned(evidence) => Some(evidence),
+            Executed::Rejected { .. } => None,
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Capability: Send + Sync {
     fn id(&self) -> CapabilityId;
 
     fn stage(&self) -> &'static str;
 
-    async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError>;
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError>;
 
     fn receipts(&self) -> Vec<EvidenceRef> {
         Vec::new()

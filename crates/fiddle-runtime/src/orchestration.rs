@@ -1,4 +1,4 @@
-use crate::capability::{Capability, ExecutionGrant, ExecutionInput};
+use crate::capability::{Capability, Executed, ExecutionGrant, ExecutionInput};
 use crate::effect::Recurrence;
 use crate::evidence::{mint_attempt_id, publish, EvidenceError};
 use crate::journal::{AttemptJournal, AttemptTrace, FileJournal};
@@ -184,7 +184,7 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
         ))
         .await
     {
-        Ok(evidence) => {
+        Ok(Executed::Earned(evidence)) => {
             ctx.journal
                 .record_effect(capability_id, "completed", std::slice::from_ref(&evidence));
             let observed = ctx.capability.receipts();
@@ -206,6 +206,26 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
                     with_receipts(evidence, &observed),
                 )],
                 observations: after,
+                evidence_failure: None,
+            }
+        }
+        Ok(Executed::Rejected { findings }) => {
+            ctx.journal.record_effect(capability_id, "rejected", &[]);
+            let observed = ctx.capability.receipts();
+            RunReport {
+                outcome: RunOutcome::Rejected {
+                    findings: findings.clone(),
+                },
+                next_action: derived,
+                executions: vec![execution(capability_id, "rejected", observed.clone())],
+                progress: vec![progress(
+                    capability_id,
+                    ctx.capability.stage(),
+                    "rejected",
+                    Published::of(fiddle_core::joined(&findings)),
+                    observed,
+                )],
+                observations: with_publication(view, ctx.capability),
                 evidence_failure: None,
             }
         }
@@ -451,13 +471,10 @@ mod tests {
             "spied"
         }
 
-        async fn execute(
-            &self,
-            _input: ExecutionInput<'_>,
-        ) -> Result<EvidenceRef, CapabilityError> {
+        async fn execute(&self, _input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.log.record("execute");
-            Ok(EvidenceRef("spy:executed".to_string()))
+            Ok(Executed::Earned(EvidenceRef("spy:executed".to_string())))
         }
     }
 
@@ -476,7 +493,7 @@ mod tests {
             self.inner.stage()
         }
 
-        async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
+        async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
             self.log.record("execute");
             self.inner.execute(input).await
         }
@@ -891,10 +908,7 @@ mod tests {
             "refused"
         }
 
-        async fn execute(
-            &self,
-            _input: ExecutionInput<'_>,
-        ) -> Result<EvidenceRef, CapabilityError> {
+        async fn execute(&self, _input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
             self.log.record("execute");
             let kind = fiddle_core::EffectName::shipped(fiddle_core::ENSURE_PULL_REQUEST);
             if let Refusal::AwaitingDecision = self.how {
@@ -958,6 +972,97 @@ mod tests {
             assert_eq!(report.progress[0].status, "failed");
             assert_eq!(log.events(), ["intent", "execute", "effect:failed"]);
         }
+    }
+
+    struct Rejecting {
+        findings: Vec<Published>,
+        log: std::sync::Arc<Log>,
+    }
+
+    #[async_trait::async_trait]
+    impl Capability for Rejecting {
+        fn id(&self) -> CapabilityId {
+            STUB_MARK
+        }
+
+        fn stage(&self) -> &'static str {
+            "rejected"
+        }
+
+        async fn execute(&self, _input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
+            self.log.record("execute");
+            Ok(Executed::Rejected {
+                findings: self.findings.clone(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rejected_run_and_a_failed_run_are_given_different_outcomes() {
+        let finding = Published::of("the diff changes a public signature the ticket did not name");
+
+        let refused_dir = fixture_root();
+        let refused_log = std::sync::Arc::<Log>::default();
+        let rejecting = Rejecting {
+            findings: vec![finding.clone()],
+            log: std::sync::Arc::clone(&refused_log),
+        };
+        let refused_items = StubWorkItemPort::new(refused_dir.path());
+        let refused_changes = StubChangePort::new(refused_dir.path());
+        let refused_journal = SpyJournal::watching(&refused_log);
+        let refused = run(&context(
+            &rejecting,
+            &refused_items,
+            &refused_changes,
+            &refused_journal,
+            &attempt_id(),
+        ))
+        .await;
+
+        let broken_dir = fixture_root();
+        let broken_log = std::sync::Arc::<Log>::default();
+        let refusing = Refusing {
+            how: Refusal::PolicyDenied,
+            log: std::sync::Arc::clone(&broken_log),
+        };
+        let broken_items = StubWorkItemPort::new(broken_dir.path());
+        let broken_changes = StubChangePort::new(broken_dir.path());
+        let broken_journal = SpyJournal::watching(&broken_log);
+        let broken = run(&context(
+            &refusing,
+            &broken_items,
+            &broken_changes,
+            &broken_journal,
+            &attempt_id(),
+        ))
+        .await;
+
+        assert_eq!(
+            refused.outcome,
+            RunOutcome::Rejected {
+                findings: vec![finding],
+            },
+            "a rejected run reports the rejection and names what the evaluation read"
+        );
+        assert_eq!(
+            broken.outcome,
+            RunOutcome::Failed {
+                error: Published::of(
+                    "policy denied ensure_pull_request: the deployment document denies this kind"
+                ),
+            },
+            "a failed run reports the failure, so the two rows below differ by what happened \
+             and not by one of them being unset"
+        );
+        assert_ne!(refused.outcome, broken.outcome);
+        assert_eq!(refused.executions[0].status, "rejected");
+        assert_eq!(broken.executions[0].status, "failed");
+        assert_eq!(refused.progress[0].status, "rejected");
+        assert_eq!(
+            refused_log.events(),
+            ["intent", "execute", "effect:rejected"],
+            "a rejected run records that it executed and was rejected"
+        );
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-use super::{Capability, CapabilityError, ExecutionInput};
+use super::{Capability, CapabilityError, Executed, ExecutionInput};
 use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts, Transcripts};
 use crate::gateway::Redaction;
 use crate::workspace::{DeclaredCommand, Workspace, WorkspaceCommand};
@@ -123,7 +123,7 @@ where
         )
     }
 
-    async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
         let ExecutionInput {
             grant,
             work_id,
@@ -177,11 +177,11 @@ where
         }
 
         self.record_change_set(work_id, invocation_ref)?;
-        Ok(EvidenceRef(format!(
+        Ok(Executed::Earned(EvidenceRef(format!(
             "{REPAIR_ORIGIN}:{}:{}",
             changed.len(),
             attempt_id.0
-        )))
+        ))))
     }
 }
 
@@ -406,8 +406,8 @@ mod tests {
             "the marker must be the one the next invocation's assessment expects"
         );
         assert_eq!(
-            evidence.0,
-            format!("repair:1:{ATTEMPT}"),
+            evidence,
+            Executed::Earned(EvidenceRef(format!("repair:1:{ATTEMPT}"))),
             "the evidence names what git saw change, not what the model claimed \
              — and names the attempt it was granted, not one of its own"
         );

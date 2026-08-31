@@ -5,7 +5,9 @@ use fiddle_core::{
     TreeObservation, CVE_MITIGATE,
 };
 use fiddle_runtime::agent::AgentBudget;
-use fiddle_runtime::capability::{attempt_worktree, Capability, ExecutionGrant, ExecutionInput};
+use fiddle_runtime::capability::{
+    attempt_worktree, Capability, Executed, ExecutionGrant, ExecutionInput,
+};
 use fiddle_runtime::cve::verdict::Budget;
 use fiddle_runtime::effect::{EffectContext, EffectTrace, ExecutionStep, Executor, ReadRetry};
 use fiddle_runtime::evaluate::{Check, Success};
@@ -66,7 +68,7 @@ enum WithJira {
 
 #[derive(Debug, Eq, PartialEq)]
 struct Outcome {
-    evidence: Result<EvidenceRef, String>,
+    evidence: Result<Executed, String>,
     disposition: Option<RunDisposition>,
     tree: Option<TreeObservation>,
     receipts: Vec<EvidenceRef>,

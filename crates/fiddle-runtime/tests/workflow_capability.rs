@@ -2,15 +2,17 @@ mod fixture;
 mod support;
 
 use fiddle_core::{
-    AttemptId, DeploymentRule, EffectId, EffectName, HumanDecisionRequirement, NextAction,
-    PayloadHash, WorkItemState, ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_READY,
-    JIRA_PULL_REQUEST_LINKED, STUB_MARK,
+    AttemptId, DeploymentRule, EffectId, EffectName, EvidenceRef, HumanDecisionRequirement,
+    NextAction, PayloadHash, Published, WorkItemState, ENSURE_PULL_REQUEST,
+    ENSURE_PULL_REQUEST_READY, JIRA_PULL_REQUEST_LINKED, STUB_MARK,
 };
 use fiddle_runtime::agent::{AgentBudget, ToolHost, ToolReceipts, Verdict};
 use fiddle_runtime::capability::workflow::{
     without_waiting, Step, Workflow, WorkflowCapability, WorkflowPorts, WorkflowRefusal, WORKFLOW,
 };
-use fiddle_runtime::capability::{Capability, CapabilityError, ExecutionGrant, ExecutionInput};
+use fiddle_runtime::capability::{
+    Capability, CapabilityError, Executed, ExecutionGrant, ExecutionInput,
+};
 use fiddle_runtime::effect::{
     registry, EffectContext, EffectError, EffectOutcome, EffectTrace, ErasedReceipt, ExecutionStep,
     Executor, OutputRefusal, ReadRetry, Recurrence, StepOutputs, StepParams,
@@ -347,6 +349,14 @@ fn workflow(steps: Vec<Step>) -> Workflow {
     Workflow::new(STAGE.to_string(), STAGE.to_string(), steps).expect("a workflow with steps")
 }
 
+fn evaluate_then_open() -> Vec<Step> {
+    vec![
+        evaluate_step(),
+        check_step("after"),
+        effect_step(ENSURE_PULL_REQUEST),
+    ]
+}
+
 fn canonical() -> Workflow {
     workflow(vec![
         agent_step(),
@@ -469,7 +479,11 @@ fn offered_to(model: &MockCompletionModel) -> Vec<String> {
     names
 }
 
-async fn ran_with(world: &World, steps: Vec<Step>, model: MockCompletionModel) -> Vec<StepOutputs> {
+async fn entered_and_concluded(
+    world: &World,
+    steps: Vec<Step>,
+    model: MockCompletionModel,
+) -> (Vec<StepOutputs>, Executed) {
     let ctx = world.context();
     let deployment = allowing();
     let capability = WorkflowCapability::new(
@@ -481,15 +495,23 @@ async fn ran_with(world: &World, steps: Vec<Step>, model: MockCompletionModel) -
         world.ports(model),
     )
     .expect("a workflow this build can run");
-    capability
+    let concluded = capability
         .execute(ExecutionInput::unobserved(
             grant(),
             "fiddle-demo",
             INVOCATION_REF,
         ))
         .await
-        .expect("a completed workflow");
-    capability.earned_on_entering_each_step()
+        .expect("a workflow that ran to an end");
+    (capability.earned_on_entering_each_step(), concluded)
+}
+
+async fn ran_with(world: &World, steps: Vec<Step>, model: MockCompletionModel) -> Vec<StepOutputs> {
+    entered_and_concluded(world, steps, model).await.0
+}
+
+async fn concluded_by(world: &World, steps: Vec<Step>, model: MockCompletionModel) -> Executed {
+    entered_and_concluded(world, steps, model).await.1
 }
 
 async fn refused_by(
@@ -553,8 +575,8 @@ async fn a_workflow_runs_its_steps_in_the_order_the_document_names_them() {
         "the effect step ran, and it ran exactly once"
     );
     assert_eq!(
-        evidence.0,
-        format!("workflow:{STAGE}:{ATTEMPT}"),
+        evidence,
+        Executed::Earned(EvidenceRef(format!("workflow:{STAGE}:{ATTEMPT}"))),
         "the evidence names the workflow and the attempt it ran under"
     );
     assert_eq!(
@@ -1477,9 +1499,9 @@ async fn a_run_starts_holding_no_pull_request_when_the_step_parameters_carry_one
 }
 
 #[tokio::test]
-async fn the_step_after_an_evaluation_reads_the_rejection_the_model_answered() {
+async fn a_run_that_stops_on_a_rejection_reads_back_the_sentences_the_model_wrote() {
     let world = world();
-    let entered = ran_with(
+    let (entered, concluded) = entered_and_concluded(
         &world,
         vec![evaluate_step(), check_step("after")],
         rejecting(),
@@ -1488,33 +1510,30 @@ async fn the_step_after_an_evaluation_reads_the_rejection_the_model_answered() {
 
     assert_eq!(
         entered.len(),
-        2,
-        "the run entered two steps, so the second reading below is the reading of a later step"
+        1,
+        "the run entered the evaluation step and no step after it"
     );
     assert_eq!(
         entered[0].verdict(),
         None,
         "the run entered the evaluation step holding no verdict"
     );
-    let read = entered[1]
-        .verdict()
-        .expect("the step after the evaluation is given the verdict the evaluation earned");
     assert_eq!(
-        read,
-        &Verdict::Rejected {
-            findings: vec![A_SIGNATURE.to_string(), A_SECOND_FAULT.to_string()],
+        concluded,
+        Executed::Rejected {
+            findings: vec![Published::of(A_SIGNATURE), Published::of(A_SECOND_FAULT)],
         },
         "the run reads back the sentences the model wrote, in the order it wrote them"
     );
     assert_ne!(
-        read,
-        &Verdict::Accepted {},
-        "the model rejected the change and the run read it as an acceptance"
+        concluded,
+        Executed::Earned(EvidenceRef(format!("workflow:{STAGE}:{ATTEMPT}"))),
+        "the model rejected the change and the run read it as evidence it earned"
     );
     assert_eq!(
         world.ran(),
-        ["after"],
-        "the evaluation step ran no command of its own, and the step after it did"
+        Vec::<String>::new(),
+        "the evaluation step ran no command of its own, and the step after it never ran"
     );
 }
 
@@ -1586,8 +1605,8 @@ async fn a_second_evaluation_that_answers_otherwise_refuses_rather_than_replacin
         &disagreed,
         vec![evaluate_step(), evaluate_step()],
         MockCompletionModel::new([
-            answering(json!({"verdict": "rejected", "findings": [A_SIGNATURE]})),
             answering(json!({"verdict": "accepted"})),
+            answering(json!({"verdict": "rejected", "findings": [A_SIGNATURE]})),
         ]),
     )
     .await;
@@ -1595,8 +1614,8 @@ async fn a_second_evaluation_that_answers_otherwise_refuses_rather_than_replacin
     assert_eq!(
         refusal.to_string(),
         OutputRefusal::Reconsidered {
-            held: "rejected",
-            answered: "accepted",
+            held: "accepted",
+            answered: "rejected",
         }
         .to_string(),
         "got {refusal:?}"
@@ -1612,18 +1631,50 @@ async fn a_second_evaluation_that_answers_otherwise_refuses_rather_than_replacin
         &agreed,
         vec![evaluate_step(), evaluate_step(), check_step("after")],
         MockCompletionModel::new([
-            answering(json!({"verdict": "rejected", "findings": [A_SIGNATURE]})),
-            answering(json!({"verdict": "rejected", "findings": [A_SIGNATURE]})),
+            answering(json!({"verdict": "accepted"})),
+            answering(json!({"verdict": "accepted"})),
         ]),
     )
     .await;
     assert_eq!(
         entered[2].verdict(),
-        Some(&Verdict::Rejected {
-            findings: vec![A_SIGNATURE.to_string()],
-        }),
+        Some(&Verdict::Accepted {}),
         "two evaluations that answer the same thing are one verdict, so the refusal above \
          names the disagreement and not the second step"
+    );
+}
+
+#[test]
+fn two_rejections_are_one_verdict_only_when_they_name_the_same_findings() {
+    let rejection = Verdict::Rejected {
+        findings: vec![A_SIGNATURE.to_string()],
+    };
+
+    let mut repeated = StepOutputs::default();
+    repeated
+        .record_verdict(rejection.clone())
+        .expect("a first rejection is recorded");
+    repeated
+        .record_verdict(rejection.clone())
+        .expect("a second rejection that names the same findings is the verdict already held");
+    assert_eq!(repeated.verdict(), Some(&rejection));
+
+    let mut widened = StepOutputs::default();
+    widened
+        .record_verdict(rejection)
+        .expect("a first rejection is recorded");
+    let refusal = widened
+        .record_verdict(Verdict::Rejected {
+            findings: vec![A_SIGNATURE.to_string(), A_SECOND_FAULT.to_string()],
+        })
+        .expect_err("a rejection that names other findings is another verdict");
+    assert_eq!(
+        refusal,
+        OutputRefusal::Reconsidered {
+            held: "rejected",
+            answered: "rejected",
+        },
+        "the refusal names both spellings, and the findings are what differ"
     );
 }
 
@@ -1701,5 +1752,98 @@ async fn the_evaluation_step_sends_the_prompt_this_repository_ships() {
         compared > 8,
         "only {compared} lines of the shipped prompt were long enough to compare, so this \
          test compared almost nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_evaluation_opens_no_pull_request_and_stops_the_steps_after_it() {
+    let refused = world();
+    ran_with(&refused, evaluate_then_open(), rejecting()).await;
+
+    let accepted = world();
+    ran_with(&accepted, evaluate_then_open(), accepting()).await;
+
+    assert_eq!(
+        refused.mutations(),
+        0,
+        "a rejected evaluation opened a pull request"
+    );
+    assert_eq!(
+        accepted.mutations(),
+        1,
+        "an accepted evaluation opens one, so the count above counts something that moves"
+    );
+    assert_eq!(
+        refused.ran(),
+        Vec::<String>::new(),
+        "the check step after the rejected evaluation ran"
+    );
+    assert_eq!(
+        accepted.ran(),
+        ["after"],
+        "the same check step runs after an acceptance, so the reading above is not vacuous"
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_run_and_a_failed_run_conclude_as_different_values() {
+    let refused = world();
+    let rejection = concluded_by(&refused, evaluate_then_open(), rejecting()).await;
+    assert_eq!(
+        rejection,
+        Executed::Rejected {
+            findings: vec![Published::of(A_SIGNATURE), Published::of(A_SECOND_FAULT)],
+        },
+        "the run concludes as the rejection the model answered, and names what it read"
+    );
+
+    let broken = world();
+    let failure = refused_by(
+        &broken,
+        vec![failing_step(), effect_step(ENSURE_PULL_REQUEST)],
+        silent(),
+    )
+    .await;
+    assert!(
+        matches!(
+            failure,
+            CapabilityError::CheckFailed {
+                exit_code: 3,
+                claimed: false,
+                ..
+            }
+        ),
+        "a step that failed is read as the failure it is, and not as a rejection: got {failure:?}"
+    );
+
+    let accepted = world();
+    let earned = concluded_by(&accepted, evaluate_then_open(), accepting()).await;
+    assert_eq!(
+        earned,
+        Executed::Earned(EvidenceRef(format!("workflow:{STAGE}:{ATTEMPT}"))),
+        "an accepted run concludes as the evidence it earned, so the rejection above is one \
+         of two values this run can conclude as, and not the only one"
+    );
+}
+
+#[tokio::test]
+async fn a_rejection_with_no_step_after_it_is_still_a_rejection() {
+    let refused = world();
+    let rejection = concluded_by(&refused, vec![evaluate_step()], rejecting()).await;
+
+    assert_eq!(
+        rejection,
+        Executed::Rejected {
+            findings: vec![Published::of(A_SIGNATURE), Published::of(A_SECOND_FAULT)],
+        },
+        "a rejection is what the verdict says, and not what the steps after it did"
+    );
+
+    let accepted = world();
+    let earned = concluded_by(&accepted, vec![evaluate_step()], accepting()).await;
+    assert_eq!(
+        earned,
+        Executed::Earned(EvidenceRef(format!("workflow:{STAGE}:{ATTEMPT}"))),
+        "the same one-step workflow earns its evidence when the model accepts"
     );
 }

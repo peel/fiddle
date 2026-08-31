@@ -9,8 +9,8 @@ use fiddle_core::{
 };
 use fiddle_runtime::agent::AgentBudget;
 use fiddle_runtime::capability::{
-    attempt_worktree, Capability, CapabilityError, ExecutionGrant, ExecutionInput, ProposeChange,
-    ProposeConfig,
+    attempt_worktree, Capability, CapabilityError, Executed, ExecutionGrant, ExecutionInput,
+    ProposeChange, ProposeConfig,
 };
 use fiddle_runtime::effect::{
     EffectContext, EffectError, EffectOutcome, EffectTrace, ExecutionStep, Executor,
@@ -529,7 +529,7 @@ async fn run(
     script: Vec<MockTurn>,
     check: WorkspaceCommand,
 ) -> (
-    Result<EvidenceRef, CapabilityError>,
+    Result<Executed, CapabilityError>,
     Vec<EvidenceRef>,
     Option<fiddle_core::Publication>,
 ) {
@@ -550,7 +550,7 @@ async fn run_with(
     bound_to: fiddle_core::CapabilityId,
     publishing_from: Option<PathBuf>,
 ) -> (
-    Result<EvidenceRef, CapabilityError>,
+    Result<Executed, CapabilityError>,
     Vec<EvidenceRef>,
     Option<fiddle_core::Publication>,
 ) {
@@ -565,7 +565,7 @@ async fn continue_in(
     world: &World,
     model: MockCompletionModel,
 ) -> (
-    Result<EvidenceRef, CapabilityError>,
+    Result<Executed, CapabilityError>,
     Vec<EvidenceRef>,
     Option<fiddle_core::Publication>,
 ) {
@@ -578,7 +578,7 @@ async fn continue_in_a_process_that_can_attempt(
     world: &World,
     model: MockCompletionModel,
 ) -> (
-    Result<EvidenceRef, CapabilityError>,
+    Result<Executed, CapabilityError>,
     Vec<EvidenceRef>,
     Option<fiddle_core::Publication>,
 ) {
@@ -594,7 +594,7 @@ async fn execute_against(
     check: WorkspaceCommand,
     bound_to: fiddle_core::CapabilityId,
 ) -> (
-    Result<EvidenceRef, CapabilityError>,
+    Result<Executed, CapabilityError>,
     Vec<EvidenceRef>,
     Option<fiddle_core::Publication>,
 ) {
@@ -1251,7 +1251,7 @@ async fn a_readied_pull_request_is_not_re_drafted() {
 }
 
 struct Answered {
-    outcome: Result<EvidenceRef, CapabilityError>,
+    outcome: Result<Executed, CapabilityError>,
     continuation_receipts: Vec<EvidenceRef>,
     model: MockCompletionModel,
     request: fiddle_core::DecisionRequestId,
@@ -1625,9 +1625,12 @@ async fn the_transition_is_performed_through_the_decided_entry_point() {
     let world = World::fresh();
     let answered = answered(&world, APPROVER, YES, APPROVES, ThenWhat::Nothing).await;
 
-    let evidence = answered
+    let concluded = answered
         .outcome
         .expect("an approved transition earns evidence");
+    let evidence = concluded
+        .earned()
+        .expect("an approved transition earns evidence rather than refusing the change");
     assert!(
         evidence.0.starts_with("effect:ensure_pull_request_ready:"),
         "the run's evidence is the transition it performed: {evidence:?}"
@@ -2047,7 +2050,10 @@ async fn a_second_invocation_after_an_approval_accounts_for_the_work_and_does_no
     let model = MockCompletionModel::new([MockTurn::text(APPROVES)]);
     let (outcome, receipts, _) = continue_in(&world, model.clone()).await;
 
-    let evidence = outcome.expect("the transition this run was about has happened");
+    let concluded = outcome.expect("the transition this run was about has happened");
+    let evidence = concluded
+        .earned()
+        .expect("the transition earns evidence rather than refusing the change");
     assert!(
         evidence.0.contains("ensure_pull_request_ready") && evidence.0.contains(":committed:"),
         "it completes on the effect the world already satisfies: {evidence:?}"

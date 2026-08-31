@@ -1,7 +1,7 @@
-use super::{Capability, CapabilityError, ExecutionInput};
+use super::{Capability, CapabilityError, Executed, ExecutionInput};
 use crate::agent::{
     attempt_briefed, judge_briefed, AgentBudget, Brief, Declarations, Held, ToolHost, Transcripts,
-    JUDGE_PREAMBLE, PREAMBLE,
+    Verdict, JUDGE_PREAMBLE, PREAMBLE,
 };
 use crate::effect::{
     registry, Construct, EffectError, EffectOutcome, ErasedReceipt, Executor, Recurrence,
@@ -382,7 +382,7 @@ where
         self.stage
     }
 
-    async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
         let ExecutionInput {
             grant,
             invocation_ref,
@@ -419,12 +419,20 @@ where
                 Ready::Check { command } => self.check(command).await?,
                 Ready::Effect { construct } => self.effect(*construct, &mut params).await?,
             }
+            if matches!(params.earned.verdict(), Some(Verdict::Rejected { .. })) {
+                break;
+            }
         }
-        Ok(EvidenceRef(format!(
-            "workflow:{}:{}",
-            self.workflow.name(),
-            grant.attempt_id().0
-        )))
+        match params.earned.verdict() {
+            Some(Verdict::Rejected { findings }) => Ok(Executed::Rejected {
+                findings: findings.iter().map(Published::of).collect(),
+            }),
+            Some(Verdict::Accepted {}) | None => Ok(Executed::Earned(EvidenceRef(format!(
+                "workflow:{}:{}",
+                self.workflow.name(),
+                grant.attempt_id().0
+            )))),
+        }
     }
 
     fn receipts(&self) -> Vec<EvidenceRef> {

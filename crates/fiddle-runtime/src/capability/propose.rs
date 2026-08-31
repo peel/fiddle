@@ -1,5 +1,5 @@
 use super::stub::write_atomically;
-use super::{Capability, CapabilityError, ExecutionGrant, ExecutionInput};
+use super::{Capability, CapabilityError, Executed, ExecutionGrant, ExecutionInput};
 use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts, Transcripts};
 use crate::effect::{
     AdapterError, EffectContext, EffectOutcome, EffectReceipt, Executor, IntegrationOperation,
@@ -837,7 +837,7 @@ where
         "propose"
     }
 
-    async fn execute(&self, input: ExecutionInput<'_>) -> Result<EvidenceRef, CapabilityError> {
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
         let ExecutionInput {
             grant,
             work_id,
@@ -875,7 +875,7 @@ where
             self.observed.lock().unwrap().failure = Some(error.to_string());
         }
         *self.publication.lock().unwrap() = Some(self.observe());
-        outcome
+        outcome.map(Executed::Earned)
     }
 
     fn receipts(&self) -> Vec<EvidenceRef> {
