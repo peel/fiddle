@@ -141,6 +141,21 @@ impl World {
             .expect("the forge names the pull request it holds")
     }
 
+    fn the_forge_already_numbered(&self, number: u64) {
+        std::fs::write(
+            self.dir.path().join("pulls_seed"),
+            json!([{
+                "number": number,
+                "head": format!("{OWNER}:another"),
+                "base": BASE,
+                "state": "open",
+                "title": "a pull request on another branch",
+            }])
+            .to_string(),
+        )
+        .unwrap();
+    }
+
     fn the_forge_now_holds_only(&self, number: u64) {
         std::fs::write(self.dir.path().join("world"), "").unwrap();
         std::fs::write(
@@ -969,6 +984,7 @@ fn the_identity_a_workflow_is_filed_under_is_not_one_of_the_five_the_cli_selects
 #[tokio::test]
 async fn a_pull_request_one_step_opens_reaches_the_step_that_links_it() {
     let world = world_holding(ISSUE).await;
+    world.the_forge_already_numbered(PR);
     let ctx = world.context();
     let deployment = allowing();
     let capability = WorkflowCapability::new(
@@ -1011,6 +1027,11 @@ async fn a_pull_request_one_step_opens_reaches_the_step_that_links_it() {
         "and the step parameters name another number, so the comparison above could not \
          have been satisfied by configuration"
     );
+    assert_ne!(
+        opened, PR,
+        "the forge already held {PR} on another branch, so the number this run earned is \
+         written in no line of this test"
+    );
     assert_eq!(
         capability.receipts().len(),
         2,
@@ -1048,7 +1069,7 @@ fn opened() -> EffectName {
 #[tokio::test]
 async fn a_link_step_reached_before_any_pull_request_is_opened_refuses_rather_than_reading_the_parameters(
 ) {
-    let world = world();
+    let world = world_holding(ISSUE).await;
     let ctx = world.context();
     let deployment = allowing();
     let capability = WorkflowCapability::new(
@@ -1062,16 +1083,21 @@ async fn a_link_step_reached_before_any_pull_request_is_opened_refuses_rather_th
     .expect("a workflow this build can run");
     let observed = observed_issue();
 
-    let refusal = capability
+    let outcome = capability
         .execute(ExecutionInput::observed(
             grant(),
             "fiddle-demo",
             INVOCATION_REF,
             Some(&observed),
         ))
-        .await
-        .expect_err("a link step earns its number from a step and not from configuration");
+        .await;
 
+    assert!(
+        world.jira().request_lines().await.is_empty(),
+        "the step reached no Jira adapter, so it read the parameters for no number"
+    );
+    let refusal =
+        outcome.expect_err("a link step earns its number from a step and not from configuration");
     assert!(
         format!("{refusal}").contains("no step before this one in this run opened a pull request"),
         "got {refusal}"
@@ -1081,7 +1107,6 @@ async fn a_link_step_reached_before_any_pull_request_is_opened_refuses_rather_th
         "the observed issue did reach the step, so this refusal is about the pull request \
          and not about the issue: {refusal}"
     );
-    assert_eq!(world.calls(), 0, "and no adapter was reached");
 
     let unobserved = capability
         .execute(ExecutionInput::unobserved(
@@ -1280,22 +1305,71 @@ async fn a_second_run_does_not_inherit_the_pull_request_the_first_run_earned() {
         "each run linked the pull request its own steps earned"
     );
 
-    let mut carried = StepOutputs::default();
-    carried
-        .record(&receipt_naming(
-            ENSURE_PULL_REQUEST,
-            Some(&first.to_string()),
+    assert_eq!(
+        capability.earned_on_entering_each_step(),
+        vec![
+            StepOutputs::default(),
+            outputs_holding(first),
+            StepOutputs::default(),
+            outputs_holding(second),
+        ],
+        "each run entered its first step holding no pull request, so the second run read \
+         nothing the first run earned"
+    );
+}
+
+fn outputs_holding(number: u64) -> StepOutputs {
+    let mut held = StepOutputs::default();
+    held.record(&receipt_naming(
+        ENSURE_PULL_REQUEST,
+        Some(&number.to_string()),
+    ))
+    .expect("a readable pull request number records");
+    held
+}
+
+#[tokio::test]
+async fn a_run_starts_holding_no_pull_request_when_the_step_parameters_carry_one() {
+    let world = world_holding(ISSUE).await;
+    let ctx = world.context();
+    let deployment = allowing();
+    let capability = WorkflowCapability::new(
+        WORKFLOW,
+        STAGE,
+        workflow(vec![effect_step(JIRA_PULL_REQUEST_LINKED)]),
+        executor(&world, &ctx, &deployment),
+        StepParams {
+            earned: outputs_holding(STALE_PULL_REQUEST),
+            ..params_naming_a_stale_pull_request()
+        },
+        world.ports(silent()),
+    )
+    .expect("a workflow this build can run");
+    let observed = observed_issue();
+
+    let outcome = capability
+        .execute(ExecutionInput::observed(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+            Some(&observed),
         ))
-        .expect("the first run's number records into an empty outputs");
+        .await;
+
+    assert_eq!(
+        capability.earned_on_entering_each_step(),
+        vec![StepOutputs::default()],
+        "the run entered its only step holding no pull request, though the parameters \
+         handed it one"
+    );
     assert!(
-        matches!(
-            carried.record(&receipt_naming(
-                ENSURE_PULL_REQUEST,
-                Some(&second.to_string())
-            )),
-            Err(OutputRefusal::Diverged { .. })
-        ),
-        "outputs still holding the first run's number refuse the second run's, so the \
-         second run above started holding none"
+        world.jira().request_lines().await.is_empty(),
+        "and the step reached no Jira adapter with the number the parameters carried"
+    );
+    let refusal =
+        outcome.expect_err("a number placed in the step parameters is not a number a step earned");
+    assert!(
+        format!("{refusal}").contains("no step before this one in this run opened a pull request"),
+        "got {refusal}"
     );
 }

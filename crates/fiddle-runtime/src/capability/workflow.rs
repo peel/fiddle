@@ -156,6 +156,7 @@ pub struct WorkflowCapability<'a, M> {
     params: StepParams,
     ports: WorkflowPorts<M>,
     receipts: Mutex<Vec<EvidenceRef>>,
+    entered: Mutex<Vec<StepOutputs>>,
 }
 
 fn ready(step: &Step, prompts: &Path) -> Result<Ready, WorkflowRefusal> {
@@ -263,11 +264,19 @@ where
             params,
             ports,
             receipts: Mutex::new(Vec::new()),
+            entered: Mutex::new(Vec::new()),
         })
     }
 
     pub fn workflow(&self) -> &Workflow {
         &self.workflow
+    }
+
+    pub fn earned_on_entering_each_step(&self) -> Vec<StepOutputs> {
+        self.entered
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     async fn attempt(&self, task: &str, max_turns: usize) -> Result<(), CapabilityError> {
@@ -362,6 +371,10 @@ where
         }
         .observing(work_item);
         for step in &self.steps {
+            self.entered
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(params.earned.clone());
             match step {
                 Ready::Agent { task, max_turns } => self.attempt(task, *max_turns).await?,
                 Ready::Check { command } => self.check(command).await?,
