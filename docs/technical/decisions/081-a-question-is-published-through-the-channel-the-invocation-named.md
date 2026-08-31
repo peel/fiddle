@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Cites: DecisionChannel, DecisionChannel::named_by, DecisionChannel::asked_by, authoritative, publish, PublishedAsk, PublishError, ChannelError, CapabilityError::Unasked, ProposeChange, HumanInteractionPort, JiraConversation, GitHubConversation, AddComment, PublishDecisionRequest, WorkItemState, InvocationScheme, JIRA_COMMENT_ADDED, PUBLISH_DECISION_REQUEST, a_jira_run_asks_on_the_issue_and_leaves_the_pull_request_unwritten, a_pull_request_run_asks_on_the_pull_request_and_leaves_the_issue_unwritten, a_jira_run_that_observed_no_revision_asks_nobody_and_names_the_rule, a_jira_run_whose_revision_is_not_a_time_asks_nobody_and_names_the_issue, the_two_refusals_the_channel_rule_gives_are_not_one_refusal, no_invocation_names_two_channels, the_effect_name_the_evidence_line_spells_follows_the_channel, a_pull_request_run_asks_on_the_pull_request_although_it_observed_an_issue, a_second_run_carrying_the_snapshot_it_started_with_recognises_its_own_question, a_run_that_re_reads_the_issue_after_the_write_asks_a_second_time, every_registered_descriptor_builds_the_operation_its_name_means_or_refuses_in_its_name, WorkflowCapability, StepParams, DecisionWalk, read_conversation, orchestration::observe, crates/fiddle-runtime/src/human/mod.rs, crates/fiddle-runtime/src/capability/propose.rs, crates/fiddle-runtime/tests/propose_capability.rs, crates/fiddle-runtime/tests/jira_conversation.rs, crates/fiddle-runtime/tests/registry_resolution.rs, crates/fiddle-runtime/tests/workflow_capability.rs
+Cites: DecisionChannel, DecisionChannel::named_by, DecisionChannel::asked_by, authoritative, publish, PublishedAsk, PublishError, ChannelError, CapabilityError::Unasked, ProposeChange, HumanInteractionPort, JiraConversation, GitHubConversation, AddComment, PublishDecisionRequest, WorkItemState, InvocationScheme, JIRA_COMMENT_ADDED, PUBLISH_DECISION_REQUEST, a_jira_run_asks_on_the_issue_and_leaves_the_pull_request_unwritten, a_pull_request_run_asks_on_the_pull_request_and_leaves_the_issue_unwritten, a_jira_run_that_observed_no_revision_asks_nobody_and_names_the_rule, a_jira_run_whose_revision_is_not_a_time_asks_nobody_and_names_the_issue, the_two_refusals_the_channel_rule_gives_are_not_one_refusal, no_invocation_names_two_channels, the_effect_name_the_evidence_line_spells_follows_the_channel, a_pull_request_run_asks_on_the_pull_request_although_it_observed_an_issue, a_second_run_carrying_the_snapshot_it_started_with_recognises_its_own_question, a_run_that_re_reads_the_issue_after_the_write_asks_a_second_time, the_port_and_the_channel_router_name_one_comment_and_write_it_once, every_registered_descriptor_builds_the_operation_its_name_means_or_refuses_in_its_name, WorkflowCapability, StepParams, DecisionWalk, read_conversation, orchestration::observe, crates/fiddle-runtime/src/human/mod.rs, crates/fiddle-runtime/src/capability/propose.rs, crates/fiddle-runtime/tests/propose_capability.rs, crates/fiddle-runtime/tests/jira_conversation.rs, crates/fiddle-runtime/tests/registry_resolution.rs, crates/fiddle-runtime/tests/workflow_capability.rs
 
 ## Context
 
@@ -84,8 +84,8 @@ earns.
 
 ## The evidence class of each claim
 
-Every claim in this record carries its class. A stub measurement is not a live
-measurement, and a behaviour no run reaches is neither.
+A stub measurement is not a live measurement, and a behaviour no run reaches
+is neither. Each claim below carries its class.
 
 - **Measured against stubs.** A run invoked as `jira:IDENT-1` posts one comment
   on the issue and zero on the pull request, and a run invoked as `beans:w-1`
@@ -95,20 +95,28 @@ measurement, and a behaviour no run reaches is neither.
 - **Measured against stubs.** A second invocation that carries the revision the
   site holds after the first write posts a second comment, for two comments on
   one issue. `a_run_that_re_reads_the_issue_after_the_write_asks_a_second_time`
-  runs it. `StubJira` advances `fields.updated` on a write, which is the shape
-  Jira Cloud has, and the duplicate has not been observed on Jira Cloud.
-- **Measured on the tree.** One of six capabilities asks a person anything, and
+  runs it. `StubJira` advances `fields.updated` on a write.
+- **Unmeasured.** That Jira Cloud advances `fields.updated` when a comment is
+  added. No test in this tree reads a live site, so this record observes that
+  behaviour on the stub only. It is expected because `fields.updated` names the
+  time the issue last changed and a comment changes the issue. The duplicate
+  the expectation predicts has not been observed on Jira Cloud.
+- **Counted on the tree.** One of six capabilities asks a person anything, and
   it reaches `publish`. Counted by `impl Capability for` under `crates/*/src`
-  and by which of those files construct a `HumanDecisionRequest`.
-- **Measured on the tree.** `named_by` names one channel or none across all 42
-  combinations the sweep enumerates, distributed 4, 15 and 23.
+  and by which of those files construct a `HumanDecisionRequest`. The instrument
+  is a search of the source. Nothing runs.
+- **Measured by an executing test.** `named_by` names one channel or none across
+  all 42 combinations `no_invocation_names_two_channels` enumerates, distributed
+  4, 15 and 23. The test builds every input and reads every answer.
 - **Argued.** `NotOne` earns its place although no derivation reaches it.
 - **Not reached.** A workflow document that spells a `publish_decision_request`
   step reaches `PublishDecisionRequest` without passing through `publish`. A
   registry test builds it. No run does.
 - **Not reached.** A Jira run does not read the reply to its own question.
   `JiraConversation` implements `HumanInteractionPort` and no capability calls
-  it.
+  it. `the_port_and_the_channel_router_name_one_comment_and_write_it_once`
+  exercises the port: it calls `responses` against the issue the router asked on
+  and reads back the one comment the router wrote.
 
 ## Consequences
 
@@ -124,15 +132,26 @@ issue is the next step and is not in this record.
 so a run that carries the revision it started with recognises the marker it
 already wrote and posts nothing further.
 `a_second_run_carrying_the_snapshot_it_started_with_recognises_its_own_question`
-runs that case. A fresh invocation is not that case. `orchestration::observe`
-reads the work item at the start of every run, the run's own comment advances
-`fields.updated`, and the next run therefore carries a later revision, builds a
-different identity, and asks again. Against `StubJira` this is two comments on
-one issue, measured by
-`a_run_that_re_reads_the_issue_after_the_write_asks_a_second_time`. Because the
-reply cannot be read, nothing stops that repeating. The measurement is a stub
-measurement; Jira Cloud also advances `updated` on a comment, so the shape is
-expected to carry, and it has not been observed there.
+runs that case. A fresh invocation is not that case, and the evidence for it
+splits in three.
+
+*Measured against stubs.*
+`a_run_that_re_reads_the_issue_after_the_write_asks_a_second_time` calls
+`publish` twice in one process and gives the second call the revision `StubJira`
+holds after the first write. The issue then carries two comments. That test
+supplies the moved revision itself and starts no orchestration.
+
+*Argued from source.* `run` calls `ctx.observe`, which is
+`orchestration::observe`, before it derives the next action, at
+`crates/fiddle-runtime/src/orchestration.rs:146`. A second run therefore reads
+the issue again instead of carrying the first run's snapshot. Where that read
+answers a later revision, the run builds a different identity and asks again.
+This link is read from the source. No test executes it.
+
+*Unmeasured.* That Jira Cloud advances `fields.updated` when a comment is added,
+which is what carries the shape above from the stub to a real site.
+
+Because the reply cannot be read, nothing stops the asking repeating.
 
 **A second asking path exists, is unreached by a run, and is exercised by a
 test.** A workflow document can spell a `publish_decision_request` step, which
