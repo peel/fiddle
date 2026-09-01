@@ -218,10 +218,10 @@ like a refusal and measures nothing.
 
 The lane holds no copy of the field list. `fields_the_port_asks_for` reads
 `const FIELDS` out of `crates/fiddle-runtime/src/jira/work_item.rs` and refuses
-when that list does not carry every field the lane grades. A port that widens its
-read while the lane keeps asking for two fields is the drift this lane was
-corrected for: for five days it asked Atlassian for five fields and recorded
-three.
+when that list does not carry every field the lane grades. That drift is what
+this lane was corrected for: the port widened its read to five fields, the lane
+kept recording three, and a green run said nothing about the two it had stopped
+grading.
 
 What it proves, and why each assertion is there:
 
@@ -298,12 +298,15 @@ the stream at all.
 So ticket prose stays inside the run directory unless an answer arrives that is
 not JSON. Nothing the lane prints is committed here.
 
-The refusals are proved without a credential and without the network.
+The refusals are proved without a credential and without reaching a site.
 `scripts/test-live-jira-lanes.sh` sources the lane, hands each recorder a fixture
 built from one well-formed answer by breaking exactly one field, and requires the
 refusal to name that field. It runs the well-formed answer through the same
 recorders first, so a recorder that refused everything would fail the suite
-rather than pass it. It ran 50 cases on 2026-09-01 and reached no site. The
+rather than pass it. It also runs the whole lane against a port source declaring
+`status,updated`, which must refuse for drift before any request, and against the
+source this repository ships, which must reach the site and fail there instead.
+It ran 52 cases on 2026-09-01. The
 port's own refusals were measured the same day against a loopback stub: with a
 `fields.labels` document, a `fields.description` list, a `fields.comment` string
 and a container carrying 1 of 3 comments, `fiddle inspect` reported the work item
