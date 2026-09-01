@@ -7,7 +7,7 @@ Cites: EffectContext, GhCli, GitCli, JiraHttp, GhError, GitError, JiraError, Exe
 
 `EffectContext` is the one value every effect adapter reads its client from. Until `a5ca6f6` it held `gh: GhCli` and `git: GitCli` outright, and `jira: Option<JiraHttp>` beside them. A forge client was therefore a precondition of performing any effect at all, including one that touches no forge.
 
-ADR 083 made that a problem. The toil eligibility gate refuses an ineligible ticket by writing a comment on the ticket, and it does so before any run exists. A deployment that only reads and writes a tracker has no `[github]` table, no forge credential and no attempt worktree. Under the old type it could not build an `EffectContext`, so it could not reach `Executor`, so its one write would have had to be a raw adapter call outside the seven-step order that ADR 033 requires of every mutation.
+ADR 083 made that a problem. The toil eligibility gate refuses an ineligible ticket by writing a comment on the ticket, and it does so before any run exists. A deployment that only reads and writes a tracker has no `[github]` table, no forge credential and no attempt worktree. Under the old type it could not build an `EffectContext` without inventing a `GhCli` and a `GitCli` it holds no credential and no worktree for. So it could not reach `Executor` honestly, and its one write would have been a raw adapter call outside the seven-step order that ADR 033 requires of every mutation.
 
 This is a decision about the effect executor and not about toil. It is recorded separately for that reason.
 
@@ -21,13 +21,13 @@ This is a decision about the effect executor and not about toil. It is recorded 
 
 **An absent client is permanent, not correctable.**
 
-`GhError::Unconfigured` and `GitError::Unconfigured` classify `EffectOutcome::NotCommitted` in both phases, because no request was sent. `CapabilityError::recurrence` maps both to `Recurrence::Permanent`: a missing table is a fact about the deployment document, and running the same command again cannot change it. `JiraError::Unconfigured` already worked this way, and ADR 076 records the phase half of the rule.
+`GhError::Unconfigured` and `GitError::Unconfigured` classify `EffectOutcome::NotCommitted` in both phases, because no request was sent. `CapabilityError::recurrence` maps both to `Recurrence::Permanent`: a missing table is a fact about the deployment document, and running the same command again cannot change it. `JiraError::Unconfigured` already worked this way. ADR 076 records the rule these three follow: the executor takes the outcome the adapter names, and an unclassified failure is `Unknown` rather than `NotCommitted`.
 
 **A tracker-only write keeps the whole protocol.**
 
 MEASURED: `a_tracker_only_deployment_comments_through_the_executor_and_reaches_no_forge` in `crates/fiddle-runtime/tests/jira_effect_credential.rs` builds a context with `EffectContext::tracking`, asserts that `gh_client` and `git_client` both refuse, and then performs an `AddComment` against a loopback tracker stub. It reads the recorded trace and requires the steps `inspect_postcondition`, `combine_policy`, `authorize`, `apply` and `observe_postcondition`, which is the order a raw adapter call would skip. The receipt names an external reference and the published comment carries the effect marker.
 
-MEASURED through the binary: `a_refused_ticket_is_told_why_on_its_own_issue` in `crates/fiddle-acceptance/tests/toil.rs` runs a deployment document with no `[github]` table, and the refusal reaches the ticket with the effect identity the receipt names printed on the operator's line. Deployment policy still governs the write: `a_deployment_that_denies_the_comment_effect_publishes_nothing_and_still_refuses` denies the effect and the ticket receives nothing while the run still refuses, and `a_site_that_refuses_the_comment_still_refuses_the_ticket` holds the same for a tracker that answers an error.
+MEASURED through the binary: `a_refused_ticket_is_told_why_on_its_own_issue` in `crates/fiddle-acceptance/tests/toil.rs` runs a deployment document with no `[github]` table, and the refusal reaches the ticket with the effect identity the receipt names printed on the operator's line. Deployment policy still governs the write: `a_deployment_that_denies_the_comment_effect_publishes_nothing_and_still_refuses` denies the effect and the ticket receives nothing while the run still refuses, and `a_site_that_refuses_the_comment_still_refuses_the_ticket` holds that a tracker error leaves the refusal a refusal rather than turning it into something else.
 
 STILL NOT REACHED: no tracker-only deployment has written to a real Jira site. Every measurement above is against a loopback stub.
 

@@ -68,8 +68,8 @@ records that gap.
 Exit 12 was the implementer's choice and not the plan's. `fiddle-z6e4` added
 `RunOutcome::Rejected` and picked the code. The row bypasses the post-execution
 re-derivation: `orchestration::run` maps `Executed::Rejected` straight to
-`RunOutcome::Rejected`, where every other executed outcome is decided by
-`concluded`.
+`RunOutcome::Rejected` and re-observes nothing, where an earned execution is
+decided by `concluded` over a fresh observation.
 
 MEASURED through the binary and against loopback stubs:
 `a_workflow_the_judge_rejects_exits_twelve_and_a_workflow_it_accepts_does_not` in
