@@ -680,12 +680,24 @@ fn an_eligible_ticket_produces_one_pull_request_and_one_jira_link() {
         payload["capability_executions"][0]["status"], "completed",
         "the capability ran to the end of the shipped document: {payload}"
     );
+    let marker = payload
+        .pointer("/observations/changes/available/value/marker")
+        .unwrap_or_else(|| {
+            panic!(
+                "the post-execution observation of the change set is available and carries \
+                 a marker field, which is the only input the assessment reads: {payload}"
+            )
+        });
+    assert!(
+        marker.is_null(),
+        "the shipped document writes no correlation marker into the change set: {payload}"
+    );
     assert_eq!(
         run.status.code(),
         Some(11),
-        "the shipped document opens the pull request and never moves the ticket, so \
-         the work item is still not started when the capability completes and the run \
-         reports a retry; 12 would be a rejected evaluation and 20 a failure: {payload}"
+        "so the post-execution assessment reads a null marker, finds the work not \
+         started, and the run honestly reports a retry; 12 would be a rejected \
+         evaluation and 20 a failure: {payload}"
     );
 
     assert_eq!(
