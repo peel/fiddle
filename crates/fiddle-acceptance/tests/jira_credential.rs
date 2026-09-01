@@ -66,6 +66,12 @@ const CENSUS: [&str; 42] = [
     "the site refuses the credential / inspect --json / what it printed on stdout",
 ];
 
+const QUALIFIED: [&str; 3] = [
+    "the site answers / inspect --json / what it printed on stdout",
+    "the site answers / run --json / the file `reports/jira-IDENT-1/<attempt>/report.json`",
+    "the site answers / run --json / what it printed on stdout",
+];
+
 const PROJECTS: usize = 6;
 
 const SWEEP_REF: &str = "cve";
@@ -297,6 +303,30 @@ fn every_surface_searched_is_output_of_a_jira_read() {
          read, and searching it proves nothing about a jira credential; only \
          {naming:?} name both"
     );
+
+    let carrying = |held: &str| {
+        let mut named: Vec<String> = searched
+            .surfaces
+            .iter()
+            .filter(|surface| surface.text.contains(held))
+            .map(|surface| surface.what.clone())
+            .collect();
+        named.sort();
+        named
+    };
+    for (field, held) in [
+        ("labels", support::JIRA_ISSUE_LABEL),
+        ("description", support::JIRA_ISSUE_DESCRIPTION),
+        ("comment", support::JIRA_ISSUE_COMMENT),
+    ] {
+        assert_eq!(
+            carrying(held),
+            QUALIFIED,
+            "the read asks the site for `{field}` so a gate can weigh it, and every \
+             surface that value reaches is pinned here and searched for the credential; \
+             a surface it starts reaching cannot join the tree unsearched"
+        );
+    }
 
     let published: Vec<&String> = searched
         .surfaces

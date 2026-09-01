@@ -108,9 +108,29 @@ fall through to the stub port.
   guesses at line endings, and all of that is code this repository has to get
   right. Here hyper does the framing, and a stub that speaks something other than
   HTTP fails at the client rather than being read as an answer. What stays ours
-  is the body: `serde_json` decodes it and `issue_from` names the four fields it
-  needs. So the suite still proves only that this adapter reads what the stub
-  serves.
+  is the body: `serde_json` decodes it and `issue_from` names the seven paths it
+  reads: `fields.status.id`, `fields.status.name`,
+  `fields.status.statusCategory.name`, `fields.updated`, `fields.labels`,
+  `fields.description` and `fields.comment`. So the suite still proves only that
+  this adapter reads what the stub serves.
+- On a direct issue read the suite proves less about the request than about the
+  body. Both stubs split the query off the request target and match the issue
+  route on the path alone, so neither answers differently when `?fields=`
+  changes. Drop a field name from `FIELDS` and no parse-side lane reds. What
+  holds the list is the request-line assertions in
+  `crates/fiddle-runtime/tests/jira_work_item.rs` and
+  `crates/fiddle-acceptance/tests/jira_observation.rs`, and nothing else. The
+  search route is not blind in the same way: `Asked::of` in
+  `crates/fiddle-runtime/tests/support/stub_jira.rs` reads the `fields` query
+  value and serves only the named fields. The acceptance stub reads no query
+  value at all.
+- Three of the seven paths read an absent field and a null field the same way.
+  `labels_in`, `description_in` and `comments_in` each answer `None` on
+  `Value::Null`, so `"labels": null`, `"description": null` and
+  `"comment": null` are each indistinguishable from the field being omitted. The
+  port asks for all three by name, so the distinction has no reader today. A
+  future reader that must tell "the site sent nothing" from "the site sent empty"
+  needs a different decision here.
 - The TLS closure is asserted, not assumed.
   `no_workspace_crate_pulls_openssl_into_its_closure` refuses `openssl`,
   `openssl-sys` and `native-tls` in the resolved closure. Measured 2026-08-26,
@@ -206,10 +226,10 @@ measurements: the shapes Atlassian's `/rest/api/3/issue` returns, the
 names match a deployment's `[jira.workflow]` table. That read settles the first
 two and leaves the third.
 
-- **Now a measurement: the shape `/rest/api/3/issue` returns.** The site
-  answered with `fields.status.id`, `fields.status.name`,
-  `fields.status.statusCategory.name` and `fields.updated`, which are the four
-  values `issue_from` reads. The response root carried no `version` key, so
+- **Now a measurement: the shape `/rest/api/3/issue` returns.** The read asked
+  for `status,updated`. The site answered with `fields.status.id`,
+  `fields.status.name`, `fields.status.statusCategory.name` and
+  `fields.updated`. The response root carried no `version` key, so
   `fields.updated` is the only revision the site offers and the target identity
   has nothing better to rest on.
 - **Now a measurement: the `fields.updated` format.** Jira Cloud sends a
@@ -230,7 +250,20 @@ two and leaves the third.
 
 The measurement is one issue on one site. A second project, a second workflow
 and a second issue type are unmeasured, and so is every failure arm but the 404
-the paragraph below measures.
+the bad-credential paragraph below measures.
+
+**Not reached: what Atlassian returns for labels, description and comments.**
+`issue_from` also reads `fields.labels`, `fields.description` and
+`fields.comment`, because eligibility weighs the label, the summary text and the
+conversation. No live lane has read those three from Atlassian. On 2026-08-26
+both halves of the lane asked for two fields, because the port asked for two.
+Today `fiddle inspect` inside the lane asks for five, and the lane still records
+only a status, a projection and a revision off the answer. It prints the
+two-field `curl` result and nothing of the five-field one. A re-run therefore
+parses the three new paths and reports nothing about their shape. Every shape
+this port accepts for those three is measured against loopback stubs, and those
+stubs ignore the field list on an issue read. So the five-field shape is an
+argument, not a measurement. Grade it **not reached**.
 
 **Now a measurement: what a bad credential returns.** Six probes ran against
 `snplow.atlassian.net` on 2026-08-27, with an operator's valid credential and

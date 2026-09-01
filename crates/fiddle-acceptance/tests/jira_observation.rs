@@ -100,10 +100,10 @@ fn inspect_asks_the_site_for_the_issue_at_the_documented_path_and_no_more_fields
     assert_eq!(
         stub.request_lines(),
         vec![format!(
-            "GET /rest/api/3/issue/{}?fields=status,updated HTTP/1.1",
+            "GET /rest/api/3/issue/{}?fields=status,updated,labels,description,comment HTTP/1.1",
             support::JIRA_ISSUE_KEY
         )],
-        "the CLI reads one issue with one GET, and it names the two fields it uses, \
+        "the CLI reads one issue with one GET, and it names the five fields it uses, \
          so a build that asks for the whole issue or asks at another path reds here"
     );
 }
@@ -114,7 +114,10 @@ fn the_site_answers_nothing_at_a_path_or_a_method_the_cli_never_asks_for() {
     let held = format!("/rest/api/3/issue/{}", support::JIRA_ISSUE_KEY);
 
     for (request_line, expected) in [
-        (format!("GET {held}?fields=status,updated HTTP/1.1"), "200"),
+        (
+            format!("GET {held}?fields=status,updated,labels,description,comment HTTP/1.1"),
+            "200",
+        ),
         (format!("GET {held} HTTP/1.1"), "200"),
         (format!("GET {held}/transitions HTTP/1.1"), "404"),
         ("GET /rest/api/3/issue/OTHER-9 HTTP/1.1".to_string(), "404"),

@@ -455,6 +455,40 @@ impl StubJira {
         };
     }
 
+    pub async fn holds_issue_carrying(&self, key: &str, fields: Value) {
+        let mut body: Value = serde_json::from_str(&issue(
+            &self.base_url,
+            key,
+            "10001",
+            "In Review",
+            "In Progress",
+            &format!("{HELD_DAY}T07:00:00.000+0000"),
+        ))
+        .expect("the stub builds an issue it can read back");
+        merged(&mut body["fields"], &fields);
+        self.state.lock().await.answer = Answer::Issue {
+            path: format!("{ISSUE_ROUTE}{key}"),
+            body: body.to_string(),
+        };
+    }
+
+    pub async fn requested_fields(&self) -> Option<String> {
+        let held = self.state.lock().await;
+        let read = held
+            .request_lines
+            .iter()
+            .rev()
+            .find_map(|line| {
+                let mut parts = line.split_whitespace();
+                let (Some("GET"), Some(target)) = (parts.next(), parts.next()) else {
+                    return None;
+                };
+                names_an_issue(target.split('?').next().unwrap_or(target)).then_some(target)
+            })
+            .expect("the stub was asked to read an issue");
+        query_value(read, "fields")
+    }
+
     pub async fn holds_nothing(&self) {
         self.state.lock().await.answer = Answer::Absent;
     }

@@ -1,6 +1,7 @@
+use crate::jira::conversation::{replies_in, written};
 use crate::jira::{canonical_revision, project, ConfiguredNames, JiraError, JiraHttp};
 use crate::ports::WorkItemPort;
-use fiddle_core::{Observation, SourceRef, WorkItemState};
+use fiddle_core::{Observation, SourceRef, WorkItemComment, WorkItemState};
 use tokio_util::sync::CancellationToken;
 
 const MYSELF: &str = "/rest/api/3/myself";
@@ -11,11 +12,16 @@ pub struct JiraWorkItemPort {
     site: String,
 }
 
+const FIELDS: &str = "status,updated,labels,description,comment";
+
 struct ReadIssue {
     status_id: String,
     status_name: String,
     status_category: String,
     updated: String,
+    labels: Option<Vec<String>>,
+    description: Option<String>,
+    comments: Option<Vec<WorkItemComment>>,
 }
 
 impl JiraWorkItemPort {
@@ -40,10 +46,10 @@ impl JiraWorkItemPort {
         work_id: &str,
         cancel: &CancellationToken,
     ) -> Result<ReadIssue, JiraError> {
-        let path = format!("/rest/api/3/issue/{work_id}?fields=status,updated");
+        let path = format!("/rest/api/3/issue/{work_id}?fields={FIELDS}");
         let answered = self.http.api("GET", &path, None, cancel).await?;
         match answered.status {
-            status if (200..300).contains(&status) => issue_from(&answered.body),
+            status if (200..300).contains(&status) => issue_from(work_id, &answered.body),
             status => Err(read_failure(&self.http, status, work_id, &answered.body, cancel).await),
         }
     }
@@ -150,6 +156,9 @@ impl WorkItemPort for JiraWorkItemPort {
                     &issue.status_category,
                 )),
                 revision: Some(revision.clone()),
+                labels: issue.labels,
+                description: issue.description,
+                comments: issue.comments,
             },
             source,
             revision: Some(revision),
@@ -157,7 +166,7 @@ impl WorkItemPort for JiraWorkItemPort {
     }
 }
 
-fn issue_from(body: &serde_json::Value) -> Result<ReadIssue, JiraError> {
+fn issue_from(work_id: &str, body: &serde_json::Value) -> Result<ReadIssue, JiraError> {
     let status = &body["fields"]["status"];
     Ok(ReadIssue {
         status_id: named(&status["id"], "fields.status.id")?,
@@ -167,7 +176,76 @@ fn issue_from(body: &serde_json::Value) -> Result<ReadIssue, JiraError> {
             "fields.status.statusCategory.name",
         )?,
         updated: named(&body["fields"]["updated"], "fields.updated")?,
+        labels: labels_in(&body["fields"]["labels"])?,
+        description: description_in(&body["fields"]["description"])?,
+        comments: comments_in(work_id, body)?,
     })
+}
+
+fn labels_in(held: &serde_json::Value) -> Result<Option<Vec<String>>, JiraError> {
+    if held.is_null() {
+        return Ok(None);
+    }
+    let Some(listed) = held.as_array() else {
+        return Err(JiraError::Malformed(format!(
+            "`fields.labels` is {}, and a list of labels is what this port reads",
+            shaped(held)
+        )));
+    };
+    let mut labels = Vec::with_capacity(listed.len());
+    for (at, label) in listed.iter().enumerate() {
+        match label.as_str() {
+            Some(label) => labels.push(label.to_string()),
+            None => {
+                return Err(JiraError::Malformed(format!(
+                    "`fields.labels` holds {} at position {at}, and a label is text",
+                    shaped(label)
+                )))
+            }
+        }
+    }
+    Ok(Some(labels))
+}
+
+fn description_in(held: &serde_json::Value) -> Result<Option<String>, JiraError> {
+    match held {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(text) => Ok(Some(text.clone())),
+        serde_json::Value::Object(_) => Ok(Some(written(held))),
+        other => Err(JiraError::Malformed(format!(
+            "`fields.description` is {}, and a description is text or a document",
+            shaped(other)
+        ))),
+    }
+}
+
+fn shaped(held: &serde_json::Value) -> &'static str {
+    match held {
+        serde_json::Value::Null => "absent",
+        serde_json::Value::Bool(_) => "a true or a false",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "text",
+        serde_json::Value::Array(_) => "a list",
+        serde_json::Value::Object(_) => "a document",
+    }
+}
+
+fn comments_in(
+    work_id: &str,
+    body: &serde_json::Value,
+) -> Result<Option<Vec<WorkItemComment>>, JiraError> {
+    if body["fields"]["comment"].is_null() {
+        return Ok(None);
+    }
+    Ok(Some(
+        replies_in(work_id, body)?
+            .into_iter()
+            .map(|reply| WorkItemComment {
+                author: reply.author.account_id,
+                text: reply.text,
+            })
+            .collect(),
+    ))
 }
 
 pub(crate) fn named(held: &serde_json::Value, path: &str) -> Result<String, JiraError> {

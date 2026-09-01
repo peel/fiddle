@@ -32,7 +32,7 @@ pub use identity::{
 };
 pub use observation::{
     ChangeSetState, Observation, ProjectedStatus, Publication, ReviewState, SourceRef,
-    TreeObservation, VerificationState, WorkItemState, WorkState, WorkStateView,
+    TreeObservation, VerificationState, WorkItemComment, WorkItemState, WorkState, WorkStateView,
 };
 pub use outcome::{Mode, RunOutcome, UnknownMode};
 pub use policy::{combine, DeploymentRule, HumanDecisionRequirement, PolicyDecision};

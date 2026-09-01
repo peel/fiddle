@@ -763,6 +763,9 @@ mod tests {
                 jira_status_category: "In Progress".to_string(),
             }),
             revision: None,
+            labels: None,
+            description: None,
+            comments: None,
         }
     }
 
@@ -801,6 +804,9 @@ mod tests {
             status: VERBATIM_STATUS.to_string(),
             projected_status: None,
             revision: None,
+            labels: None,
+            description: None,
+            comments: None,
         });
 
         assert_eq!(

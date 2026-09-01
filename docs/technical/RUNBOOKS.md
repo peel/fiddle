@@ -235,9 +235,28 @@ The lane records evidence and does not gate. `scripts/gate.sh` references no
 disposable target; do not point it at an issue whose `status` you mind being
 printed to your terminal.
 
-The lane prints the issue it read. It requests `fields=status,updated` and no
-other field, so no ticket prose crosses the boundary, and nothing it prints is
-committed here.
+The lane prints the issue its own `curl` read, and that call requests
+`fields=status,updated` and no other field, so no ticket prose reaches the
+terminal. `fiddle inspect` on the same issue requests
+`status,updated,labels,description,comment`, because eligibility weighs the
+label, the summary text and the conversation
+(`crates/fiddle-runtime/src/jira/work_item.rs`). The lane writes that answer to a
+temporary file and reads a status, a projection and a revision off it.
+
+On the path that passes, none of the inspected answer is printed. The lane
+reports the three values it read, and `trap 'rm -rf "$TMP"' EXIT` removes the
+temporary directory when the run ends.
+
+One path does print it. When the answer does not parse as JSON, the lane fails
+and writes the whole answer to stderr, because a reader who cannot see what
+arrived cannot say why it did not parse. That is the malformed-answer
+diagnostic, and it is the only path on which the inspected answer reaches the
+terminal. A non-zero exit from `fiddle inspect` prints the captured stderr and
+not the answer. A credential found in either stream is reported without printing
+the stream at all.
+
+So ticket prose stays inside the run directory unless `fiddle inspect` answers
+something that is not JSON. Nothing the lane prints is committed here.
 
 ### The live Jira search shape lane
 
