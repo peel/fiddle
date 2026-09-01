@@ -13,19 +13,17 @@ use crate::github::{
 };
 use crate::human::interpret::InterpretationBounds;
 use crate::human::validate::{
-    resolve, DecisionError, DecisionResolution, DecisionTrace, DecisionWalk, HumanAnswer,
+    resolve, Decider, DecisionError, DecisionResolution, DecisionTrace, DecisionWalk, HumanAnswer,
     IgnoredReply,
 };
-use crate::human::{
-    publish, DecisionChannel, InteractionRef, PublishDecisionRequest, CONVERSATION_PAGES,
-};
+use crate::human::{asked_already, publish, DecisionChannel, InteractionRef};
 use crate::workspace::{DeclaredCommand, Workspace, WorkspaceCommand};
 use fiddle_core::{
     correlation_key, decision_request_id, effect_id, payload_hash, AttemptId, CapabilityId,
     ChangeSetState, DecisionBinding, EffectName, EvidenceRef, HumanDecisionRequest,
     InterpretedHumanDecision, Observation, ProposedEffect, Publication, Published, ReviewState,
     SourceRef, WorkItemState, WorkRef, ENSURE_BRANCH_PUBLISHED, ENSURE_PULL_REQUEST,
-    ENSURE_PULL_REQUEST_READY, PUBLISH_DECISION_REQUEST,
+    ENSURE_PULL_REQUEST_READY,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -81,7 +79,7 @@ pub struct ProposeConfig {
 
     pub transcripts: Option<Transcripts>,
 
-    pub deciders: Vec<u64>,
+    pub deciders: Vec<Decider>,
 
     pub interpretation: InterpretationBounds,
 
@@ -458,16 +456,17 @@ where
         let gated = self.gated(pr, head_sha);
         let target = gated.target();
         let payload = gated.payload();
+        let asked_on = interaction.clone();
         let walk = DecisionWalk {
             repo: &self.config.repo,
             pr,
-            max_pages: CONVERSATION_PAGES,
             project: self.executor.project(),
             invocation_ref: self.executor.invocation_ref(),
             kind: EffectName::shipped(ENSURE_PULL_REQUEST_READY),
             target: &target,
             payload: &payload,
             allowlist: &self.config.deciders,
+            asked_on: &asked_on,
         };
 
         let resolution = match resolve(
@@ -523,7 +522,7 @@ where
                     work_id,
                     head_sha,
                     instruction,
-                    acted_on.comment,
+                    &acted_on.comment,
                     &ignored,
                     work_item,
                 )
@@ -554,7 +553,7 @@ where
         work_id: &str,
         head_sha: &str,
         instruction: &Published,
-        comment: u64,
+        comment: &str,
         declined: &[IgnoredReply],
         work_item: Option<&WorkItemState>,
     ) -> Result<EvidenceRef, CapabilityError> {
@@ -660,7 +659,7 @@ where
                 format!(
                     "comment {} by {} ({})",
                     reply.comment,
-                    reply.author.id,
+                    reply.author,
                     reply.reason.as_str()
                 )
             })
@@ -745,22 +744,18 @@ where
                 observed.pull_request = Some(pull_request.number);
             }
             let request = self.question_about(work_id, pull_request.number, &head_sha);
-            let asking = PublishDecisionRequest::new(
-                self.config.repo.clone(),
-                pull_request.number,
-                request.clone(),
+            let named = DecisionChannel::named_by(
+                self.executor.invocation_ref(),
+                work_item,
+                Some((self.config.repo.as_str(), pull_request.number)),
             );
 
-            let published = asking
-                .inspect(self.ctx)
-                .await
-                .map_err(|error| adapter(&EffectName::shipped(PUBLISH_DECISION_REQUEST), error))?;
-            return match published {
-                Some(published) => {
+            return match asked_already(self.ctx, &named, &request).await? {
+                Some(asked_on) => {
                     let evidence = self
                         .continue_from(
                             request,
-                            published.into_value(),
+                            asked_on,
                             pull_request.number,
                             &head_sha,
                             work_id,

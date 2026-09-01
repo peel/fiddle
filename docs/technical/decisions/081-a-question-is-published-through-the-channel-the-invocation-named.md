@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Cites: DecisionChannel, DecisionChannel::named_by, DecisionChannel::asked_by, authoritative, publish, PublishedAsk, PublishError, ChannelError, CapabilityError::Unasked, ProposeChange, HumanInteractionPort, JiraConversation, GitHubConversation, AddComment, PublishDecisionRequest, WorkItemState, InvocationScheme, JIRA_COMMENT_ADDED, PUBLISH_DECISION_REQUEST, a_jira_run_asks_on_the_issue_and_leaves_the_pull_request_unwritten, a_pull_request_run_asks_on_the_pull_request_and_leaves_the_issue_unwritten, a_jira_run_that_observed_no_revision_asks_nobody_and_names_the_rule, a_jira_run_whose_revision_is_not_a_time_asks_nobody_and_names_the_issue, the_two_refusals_the_channel_rule_gives_are_not_one_refusal, no_invocation_names_two_channels, the_effect_name_the_evidence_line_spells_follows_the_channel, a_pull_request_run_asks_on_the_pull_request_although_it_observed_an_issue, a_second_run_carrying_the_snapshot_it_started_with_recognises_its_own_question, a_run_that_re_reads_the_issue_after_the_write_asks_a_second_time, the_port_and_the_channel_router_name_one_comment_and_write_it_once, every_registered_descriptor_builds_the_operation_its_name_means_or_refuses_in_its_name, WorkflowCapability, StepParams, DecisionWalk, read_conversation, orchestration::observe, crates/fiddle-runtime/src/human/mod.rs, crates/fiddle-runtime/src/capability/propose.rs, crates/fiddle-runtime/tests/propose_capability.rs, crates/fiddle-runtime/tests/jira_conversation.rs, crates/fiddle-runtime/tests/registry_resolution.rs, crates/fiddle-runtime/tests/workflow_capability.rs
+Cites: DecisionChannel, DecisionChannel::named_by, DecisionChannel::asked_by, authoritative, publish, PublishedAsk, PublishError, ChannelError, CapabilityError::Unasked, ProposeChange, HumanInteractionPort, JiraConversation, GitHubConversation, AskOnIssue, AskedOnIssue, PublishDecisionRequest, asked_already, Decider, resolve, DecisionResolution, WorkItemState, InvocationScheme, JIRA_COMMENT_ADDED, PUBLISH_DECISION_REQUEST, a_jira_run_asks_on_the_issue_and_leaves_the_pull_request_unwritten, a_pull_request_run_asks_on_the_pull_request_and_leaves_the_issue_unwritten, a_jira_run_that_observed_no_revision_asks_nobody_and_names_the_rule, a_jira_run_whose_revision_is_not_a_time_asks_nobody_and_names_the_issue, the_two_refusals_the_channel_rule_gives_are_not_one_refusal, no_invocation_names_two_channels, the_effect_name_the_evidence_line_spells_follows_the_channel, a_pull_request_run_asks_on_the_pull_request_although_it_observed_an_issue, a_second_run_carrying_the_snapshot_it_started_with_recognises_its_own_question, a_run_that_re_reads_the_issue_after_the_write_asks_no_second_time, the_port_and_the_channel_router_name_one_comment_and_write_it_once, the_port_reads_back_every_reply_beside_the_account_that_wrote_it, the_question_the_issue_is_asked_is_identified_by_the_request_and_not_by_the_revision, a_jira_run_reads_the_reply_on_its_own_question_and_proceeds, a_jira_reply_from_an_account_this_deployment_did_not_nominate_decides_nothing, a_jira_account_id_equal_to_an_allowed_github_id_is_not_that_decider, a_jira_account_id_spelled_like_an_allowed_github_id_is_not_that_decider, a_github_author_id_spelled_like_an_allowed_jira_account_is_not_that_decider, every_registered_descriptor_builds_the_operation_its_name_means_or_refuses_in_its_name, WorkflowCapability, StepParams, DecisionWalk, orchestration::observe, crates/fiddle-runtime/src/human/mod.rs, crates/fiddle-runtime/src/capability/propose.rs, crates/fiddle-runtime/tests/propose_capability.rs, crates/fiddle-runtime/tests/jira_conversation.rs, crates/fiddle-runtime/tests/registry_resolution.rs, crates/fiddle-runtime/tests/workflow_capability.rs
 
 ## Context
 
@@ -48,9 +48,9 @@ both reachable from a run, so neither is dead weight the GitHub caller carries
 for the Jira caller.
 
 - `Channel(ChannelError::NoneNamed)` is what a `jira` run gets when nothing
-  observed a revision for the issue. A comment on an issue builds its identity
-  from the revision the issue was read at, so an unrevised observation
-  addresses nothing.
+  observed a revision for the issue. A run that cannot say which snapshot of the
+  issue it read did not observe the issue, so an unrevised observation addresses
+  nothing.
   `a_jira_run_that_observed_no_revision_asks_nobody_and_names_the_rule` runs it.
 - `Unaddressable` is what a `jira` run gets when the observed revision is not a
   `fields.updated` a target can be spelled from, per ADR 078.
@@ -82,6 +82,35 @@ one. `the_effect_name_the_evidence_line_spells_follows_the_channel` pins the
 mapping, and the two run tests pin the whole evidence sequence each channel
 earns.
 
+## Decision four — the reply is read through the channel the question was published on
+
+`publish` answers an `InteractionRef`, and that reference is what `resolve`
+reads. `DecisionWalk` carries it as `asked_on`. A pull-request comment reaches
+`GitHubConversation::responses`; an issue comment reaches
+`JiraConversation::responses`. Neither port will read the other channel's
+reference, and each refuses by name rather than reading nothing.
+
+The allowlist is widened to match. `Decider` is `GitHubAuthor(u64)` or
+`JiraAccount(String)`. A Jira account id is a string the site mints and a GitHub
+author id is a number, and the two namespaces are unrelated, so one entry cannot
+stand for both. The refusal is a property of the type and not of a comparison a
+future caller can loosen.
+
+`ProposeChange::walk` looks for a standing question through `asked_already`,
+which takes the same channel list `publish` takes and holds the same
+`authoritative` rule. Before this, `walk` inspected GitHub unconditionally, so a
+Jira-steered run looked for its question where it had never asked it, found
+nothing, and asked again.
+
+`AskOnIssue` and `AddComment` both perform `jira.comment_added`, and both post a
+comment on an issue, so one deployment policy rule governs both. The registry
+holds one constructor for that name, `AddComment`, which refuses to be built from
+a step at all, and `AskOnIssue` is constructed only by `publish` and
+`asked_already`. The identity each writes into the world is the identity each
+reads back: `AddComment` derives its marker from its own target and refuses when
+the executor authorized another, and `AskOnIssue` writes the request id it was
+given and searches for the same value, so the two cannot diverge.
+
 ## The evidence class of each claim
 
 A stub measurement is not a live measurement, and a behaviour no run reaches
@@ -92,23 +121,37 @@ is neither. Each claim below carries its class.
   posts one on the pull request and zero on the issue, both against stub sites
   that count requests. The two tests observe the same Jira issue, so the zero in
   each is the counter-case to the one in the other.
-- **Measured against stubs.** A second invocation that carries the revision the
-  site holds after the first write posts a second comment, for two comments on
-  one issue. `a_run_that_re_reads_the_issue_after_the_write_asks_a_second_time`
-  runs it. `StubJira` advances `fields.updated` on a write.
-- **Unmeasured.** That Jira Cloud advances `fields.updated` when a comment is
-  added. No test in this tree reads a live site's `fields.updated` after a
-  comment is added, so this record observes that behaviour on the stub only. It
-  is expected because `fields.updated` names the time the issue last changed and
-  a comment changes the issue. The duplicate the expectation predicts has not
-  been observed on Jira Cloud.
+- **Measured against stubs, and re-graded.** A second invocation that carries the
+  revision the site holds after the first write posts **no** second comment, for
+  one comment on one issue.
+  `a_run_that_re_reads_the_issue_after_the_write_asks_no_second_time` runs it.
+  This row read "posts a second comment, for two comments on one issue" until
+  `AskOnIssue` replaced `AddComment` as the question a `jira` channel publishes.
+  The earlier reading was a correct measurement of the identity in the tree at
+  the time: `AddComment` spells its target `{issue}@{fields.updated}`, and
+  `StubJira` advances `fields.updated` on a write, so the second invocation
+  derived a marker the first had never written. `AskOnIssue` spells its target
+  `{issue}#{request}`, which the revision does not move, so the second
+  invocation's `inspect` finds the comment the first one wrote.
+  `the_question_the_issue_is_asked_is_identified_by_the_request_and_not_by_the_revision`
+  holds the identity apart from the revision and holds it apart from a constant:
+  a question about another commit is another request, so another target.
+- **Unmeasured, and its class is unchanged.** That Jira Cloud advances
+  `fields.updated` when a comment is added. No test in this tree reads a live
+  site's `fields.updated` after a comment is added, so this record still observes
+  that behaviour on the stub only, and no live probe has been run since. It is
+  expected because `fields.updated` names the time the issue last changed and a
+  comment changes the issue. What has changed is the consequence, not the class:
+  the advance no longer produces a duplicate, because the question is no longer
+  identified by the revision. A live site that advanced `fields.updated` and one
+  that did not would both leave the question asked once.
 - **Counted on the tree.** One of six capabilities asks a person anything, and
   it reaches `publish`. Counted by `impl Capability for` under `crates/*/src`.
   That search answers ten: six production capabilities, and four test doubles in
   the `#[cfg(test)]` module `crates/fiddle-runtime/src/orchestration.rs` opens
   at line 418. The six are the denominator. Of the six, only `ProposeChange`
   constructs a `HumanDecisionRequest`, at
-  `crates/fiddle-runtime/src/capability/propose.rs:218`. The instrument is a
+  `crates/fiddle-runtime/src/capability/propose.rs:215`. The instrument is a
   search of the source. Nothing runs.
 - **Measured by an executing test.** `named_by` names one channel or none across
   all 42 combinations `no_invocation_names_two_channels` enumerates, distributed
@@ -117,48 +160,100 @@ is neither. Each claim below carries its class.
 - **Not reached.** A workflow document that spells a `publish_decision_request`
   step reaches `PublishDecisionRequest` without passing through `publish`. A
   registry test builds it. No run does.
-- **Not reached.** A Jira run does not read the reply to its own question.
-  `JiraConversation` implements `HumanInteractionPort` and no capability calls
-  it. `the_port_and_the_channel_router_name_one_comment_and_write_it_once`
-  exercises the port: it calls `responses` against the issue the router asked on
-  and reads back the one comment the router wrote.
+- **Measured against stubs, and re-graded from Not reached.** A Jira run reads
+  the reply to its own question and proceeds.
+  `a_jira_run_reads_the_reply_on_its_own_question_and_proceeds` drives
+  `ProposeChange` twice against `StubJira` and a GitHub stub. The first
+  invocation asks on the issue and suspends. A nominated account then replies on
+  the issue. The second invocation, carrying the later revision the first write
+  left behind, reads that reply, interprets it, and marks the pull request ready:
+  one GraphQL mutation, one comment on the issue across both invocations, and
+  zero comments on the pull request. `resolve` reads through the channel the
+  question was published on, which it takes from the `InteractionRef` the ask
+  earned, so `JiraConversation::responses` is now called by a capability and not
+  only by a test.
+- **Measured against stubs.** A reply from an account this deployment did not
+  nominate leaves the question standing.
+  `a_jira_reply_from_an_account_this_deployment_did_not_nominate_decides_nothing`
+  runs the same two invocations with the reply written by a stranger and gets
+  `AwaitingDecision` and zero mutations. It is the counter-case to the row above:
+  without it, a run that can read no reply at all would satisfy neither and both
+  would look alike.
+- **Measured against stubs.** A Jira account id and a GitHub author id cannot
+  satisfy one allowlist entry. `Decider` is
+  `GitHubAuthor(u64) | JiraAccount(String)`, and the allowlist is compared
+  against that value rather than against a number.
+  `a_jira_account_id_equal_to_an_allowed_github_id_is_not_that_decider` seeds a
+  Jira reply from account id `505401` against an allowlist naming GitHub author
+  `505401`, gets `AwaitingDecision` and zero mutations, then names the same
+  string as a Jira account and gets the mutation. Two unit cases,
+  `a_jira_account_id_spelled_like_an_allowed_github_id_is_not_that_decider` and
+  `a_github_author_id_spelled_like_an_allowed_jira_account_is_not_that_decider`,
+  hold the refusal in both directions and pair each with the case that corrects
+  only the channel.
+- **Counted on the tree, and a gap.** No deployment can name a Jira decider yet.
+  `[github.decision].authorized` deserialises as `Vec<u64>`, and
+  `crates/fiddle-cli/src/main.rs` maps every entry to `Decider::GitHubAuthor`.
+  So a Jira-steered run in a real deployment reads the reply on the issue and
+  declines it as `ActorNotAuthorized`, whatever the reply says. The behaviour
+  above is reached by a test that supplies `Decider::JiraAccount` directly. A
+  Jira allowlist in the configuration document is not in this record.
 
 ## Consequences
 
-**A `jira` run asks on the issue and cannot yet read the answer there.**
-`ProposeChange::continue_from` resolves a reply through `DecisionWalk`, which
-names a repository, a pull request and GitHub author identifiers, and `resolve`
-opens on `read_conversation` against GitHub. A Jira run therefore suspends on
-every invocation rather than interpreting a comment. Reading the reply from the
-issue is the next step and is not in this record.
+**A `jira` run reads the answer on the issue it asked on.** `DecisionWalk`
+carries the `InteractionRef` the ask earned, and `resolve` reads through the
+channel that reference names: `GitHubConversation` for a pull-request comment,
+`JiraConversation` for an issue comment. `ProposeChange::walk` looks for a
+standing question on the channel `DecisionChannel::named_by` chose, through
+`asked_already`, so a Jira-steered run no longer inspects a GitHub pull request
+for a question it never asked there.
 
-**Idempotence holds for a retry, and does not hold for a fresh observation.**
+One deterministic order serves both channels, and two steps read differently
+inside it.
 
-*Measured against stubs.* `AddComment` builds its marker identity from the issue
-revision the run carries, so a run that carries the revision it started with
-recognises the marker it already wrote and posts nothing further.
+- `select_candidates` weighs one `Decider` value for both channels. On GitHub a
+  comment is not a person when the site says `type: Bot` or names an app. Jira
+  says neither, so on Jira a comment is not a person when it comes from the
+  account that asked the question, which is the account this run writes as.
+- `re_read_candidates` re-reads each GitHub comment by id, because the listing
+  and the body acted on are two reads and something can change between them. One
+  Jira read answers the listing and the bodies together, so there is no window
+  and no second read. `DecisionError::ReplyEdited` is therefore a GitHub-only
+  refusal. The request comment is still held to `created == updated` on both
+  channels, and `DecisionError::RequestEdited` is reachable from both.
+
+**Idempotence holds for a retry and for a fresh observation.**
+
+*Measured against stubs.* A run that carries the revision it started with finds
+the comment it already wrote and posts nothing further.
 `a_second_run_carrying_the_snapshot_it_started_with_recognises_its_own_question`
 runs that case against `StubJira` and counts one comment on the issue.
 
-A fresh invocation is not that case, and the evidence for it splits in three.
-
-*Measured against stubs.*
-`a_run_that_re_reads_the_issue_after_the_write_asks_a_second_time` calls
+A fresh invocation carrying a later revision is now the same case.
+`a_run_that_re_reads_the_issue_after_the_write_asks_no_second_time` calls
 `publish` twice in one process and gives the second call the revision `StubJira`
-holds after the first write. The issue then carries two comments. That test
-supplies the moved revision itself and starts no orchestration.
+holds after the first write. The issue carries one comment, and both calls name
+the same effect id and the same comment.
+`a_jira_run_reads_the_reply_on_its_own_question_and_proceeds` runs the same shape
+through the capability rather than through `publish` alone, and counts one
+comment across two invocations.
 
-*Argued from source.* `run` calls `ctx.observe`, which is
-`orchestration::observe`, before it derives the next action, at
+*Argued from source, and now inconsequential.* `run` calls `ctx.observe`, which
+is `orchestration::observe`, before it derives the next action, at
 `crates/fiddle-runtime/src/orchestration.rs:146`. A second run therefore reads
-the issue again instead of carrying the first run's snapshot. Where that read
-answers a later revision, the run builds a different identity and asks again.
-This link is read from the source. No test executes it.
+the issue again instead of carrying the first run's snapshot, and where that read
+answers a later revision the run holds a later revision. It no longer builds a
+different question from it. This link is still read from the source; no test
+executes it, and nothing now depends on it.
 
-*Unmeasured.* That Jira Cloud advances `fields.updated` when a comment is added,
-which is what carries the shape above from the stub to a real site.
-
-Because the reply cannot be read, nothing stops the asking repeating.
+**The revision is a precondition on the ask and not part of its identity.**
+`AskOnIssue::new` refuses a `fields.updated` it cannot read, so a `jira` channel
+naming an unreadable revision publishes nothing and
+`PublishError::Unaddressable` stays reachable from a run. The canonical revision
+is carried into `AskedOnIssue` and printed in the postcondition sentence, which
+tells a reader which snapshot of the issue the run held when it asked. It is not
+in the target, so it cannot move the question.
 
 **A second asking path exists, is unreached by a run, and is exercised by a
 test.** A workflow document can spell a `publish_decision_request` step, which

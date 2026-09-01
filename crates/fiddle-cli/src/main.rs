@@ -14,6 +14,7 @@ use fiddle_runtime::capability::workflow::{
 };
 use fiddle_runtime::effect::{EffectContext, Executor, StepParams};
 use fiddle_runtime::human::interpret::InterpretationBounds;
+use fiddle_runtime::human::validate::Decider;
 use fiddle_runtime::ports::{ChangePort, WorkItemPort};
 use fiddle_runtime::{
     Addressed, AgentBudget, AttemptContext, AttemptTrace, Capability, ConfiguredNames,
@@ -952,7 +953,12 @@ fn build_capability<'a>(
                     },
                     redaction: gateway.redaction,
                     transcripts: transcripts.cloned(),
-                    deciders: decision.authorized.clone(),
+                    deciders: decision
+                        .authorized
+                        .iter()
+                        .copied()
+                        .map(Decider::GitHubAuthor)
+                        .collect(),
                     interpretation: interpretation_bounds(agent),
                     cancel: cancel.clone(),
                 },
