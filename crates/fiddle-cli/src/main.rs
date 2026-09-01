@@ -878,10 +878,10 @@ fn build_capability<'a>(
 
         Selection::Propose => {
             let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
-            let decision = github
-                .decision
-                .as_ref()
-                .ok_or_else(|| missing("[github.decision]"))?;
+            let deciders = config::deciders(config);
+            if deciders.is_empty() {
+                return Err(missing("[github.decision]").into());
+            }
             let agent = config.agent.as_ref().ok_or_else(|| missing("[agent]"))?;
             let workspace = config
                 .workspace
@@ -952,7 +952,7 @@ fn build_capability<'a>(
                     },
                     redaction: gateway.redaction,
                     transcripts: transcripts.cloned(),
-                    deciders: decision.authorized.clone(),
+                    deciders,
                     interpretation: interpretation_bounds(agent),
                     cancel: cancel.clone(),
                 },

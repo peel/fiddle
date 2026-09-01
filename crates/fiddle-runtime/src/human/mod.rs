@@ -6,7 +6,7 @@ use crate::effect::{
     FromStepParams, IntegrationOperation, ObservedState, StepParams,
 };
 use crate::github::{read_conversation, GhError};
-use crate::jira::comment::AddComment;
+use crate::jira::conversation::AskOnIssue;
 use crate::jira::JiraError;
 use fiddle_core::{
     parse_marker, render_marker, EffectName, HumanDecisionRequest, HumanDecisionRequirement,
@@ -188,31 +188,47 @@ pub async fn publish(
             })
         }
         DecisionChannel::JiraIssue { issue, updated } => {
-            let ask = AddComment::new(
-                issue.clone(),
-                updated,
-                render_request(request),
-                executor.project(),
-                executor.invocation_ref(),
-            )?;
-            let receipt = executor.execute(proposing(executor, &ask), ask).await?;
+            let ask = AskOnIssue::new(issue.clone(), updated, request)?;
             Ok(PublishedAsk {
                 asked_by,
-                receipt: EffectReceipt {
-                    effect_id: receipt.effect_id,
-                    payload_hash: receipt.payload_hash,
-                    target: receipt.target,
-                    outcome: receipt.outcome,
-                    postcondition: receipt.postcondition,
-                    external_ref: receipt.external_ref,
-                    value: InteractionRef::JiraIssueComment {
-                        issue: receipt.value.issue,
-                        comment: receipt.value.comment_id,
-                    },
-                },
+                receipt: executor.execute(proposing(executor, &ask), ask).await?,
             })
         }
     }
+}
+
+pub async fn asked_already(
+    ctx: &EffectContext,
+    named: &[DecisionChannel],
+    request: &HumanDecisionRequest,
+) -> Result<Option<InteractionRef>, PublishError> {
+    let channel = authoritative(named)?;
+    let asked_by = channel.asked_by();
+    match channel {
+        DecisionChannel::GitHubPullRequest { repo, pr } => {
+            let asking = PublishDecisionRequest::new(repo.clone(), *pr, request.clone());
+            let found = asking
+                .inspect(ctx)
+                .await
+                .map_err(|error| unread(asked_by, error))?;
+            Ok(found.map(ObservedState::into_value))
+        }
+        DecisionChannel::JiraIssue { issue, updated } => {
+            let asking = AskOnIssue::new(issue.clone(), updated, request)?;
+            let found = asking
+                .inspect(ctx)
+                .await
+                .map_err(|error| unread(asked_by, error))?;
+            Ok(found.map(ObservedState::into_value))
+        }
+    }
+}
+
+fn unread<E: crate::effect::AdapterError>(kind: EffectName, error: E) -> PublishError {
+    PublishError::Unpublished(EffectError::Adapter {
+        kind,
+        source: Box::new(error),
+    })
 }
 
 fn proposing<O: IntegrationOperation>(executor: &Executor<'_>, ask: &O) -> ProposedEffect {

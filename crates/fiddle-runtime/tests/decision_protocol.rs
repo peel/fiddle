@@ -11,8 +11,10 @@ use fiddle_runtime::effect::{EffectContext, IntegrationOperation, ResolvedDecisi
 use fiddle_runtime::github::EnsurePullRequestReady;
 use fiddle_runtime::human::interpret::InterpretationBounds;
 use fiddle_runtime::human::validate::{
-    resolve, DecisionError, DecisionResolution, DecisionStep, DecisionTrace, DecisionWalk, Ignored,
+    resolve, Decider, DecisionError, DecisionResolution, DecisionStep, DecisionTrace, DecisionWalk,
+    Ignored,
 };
+use fiddle_runtime::human::InteractionRef;
 use fiddle_runtime::GhCli;
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::{json, Value};
@@ -28,8 +30,6 @@ const REPO: &str = "acme/r";
 const PR: u64 = 7;
 
 const HEAD_SHA: &str = "3f9a1c2b4d6e8f0a1b2c3d4e5f60718293a4b5c6";
-
-const MAX_PAGES: u32 = 10;
 
 const PATIENT: Duration = Duration::from_secs(60);
 
@@ -153,7 +153,7 @@ struct World {
     dir: TempDir,
     steps: Mutex<Vec<&'static str>>,
     model: MockCompletionModel,
-    allowlist: Vec<u64>,
+    allowlist: Vec<Decider>,
 }
 
 impl DecisionTrace for World {
@@ -170,7 +170,7 @@ impl World {
             dir,
             steps: Mutex::new(Vec::new()),
             model: MockCompletionModel::new([MockTurn::text(scripted)]),
-            allowlist: vec![APPROVER],
+            allowlist: vec![Decider::GitHubAuthor(APPROVER)],
         };
         world.pull(json!({
             "state": "open",
@@ -182,7 +182,7 @@ impl World {
     }
 
     fn authorizing(mut self, ids: &[u64]) -> Self {
-        self.allowlist = ids.to_vec();
+        self.allowlist = ids.iter().copied().map(Decider::GitHubAuthor).collect();
         self
     }
 
@@ -247,16 +247,21 @@ impl World {
         let operation = operation();
         let target = operation.target();
         let payload = operation.payload();
+        let asked_on = InteractionRef::GitHubPullRequestComment {
+            repo: REPO.to_string(),
+            pr: PR,
+            comment: ASKED,
+        };
         let walk = DecisionWalk {
             repo: REPO,
             pr: PR,
-            max_pages: MAX_PAGES,
             project: PROJECT,
             invocation_ref: INVOCATION_REF,
             kind: EffectName::shipped(ENSURE_PULL_REQUEST_READY),
             target: &target,
             payload: &payload,
             allowlist: &self.allowlist,
+            asked_on: &asked_on,
         };
         resolve(
             &ctx,
@@ -507,10 +512,10 @@ async fn every_refusal_names_what_actually_moved() {
         .resolve()
         .await
         .expect_err("an edited request comment refuses");
-    assert!(matches!(
-        edited_request,
-        DecisionError::RequestEdited { comment: ASKED }
-    ));
+    assert!(
+        matches!(&edited_request, DecisionError::RequestEdited { comment } if comment == &ASKED.to_string()),
+        "got {edited_request:?}"
+    );
     assert!(
         !edited_request.to_string().contains("since it was listed"),
         "the evidence is `created_at != updated_at`, which an edit made before the \
@@ -518,7 +523,7 @@ async fn every_refusal_names_what_actually_moved() {
     );
     assert!(matches!(
         with_edited_approval().resolve().await,
-        Err(DecisionError::ReplyEdited { comment: 1_002 })
+        Err(DecisionError::ReplyEdited { comment }) if comment == "1002"
     ));
     assert!(matches!(
         with_closed_pr().resolve().await,
@@ -658,12 +663,12 @@ async fn an_unauthorized_reply_is_observed_ignored_and_recorded() {
     let decision = world.resolve().await.expect("an authorized reply answered");
     let answer = decision.answer.as_ref().expect("somebody answered");
     assert_eq!(answer.interpreted, InterpretedHumanDecision::Approve);
-    assert_eq!(answer.acted_on.comment, 1_003);
+    assert_eq!(answer.acted_on.comment, "1003");
     assert!(
         decision
             .ignored
             .iter()
-            .any(|i| i.comment == 1_002 && i.reason == Ignored::ActorNotAuthorized),
+            .any(|i| i.comment == "1002" && i.reason == Ignored::ActorNotAuthorized),
         "the ignored reply must be recorded: {:?}",
         decision.ignored
     );
@@ -710,7 +715,7 @@ async fn neither_a_bot_nor_an_app_can_decide() {
         assert!(decision
             .ignored
             .iter()
-            .any(|i| i.comment == 1_002 && i.reason == Ignored::NotAPerson));
+            .any(|i| i.comment == "1002" && i.reason == Ignored::NotAPerson));
         assert_eq!(world.model_calls(), 0);
     }
 }
@@ -735,7 +740,7 @@ async fn a_deployment_that_nominated_nobody_authorizes_nobody() {
         decision
             .ignored
             .iter()
-            .any(|i| i.comment == 1_002 && i.reason == Ignored::ActorNotAuthorized),
+            .any(|i| i.comment == "1002" && i.reason == Ignored::ActorNotAuthorized),
         "the reply is recorded as declined rather than dropped: {:?}",
         decision.ignored
     );
@@ -753,7 +758,7 @@ async fn the_request_comment_is_never_read_as_a_reply_to_itself() {
     assert!(decision
         .ignored
         .iter()
-        .any(|i| i.comment == ASKED && i.reason == Ignored::RequestComment));
+        .any(|i| i.comment == ASKED.to_string() && i.reason == Ignored::RequestComment));
     assert_eq!(world.model_calls(), 0);
 }
 
@@ -783,7 +788,7 @@ async fn the_last_authorized_reply_decides_and_the_earlier_ones_are_evidence() {
         let answer = decision.answer.as_ref().expect("somebody answered");
 
         assert_eq!(Expect::of(&answer.interpreted), expected, "{scripted}");
-        assert_eq!(answer.acted_on.comment, 1_003, "the greatest id decides");
+        assert_eq!(answer.acted_on.comment, "1003", "the greatest id decides");
         assert_eq!(
             decision.considered.len(),
             2,
@@ -818,16 +823,16 @@ async fn a_scrambled_listing_reaches_the_same_decision_as_a_sorted_one() {
     let answer = decision.answer.as_ref().expect("somebody answered");
     assert_eq!(answer.interpreted, InterpretedHumanDecision::Approve);
     assert_eq!(
-        answer.acted_on.comment, 1_003,
+        answer.acted_on.comment, "1003",
         "the greatest id decides whatever position it arrived in"
     );
     assert_eq!(
         decision
             .considered
             .iter()
-            .map(|reply| reply.comment)
+            .map(|reply| reply.comment.clone())
             .collect::<Vec<_>>(),
-        [1_002, 1_003],
+        ["1002", "1003"],
         "the superseded reply comes first however the page arrived"
     );
     assert!(!world.prompts().contains(EARLIER));

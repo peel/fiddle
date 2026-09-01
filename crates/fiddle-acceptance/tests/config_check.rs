@@ -466,9 +466,9 @@ fn a_document_leaving_an_effect_out_is_accepted_and_reports_it_ungated() {
 
 const DECIDER: u64 = 505_401;
 
-const DECISION_STATUS: &str = "accepted-not-enforced";
+const DECISION_STATUS: &str = "enforced-by-propose-change";
 
-const DECISION_STATUS_PHRASE: &str = "accepted, not enforced";
+const DECISION_STATUS_PHRASE: &str = "enforced by propose-change";
 
 fn with_decision(body: &str) -> String {
     format!("{FORGE}\n[github.decision]\n{body}\n")
@@ -1123,11 +1123,13 @@ fn config_check_echoes_the_tracker_and_names_its_credential_without_resolving_it
                 "done": "Done",
             },
             "labels": { "toil_trigger": "fiddle/toil" },
+            "decision": null,
             "filing": null,
         }),
         "an operator must read back the site, the project, the bound and the \
          variables the document names, and a tracker this deployment files no \
-         advisory into echoes that absence rather than omitting the key"
+         advisory into and nominates no decider on echoes both absences rather \
+         than omitting the keys"
     );
 
     let dir = tempfile::tempdir().unwrap();
@@ -1216,6 +1218,87 @@ fn config_check_echoes_the_trigger_label_the_labels_table_names() {
         "and a tracker table that names no labels table triggers on the \
          documented label, so the case above cannot be passing because this \
          command echoes whatever it is given"
+    );
+}
+
+const JIRA_ACCOUNT: &str = "70121:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+fn with_jira_decision(body: &str) -> String {
+    format!("{AGENTIC}{TRACKER}\n[jira.decision]\n{body}\n")
+}
+
+#[test]
+fn config_check_reports_the_jira_accounts_that_may_decide() {
+    let document = with_jira_decision(&format!("authorized = [\"{JIRA_ACCOUNT}\"]"));
+    let jira = checked(&document)["jira"].clone();
+    let decision = &jira["decision"];
+    assert_eq!(
+        decision["authorized"],
+        serde_json::json!([JIRA_ACCOUNT]),
+        "an operator must read back the Jira account a reply is matched on, \
+         under the key the document writes it under: {jira}"
+    );
+    assert_eq!(decision["matched_on"], "jira_account_id", "{jira}");
+    assert_eq!(decision["status"], DECISION_STATUS, "{jira}");
+    assert_eq!(
+        checked(&format!("{AGENTIC}{TRACKER}"))["jira"]["decision"],
+        serde_json::Value::Null,
+        "and a tracker table naming no decision table nominates nobody, so the \
+         rows above cannot be passing on a rendering that prints an account for \
+         every document"
+    );
+
+    let stdout = plain(&document);
+    assert!(
+        stdout.contains(&format!("jira.decision.authorized = {JIRA_ACCOUNT}"))
+            && stdout.contains("jira_account_id")
+            && stdout.contains(DECISION_STATUS_PHRASE),
+        "an operator at a terminal cannot confirm the account that may decide: {stdout}"
+    );
+}
+
+#[test]
+fn config_check_refuses_a_jira_decision_table_that_names_nobody() {
+    let out = check(&with_jira_decision("authorized = []"));
+    assert_eq!(out.status.code(), Some(2), "an empty list must exit 2");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("authorized") && stderr.contains("nobody"),
+        "the diagnostic must name the key and say why, got: {stderr}"
+    );
+}
+
+#[test]
+fn config_check_refuses_a_decider_named_by_email_address() {
+    let out = check(&with_jira_decision(r#"authorized = ["peel@example.com"]"#));
+    assert_eq!(out.status.code(), Some(2), "an address must exit 2");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("accountId"),
+        "the diagnostic must name what a reply is matched on, got: {stderr}"
+    );
+    assert_eq!(
+        check(&with_jira_decision(&format!(
+            "authorized = [\"{JIRA_ACCOUNT}\"]"
+        )))
+        .status
+        .code(),
+        Some(0),
+        "and an account id is accepted, so the refusal above is about the \
+         address and not about the table"
+    );
+}
+
+#[test]
+fn config_check_rejects_an_unknown_key_inside_the_jira_decision_table() {
+    let out = check(&with_jira_decision(&format!(
+        "authorised = [\"{JIRA_ACCOUNT}\"]"
+    )));
+    assert_eq!(out.status.code(), Some(2), "unknown key must exit 2");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("authorised") && stderr.contains("unknown field"),
+        "the diagnostic must name the offending key and why, got: {stderr}"
     );
 }
 

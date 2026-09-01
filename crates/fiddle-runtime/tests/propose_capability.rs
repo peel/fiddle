@@ -19,7 +19,9 @@ use fiddle_runtime::effect::{
 use fiddle_runtime::git::GitCli;
 use fiddle_runtime::github::{branch_name, pull_request_ready_target, EnsurePullRequestReady};
 use fiddle_runtime::human::interpret::InterpretationBounds;
-use fiddle_runtime::human::validate::{resolve, DecisionStep, DecisionTrace, DecisionWalk};
+use fiddle_runtime::human::validate::{
+    resolve, Decider, DecisionStep, DecisionTrace, DecisionWalk,
+};
 use fiddle_runtime::human::InteractionRef;
 use fiddle_runtime::workspace::WorkspaceCommand;
 use fiddle_runtime::GhCli;
@@ -253,9 +255,16 @@ impl World {
     }
 
     fn published_sha(&self) -> String {
+        self.published_sha_for(INVOCATION_REF)
+    }
+
+    fn published_sha_for(&self, invocation_ref: &str) -> String {
         self.git_says(
             &self.remote,
-            &["rev-parse", &format!("refs/heads/{}", self.branch())],
+            &[
+                "rev-parse",
+                &format!("refs/heads/{}", branch_name(PROJECT, invocation_ref)),
+            ],
         )
     }
 
@@ -481,6 +490,14 @@ fn comment(id: u64, author: u64, body: &str) -> Value {
 }
 
 fn config(world: &World, check: WorkspaceCommand) -> ProposeConfig {
+    config_deciding(world, check, vec![Decider::GitHubAuthor(APPROVER)])
+}
+
+fn config_deciding(
+    world: &World,
+    check: WorkspaceCommand,
+    deciders: Vec<Decider>,
+) -> ProposeConfig {
     ProposeConfig {
         repo: REPO.to_string(),
         head_owner: HEAD_OWNER.to_string(),
@@ -503,7 +520,7 @@ fn config(world: &World, check: WorkspaceCommand) -> ProposeConfig {
         },
         redaction: Redaction::unknown(),
         transcripts: None,
-        deciders: vec![APPROVER],
+        deciders,
         interpretation: patient_interpretation(),
         cancel: CancellationToken::new(),
     }
@@ -694,17 +711,22 @@ async fn suspended(world: &World) -> Suspension {
     Suspension { comment, head_sha }
 }
 
-fn walk_at<'a>(target: &'a str, payload: &'a str, allowlist: &'a [u64]) -> DecisionWalk<'a> {
+fn walk_at<'a>(
+    target: &'a str,
+    payload: &'a str,
+    allowlist: &'a [Decider],
+    asked_on: &'a InteractionRef,
+) -> DecisionWalk<'a> {
     DecisionWalk {
         repo: REPO,
         pr: PR,
-        max_pages: 10,
         project: PROJECT,
         invocation_ref: INVOCATION_REF,
         kind: EffectName::shipped(ENSURE_PULL_REQUEST_READY),
         target,
         payload,
         allowlist,
+        asked_on,
     }
 }
 
@@ -1645,9 +1667,11 @@ async fn a_redirect_names_the_instruction_it_received_where_an_operator_reads_it
             named[0].contains(&format!(
                 "; 1 comment was read and not counted: comment {} by {} (the request \
                  comment is not a reply to itself)",
-                answered.question_comment, FIDDLE_BOT
+                answered.question_comment,
+                Decider::GitHubAuthor(FIDDLE_BOT)
             )),
-            "the receipt must say who else the walk read, and name them: {}",
+            "the receipt must say who else the walk read, and name them in the channel they \
+             wrote on: {}",
             named[0]
         );
 
@@ -1996,7 +2020,16 @@ async fn the_second_payload_comparison_catches_what_the_first_could_not_see() {
     let payload = ready.payload();
     let resolution = resolve(
         &ctx,
-        &walk_at(&target, &payload, &[APPROVER]),
+        &walk_at(
+            &target,
+            &payload,
+            &[Decider::GitHubAuthor(APPROVER)],
+            &InteractionRef::GitHubPullRequestComment {
+                repo: REPO.to_string(),
+                pr: PR,
+                comment: suspension.comment,
+            },
+        ),
         QUESTION,
         MockCompletionModel::new([MockTurn::text(APPROVES)]),
         &patient_interpretation(),
@@ -2169,6 +2202,23 @@ async fn steered_by(
     invocation_ref: &str,
     work_item: Option<&WorkItemState>,
 ) -> (Result<Executed, CapabilityError>, Vec<EvidenceRef>) {
+    steered_by_with(
+        world,
+        invocation_ref,
+        work_item,
+        MockCompletionModel::new(repairs()),
+        vec![Decider::GitHubAuthor(APPROVER)],
+    )
+    .await
+}
+
+async fn steered_by_with(
+    world: &World,
+    invocation_ref: &str,
+    work_item: Option<&WorkItemState>,
+    model: MockCompletionModel,
+    deciders: Vec<Decider>,
+) -> (Result<Executed, CapabilityError>, Vec<EvidenceRef>) {
     let ctx = world.ctx_publishing_from(world.work_for(invocation_ref));
     let deployment = Deployment(DeploymentRule::Allow);
     let executor = Executor::new(
@@ -2184,8 +2234,8 @@ async fn steered_by(
         executor,
         &ctx,
         world,
-        MockCompletionModel::new(repairs()),
-        config(world, the_projects_own_check()),
+        model,
+        config_deciding(world, the_projects_own_check(), deciders),
     );
     let outcome = capability
         .execute(ExecutionInput::observed(
@@ -2351,6 +2401,198 @@ async fn a_jira_run_whose_revision_is_not_a_time_asks_nobody_and_names_the_issue
     );
     assert_eq!(world.jira_comments_on(ISSUE).await, 0);
     assert_eq!(world.posted_comments().len(), 0);
+}
+
+const JIRA_DECIDER: &str = "70121:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+const JIRA_STRANGER: &str = "70121:ffffffff-0000-1111-2222-333333333333";
+
+struct AskedOnTheIssue {
+    head_sha: String,
+    asked_at: String,
+}
+
+async fn a_jira_run_that_asked_on_the_issue(world: &World) -> AskedOnTheIssue {
+    let held = world.revision_the_site_holds().await;
+    let observed = observed_issue(Some(&held));
+    let (outcome, _) = steered_by(world, JIRA_INVOCATION, Some(&observed)).await;
+
+    match outcome {
+        Err(CapabilityError::AwaitingDecision {
+            interaction: InteractionRef::JiraIssueComment { .. },
+            ..
+        }) => {}
+        other => panic!("a first jira run asks on the issue and suspends, got {other:?}"),
+    }
+    assert_eq!(world.jira_comments_on(ISSUE).await, 1);
+    let head_sha = world.published_sha_for(JIRA_INVOCATION);
+    world.pull_request_at(PR, &head_sha, true);
+    AskedOnTheIssue {
+        head_sha,
+        asked_at: held,
+    }
+}
+
+struct AnsweredOnTheIssue {
+    world: World,
+    outcome: Result<Executed, CapabilityError>,
+    head_sha: String,
+    asked_at: String,
+    carried: String,
+}
+
+async fn a_second_invocation_after(reply_from: &str, deciders: Vec<Decider>) -> AnsweredOnTheIssue {
+    let world = World::reachable_jira_site().await;
+    let asked = a_jira_run_that_asked_on_the_issue(&world).await;
+    world.jira().comment_from(ISSUE, reply_from, YES).await;
+    world.script_graphql(0, 200, readied());
+
+    let moved = world.revision_the_site_holds().await;
+    let observed = observed_issue(Some(&moved));
+    let (outcome, _) = steered_by_with(
+        &world,
+        JIRA_INVOCATION,
+        Some(&observed),
+        MockCompletionModel::new(vec![MockTurn::text(APPROVES)]),
+        deciders,
+    )
+    .await;
+    AnsweredOnTheIssue {
+        world,
+        outcome,
+        head_sha: asked.head_sha,
+        asked_at: asked.asked_at,
+        carried: moved,
+    }
+}
+
+#[tokio::test]
+async fn a_jira_run_reads_the_reply_on_its_own_question_and_proceeds() {
+    let answered = a_second_invocation_after(
+        JIRA_DECIDER,
+        vec![Decider::JiraAccount(JIRA_DECIDER.to_string())],
+    )
+    .await;
+    let world = &answered.world;
+
+    answered
+        .outcome
+        .expect("the second invocation reads the answer on the issue and proceeds");
+    assert!(
+        world
+            .effects_performed()
+            .contains(&EffectName::shipped(ENSURE_PULL_REQUEST_READY)),
+        "the approval reached the gated effect: {:?}",
+        world.effects_performed()
+    );
+    assert_eq!(
+        world.graphql_calls(),
+        1,
+        "and it was performed once, against the pull request the question named"
+    );
+    assert_ne!(
+        answered.carried, answered.asked_at,
+        "the second invocation must carry a later revision than the one the question was \
+         asked under, or one comment proves nothing about a moved issue"
+    );
+    assert_eq!(
+        world.jira_comments_on(ISSUE).await,
+        1,
+        "the question was asked once across two invocations, although the second carried \
+         revision {} where the first asked under {}",
+        answered.carried,
+        answered.asked_at
+    );
+    assert_eq!(
+        world.posted_comments().len(),
+        0,
+        "and no part of the conversation reached github; a run that asked on the issue and read \
+         the pull request would suspend for ever"
+    );
+    assert_eq!(
+        world.decision_steps(),
+        [
+            DecisionStep::RecomputeIdentity.as_str(),
+            DecisionStep::FindRequest.as_str(),
+            DecisionStep::ParseBinding.as_str(),
+            DecisionStep::SelectCandidates.as_str(),
+            DecisionStep::ReReadCandidates.as_str(),
+            DecisionStep::ReObserveState.as_str(),
+            DecisionStep::Interpret.as_str(),
+            DecisionStep::ComparePayload.as_str(),
+        ],
+        "the jira channel walks the same order the pull-request channel walks"
+    );
+    assert!(
+        world.marker(WORK_ID).is_some(),
+        "and the completed work is accounted for: {:?}",
+        world.change_sets()
+    );
+    assert_eq!(
+        world.published_sha_for(JIRA_INVOCATION),
+        answered.head_sha,
+        "no second commit was published, so the second invocation ran no attempt"
+    );
+}
+
+#[tokio::test]
+async fn a_jira_reply_from_an_account_this_deployment_did_not_nominate_decides_nothing() {
+    let refused = a_second_invocation_after(
+        JIRA_STRANGER,
+        vec![Decider::JiraAccount(JIRA_DECIDER.to_string())],
+    )
+    .await;
+
+    let error = refused
+        .outcome
+        .expect_err("a reply nobody nominated leaves the question standing");
+    assert!(
+        matches!(&error, CapabilityError::AwaitingDecision { .. }),
+        "got {error:?}"
+    );
+    assert!(
+        error.to_string().contains("jira account"),
+        "the run says which account it read and did not count: {error}"
+    );
+    assert_eq!(
+        refused.world.graphql_calls(),
+        0,
+        "and nothing was marked ready"
+    );
+    assert_eq!(
+        refused.world.jira_comments_on(ISSUE).await,
+        1,
+        "the standing question was not asked again either"
+    );
+}
+
+#[tokio::test]
+async fn a_jira_account_id_equal_to_an_allowed_github_id_is_not_that_decider() {
+    let crossed = APPROVER.to_string();
+
+    let refused = a_second_invocation_after(&crossed, vec![Decider::GitHubAuthor(APPROVER)]).await;
+    let error = refused
+        .outcome
+        .expect_err("a github author id does not authorize a jira account of the same number");
+    assert!(
+        matches!(&error, CapabilityError::AwaitingDecision { .. }),
+        "got {error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("jira account {crossed}")),
+        "the account it declined is named in the channel it wrote on: {error}"
+    );
+    assert_eq!(refused.world.graphql_calls(), 0);
+
+    let allowed =
+        a_second_invocation_after(&crossed, vec![Decider::JiraAccount(crossed.clone())]).await;
+    allowed.outcome.expect(
+        "the same account id, nominated as a jira account, does decide; without this line the \
+         refusal above would pass on a run that can never read any reply at all",
+    );
+    assert_eq!(allowed.world.graphql_calls(), 1);
 }
 
 fn effect_kinds(receipts: &[EvidenceRef]) -> Vec<String> {

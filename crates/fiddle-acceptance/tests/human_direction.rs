@@ -8,6 +8,10 @@ use support::{
     SENTINEL, STRANGER,
 };
 
+fn declined(comment: u64, author: u64, reason: &str) -> String {
+    format!("comment {comment} by github author {author} ({reason})")
+}
+
 #[test]
 fn inspect_builds_nothing_for_propose_change() {
     let world = World::new();
@@ -977,9 +981,10 @@ fn the_decision_matrix_mutates_only_where_it_should() {
         if name == "no reply at all" {
             let published = world.all_published_bytes();
             assert!(
-                published.contains(&format!(
-                    "comment {question} by {FIDDLE_BOT} (the request comment is not a \
-                     reply to itself)"
+                published.contains(&declined(
+                    question,
+                    FIDDLE_BOT,
+                    "the request comment is not a reply to itself"
                 )),
                 "{name}: a suspension with no replies still records the one comment the \
                  walk declined: {}",
@@ -1485,7 +1490,7 @@ fn an_ignored_reply_is_visible_in_what_the_run_published() {
             "the request comment is not a reply to itself",
         ),
     ] {
-        let entry = format!("comment {comment} by {author} ({reason})");
+        let entry = declined(comment, author, reason);
         assert!(
             published.contains(&entry),
             "the record must carry {entry:?} as one entry: {}",
@@ -2085,9 +2090,10 @@ fn an_approval_below_the_question_is_no_candidate_and_the_same_words_above_it_ar
     );
 
     let bytes = world.all_published_bytes();
-    let declined_question = format!(
-        "comment {question} by {FIDDLE_BOT} (the request comment is not a reply to \
-         itself)"
+    let declined_question = declined(
+        question,
+        FIDDLE_BOT,
+        "the request comment is not a reply to itself",
     );
     assert!(
         bytes.contains(&declined_question),
@@ -2208,7 +2214,9 @@ fn an_approval_of_the_earlier_change_is_read_and_superseded_rather_than_spent() 
         "one comment was declined: {evidence}"
     );
     assert!(
-        evidence.contains(&format!("comment {first_question} by {FIDDLE_BOT}")),
+        evidence.contains(&format!(
+            "comment {first_question} by github author {FIDDLE_BOT}"
+        )),
         "and it is fiddle's own question: {evidence}"
     );
     assert!(

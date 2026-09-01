@@ -48,6 +48,17 @@ pub fn marked_body(text: &str, marker: &str) -> serde_json::Value {
     })
 }
 
+pub fn document(text: &str) -> serde_json::Value {
+    let content: Vec<serde_json::Value> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(paragraph)
+        .collect();
+    serde_json::json!({
+        "body": {"type": "doc", "version": 1, "content": content},
+    })
+}
+
 fn paragraph(text: &str) -> serde_json::Value {
     serde_json::json!({
         "type": "paragraph",
