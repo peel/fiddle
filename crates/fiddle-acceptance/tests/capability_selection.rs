@@ -1187,3 +1187,130 @@ fn a_workflow_the_judge_rejects_exits_twelve_and_a_workflow_it_accepts_does_not(
         "and 11 is that reason and no other: {accepted}"
     );
 }
+
+const JIRA_USER: &str = "JIRA_USER_EMAIL";
+
+const JIRA_TOKEN: &str = "JIRA_API_TOKEN";
+
+fn toiling_over_jira() -> (support::StubJira, Scenario, String) {
+    let jira = support::StubJira::holding_the_issue();
+    let s = toiling();
+    s.append_config(&format!(
+        "\n[jira]\n\
+         site = \"https://icecube.atlassian.net\"\n\
+         project = \"IDENT\"\n\
+         user = {{ env = \"{JIRA_USER}\" }}\n\
+         token = {{ env = \"{JIRA_TOKEN}\" }}\n\
+         base_url = \"{}\"\n\
+         timeout = \"30s\"\n",
+        jira.base_url()
+    ));
+    let reference = format!("jira:{}", support::JIRA_ISSUE_KEY);
+    (jira, s, reference)
+}
+
+fn toil_run_missing(scenario: &Scenario, reference: &str, absent: &[&str]) -> std::process::Output {
+    let mut command = scenario.run_command(reference);
+    command
+        .args(["--capability", "toil", "--json"])
+        .env(CREDENTIAL, SENTINEL)
+        .env(FORGE_TOKEN, "ghp-a-token-no-forge-would-honour")
+        .env(JIRA_USER, "nobody@example.com")
+        .env(JIRA_TOKEN, "a-token-no-site-would-honour");
+    for name in absent {
+        command.env_remove(name);
+    }
+    command.output().unwrap()
+}
+
+#[test]
+fn an_absent_document_is_named_before_any_credential_is_asked_for() {
+    for absent in [
+        vec![FORGE_TOKEN],
+        vec![CREDENTIAL],
+        vec![FORGE_TOKEN, CREDENTIAL],
+    ] {
+        let s = toiling();
+        let looked_for = document_path(&s);
+        assert!(
+            !looked_for.exists(),
+            "this scenario is about a document that is not there"
+        );
+
+        let out = toil_run_missing(&s, INVOCATION_REF, &absent);
+
+        let stderr = refused_nothing_else_ran(&s, &out);
+        assert!(
+            squeezed(&stderr).contains(&squeezed(&looked_for.display().to_string())),
+            "with {absent:?} unset the refusal must still name the document it \
+             looked for, not the credential: {stderr}"
+        );
+        assert!(
+            stderr.contains("fiddle::workflow::document_unusable"),
+            "the document is what is missing, so the document is what the \
+             diagnostic is about, with {absent:?} unset: {stderr}"
+        );
+        assert!(
+            !stderr.contains("fiddle::config::credential_absent"),
+            "a credential this build never got as far as needing must not be \
+             reported in the document's place, with {absent:?} unset: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn an_absent_document_is_named_before_the_tracker_credential_is_asked_for() {
+    let (_jira, s, reference) = toiling_over_jira();
+    let looked_for = document_path(&s);
+    assert!(
+        !looked_for.exists(),
+        "this scenario is about a document that is not there"
+    );
+
+    let out = toil_run_missing(&s, &reference, &[JIRA_USER, JIRA_TOKEN, FORGE_TOKEN]);
+
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(
+        s.read_change_marker(support::JIRA_ISSUE_KEY),
+        None,
+        "no built-in capability may run in the document's place: {stderr}"
+    );
+    assert!(
+        !s.report_dir().exists(),
+        "a refused run publishes no bundle: {stderr}"
+    );
+    assert_eq!(out.status.code(), Some(2), "stderr = {stderr}");
+    assert!(
+        squeezed(&stderr).contains(&squeezed(&looked_for.display().to_string())),
+        "an unqualified jira run selects toil, and with no tracker credential the \
+         refusal must still name the document: {stderr}"
+    );
+    assert!(
+        !stderr.contains("fiddle::config::credential_absent"),
+        "the tracker credential is not what is missing: {stderr}"
+    );
+}
+
+#[test]
+fn a_document_that_is_there_still_lets_an_absent_credential_be_named() {
+    let forge_missing = toiling();
+    write_toil_document(&forge_missing, ONE_CHECK);
+    let out = toil_run_missing(&forge_missing, INVOCATION_REF, &[FORGE_TOKEN]);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(2), "stderr = {stderr}");
+    assert!(
+        stderr.contains("fiddle::config::credential_absent") && stderr.contains(FORGE_TOKEN),
+        "reading the document first must not swallow the forge credential a \
+         readable document still needs: {stderr}"
+    );
+
+    let (_jira, tracker_missing, reference) = toiling_over_jira();
+    write_toil_document(&tracker_missing, ONE_CHECK);
+    let out = toil_run_missing(&tracker_missing, &reference, &[JIRA_TOKEN]);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(2), "stderr = {stderr}");
+    assert!(
+        stderr.contains("fiddle::config::credential_absent") && stderr.contains(JIRA_TOKEN),
+        "and it must not swallow the tracker credential either: {stderr}"
+    );
+}

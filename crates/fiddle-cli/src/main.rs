@@ -365,6 +365,35 @@ fn workflow_document(path: &Path, stage: &str) -> Result<Workflow, WorkflowDocum
     Ok(workflow)
 }
 
+struct SelectedWorkflow {
+    document: PathBuf,
+    workflow: Workflow,
+}
+
+struct Resolved<'a> {
+    forge: Option<&'a Forge>,
+    transcripts: Option<&'a Transcripts>,
+    workflow: Option<SelectedWorkflow>,
+}
+
+fn selected_workflow(
+    selection: Selection,
+    config_path: &Path,
+) -> Result<Option<SelectedWorkflow>, WorkflowDocumentUnusable> {
+    match selection {
+        Selection::Toil => {
+            let document = workflows_root(config_path).join(TOIL_DOCUMENT);
+            let workflow = workflow_document(&document, TOIL_STAGE)?;
+            Ok(Some(SelectedWorkflow { document, workflow }))
+        }
+        Selection::Mark
+        | Selection::Publish
+        | Selection::Propose
+        | Selection::Repair
+        | Selection::Mitigate => Ok(None),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 struct InvalidInvocationRef(#[from] InvocationRefError);
@@ -739,9 +768,13 @@ fn build_capability<'a>(
     config_path: &Path,
     cancel: &CancellationToken,
     reference: &InvocationRef,
-    forge: Option<&'a Forge>,
-    transcripts: Option<&Transcripts>,
+    resolved: Resolved<'a>,
 ) -> Result<Box<dyn Capability + 'a>, CliError> {
+    let Resolved {
+        forge,
+        transcripts,
+        workflow: selected,
+    } = resolved;
     let missing = |missing: &'static str| Unconfigured {
         capability: selection.id(),
         missing,
@@ -1042,8 +1075,16 @@ fn build_capability<'a>(
         }
 
         Selection::Toil => {
-            let document = workflows_root(config_path).join(TOIL_DOCUMENT);
-            let workflow = workflow_document(&document, TOIL_STAGE)?;
+            let SelectedWorkflow { document, workflow } =
+                selected.ok_or_else(|| WorkflowDocumentUnusable {
+                    path: workflows_root(config_path)
+                        .join(TOIL_DOCUMENT)
+                        .display()
+                        .to_string(),
+                    reason: "this build reads the document before it resolves a \
+                             credential, and nothing read it"
+                        .to_string(),
+                })?;
 
             let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
             let agent = config.agent.as_ref().ok_or_else(|| missing("[agent]"))?;
@@ -1270,6 +1311,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             let reference = reference_from(invocation_ref)?;
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
+            let document = selected_workflow(selection, &cli.config)?;
 
             let recording = transcripts(&config.report.dir, &reference)?;
 
@@ -1288,8 +1330,11 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 &cli.config,
                 &cancel,
                 &reference,
-                forge.as_ref(),
-                recording.as_ref(),
+                Resolved {
+                    forge: forge.as_ref(),
+                    transcripts: recording.as_ref(),
+                    workflow: document,
+                },
             )?;
             let record = fiddle_runtime::attempt(&AttemptContext {
                 project: &config.project.name,
@@ -1554,8 +1599,11 @@ mod tests {
             &path,
             &CancellationToken::new(),
             &a_reference(),
-            None,
-            None,
+            Resolved {
+                forge: None,
+                transcripts: None,
+                workflow: None,
+            },
         ) else {
             panic!("nothing exports that variable, so no endpoint exists")
         };
@@ -1639,8 +1687,11 @@ mod tests {
             &path,
             &CancellationToken::new(),
             &a_reference(),
-            None,
-            None,
+            Resolved {
+                forge: None,
+                transcripts: None,
+                workflow: None,
+            },
         ) else {
             panic!("the deterministic capability needs nothing but the document")
         };
@@ -1673,8 +1724,11 @@ mod tests {
             &path,
             &CancellationToken::new(),
             &a_reference(),
-            None,
-            None,
+            Resolved {
+                forge: None,
+                transcripts: None,
+                workflow: None,
+            },
         ) else {
             panic!("no forge was supplied, so nothing can be built")
         };
@@ -1717,8 +1771,11 @@ mod tests {
             &path,
             &CancellationToken::new(),
             &a_reference(),
-            None,
-            None,
+            Resolved {
+                forge: None,
+                transcripts: None,
+                workflow: None,
+            },
         ) else {
             panic!("a publication needs a forge to publish to")
         };
@@ -1877,8 +1934,11 @@ mod tests {
             &path,
             &CancellationToken::new(),
             &a_reference(),
-            None,
-            None,
+            Resolved {
+                forge: None,
+                transcripts: None,
+                workflow: None,
+            },
         ) else {
             panic!("a repair needs a model and somewhere to work")
         };
