@@ -1122,6 +1122,7 @@ fn config_check_echoes_the_tracker_and_names_its_credential_without_resolving_it
                 "blocked": "Blocked",
                 "done": "Done",
             },
+            "labels": { "toil_trigger": "fiddle/toil" },
             "filing": null,
         }),
         "an operator must read back the site, the project, the bound and the \
@@ -1149,6 +1150,121 @@ fn config_check_echoes_the_tracker_and_names_its_credential_without_resolving_it
         assert!(
             stdout.contains(TRACKER_CREDENTIAL),
             "{extra:?} must still name the variable the document points at: {stdout}"
+        );
+    }
+}
+
+const TOIL_BOUNDS: &str = r#"
+[orchestration.toil]
+max_files_changed = 3
+max_diff_lines = 30
+"#;
+
+#[test]
+fn config_check_echoes_the_toil_bounds_when_no_table_names_them() {
+    let orchestration = checked(&format!("{AGENTIC}{TRACKER}"))["orchestration"].clone();
+    assert_eq!(
+        orchestration,
+        serde_json::json!({
+            "toil": { "max_files_changed": 10, "max_diff_lines": 500 },
+        }),
+        "a deployment that receives jira work resolves to a bound whether or not \
+         it wrote [orchestration.toil], and an operator confirms the resolved \
+         pair here rather than reading it out of the source: {orchestration}"
+    );
+
+    let named =
+        checked(&format!("{AGENTIC}{TRACKER}{TOIL_BOUNDS}"))["orchestration"]["toil"].clone();
+    assert_eq!(
+        named,
+        serde_json::json!({ "max_files_changed": 3, "max_diff_lines": 30 }),
+        "and the table the document does write is what it echoes, so the case \
+         above is this command reading an absent table and not a constant it \
+         prints for every document: {named}"
+    );
+}
+
+#[test]
+fn a_document_that_receives_no_jira_work_echoes_no_toil_bound() {
+    assert!(
+        checked(AGENTIC).get("orchestration").is_none(),
+        "toil work arrives as a `jira:` reference, so a document naming no \
+         tracker receives none, and a bound on work it cannot receive would be \
+         the blank filled in silently that the m0 payload forbids"
+    );
+    assert_eq!(
+        checked(&format!("{AGENTIC}{TOIL_BOUNDS}"))["orchestration"]["toil"]["max_files_changed"],
+        3,
+        "and a document that writes the table itself reads it back, so the \
+         absence above is the tracker's and not this command dropping the key"
+    );
+}
+
+#[test]
+fn config_check_echoes_the_trigger_label_the_labels_table_names() {
+    assert_eq!(
+        checked(&format!(
+            "{AGENTIC}{TRACKER}\n[jira.labels]\ntoil_trigger = \"fiddle/chore\"\n"
+        ))["jira"]["labels"]["toil_trigger"],
+        "fiddle/chore",
+        "the label a toil run triggers on is named once, under [jira.labels], \
+         and an operator reads back the one the document wrote"
+    );
+    assert_eq!(
+        checked(&format!("{AGENTIC}{TRACKER}"))["jira"]["labels"]["toil_trigger"],
+        "fiddle/toil",
+        "and a tracker table that names no labels table triggers on the \
+         documented label, so the case above cannot be passing because this \
+         command echoes whatever it is given"
+    );
+}
+
+#[test]
+fn a_second_spelling_of_the_trigger_label_is_refused_by_name() {
+    let out = check(&format!(
+        "{AGENTIC}{TRACKER}\n[jira.labels]\ntrigger = \"fiddle/chore\"\n"
+    ));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("toil_trigger"),
+        "a label written under a second key is a label nothing reads, and the \
+         refusal must name the one key that carries it: {said}"
+    );
+}
+
+#[test]
+fn the_plain_rendering_names_the_label_and_the_bounds_it_resolved() {
+    let stdout = plain(&format!(
+        "{AGENTIC}{TRACKER}{TOIL_BOUNDS}\n[jira.labels]\ntoil_trigger = \"fiddle/chore\"\n"
+    ));
+    for line in [
+        "jira.labels.toil_trigger = fiddle/chore",
+        "orchestration.toil.max_files_changed = 3",
+        "orchestration.toil.max_diff_lines = 30",
+    ] {
+        assert!(
+            stdout.contains(line),
+            "an operator at a terminal cannot confirm `{line}`: {stdout}"
+        );
+    }
+
+    let defaulted = plain(&format!("{AGENTIC}{TRACKER}"));
+    for line in [
+        "jira.labels.toil_trigger = fiddle/toil",
+        "orchestration.toil.max_files_changed = 10",
+        "orchestration.toil.max_diff_lines = 500",
+    ] {
+        assert!(
+            defaulted.contains(line),
+            "and the same three lines carry the resolved defaults, so the rows \
+             above cannot be passing on a rendering that prints the document \
+             back: `{line}` is not in {defaulted}"
         );
     }
 }

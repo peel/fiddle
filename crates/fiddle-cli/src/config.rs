@@ -40,6 +40,19 @@ pub struct Scanner {
 pub struct Orchestration {
     #[serde(default)]
     pub cve: Option<OrchestrationCve>,
+
+    #[serde(default)]
+    pub toil: Option<OrchestrationToil>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrchestrationToil {
+    #[serde(default = "default_max_files_changed")]
+    pub max_files_changed: usize,
+
+    #[serde(default = "default_max_diff_lines")]
+    pub max_diff_lines: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -604,7 +617,25 @@ pub struct Jira {
     pub workflow: JiraWorkflow,
 
     #[serde(default)]
+    pub labels: JiraLabels,
+
+    #[serde(default)]
     pub filing: Option<JiraFiling>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JiraLabels {
+    #[serde(default = "default_toil_trigger")]
+    pub toil_trigger: String,
+}
+
+impl Default for JiraLabels {
+    fn default() -> Self {
+        Self {
+            toil_trigger: default_toil_trigger(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -821,6 +852,58 @@ fn default_scan_timeout() -> HumanDuration {
 
 fn default_max_findings() -> usize {
     5
+}
+
+fn default_max_files_changed() -> usize {
+    10
+}
+
+fn default_max_diff_lines() -> usize {
+    500
+}
+
+fn default_toil_trigger() -> String {
+    "fiddle/toil".to_string()
+}
+
+const TOIL_WORKED_ISSUE_TYPES: [&str; 1] = ["Task"];
+
+const TOIL_SHORTEST_DESCRIPTION: usize = 20;
+
+pub struct ToilBounds {
+    pub eligibility: fiddle_runtime::toil::Eligibility,
+    pub max_files_changed: usize,
+    pub max_diff_lines: usize,
+}
+
+pub fn toil_bounds(config: &Config) -> ToilBounds {
+    let toil = config
+        .orchestration
+        .as_ref()
+        .and_then(|orchestration| orchestration.toil.as_ref());
+    ToilBounds {
+        eligibility: fiddle_runtime::toil::Eligibility {
+            trigger_label: config
+                .jira
+                .as_ref()
+                .map_or_else(default_toil_trigger, |jira| {
+                    jira.labels.toil_trigger.clone()
+                }),
+            worked_issue_types: TOIL_WORKED_ISSUE_TYPES
+                .iter()
+                .map(|worked| (*worked).to_string())
+                .collect(),
+            bounded_repositories: config
+                .github
+                .as_ref()
+                .map(|github| vec![github.repo.to_string()])
+                .unwrap_or_default(),
+            shortest_description: TOIL_SHORTEST_DESCRIPTION,
+        },
+        max_files_changed: toil
+            .map_or_else(default_max_files_changed, |toil| toil.max_files_changed),
+        max_diff_lines: toil.map_or_else(default_max_diff_lines, |toil| toil.max_diff_lines),
+    }
 }
 
 fn default_cve_title() -> String {
@@ -2472,5 +2555,256 @@ token = { env = "JIRA_API_TOKEN" }
                 .contains("anchor"),
             "an unknown key in [jira.filing] would name a ledger nothing reads"
         );
+    }
+
+    const TOILING: &str = r#"
+[project]
+name = "p"
+
+[stub]
+root = "s"
+
+[report]
+dir = "r"
+
+[github]
+repo = "peel/fiddle"
+base = "main"
+token = { env = "FIDDLE_GITHUB_TOKEN" }
+
+[jira]
+site = "https://example.atlassian.net"
+project = "IDENT"
+user = { env = "JIRA_USER_EMAIL" }
+token = { env = "JIRA_API_TOKEN" }
+"#;
+
+    fn resolved(text: &str) -> ToilBounds {
+        toil_bounds(&toml::from_str::<Config>(text).unwrap())
+    }
+
+    const NAMING_BOTH: &str = "\n[orchestration.toil]\nmax_files_changed = 3\n\
+                               max_diff_lines = 30\n";
+
+    #[test]
+    fn an_absent_toil_table_resolves_to_the_documented_bounds() {
+        let bounds = resolved(TOILING);
+        assert_eq!(
+            (bounds.max_files_changed, bounds.max_diff_lines),
+            (10, 500),
+            "a document that names no [orchestration.toil] table resolves to the \
+             documented 10 files and 500 lines, and never to no bound at all"
+        );
+
+        let named = resolved(&format!("{TOILING}{NAMING_BOTH}"));
+        assert_eq!(
+            (named.max_files_changed, named.max_diff_lines),
+            (3, 30),
+            "and the same resolver returns the values a table does name, so the \
+             defaults above are it reading an absent table rather than a constant \
+             it returns for every document"
+        );
+    }
+
+    #[test]
+    fn an_orchestration_table_that_names_no_toil_table_still_resolves_to_both() {
+        let sweeping = format!(
+            "{TOILING}\n[scanner]\ncli = {{ program = \"wizcli\" }}\n\
+             \n[orchestration.cve]\nimage = \"acme/i:latest\"\n"
+        );
+        let bounds = resolved(&sweeping);
+        assert_eq!(
+            (bounds.max_files_changed, bounds.max_diff_lines),
+            (10, 500),
+            "[orchestration] is present and its toil table is not, which is the \
+             case a resolver that stops at the first absent table gets wrong"
+        );
+        assert_eq!(
+            resolved(&format!("{sweeping}{NAMING_BOTH}")).max_files_changed,
+            3,
+            "and a toil table beside a cve table is still read, so the case above \
+             cannot be passing because [orchestration.cve] hides the toil table"
+        );
+    }
+
+    #[test]
+    fn a_toil_table_that_names_one_bound_defaults_the_other() {
+        for (named, expected) in [
+            ("max_files_changed = 3", (3, 500)),
+            ("max_diff_lines = 30", (10, 30)),
+        ] {
+            let bounds = resolved(&format!("{TOILING}\n[orchestration.toil]\n{named}\n"));
+            assert_eq!(
+                (bounds.max_files_changed, bounds.max_diff_lines),
+                expected,
+                "`{named}` alone leaves the other bound at its default, and a \
+                 resolver that reads only one key cannot satisfy both rows"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_key_in_the_toil_table_is_refused() {
+        let bad = format!("{TOILING}\n[orchestration.toil]\nmax_diff = 30\n");
+        let message = toml::from_str::<Config>(&bad)
+            .expect_err("a bound spelled another way is a bound nothing enforces")
+            .message()
+            .to_string();
+        assert!(
+            message.contains("max_diff_lines"),
+            "the refusal must name the key an operator would write instead, got {message}"
+        );
+        assert!(
+            toml::from_str::<Config>(&format!("{TOILING}{NAMING_BOTH}")).is_ok(),
+            "and the documented spelling is accepted, so this case cannot be \
+             passing because every toil table is refused"
+        );
+    }
+
+    #[test]
+    fn the_trigger_label_is_read_from_the_jira_labels_table() {
+        assert_eq!(
+            resolved(TOILING).eligibility.trigger_label,
+            "fiddle/toil",
+            "a tracker table that names no labels table resolves to the \
+             documented label"
+        );
+        assert_eq!(
+            resolved(&format!(
+                "{TOILING}\n[jira.labels]\ntoil_trigger = \"fiddle/chore\"\n"
+            ))
+            .eligibility
+            .trigger_label,
+            "fiddle/chore",
+            "and the label the document names reaches the gate's bounds"
+        );
+    }
+
+    #[test]
+    fn the_trigger_label_has_one_spelling_in_the_document() {
+        let message = toml::from_str::<Config>(&format!(
+            "{TOILING}\n[jira.labels]\ntrigger = \"fiddle/chore\"\n"
+        ))
+        .expect_err("a second spelling of the trigger label is a label nothing reads")
+        .message()
+        .to_string();
+        assert!(
+            message.contains("toil_trigger"),
+            "the refusal must name the one key that carries the trigger label, got {message}"
+        );
+    }
+
+    struct AsksForAChange;
+
+    #[async_trait::async_trait]
+    impl fiddle_runtime::toil::AmbiguityReview for AsksForAChange {
+        async fn review(
+            &self,
+            quoted: &fiddle_runtime::toil::Quoted,
+        ) -> Result<fiddle_runtime::toil::Judgement, fiddle_runtime::toil::ReviewError> {
+            Ok(fiddle_runtime::toil::Judgement {
+                verdict: fiddle_runtime::toil::Verdict::AsksForAChange,
+                quoting: quoted.text().to_string(),
+                certainty: 0.9,
+            })
+        }
+    }
+
+    fn labelled_ticket() -> fiddle_runtime::toil::TicketFacts {
+        fiddle_runtime::toil::TicketFacts {
+            id: "IDENT-7".to_string(),
+            issue_type: "Task".to_string(),
+            labels: Some(vec!["fiddle/toil".to_string()]),
+            repository: Some("peel/fiddle".to_string()),
+            summary: "Rename the deprecated helper".to_string(),
+            description: Some(
+                "Rename the deprecated helper in workspace.rs and its one caller.".to_string(),
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn one_trigger_label_moves_both_the_reported_value_and_the_gate() {
+        let document = |named: &str| {
+            toml::from_str::<Config>(&format!(
+                "{TOILING}\n[jira.labels]\ntoil_trigger = \"{named}\"\n"
+            ))
+            .unwrap()
+        };
+        let ticket = labelled_ticket();
+
+        let triggering = document("fiddle/toil");
+        assert!(
+            crate::render::config_check_human(&triggering)
+                .contains("jira.labels.toil_trigger = fiddle/toil"),
+            "the command reports the label it resolved: {}",
+            crate::render::config_check_human(&triggering)
+        );
+        let admitted = fiddle_runtime::toil::qualify(
+            &ticket,
+            &toil_bounds(&triggering).eligibility,
+            &AsksForAChange,
+        )
+        .await;
+        assert!(
+            admitted.eligible().is_some(),
+            "the ticket carries the label the document names, so the gate admits \
+             it: {admitted:?}"
+        );
+
+        let other = document("fiddle/chore");
+        assert!(
+            crate::render::config_check_human(&other)
+                .contains("jira.labels.toil_trigger = fiddle/chore"),
+            "one field changed and the reported value moved with it: {}",
+            crate::render::config_check_human(&other)
+        );
+        let refusal = fiddle_runtime::toil::qualify(
+            &ticket,
+            &toil_bounds(&other).eligibility,
+            &AsksForAChange,
+        )
+        .await;
+        let refusal = refusal
+            .refused()
+            .expect("the same ticket no longer carries the label the document names");
+        assert_eq!(
+            refusal.failed_rule, "the trigger label is present",
+            "and the enforced value moved with it: the gate failed on the trigger \
+             label and on nothing else: {refusal:?}"
+        );
+        assert!(
+            refusal.remedy.contains("fiddle/chore"),
+            "the remedy names the label the document now says, and not the one it \
+             said before: {refusal:?}"
+        );
+    }
+
+    #[test]
+    fn the_command_reports_the_bounds_the_resolver_returns() {
+        for (document, files, lines) in [
+            (TOILING.to_string(), 10, 500),
+            (format!("{TOILING}{NAMING_BOTH}"), 3, 30),
+        ] {
+            let config = toml::from_str::<Config>(&document).unwrap();
+            let bounds = toil_bounds(&config);
+            assert_eq!(
+                (bounds.max_files_changed, bounds.max_diff_lines),
+                (files, lines),
+                "the row's own premise: the resolver returns what the document names"
+            );
+            let said = crate::render::config_check_human(&config);
+            for line in [
+                format!("orchestration.toil.max_files_changed = {files}"),
+                format!("orchestration.toil.max_diff_lines = {lines}"),
+            ] {
+                assert!(
+                    said.contains(&line),
+                    "an operator reads the bound back from the resolver that \
+                     returns it, and `{line}` is not in what the command said: \
+                     {said}"
+                );
+            }
+        }
     }
 }

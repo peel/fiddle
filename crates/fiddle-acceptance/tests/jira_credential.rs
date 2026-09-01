@@ -72,6 +72,13 @@ const QUALIFIED: [&str; 3] = [
     "the site answers / run --json / what it printed on stdout",
 ];
 
+const TRIGGER_RESOLVED: [&str; 4] = [
+    "the document is read back / config check --json / what it printed on stdout",
+    "the document is read back / config check / what it printed on stdout",
+    "the filing table is read back / config check --json / what it printed on stdout",
+    "the filing table is read back / config check / what it printed on stdout",
+];
+
 const PROJECTS: usize = 6;
 
 const SWEEP_REF: &str = "cve";
@@ -314,17 +321,36 @@ fn every_surface_searched_is_output_of_a_jira_read() {
         named.sort();
         named
     };
-    for (field, held) in [
-        ("labels", support::JIRA_ISSUE_LABEL),
-        ("description", support::JIRA_ISSUE_DESCRIPTION),
-        ("comment", support::JIRA_ISSUE_COMMENT),
+    let named = |pinned: &[&str]| {
+        let mut names: Vec<String> = pinned.iter().map(|name| (*name).to_string()).collect();
+        names.sort();
+        names
+    };
+    let read_and_resolved = named(
+        &QUALIFIED
+            .iter()
+            .chain(TRIGGER_RESOLVED.iter())
+            .copied()
+            .collect::<Vec<_>>(),
+    );
+    for (field, held, reaching) in [
+        ("labels", support::JIRA_ISSUE_LABEL, read_and_resolved),
+        (
+            "description",
+            support::JIRA_ISSUE_DESCRIPTION,
+            named(&QUALIFIED),
+        ),
+        ("comment", support::JIRA_ISSUE_COMMENT, named(&QUALIFIED)),
     ] {
         assert_eq!(
             carrying(held),
-            QUALIFIED,
+            reaching,
             "the read asks the site for `{field}` so a gate can weigh it, and every \
              surface that value reaches is pinned here and searched for the credential; \
-             a surface it starts reaching cannot join the tree unsearched"
+             a surface it starts reaching cannot join the tree unsearched. The trigger \
+             label a document resolves to is the same text as the label this ticket \
+             carries, so `config check` names it without reading the site, and those \
+             four surfaces are pinned beside the read's own"
         );
     }
 

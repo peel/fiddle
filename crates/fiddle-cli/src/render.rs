@@ -37,6 +37,7 @@ const AUTHORIZED_MATCHED_ON: &str = "numeric_user_id";
 const DECISION_STATUS: &str = ACCEPTED_NOT_ENFORCED;
 
 pub fn config_check_json(config: &Config) -> String {
+    let toil = crate::config::toil_bounds(config);
     let mut body = serde_json::json!({
         "status": "valid",
         "project": { "name": config.project.name },
@@ -131,6 +132,7 @@ pub fn config_check_json(config: &Config) -> String {
                 "blocked": jira.workflow.blocked,
                 "done": jira.workflow.done,
             },
+            "labels": { "toil_trigger": toil.eligibility.trigger_label },
             "filing": jira.filing.as_ref().map(|filing| filing.resolved()).map(|filing| serde_json::json!({
                 "project": filing.project_key,
                 "issue_type": filing.issue_type,
@@ -144,20 +146,34 @@ pub fn config_check_json(config: &Config) -> String {
             "timeout": scanner.timeout.to_string(),
         });
     }
+    if reports_toil(config) {
+        body["orchestration"] = serde_json::json!({
+            "toil": {
+                "max_files_changed": toil.max_files_changed,
+                "max_diff_lines": toil.max_diff_lines,
+            },
+        });
+    }
     if let Some(cve) = config
         .orchestration
         .as_ref()
         .and_then(|orchestration| orchestration.cve.as_ref())
     {
-        body["orchestration"] = serde_json::json!({
-            "cve": {
-                "image": cve.image,
-                "severities": cve.severities.grades().collect::<Vec<_>>(),
-                "max_findings": cve.max_findings,
-            },
+        body["orchestration"]["cve"] = serde_json::json!({
+            "image": cve.image,
+            "severities": cve.severities.grades().collect::<Vec<_>>(),
+            "max_findings": cve.max_findings,
         });
     }
     payload(CONFIG_CHECK_SCHEMA, body)
+}
+
+fn reports_toil(config: &Config) -> bool {
+    config.jira.is_some()
+        || config
+            .orchestration
+            .as_ref()
+            .is_some_and(|orchestration| orchestration.toil.is_some())
 }
 
 fn rule(rule: fiddle_core::DeploymentRule) -> &'static str {
@@ -210,6 +226,7 @@ fn cleanup(cleanup: crate::config::Cleanup) -> &'static str {
 }
 
 pub fn config_check_human(config: &Config) -> String {
+    let toil = crate::config::toil_bounds(config);
     let mut out = format!(
         "configuration valid\n  project.name = {}\n  stub.root    = {}\n  report.dir   = {}",
         config.project.name,
@@ -346,6 +363,7 @@ pub fn config_check_human(config: &Config) -> String {
              \n  jira.workflow.in_review = {}\
              \n  jira.workflow.blocked = {}\
              \n  jira.workflow.done = {}\
+             \n  jira.labels.toil_trigger = {}\
              \n  jira.filing.project = {}\
              \n  jira.filing.issue_type = {}\
              \n  jira.filing.ledger_issue = {}",
@@ -360,6 +378,7 @@ pub fn config_check_human(config: &Config) -> String {
             optional(jira.workflow.in_review.clone()),
             optional(jira.workflow.blocked.clone()),
             optional(jira.workflow.done.clone()),
+            toil.eligibility.trigger_label,
             optional(
                 jira.filing
                     .as_ref()
@@ -383,6 +402,13 @@ pub fn config_check_human(config: &Config) -> String {
              \n  scanner.timeout = {}",
             program_line(&scanner.cli),
             scanner.timeout,
+        ));
+    }
+    if reports_toil(config) {
+        out.push_str(&format!(
+            "\n  orchestration.toil.max_files_changed = {}\
+             \n  orchestration.toil.max_diff_lines = {}",
+            toil.max_files_changed, toil.max_diff_lines,
         ));
     }
     if let Some(cve) = config
