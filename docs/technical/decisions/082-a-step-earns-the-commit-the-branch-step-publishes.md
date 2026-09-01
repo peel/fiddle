@@ -24,7 +24,7 @@ The commit step makes no empty commit. The run continues to the branch step. The
 
 **The recorded commit is checked for spelling, and one run earns one commit.**
 
-`OutputRefusal::Misspelt` refuses an answer that is not 40 hexadecimal characters. That is the whole check. It asks no repository whether an object of that name exists, and `a_sha_no_object_in_the_workspace_matches_records_because_the_check_is_spelling_alone` measures the gap: a well-spelt sha that `git cat-file -e` reports absent from the workspace records without complaint.
+`OutputRefusal::Misspelt` refuses an answer that is not 40 hexadecimal characters. That is the whole check. It asks no repository whether an object of that name exists, and `a_sha_no_object_in_the_workspace_matches_records_because_the_check_is_spelling_alone` measures the gap: a well-spelt sha that `git cat-file -t` reports absent from a workspace whose own head that same command does resolve records without complaint.
 
 What makes an earned sha a commit is therefore where it comes from, not this check. Outside the tests, `record_head_sha` has one caller: the commit step, which reads `git rev-parse HEAD` after its own `git commit`. `record_head_sha` is public, so a later caller could record a well-spelt name of nothing and this check would not notice. A build that wants the stronger property must resolve the name against a repository and say so here.
 
