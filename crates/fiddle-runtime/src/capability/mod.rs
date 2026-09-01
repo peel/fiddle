@@ -29,12 +29,13 @@ use fiddle_core::{
 };
 use std::path::PathBuf;
 
-pub const CAPABILITIES: [CapabilityId; 5] = [
+pub const CAPABILITIES: [CapabilityId; 6] = [
     fiddle_core::STUB_MARK,
     fiddle_core::FIXTURE_REPAIR,
     fiddle_core::PUBLISH_CHANGE,
     fiddle_core::PROPOSE_CHANGE,
     fiddle_core::CVE_MITIGATE,
+    fiddle_core::TOIL,
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -329,7 +330,8 @@ mod tests {
                 fiddle_core::FIXTURE_REPAIR,
                 fiddle_core::PUBLISH_CHANGE,
                 fiddle_core::PROPOSE_CHANGE,
-                fiddle_core::CVE_MITIGATE
+                fiddle_core::CVE_MITIGATE,
+                fiddle_core::TOIL
             ]
         );
     }

@@ -1954,7 +1954,8 @@ fn the_registry_holds_every_capability_this_build_offers() {
             "fixture_repair",
             "publish_change",
             "propose_change",
-            "cve_mitigate"
+            "cve_mitigate",
+            "toil"
         ]
     );
 }

@@ -476,7 +476,10 @@ fn surfaces_of_every_jira_invocation() -> Searched {
     for (command, args) in [
         ("inspect --json", vec!["inspect", REFERENCE, "--json"]),
         ("inspect", vec!["inspect", REFERENCE]),
-        ("run --json", vec!["run", REFERENCE, "--json"]),
+        (
+            "run --json",
+            vec!["run", REFERENCE, "--capability", "stub_mark", "--json"],
+        ),
     ] {
         let said = ask(answered, &args, &credentials);
         assert_eq!(
@@ -513,7 +516,10 @@ fn surfaces_of_every_jira_invocation() -> Searched {
 
     for (command, args) in [
         ("inspect --json", vec!["inspect", REFERENCE, "--json"]),
-        ("run --json", vec!["run", REFERENCE, "--json"]),
+        (
+            "run --json",
+            vec!["run", REFERENCE, "--capability", "stub_mark", "--json"],
+        ),
     ] {
         let said = ask(unreachable, &args, &credentials);
         assert!(

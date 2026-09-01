@@ -9,17 +9,22 @@ use fiddle_core::{
     WorkStateView,
 };
 use fiddle_runtime::agent::transcript;
-use fiddle_runtime::effect::{EffectContext, Executor};
+use fiddle_runtime::capability::workflow::{
+    Workflow, WorkflowCapability, WorkflowFile, WorkflowPorts,
+};
+use fiddle_runtime::effect::{EffectContext, Executor, StepParams};
 use fiddle_runtime::human::interpret::InterpretationBounds;
 use fiddle_runtime::ports::{ChangePort, WorkItemPort};
 use fiddle_runtime::{
     Addressed, AgentBudget, AttemptContext, AttemptTrace, Capability, ConfiguredNames,
     DeclaredCommand, Extend, FixtureRepair, GatewayError, GhCli, GitCli, JiraError, JiraHttp,
     JiraWorkItemPort, ProposeChange, ProposeConfig, PublishChange, PublishConfig, RepairConfig,
-    StubChangePort, StubMark, StubWorkItemPort, Transcripts, WorkspaceCommand, CAPABILITIES,
+    StubChangePort, StubMark, StubWorkItemPort, ToolHost, ToolReceipts, Transcripts,
+    WorkspaceCommand, CAPABILITIES,
 };
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 const EXIT_INVALID_INPUT: u8 = 2;
@@ -89,6 +94,14 @@ enum CliError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     TranscriptSwitch(#[from] TranscriptSwitchUnknown),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    WorkflowDocument(#[from] WorkflowDocumentUnusable),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    WorkflowUnrunnable(#[from] WorkflowUnrunnable),
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
@@ -109,6 +122,7 @@ enum Selection {
     Publish,
     Propose,
     Mitigate,
+    Toil,
 }
 
 impl Selection {
@@ -119,6 +133,7 @@ impl Selection {
             Selection::Publish => fiddle_core::PUBLISH_CHANGE,
             Selection::Propose => fiddle_core::PROPOSE_CHANGE,
             Selection::Mitigate => fiddle_core::CVE_MITIGATE,
+            Selection::Toil => fiddle_core::TOIL,
         }
     }
 
@@ -137,6 +152,8 @@ impl Selection {
             Ok(Selection::Propose)
         } else if requested == fiddle_core::CVE_MITIGATE.0 {
             Ok(Selection::Mitigate)
+        } else if requested == fiddle_core::TOIL.0 {
+            Ok(Selection::Toil)
         } else {
             Err(UnknownCapability {
                 requested: requested.to_string(),
@@ -162,10 +179,10 @@ impl Selection {
     fn default_for(scheme: InvocationScheme) -> Self {
         match scheme {
             InvocationScheme::Cve => Selection::Mitigate,
-            InvocationScheme::Beans
-            | InvocationScheme::Jira
-            | InvocationScheme::Scheduled
-            | InvocationScheme::Scanner => Selection::Mark,
+            InvocationScheme::Jira => Selection::Toil,
+            InvocationScheme::Beans | InvocationScheme::Scheduled | InvocationScheme::Scanner => {
+                Selection::Mark
+            }
         }
     }
 }
@@ -290,6 +307,93 @@ struct PathUnusable {
     reason: String,
 }
 
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("the workflow document at {path} could not be read: {reason}")]
+#[diagnostic(
+    code(fiddle::workflow::document_unusable),
+    help(
+        "write the document at {path}; this build reads no other location for it, \
+         and it runs no built-in capability in its place"
+    )
+)]
+struct WorkflowDocumentUnusable {
+    path: String,
+    reason: String,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("the workflow document at {path} names a step this build cannot run: {reason}")]
+#[diagnostic(
+    code(fiddle::workflow::unrunnable),
+    help("correct the step the reason names, or select a capability that needs no document")
+)]
+struct WorkflowUnrunnable {
+    path: String,
+    reason: String,
+}
+
+const WORKFLOWS_DIR: &str = "workflows";
+
+const PROMPTS_DIR: &str = "prompts";
+
+const TOIL_DOCUMENT: &str = "toil.toml";
+
+const TOIL_STAGE: &str = "toil";
+
+fn workflows_root(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(WORKFLOWS_DIR)
+}
+
+fn workflow_document(path: &Path, stage: &str) -> Result<Workflow, WorkflowDocumentUnusable> {
+    let unusable = |reason: String| WorkflowDocumentUnusable {
+        path: path.display().to_string(),
+        reason,
+    };
+    let text = std::fs::read_to_string(path).map_err(|source| unusable(source.to_string()))?;
+    let file: WorkflowFile = toml::from_str(&text).map_err(|error| unusable(error.to_string()))?;
+    let workflow = Workflow::try_from(file).map_err(|error| unusable(error.to_string()))?;
+    if workflow.stage() != stage {
+        return Err(unusable(format!(
+            "this build files the run under the stage `{stage}`, and the document \
+             names the stage `{}`",
+            workflow.stage()
+        )));
+    }
+    Ok(workflow)
+}
+
+struct SelectedWorkflow {
+    document: PathBuf,
+    workflow: Workflow,
+}
+
+struct Resolved<'a> {
+    forge: Option<&'a Forge>,
+    transcripts: Option<&'a Transcripts>,
+    workflow: Option<SelectedWorkflow>,
+}
+
+fn selected_workflow(
+    selection: Selection,
+    config_path: &Path,
+) -> Result<Option<SelectedWorkflow>, WorkflowDocumentUnusable> {
+    match selection {
+        Selection::Toil => {
+            let document = workflows_root(config_path).join(TOIL_DOCUMENT);
+            let workflow = workflow_document(&document, TOIL_STAGE)?;
+            Ok(Some(SelectedWorkflow { document, workflow }))
+        }
+        Selection::Mark
+        | Selection::Publish
+        | Selection::Propose
+        | Selection::Repair
+        | Selection::Mitigate => Ok(None),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 struct InvalidInvocationRef(#[from] InvocationRefError);
@@ -390,7 +494,9 @@ fn exit_code_for(termination: &Termination) -> u8 {
             | CliError::Jira(_)
             | CliError::PathUnusable(_)
             | CliError::UnimplementedForm(_)
-            | CliError::TranscriptSwitch(_),
+            | CliError::TranscriptSwitch(_)
+            | CliError::WorkflowDocument(_)
+            | CliError::WorkflowUnrunnable(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -600,7 +706,7 @@ async fn resolve_forge(
                     .ok_or_else(|| missing("github.workflow"))?,
             ),
         ),
-        Selection::Propose | Selection::Mitigate => {
+        Selection::Propose | Selection::Mitigate | Selection::Toil => {
             let workspace = config
                 .workspace
                 .as_ref()
@@ -662,9 +768,13 @@ fn build_capability<'a>(
     config_path: &Path,
     cancel: &CancellationToken,
     reference: &InvocationRef,
-    forge: Option<&'a Forge>,
-    transcripts: Option<&Transcripts>,
+    resolved: Resolved<'a>,
 ) -> Result<Box<dyn Capability + 'a>, CliError> {
+    let Resolved {
+        forge,
+        transcripts,
+        workflow: selected,
+    } = resolved;
     let missing = |missing: &'static str| Unconfigured {
         capability: selection.id(),
         missing,
@@ -963,6 +1073,127 @@ fn build_capability<'a>(
                 },
             )))
         }
+
+        Selection::Toil => {
+            let SelectedWorkflow { document, workflow } =
+                selected.ok_or_else(|| WorkflowDocumentUnusable {
+                    path: workflows_root(config_path)
+                        .join(TOIL_DOCUMENT)
+                        .display()
+                        .to_string(),
+                    reason: "this build reads the document before it resolves a \
+                             credential, and nothing read it"
+                        .to_string(),
+                })?;
+
+            let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
+            let agent = config.agent.as_ref().ok_or_else(|| missing("[agent]"))?;
+            let workspace = config
+                .workspace
+                .as_ref()
+                .ok_or_else(|| missing("[workspace]"))?;
+            let fixture = workspace
+                .fixture
+                .as_ref()
+                .ok_or_else(|| missing("workspace.fixture"))?;
+            let check = workspace
+                .check
+                .as_ref()
+                .ok_or_else(|| missing("workspace.check"))?;
+            let forge = forge.ok_or_else(|| missing("[github]"))?;
+
+            let gateway = model_client(agent)?;
+
+            let worktree = fiddle_runtime::attempt_worktree(
+                &workspace.root,
+                &config.project.name,
+                &reference.as_str(),
+            );
+            let root = worktree.parent().unwrap_or(&workspace.root);
+            let leaf = fiddle_core::AttemptId(
+                worktree
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+            );
+            let isolated = Arc::new(
+                fiddle_runtime::workspace::Workspace::create(fixture, root, &leaf, cancel.clone())
+                    .map_err(|error| PathUnusable {
+                        key: "workspace.fixture",
+                        path: fixture.display().to_string(),
+                        reason: error.to_string(),
+                    })?,
+            );
+
+            let executor = Executor::new(
+                fiddle_core::TOIL,
+                config.project.name.clone(),
+                reference.as_str(),
+                &github.policy,
+                &forge.ctx,
+                &forge.trace,
+                github.read_retry.as_read_retry(),
+            );
+
+            let capability = WorkflowCapability::new(
+                fiddle_core::TOIL,
+                TOIL_STAGE,
+                workflow,
+                executor,
+                StepParams {
+                    repo: Some(github.repo.to_string()),
+                    head_owner: Some(github.repo.owner.clone()),
+                    branch: Some(fiddle_runtime::branch_name(
+                        &config.project.name,
+                        &reference.as_str(),
+                    )),
+                    base: Some(github.base.clone()),
+                    title: Some(format!("{}: {}", config.project.name, reference.as_str())),
+                    body: Some(format!(
+                        "Opened by fiddle for {} in project {}.\n\n\
+                         The steps this run took are the steps {} names, in the \
+                         order it names them.\n",
+                        reference.as_str(),
+                        config.project.name,
+                        document.display(),
+                    )),
+                    draft: true,
+                    ..StepParams::for_capability(fiddle_core::TOIL)
+                },
+                WorkflowPorts {
+                    model: gateway.model,
+                    host: ToolHost {
+                        workspace: isolated,
+                        cancel: cancel.clone(),
+                        check: WorkspaceCommand {
+                            program: check.program.clone(),
+                            args: check.args.clone(),
+                            timeout: workspace.command_timeout.as_duration(),
+                        },
+                        commands: declared_commands(workspace),
+                        command_timeout: workspace.command_timeout.as_duration(),
+                        receipts: Arc::new(Mutex::new(ToolReceipts::default())),
+                    },
+                    budget: AgentBudget {
+                        max_turns: agent.max_turns,
+                        max_tokens: agent.max_tokens,
+                        deadline: agent.deadline.as_duration(),
+                        max_changed_files: agent.max_changed_files,
+                        tool_timeout: agent.tool_timeout.as_duration(),
+                    },
+                    redaction: gateway.redaction,
+                    transcripts: transcripts.cloned(),
+                    prompts: workflows_root(config_path).join(PROMPTS_DIR),
+                },
+            )
+            .map_err(|refusal| WorkflowUnrunnable {
+                path: document.display().to_string(),
+                reason: refusal.to_string(),
+            })?;
+
+            Ok(Box::new(capability))
+        }
     }
 }
 
@@ -1080,6 +1311,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             let reference = reference_from(invocation_ref)?;
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
+            let document = selected_workflow(selection, &cli.config)?;
 
             let recording = transcripts(&config.report.dir, &reference)?;
 
@@ -1087,7 +1319,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             cancel_on_interrupt(&cancel);
             let (work_items, changes) = ports(&config, &cli.config, &reference)?;
             let forge = match selection {
-                Selection::Publish | Selection::Propose | Selection::Mitigate => {
+                Selection::Publish | Selection::Propose | Selection::Mitigate | Selection::Toil => {
                     Some(resolve_forge(&config, &cli.config, &cancel, selection, &reference).await?)
                 }
                 Selection::Mark | Selection::Repair => None,
@@ -1098,8 +1330,11 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 &cli.config,
                 &cancel,
                 &reference,
-                forge.as_ref(),
-                recording.as_ref(),
+                Resolved {
+                    forge: forge.as_ref(),
+                    transcripts: recording.as_ref(),
+                    workflow: document,
+                },
             )?;
             let record = fiddle_runtime::attempt(&AttemptContext {
                 project: &config.project.name,
@@ -1264,6 +1499,35 @@ mod tests {
     }
 
     #[test]
+    fn a_workflow_document_is_selectable_and_the_jira_scheme_resolves_to_toil() {
+        assert_eq!(Selection::parse("toil").unwrap(), Selection::Toil);
+        assert_eq!(
+            Selection::default_for(InvocationScheme::Jira),
+            Selection::Toil
+        );
+        assert_eq!(
+            Selection::default_for(InvocationScheme::Cve),
+            Selection::Mitigate
+        );
+    }
+
+    #[test]
+    fn a_scheme_that_names_no_capability_of_its_own_still_selects_the_deterministic_one() {
+        for scheme in [
+            InvocationScheme::Beans,
+            InvocationScheme::Scheduled,
+            InvocationScheme::Scanner,
+        ] {
+            assert_eq!(
+                Selection::default_for(scheme),
+                Selection::Mark,
+                "`{}` names no capability of its own",
+                scheme.as_str()
+            );
+        }
+    }
+
+    #[test]
     fn an_unknown_capability_is_refused_with_the_known_list() {
         let error = Selection::parse("nope").unwrap_err();
         assert!(error.known.contains("stub_mark"), "{}", error.known);
@@ -1335,8 +1599,11 @@ mod tests {
             &path,
             &CancellationToken::new(),
             &a_reference(),
-            None,
-            None,
+            Resolved {
+                forge: None,
+                transcripts: None,
+                workflow: None,
+            },
         ) else {
             panic!("nothing exports that variable, so no endpoint exists")
         };
@@ -1420,8 +1687,11 @@ mod tests {
             &path,
             &CancellationToken::new(),
             &a_reference(),
-            None,
-            None,
+            Resolved {
+                forge: None,
+                transcripts: None,
+                workflow: None,
+            },
         ) else {
             panic!("the deterministic capability needs nothing but the document")
         };
@@ -1454,8 +1724,11 @@ mod tests {
             &path,
             &CancellationToken::new(),
             &a_reference(),
-            None,
-            None,
+            Resolved {
+                forge: None,
+                transcripts: None,
+                workflow: None,
+            },
         ) else {
             panic!("no forge was supplied, so nothing can be built")
         };
@@ -1498,8 +1771,11 @@ mod tests {
             &path,
             &CancellationToken::new(),
             &a_reference(),
-            None,
-            None,
+            Resolved {
+                forge: None,
+                transcripts: None,
+                workflow: None,
+            },
         ) else {
             panic!("a publication needs a forge to publish to")
         };
@@ -1658,8 +1934,11 @@ mod tests {
             &path,
             &CancellationToken::new(),
             &a_reference(),
-            None,
-            None,
+            Resolved {
+                forge: None,
+                transcripts: None,
+                workflow: None,
+            },
         ) else {
             panic!("a repair needs a model and somewhere to work")
         };

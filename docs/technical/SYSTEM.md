@@ -43,7 +43,7 @@ Paths are relative to the repository root. A skill path omits `/SKILL.md`.
 | direction | `fiddle-runtime/src/{github/comments.rs,capability}` | reads the conversation, the reviews and the diff-line comments of both pull requests | a review asking for changes is work to answer and a comment can waive a check (ADR 068); only `OWNER`, `MEMBER` or `COLLABORATOR` carries either (ADR 067); the words carry it and a bare approval waives nothing (ADR 069); the sentence must exist in the conversation or it is ignored, and the author and the reviewer cannot be one person (ADR 070) |
 | release | `.github/workflows/release.yml` | builds the `linux-amd64` binary on a `v*` tag | the SHA256 file ships beside the binary |
 
-Five capabilities are registered: `stub_mark`, `fixture_repair`, `publish_change`, `propose_change` and `cve_mitigate`. Each names its own progress stage, so a bundle is labelled in the vocabulary of whatever ran. `crates/fiddle-acceptance/tests/capability_selection.rs` reads the list `--capability` validates against out of the binary's own diagnostic, and requires this line to name every id and to state their number.
+Six capabilities are registered: `stub_mark`, `fixture_repair`, `publish_change`, `propose_change`, `cve_mitigate` and `toil`. Each names its own progress stage, so a bundle is labelled in the vocabulary of whatever ran. `crates/fiddle-acceptance/tests/capability_selection.rs` reads the list `--capability` validates against out of the binary's own diagnostic, and requires this line to name every id and to state their number.
 
 `inspect` and `run` share one selection flag and one default, so the read-only
 command cannot name a capability the executing one would refuse. `inspect` takes the

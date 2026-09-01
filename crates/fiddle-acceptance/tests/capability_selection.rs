@@ -756,3 +756,561 @@ fn an_absent_forge_credential_names_the_forge_and_not_the_model() {
         "the forge credential must not be described as the model's: {stderr}"
     );
 }
+
+const TOIL_DOCUMENT: &str = "workflows/toil.toml";
+
+const ONE_CHECK: &str = "version = 1\n\
+                         name = \"toil\"\n\
+                         stage = \"toil\"\n\
+                         \n\
+                         [[steps]]\n\
+                         kind = \"check\"\n\
+                         program = \"true\"\n\
+                         args = []\n\
+                         timeout_secs = 30\n";
+
+fn toiling_tables(scenario: &Scenario, base_url: &str) -> String {
+    let fixture = scenario.write_fixture_repo();
+    format!(
+        "[agent]\n\
+         model = \"a-model\"\n\
+         base_url = \"{base_url}\"\n\
+         api_key = {{ env = \"{CREDENTIAL}\" }}\n\
+         max_turns = 1\n\
+         max_tokens = 64\n\
+         deadline = \"30s\"\n\
+         tool_timeout = \"30s\"\n\
+         \n\
+         [github]\n\
+         repo = \"acme/icecube\"\n\
+         base = \"main\"\n\
+         token = {{ env = \"{FORGE_TOKEN}\" }}\n\
+         config_dir = {config_dir}\n\
+         timeout = \"30s\"\n\
+         \n\
+         [workspace]\n\
+         root = {root}\n\
+         fixture = {fixture}\n\
+         check = {{ program = \"true\" }}\n\
+         command_timeout = \"30s\"\n",
+        config_dir = support::toml_string(&scenario.dir().join("gh-config")),
+        root = support::toml_string(&scenario.dir().join("workspaces")),
+        fixture = support::toml_string(&fixture),
+    )
+}
+
+fn toiling() -> Scenario {
+    toiling_against(UNREACHABLE_GATEWAY)
+}
+
+fn toiling_against(base_url: &str) -> Scenario {
+    let scenario = Scenario::new();
+    scenario.write_work_item(WORK_ID, "open");
+    let tables = toiling_tables(&scenario, base_url);
+    scenario.append_config(&tables);
+    scenario
+}
+
+fn write_toil_prompt(scenario: &Scenario, name: &str, text: &str) {
+    let path = scenario.dir().join("workflows/prompts").join(name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+fn document_path(scenario: &Scenario) -> std::path::PathBuf {
+    scenario.dir().join(TOIL_DOCUMENT)
+}
+
+fn write_toil_document(scenario: &Scenario, text: &str) -> std::path::PathBuf {
+    let path = document_path(scenario);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+fn run_toil(scenario: &Scenario) -> std::process::Output {
+    scenario
+        .run_command(INVOCATION_REF)
+        .args(["--capability", "toil", "--json"])
+        .env(CREDENTIAL, SENTINEL)
+        .env(FORGE_TOKEN, "ghp-a-token-no-forge-would-honour")
+        .output()
+        .unwrap()
+}
+
+fn payload_of(out: &std::process::Output) -> serde_json::Value {
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not JSON ({e}): {stdout}\nstderr = {stderr}"))
+}
+
+fn squeezed(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace() && *c != '\u{2502}')
+        .collect()
+}
+
+fn refused_nothing_else_ran(scenario: &Scenario, out: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(
+        scenario.read_change_marker(WORK_ID),
+        None,
+        "no built-in capability may run in the document's place, and `stub_mark` \
+         is the one that would leave a marker: {stderr}"
+    );
+    assert!(
+        !scenario.report_dir().exists(),
+        "a refused run publishes no bundle: {stderr}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "",
+        "a refused run reports no payload: {stderr}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a document this build cannot run is invalid input; stderr = {stderr}"
+    );
+    stderr
+}
+
+#[test]
+fn an_absent_workflow_document_refuses_with_the_path_it_looked_for() {
+    let s = toiling();
+    let looked_for = document_path(&s);
+    assert!(
+        !looked_for.exists(),
+        "this scenario is about a document that is not there"
+    );
+
+    let out = run_toil(&s);
+
+    let stderr = refused_nothing_else_ran(&s, &out);
+    assert!(
+        squeezed(&stderr).contains(&squeezed(&looked_for.display().to_string())),
+        "the refusal must name the path it looked for, so an operator can write \
+         the document there: {stderr}"
+    );
+}
+
+#[test]
+fn a_workflow_document_that_is_there_reaches_the_capability_the_command_line_named() {
+    let s = toiling();
+    write_toil_document(&s, ONE_CHECK);
+
+    let out = run_toil(&s);
+    let payload = payload_of(&out);
+
+    assert_eq!(
+        payload["capability_executions"][0]["capability_id"], "toil",
+        "the run must execute the capability the flag named, and no built-in in \
+         its place: {payload}"
+    );
+    assert_eq!(
+        payload["capability_executions"][0]["status"], "completed",
+        "the document names one check that exits zero, so the workflow ran to its \
+         end: {payload}"
+    );
+    assert_eq!(
+        payload["progress"][0]["stage"], "toil",
+        "a toil run files its progress under its own stage: {payload}"
+    );
+}
+
+#[test]
+fn inspect_and_run_agree_that_toil_is_the_capability_a_toil_run_executes() {
+    let s = toiling();
+    write_toil_document(&s, ONE_CHECK);
+
+    let foreseen = s.inspect_json_with(&["--capability", "toil"], INVOCATION_REF);
+    let ran = payload_of(&run_toil(&s));
+
+    assert_eq!(
+        foreseen["next_action"]["execute"]["capability_id"], "toil",
+        "inspect must foresee the capability it was asked about: {foreseen}"
+    );
+    assert_eq!(
+        foreseen["next_action"]["execute"]["capability_id"],
+        ran["capability_executions"][0]["capability_id"],
+        "the capability inspect foresaw and the capability run executed must be \
+         the same one: inspect said {foreseen}, run did {ran}"
+    );
+}
+
+#[test]
+fn the_step_the_document_names_is_the_step_that_runs() {
+    let passing = toiling();
+    write_toil_document(&passing, ONE_CHECK);
+    let completed = payload_of(&run_toil(&passing));
+
+    let failing = toiling();
+    write_toil_document(&failing, &ONE_CHECK.replace("\"true\"", "\"false\""));
+    let out = run_toil(&failing);
+    let failed = payload_of(&out);
+
+    assert_eq!(
+        completed["capability_executions"][0]["status"], "completed",
+        "{completed}"
+    );
+    assert_eq!(
+        failed["capability_executions"][0]["status"], "failed",
+        "the only difference between the two documents is the program the check \
+         step names, so a build that never reads the step reports the same status \
+         twice: {failed}"
+    );
+    assert_eq!(
+        failed["capability_executions"][0]["capability_id"], "toil",
+        "the failing run is the workflow failing, not something else running: {failed}"
+    );
+}
+
+#[test]
+fn a_workflow_document_this_build_does_not_read_refuses_with_its_version() {
+    let s = toiling();
+    let path = write_toil_document(&s, &ONE_CHECK.replace("version = 1", "version = 2"));
+
+    let out = run_toil(&s);
+
+    let stderr = refused_nothing_else_ran(&s, &out);
+    let said = squeezed(&stderr);
+    assert!(
+        said.contains(&squeezed(&path.display().to_string())),
+        "the refusal must name the document: {stderr}"
+    );
+    assert!(
+        said.contains("readsworkflowversion1"),
+        "the refusal must say which version this build reads, so `2` alone \
+         cannot satisfy it: {stderr}"
+    );
+    assert!(
+        said.contains("thedocumentsays2"),
+        "and which version the document declares: {stderr}"
+    );
+}
+
+#[test]
+fn a_workflow_document_with_no_step_refuses_rather_than_doing_no_work() {
+    let s = toiling();
+    let path = write_toil_document(
+        &s,
+        "version = 1\nname = \"toil\"\nstage = \"toil\"\nsteps = []\n",
+    );
+
+    let out = run_toil(&s);
+
+    let stderr = refused_nothing_else_ran(&s, &out);
+    assert!(
+        squeezed(&stderr).contains(&squeezed(&path.display().to_string())),
+        "the refusal must name the document: {stderr}"
+    );
+}
+
+#[test]
+fn a_document_naming_another_stage_refuses_rather_than_filing_progress_under_a_third() {
+    let s = toiling();
+    let path = write_toil_document(
+        &s,
+        &ONE_CHECK.replace("stage = \"toil\"", "stage = \"triage\""),
+    );
+
+    let out = run_toil(&s);
+
+    let stderr = refused_nothing_else_ran(&s, &out);
+    let said = squeezed(&stderr);
+    assert!(
+        said.contains(&squeezed(&path.display().to_string())),
+        "the refusal must name the document: {stderr}"
+    );
+    assert!(
+        said.contains("filestherununderthestage`toil`"),
+        "the refusal must name the stage this build files a toil run under; \
+         `toil` on its own is already in the document path: {stderr}"
+    );
+    assert!(
+        said.contains("thedocumentnamesthestage`triage`"),
+        "and the stage the document declares, said of the document: {stderr}"
+    );
+}
+
+#[test]
+fn a_step_whose_prompt_is_absent_refuses_with_the_prompt_path() {
+    let s = toiling();
+    let document = write_toil_document(
+        &s,
+        "version = 1\n\
+         name = \"toil\"\n\
+         stage = \"toil\"\n\
+         \n\
+         [[steps]]\n\
+         kind = \"agent\"\n\
+         prompt = \"nothing_wrote_this.md\"\n\
+         max_turns = 1\n",
+    );
+    let prompt = s.dir().join("workflows/prompts/nothing_wrote_this.md");
+
+    let out = run_toil(&s);
+
+    let stderr = refused_nothing_else_ran(&s, &out);
+    assert!(
+        squeezed(&stderr).contains(&squeezed(&prompt.display().to_string())),
+        "the refusal must name the prompt it could not read: {stderr}"
+    );
+    assert!(
+        squeezed(&stderr).contains(&squeezed(&document.display().to_string())),
+        "and the document that named it: {stderr}"
+    );
+}
+
+#[test]
+fn a_jira_invocation_defaults_to_toil_and_a_cve_invocation_still_defaults_to_mitigate() {
+    let jira = support::StubJira::holding_the_issue();
+    let s = toiling();
+    s.append_config(&format!(
+        "\n[jira]\n\
+         site = \"https://icecube.atlassian.net\"\n\
+         project = \"IDENT\"\n\
+         user = {{ env = \"JIRA_USER_EMAIL\" }}\n\
+         token = {{ env = \"JIRA_API_TOKEN\" }}\n\
+         base_url = \"{}\"\n\
+         timeout = \"30s\"\n",
+        jira.base_url()
+    ));
+
+    let out = s
+        .command()
+        .args([
+            "inspect",
+            &format!("jira:{}", support::JIRA_ISSUE_KEY),
+            "--json",
+            "--config",
+        ])
+        .arg(s.config_path())
+        .env("JIRA_USER_EMAIL", "nobody@example.com")
+        .env("JIRA_API_TOKEN", "a-token-no-site-would-honour")
+        .output()
+        .unwrap();
+    let inspected = payload_of(&out);
+
+    assert_eq!(
+        inspected["next_action"]["execute"]["capability_id"], "toil",
+        "an unqualified jira invocation plans the toil workflow: {inspected}"
+    );
+
+    let sweeping = mitigating();
+    let swept = sweeping.inspect_json_with(&[], "cve");
+    assert_eq!(
+        swept["next_action"]["execute"]["capability_id"], "cve_mitigate",
+        "a cve invocation still plans the sweep: {swept}"
+    );
+}
+
+const ONE_EVALUATION: &str = "version = 1\n\
+                              name = \"toil\"\n\
+                              stage = \"toil\"\n\
+                              \n\
+                              [[steps]]\n\
+                              kind = \"evaluate\"\n\
+                              prompt = \"change_evaluate.md\"\n\
+                              max_turns = 2\n";
+
+const A_FINDING: &str = "the diff changes a public signature the ticket did not name";
+
+fn verdict_of(finding: Option<&str>) -> serde_json::Value {
+    match finding {
+        Some(finding) => serde_json::json!({ "verdict": "rejected", "findings": [finding] }),
+        None => serde_json::json!({ "verdict": "accepted" }),
+    }
+}
+
+fn a_run_the_judge(finding: Option<&str>) -> (support::StubGateway, serde_json::Value, i32) {
+    let gateway = support::StubGateway::serving(vec![support::accepted(support::reports(
+        verdict_of(finding),
+    ))]);
+    let s = toiling_against(&gateway.base_url());
+    write_toil_document(&s, ONE_EVALUATION);
+    write_toil_prompt(
+        &s,
+        "change_evaluate.md",
+        "Judge the change this run found, and reply with the structured verdict.\n",
+    );
+
+    let out = run_toil(&s);
+    let code = out.status.code().expect("the binary exited");
+    (gateway, payload_of(&out), code)
+}
+
+#[test]
+fn a_workflow_the_judge_rejects_exits_twelve_and_a_workflow_it_accepts_does_not() {
+    let (rejecting, rejected, rejected_code) = a_run_the_judge(Some(A_FINDING));
+    assert_eq!(
+        rejecting.served(),
+        1,
+        "the verdict below has to have come off the wire: {rejected}"
+    );
+    assert_eq!(
+        rejected["capability_executions"][0]["capability_id"], "toil",
+        "{rejected}"
+    );
+    assert_eq!(
+        rejected["capability_executions"][0]["status"], "rejected",
+        "a judge that rejects stops the run as a rejection: {rejected}"
+    );
+    assert_eq!(
+        rejected["outcome"]["rejected"]["findings"][0], A_FINDING,
+        "the finding the judge named reaches the bundle: {rejected}"
+    );
+    assert_eq!(
+        rejected_code, 12,
+        "a rejected run exits 12, which is neither a failure at 20 nor a retry \
+         at 11: {rejected}"
+    );
+
+    let (accepting, accepted, accepted_code) = a_run_the_judge(None);
+    assert_eq!(accepting.served(), 1, "{accepted}");
+    assert_eq!(
+        accepted["capability_executions"][0]["status"], "completed",
+        "the same document and the same steps, and only the verdict differs, so a \
+         build that exits 12 whatever the judge said reds here: {accepted}"
+    );
+    assert_eq!(
+        accepted_code, 11,
+        "an accepted evaluation completes the capability and leaves the work item \
+         not started, which this build reports as retryable at 11; `!= 12` would \
+         pass on any of 0, 11 or 20: {accepted}"
+    );
+    assert_eq!(
+        accepted["outcome"]["retryable"]["reason"],
+        "toil executed and reported success, and the work is still not started \
+         afterwards",
+        "and 11 is that reason and no other: {accepted}"
+    );
+}
+
+const JIRA_USER: &str = "JIRA_USER_EMAIL";
+
+const JIRA_TOKEN: &str = "JIRA_API_TOKEN";
+
+fn toiling_over_jira() -> (support::StubJira, Scenario, String) {
+    let jira = support::StubJira::holding_the_issue();
+    let s = toiling();
+    s.append_config(&format!(
+        "\n[jira]\n\
+         site = \"https://icecube.atlassian.net\"\n\
+         project = \"IDENT\"\n\
+         user = {{ env = \"{JIRA_USER}\" }}\n\
+         token = {{ env = \"{JIRA_TOKEN}\" }}\n\
+         base_url = \"{}\"\n\
+         timeout = \"30s\"\n",
+        jira.base_url()
+    ));
+    let reference = format!("jira:{}", support::JIRA_ISSUE_KEY);
+    (jira, s, reference)
+}
+
+fn toil_run_missing(scenario: &Scenario, reference: &str, absent: &[&str]) -> std::process::Output {
+    let mut command = scenario.run_command(reference);
+    command
+        .args(["--capability", "toil", "--json"])
+        .env(CREDENTIAL, SENTINEL)
+        .env(FORGE_TOKEN, "ghp-a-token-no-forge-would-honour")
+        .env(JIRA_USER, "nobody@example.com")
+        .env(JIRA_TOKEN, "a-token-no-site-would-honour");
+    for name in absent {
+        command.env_remove(name);
+    }
+    command.output().unwrap()
+}
+
+#[test]
+fn an_absent_document_is_named_before_any_credential_is_asked_for() {
+    for absent in [
+        vec![FORGE_TOKEN],
+        vec![CREDENTIAL],
+        vec![FORGE_TOKEN, CREDENTIAL],
+    ] {
+        let s = toiling();
+        let looked_for = document_path(&s);
+        assert!(
+            !looked_for.exists(),
+            "this scenario is about a document that is not there"
+        );
+
+        let out = toil_run_missing(&s, INVOCATION_REF, &absent);
+
+        let stderr = refused_nothing_else_ran(&s, &out);
+        assert!(
+            squeezed(&stderr).contains(&squeezed(&looked_for.display().to_string())),
+            "with {absent:?} unset the refusal must still name the document it \
+             looked for, not the credential: {stderr}"
+        );
+        assert!(
+            stderr.contains("fiddle::workflow::document_unusable"),
+            "the document is what is missing, so the document is what the \
+             diagnostic is about, with {absent:?} unset: {stderr}"
+        );
+        assert!(
+            !stderr.contains("fiddle::config::credential_absent"),
+            "a credential this build never got as far as needing must not be \
+             reported in the document's place, with {absent:?} unset: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn an_absent_document_is_named_before_the_tracker_credential_is_asked_for() {
+    let (_jira, s, reference) = toiling_over_jira();
+    let looked_for = document_path(&s);
+    assert!(
+        !looked_for.exists(),
+        "this scenario is about a document that is not there"
+    );
+
+    let out = toil_run_missing(&s, &reference, &[JIRA_USER, JIRA_TOKEN, FORGE_TOKEN]);
+
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(
+        s.read_change_marker(support::JIRA_ISSUE_KEY),
+        None,
+        "no built-in capability may run in the document's place: {stderr}"
+    );
+    assert!(
+        !s.report_dir().exists(),
+        "a refused run publishes no bundle: {stderr}"
+    );
+    assert_eq!(out.status.code(), Some(2), "stderr = {stderr}");
+    assert!(
+        squeezed(&stderr).contains(&squeezed(&looked_for.display().to_string())),
+        "an unqualified jira run selects toil, and with no tracker credential the \
+         refusal must still name the document: {stderr}"
+    );
+    assert!(
+        !stderr.contains("fiddle::config::credential_absent"),
+        "the tracker credential is not what is missing: {stderr}"
+    );
+}
+
+#[test]
+fn a_document_that_is_there_still_lets_an_absent_credential_be_named() {
+    let forge_missing = toiling();
+    write_toil_document(&forge_missing, ONE_CHECK);
+    let out = toil_run_missing(&forge_missing, INVOCATION_REF, &[FORGE_TOKEN]);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(2), "stderr = {stderr}");
+    assert!(
+        stderr.contains("fiddle::config::credential_absent") && stderr.contains(FORGE_TOKEN),
+        "reading the document first must not swallow the forge credential a \
+         readable document still needs: {stderr}"
+    );
+
+    let (_jira, tracker_missing, reference) = toiling_over_jira();
+    write_toil_document(&tracker_missing, ONE_CHECK);
+    let out = toil_run_missing(&tracker_missing, &reference, &[JIRA_TOKEN]);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(2), "stderr = {stderr}");
+    assert!(
+        stderr.contains("fiddle::config::credential_absent") && stderr.contains(JIRA_TOKEN),
+        "and it must not swallow the tracker credential either: {stderr}"
+    );
+}
