@@ -360,10 +360,10 @@ pub enum OutputRefusal {
     },
 
     #[error(
-        "the commit step answered `{answered}`, which the workspace does not spell as a \
-         commit, and a later step is given no guess in its place"
+        "the commit step answered `{answered}`, which is not forty hexadecimal characters, \
+         and a later step is given no guess in its place"
     )]
-    Unnameable { answered: String },
+    Misspelt { answered: String },
 
     #[error(
         "the commit step committed {answered} and this run already earned {held}, so no \
@@ -388,7 +388,7 @@ impl StepOutputs {
     pub fn record_head_sha(&mut self, answered: &str) -> Result<(), OutputRefusal> {
         let answered = answered.trim();
         if !crate::git::publish::is_object_name(answered) {
-            return Err(OutputRefusal::Unnameable {
+            return Err(OutputRefusal::Misspelt {
                 answered: answered.to_string(),
             });
         }

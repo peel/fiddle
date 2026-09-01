@@ -1,7 +1,7 @@
 # 082 — A step earns the commit the branch step publishes
 
 Status: accepted
-Cites: Step, Ready, StepOutputs, OutputRefusal, StepParams, WorkflowCapability, EnsureBranchPublished, FromStepParams, ProposeChange, WorkflowRefusal, EnsurePullRequestReady, workflows/toil.toml, crates/fiddle-runtime/tests/toil_document.rs, the_branch_step_publishes_the_commit_the_commit_step_made_from_the_agents_work, a_run_whose_agent_wrote_nothing_refuses_at_the_branch_step_and_publishes_no_sha, a_commit_step_is_spelt_by_its_kind_alone_and_carries_no_other_field, record_head_sha, earned_head_sha, commit_changed, crates/fiddle-runtime/src/capability/commit.rs
+Cites: Step, Ready, StepOutputs, OutputRefusal, StepParams, WorkflowCapability, EnsureBranchPublished, FromStepParams, ProposeChange, WorkflowRefusal, EnsurePullRequestReady, workflows/toil.toml, crates/fiddle-runtime/tests/toil_document.rs, the_branch_step_publishes_the_commit_the_commit_step_made_from_the_agents_work, a_run_whose_agent_wrote_nothing_refuses_at_the_branch_step_and_publishes_no_sha, a_commit_step_is_spelt_by_its_kind_alone_and_carries_no_other_field, a_sha_no_object_in_the_workspace_matches_records_because_the_check_is_spelling_alone, record_head_sha, earned_head_sha, commit_changed, crates/fiddle-runtime/src/capability/commit.rs
 Retired: no_step_earns_the_commit_the_branch_step_publishes
 
 ## Context
@@ -22,9 +22,13 @@ Retired: no_step_earns_the_commit_the_branch_step_publishes
 
 The commit step makes no empty commit. The run continues to the branch step. The branch step then refuses when it is built, and the reason names `ensure_branch_published`. The refusal lands where the consequence is, and not one step earlier.
 
-**The recorded commit must be an object name, and one run earns one commit.**
+**The recorded commit is checked for spelling, and one run earns one commit.**
 
-`OutputRefusal::Unnameable` refuses an answer that is not 40 hexadecimal characters. `OutputRefusal::Recommitted` refuses a second, different commit in the same run. A later step is given no guess in place of either.
+`OutputRefusal::Misspelt` refuses an answer that is not 40 hexadecimal characters. That is the whole check. It asks no repository whether an object of that name exists, and `a_sha_no_object_in_the_workspace_matches_records_because_the_check_is_spelling_alone` measures the gap: a well-spelt sha that `git cat-file -e` reports absent from the workspace records without complaint.
+
+What makes an earned sha a commit is therefore where it comes from, not this check. Outside the tests, `record_head_sha` has one caller: the commit step, which reads `git rev-parse HEAD` after its own `git commit`. `record_head_sha` is public, so a later caller could record a well-spelt name of nothing and this check would not notice. A build that wants the stronger property must resolve the name against a repository and say so here.
+
+`OutputRefusal::Recommitted` refuses a second, different commit in the same run. A later step is given no guess in place of either.
 
 **We rejected: the agent step earns the commit.**
 

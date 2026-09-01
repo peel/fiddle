@@ -126,6 +126,20 @@ pub fn git_says(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
+pub fn git_refuses(dir: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|source| panic!("could not run git {args:?}: {source}"));
+    assert!(
+        !output.status.success(),
+        "git {args:?} succeeded in {dir:?}: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
 pub fn changed_files(dir: &Path) -> Vec<String> {
     let output = std::process::Command::new("git")
         .args(["status", "--porcelain"])

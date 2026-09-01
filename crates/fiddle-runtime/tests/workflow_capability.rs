@@ -1864,18 +1864,18 @@ async fn a_rejection_with_no_step_after_it_is_still_a_rejection() {
     );
 }
 
-const A_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+const A_FORTY_HEX_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
-const ANOTHER_COMMIT: &str = "89abcdef0123456789abcdef0123456789abcdef";
+const ANOTHER_FORTY_HEX_SHA: &str = "89abcdef0123456789abcdef0123456789abcdef";
 
 fn commit_step() -> Step {
     Step::Commit {}
 }
 
-fn outputs_holding_the_commit(sha: &str) -> StepOutputs {
+fn outputs_holding_the_sha(sha: &str) -> StepOutputs {
     let mut held = StepOutputs::default();
     held.record_head_sha(sha)
-        .expect("a commit object name records");
+        .expect("forty hexadecimal characters record");
     held
 }
 
@@ -1984,15 +1984,15 @@ async fn a_commit_step_that_finds_a_clean_workspace_earns_nothing_and_the_branch
 }
 
 #[test]
-fn an_answer_that_is_not_a_commit_object_name_is_refused_and_no_commit_is_put_in_its_place() {
+fn an_answer_that_is_not_forty_hexadecimal_characters_is_refused_and_no_sha_is_put_in_its_place() {
     let mut outputs = StepOutputs::default();
 
     let refusal = outputs
         .record_head_sha("HEAD")
-        .expect_err("`HEAD` is a name for a commit and not the name of one");
+        .expect_err("`HEAD` is a name for a commit and not forty hexadecimal characters");
     assert_eq!(
         refusal,
-        OutputRefusal::Unnameable {
+        OutputRefusal::Misspelt {
             answered: "HEAD".to_string()
         }
     );
@@ -2012,11 +2012,11 @@ fn an_answer_that_is_not_a_commit_object_name_is_refused_and_no_commit_is_put_in
 
     let mut corrected = StepOutputs::default();
     corrected
-        .record_head_sha(&format!("{A_COMMIT}\n"))
-        .expect("an answer that differs only in being an object name records");
+        .record_head_sha(&format!("{A_FORTY_HEX_SHA}\n"))
+        .expect("an answer that differs only in being forty hexadecimal characters records");
     assert_eq!(
         corrected.head_sha(),
-        Some(A_COMMIT),
+        Some(A_FORTY_HEX_SHA),
         "so the refusal above answers the text and not the recording around it"
     );
 
@@ -2024,8 +2024,8 @@ fn an_answer_that_is_not_a_commit_object_name_is_refused_and_no_commit_is_put_in
     assert_eq!(
         short
             .record_head_sha(HEAD_SHA)
-            .expect_err("an abbreviation is not the name of a commit object"),
-        OutputRefusal::Unnameable {
+            .expect_err("an abbreviation is shorter than forty characters"),
+        OutputRefusal::Misspelt {
             answered: HEAD_SHA.to_string()
         },
         "the sha the step parameters carry is not one this build would record"
@@ -2033,26 +2033,64 @@ fn an_answer_that_is_not_a_commit_object_name_is_refused_and_no_commit_is_put_in
 }
 
 #[test]
-fn one_run_that_commits_two_different_shas_refuses_and_committing_one_twice_does_not() {
-    let mut outputs = outputs_holding_the_commit(A_COMMIT);
+fn a_sha_no_object_in_the_workspace_matches_records_because_the_check_is_spelling_alone() {
+    let world = world();
+    let head = world.workspace_head();
+    assert_eq!(
+        fixture::git_says(world.workspace.root(), &["cat-file", "-t", &head]),
+        "commit",
+        "`git cat-file -t` cannot report an object absent here if it reports nothing present"
+    );
+    assert!(
+        !fixture::git_refuses(world.workspace.root(), &["cat-file", "-t", A_FORTY_HEX_SHA])
+            .is_empty(),
+        "the workspace holds an object named {A_FORTY_HEX_SHA}, so the case below is not a \
+         counterexample"
+    );
+
+    let mut outputs = StepOutputs::default();
     outputs
-        .record_head_sha(A_COMMIT)
+        .record_head_sha(A_FORTY_HEX_SHA)
+        .expect("a well-spelt sha no repository holds records, because nothing here looks");
+    assert_eq!(
+        outputs.head_sha(),
+        Some(A_FORTY_HEX_SHA),
+        "`record_head_sha` checks how the answer is spelt and not whether an object of that \
+         name exists; what makes the earned sha a commit is the commit step reading `git \
+         rev-parse HEAD` after its own `git commit`"
+    );
+
+    let mut real = StepOutputs::default();
+    real.record_head_sha(&head)
+        .expect("a sha the workspace does hold records too");
+    assert_eq!(
+        real.head_sha(),
+        Some(head.as_str()),
+        "so the case above is not passing for want of a sha this build would accept at all"
+    );
+}
+
+#[test]
+fn one_run_that_commits_two_different_shas_refuses_and_committing_one_twice_does_not() {
+    let mut outputs = outputs_holding_the_sha(A_FORTY_HEX_SHA);
+    outputs
+        .record_head_sha(A_FORTY_HEX_SHA)
         .expect("the same commit twice is one commit");
-    assert_eq!(outputs.head_sha(), Some(A_COMMIT));
+    assert_eq!(outputs.head_sha(), Some(A_FORTY_HEX_SHA));
 
     let refusal = outputs
-        .record_head_sha(ANOTHER_COMMIT)
+        .record_head_sha(ANOTHER_FORTY_HEX_SHA)
         .expect_err("two different commits in one run leave a later step no answer");
     assert_eq!(
         refusal,
         OutputRefusal::Recommitted {
-            held: A_COMMIT.to_string(),
-            answered: ANOTHER_COMMIT.to_string()
+            held: A_FORTY_HEX_SHA.to_string(),
+            answered: ANOTHER_FORTY_HEX_SHA.to_string()
         }
     );
     assert_eq!(
         outputs.head_sha(),
-        Some(A_COMMIT),
+        Some(A_FORTY_HEX_SHA),
         "and the commit the run earned first is unchanged"
     );
 }
@@ -2068,7 +2106,7 @@ async fn a_run_starts_holding_no_commit_when_the_step_parameters_carry_one() {
         workflow(vec![effect_step(ENSURE_BRANCH_PUBLISHED)]),
         executor(&world, &ctx, &deployment),
         StepParams {
-            earned: outputs_holding_the_commit(A_COMMIT),
+            earned: outputs_holding_the_sha(A_FORTY_HEX_SHA),
             ..params()
         },
         world.ports(silent()),

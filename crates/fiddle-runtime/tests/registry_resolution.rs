@@ -29,7 +29,7 @@ const BRANCH: &str = "fiddle/abc";
 
 const HEAD_SHA: &str = "deadbeef";
 
-const A_COMMIT_A_STEP_MADE: &str = "0123456789abcdef0123456789abcdef01234567";
+const A_FORTY_HEX_SHA_A_STEP_EARNED: &str = "0123456789abcdef0123456789abcdef01234567";
 
 const TITLE: &str = "fiddle: repair the fixture";
 
@@ -152,8 +152,8 @@ fn decision_request() -> HumanDecisionRequest {
 fn earned_a_commit() -> StepOutputs {
     let mut earned = StepOutputs::default();
     earned
-        .record_head_sha(A_COMMIT_A_STEP_MADE)
-        .expect("a commit object name records");
+        .record_head_sha(A_FORTY_HEX_SHA_A_STEP_EARNED)
+        .expect("forty hexadecimal characters record");
     earned
 }
 
