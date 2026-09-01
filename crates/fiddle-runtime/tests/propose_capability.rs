@@ -2407,7 +2407,12 @@ const JIRA_DECIDER: &str = "70121:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
 const JIRA_STRANGER: &str = "70121:ffffffff-0000-1111-2222-333333333333";
 
-async fn a_jira_run_that_asked_on_the_issue(world: &World) -> String {
+struct AskedOnTheIssue {
+    head_sha: String,
+    asked_at: String,
+}
+
+async fn a_jira_run_that_asked_on_the_issue(world: &World) -> AskedOnTheIssue {
     let held = world.revision_the_site_holds().await;
     let observed = observed_issue(Some(&held));
     let (outcome, _) = steered_by(world, JIRA_INVOCATION, Some(&observed)).await;
@@ -2422,18 +2427,23 @@ async fn a_jira_run_that_asked_on_the_issue(world: &World) -> String {
     assert_eq!(world.jira_comments_on(ISSUE).await, 1);
     let head_sha = world.published_sha_for(JIRA_INVOCATION);
     world.pull_request_at(PR, &head_sha, true);
-    head_sha
+    AskedOnTheIssue {
+        head_sha,
+        asked_at: held,
+    }
 }
 
 struct AnsweredOnTheIssue {
     world: World,
     outcome: Result<Executed, CapabilityError>,
     head_sha: String,
+    asked_at: String,
+    carried: String,
 }
 
 async fn a_second_invocation_after(reply_from: &str, deciders: Vec<Decider>) -> AnsweredOnTheIssue {
     let world = World::reachable_jira_site().await;
-    let head_sha = a_jira_run_that_asked_on_the_issue(&world).await;
+    let asked = a_jira_run_that_asked_on_the_issue(&world).await;
     world.jira().comment_from(ISSUE, reply_from, YES).await;
     world.script_graphql(0, 200, readied());
 
@@ -2450,7 +2460,9 @@ async fn a_second_invocation_after(reply_from: &str, deciders: Vec<Decider>) -> 
     AnsweredOnTheIssue {
         world,
         outcome,
-        head_sha,
+        head_sha: asked.head_sha,
+        asked_at: asked.asked_at,
+        carried: moved,
     }
 }
 
@@ -2478,11 +2490,18 @@ async fn a_jira_run_reads_the_reply_on_its_own_question_and_proceeds() {
         1,
         "and it was performed once, against the pull request the question named"
     );
+    assert_ne!(
+        answered.carried, answered.asked_at,
+        "the second invocation must carry a later revision than the one the question was \
+         asked under, or one comment proves nothing about a moved issue"
+    );
     assert_eq!(
         world.jira_comments_on(ISSUE).await,
         1,
-        "the question was asked once across two invocations, although the second carried the \
-         revision the first write left behind"
+        "the question was asked once across two invocations, although the second carried \
+         revision {} where the first asked under {}",
+        answered.carried,
+        answered.asked_at
     );
     assert_eq!(
         world.posted_comments().len(),

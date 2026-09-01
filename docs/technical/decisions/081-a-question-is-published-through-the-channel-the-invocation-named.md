@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Cites: DecisionChannel, DecisionChannel::named_by, DecisionChannel::asked_by, authoritative, publish, PublishedAsk, PublishError, ChannelError, CapabilityError::Unasked, ProposeChange, HumanInteractionPort, JiraConversation, GitHubConversation, AskOnIssue, AskedOnIssue, PublishDecisionRequest, asked_already, Decider, resolve, DecisionResolution, WorkItemState, InvocationScheme, JIRA_COMMENT_ADDED, PUBLISH_DECISION_REQUEST, a_jira_run_asks_on_the_issue_and_leaves_the_pull_request_unwritten, a_pull_request_run_asks_on_the_pull_request_and_leaves_the_issue_unwritten, a_jira_run_that_observed_no_revision_asks_nobody_and_names_the_rule, a_jira_run_whose_revision_is_not_a_time_asks_nobody_and_names_the_issue, the_two_refusals_the_channel_rule_gives_are_not_one_refusal, no_invocation_names_two_channels, the_effect_name_the_evidence_line_spells_follows_the_channel, a_pull_request_run_asks_on_the_pull_request_although_it_observed_an_issue, a_second_run_carrying_the_snapshot_it_started_with_recognises_its_own_question, a_run_that_re_reads_the_issue_after_the_write_asks_no_second_time, the_port_and_the_channel_router_name_one_comment_and_write_it_once, the_port_reads_back_every_reply_beside_the_account_that_wrote_it, the_question_the_issue_is_asked_is_identified_by_the_request_and_not_by_the_revision, a_jira_run_reads_the_reply_on_its_own_question_and_proceeds, a_jira_reply_from_an_account_this_deployment_did_not_nominate_decides_nothing, a_jira_account_id_equal_to_an_allowed_github_id_is_not_that_decider, a_jira_account_id_spelled_like_an_allowed_github_id_is_not_that_decider, a_github_author_id_spelled_like_an_allowed_jira_account_is_not_that_decider, every_registered_descriptor_builds_the_operation_its_name_means_or_refuses_in_its_name, WorkflowCapability, StepParams, DecisionWalk, orchestration::observe, crates/fiddle-runtime/src/human/mod.rs, crates/fiddle-runtime/src/capability/propose.rs, crates/fiddle-runtime/tests/propose_capability.rs, crates/fiddle-runtime/tests/jira_conversation.rs, crates/fiddle-runtime/tests/registry_resolution.rs, crates/fiddle-runtime/tests/workflow_capability.rs
+Cites: DecisionChannel, DecisionChannel::named_by, DecisionChannel::asked_by, authoritative, publish, PublishedAsk, PublishError, ChannelError, CapabilityError::Unasked, ProposeChange, HumanInteractionPort, JiraConversation, GitHubConversation, AskOnIssue, AskedOnIssue, PublishDecisionRequest, asked_already, Decider, resolve, DecisionResolution, WorkItemState, InvocationScheme, JIRA_COMMENT_ADDED, PUBLISH_DECISION_REQUEST, a_jira_run_asks_on_the_issue_and_leaves_the_pull_request_unwritten, a_pull_request_run_asks_on_the_pull_request_and_leaves_the_issue_unwritten, a_jira_run_that_observed_no_revision_asks_nobody_and_names_the_rule, a_jira_run_whose_revision_is_not_a_time_asks_nobody_and_names_the_issue, the_two_refusals_the_channel_rule_gives_are_not_one_refusal, no_invocation_names_two_channels, the_effect_name_the_evidence_line_spells_follows_the_channel, a_pull_request_run_asks_on_the_pull_request_although_it_observed_an_issue, a_second_run_carrying_the_snapshot_it_started_with_recognises_its_own_question, a_run_that_re_reads_the_issue_after_the_write_asks_no_second_time, the_port_and_the_channel_router_name_one_comment_and_write_it_once, the_port_reads_back_every_reply_beside_the_account_that_wrote_it, the_question_the_issue_is_asked_is_identified_by_the_request_and_not_by_the_revision, a_jira_run_reads_the_reply_on_its_own_question_and_proceeds, a_jira_reply_from_an_account_this_deployment_did_not_nominate_decides_nothing, a_jira_account_id_equal_to_an_allowed_github_id_is_not_that_decider, a_jira_account_id_spelled_like_an_allowed_github_id_is_not_that_decider, a_github_author_id_spelled_like_an_allowed_jira_account_is_not_that_decider, JiraDecision, deciders, a_jira_account_the_document_names_reaches_the_allowlist_as_a_jira_decider, one_number_written_in_both_decision_tables_resolves_to_two_deciders, a_jira_decision_table_that_names_nobody_is_refused, an_email_address_is_not_a_jira_account_id, a_mistyped_key_in_the_jira_decision_table_is_refused, config_check_reports_the_jira_accounts_that_may_decide, an_ignored_reply_is_visible_in_what_the_run_published, every_registered_descriptor_builds_the_operation_its_name_means_or_refuses_in_its_name, WorkflowCapability, StepParams, DecisionWalk, orchestration::observe, crates/fiddle-cli/src/config.rs, crates/fiddle-cli/src/render.rs, crates/fiddle-acceptance/tests/config_check.rs, crates/fiddle-runtime/src/human/mod.rs, crates/fiddle-runtime/src/capability/propose.rs, crates/fiddle-runtime/tests/propose_capability.rs, crates/fiddle-runtime/tests/jira_conversation.rs, crates/fiddle-runtime/tests/registry_resolution.rs, crates/fiddle-runtime/tests/workflow_capability.rs
 
 ## Context
 
@@ -95,6 +95,21 @@ The allowlist is widened to match. `Decider` is `GitHubAuthor(u64)` or
 author id is a number, and the two namespaces are unrelated, so one entry cannot
 stand for both. The refusal is a property of the type and not of a comparison a
 future caller can loosen.
+
+A deployment names each channel's deciders in that channel's own table:
+`[github.decision].authorized` holds numeric user ids and
+`[jira.decision].authorized` holds Jira account ids. One table per channel, under
+the channel's table, mirrors the enum and mirrors `[jira.labels]`, which is where
+this document already puts a Jira-only setting. The alternative considered was one
+heterogeneous list of tagged entries. It was declined because it makes the GitHub
+table carry Jira identities and because it changes the type of a key deployments
+already write. `deciders` reads both tables and answers one `Vec<Decider>`, which
+is the only list a propose run is given, so a key with no reader cannot appear
+here. A propose run whose document names nobody in either table is refused before
+it starts, because a run that can ask and can never accept an answer suspends for
+ever. An account id is checked for shape at load: an email address or a display
+name written where an `accountId` belongs matches no reply, so it is refused at
+the table it was written in rather than at the first suspension.
 
 `ProposeChange::walk` looks for a standing question through `asked_already`,
 which takes the same channel list `publish` takes and holds the same
@@ -191,13 +206,41 @@ is neither. Each claim below carries its class.
   `a_github_author_id_spelled_like_an_allowed_jira_account_is_not_that_decider`,
   hold the refusal in both directions and pair each with the case that corrects
   only the channel.
-- **Counted on the tree, and a gap.** No deployment can name a Jira decider yet.
-  `[github.decision].authorized` deserialises as `Vec<u64>`, and
-  `crates/fiddle-cli/src/main.rs` maps every entry to `Decider::GitHubAuthor`.
-  So a Jira-steered run in a real deployment reads the reply on the issue and
-  declines it as `ActorNotAuthorized`, whatever the reply says. The behaviour
-  above is reached by a test that supplies `Decider::JiraAccount` directly. A
-  Jira allowlist in the configuration document is not in this record.
+- **Measured at the configuration boundary, and re-graded from Counted on the
+  tree, and a gap.** A deployment names a Jira decider under `[jira.decision]`,
+  and the account it writes there reaches the allowlist a propose run is given as
+  a `Decider::JiraAccount`. `deciders` is the one place that builds that list,
+  from both decision tables, and `crates/fiddle-cli/src/main.rs` passes what it
+  answers.
+  `a_jira_account_the_document_names_reaches_the_allowlist_as_a_jira_decider`
+  parses a document and compares the resolved list, and pairs that with the same
+  document minus the table, so the row cannot pass on a resolver that appends an
+  account to every document.
+  `one_number_written_in_both_decision_tables_resolves_to_two_deciders` writes
+  `70121` in both tables and asserts the two entries are unequal, so the type
+  refusal above holds at the document as well as in the walk.
+  `config_check_reports_the_jira_accounts_that_may_decide` reads the same key back
+  through the shipped binary.
+  This row read "No deployment can name a Jira decider yet" until `[jira.decision]`
+  was admitted, and the earlier reading was a correct measurement: the allowlist
+  was built from `[github.decision].authorized` alone, so a Jira-steered
+  deployment read its reply and declined it as `ActorNotAuthorized`.
+  The class is a document measurement joined to a stub measurement, and it is not
+  a site measurement. Nothing here reads a live Jira account id. The run half is
+  the stub-measured row above, and the join between the two halves is the one
+  account string written in the document in `crates/fiddle-cli/src/config.rs` and
+  supplied to the capability in
+  `crates/fiddle-runtime/tests/propose_capability.rs`. No test drives the binary
+  through two Jira invocations end to end.
+- **Measured against stubs, and re-graded.** `config check` reports each decision
+  table as `enforced-by-propose-change`. It reported `accepted-not-enforced` with
+  the phrase "no capability in this build reads it", and that reading was already
+  false when written: `main.rs` fed `[github.decision].authorized` into the
+  propose configuration, `ProposeChange::walk` passes it to `resolve` as the
+  allowlist, and `an_ignored_reply_is_visible_in_what_the_run_published` drives the
+  shipped binary against a document naming one authorized id and records the reply
+  the allowlist declined. The status word is scoped to `propose-change` because no
+  other capability builds a decider list.
 
 ## Consequences
 

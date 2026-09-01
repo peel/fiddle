@@ -26,15 +26,18 @@ const ATTEMPT_BOUND_STATUS: &str = "enforced-per-pull-request";
 
 const ATTEMPT_BOUND_COUNTED_IN: &str = "pull-request-body";
 
-const ACCEPTED_NOT_ENFORCED: &str = "accepted-not-enforced";
-
 const OBSERVED_NOT_ENFORCED: &str = "observed-not-enforced";
 
 const REQUIRED_CHECKS_DECISION: &str = "017-required-checks-are-observed-not-enforced";
 
 const AUTHORIZED_MATCHED_ON: &str = "numeric_user_id";
 
-const DECISION_STATUS: &str = ACCEPTED_NOT_ENFORCED;
+const JIRA_AUTHORIZED_MATCHED_ON: &str = "jira_account_id";
+
+const DECISION_STATUS: &str = "enforced-by-propose-change";
+
+const DECISION_STATUS_PHRASE: &str =
+    "enforced by propose-change: a reply from anybody else decides nothing";
 
 pub fn config_check_json(config: &Config) -> String {
     let toil = crate::config::toil_bounds(config);
@@ -133,6 +136,11 @@ pub fn config_check_json(config: &Config) -> String {
                 "done": jira.workflow.done,
             },
             "labels": { "toil_trigger": toil.eligibility.trigger_label },
+            "decision": jira.decision.as_ref().map(|decision| serde_json::json!({
+                "authorized": decision.authorized,
+                "matched_on": JIRA_AUTHORIZED_MATCHED_ON,
+                "status": DECISION_STATUS,
+            })),
             "filing": jira.filing.as_ref().map(|filing| filing.resolved()).map(|filing| serde_json::json!({
                 "project": filing.project_key,
                 "issue_type": filing.issue_type,
@@ -337,8 +345,7 @@ pub fn config_check_human(config: &Config) -> String {
             "\n  github.decision.authorized = {}",
             optional(github.decision.as_ref().map(|decision| {
                 format!(
-                    "{} (matched on {}; accepted, not enforced: no capability in \
-                     this build reads it)",
+                    "{} (matched on {}; {DECISION_STATUS_PHRASE})",
                     decision
                         .authorized
                         .iter()
@@ -364,6 +371,7 @@ pub fn config_check_human(config: &Config) -> String {
              \n  jira.workflow.blocked = {}\
              \n  jira.workflow.done = {}\
              \n  jira.labels.toil_trigger = {}\
+             \n  jira.decision.authorized = {}\
              \n  jira.filing.project = {}\
              \n  jira.filing.issue_type = {}\
              \n  jira.filing.ledger_issue = {}",
@@ -379,6 +387,13 @@ pub fn config_check_human(config: &Config) -> String {
             optional(jira.workflow.blocked.clone()),
             optional(jira.workflow.done.clone()),
             toil.eligibility.trigger_label,
+            optional(jira.decision.as_ref().map(|decision| {
+                format!(
+                    "{} (matched on {JIRA_AUTHORIZED_MATCHED_ON}; \
+                     {DECISION_STATUS_PHRASE})",
+                    decision.authorized.join(" "),
+                )
+            })),
             optional(
                 jira.filing
                     .as_ref()

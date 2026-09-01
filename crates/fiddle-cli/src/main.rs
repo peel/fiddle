@@ -14,7 +14,6 @@ use fiddle_runtime::capability::workflow::{
 };
 use fiddle_runtime::effect::{EffectContext, Executor, StepParams};
 use fiddle_runtime::human::interpret::InterpretationBounds;
-use fiddle_runtime::human::validate::Decider;
 use fiddle_runtime::ports::{ChangePort, WorkItemPort};
 use fiddle_runtime::{
     Addressed, AgentBudget, AttemptContext, AttemptTrace, Capability, ConfiguredNames,
@@ -879,10 +878,10 @@ fn build_capability<'a>(
 
         Selection::Propose => {
             let github = config.github.as_ref().ok_or_else(|| missing("[github]"))?;
-            let decision = github
-                .decision
-                .as_ref()
-                .ok_or_else(|| missing("[github.decision]"))?;
+            let deciders = config::deciders(config);
+            if deciders.is_empty() {
+                return Err(missing("[github.decision]").into());
+            }
             let agent = config.agent.as_ref().ok_or_else(|| missing("[agent]"))?;
             let workspace = config
                 .workspace
@@ -953,12 +952,7 @@ fn build_capability<'a>(
                     },
                     redaction: gateway.redaction,
                     transcripts: transcripts.cloned(),
-                    deciders: decision
-                        .authorized
-                        .iter()
-                        .copied()
-                        .map(Decider::GitHubAuthor)
-                        .collect(),
+                    deciders,
                     interpretation: interpretation_bounds(agent),
                     cancel: cancel.clone(),
                 },

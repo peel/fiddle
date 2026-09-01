@@ -1,5 +1,6 @@
 use fiddle_core::{DeploymentRule, EffectName, Severities};
 use fiddle_runtime::effect::{registry, DeploymentPolicy};
+use fiddle_runtime::human::validate::Decider;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -620,7 +621,55 @@ pub struct Jira {
     pub labels: JiraLabels,
 
     #[serde(default)]
+    pub decision: Option<JiraDecision>,
+
+    #[serde(default)]
     pub filing: Option<JiraFiling>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "JiraDecisionDocument")]
+pub struct JiraDecision {
+    pub authorized: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JiraDecisionDocument {
+    authorized: Vec<String>,
+}
+
+impl TryFrom<JiraDecisionDocument> for JiraDecision {
+    type Error = String;
+
+    fn try_from(document: JiraDecisionDocument) -> Result<Self, String> {
+        if document.authorized.is_empty() {
+            return Err(
+                "`authorized = []` names nobody, and nobody is not the permissive \
+                 reading: a run that asks on the issue and can never accept an answer \
+                 suspends for ever. Name the Jira account ids that may decide, or \
+                 leave `[jira.decision]` out of the document altogether"
+                    .to_string(),
+            );
+        }
+        for account in &document.authorized {
+            if account.trim().is_empty()
+                || account.contains('@')
+                || account.contains(char::is_whitespace)
+            {
+                return Err(format!(
+                    "`authorized = [\"{account}\"]` is not a Jira account id. A reply is \
+                     matched on the `accountId` the site reports, which is an opaque \
+                     token such as `70121:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`, and \
+                     never an email address or a display name. An address written here \
+                     matches no reply, so every run suspends for ever"
+                ));
+            }
+        }
+        Ok(Self {
+            authorized: document.authorized,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -869,6 +918,34 @@ fn default_toil_trigger() -> String {
 const TOIL_WORKED_ISSUE_TYPES: [&str; 1] = ["Task"];
 
 const TOIL_SHORTEST_DESCRIPTION: usize = 20;
+
+pub fn deciders(config: &Config) -> Vec<Decider> {
+    let github = config
+        .github
+        .as_ref()
+        .and_then(|github| github.decision.as_ref())
+        .into_iter()
+        .flat_map(|decision| {
+            decision
+                .authorized
+                .iter()
+                .copied()
+                .map(Decider::GitHubAuthor)
+        });
+    let jira = config
+        .jira
+        .as_ref()
+        .and_then(|jira| jira.decision.as_ref())
+        .into_iter()
+        .flat_map(|decision| {
+            decision
+                .authorized
+                .iter()
+                .cloned()
+                .map(Decider::JiraAccount)
+        });
+    github.chain(jira).collect()
+}
 
 pub struct ToilBounds {
     pub eligibility: fiddle_runtime::toil::Eligibility,
@@ -2691,6 +2768,105 @@ token = { env = "JIRA_API_TOKEN" }
         assert!(
             message.contains("toil_trigger"),
             "the refusal must name the one key that carries the trigger label, got {message}"
+        );
+    }
+
+    const JIRA_ACCOUNT: &str = "70121:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+    fn deciding(named: &str) -> Vec<Decider> {
+        deciders(&toml::from_str::<Config>(&format!("{TOILING}{named}")).unwrap())
+    }
+
+    const NAMING_A_GITHUB_DECIDER: &str = "\n[github.decision]\nauthorized = [505401]\n";
+
+    #[test]
+    fn a_jira_account_the_document_names_reaches_the_allowlist_as_a_jira_decider() {
+        assert_eq!(
+            deciding(&format!(
+                "{NAMING_A_GITHUB_DECIDER}\n[jira.decision]\nauthorized = [\"{JIRA_ACCOUNT}\"]\n"
+            )),
+            vec![
+                Decider::GitHubAuthor(505401),
+                Decider::JiraAccount(JIRA_ACCOUNT.to_string()),
+            ],
+            "the allowlist a propose run is given must carry the Jira account the \
+             document nominated, or a jira run reads its reply and declines it"
+        );
+        assert_eq!(
+            deciding(NAMING_A_GITHUB_DECIDER),
+            vec![Decider::GitHubAuthor(505401)],
+            "and a document naming no jira decision table names no Jira account, \
+             so the row above cannot be passing on a resolver that appends one to \
+             every document"
+        );
+    }
+
+    #[test]
+    fn one_number_written_in_both_decision_tables_resolves_to_two_deciders() {
+        let both = deciding(
+            "\n[github.decision]\nauthorized = [70121]\n\
+             \n[jira.decision]\nauthorized = [\"70121\"]\n",
+        );
+        assert_eq!(
+            both,
+            vec![
+                Decider::GitHubAuthor(70121),
+                Decider::JiraAccount("70121".to_string()),
+            ],
+            "one number in two tables is two deciders in two namespaces"
+        );
+        assert_ne!(
+            both[0], both[1],
+            "and the document cannot collapse them into one allowlist entry: {both:?}"
+        );
+    }
+
+    #[test]
+    fn a_jira_decision_table_that_names_nobody_is_refused() {
+        let message =
+            toml::from_str::<Config>(&format!("{TOILING}\n[jira.decision]\nauthorized = []\n"))
+                .expect_err("a table naming nobody suspends every run for ever")
+                .message()
+                .to_string();
+        assert!(
+            message.contains("authorized") && message.contains("nobody"),
+            "the refusal must name the key and say why, got {message}"
+        );
+    }
+
+    #[test]
+    fn an_email_address_is_not_a_jira_account_id() {
+        let message = toml::from_str::<Config>(&format!(
+            "{TOILING}\n[jira.decision]\nauthorized = [\"peel@example.com\"]\n"
+        ))
+        .expect_err("a reply is matched on the accountId the site reports")
+        .message()
+        .to_string();
+        assert!(
+            message.contains("accountId"),
+            "the refusal must name what the site matches on, got {message}"
+        );
+        assert_eq!(
+            deciding(&format!(
+                "\n[jira.decision]\nauthorized = [\"{JIRA_ACCOUNT}\"]\n"
+            )),
+            vec![Decider::JiraAccount(JIRA_ACCOUNT.to_string())],
+            "and an account id is accepted, so the refusal above is about the \
+             address and not about the table"
+        );
+    }
+
+    #[test]
+    fn a_mistyped_key_in_the_jira_decision_table_is_refused() {
+        let message = toml::from_str::<Config>(&format!(
+            "{TOILING}\n[jira.decision]\nauthorised = [\"{JIRA_ACCOUNT}\"]\n"
+        ))
+        .expect_err("an account written under a second key is an account nothing reads")
+        .message()
+        .to_string();
+        assert!(
+            message.contains("authorised"),
+            "the refusal must name the offending key, got {message}"
         );
     }
 
