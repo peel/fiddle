@@ -1314,3 +1314,125 @@ fn a_document_that_is_there_still_lets_an_absent_credential_be_named() {
         "and it must not swallow the tracker credential either: {stderr}"
     );
 }
+
+const ONE_AGENT_STEP: &str = "version = 1\n\
+                              name = \"toil\"\n\
+                              stage = \"toil\"\n\
+                              \n\
+                              [[steps]]\n\
+                              kind = \"agent\"\n\
+                              prompt = \"change.md\"\n\
+                              max_turns = 8\n";
+
+fn toiling_within(bound: &str, value: usize, base_url: &str) -> Scenario {
+    let scenario = toiling_against(base_url);
+    scenario.append_config(&format!("[orchestration.toil]\n{bound} = {value}\n"));
+    write_toil_document(&scenario, ONE_AGENT_STEP);
+    write_toil_prompt(
+        &scenario,
+        "change.md",
+        "make the change the ticket asks for\n",
+    );
+    scenario
+}
+
+fn changing(files: usize, lines: usize) -> Vec<support::Reply> {
+    let planted: Vec<String> = (1..=files)
+        .map(|file| format!("changed_{file}.txt"))
+        .collect();
+    let mut script: Vec<support::Reply> = planted
+        .iter()
+        .map(|path| {
+            support::accepted(support::calls(
+                "write_file",
+                serde_json::json!({ "path": path, "contents": "change\n".repeat(lines) }),
+            ))
+        })
+        .collect();
+    script.push(support::accepted(support::reports(serde_json::json!({
+        "changed_files": planted,
+        "summary": "wrote the files this row measures",
+        "claimed_complete": true,
+    }))));
+    script
+}
+
+fn what_config_check_said(scenario: &Scenario) -> String {
+    let out = scenario.config_check_raw(&scenario.config_path());
+    assert!(
+        out.status.success(),
+        "config check refused a document a toil run reads: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn the_command_line_toil_route_enforces_the_bound_config_check_reports() {
+    for (named, unbroken, tight, loose, files, lines) in [
+        ("max_files_changed", "max_diff_lines", 2, 8, 4, 1),
+        ("max_diff_lines", "max_files_changed", 4, 40, 1, 8),
+    ] {
+        let refusing = support::StubGateway::serving(changing(files, lines));
+        let s = toiling_within(named, tight, &refusing.base_url());
+        assert!(
+            what_config_check_said(&s).contains(&format!("orchestration.toil.{named} = {tight}")),
+            "the row's own premise: the command reports the bound this document names"
+        );
+
+        let out = run_toil(&s);
+        let payload = payload_of(&out);
+        let reason = payload["outcome"]["failed"]["error"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!(
+                    "a change past the configured bound must end the run, and this run \
+                     reported {payload}"
+                )
+            })
+            .to_string();
+        assert!(
+            reason.contains(&format!("the change exceeds {named}")),
+            "the run started from the command line must refuse by the bound the \
+             document named: {reason}"
+        );
+        assert!(
+            !reason.contains(unbroken),
+            "this change is inside `{unbroken}`, and the route refused naming it \
+             anyway: {reason}"
+        );
+        assert_eq!(
+            refusing.served(),
+            files + 1,
+            "the agent step ran to its report, so the refusal above is the guard \
+             biting after the change and not the route refusing before it"
+        );
+
+        let admitting = support::StubGateway::serving(changing(files, lines));
+        let loosened = toiling_within(named, loose, &admitting.base_url());
+        assert!(
+            what_config_check_said(&loosened)
+                .contains(&format!("orchestration.toil.{named} = {loose}")),
+            "the row's own premise: the command reports the loosened bound too"
+        );
+        let earned = payload_of(&run_toil(&loosened));
+        assert_eq!(
+            earned["capability_executions"][0]["status"], "completed",
+            "one number changed in `fiddle.toml`, and the same change the tighter \
+             bound refused runs to the end of the document, so the value \
+             `config check` reports and the value the command line enforces moved \
+             together: {earned}"
+        );
+        assert_eq!(
+            earned["outcome"]["failed"],
+            serde_json::Value::Null,
+            "the loosened run failed for some other reason, so this row proves \
+             nothing about the bound: {earned}"
+        );
+        assert_eq!(
+            admitting.served(),
+            files + 1,
+            "the loosened row ran the same agent step as the refused row"
+        );
+    }
+}
