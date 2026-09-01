@@ -2135,3 +2135,34 @@ as test.
 
 Origin: discovery (bean `fiddle-vaob`, measured 2026-08-29)
 Tags: #debt #tooling #metrics
+
+### 2026-09-02 — an ADR number named at planning time is a number a later bean can take
+
+A bean that names an ADR file to create names its number when the bean is written.
+Nothing checks that number again before the file is written, and a bean planned
+earlier can be implemented later, so the number a bean holds is a claim on a
+resource that no mechanism reserves.
+
+MEASURED by reading the bean bodies and the creating commits: one record collided
+three times before it was written. `fiddle-rgvp` planned
+`080-toil-is-a-document-and-not-a-capability.md` while `fiddle-zlc4` had already created
+`080-filing-is-asked-for-and-a-refusal-to-file-does-not-undo-a-repair.md` in M5b.
+That bean was replanned as `fiddle-88n9` at 081, and `fiddle-yk74` created
+`081-a-question-is-published-through-the-channel-the-invocation-named.md` at
+`713e76a`. The bean was corrected to 082, and
+`082-a-step-earns-the-commit-the-branch-step-publishes.md` was created at
+`e23ebd3`. It was written as 083. The lead counts a fourth collision in the same
+milestone chain, on another record; this entry names only the three it verified.
+
+`scripts/check-adr-cites.sh` refuses two records that share a number, so a
+collision that reaches the tree is caught. It is caught after both files exist,
+which is a merge conflict between two lanes rather than a warning to one. Each
+correction above was made by hand, by the lead, between lanes.
+
+The rule that would close it: a bean names the ADR's title and not its number, and
+the implementer claims the number at write time by reading the directory. Every
+implementer already has to do that to be correct. This one record was given four
+numbers before one of them was free.
+
+Origin: implementation (bean `fiddle-88n9`, measured 2026-09-02)
+Tags: #debt #process #docs

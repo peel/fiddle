@@ -1,0 +1,98 @@
+# 083 — Toil is a document and a gate
+
+Status: accepted
+Cites: qualify, recheck, Qualification, Eligibility, Eligible, Refusal, RULES, RuleState, Standing, EvidenceClass, TicketFacts, ModelReview, Scope, Change, OutOfScope, Step, Ready, Workflow, WorkflowFile, WorkflowRefusal, WorkflowCapability, WORKFLOW, WORKFLOW_VERSION, CAPABILITIES, TOIL, StepOutputs, StepParams, Offer, Verdict, RunOutcome, LinkPullRequest, TransitionIssue, AddComment, AskOnIssue, FromStepParams, moved_since_qualifying, refusal_note, selected_workflow, within_scope, neither_effect_is_buildable_from_a_step_alone, crates/fiddle-runtime/src/orchestration.rs, workflows/toil.toml, crates/fiddle-cli/src/main.rs, crates/fiddle-runtime/src/toil/qualify.rs, crates/fiddle-runtime/src/capability/workflow.rs, crates/fiddle-acceptance/tests/toil.rs, crates/fiddle-acceptance/tests/capability_selection.rs, crates/fiddle-runtime/tests/toil_document.rs, an_eligible_ticket_produces_one_pull_request_and_one_jira_link, a_refused_ticket_is_told_why_on_its_own_issue, a_ticket_that_moves_after_it_is_qualified_opens_no_pull_request, a_second_run_over_the_same_ticket_adds_no_second_pull_request_and_no_second_link, a_rerun_whose_branch_is_gone_finds_its_own_pull_request_and_its_own_link, a_workflow_the_judge_rejects_exits_twelve_and_a_workflow_it_accepts_does_not, the_command_line_toil_route_enforces_the_bound_config_check_reports, a_deployment_that_denies_the_comment_effect_publishes_nothing_and_still_refuses
+
+## Context
+
+Requirement 21 of the product requirements document asks for a toil agent. That document is not in this tree; `docs/specs/` is gitignored and the bean body carries the contract. A labelled Jira ticket becomes one pull request, linked back onto the ticket, with no person in the loop.
+
+ADR 074 had already settled the workflow format. A file is read and never evaluated, it holds no condition, and a capability that wants a condition belongs in Rust. `WorkflowCapability` existed under that rule, and nothing reached it from a command line.
+
+Two questions were left. Where does the judgement "is this work fiddle takes on?" live. And what does the workflow document have to gain before it can carry the toil route at all.
+
+This record grades each claim it makes. MEASURED means a test in this repository observes the behaviour. ARGUED means the claim is read off the source and no test fails if it is wrong. STILL NOT REACHED means no run has done the thing.
+
+Nothing in this record is measured against real infrastructure. Every toil measurement below runs the compiled binary against a loopback model gateway, a loopback Jira server, a compiled stand-in for `gh`, and a local bare git repository as the remote. No toil run has reached a real forge or a real Jira site.
+
+## Decision
+
+**Eligibility is an outer Rust gate. It is not a step.**
+
+`toil::qualify` runs in `crates/fiddle-cli/src/main.rs`, in `qualified`, before the document is loaded. `RULES` holds the thirteen rule names it applies. It answers `Qualification::Eligible` or `Qualification::Refused`, and a `Refusal` carries the rule that failed, what was found and the remedy that would change the answer.
+
+Three reasons, and ADR 074 gives the first. Eligibility is nothing but conditions, and a condition in a file means the capability belongs in Rust.
+
+The second is cost. An ineligible ticket must pay for no worktree, no forge client and no model call. Placing the judgement inside the document would spend all three to reach the step that declines the work. MEASURED: `a_refused_ticket_is_told_why_on_its_own_issue` in `crates/fiddle-acceptance/tests/toil.rs` counts zero model calls, zero pull requests and zero branches for a ticket without the trigger label, and the run exits 2.
+
+The third is the refusal itself. A refusal is a write on the ticket, and the run that must not start cannot be the run that performs it. So the gate publishes the refusal, and the document never sees the ticket. ADR 084 records what that required of the effect executor.
+
+**A qualification is rechecked against the revision the run observes.**
+
+`toil::recheck` compares the `fields.updated` the ticket was qualified at with the revision the pre-execution observation read. `moved_since_qualifying` in `crates/fiddle-runtime/src/orchestration.rs` calls it and stops the run when the two differ. MEASURED: `a_ticket_that_moves_after_it_is_qualified_opens_no_pull_request`.
+
+**The gate grades its own rules, and no reader sees the grades.**
+
+`RuleState` has three variants: `Held`, `Failed` and `NotReached`, and the first two each carry an `EvidenceClass` of `Measured` or `Argued`. A rule decided from a field the tracker returned is therefore distinguishable from one decided by `ModelReview` reading the ticket text. `Refusal` carries that ledger.
+
+ARGUED, read off the source at `77b82f6`: the ledger reaches no surface. `refusal_note` publishes the failed rule, what was found, the remedy and the quoted ticket text, and no more. Nothing outside `crates/fiddle-runtime/src/toil/qualify.rs` reads `Standing`, `rules_held` or `rules_not_reached`. So a person reading the comment on their own ticket is told which rule failed and is not told which of the other twelve were reached, nor on what class of evidence any of them stood.
+
+**`toil` is the selectable name, and `WORKFLOW` stays out of the registry.**
+
+`CAPABILITIES` holds six ids, and `fiddle_core::TOIL` is one of them. `WORKFLOW` is not, and ADR 074's reason still holds: every name in that array must be selectable on a command line, and a workflow needs a document. What changed is that `toil` names a document at a fixed path. `selected_workflow` maps `Selection::Toil` to `workflows/toil.toml` beside the deployment document, and refuses a file whose `stage` is not `toil`.
+
+**A workflow earns typed outputs, and one step is read-only.**
+
+`StepOutputs` holds three values: a pull request number, a `Verdict` and a head sha. It is closed and typed. A document names none of the three, so the format gained no variable and no interpolation, which is what ADR 074 forbids. ADR 082 records the head sha half.
+
+`Step::Evaluate` runs the agent under `Offer::Judge`. That offer returns `READING` alone, so the judge is given `read_file`, `list_files` and `search_files` and is given neither `edit_file` nor `write_file` nor `run_check`. Its answer is a `Verdict` through `output_schema` with a required tool choice, so it is parsed and not read out of prose. A `Verdict::Rejected` breaks the step loop and the run reports `RunOutcome::Rejected`, which exits 12.
+
+MEASURED through the binary: `a_workflow_the_judge_rejects_exits_twelve_and_a_workflow_it_accepts_does_not` in `crates/fiddle-acceptance/tests/capability_selection.rs` runs one document twice and changes only the verdict the gateway stub serves. The rejecting run exits 12 and the accepting run exits 11, so a build that exits 12 whatever the judge said fails the second half.
+
+**Scope is enforced in Rust, after the agent step and before any effect.**
+
+`Scope` carries `max_files_changed` and `max_diff_lines`. `WorkflowCapability::within_scope` measures the workspace after each agent step and refuses through `OutOfScope`. The document names no bound; `[orchestration.toil]` does, and an absent table resolves to 10 and 500 rather than to no bound.
+
+MEASURED through the binary: `the_command_line_toil_route_enforces_the_bound_config_check_reports` in `crates/fiddle-acceptance/tests/capability_selection.rs`, where each bound refuses on its own and admits the same change when that one number is loosened. That lane names no effect step, so it measures the bound and not the ordering. The ordering is measured one level down, against the shipped document rather than through the binary: `a_change_beyond_the_bounds_stops_before_any_effect_and_each_bound_bites_on_its_own` and `a_change_inside_both_bounds_runs_to_the_effect_tail` in `crates/fiddle-runtime/tests/toil_document.rs` are the pair.
+
+**The document has no `ask` step, and that is the requirement rather than an omission.**
+
+`Step` has five shapes: `Agent`, `Evaluate`, `Check`, `Effect` and `Commit`. It is a serde enum tagged by `kind` with `deny_unknown_fields`, so a document naming a sixth kind is refused when it loads. `WorkflowRefusal::Gated` separately refuses a document that names an effect whose minimum is `Human`.
+
+A toil run therefore cannot suspend on a question by construction. Requirement 21 wants that: toil declines decision-heavy work at the gate instead of asking about it. The channel that asks a person a question belongs to `propose_change`, and ADR 081 records it.
+
+## Consequences
+
+**The epic's outcome, both halves, measured through the binary against loopback stubs.**
+
+An eligible ticket produces one pull request and one link comment on the ticket. MEASURED: `an_eligible_ticket_produces_one_pull_request_and_one_jira_link` counts one pull request and one branch off the `gh` stand-in, one link comment off the tracker stub, and the three effect steps in the order the shipped document names them. A second run over the same ticket adds neither, and the two tests that hold this differ in what they prove. `a_second_run_over_the_same_ticket_adds_no_second_pull_request_and_no_second_link` pins the second run refusing at the branch step, because the branch the first run published is not an ancestor of the sha the second run made, and it earns no effect receipt at all. There the ticket is spared by a refusal and not by recognition; `fiddle-buu6` carries that. `a_rerun_whose_branch_is_gone_finds_its_own_pull_request_and_its_own_link` deletes the remote branch first, so the second run reaches all three effect steps, and the pull request step and the link step each name what the first run made. Inspect-before-write on those two effects is therefore measured. A plain rerun is measured refusing, which is not the same property.
+
+An ineligible ticket is refused on its own issue with the reason on it, and the refusal is performed through the effect executor under an effect identity. MEASURED by the two tests named above, and by `a_deployment_that_denies_the_comment_effect_publishes_nothing_and_still_refuses`, which holds that deployment policy still governs the write.
+
+STILL NOT REACHED: no toil run has reached a real forge or a real Jira site. The agreement between these stubs and the real services is argued from M5b's four live Jira lanes against one project on one site, and from nothing on the forge side.
+
+**A successful toil run exits 11, and that is a defect this decision did not fix.**
+
+`assess` decides that work is done on one input, the correlation marker in the change set. `WorkflowCapability` is the only capability that never writes that marker, so a run that opens the pull request and links it is judged not started and reports a retry. MEASURED by the assertion inside `an_eligible_ticket_produces_one_pull_request_and_one_jira_link`, which reads a null marker out of the post-execution observation and pins exit 11. `fiddle-l4ls` carries the repair. The exit-code table is right; either the workflow route writes the marker or a workflow capability is judged by something else, and papering over it at the outcome mapping is not the answer.
+
+The retry that 11 asks for cannot succeed either. `fiddle-buu6` records why: a commit sha is not deterministic, so the branch guard that keeps a rerun from publishing a second branch refuses the rerun permanently. The two defects compound, and a toil run under a retry loop never converges.
+
+In the same bundle, `progress[].summary` says "wrote correlation marker" and names the expected marker on every `Executed::Earned`, because `orchestration::run` formats that sentence with no check that anything wrote it. So the run's own report carries a sentence that reads like evidence beside `marker: null`. `fiddle-l4ls` carries that half too.
+
+**`jira.pull_request_linked` gained its first caller, and one registered name still has none.**
+
+`LinkPullRequest::from_params` reads the issue key and the revision out of `StepParams`, which `StepParams::observing` fills from the work item the run observed, and the pull request number out of `StepOutputs`, which the effect step before it earned. ADR 078 requires that identity to come from a read of the issue rather than from a document, and it still does: the document names the effect, and the run supplies the two facts. What changed is that the run now carries them to the step. `fiddle-jgnc` recorded `jira.pull_request_linked` as having no caller; that is out of date for this one name.
+
+The refusal is narrower than it was, not gone. `neither_effect_is_buildable_from_a_step_alone` still passes, because the `StepParams` it builds names no issue key and no revision, and both `AddComment` and `LinkPullRequest` refuse such a set. ARGUED: a document is admitted with a `jira.pull_request_linked` step whatever the run will observe, and a run whose observation carries no revision fails at that step. No test drives that arm.
+
+`AddComment` and `TransitionIssue` refuse `from_params` unconditionally. `jira.comment_added` is reached instead by two operation types in Rust: `AskOnIssue`, on the decision channel, and `AddComment`, on the toil refusal path. `jira.issue_transitioned` has no caller at all. Requirement 21 also sets the ticket to In Review, and `workflows/toil.toml` records in its own text why no step does: the name is registered, its operation refuses every set of step parameters, so a step naming it would load and then fail after the pull request was already open.
+
+**A rejected evaluation is now reachable from a command line, and the suite that exists for outcomes does not cover it.**
+
+`crates/fiddle-acceptance/tests/run_outcome.rs` covers outcomes end to end across twelve tests and has no exit-12 case. The coverage sits in `crates/fiddle-acceptance/tests/capability_selection.rs` instead, beside the capability that reaches it.
+
+**An absent `[orchestration.toil]` table is now a bound and was previously none.** `config::toil_bounds` resolves the missing table to 10 files and 500 diff lines. A deployment that ran the toil route unbounded before this epic is bounded after it, without editing its document. `config check` reports both resolved values, which is where an operator sees the number they did not write.
+
+**What the document still cannot express.**
+
+It cannot branch: there is no condition, no loop and no variable, and ADR 074 gives the reason. It cannot ask a person anything. It cannot name a bound, an eligibility rule or a commit — those are `fiddle.toml`, Rust and an earned output. It cannot name an effect that acts on an existing Jira issue other than the link, because `FromStepParams` refuses the other two. It cannot set a ticket's status. A route that needs any of those is a Rust capability, which is the escape hatch ADR 074 named and not a widening of this format.
