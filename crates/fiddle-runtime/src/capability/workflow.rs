@@ -9,7 +9,7 @@ use crate::effect::{
     StepOutputs, StepParams,
 };
 use crate::gateway::Redaction;
-use crate::toil::Quoted;
+use crate::toil::{Change, Quoted, Scope};
 use crate::workspace::WorkspaceCommand;
 use fiddle_core::{
     CapabilityId, EffectName, EvidenceRef, HumanDecisionRequirement, Published, WorkItemState,
@@ -167,6 +167,7 @@ pub struct WorkflowCapability<'a, M> {
     executor: Executor<'a>,
     params: StepParams,
     ports: WorkflowPorts<M>,
+    scope: Option<Scope>,
     receipts: Mutex<Vec<EvidenceRef>>,
     entered: Mutex<Vec<StepOutputs>>,
 }
@@ -296,9 +297,15 @@ where
             executor,
             params,
             ports,
+            scope: None,
             receipts: Mutex::new(Vec::new()),
             entered: Mutex::new(Vec::new()),
         })
+    }
+
+    pub fn bounded_by(mut self, scope: Scope) -> Self {
+        self.scope = Some(scope);
+        self
     }
 
     pub fn workflow(&self) -> &Workflow {
@@ -333,6 +340,18 @@ where
         )
         .await?;
         Ok(())
+    }
+
+    fn within_scope(&self) -> Result<(), CapabilityError> {
+        let Some(scope) = self.scope else {
+            return Ok(());
+        };
+        let workspace = &self.ports.host.workspace;
+        let measured = Change {
+            files_changed: workspace.changed_files()?.len(),
+            diff_lines: workspace.changed_lines()?,
+        };
+        Ok(scope.admits(&measured)?)
     }
 
     async fn evaluate(
@@ -454,7 +473,8 @@ where
             match step {
                 Ready::Agent { task, max_turns } => {
                     self.attempt(&task_carrying(task, quoted.as_ref()), *max_turns)
-                        .await?
+                        .await?;
+                    self.within_scope()?
                 }
                 Ready::Evaluate { task, max_turns } => {
                     self.evaluate(

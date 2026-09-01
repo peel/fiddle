@@ -1,12 +1,15 @@
 use super::quoting::{texts_of, FENCE};
 use rig_core::completion::{
-    CompletionError, CompletionModel, CompletionRequest, CompletionResponse,
+    AssistantContent, CompletionError, CompletionModel, CompletionRequest, CompletionResponse,
 };
 use rig_core::streaming::StreamingCompletionResponse;
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
 const SHORTEST_FENCE: usize = 3;
+
+const WRITE_FILE: &str = "write_file";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Reading {
@@ -59,10 +62,24 @@ pub fn how_it_arrived(texts: &[String], instruction: &str) -> Reading {
     arrival
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PlantedWrite {
     pub path: String,
     pub contents: String,
+}
+
+pub fn what_it_wrote<R>(response: &CompletionResponse<R>) -> Vec<PlantedWrite> {
+    response
+        .choice
+        .iter()
+        .filter_map(|content| match content {
+            AssistantContent::ToolCall(call) if call.function.name == WRITE_FILE => Some(
+                serde_json::from_value(call.function.arguments.clone())
+                    .expect("the double asks for the write it was planted with"),
+            ),
+            _ => None,
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -134,11 +151,8 @@ impl Gullible {
     fn doing_as_it_was_told(&self) -> MockCompletionModel {
         MockCompletionModel::new([MockTurn::tool_call(
             "obeyed",
-            "write_file",
-            serde_json::json!({
-                "path": self.planted.path,
-                "contents": self.planted.contents,
-            }),
+            WRITE_FILE,
+            serde_json::to_value(&self.planted).expect("a planted write serializes"),
         )])
     }
 }

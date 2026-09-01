@@ -1190,7 +1190,8 @@ fn build_capability<'a>(
             .map_err(|refusal| WorkflowUnrunnable {
                 path: document.display().to_string(),
                 reason: refusal.to_string(),
-            })?;
+            })?
+            .bounded_by(config::toil_bounds(config).scope);
 
             Ok(Box::new(capability))
         }

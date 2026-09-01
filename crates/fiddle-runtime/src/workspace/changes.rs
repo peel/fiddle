@@ -8,6 +8,10 @@ const UNTRACKED: &[u8] = b"??";
 
 const COMMITTED: &[&str] = &["ls-tree", "-r", "--name-only", "-z", "HEAD"];
 
+const NUMSTAT: &[&str] = &["diff", "--numstat", "HEAD", "--"];
+
+const UNCOUNTED: &str = "-";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Content {
     Absent,
@@ -42,6 +46,17 @@ impl super::Workspace {
         paths.sort();
         paths.dedup();
         Ok(paths)
+    }
+
+    pub fn changed_lines(&self) -> Result<usize, WorkspaceError> {
+        let out = super::git_stdout(self.root(), NUMSTAT)?;
+        let mut lines = counted(decode(NUMSTAT, &out)?)?;
+        for path in self.created()? {
+            if let Content::Text(text) = self.working(&path)? {
+                lines += text.lines().count();
+            }
+        }
+        Ok(lines)
     }
 
     pub fn edits(&self) -> Result<Vec<FileEdit>, WorkspaceError> {
@@ -104,6 +119,34 @@ fn listed(command: &[&str], out: &[u8]) -> Result<Vec<WorkspacePath>, WorkspaceE
     paths.sort();
     paths.dedup();
     Ok(paths)
+}
+
+fn counted(out: &str) -> Result<usize, WorkspaceError> {
+    let mut lines = 0;
+    for record in out.lines().filter(|record| !record.is_empty()) {
+        let mut fields = record.split('\t');
+        let (Some(added), Some(deleted), Some(_)) = (fields.next(), fields.next(), fields.next())
+        else {
+            return Err(malformed(
+                NUMSTAT,
+                &format!("expected an `added deleted path` record, got {record:?}"),
+            ));
+        };
+        lines += side(added)? + side(deleted)?;
+    }
+    Ok(lines)
+}
+
+fn side(field: &str) -> Result<usize, WorkspaceError> {
+    match field {
+        UNCOUNTED => Ok(0),
+        counted => counted.parse::<usize>().map_err(|_| {
+            malformed(
+                NUMSTAT,
+                &format!("`{counted}` is not a line count git could have written"),
+            )
+        }),
+    }
 }
 
 fn tracked(out: &[u8]) -> Result<Vec<WorkspacePath>, WorkspaceError> {
@@ -200,6 +243,48 @@ mod tests {
     #[test]
     fn a_clean_worktree_reports_nothing() {
         assert!(parsed(b"").is_empty());
+        assert_eq!(counted("").unwrap(), 0);
+    }
+
+    #[test]
+    fn a_line_count_is_both_sides_of_every_record() {
+        assert_eq!(
+            counted("3\t0\tsrc/lib.rs\n1\t4\tsrc/other.rs\n").unwrap(),
+            8,
+            "a diff is what it added and what it removed, and 3 + 0 + 1 + 4 is 8"
+        );
+        assert_eq!(
+            counted("0\t0\tsrc/lib.rs\n").unwrap(),
+            0,
+            "and a record git wrote with nothing on either side counts nothing, so \
+             the row above is reading the fields rather than the record count"
+        );
+    }
+
+    #[test]
+    fn a_file_git_counts_no_lines_in_counts_no_lines() {
+        assert_eq!(
+            counted("-\t-\tsrc/logo.png\n2\t1\tsrc/lib.rs\n").unwrap(),
+            3,
+            "git writes `-` for a file it reads as binary, and the text beside it \
+             is still counted"
+        );
+    }
+
+    #[test]
+    fn a_record_that_is_not_a_numstat_record_is_refused() {
+        for out in ["3\t0\n", "src/lib.rs\n", "3\n", "x\t0\tsrc/lib.rs\n"] {
+            let err = counted(out).unwrap_err();
+            assert!(
+                matches!(&err, WorkspaceError::Git { command, .. } if command.starts_with("diff")),
+                "{out:?} must be refused and name the invocation it came from, got {err:?}"
+            );
+        }
+        assert!(
+            counted("3\t0\tsrc/a file.rs\n").is_ok(),
+            "and a path with a space in it is still one record, so the rows above \
+             cannot be passing because every record is refused"
+        );
     }
 
     #[test]

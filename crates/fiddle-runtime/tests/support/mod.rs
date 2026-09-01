@@ -2,6 +2,7 @@
 
 pub mod cve;
 pub mod gullible;
+pub mod judging;
 pub mod quoting;
 pub mod stub_jira;
 

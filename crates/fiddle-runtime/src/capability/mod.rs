@@ -232,6 +232,9 @@ pub enum CapabilityError {
 
     #[error("the question reached no human: {0}")]
     Unasked(#[from] crate::human::PublishError),
+
+    #[error("{0}")]
+    OutOfScope(#[from] crate::toil::OutOfScope),
 }
 
 impl CapabilityError {
@@ -247,6 +250,7 @@ impl CapabilityError {
             CapabilityError::NotAuthorised { .. }
             | CapabilityError::Misbound { .. }
             | CapabilityError::Output(_)
+            | CapabilityError::OutOfScope(_)
             | CapabilityError::WouldWait { .. }
             | CapabilityError::PublishesElsewhere { .. } => Recurrence::Permanent,
 

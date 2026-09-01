@@ -541,6 +541,7 @@ dependencies = [
  "fiddle-core",
  "fiddle-runtime",
  "miette",
+ "rig-core",
  "serde",
  "serde_json",
  "tempfile",
