@@ -2713,6 +2713,7 @@ token = { env = "JIRA_API_TOKEN" }
     fn labelled_ticket() -> fiddle_runtime::toil::TicketFacts {
         fiddle_runtime::toil::TicketFacts {
             id: "IDENT-7".to_string(),
+            revision: Some("2026-08-30T10:00:00Z".to_string()),
             issue_type: "Task".to_string(),
             labels: Some(vec!["fiddle/toil".to_string()]),
             repository: Some("peel/fiddle".to_string()),

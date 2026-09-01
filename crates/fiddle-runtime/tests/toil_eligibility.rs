@@ -1,12 +1,26 @@
 use async_trait::async_trait;
+use fiddle_core::{AttemptId, CapabilityId, EffectName, EvidenceRef, RunOutcome, TOIL};
+use fiddle_runtime::capability::{Capability, CapabilityError, Executed, ExecutionInput};
+use fiddle_runtime::effect::ExecutionStep;
+use fiddle_runtime::evidence::EvidenceError;
+use fiddle_runtime::human::validate::DecisionStep;
+use fiddle_runtime::journal::AttemptJournal;
+use fiddle_runtime::orchestration::{self, Addressed, RunContext, RunReport};
+use fiddle_runtime::stub::{StubChangePort, StubWorkItemPort};
 use fiddle_runtime::toil::{
-    qualify, AmbiguityReview, Eligibility, EvidenceClass, Judgement, Quoted, Refusal, ReviewError,
-    RuleState, Source, Standing, TicketFacts, Verdict, RULES,
+    qualify, recheck, AmbiguityReview, Eligibility, Eligible, EvidenceClass, Judgement, Quoted,
+    Refusal, ReviewError, RuleState, Source, Standing, TicketFacts, Verdict, RULES,
+    TICKET_HELD_ITS_REVISION,
 };
 use std::collections::BTreeSet;
 use std::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 const SENTINEL: &str = "IGNORE-ALL-PRIOR-INSTRUCTIONS-7f3a";
+
+const QUALIFIED_AT: &str = "2026-08-30T10:00:00.000+0000";
+
+const MOVED_TO: &str = "2026-08-30T11:00:00.000+0000";
 
 fn bounds() -> Eligibility {
     Eligibility {
@@ -20,6 +34,7 @@ fn bounds() -> Eligibility {
 fn eligible_ticket() -> TicketFacts {
     TicketFacts {
         id: "ISP-43".into(),
+        revision: Some(QUALIFIED_AT.into()),
         issue_type: "Task".into(),
         labels: Some(vec!["toil".into()]),
         repository: Some("snowplow/iglu".into()),
@@ -113,15 +128,33 @@ async fn a_ticket_that_meets_every_rule_is_admitted() {
         .eligible()
         .unwrap_or_else(|| panic!("the gate refused a ticket with no fault: {outcome:?}"));
     assert_eq!(eligible.repository, "snowplow/iglu");
+    assert_eq!(eligible.revision, QUALIFIED_AT);
     assert_eq!(
         eligible.ledger.len(),
         RULES.len(),
-        "an admitted ticket holds every rule: {:?}",
+        "a ledger records every rule the gate declares: {:?}",
         eligible.ledger
     );
-    assert!(
-        eligible.ledger.iter().all(Standing::is_pass),
-        "an admitted ticket holds every rule: {:?}",
+    let unheld: Vec<&str> = eligible
+        .ledger
+        .iter()
+        .filter(|standing| !standing.is_pass())
+        .map(|standing| standing.rule)
+        .collect();
+    assert_eq!(
+        unheld,
+        vec![TICKET_HELD_ITS_REVISION],
+        "a qualification holds every rule but the one only the action can decide: {:?}",
+        eligible.ledger
+    );
+    assert_eq!(
+        eligible
+            .ledger
+            .iter()
+            .find(|standing| standing.rule == TICKET_HELD_ITS_REVISION)
+            .map(|standing| standing.state),
+        Some(RuleState::NotReached),
+        "the rule the action decides is not reached by qualifying alone: {:?}",
         eligible.ledger
     );
 }
@@ -159,6 +192,23 @@ fn pairs() -> Vec<Pair> {
             quotes: Some((Source::Ticket, SENTINEL)),
             differs_in: &["id"],
             remedy_names: "the key the tracker assigned",
+        },
+        Pair {
+            named_fault: "the read carried no revision",
+            failed_rule: "the read carries the ticket's revision",
+            class: EvidenceClass::Measured,
+            refused: TicketFacts {
+                revision: None,
+                ..eligible_ticket()
+            },
+            admitted: TicketFacts {
+                revision: Some(QUALIFIED_AT.into()),
+                ..eligible_ticket()
+            },
+            review: plain_change(),
+            quotes: None,
+            differs_in: &["revision"],
+            remedy_names: "must request the `fields.updated`",
         },
         Pair {
             named_fault: "the read carried no labels field",
@@ -380,6 +430,7 @@ fn carries(ticket: &TicketFacts, text: &str) -> bool {
     }
     let TicketFacts {
         id,
+        revision: _,
         issue_type,
         labels,
         repository,
@@ -402,6 +453,7 @@ fn carries(ticket: &TicketFacts, text: &str) -> bool {
 fn differing(refused: &TicketFacts, admitted: &TicketFacts) -> Vec<&'static str> {
     let TicketFacts {
         id,
+        revision,
         issue_type,
         labels,
         repository,
@@ -411,6 +463,9 @@ fn differing(refused: &TicketFacts, admitted: &TicketFacts) -> Vec<&'static str>
     let mut named = Vec::new();
     if *id != admitted.id {
         named.push("id");
+    }
+    if *revision != admitted.revision {
+        named.push("revision");
     }
     if *issue_type != admitted.issue_type {
         named.push("issue_type");
@@ -533,6 +588,7 @@ async fn the_gate_refuses_for_every_rule_it_declares() {
     for pair in pairs() {
         broken.insert(refusal_of(&pair).await.failed_rule);
     }
+    broken.insert(refused_after_moving().await.failed_rule);
     let declared: BTreeSet<&str> = RULES.into_iter().collect();
     assert_eq!(
         broken, declared,
@@ -1195,4 +1251,321 @@ async fn the_summary_reaches_a_refusal_only_inside_a_fence() {
             refusal.remedy
         );
     }
+}
+
+const ACTED_ON: &str = "ISP-42";
+
+const PROJECT: &str = "snowplow/iglu";
+
+const INVOCATION_REF: &str = "jira:ISP-42";
+
+struct WouldOpenAPullRequest {
+    acting_on: Option<Eligible>,
+    requests: Mutex<Vec<String>>,
+}
+
+impl WouldOpenAPullRequest {
+    fn acting_on(qualification: Option<Eligible>) -> Self {
+        WouldOpenAPullRequest {
+            acting_on: qualification,
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    fn request_count(&self) -> usize {
+        self.requests.lock().unwrap().len()
+    }
+}
+
+#[async_trait]
+impl Capability for WouldOpenAPullRequest {
+    fn id(&self) -> CapabilityId {
+        TOIL
+    }
+
+    fn stage(&self) -> &'static str {
+        "toil"
+    }
+
+    async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
+        self.requests
+            .lock()
+            .unwrap()
+            .push(format!("pull_request:{}", input.work_id));
+        Ok(Executed::Earned(EvidenceRef(format!(
+            "toil:{}",
+            input.grant.attempt_id().0
+        ))))
+    }
+
+    fn qualification(&self) -> Option<&Eligible> {
+        self.acting_on.as_ref()
+    }
+}
+
+#[derive(Default)]
+struct Journalled {
+    intents: Mutex<Vec<CapabilityId>>,
+}
+
+impl Journalled {
+    fn intents(&self) -> Vec<CapabilityId> {
+        self.intents.lock().unwrap().clone()
+    }
+}
+
+impl AttemptJournal for Journalled {
+    fn record_intent(&self, capability: CapabilityId) -> Result<(), EvidenceError> {
+        self.intents.lock().unwrap().push(capability);
+        Ok(())
+    }
+
+    fn record_step(&self, _kind: &EffectName, _step: ExecutionStep) {}
+
+    fn record_decision_step(&self, _step: DecisionStep) {}
+
+    fn record_effect(&self, _capability: CapabilityId, _status: &str, _evidence: &[EvidenceRef]) {}
+
+    fn supersede(&self) {}
+}
+
+struct Tracker {
+    dir: tempfile::TempDir,
+}
+
+impl Tracker {
+    fn reads(revision: Option<&str>) -> Self {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let root = dir.path().join("stub-state");
+        std::fs::create_dir_all(root.join("work")).unwrap();
+        std::fs::create_dir_all(root.join("changes")).unwrap();
+        let carried = match revision {
+            Some(revision) => format!(r#","revision":"{revision}""#),
+            None => String::new(),
+        };
+        std::fs::write(
+            root.join(format!("work/{ACTED_ON}.json")),
+            format!(r#"{{"id":"{ACTED_ON}","status":"open"{carried}}}"#),
+        )
+        .unwrap();
+        Tracker { dir }
+    }
+
+    fn root(&self) -> std::path::PathBuf {
+        self.dir.path().join("stub-state")
+    }
+}
+
+async fn acting(tracker: &Tracker, capability: &WouldOpenAPullRequest) -> (RunReport, Journalled) {
+    let attempt = AttemptId("attempt-1".to_string());
+    let journal = Journalled::default();
+    let report = orchestration::run(&RunContext {
+        project: PROJECT,
+        invocation_ref: INVOCATION_REF,
+        addressed: Addressed::WorkItem(ACTED_ON),
+        attempt: &attempt,
+        work_items: &StubWorkItemPort::new(tracker.root()),
+        changes: &StubChangePort::new(tracker.root()),
+        capability,
+        journal: &journal,
+        cancel: &CancellationToken::new(),
+    })
+    .await;
+    (report, journal)
+}
+
+async fn qualified_at(revision: &str) -> Eligible {
+    let ticket = TicketFacts {
+        id: ACTED_ON.into(),
+        revision: Some(revision.into()),
+        ..eligible_ticket()
+    };
+    let outcome = qualify(&ticket, &bounds(), &plain_change()).await;
+    outcome
+        .eligible()
+        .unwrap_or_else(|| panic!("{ACTED_ON} meets every rule the gate declares: {outcome:?}"))
+        .clone()
+}
+
+async fn refused_after_moving() -> Refusal {
+    let admitted = qualified_at(QUALIFIED_AT).await;
+    recheck(&admitted, Some(MOVED_TO))
+        .refused()
+        .expect("a ticket that moved after it was qualified is refused")
+        .clone()
+}
+
+fn spoken(report: &RunReport) -> String {
+    match &report.outcome {
+        RunOutcome::Retryable { reason } => reason.as_str().to_string(),
+        other => panic!("a run that acted on nothing must say why it is retryable: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_ticket_that_moved_between_qualifying_and_acting_is_refused() {
+    let tracker = Tracker::reads(Some(MOVED_TO));
+    let capability = WouldOpenAPullRequest::acting_on(Some(qualified_at(QUALIFIED_AT).await));
+    let (report, journal) = acting(&tracker, &capability).await;
+    assert_eq!(
+        capability.request_count(),
+        0,
+        "a stale qualification opened a pull request: {:?}",
+        capability.requests()
+    );
+    assert!(
+        journal.intents().is_empty() && report.executions.is_empty(),
+        "a run that requested no effect must record no intent and no execution: {:?} / {:?}",
+        journal.intents(),
+        report.executions
+    );
+    let said = spoken(&report);
+    assert!(
+        said.contains("the ticket changed after it was qualified"),
+        "the run must say the ticket moved: {said}"
+    );
+    assert!(
+        said.contains(QUALIFIED_AT) && said.contains(MOVED_TO) && said.contains(ACTED_ON),
+        "the run must name the ticket and both revisions it compared: {said}"
+    );
+}
+
+#[tokio::test]
+async fn a_ticket_that_held_its_revision_is_acted_on() {
+    let tracker = Tracker::reads(Some(QUALIFIED_AT));
+    let capability = WouldOpenAPullRequest::acting_on(Some(qualified_at(QUALIFIED_AT).await));
+    let (report, journal) = acting(&tracker, &capability).await;
+    assert_eq!(
+        capability.requests(),
+        vec![format!("pull_request:{ACTED_ON}")],
+        "an unchanged ticket must reach the effect its qualification admitted it for: {:?}",
+        report.outcome
+    );
+    assert_eq!(
+        journal.intents(),
+        vec![TOIL],
+        "a run that requested an effect records the intent first"
+    );
+    assert_eq!(
+        report.executions.len(),
+        1,
+        "the run must report the execution it made: {:?}",
+        report.executions
+    );
+}
+
+async fn counted(tracker: &Tracker) -> (usize, RunReport) {
+    let capability = WouldOpenAPullRequest::acting_on(Some(qualified_at(QUALIFIED_AT).await));
+    let (report, _) = acting(tracker, &capability).await;
+    (capability.request_count(), report)
+}
+
+#[tokio::test]
+async fn the_recheck_refuses_the_moved_ticket_and_no_other() {
+    let moved = Tracker::reads(Some(MOVED_TO));
+    let held = Tracker::reads(Some(QUALIFIED_AT));
+    let unread = Tracker::reads(None);
+    let (after_moving, _) = counted(&moved).await;
+    let (after_holding, _) = counted(&held).await;
+    let (after_unread, refusal) = counted(&unread).await;
+    assert_eq!(
+        (after_moving, after_holding, after_unread),
+        (0, 1, 0),
+        "the recheck must bite on a moved ticket and on an unread revision, and on nothing else"
+    );
+    assert!(
+        spoken(&refusal).contains("carried no revision"),
+        "a read that carried no revision compared the qualification with nothing, and that is a \
+         refusal rather than a pass: {}",
+        spoken(&refusal)
+    );
+}
+
+#[tokio::test]
+async fn a_run_that_carries_no_qualification_is_not_rechecked() {
+    let tracker = Tracker::reads(None);
+    let capability = WouldOpenAPullRequest::acting_on(None);
+    let (report, journal) = acting(&tracker, &capability).await;
+    assert_eq!(
+        capability.request_count(),
+        1,
+        "a capability that names no qualification has no revision to hold, so the recheck must \
+         not refuse it: {:?}",
+        report.outcome
+    );
+    assert_eq!(journal.intents(), vec![TOIL]);
+}
+
+#[tokio::test]
+async fn the_recheck_decides_the_rule_the_qualification_leaves_unreached() {
+    let admitted = qualified_at(QUALIFIED_AT).await;
+    let outcome = recheck(&admitted, Some(QUALIFIED_AT));
+    let held = outcome
+        .eligible()
+        .unwrap_or_else(|| panic!("an unchanged ticket stays admitted: {outcome:?}"));
+    assert!(
+        held.ledger.iter().all(Standing::is_pass),
+        "a rechecked ticket holds every rule the gate declares: {:?}",
+        held.ledger
+    );
+    assert_eq!(
+        held.ledger.len(),
+        RULES.len(),
+        "a ledger records every rule the gate declares: {:?}",
+        held.ledger
+    );
+    let refusal = refused_after_moving().await;
+    assert_eq!(refusal.failed_rule, TICKET_HELD_ITS_REVISION);
+    assert_eq!(refusal.evidence_class, EvidenceClass::Measured);
+    assert_eq!(
+        refusal.rules_not_reached(),
+        Vec::<&str>::new(),
+        "a recheck runs after every other rule held, so no rule is unreached: {:?}",
+        refusal.ledger
+    );
+    assert_eq!(
+        refusal.rules_held().len(),
+        RULES.len() - 1,
+        "a moved ticket fails one rule and holds the rest: {:?}",
+        refusal.ledger
+    );
+    assert_eq!(refusal.quoted, None);
+    assert!(
+        !refusal.found.contains(SENTINEL) && !refusal.remedy.contains(SENTINEL),
+        "ticket text must not reach a refusal sentence: {} / {}",
+        refusal.found,
+        refusal.remedy
+    );
+}
+
+#[tokio::test]
+async fn an_unread_revision_and_a_changed_revision_are_different_refusals() {
+    let admitted = qualified_at(QUALIFIED_AT).await;
+    let unread = recheck(&admitted, None)
+        .refused()
+        .expect("a read that carried no revision is refused")
+        .clone();
+    let changed = refused_after_moving().await;
+    assert_eq!(unread.failed_rule, changed.failed_rule);
+    assert_ne!(
+        unread.found, changed.found,
+        "an unread revision and a changed revision are different faults"
+    );
+    assert_ne!(unread.remedy, changed.remedy);
+    for blank in [None, Some(""), Some("   ")] {
+        assert!(
+            recheck(&admitted, blank).refused().is_some(),
+            "a read that carried {blank:?} names no revision, and the empty string is not a \
+             revision"
+        );
+    }
+    assert!(
+        recheck(&admitted, Some(QUALIFIED_AT)).eligible().is_some(),
+        "the revision the qualification read still admits the ticket, so the recheck cannot pass \
+         by refusing every ticket"
+    );
 }
