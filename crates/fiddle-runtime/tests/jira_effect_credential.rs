@@ -508,3 +508,72 @@ async fn a_credential_the_site_echoes_reaches_no_published_report_bundle() {
     surfaces.are_shown_to_bite();
     surfaces.carry_no_credential();
 }
+
+#[tokio::test]
+async fn a_tracker_only_deployment_comments_through_the_executor_and_reaches_no_forge() {
+    let server = StubJira::start().await;
+    let key = format!("{SEEDED_PROJECT}-1");
+    server
+        .holds_issue_in_status(&key, "10001", "To Do", "To Do")
+        .await;
+    let revision = seeded_revision(&server, &key).await;
+    let ctx = EffectContext::tracking(
+        JiraHttp::new(server.base_url(), USER, SENTINEL, PATIENT).expect("a client"),
+        PathBuf::from("/nonexistent"),
+        tokio_util::sync::CancellationToken::new(),
+    );
+
+    assert!(
+        matches!(ctx.gh_client(), Err(fiddle_runtime::GhError::Unconfigured)),
+        "a deployment with no `[github]` holds no forge client, so a forge effect refuses \
+         rather than reaching one"
+    );
+    assert!(
+        matches!(
+            ctx.git_client(),
+            Err(fiddle_runtime::GitError::Unconfigured)
+        ),
+        "and holds no local git either"
+    );
+
+    let trace = Recorded::default();
+    let commenting = AddComment::new(
+        key.clone(),
+        &revision,
+        "the ticket was refused and this is why".to_string(),
+        PROJECT,
+        INVOCATION_REF,
+    )
+    .expect("an operation builds from a revision this build can read");
+    let marker = commenting.marker();
+    let receipt = run(&ctx, &trace, commenting)
+        .await
+        .expect("the comment is performed on a context that holds only a tracker");
+
+    assert!(
+        receipt.external_ref.is_some(),
+        "the executor answered with a receipt naming the comment it observed: {receipt:?}"
+    );
+    let steps = trace
+        .steps
+        .lock()
+        .expect("no step panicked while holding the trace")
+        .clone();
+    for named in [
+        "inspect_postcondition",
+        "combine_policy",
+        "authorize",
+        "apply",
+        "observe_postcondition",
+    ] {
+        assert!(
+            steps.iter().any(|step| step.ends_with(named)),
+            "the write walked `{named}`, so it kept the protocol a raw adapter call skips: \
+             {steps:?}"
+        );
+    }
+    assert!(
+        marker.starts_with("fiddle-effect:"),
+        "and the comment carries the effect identity the receipt names: {marker}"
+    );
+}

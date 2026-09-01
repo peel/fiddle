@@ -299,7 +299,7 @@ impl IntegrationOperation for EnsureCheckRequested {
 
     async fn inspect(&self, ctx: &EffectContext) -> Result<Option<WorkflowRun>, GhError> {
         let response = ctx
-            .gh
+            .gh_client()?
             .api("GET", &self.runs_path(), None, &ctx.cancel)
             .await?;
 
@@ -340,7 +340,7 @@ impl IntegrationOperation for EnsureCheckRequested {
             "ref": self.git_ref,
             "inputs": { "fiddle_effect_id": self.effect_id.0 },
         });
-        ctx.gh
+        ctx.gh_client()?
             .api("POST", &self.dispatch_path(), Some(&body), &ctx.cancel)
             .await
             .map(|_response| ())

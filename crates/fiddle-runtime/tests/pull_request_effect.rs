@@ -406,7 +406,8 @@ async fn a_422_for_a_pull_request_that_already_exists_is_not_a_false_failure() {
     witness.script(CREATE, "422 1 conflict");
     let refusal = witness
         .context()
-        .gh
+        .gh_client()
+        .expect("the context holds a forge")
         .api(
             "POST",
             &format!("/repos/{REPO}/pulls"),
@@ -501,7 +502,8 @@ async fn a_lost_create_response_does_not_produce_a_second_pull_request() {
     witness.script(CREATE, "201 0 commit_then_die");
     let lost = witness
         .context()
-        .gh
+        .gh_client()
+        .expect("the context holds a forge")
         .api(
             "POST",
             &format!("/repos/{REPO}/pulls"),

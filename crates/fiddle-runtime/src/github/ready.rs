@@ -123,7 +123,7 @@ impl IntegrationOperation for EnsurePullRequestReady {
 
     async fn inspect(&self, ctx: &EffectContext) -> Result<Option<ReadyPullRequest>, GhError> {
         let response = ctx
-            .gh
+            .gh_client()?
             .api("GET", &self.lookup_path(), None, &ctx.cancel)
             .await?;
         let (draft, node_id) = self.read(&response.body)?;
@@ -146,7 +146,7 @@ impl IntegrationOperation for EnsurePullRequestReady {
     ) -> Result<(), GhError> {
         let (query, variables) = self.mutation()?;
 
-        ctx.gh
+        ctx.gh_client()?
             .graphql(query, &variables, &ctx.cancel)
             .await
             .map(|_data| ())

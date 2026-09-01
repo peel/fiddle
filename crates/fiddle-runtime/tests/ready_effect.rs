@@ -527,7 +527,8 @@ async fn a_lost_answer_on_the_ready_transition_is_settled_by_reading() {
 
     let lost = witness
         .ctx()
-        .gh
+        .gh_client()
+        .expect("the context holds a forge")
         .graphql(MUTATION, &[("id", NODE_ID)], &CancellationToken::new())
         .await
         .expect_err("the fixture must really lose the answer, or this proves nothing");

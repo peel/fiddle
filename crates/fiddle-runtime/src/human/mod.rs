@@ -385,7 +385,7 @@ impl IntegrationOperation for PublishDecisionRequest {
 
     async fn inspect(&self, ctx: &EffectContext) -> Result<Option<PublishedRequest>, GhError> {
         let conversation = read_conversation(
-            &ctx.gh,
+            ctx.gh_client()?,
             &self.repo,
             self.pr,
             CONVERSATION_PAGES,
@@ -464,7 +464,10 @@ impl HumanInteractionPort for GitHubConversation {
     ) -> Result<InteractionRef, GhError> {
         let path = request.comments_path();
         let body = serde_json::json!({ "body": request.payload() });
-        let response = ctx.gh.api("POST", &path, Some(&body), &ctx.cancel).await?;
+        let response = ctx
+            .gh_client()?
+            .api("POST", &path, Some(&body), &ctx.cancel)
+            .await?;
         let comment = response.body["id"].as_u64().ok_or_else(|| {
             GhError::Malformed(format!(
                 "{path} answered {} with no comment id",
@@ -485,7 +488,8 @@ impl HumanInteractionPort for GitHubConversation {
     ) -> Result<Vec<HumanResponse>, GhError> {
         match interaction {
             InteractionRef::GitHubPullRequestComment { repo, pr, .. } => {
-                read_conversation(&ctx.gh, repo, *pr, CONVERSATION_PAGES, &ctx.cancel).await
+                read_conversation(ctx.gh_client()?, repo, *pr, CONVERSATION_PAGES, &ctx.cancel)
+                    .await
             }
             InteractionRef::JiraIssueComment { .. } => Err(GhError::NotSent(format!(
                 "{interaction} is a jira interaction and this port reads a github conversation; \

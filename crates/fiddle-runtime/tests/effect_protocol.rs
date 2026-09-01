@@ -1541,7 +1541,8 @@ async fn a_push_that_landed_before_its_answer_was_lost_is_resolved_by_reading() 
     let witness = Remote::empty();
     let wctx = witness.context_pushing_with("push_then_killed", PATIENT);
     let lost = wctx
-        .git
+        .git_client()
+        .expect("the context holds a forge")
         .publish(&wctx.work, &published_branch(), &wctx.cancel)
         .await
         .expect_err("the fixture must really lose the answer, or it proves nothing");
