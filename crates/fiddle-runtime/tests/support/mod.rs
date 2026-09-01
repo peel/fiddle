@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod cve;
+pub mod gullible;
 pub mod quoting;
 pub mod stub_jira;
 

@@ -1,3 +1,4 @@
+use rig_core::completion::CompletionRequest;
 use rig_core::test_utils::MockCompletionModel;
 
 pub const FENCE: char = '`';
@@ -37,20 +38,22 @@ fn strings_in(value: &serde_json::Value, into: &mut Vec<String>) {
     }
 }
 
+pub fn texts_of(request: &CompletionRequest) -> Vec<String> {
+    let mut texts: Vec<String> = request.preamble.clone().into_iter().collect();
+    strings_in(
+        &serde_json::to_value(&request.chat_history)
+            .expect("the messages the model received serialize"),
+        &mut texts,
+    );
+    texts
+}
+
+pub fn carried_by(requests: &[CompletionRequest]) -> Vec<Vec<String>> {
+    requests.iter().map(texts_of).collect()
+}
+
 pub fn what_each_request_carried(model: &MockCompletionModel) -> Vec<Vec<String>> {
-    model
-        .requests()
-        .iter()
-        .map(|request| {
-            let mut texts: Vec<String> = request.preamble.clone().into_iter().collect();
-            strings_in(
-                &serde_json::to_value(&request.chat_history)
-                    .expect("the messages the model received serialize"),
-                &mut texts,
-            );
-            texts
-        })
-        .collect()
+    carried_by(&model.requests())
 }
 
 pub fn carrying<'a>(planted: &str, texts: &'a [String]) -> Vec<&'a String> {

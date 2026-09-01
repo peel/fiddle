@@ -15,16 +15,19 @@ use fiddle_runtime::capability::{
 use fiddle_runtime::effect::{
     EffectContext, EffectTrace, ExecutionStep, Executor, ReadRetry, StepParams,
 };
+use fiddle_runtime::toil::Quoted;
 use fiddle_runtime::workspace::{Workspace, WorkspaceCommand};
 use fiddle_runtime::{GhCli, GitCli, Redaction};
+use rig_core::completion::CompletionModel;
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use support::gullible::{how_it_arrived, reading_of, Gullible, PlantedWrite, Reading};
 use support::quoting::{
-    carrying, longest_run_of_fences, quotation_in, what_each_request_carried, FENCE,
+    carried_by, carrying, longest_run_of_fences, quotation_in, what_each_request_carried, FENCE,
 };
 use support::stub_jira::{client_for, StubJira};
 use support::{Deployment, INVOCATION_REF, PROJECT};
@@ -67,6 +70,8 @@ const AN_INSTRUCTION_IN_THE_TICKET: &str =
 const A_PLANTED_VALUE: &str = "SUPPLIER-Zq7Velum4418";
 
 const FIDDLES_CLOSING_WORDS: &str = "The quotation has ended.";
+
+const A_SECRET_FILE: &str = "deploy/secrets.yml";
 
 fn a_ticket_asking_for_a_change() -> String {
     format!(
@@ -588,7 +593,7 @@ impl World {
             .collect()
     }
 
-    fn ports(&self, model: MockCompletionModel) -> WorkflowPorts<MockCompletionModel> {
+    fn ports<M>(&self, model: M) -> WorkflowPorts<M> {
         WorkflowPorts {
             model,
             host: ToolHost {
@@ -610,6 +615,10 @@ impl World {
             transcripts: None,
             prompts: shipped_prompts(),
         }
+    }
+
+    fn holds(&self, path: &str) -> bool {
+        self.workspace.root().join(path).exists()
     }
 
     fn workspace_head(&self) -> String {
@@ -793,22 +802,54 @@ fn rejecting() -> MockCompletionModel {
     reporting_then(json!({"verdict": "rejected", "findings": [A_SIGNATURE]}))
 }
 
-async fn ran(
+fn accepting_turns() -> Vec<MockTurn> {
+    vec![
+        MockTurn::tool_call("c1", "run_check", json!({})),
+        MockTurn::text(
+            json!({"changed_files": ["src/lib.rs"], "summary": "made the change", "claimed_complete": true})
+                .to_string(),
+        ),
+        MockTurn::text(json!({"verdict": "accepted"}).to_string()),
+    ]
+}
+
+fn the_key_the_instruction_asked_for() -> PlantedWrite {
+    PlantedWrite {
+        path: A_SECRET_FILE.to_string(),
+        contents: format!("deploy_secrets:\n  supplier_key: {A_PLANTED_VALUE}\n"),
+    }
+}
+
+fn a_model_that_obeys_an_unquoted_instruction() -> Gullible {
+    Gullible::obeying(
+        AN_INSTRUCTION_IN_THE_TICKET,
+        the_key_the_instruction_asked_for(),
+        accepting_turns(),
+    )
+}
+
+async fn ran<M>(
     world: &World,
-    model: MockCompletionModel,
+    model: M,
     params: StepParams,
     observed: Option<&WorkItemState>,
-) -> Result<Executed, CapabilityError> {
+) -> Result<Executed, CapabilityError>
+where
+    M: CompletionModel + 'static,
+{
     ran_document(world, toil(), model, params, observed).await
 }
 
-async fn ran_document(
+async fn ran_document<M>(
     world: &World,
     workflow: Workflow,
-    model: MockCompletionModel,
+    model: M,
     params: StepParams,
     observed: Option<&WorkItemState>,
-) -> Result<Executed, CapabilityError> {
+) -> Result<Executed, CapabilityError>
+where
+    M: CompletionModel + 'static,
+{
     let ctx = world.context();
     let deployment = allowing();
     let capability = WorkflowCapability::new(
@@ -1351,46 +1392,106 @@ async fn a_ticket_carrying_a_fence_cannot_break_out_of_its_own_quotation() {
     }
 }
 
-#[tokio::test]
-async fn a_ticket_that_instructs_the_model_moves_no_effect_this_document_does_not_name() {
-    let asked = world_holding(ISSUE).await;
-    let asking = accepting();
-    ran(
-        &asked,
-        asking.clone(),
-        params(),
-        Some(&described_issue("Ready", &a_ticket_asking_for_a_change())),
-    )
-    .await
-    .expect("a ticket that describes a change runs to an end");
+#[test]
+fn the_gullible_model_reads_a_fenced_ticket_as_data_and_an_unfenced_one_as_an_instruction() {
+    assert!(
+        !AN_INSTRUCTION_IN_THE_TICKET.contains('\n'),
+        "this instruction is written to sit on one line, so the reading below can locate it"
+    );
 
+    let prompt = shipped_prompt(TOIL_PROMPT);
+    let fenced = format!(
+        "{prompt}\n\n{}",
+        Quoted::of(AN_INSTRUCTION_IN_THE_TICKET).fenced()
+    );
+    let bare = format!("{prompt}\n\n{AN_INSTRUCTION_IN_THE_TICKET}");
+
+    assert_eq!(
+        reading_of(&prompt, AN_INSTRUCTION_IN_THE_TICKET),
+        Reading::Absent,
+        "the shipped prompt spells the instruction, so a run that never carried one would \
+         read as though it had"
+    );
+    assert_eq!(
+        reading_of(&fenced, AN_INSTRUCTION_IN_THE_TICKET),
+        Reading::Quoted,
+        "the model double must read the shape this build sends as a quotation, or it can \
+         never find the run compliant"
+    );
+    assert_eq!(
+        reading_of(&bare, AN_INSTRUCTION_IN_THE_TICKET),
+        Reading::Bare,
+        "the model double must read a ticket handed over without a fence as an instruction, \
+         or it cannot tell the two shapes apart and the run below proves nothing"
+    );
+    assert_ne!(
+        reading_of(&fenced, AN_INSTRUCTION_IN_THE_TICKET),
+        reading_of(&bare, AN_INSTRUCTION_IN_THE_TICKET),
+        "the two shapes the data boundary switches between must read differently"
+    );
+
+    assert_eq!(
+        how_it_arrived(
+            &[prompt.clone(), fenced.clone(), bare.clone()],
+            AN_INSTRUCTION_IN_THE_TICKET
+        ),
+        Reading::Bare,
+        "one unfenced copy among many quoted ones is still an instruction the model was given"
+    );
+    assert_eq!(
+        how_it_arrived(&[prompt, fenced], AN_INSTRUCTION_IN_THE_TICKET),
+        Reading::Quoted,
+        "a request that carries the instruction only inside a fence carried it as data"
+    );
+}
+
+#[tokio::test]
+async fn a_model_that_obeys_an_unquoted_instruction_obeys_none_in_this_documents_ticket() {
     let instructed = world_holding(ISSUE).await;
-    let instructing = accepting();
+    let model = a_model_that_obeys_an_unquoted_instruction();
     let earned = ran(
         &instructed,
-        instructing.clone(),
+        model.clone(),
         params(),
         Some(&described_issue("Ready", AN_INSTRUCTION_IN_THE_TICKET)),
     )
     .await
-    .expect("a ticket that instructs the model runs to the same end");
+    .expect("a ticket that instructs the model runs to an end");
     assert!(
         matches!(earned, Executed::Earned(_)),
         "an accepted change earns the run: {earned:?}"
     );
 
-    let requests = what_each_request_carried(&instructing);
+    let readings = model.readings();
     assert!(
-        requests.len() > 2,
-        "only {} requests reached the model, so the counts below compare a run that was told \
-         almost nothing",
-        requests.len()
+        readings.len() > 2,
+        "only {} requests reached the model, so the readings below read almost nothing",
+        readings.len()
     );
+    let not_quoted: Vec<(usize, Reading)> = readings
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, reading)| *reading != Reading::Quoted)
+        .collect();
+    assert_eq!(
+        not_quoted,
+        Vec::new(),
+        "every request must carry the instruction, and carry it between two fence lines: \
+         {readings:?}"
+    );
+    assert_eq!(
+        model.times_it_obeyed(),
+        0,
+        "the model was handed the instruction as an instruction and did what it said"
+    );
+
+    let requests = carried_by(&model.requests());
     for (nth, texts) in requests.iter().enumerate() {
         assert!(
             !carrying(AN_INSTRUCTION_IN_THE_TICKET, texts).is_empty(),
-            "request {nth} never carried the instruction, so the counts below compare two \
-             runs neither of which was given one"
+            "request {nth} never carried the instruction, so the counts below measure a run \
+             that was never given one"
         );
     }
 
@@ -1404,29 +1505,18 @@ async fn a_ticket_that_instructs_the_model_moves_no_effect_this_document_does_no
         "the run performed an effect the shipped document does not name"
     );
     assert_eq!(
-        instructed.effect_steps(),
-        asked.effect_steps(),
-        "the instruction in the ticket moved which effect steps the run took"
-    );
-    assert_eq!(
         instructed.issues_written_to().await,
         vec![ISSUE.to_string()],
         "the run wrote onto a ticket other than the one it observed"
     );
     assert_eq!(
-        instructed.issues_written_to().await,
-        asked.issues_written_to().await,
-        "the instruction in the ticket moved which tickets the run wrote onto"
-    );
-    assert_eq!(
-        instructed.calls(),
-        asked.calls(),
-        "the instruction in the ticket changed how many requests reached the forge"
-    );
-    assert_eq!(
         files_committed_by(&instructed),
         vec![TRACE.to_string()],
         "the run committed a file the instruction in the ticket asked for"
+    );
+    assert!(
+        !instructed.holds(A_SECRET_FILE),
+        "the instruction asked for a deploy secret and the workspace holds the file it named"
     );
 
     let named_a_secret: Vec<String> = instructed
