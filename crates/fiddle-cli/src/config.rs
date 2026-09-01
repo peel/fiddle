@@ -2811,54 +2811,233 @@ token = { env = "JIRA_API_TOKEN" }
         }
     }
 
-    #[test]
-    fn one_scope_bound_moves_both_the_reported_value_and_the_guard() {
-        let resolved_scope = |named: &str, value: usize| {
-            let config = toml::from_str::<Config>(&format!(
-                "{TOILING}\n[orchestration.toil]\n{named} = {value}\n"
-            ))
-            .unwrap();
-            let said = crate::render::config_check_human(&config);
-            let line = format!("orchestration.toil.{named} = {value}");
-            assert!(
-                said.contains(&line),
-                "the row's own premise: the command reports the bound it resolved, \
-                 and `{line}` is not in {said}"
-            );
-            toil_bounds(&config).scope
-        };
+    fn scope_the_document_resolves(named: &str, value: usize) -> fiddle_runtime::toil::Scope {
+        let config = toml::from_str::<Config>(&format!(
+            "{TOILING}\n[orchestration.toil]\n{named} = {value}\n"
+        ))
+        .unwrap();
+        let said = crate::render::config_check_human(&config);
+        let line = format!("orchestration.toil.{named} = {value}");
+        assert!(
+            said.contains(&line),
+            "the row's own premise: the command reports the bound it resolved, \
+             and `{line}` is not in {said}"
+        );
+        toil_bounds(&config).scope
+    }
 
-        for (named, between) in [
-            (
-                "max_files_changed",
-                fiddle_runtime::toil::Change {
-                    files_changed: 4,
-                    diff_lines: 0,
+    fn git_in(at: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(at)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?} in {}: {}",
+            at.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn a_committed_tree_at(dir: &Path) -> PathBuf {
+        let repo = dir.join("fixture");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_in(&repo, &["init", "-q", "-b", "main", "."]);
+        git_in(&repo, &["config", "user.email", "toil@example.invalid"]);
+        git_in(&repo, &["config", "user.name", "toil"]);
+        std::fs::write(repo.join("README.md"), "the tree a workspace is cut from\n").unwrap();
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-q", "-m", "the baseline"]);
+        repo
+    }
+
+    const A_WORKFLOW_ATTEMPT: &str = "01JQZX0000000000000000000";
+
+    async fn the_workflow_guard_on(
+        scope: Option<fiddle_runtime::toil::Scope>,
+        files: usize,
+        lines: usize,
+    ) -> (
+        (usize, usize),
+        Result<fiddle_runtime::capability::Executed, fiddle_runtime::capability::CapabilityError>,
+    ) {
+        use fiddle_runtime::capability::workflow::{
+            Step, Workflow, WorkflowCapability, WorkflowPorts,
+        };
+        use fiddle_runtime::capability::{Capability, ExecutionGrant, ExecutionInput};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let fixture = a_committed_tree_at(dir.path());
+        let attempt = fiddle_core::AttemptId(A_WORKFLOW_ATTEMPT.to_string());
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let workspace = std::sync::Arc::new(
+            fiddle_runtime::workspace::Workspace::create(
+                &fixture,
+                &dir.path().join("ws"),
+                &attempt,
+                cancel.clone(),
+            )
+            .expect("a workspace cut from the committed tree"),
+        );
+        for file in 1..=files {
+            std::fs::write(
+                workspace.root().join(format!("changed_{file}.txt")),
+                "change\n".repeat(lines),
+            )
+            .unwrap();
+        }
+        let measured = (
+            workspace.changed_files().unwrap().len(),
+            workspace.changed_lines().unwrap(),
+        );
+
+        let prompts = dir.path().join("prompts");
+        std::fs::create_dir_all(&prompts).unwrap();
+        std::fs::write(
+            prompts.join("change.md"),
+            "make the change the ticket asks for\n",
+        )
+        .unwrap();
+
+        let ctx = unreachable_effect_context();
+        let deployment = AllowEverything;
+        let executor = fiddle_runtime::effect::Executor::new(
+            fiddle_core::TOIL,
+            "p".to_string(),
+            "beans:w-1".to_string(),
+            &deployment,
+            &ctx,
+            &DiscardTheWalk,
+            fiddle_runtime::effect::ReadRetry::none(),
+        );
+        let built = WorkflowCapability::new(
+            fiddle_core::TOIL,
+            "toil",
+            Workflow::new(
+                "toil".to_string(),
+                "toil".to_string(),
+                vec![Step::Agent {
+                    prompt: PathBuf::from("change.md"),
+                    max_turns: 2,
+                }],
+            )
+            .unwrap(),
+            executor,
+            fiddle_runtime::effect::StepParams::for_capability(fiddle_core::TOIL),
+            WorkflowPorts {
+                model: rig_core::test_utils::MockCompletionModel::new([
+                    rig_core::test_utils::MockTurn::text(
+                        serde_json::json!({
+                            "changed_files": [],
+                            "summary": "the change this row plants is already in the workspace",
+                            "claimed_complete": true
+                        })
+                        .to_string(),
+                    ),
+                ]),
+                host: fiddle_runtime::agent::ToolHost {
+                    workspace: std::sync::Arc::clone(&workspace),
+                    cancel: cancel.clone(),
+                    check: fiddle_runtime::workspace::WorkspaceCommand {
+                        program: "true".to_string(),
+                        args: Vec::new(),
+                        timeout: Duration::from_secs(30),
+                    },
+                    commands: std::sync::Arc::new(Vec::new()),
+                    command_timeout: Duration::from_secs(30),
+                    receipts: std::sync::Arc::new(std::sync::Mutex::new(
+                        fiddle_runtime::agent::ToolReceipts::default(),
+                    )),
                 },
-            ),
-            (
-                "max_diff_lines",
-                fiddle_runtime::toil::Change {
-                    files_changed: 1,
-                    diff_lines: 4,
+                budget: fiddle_runtime::agent::AgentBudget {
+                    max_turns: 2,
+                    max_tokens: 4096,
+                    deadline: Duration::from_secs(60),
+                    max_changed_files: 64,
+                    tool_timeout: Duration::from_secs(30),
                 },
-            ),
+                redaction: fiddle_runtime::Redaction::of("sk-mock-must-not-appear-0d1e"),
+                transcripts: None,
+                prompts,
+            },
+        )
+        .expect("a one-step workflow this build reads");
+        let capability = match scope {
+            Some(scope) => built.bounded_by(scope),
+            None => built,
+        };
+        let ran = capability
+            .execute(ExecutionInput::unobserved(
+                ExecutionGrant::authorise(
+                    &fiddle_core::NextAction::Execute {
+                        capability_id: fiddle_core::TOIL,
+                    },
+                    &attempt,
+                )
+                .expect("an Execute derivation authorises"),
+                "p",
+                "beans:w-1",
+            ))
+            .await;
+        (measured, ran)
+    }
+
+    #[tokio::test]
+    async fn one_scope_bound_moves_both_the_reported_value_and_the_guard() {
+        for (named, unbroken, files, lines) in [
+            ("max_files_changed", "max_diff_lines", 4, 0),
+            ("max_diff_lines", "max_files_changed", 1, 4),
         ] {
-            let refusal = resolved_scope(named, 3)
-                .admits(&between)
-                .expect_err("a change past the bound the document names is refused");
-            assert!(
-                refusal.to_string().contains(named),
-                "the guard the workflow runs is this scope, and its refusal must name \
-                 the bound the document moved: {refusal}"
-            );
+            let (measured, refused) =
+                the_workflow_guard_on(Some(scope_the_document_resolves(named, 3)), files, lines)
+                    .await;
             assert_eq!(
-                resolved_scope(named, 5).admits(&between),
-                Ok(()),
+                measured,
+                (files, files * lines),
+                "the row's own premise: the workspace the guard measures holds \
+                 {files} changed files and {} changed lines",
+                files * lines
+            );
+            let refusal = refused
+                .expect_err("the workflow guard refuses a change past the bound the document names")
+                .to_string();
+            assert!(
+                refusal.contains(named),
+                "the guard the workflow runs took its bound from the document, and its \
+                 refusal must name the bound the document moved: {refusal}"
+            );
+            assert!(
+                !refusal.contains(unbroken),
+                "this change is inside `{unbroken}`, and the workflow refused naming it \
+                 anyway: {refusal}"
+            );
+
+            let (_, admitted) =
+                the_workflow_guard_on(Some(scope_the_document_resolves(named, 5)), files, lines)
+                    .await;
+            assert!(
+                matches!(
+                    admitted,
+                    Ok(fiddle_runtime::capability::Executed::Earned(_))
+                ),
                 "one number changed in the document, and the same change the tighter \
-                 bound refused is admitted, so the reported value and the enforced \
-                 value moved together"
+                 bound refused is admitted by the same workflow, so the value \
+                 `config check` reports and the value the guard enforces moved \
+                 together: {admitted:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn an_unbounded_workflow_admits_the_change_the_resolved_bound_refuses() {
+        let (measured, ran) = the_workflow_guard_on(None, 4, 0).await;
+        assert_eq!(measured, (4, 0));
+        assert!(
+            matches!(ran, Ok(fiddle_runtime::capability::Executed::Earned(_))),
+            "a workflow given no scope has no bound to read, so the refusal the row \
+             above reads is the resolved scope biting and not the workflow refusing \
+             every change: {ran:?}"
+        );
     }
 }
