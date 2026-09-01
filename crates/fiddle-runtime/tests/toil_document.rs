@@ -632,6 +632,9 @@ fn observed_issue(status: &str) -> WorkItemState {
         status: status.to_string(),
         projected_status: None,
         revision: Some(AT_SEVEN.to_string()),
+        labels: None,
+        description: None,
+        comments: None,
     }
 }
 
