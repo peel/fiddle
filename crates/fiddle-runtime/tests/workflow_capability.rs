@@ -1936,7 +1936,7 @@ async fn a_commit_step_that_finds_a_clean_workspace_earns_nothing_and_the_branch
     assert_eq!(
         params().head_sha.as_deref(),
         Some(HEAD_SHA),
-        "the step parameters name a commit, so the refusal below is a refusal to use it"
+        "the step parameters carry a `head_sha`, so the refusal below is a refusal to use it"
     );
 
     let refusal = refused_by(
@@ -2071,16 +2071,16 @@ fn a_sha_no_object_in_the_workspace_matches_records_because_the_check_is_spellin
 }
 
 #[test]
-fn one_run_that_commits_two_different_shas_refuses_and_committing_one_twice_does_not() {
+fn one_run_that_records_two_different_shas_refuses_and_recording_one_twice_does_not() {
     let mut outputs = outputs_holding_the_sha(A_FORTY_HEX_SHA);
     outputs
         .record_head_sha(A_FORTY_HEX_SHA)
-        .expect("the same commit twice is one commit");
+        .expect("the same sha recorded twice is one recording");
     assert_eq!(outputs.head_sha(), Some(A_FORTY_HEX_SHA));
 
     let refusal = outputs
         .record_head_sha(ANOTHER_FORTY_HEX_SHA)
-        .expect_err("two different commits in one run leave a later step no answer");
+        .expect_err("two different well-spelt shas in one run leave a later step no answer");
     assert_eq!(
         refusal,
         OutputRefusal::Recommitted {
@@ -2091,12 +2091,12 @@ fn one_run_that_commits_two_different_shas_refuses_and_committing_one_twice_does
     assert_eq!(
         outputs.head_sha(),
         Some(A_FORTY_HEX_SHA),
-        "and the commit the run earned first is unchanged"
+        "and the sha the run recorded first is unchanged"
     );
 }
 
 #[tokio::test]
-async fn a_run_starts_holding_no_commit_when_the_step_parameters_carry_one() {
+async fn a_run_starts_holding_nothing_earned_though_the_step_parameters_carry_a_recorded_sha() {
     let world = world();
     let ctx = world.context();
     let deployment = allowing();
@@ -2124,15 +2124,16 @@ async fn a_run_starts_holding_no_commit_when_the_step_parameters_carry_one() {
     assert_eq!(
         capability.earned_on_entering_each_step(),
         vec![StepOutputs::default()],
-        "the run entered its only step holding no commit, though the parameters handed it one"
+        "the run entered its only step holding nothing earned, though the parameters handed \
+         it a recorded sha"
     );
     assert_eq!(
         world.calls(),
         0,
-        "and the step reached no forge with the commit the parameters carried"
+        "and the step reached no forge with the sha the parameters carried"
     );
     let refusal =
-        outcome.expect_err("a commit placed in the step parameters is not one a step earned");
+        outcome.expect_err("a sha placed in the step parameters is not one a step earned");
     assert!(
         format!("{refusal}")
             .contains("no step before this one in this run committed the workspace"),

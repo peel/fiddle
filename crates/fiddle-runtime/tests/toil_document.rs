@@ -1039,7 +1039,7 @@ async fn the_branch_step_publishes_the_commit_the_commit_step_made_from_the_agen
     assert_eq!(
         params().head_sha.as_deref(),
         Some(HEAD_SHA),
-        "the step parameters name a commit, so the sha the run publishes below is a sha it \
+        "the step parameters carry a `head_sha`, so the sha the run publishes below is one it \
          earned and not the only one it was given"
     );
 

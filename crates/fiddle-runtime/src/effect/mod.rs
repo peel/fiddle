@@ -366,8 +366,8 @@ pub enum OutputRefusal {
     Misspelt { answered: String },
 
     #[error(
-        "the commit step committed {answered} and this run already earned {held}, so no \
-         later step can be told which commit it publishes"
+        "the commit step answered `{answered}` and this run already earned `{held}`, so no \
+         later step can be told which sha it publishes"
     )]
     Recommitted { held: String, answered: String },
 }

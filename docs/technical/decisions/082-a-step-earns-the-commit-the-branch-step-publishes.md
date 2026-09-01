@@ -1,7 +1,7 @@
 # 082 — A step earns the commit the branch step publishes
 
 Status: accepted
-Cites: Step, Ready, StepOutputs, OutputRefusal, StepParams, WorkflowCapability, EnsureBranchPublished, FromStepParams, ProposeChange, WorkflowRefusal, EnsurePullRequestReady, workflows/toil.toml, crates/fiddle-runtime/tests/toil_document.rs, the_branch_step_publishes_the_commit_the_commit_step_made_from_the_agents_work, a_run_whose_agent_wrote_nothing_refuses_at_the_branch_step_and_publishes_no_sha, a_commit_step_is_spelt_by_its_kind_alone_and_carries_no_other_field, a_sha_no_object_in_the_workspace_matches_records_because_the_check_is_spelling_alone, record_head_sha, earned_head_sha, commit_changed, crates/fiddle-runtime/src/capability/commit.rs
+Cites: Step, Ready, StepOutputs, OutputRefusal, StepParams, WorkflowCapability, EnsureBranchPublished, FromStepParams, ProposeChange, WorkflowRefusal, EnsurePullRequestReady, workflows/toil.toml, crates/fiddle-runtime/tests/toil_document.rs, the_branch_step_publishes_the_commit_the_commit_step_made_from_the_agents_work, a_run_whose_agent_wrote_nothing_refuses_at_the_branch_step_and_publishes_no_sha, a_commit_step_is_spelt_by_its_kind_alone_and_carries_no_other_field, a_sha_no_object_in_the_workspace_matches_records_because_the_check_is_spelling_alone, one_run_that_records_two_different_shas_refuses_and_recording_one_twice_does_not, record_head_sha, earned_head_sha, commit_changed, crates/fiddle-runtime/src/capability/commit.rs
 Retired: no_step_earns_the_commit_the_branch_step_publishes
 
 ## Context
@@ -28,7 +28,7 @@ The commit step makes no empty commit. The run continues to the branch step. The
 
 What makes an earned sha a commit is therefore where it comes from, not this check. Outside the tests, `record_head_sha` has one caller: the commit step, which reads `git rev-parse HEAD` after its own `git commit`. `record_head_sha` is public, so a later caller could record a well-spelt name of nothing and this check would not notice. A build that wants the stronger property must resolve the name against a repository and say so here.
 
-`OutputRefusal::Recommitted` refuses a second, different commit in the same run. A later step is given no guess in place of either.
+`OutputRefusal::Recommitted` refuses a second, different well-spelt sha in the same run. Its check is the same spelling test and an inequality, so its message names what the commit step answered and calls neither value a commit. A later step is given no guess in place of either.
 
 **We rejected: the agent step earns the commit.**
 
@@ -50,4 +50,4 @@ The shipped `workflows/toil.toml` names six steps: agent, evaluate, commit, `ens
 
 The commit message is `<project>: <invocation ref>`. `ProposeChange` wrote the same message from its own copy of the same three git calls. Both now call `commit_changed` and `message` in `capability/commit.rs`, so one change moves both. `CveMitigate` still commits through its own `Git` trait, which takes a different message, and this record does not merge that third path.
 
-A document that commits twice over two different trees is refused. A future document that genuinely needs two commits must change this rule, and it must record why here.
+A run that records two different shas is refused, and `one_run_that_records_two_different_shas_refuses_and_recording_one_twice_does_not` holds that rule on `StepOutputs` directly. A document that writes, commits, writes again and commits again therefore publishes neither commit. That second sentence is an argument from the rule, not a measurement: no test runs a document with two commit steps. A future document that genuinely needs two commits must change this rule, and it must record why here.

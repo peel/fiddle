@@ -149,7 +149,7 @@ fn decision_request() -> HumanDecisionRequest {
     }
 }
 
-fn earned_a_commit() -> StepOutputs {
+fn earned_a_recorded_sha() -> StepOutputs {
     let mut earned = StepOutputs::default();
     earned
         .record_head_sha(A_FORTY_HEX_SHA_A_STEP_EARNED)
@@ -170,7 +170,7 @@ fn params_for(capability: CapabilityId) -> StepParams {
         pull_request: Some(PR),
         check_workflow: Some(CHECK_WORKFLOW.to_string()),
         decision_request: Some(decision_request()),
-        earned: earned_a_commit(),
+        earned: earned_a_recorded_sha(),
         ..StepParams::for_capability(capability)
     }
 }
@@ -297,13 +297,13 @@ async fn every_registered_descriptor_builds_the_operation_its_name_means_or_refu
         "these are the effects a workflow step names, and the list is measured by building \
          every registered descriptor rather than declared"
     );
-    let without_a_commit = StepParams {
+    let without_an_earned_sha = StepParams {
         earned: StepOutputs::default(),
         ..params.clone()
     };
     let branch = registry::resolve(&EffectName::parse(ENSURE_BRANCH_PUBLISHED).unwrap())
         .expect("a registered name has a constructor");
-    let refusal = branch(&executor, &without_a_commit)
+    let refusal = branch(&executor, &without_an_earned_sha)
         .err()
         .expect("a branch step that no commit step ran before builds nothing");
     assert!(
@@ -312,9 +312,8 @@ async fn every_registered_descriptor_builds_the_operation_its_name_means_or_refu
     );
     assert!(
         !refusal.to_string().contains(HEAD_SHA),
-        "the branch effect is in the list above because a step earned a commit, and without \
-         one it must refuse rather than reach for the `head_sha` the parameters carry: \
-         {refusal}"
+        "the branch effect is in the list above because a step earned a sha, and without one \
+         it must refuse rather than reach for the `head_sha` the parameters carry: {refusal}"
     );
     assert_eq!(
         refused,
