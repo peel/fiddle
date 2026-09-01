@@ -204,8 +204,9 @@ the credential boundary.
 organisation's tenant and answers `serverTitle: Aspen Digital`. A run against it
 spends its rounds on authentication that could never succeed.
 
-`scripts/live-jira-observe.sh` reads one issue two ways and compares them. It
-calls `/rest/api/3/issue/KEY?fields=status,updated` itself, then runs
+`scripts/live-jira-observe.sh` reads one issue three ways and compares them. It
+calls `/rest/api/3/issue/KEY?fields=status,updated` itself, calls the same route
+again with the field list the port sends, then runs
 `fiddle inspect jira:KEY --json` against a generated document that names
 `JIRA_USER_EMAIL` and `JIRA_API_TOKEN` and carries neither value. It refuses when
 any of `JIRA_SITE`, `JIRA_ISSUE`, `JIRA_USER_EMAIL`, `JIRA_API_TOKEN` or
@@ -214,6 +215,13 @@ would read exactly like one that passed. It also refuses a `JIRA_SITE` that is
 not an `https://` origin. Set the scheme. A bare `snplow.atlassian.net` reaches
 the site over http, and the site answers **301** to every request, which reads
 like a refusal and measures nothing.
+
+The lane holds no copy of the field list. `fields_the_port_asks_for` reads
+`const FIELDS` out of `crates/fiddle-runtime/src/jira/work_item.rs` and refuses
+when that list does not carry every field the lane grades. A port that widens its
+read while the lane keeps asking for two fields is the drift this lane was
+corrected for: for five days it asked Atlassian for five fields and recorded
+three.
 
 What it proves, and why each assertion is there:
 
@@ -229,34 +237,78 @@ What it proves, and why each assertion is there:
   `canonical_revision` returns `None`, the port reports `Unavailable`, and this
   lane is the only thing that would say so — the hermetic suite reads a stub that
   emits the shape it was written to emit.
+- the site answers the port's own field list, and `fields.labels`,
+  `fields.description` and `fields.comment` arrive in shapes `labels_in`,
+  `description_in` and `comments_in` read. Each recorder names the field whose
+  shape it refuses, so an answer the port cannot parse stops the lane rather than
+  passing through it.
+- what `fiddle` parsed agrees with what the direct read carried, field by field.
+  A lane that recorded a shape and never compared it with the port's own reading
+  would pass while the two disagreed.
+- a work item the port reports `Unavailable` fails the lane and carries the
+  port's reason verbatim. That reason is the only line that names the field, so
+  the lane prints it rather than reporting "no status".
+
+Measured on 2026-09-01 against `snplow.atlassian.net`:
+
+| what came back | ISP-239 | ISP-267 |
+| --- | --- | --- |
+| `fields.labels` | a list of 2, every entry text | a list of 2, every entry text |
+| `fields.description` | a document, type `doc`, version `1`, 3729 bytes | a document, type `doc`, version `1`, 4376 bytes |
+| `fields.comment` | 2 of 2 comments, page size 2 | 1 of 1 comments, page size 1 |
+| what `fiddle` read off it | 2 labels, 2638 characters of description, 2 comments | 2 labels, 1401 characters of description, 1 comment |
+
+Both comment containers carried `comments`, `total`, `maxResults` and `startAt`,
+every comment carried `id` and `author.accountId`, and every body was a document
+`written` flattened to something rather than to nothing. `maxResults` equalled
+`total` in both reads, so the page an issue read returns is still unmeasured.
+`replies_in` refuses a `total` above the number of comments carried, so an issue
+whose conversation exceeds one page would report `Unavailable`. No such issue has
+been read.
 
 The lane records evidence and does not gate. `scripts/gate.sh` references no
 `live-*.sh` script. It reads an issue and writes nothing, so it needs no
 disposable target; do not point it at an issue whose `status` you mind being
 printed to your terminal.
 
-The lane prints the issue its own `curl` read, and that call requests
-`fields=status,updated` and no other field, so no ticket prose reaches the
-terminal. `fiddle inspect` on the same issue requests
+The lane prints the issue its narrow `curl` read, and that call requests
+`fields=status,updated` and no other field, so no ticket prose can reach the
+terminal through it. The wide `curl` and `fiddle inspect` both request
 `status,updated,labels,description,comment`, because eligibility weighs the
 label, the summary text and the conversation
-(`crates/fiddle-runtime/src/jira/work_item.rs`). The lane writes that answer to a
-temporary file and reads a status, a projection and a revision off it.
+(`crates/fiddle-runtime/src/jira/work_item.rs`). The lane writes both of those
+answers to a temporary file and prints types, counts, byte sizes and character
+counts off them. No label's text, no description's prose and no comment's body
+reaches a line the lane prints.
 
-On the path that passes, none of the inspected answer is printed. The lane
-reports the three values it read, and `trap 'rm -rf "$TMP"' EXIT` removes the
-temporary directory when the run ends.
+On the path that passes, none of either five-field answer is printed. The lane
+reports the three values it read and the three shapes it graded, and
+`trap 'rm -rf "$TMP"' EXIT` removes the temporary directory when the run ends.
 
-One path does print it. When the answer does not parse as JSON, the lane fails
-and writes the whole answer to stderr, because a reader who cannot see what
-arrived cannot say why it did not parse. That is the malformed-answer
-diagnostic, and it is the only path on which the inspected answer reaches the
-terminal. A non-zero exit from `fiddle inspect` prints the captured stderr and
-not the answer. A credential found in either stream is reported without printing
+Two paths do print an answer. When the site's five-field answer does not parse as
+JSON, or when `fiddle`'s own answer does not, the lane fails and writes that whole
+answer to stderr, because a reader who cannot see what arrived cannot say why it
+did not parse. Those are the malformed-answer diagnostics, and they are the only
+paths on which an inspected answer reaches the terminal. A refused shape is not
+one of them: it names the field, the shape word and the counts, and prints none
+of the value. A non-zero exit from `fiddle inspect` prints the captured stderr
+and not the answer. A credential found in any stream is reported without printing
 the stream at all.
 
-So ticket prose stays inside the run directory unless `fiddle inspect` answers
-something that is not JSON. Nothing the lane prints is committed here.
+So ticket prose stays inside the run directory unless an answer arrives that is
+not JSON. Nothing the lane prints is committed here.
+
+The refusals are proved without a credential and without the network.
+`scripts/test-live-jira-lanes.sh` sources the lane, hands each recorder a fixture
+built from one well-formed answer by breaking exactly one field, and requires the
+refusal to name that field. It runs the well-formed answer through the same
+recorders first, so a recorder that refused everything would fail the suite
+rather than pass it. It ran 50 cases on 2026-09-01 and reached no site. The
+port's own refusals were measured the same day against a loopback stub: with a
+`fields.labels` document, a `fields.description` list, a `fields.comment` string
+and a container carrying 1 of 3 comments, `fiddle inspect` reported the work item
+`unavailable` on all four and the lane failed carrying a reason that named the
+field.
 
 ### The live Jira search shape lane
 
