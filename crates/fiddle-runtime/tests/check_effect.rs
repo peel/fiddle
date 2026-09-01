@@ -260,7 +260,14 @@ async fn request_the_check(
 
 async fn observe(ci: &Ci, head: &str, names: &[&str]) -> Observation<VerificationState> {
     let ctx = ci.context();
-    observe_checks(&ctx.gh, REPO, head, &required(names), &ctx.cancel).await
+    observe_checks(
+        ctx.gh_client().expect("the context holds a forge"),
+        REPO,
+        head,
+        &required(names),
+        &ctx.cancel,
+    )
+    .await
 }
 
 #[tokio::test]
@@ -479,7 +486,8 @@ async fn a_lost_dispatch_response_does_not_start_a_second_run() {
     witness.script(DISPATCH, "204 0 commit_then_die");
     let lost = witness
         .context()
-        .gh
+        .gh_client()
+        .expect("the context holds a forge")
         .api(
             "POST",
             &format!("/repos/{REPO}/actions/workflows/{WORKFLOW}/dispatches"),

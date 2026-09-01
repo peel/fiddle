@@ -142,7 +142,8 @@ impl World {
     async fn opened_pull_request_number(&self) -> u64 {
         let ctx = self.plain_context();
         let listed = ctx
-            .gh
+            .gh_client()
+            .expect("the context holds a forge")
             .api(
                 "GET",
                 &format!("/repos/{REPO}/pulls?head={OWNER}%3A{BRANCH}&base={BASE}&state=open"),

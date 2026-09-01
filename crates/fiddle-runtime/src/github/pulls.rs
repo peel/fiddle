@@ -208,7 +208,7 @@ impl IntegrationOperation for EnsurePullRequest {
 
     async fn inspect(&self, ctx: &EffectContext) -> Result<Option<PullRequest>, GhError> {
         let response = ctx
-            .gh
+            .gh_client()?
             .api("GET", &self.lookup_path(), None, &ctx.cancel)
             .await?;
 
@@ -242,7 +242,7 @@ impl IntegrationOperation for EnsurePullRequest {
         ]);
         body.extend(self.draft_key());
         let created = ctx
-            .gh
+            .gh_client()?
             .api(
                 "POST",
                 &format!("/repos/{}/pulls", self.repo),
@@ -263,7 +263,7 @@ impl IntegrationOperation for EnsurePullRequest {
             ))
         })?;
 
-        ctx.gh
+        ctx.gh_client()?
             .api(
                 "POST",
                 &self.labels_path(number),
@@ -423,7 +423,10 @@ impl EnsurePullRequestBody {
     }
 
     async fn held(&self, ctx: &EffectContext) -> Result<String, GhError> {
-        let response = ctx.gh.api("GET", &self.path(), None, &ctx.cancel).await?;
+        let response = ctx
+            .gh_client()?
+            .api("GET", &self.path(), None, &ctx.cancel)
+            .await?;
         self.read(&response.body)
     }
 }
@@ -490,7 +493,7 @@ impl IntegrationOperation for EnsurePullRequestBody {
         ctx: &EffectContext,
         _authorized: &AuthorizedEffect<Self>,
     ) -> Result<(), GhError> {
-        ctx.gh
+        ctx.gh_client()?
             .api("PATCH", &self.path(), Some(&self.request()), &ctx.cancel)
             .await
             .map(|_response| ())

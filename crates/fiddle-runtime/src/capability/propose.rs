@@ -174,7 +174,7 @@ where
         let path = format!("/repos/{}/pulls/{pr}", self.config.repo);
         let response = self
             .ctx
-            .gh
+            .gh_client()?
             .api("GET", &path, None, &self.ctx.cancel)
             .await?;
         response.body["head"]["sha"]

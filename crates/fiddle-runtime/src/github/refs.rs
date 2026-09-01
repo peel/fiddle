@@ -87,7 +87,11 @@ impl EnsureBranchPublished {
     }
 
     async fn inspect(&self, ctx: &EffectContext) -> Result<Option<BranchRef>, GhError> {
-        let response = match ctx.gh.api("GET", &self.ref_path(), None, &ctx.cancel).await {
+        let response = match ctx
+            .gh_client()?
+            .api("GET", &self.ref_path(), None, &ctx.cancel)
+            .await
+        {
             Ok(response) => response,
             Err(GhError::Http { status: 404, .. }) => return Ok(None),
             Err(error) => return Err(error),
@@ -118,7 +122,8 @@ impl EnsureBranchPublished {
         ctx: &EffectContext,
         _authorized: &AuthorizedEffect<Self>,
     ) -> Result<(), GhError> {
-        ctx.git
+        ctx.git_client()
+            .map_err(GhError::Push)?
             .publish(&ctx.work, &self.branch, &ctx.cancel)
             .await
             .map(|_published| ())

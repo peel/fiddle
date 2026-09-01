@@ -235,6 +235,12 @@ pub enum CapabilityError {
 
     #[error("{0}")]
     OutOfScope(#[from] crate::toil::OutOfScope),
+
+    #[error("the forge was not reached: {0}")]
+    Forge(#[from] crate::github::GhError),
+
+    #[error("the local repository was not read: {0}")]
+    Tree(#[from] crate::git::GitError),
 }
 
 impl CapabilityError {
@@ -296,6 +302,11 @@ impl CapabilityError {
             CapabilityError::Attempts(_) => Recurrence::Correctable,
 
             CapabilityError::ChecksUnreadable(_) => Recurrence::Correctable,
+
+            CapabilityError::Forge(crate::github::GhError::Unconfigured)
+            | CapabilityError::Tree(crate::git::GitError::Unconfigured) => Recurrence::Permanent,
+
+            CapabilityError::Forge(_) | CapabilityError::Tree(_) => Recurrence::Correctable,
         }
     }
 }

@@ -8,8 +8,8 @@ pub use registry::{
 };
 
 use crate::agent::Verdict;
-use crate::git::GitCli;
-use crate::github::GhCli;
+use crate::git::{GitCli, GitError};
+use crate::github::{GhCli, GhError};
 use crate::jira::{JiraError, JiraHttp};
 use fiddle_core::{
     combine, effect_id, payload_hash, CapabilityId, DecisionBinding, DeploymentRule, EffectId,
@@ -106,8 +106,8 @@ pub trait DeploymentPolicy: Send + Sync {
 }
 
 pub struct EffectContext {
-    pub gh: GhCli,
-    pub git: GitCli,
+    pub gh: Option<GhCli>,
+    pub git: Option<GitCli>,
     pub jira: Option<JiraHttp>,
     pub work: PathBuf,
     pub cancel: CancellationToken,
@@ -116,9 +116,19 @@ pub struct EffectContext {
 impl EffectContext {
     pub fn new(gh: GhCli, git: GitCli, work: PathBuf, cancel: CancellationToken) -> Self {
         Self {
-            gh,
-            git,
+            gh: Some(gh),
+            git: Some(git),
             jira: None,
+            work,
+            cancel,
+        }
+    }
+
+    pub fn tracking(jira: JiraHttp, work: PathBuf, cancel: CancellationToken) -> Self {
+        Self {
+            gh: None,
+            git: None,
+            jira: Some(jira),
             work,
             cancel,
         }
@@ -131,6 +141,14 @@ impl EffectContext {
 
     pub fn jira_client(&self) -> Result<&JiraHttp, JiraError> {
         self.jira.as_ref().ok_or(JiraError::Unconfigured)
+    }
+
+    pub fn gh_client(&self) -> Result<&GhCli, GhError> {
+        self.gh.as_ref().ok_or(GhError::Unconfigured)
+    }
+
+    pub fn git_client(&self) -> Result<&GitCli, GitError> {
+        self.git.as_ref().ok_or(GitError::Unconfigured)
     }
 }
 
@@ -627,8 +645,8 @@ impl<'a> Executor<'a> {
         &self.invocation_ref
     }
 
-    pub fn git(&self) -> &GitCli {
-        &self.ctx.git
+    pub fn git(&self) -> Result<&GitCli, GitError> {
+        self.ctx.git_client()
     }
 
     pub async fn observe_checks(
@@ -637,8 +655,15 @@ impl<'a> Executor<'a> {
         head_sha: &str,
         required: &[String],
     ) -> Observation<VerificationState> {
-        crate::github::observe_checks(&self.ctx.gh, repo, head_sha, required, &self.ctx.cancel)
-            .await
+        match self.ctx.gh_client() {
+            Ok(gh) => {
+                crate::github::observe_checks(gh, repo, head_sha, required, &self.ctx.cancel).await
+            }
+            Err(absent) => Observation::Unavailable {
+                source: fiddle_core::SourceRef(format!("github:{repo}/commits/{head_sha}")),
+                reason: absent.to_string(),
+            },
+        }
     }
 
     pub async fn execute<O>(

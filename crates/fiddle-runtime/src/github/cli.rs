@@ -44,6 +44,9 @@ pub enum GhError {
     Duplicate { count: usize },
     #[error("the branch could not be pushed: {0}")]
     Push(#[from] GitError),
+
+    #[error("this deployment holds no `[github]` configuration, so no request was sent")]
+    Unconfigured,
 }
 
 impl AdapterError for GhError {
@@ -61,9 +64,10 @@ impl AdapterError for GhError {
             },
             GhError::Duplicate { .. } => EffectOutcome::Unknown,
             GhError::Malformed(_) => EffectOutcome::Unknown,
-            GhError::Auth | GhError::CancelledBeforeSpawn | GhError::NotSent(_) => {
-                EffectOutcome::NotCommitted
-            }
+            GhError::Auth
+            | GhError::CancelledBeforeSpawn
+            | GhError::NotSent(_)
+            | GhError::Unconfigured => EffectOutcome::NotCommitted,
             GhError::Push(error) => error.outcome(phase),
         }
     }
@@ -86,6 +90,7 @@ impl AdapterError for GhError {
             | GhError::NotSent(_)
             | GhError::Malformed(_)
             | GhError::Duplicate { .. }
+            | GhError::Unconfigured
             | GhError::Push(_) => false,
         }
     }
@@ -480,6 +485,7 @@ mod outcome {
             GhError::Malformed(_) => 8,
             GhError::Duplicate { .. } => 9,
             GhError::Push(_) => 10,
+            GhError::Unconfigured => 11,
         }
     }
 
@@ -525,6 +531,7 @@ mod outcome {
                 }),
                 EffectOutcome::Unknown,
             ),
+            (GhError::Unconfigured, EffectOutcome::NotCommitted),
         ]
     }
 

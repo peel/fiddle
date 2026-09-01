@@ -205,7 +205,7 @@ where
         work_id: &str,
     ) -> Result<(Run, Option<crate::scanner::ScanError>), CapabilityError> {
         let approved = plan_shared_pull_request(
-            &self.context.gh,
+            self.context.gh_client()?,
             &self.config.repo,
             &self.config.base,
             &stamped(&self.config.today, work_id),
@@ -214,7 +214,7 @@ where
         .await?;
 
         let unproved = plan_unproved_pull_request(
-            &self.context.gh,
+            self.context.gh_client()?,
             &self.config.repo,
             &self.config.base,
             &stamped(&self.config.today, work_id),
@@ -248,7 +248,7 @@ where
         let checkout = check_out(
             &InRepository::new(
                 &self.config.tree,
-                self.executor.git(),
+                self.executor.git()?,
                 self.config.cancel.clone(),
             ),
             &approved,
@@ -277,7 +277,7 @@ where
         let git = InWorktree::new(
             &workspace,
             self.config.budget.tool_timeout,
-            self.executor.git(),
+            self.executor.git()?,
         );
 
         let fixed = commit_log_dedup(workspace.root(), &self.config.base)?;
@@ -511,13 +511,16 @@ where
         let Some(candidate) = approved.pr_head() else {
             return Feedback::NoCandidate;
         };
-        let observed = observe_genuine_failure(
-            &self.context.gh,
-            &self.config.repo,
-            candidate,
-            &self.config.cancel,
-        )
-        .await;
+        let gh = match self.context.gh_client() {
+            Ok(gh) => gh,
+            Err(absent) => {
+                return Feedback::Unreadable {
+                    why: absent.to_string(),
+                }
+            }
+        };
+        let observed =
+            observe_genuine_failure(gh, &self.config.repo, candidate, &self.config.cancel).await;
         match observed {
             Observation::Available { value, .. } => match value.failure {
                 Some(failure) => Feedback::Blaming(failure),
@@ -560,8 +563,11 @@ where
             return (Vec::new(), Vec::new());
         };
         let head = approved.pr_head().unwrap_or_default().to_string();
+        let Ok(gh) = self.context.gh_client() else {
+            return (Vec::new(), Vec::new());
+        };
         let read = crate::github::read_reviews(
-            &self.context.gh,
+            gh,
             &self.config.repo,
             number,
             crate::human::CONVERSATION_PAGES,
@@ -607,8 +613,11 @@ where
         let Some(number) = approved.reused() else {
             return Vec::new();
         };
+        let Ok(gh) = self.context.gh_client() else {
+            return Vec::new();
+        };
         let read = crate::github::read_conversation(
-            &self.context.gh,
+            gh,
             &self.config.repo,
             number,
             crate::human::CONVERSATION_PAGES,

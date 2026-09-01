@@ -423,9 +423,14 @@ async fn reread(
     listed: &Listed,
     moved: fn(String) -> DecisionError,
 ) -> Result<HumanResponse, DecisionError> {
-    let current = read_one_comment(&ctx.gh, repo, listed.order, &ctx.cancel)
-        .await
-        .map_err(unreadable)?;
+    let current = read_one_comment(
+        ctx.gh_client().map_err(unreadable)?,
+        repo,
+        listed.order,
+        &ctx.cancel,
+    )
+    .await
+    .map_err(unreadable)?;
     if current.updated_at != listed.updated_at {
         return Err(moved(listed.comment.clone()));
     }
@@ -439,7 +444,8 @@ async fn observe(
 ) -> Result<(), DecisionError> {
     let path = format!("/repos/{}/pulls/{}", walk.repo, walk.pr);
     let response = ctx
-        .gh
+        .gh_client()
+        .map_err(unreadable)?
         .api("GET", &path, None, &ctx.cancel)
         .await
         .map_err(unreadable)?;

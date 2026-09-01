@@ -50,6 +50,9 @@ pub enum GitError {
 
     #[error("git was killed before it answered")]
     Killed,
+
+    #[error("this deployment holds no `[github]` configuration, so no git command was run")]
+    Unconfigured,
 }
 
 impl AdapterError for GitError {
@@ -57,6 +60,7 @@ impl AdapterError for GitError {
         match self {
             GitError::InvalidBranch { .. }
             | GitError::CancelledBeforePush
+            | GitError::Unconfigured
             | GitError::Head { .. } => EffectOutcome::NotCommitted,
             GitError::NonFastForward { .. } | GitError::Rejected { .. } => {
                 EffectOutcome::NotCommitted
@@ -493,6 +497,7 @@ mod outcome {
             GitError::CancelledBeforePush => 8,
             GitError::CancelledMidPush => 9,
             GitError::Killed => 10,
+            GitError::Unconfigured => 11,
         }
     }
 
@@ -544,6 +549,7 @@ mod outcome {
             (GitError::CancelledBeforePush, EffectOutcome::NotCommitted),
             (GitError::CancelledMidPush, EffectOutcome::Unknown),
             (GitError::Killed, EffectOutcome::Unknown),
+            (GitError::Unconfigured, EffectOutcome::NotCommitted),
         ]
     }
 
