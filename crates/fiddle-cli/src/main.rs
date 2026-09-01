@@ -5,16 +5,19 @@ mod render;
 use clap::Parser;
 use config::ConfigError;
 use fiddle_core::{
-    CapabilityId, FiddleBuild, InvocationRef, InvocationRefError, InvocationScheme, RunOutcome,
-    WorkStateView,
+    CapabilityId, FiddleBuild, InvocationRef, InvocationRefError, InvocationScheme, ProposedEffect,
+    RunOutcome, WorkStateView,
 };
 use fiddle_runtime::agent::transcript;
 use fiddle_runtime::capability::workflow::{
     Workflow, WorkflowCapability, WorkflowFile, WorkflowPorts,
 };
-use fiddle_runtime::effect::{EffectContext, Executor, StepParams};
+use fiddle_runtime::effect::{
+    DeploymentPolicy, EffectContext, EffectError, EffectReceipt, Executor, IntegrationOperation,
+    StepParams,
+};
 use fiddle_runtime::human::interpret::InterpretationBounds;
-use fiddle_runtime::jira::AddComment;
+use fiddle_runtime::jira::{AddComment, MarkedComment};
 use fiddle_runtime::ports::{ChangePort, WorkItemPort};
 use fiddle_runtime::toil::{Eligible, Refusal, Source, TicketFacts};
 use fiddle_runtime::{
@@ -711,25 +714,61 @@ async fn qualified(
     {
         fiddle_runtime::toil::Qualification::Eligible(admitted) => Ok(Some(admitted)),
         fiddle_runtime::toil::Qualification::Refused(refusal) => {
-            let told = match tracker_client(config, config_path, selection, reference)? {
+            let tracker = tracker_client(config, config_path, selection, reference)?;
+            let unforged = config::PolicyTable::default();
+            let untimed = config::ReadRetryTable::default();
+            let trace = AttemptTrace::new();
+            let told = match tracker {
                 Some(http) => {
+                    let ctx = EffectContext::tracking(
+                        http,
+                        config_path
+                            .parent()
+                            .unwrap_or_else(|| Path::new("."))
+                            .to_path_buf(),
+                        cancel.clone(),
+                    );
+                    let policy: &dyn DeploymentPolicy = match config.github.as_ref() {
+                        Some(github) => &github.policy,
+                        None => &unforged,
+                    };
+                    let read_retry = match config.github.as_ref() {
+                        Some(github) => github.read_retry.as_read_retry(),
+                        None => untimed.as_read_retry(),
+                    };
+                    let executor = Executor::new(
+                        fiddle_core::TOIL,
+                        config.project.name.clone(),
+                        reference.as_str(),
+                        policy,
+                        &ctx,
+                        &trace,
+                        read_retry,
+                    );
                     publish_refusal(
-                        &http,
+                        &executor,
                         &config.project.name,
                         reference,
                         &refusal,
                         ticket.revision.as_deref(),
-                        cancel,
                     )
                     .await
                 }
-                None => Err(JiraError::Unconfigured),
+                None => Err(JiraError::Unconfigured.into()),
             };
-            if let Err(reason) = told {
-                eprintln!(
+            match told {
+                Ok(receipt) => eprintln!(
+                    "{}",
+                    render::refusal_published(
+                        &refusal.work_item,
+                        &receipt.effect_id.0,
+                        receipt.external_ref.as_deref(),
+                    )
+                ),
+                Err(reason) => eprintln!(
                     "{}",
                     render::refusal_unpublished(&refusal.work_item, &reason)
-                );
+                ),
             }
             Err(Ineligible::of(&refusal).into())
         }
@@ -759,14 +798,22 @@ fn refusal_note(refusal: &Refusal) -> String {
     told.join("\n")
 }
 
+#[derive(Debug, thiserror::Error)]
+enum RefusalUnpublished {
+    #[error("{0}")]
+    Tracker(#[from] JiraError),
+
+    #[error("{0}")]
+    Effect(#[from] EffectError),
+}
+
 async fn publish_refusal(
-    http: &JiraHttp,
+    executor: &Executor<'_>,
     project: &str,
     reference: &InvocationRef,
     refusal: &Refusal,
     revision: Option<&str>,
-    cancel: &CancellationToken,
-) -> Result<(), JiraError> {
+) -> Result<EffectReceipt<MarkedComment>, RefusalUnpublished> {
     let revision = revision.ok_or_else(|| {
         JiraError::Malformed(format!(
             "the read of `{}` carried no revision, and this comment's identity is built from \
@@ -774,35 +821,20 @@ async fn publish_refusal(
             refusal.work_item
         ))
     })?;
-    let note = refusal_note(refusal);
     let comment = AddComment::new(
         refusal.work_item.clone(),
         revision,
-        note.clone(),
+        refusal_note(refusal),
         project,
         &reference.as_str(),
     )?;
-    let marker = comment.marker();
-    match fiddle_runtime::jira::comment::read_marked_comment(
-        http,
-        &refusal.work_item,
-        &marker,
-        cancel,
-    )
-    .await?
-    {
-        Some(_) => Ok(()),
-        None => {
-            fiddle_runtime::jira::comment::post_marked_comment(
-                http,
-                &refusal.work_item,
-                &note,
-                &marker,
-                cancel,
-            )
-            .await
-        }
-    }
+    let proposed = ProposedEffect {
+        capability: executor.capability(),
+        kind: comment.kind(),
+        target: comment.target(),
+        payload: comment.payload(),
+    };
+    Ok(executor.execute(proposed, comment).await?)
 }
 
 fn build_identity() -> FiddleBuild {

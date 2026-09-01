@@ -746,6 +746,14 @@ fn observation_line<T>(observed: &Observation<T>, describe: impl Fn(&T) -> Strin
     }
 }
 
+pub fn refusal_published(work_item: &str, effect_id: &str, external_ref: Option<&str>) -> String {
+    format!(
+        "the refusal below was published on `{work_item}`\n  work_item   = {work_item}\n  \
+         effect_id   = {effect_id}\n  comment     = {}",
+        external_ref.unwrap_or("unnamed")
+    )
+}
+
 pub fn refusal_unpublished(work_item: &str, cause: &dyn std::fmt::Display) -> String {
     format!(
         "error: the refusal below was not published on `{work_item}`, so the person who \

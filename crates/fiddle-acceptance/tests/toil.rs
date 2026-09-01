@@ -616,6 +616,11 @@ impl ToilWorld {
         )
     }
 
+    pub fn denies_the_refusal_comment(&self) {
+        self.scenario
+            .append_config("[github.policy]\n\"jira.comment_added\" = \"deny\"\n");
+    }
+
     pub fn jira(&self) -> &ToilJira {
         &self.jira
     }
@@ -1157,6 +1162,69 @@ fn a_refused_ticket_is_told_why_on_its_own_issue() {
         0,
         "the gate refused before the ambiguity review, so the refusal cost no model \
          call: {stderr}"
+    );
+    let carried = comment
+        .split(MARKER)
+        .nth(1)
+        .map(|tail| {
+            tail.chars()
+                .take_while(|held| held.is_ascii_hexdigit())
+                .collect::<String>()
+        })
+        .expect("the published comment carries this build's effect marker");
+    assert!(
+        stderr.contains(&format!("effect_id   = {carried}")),
+        "the run reports a receipt for the identity the published comment carries, so the \
+         write was performed under an effect identity and not as a bare request: {stderr}"
+    );
+}
+
+#[test]
+fn a_deployment_that_denies_the_comment_effect_publishes_nothing_and_still_refuses() {
+    let world = ToilWorld::start();
+    world
+        .jira()
+        .holds_a_ticket_without_the_trigger_label(TICKET);
+    world.denies_the_refusal_comment();
+
+    let run = world.run_toil(REFERENCE);
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+
+    assert_eq!(
+        world.jira().comment_posts(),
+        0,
+        "the deployment denied `jira.comment_added` and nothing was sent, so the refusal \
+         is written by the executor that reads that rule and not by a raw adapter call \
+         that never sees it: {:?}",
+        world.jira().request_lines()
+    );
+    assert_eq!(
+        world.jira().last_comment_on(TICKET),
+        None,
+        "and the ticket holds no refusal: {:?}",
+        world.jira().request_lines()
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(2),
+        "a refusal a deployment will not publish is still a refusal: {stderr}"
+    );
+    assert!(
+        stderr.contains(TRIGGER_LABEL_RULE),
+        "and it still names the rule that failed: {stderr}"
+    );
+    assert!(
+        stderr.contains(TICKET) && stderr.contains("was not published"),
+        "and the operator is told the ticket was never reached: {stderr}"
+    );
+    assert_eq!(
+        world.model_calls(),
+        0,
+        "the denied comment bought no model call: {stderr}"
+    );
+    assert!(
+        world.github().pull_requests().is_empty(),
+        "and opened no pull request: {stderr}"
     );
 }
 
