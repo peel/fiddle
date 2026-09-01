@@ -305,7 +305,7 @@ fn validate_branch(branch: &str) -> Result<(), GitError> {
     Ok(())
 }
 
-fn is_object_name(text: &str) -> bool {
+pub(crate) fn is_object_name(text: &str) -> bool {
     text.len() == 40 && text.chars().all(|c| c.is_ascii_hexdigit())
 }
 

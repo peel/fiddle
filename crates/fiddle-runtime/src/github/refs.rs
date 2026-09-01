@@ -64,7 +64,7 @@ impl FromStepParams for EnsureBranchPublished {
         Ok(Self::new(
             required(&params.repo, &kind, "repo")?,
             required(&params.branch, &kind, "branch")?,
-            required(&params.head_sha, &kind, "head_sha")?,
+            params.earned_head_sha(&kind)?,
         ))
     }
 }

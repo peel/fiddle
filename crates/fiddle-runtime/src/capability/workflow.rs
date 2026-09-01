@@ -1,3 +1,4 @@
+use super::commit;
 use super::{Capability, CapabilityError, Executed, ExecutionInput};
 use crate::agent::{
     attempt_briefed, judge_briefed, AgentBudget, Brief, Declarations, Held, ToolHost, Transcripts,
@@ -12,7 +13,7 @@ use crate::workspace::WorkspaceCommand;
 use fiddle_core::{CapabilityId, EffectName, EvidenceRef, HumanDecisionRequirement, Published};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const WORKFLOW_VERSION: u32 = 1;
@@ -36,6 +37,7 @@ pub enum Step {
     Effect {
         name: EffectName,
     },
+    Commit {},
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -151,6 +153,7 @@ enum Ready {
     Evaluate { task: String, max_turns: usize },
     Check { command: WorkspaceCommand },
     Effect { construct: Construct },
+    Commit,
 }
 
 pub struct WorkflowCapability<'a, M> {
@@ -198,6 +201,7 @@ fn ready(step: &Step, prompts: &Path) -> Result<Ready, WorkflowRefusal> {
                 timeout: Duration::from_secs(*timeout_secs),
             },
         }),
+        Step::Commit {} => Ok(Ready::Commit),
         Step::Effect { name } => {
             let descriptor = registry::describe(name)
                 .ok_or_else(|| WorkflowRefusal::Unperformable { name: name.clone() })?;
@@ -350,6 +354,23 @@ where
         }
     }
 
+    async fn commit(&self, params: &mut StepParams) -> Result<(), CapabilityError> {
+        let workspace = Arc::clone(&self.ports.host.workspace);
+        let changed = workspace.changed_files()?;
+        if changed.is_empty() {
+            return Ok(());
+        }
+        let head = commit::commit_changed(
+            &workspace,
+            &changed,
+            &commit::message(self.executor.project(), self.executor.invocation_ref()),
+            self.ports.budget.tool_timeout,
+        )
+        .await?;
+        params.earned.record_head_sha(&head)?;
+        Ok(())
+    }
+
     async fn effect(
         &self,
         construct: Construct,
@@ -417,6 +438,7 @@ where
                     self.evaluate(task, *max_turns, &mut params).await?
                 }
                 Ready::Check { command } => self.check(command).await?,
+                Ready::Commit => self.commit(&mut params).await?,
                 Ready::Effect { construct } => self.effect(*construct, &mut params).await?,
             }
             if matches!(params.earned.verdict(), Some(Verdict::Rejected { .. })) {

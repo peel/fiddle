@@ -1,3 +1,4 @@
+mod commit;
 pub mod cve;
 pub mod mitigate;
 pub mod propose;

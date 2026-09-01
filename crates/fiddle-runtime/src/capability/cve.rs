@@ -1,4 +1,4 @@
-use super::propose::COMMITTER;
+use super::commit::COMMITTER;
 use super::CapabilityError;
 use crate::agent::{
     attempt_briefed, unaccounted, AgentBudget, Brief, Declarations, FindingDisposition, Held,

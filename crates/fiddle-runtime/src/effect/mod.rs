@@ -304,12 +304,26 @@ impl StepParams {
                     .to_string(),
             })
     }
+
+    pub fn earned_head_sha(&self, kind: &EffectName) -> Result<String, EffectError> {
+        self.earned
+            .head_sha()
+            .map(str::to_string)
+            .ok_or_else(|| EffectError::Unbuildable {
+                kind: kind.clone(),
+                reason: "no step before this one in this run committed the workspace, and a \
+                         later step publishes the commit a step earned rather than a \
+                         `head_sha` from the step parameters"
+                    .to_string(),
+            })
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StepOutputs {
     pull_request: Option<u64>,
     verdict: Option<Verdict>,
+    head_sha: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -344,6 +358,18 @@ pub enum OutputRefusal {
         held: &'static str,
         answered: &'static str,
     },
+
+    #[error(
+        "the commit step answered `{answered}`, which the workspace does not spell as a \
+         commit, and a later step is given no guess in its place"
+    )]
+    Unnameable { answered: String },
+
+    #[error(
+        "the commit step committed {answered} and this run already earned {held}, so no \
+         later step can be told which commit it publishes"
+    )]
+    Recommitted { held: String, answered: String },
 }
 
 impl StepOutputs {
@@ -353,6 +379,29 @@ impl StepOutputs {
 
     pub fn verdict(&self) -> Option<&Verdict> {
         self.verdict.as_ref()
+    }
+
+    pub fn head_sha(&self) -> Option<&str> {
+        self.head_sha.as_deref()
+    }
+
+    pub fn record_head_sha(&mut self, answered: &str) -> Result<(), OutputRefusal> {
+        let answered = answered.trim();
+        if !crate::git::publish::is_object_name(answered) {
+            return Err(OutputRefusal::Unnameable {
+                answered: answered.to_string(),
+            });
+        }
+        match &self.head_sha {
+            Some(held) if held != answered => Err(OutputRefusal::Recommitted {
+                held: held.clone(),
+                answered: answered.to_string(),
+            }),
+            _ => {
+                self.head_sha = Some(answered.to_string());
+                Ok(())
+            }
+        }
     }
 
     pub fn record_verdict(&mut self, answered: Verdict) -> Result<(), OutputRefusal> {

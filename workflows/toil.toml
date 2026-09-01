@@ -23,6 +23,10 @@ kind = "evaluate"
 prompt = "change_evaluate.md"
 max_turns = 12
 
+# Commit what the agent wrote, and earn the commit the branch step publishes.
+[[steps]]
+kind = "commit"
+
 # Push the marked branch.
 [[steps]]
 kind = "effect"

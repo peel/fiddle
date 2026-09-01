@@ -20,6 +20,7 @@ fn canonical() -> Workflow {
                 args: vec![],
                 timeout_secs: 30,
             },
+            Step::Commit {},
             Step::Effect {
                 name: EffectName::parse("ensure_pull_request").unwrap(),
             },
@@ -127,13 +128,34 @@ fn the_rust_constructor_refuses_what_the_file_path_refuses() {
 }
 
 #[test]
-fn a_step_is_one_of_exactly_four_kinds() {
+fn a_step_is_one_of_exactly_five_kinds() {
     let named = |step: &Step| match step {
         Step::Agent { .. } => "agent",
         Step::Evaluate { .. } => "evaluate",
         Step::Check { .. } => "check",
+        Step::Commit {} => "commit",
         Step::Effect { .. } => "effect",
     };
     let kinds: Vec<&str> = canonical().to_file().steps.iter().map(named).collect();
-    assert_eq!(kinds, ["agent", "evaluate", "check", "effect"]);
+    assert_eq!(kinds, ["agent", "evaluate", "check", "commit", "effect"]);
+}
+
+#[test]
+fn a_commit_step_is_spelt_by_its_kind_alone_and_carries_no_other_field() {
+    assert_eq!(
+        read("version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"commit\"\n")
+            .expect("a commit step needs no field beside its kind")
+            .steps(),
+        [Step::Commit {}]
+    );
+    assert_eq!(
+        read(
+            "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"commit\"\n\
+             sha = \"deadbeef\"\n"
+        )
+        .unwrap_err(),
+        Refused::Reading,
+        "a document that names the commit it wants is a document that configures a sha, and \
+         the commit step earns one instead"
+    );
 }

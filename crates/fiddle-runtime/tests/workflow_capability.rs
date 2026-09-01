@@ -3,8 +3,8 @@ mod support;
 
 use fiddle_core::{
     AttemptId, DeploymentRule, EffectId, EffectName, EvidenceRef, HumanDecisionRequirement,
-    NextAction, PayloadHash, Published, WorkItemState, ENSURE_PULL_REQUEST,
-    ENSURE_PULL_REQUEST_READY, JIRA_PULL_REQUEST_LINKED, STUB_MARK, TOIL,
+    NextAction, PayloadHash, Published, WorkItemState, ENSURE_BRANCH_PUBLISHED,
+    ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_READY, JIRA_PULL_REQUEST_LINKED, STUB_MARK, TOIL,
 };
 use fiddle_runtime::agent::{AgentBudget, ToolHost, ToolReceipts, Verdict};
 use fiddle_runtime::capability::workflow::{
@@ -249,6 +249,10 @@ impl World {
             transcripts: None,
             prompts: self.dir.path().join("prompts"),
         }
+    }
+
+    fn workspace_head(&self) -> String {
+        fixture::git_says(self.workspace.root(), &["rev-parse", "HEAD"])
     }
 
     fn ran(&self) -> Vec<String> {
@@ -1857,5 +1861,243 @@ async fn a_rejection_with_no_step_after_it_is_still_a_rejection() {
         earned,
         Executed::Earned(EvidenceRef(format!("workflow:{STAGE}:{ATTEMPT}"))),
         "the same one-step workflow earns its evidence when the model accepts"
+    );
+}
+
+const A_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+const ANOTHER_COMMIT: &str = "89abcdef0123456789abcdef0123456789abcdef";
+
+fn commit_step() -> Step {
+    Step::Commit {}
+}
+
+fn outputs_holding_the_commit(sha: &str) -> StepOutputs {
+    let mut held = StepOutputs::default();
+    held.record_head_sha(sha)
+        .expect("a commit object name records");
+    held
+}
+
+#[tokio::test]
+async fn a_commit_step_earns_the_commit_it_made_and_the_step_after_it_reads_that_commit() {
+    let world = world();
+    let before = world.workspace_head();
+
+    let entered = ran_with(
+        &world,
+        vec![agent_step(), commit_step(), check_step("after")],
+        reporting(),
+    )
+    .await;
+
+    let after = world.workspace_head();
+    assert_ne!(
+        after, before,
+        "the commit step made no commit, so the sha below could be the one the workspace \
+         already had"
+    );
+    assert_eq!(
+        entered[1].head_sha(),
+        None,
+        "the run entered the commit step holding no commit"
+    );
+    assert_eq!(
+        entered[2].head_sha(),
+        Some(after.as_str()),
+        "the step after the commit step reads the commit the workspace now points at"
+    );
+    assert_ne!(
+        entered[2].head_sha(),
+        Some(HEAD_SHA),
+        "the step parameters name {HEAD_SHA} and no step earned it"
+    );
+    assert_eq!(
+        fixture::git_says(
+            world.workspace.root(),
+            &["show", "--no-patch", "--format=%s", &after]
+        ),
+        format!("{PROJECT}: {INVOCATION_REF}"),
+        "the commit the run earned is the one this run wrote"
+    );
+    assert!(
+        fixture::git_says(
+            world.workspace.root(),
+            &["show", &format!("{after}:{TRACE}")]
+        )
+        .contains("agent"),
+        "the commit carries the file the agent step wrote through its check"
+    );
+}
+
+#[tokio::test]
+async fn a_commit_step_that_finds_a_clean_workspace_earns_nothing_and_the_branch_step_refuses() {
+    let clean = world();
+    assert_eq!(
+        params().head_sha.as_deref(),
+        Some(HEAD_SHA),
+        "the step parameters name a commit, so the refusal below is a refusal to use it"
+    );
+
+    let refusal = refused_by(
+        &clean,
+        vec![commit_step(), effect_step(ENSURE_BRANCH_PUBLISHED)],
+        silent(),
+    )
+    .await;
+    let reason = refusal.to_string();
+    assert!(
+        reason.contains(ENSURE_BRANCH_PUBLISHED) && reason.contains("committed the workspace"),
+        "a branch step given no earned commit must name itself and say what it lacks: {reason}"
+    );
+    assert!(
+        !reason.contains(HEAD_SHA),
+        "the branch step reached for the sha the parameters carry: {reason}"
+    );
+    assert_eq!(
+        clean.steps.lock().unwrap().clone(),
+        Vec::<&str>::new(),
+        "the branch step was refused before it was built, so nothing was proposed"
+    );
+    assert_eq!(clean.calls(), 0, "and no request reached the forge");
+
+    let wrote = world();
+    let corrected = refused_by(
+        &wrote,
+        vec![
+            check_step("wrote"),
+            commit_step(),
+            effect_step(ENSURE_BRANCH_PUBLISHED),
+        ],
+        silent(),
+    )
+    .await;
+    assert!(
+        !corrected.to_string().contains("committed the workspace"),
+        "a run that differs only by a step that writes must reach the push, or the refusal \
+         above is the refusal of any run at all: {corrected}"
+    );
+    assert!(
+        !wrote.steps.lock().unwrap().is_empty(),
+        "and that run proposed the branch step it built"
+    );
+}
+
+#[test]
+fn an_answer_that_is_not_a_commit_object_name_is_refused_and_no_commit_is_put_in_its_place() {
+    let mut outputs = StepOutputs::default();
+
+    let refusal = outputs
+        .record_head_sha("HEAD")
+        .expect_err("`HEAD` is a name for a commit and not the name of one");
+    assert_eq!(
+        refusal,
+        OutputRefusal::Unnameable {
+            answered: "HEAD".to_string()
+        }
+    );
+    assert_eq!(outputs.head_sha(), None);
+
+    let carried = CapabilityError::from(refusal.clone());
+    assert_eq!(
+        format!("{carried}"),
+        format!("{refusal}"),
+        "a workflow carries the reason to its caller unchanged"
+    );
+    assert_eq!(
+        carried.recurrence(),
+        Recurrence::Permanent,
+        "and an answer this build cannot read is not a wait"
+    );
+
+    let mut corrected = StepOutputs::default();
+    corrected
+        .record_head_sha(&format!("{A_COMMIT}\n"))
+        .expect("an answer that differs only in being an object name records");
+    assert_eq!(
+        corrected.head_sha(),
+        Some(A_COMMIT),
+        "so the refusal above answers the text and not the recording around it"
+    );
+
+    let mut short = StepOutputs::default();
+    assert_eq!(
+        short
+            .record_head_sha(HEAD_SHA)
+            .expect_err("an abbreviation is not the name of a commit object"),
+        OutputRefusal::Unnameable {
+            answered: HEAD_SHA.to_string()
+        },
+        "the sha the step parameters carry is not one this build would record"
+    );
+}
+
+#[test]
+fn one_run_that_commits_two_different_shas_refuses_and_committing_one_twice_does_not() {
+    let mut outputs = outputs_holding_the_commit(A_COMMIT);
+    outputs
+        .record_head_sha(A_COMMIT)
+        .expect("the same commit twice is one commit");
+    assert_eq!(outputs.head_sha(), Some(A_COMMIT));
+
+    let refusal = outputs
+        .record_head_sha(ANOTHER_COMMIT)
+        .expect_err("two different commits in one run leave a later step no answer");
+    assert_eq!(
+        refusal,
+        OutputRefusal::Recommitted {
+            held: A_COMMIT.to_string(),
+            answered: ANOTHER_COMMIT.to_string()
+        }
+    );
+    assert_eq!(
+        outputs.head_sha(),
+        Some(A_COMMIT),
+        "and the commit the run earned first is unchanged"
+    );
+}
+
+#[tokio::test]
+async fn a_run_starts_holding_no_commit_when_the_step_parameters_carry_one() {
+    let world = world();
+    let ctx = world.context();
+    let deployment = allowing();
+    let capability = WorkflowCapability::new(
+        WORKFLOW,
+        STAGE,
+        workflow(vec![effect_step(ENSURE_BRANCH_PUBLISHED)]),
+        executor(&world, &ctx, &deployment),
+        StepParams {
+            earned: outputs_holding_the_commit(A_COMMIT),
+            ..params()
+        },
+        world.ports(silent()),
+    )
+    .expect("a workflow this build can run");
+
+    let outcome = capability
+        .execute(ExecutionInput::unobserved(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+        ))
+        .await;
+
+    assert_eq!(
+        capability.earned_on_entering_each_step(),
+        vec![StepOutputs::default()],
+        "the run entered its only step holding no commit, though the parameters handed it one"
+    );
+    assert_eq!(
+        world.calls(),
+        0,
+        "and the step reached no forge with the commit the parameters carried"
+    );
+    let refusal =
+        outcome.expect_err("a commit placed in the step parameters is not one a step earned");
+    assert!(
+        format!("{refusal}")
+            .contains("no step before this one in this run committed the workspace"),
+        "got {refusal}"
     );
 }

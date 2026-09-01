@@ -16,7 +16,7 @@ use fiddle_runtime::effect::{
     EffectContext, EffectTrace, ExecutionStep, Executor, ReadRetry, StepParams,
 };
 use fiddle_runtime::workspace::{Workspace, WorkspaceCommand};
-use fiddle_runtime::{GhCli, Redaction};
+use fiddle_runtime::{GhCli, GitCli, Redaction};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use support::stub_jira::{client_for, StubJira};
-use support::{unreachable_git, Deployment, INVOCATION_REF, PROJECT};
+use support::{Deployment, INVOCATION_REF, PROJECT};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
@@ -100,6 +100,7 @@ fn spelled(step: &Step) -> String {
             format!("evaluate:{} in {max_turns} turns", prompt.display())
         }
         Step::Check { program, .. } => format!("check:{program}"),
+        Step::Commit {} => "commit".to_string(),
         Step::Effect { name } => format!("effect:{}", name.as_str()),
     }
 }
@@ -112,6 +113,7 @@ fn required_sequence() -> Vec<String> {
     vec![
         format!("agent:{TOIL_PROMPT} in {CHANGE_TURNS} turns"),
         format!("evaluate:{CHANGE_EVALUATE} in {EVALUATE_TURNS} turns"),
+        "commit".to_string(),
         format!("effect:{ENSURE_BRANCH_PUBLISHED}"),
         format!("effect:{ENSURE_PULL_REQUEST}"),
         format!("effect:{JIRA_PULL_REQUEST_LINKED}"),
@@ -462,20 +464,30 @@ fn an_inversion_of_every_obligation() -> String {
 struct World {
     dir: TempDir,
     workspace: Arc<Workspace>,
-    steps: Mutex<Vec<&'static str>>,
+    steps: Mutex<Vec<(String, &'static str)>>,
     jira: Option<StubJira>,
 }
 
 impl EffectTrace for World {
-    fn step(&self, _kind: &EffectName, step: ExecutionStep) {
-        self.steps.lock().unwrap().push(step.as_str());
+    fn step(&self, kind: &EffectName, step: ExecutionStep) {
+        self.steps
+            .lock()
+            .unwrap()
+            .push((kind.as_str().to_string(), step.as_str()));
     }
 }
 
 fn world() -> World {
     let dir = TempDir::new().unwrap();
     std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    let remote = dir.path().join("remote.git");
+    std::fs::create_dir_all(&remote).unwrap();
+    fixture::git(&remote, &["init", "-q", "--bare", "."]);
     let repo = fixture::trivial_repo(dir.path());
+    fixture::git(
+        &repo,
+        &["remote", "add", "origin", &remote.display().to_string()],
+    );
     let workspace = Workspace::create(
         &repo,
         &dir.path().join("ws"),
@@ -514,8 +526,13 @@ impl World {
                 self.dir.path().join("config"),
                 PATIENT,
             ),
-            unreachable_git(),
-            self.dir.path().to_path_buf(),
+            GitCli::new(
+                PathBuf::from("git"),
+                "ghp_never_used_by_a_path_remote".to_string(),
+                "FIDDLE_GITHUB_TOKEN",
+                PATIENT,
+            ),
+            self.workspace.root().to_path_buf(),
             CancellationToken::new(),
         );
         match &self.jira {
@@ -563,8 +580,32 @@ impl World {
         }
     }
 
-    fn effect_steps(&self) -> Vec<&'static str> {
+    fn workspace_head(&self) -> String {
+        fixture::git_says(self.workspace.root(), &["rev-parse", "HEAD"])
+    }
+
+    fn published_sha(&self, branch: &str) -> Option<String> {
+        std::fs::read_to_string(
+            self.dir
+                .path()
+                .join("remote.git")
+                .join("refs/heads")
+                .join(branch),
+        )
+        .ok()
+        .map(|sha| sha.trim().to_string())
+    }
+
+    fn effect_steps(&self) -> Vec<(String, &'static str)> {
         self.steps.lock().unwrap().clone()
+    }
+
+    fn steps_of(&self, kind: &str) -> Vec<&'static str> {
+        self.effect_steps()
+            .into_iter()
+            .filter(|(named, _)| named == kind)
+            .map(|(_, step)| step)
+            .collect()
     }
 
     fn calls(&self) -> usize {
@@ -653,6 +694,17 @@ fn accepting() -> MockCompletionModel {
     reporting_then(json!({"verdict": "accepted"}))
 }
 
+fn accepting_without_writing() -> MockCompletionModel {
+    MockCompletionModel::new([
+        MockTurn::text(
+            json!({"changed_files": [], "summary": "the ticket asked for nothing this project \
+                   does not already do", "claimed_complete": true})
+            .to_string(),
+        ),
+        MockTurn::text(json!({"verdict": "accepted"}).to_string()),
+    ])
+}
+
 fn rejecting() -> MockCompletionModel {
     reporting_then(json!({"verdict": "rejected", "findings": [A_SIGNATURE]}))
 }
@@ -692,22 +744,6 @@ async fn ran_document(
             observed,
         ))
         .await
-}
-
-fn the_document_without_the_branch_step() -> Workflow {
-    let mut file =
-        toml::from_str::<WorkflowFile>(&shipped_document()).expect("the shipped document parses");
-    let before = file.steps.len();
-    file.steps
-        .retain(|step| spelled(step) != format!("effect:{ENSURE_BRANCH_PUBLISHED}"));
-    assert_eq!(
-        before - file.steps.len(),
-        1,
-        "this world holds no remote a branch can be pushed to, so the run below drops that \
-         one step of the shipped document and keeps every other one. The document no longer \
-         names the step this line removes"
-    );
-    Workflow::try_from(file).expect("the steps that remain are still a workflow this build reads")
 }
 
 fn refusal_of(document: &str) -> WorkflowRefusal {
@@ -967,7 +1003,7 @@ async fn a_rejected_evaluation_stops_the_toil_run_before_any_effect() {
     );
     assert_eq!(
         refused.effect_steps(),
-        Vec::<&str>::new(),
+        Vec::new(),
         "the three effect steps after the evaluation ran"
     );
     assert_eq!(
@@ -997,27 +1033,107 @@ async fn a_rejected_evaluation_stops_the_toil_run_before_any_effect() {
 }
 
 #[tokio::test]
-async fn no_step_earns_the_commit_the_branch_step_publishes() {
-    let world = world();
-    let unknown_head = StepParams {
-        head_sha: None,
-        ..params()
-    };
-    let failed = ran(
+async fn the_branch_step_publishes_the_commit_the_commit_step_made_from_the_agents_work() {
+    let world = world_holding(ISSUE).await;
+    let before = world.workspace_head();
+    assert_eq!(
+        params().head_sha.as_deref(),
+        Some(HEAD_SHA),
+        "the step parameters name a commit, so the sha the run publishes below is a sha it \
+         earned and not the only one it was given"
+    );
+
+    let earned = ran(
         &world,
         accepting(),
-        unknown_head,
+        params(),
         Some(&observed_issue("Ready")),
     )
     .await
-    .expect_err("a branch step given no commit cannot publish one");
+    .expect("the shipped toil document runs to an end through the branch step");
+    assert!(
+        matches!(earned, Executed::Earned(_)),
+        "an accepted change earns the run: {earned:?}"
+    );
+
+    let published = world
+        .published_sha(BRANCH)
+        .expect("the branch step pushed the branch onto the remote");
+    assert_eq!(
+        published,
+        world.workspace_head(),
+        "the branch names a commit the workspace does not point at"
+    );
+    assert_ne!(
+        published, before,
+        "the branch names the commit the workspace already had before the run"
+    );
+    assert_ne!(
+        published, HEAD_SHA,
+        "the branch names the sha the step parameters carry"
+    );
+    assert!(
+        fixture::git_says(
+            world.workspace.root(),
+            &["show", &format!("{published}:{TRACE}")]
+        )
+        .contains("agent"),
+        "the published commit does not carry what the agent step wrote"
+    );
+    assert_eq!(
+        world.steps_of(ENSURE_BRANCH_PUBLISHED),
+        [
+            "validate_capability",
+            "derive_identity",
+            "inspect_postcondition",
+            "combine_policy",
+            "authorize",
+            "apply",
+            "observe_postcondition",
+        ],
+        "the branch step pushed and then observed what it published"
+    );
+}
+
+#[tokio::test]
+async fn a_run_whose_agent_wrote_nothing_refuses_at_the_branch_step_and_publishes_no_sha() {
+    let world = world();
+    let before = world.workspace_head();
+
+    let failed = ran(
+        &world,
+        accepting_without_writing(),
+        params(),
+        Some(&observed_issue("Ready")),
+    )
+    .await
+    .expect_err("a branch step given no earned commit cannot publish one");
+
     let reason = failed.to_string();
     assert!(
-        reason.contains(ENSURE_BRANCH_PUBLISHED) && reason.contains("head_sha"),
-        "the agent step wrote files into the workspace and no step turns them into a commit \
-         the branch step can publish, so `head_sha` reaches the run only from outside it, \
-         before the agent has written anything: {reason}"
+        reason.contains(ENSURE_BRANCH_PUBLISHED) && reason.contains("committed the workspace"),
+        "the branch step must name itself and say that no step earned a commit: {reason}"
     );
+    assert!(
+        !reason.contains(HEAD_SHA),
+        "the branch step reached for the sha the step parameters carry: {reason}"
+    );
+    assert_eq!(
+        world.workspace_head(),
+        before,
+        "the commit step committed a workspace it found clean"
+    );
+    assert_eq!(
+        world.published_sha(BRANCH),
+        None,
+        "a run that earned no commit published a branch"
+    );
+    assert_eq!(
+        world.effect_steps(),
+        Vec::new(),
+        "the branch step was refused before it was built, so no effect was proposed"
+    );
+    assert_eq!(world.calls(), 0, "and no request reached the forge");
 }
 
 #[tokio::test]
@@ -1060,7 +1176,7 @@ async fn the_link_step_names_the_ticket_the_run_observed_and_refuses_without_one
     let observed = world_holding(ISSUE).await;
     let earned = ran_document(
         &observed,
-        the_document_without_the_branch_step(),
+        toil(),
         accepting(),
         params(),
         Some(&observed_issue("Ready")),
@@ -1078,15 +1194,9 @@ async fn the_link_step_names_the_ticket_the_run_observed_and_refuses_without_one
     );
 
     let unobserved = world_holding(ISSUE).await;
-    let refused = ran_document(
-        &unobserved,
-        the_document_without_the_branch_step(),
-        accepting(),
-        params(),
-        None,
-    )
-    .await
-    .expect_err("a run that observed no work item holds no issue key for the link step");
+    let refused = ran_document(&unobserved, toil(), accepting(), params(), None)
+        .await
+        .expect_err("a run that observed no work item holds no issue key for the link step");
     let reason = refused.to_string();
     assert!(
         reason.contains(JIRA_PULL_REQUEST_LINKED) && reason.contains("issue key"),

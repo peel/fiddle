@@ -1,3 +1,4 @@
+use super::commit;
 use super::stub::write_atomically;
 use super::{Capability, CapabilityError, Executed, ExecutionGrant, ExecutionInput};
 use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts, Transcripts};
@@ -18,7 +19,7 @@ use crate::human::validate::{
 use crate::human::{
     publish, DecisionChannel, InteractionRef, PublishDecisionRequest, CONVERSATION_PAGES,
 };
-use crate::workspace::{DeclaredCommand, Workspace, WorkspaceCommand, WorkspacePath};
+use crate::workspace::{DeclaredCommand, Workspace, WorkspaceCommand};
 use fiddle_core::{
     correlation_key, decision_request_id, effect_id, payload_hash, AttemptId, CapabilityId,
     ChangeSetState, DecisionBinding, EffectName, EvidenceRef, HumanDecisionRequest,
@@ -34,8 +35,6 @@ const PROPOSE_ORIGIN: &str = "propose";
 const REDIRECT_ORIGIN: &str = "redirect";
 
 const OPEN: &str = "open";
-
-pub(super) const COMMITTER: [&str; 2] = ["user.name=fiddle", "user.email=fiddle@invalid"];
 
 const REGISTERED_TOOLS: [&str; 5] = [
     "read_file",
@@ -374,66 +373,18 @@ where
             return Err(CapabilityError::NothingProposed);
         }
 
-        let sha = self.commit(&workspace, &changed).await?;
+        let sha = commit::commit_changed(
+            &workspace,
+            &changed,
+            &commit::message(&self.config.project, self.executor.invocation_ref()),
+            self.config.budget.tool_timeout,
+        )
+        .await?;
         Ok(Produced {
             workspace,
             sha,
             changed: changed.len(),
         })
-    }
-
-    async fn commit(
-        &self,
-        workspace: &Workspace,
-        changed: &[WorkspacePath],
-    ) -> Result<String, CapabilityError> {
-        let mut add = vec!["add".to_string(), "-f".to_string(), "--".to_string()];
-        add.extend(changed.iter().map(|path| path.as_str().to_string()));
-        self.git(workspace, add).await?;
-
-        let mut commit: Vec<String> = COMMITTER
-            .iter()
-            .flat_map(|setting| ["-c".to_string(), (*setting).to_string()])
-            .collect();
-        commit.extend([
-            "commit".to_string(),
-            "-q".to_string(),
-            "-m".to_string(),
-            format!(
-                "{}: {}",
-                self.config.project,
-                self.executor.invocation_ref()
-            ),
-        ]);
-        self.git(workspace, commit).await?;
-
-        Ok(self
-            .git(workspace, vec!["rev-parse".to_string(), "HEAD".to_string()])
-            .await?
-            .trim()
-            .to_string())
-    }
-
-    async fn git(
-        &self,
-        workspace: &Workspace,
-        args: Vec<String>,
-    ) -> Result<String, CapabilityError> {
-        let command = WorkspaceCommand {
-            program: "git".to_string(),
-            args: args.clone(),
-            timeout: self.config.budget.tool_timeout,
-        };
-        let result = workspace.run(&command).await?;
-        match result.exit_code {
-            0 => Ok(result.stdout),
-            _ => Err(CapabilityError::Workspace(
-                crate::workspace::WorkspaceError::Git {
-                    command: args.join(" "),
-                    stderr: result.stderr,
-                },
-            )),
-        }
     }
 
     async fn publish(&self, branch: &str, head_sha: &str) -> Result<u64, CapabilityError> {

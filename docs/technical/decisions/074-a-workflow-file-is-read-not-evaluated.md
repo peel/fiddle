@@ -7,7 +7,7 @@ Cites: Step, WorkflowFile, Workflow, WorkflowError, WorkflowRefusal, WORKFLOW_VE
 
 A capability can be a list of steps in a file. Such a list has no conditions. The next request is therefore a condition. This record states what keeps the file format small, and why a condition is unnecessary rather than only unwanted.
 
-The file is TOML. `WorkflowFile` carries a `version`, a `name`, a `stage` and a list of `Step`. `Step` has three shapes and no more: `Agent`, `Check` and `Effect`. None of the three holds an expression.
+The file is TOML. `WorkflowFile` carries a `version`, a `name`, a `stage` and a list of `Step`. `Step` has five shapes and no more: `Agent`, `Evaluate`, `Check`, `Commit` and `Effect`. None of the five holds an expression.
 
 ## Decision
 
