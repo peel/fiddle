@@ -24,12 +24,13 @@ use rig_core::completion::{CompletionModel, CompletionRequest, CompletionRequest
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use support::gullible::{
     how_it_arrived, reading_of, what_it_wrote, Gullible, PlantedWrite, Reading,
 };
+use support::judging;
 use support::quoting::{
     carried_by, carrying, longest_run_of_fences, quotation_in, what_each_request_carried, FENCE,
 };
@@ -1142,8 +1143,87 @@ fn the_shipped_document_is_admitted_and_a_document_naming_an_unknown_effect_is_n
     );
 }
 
+const A_SENTENCE_WORTH_LOOKING_FOR: usize = 40;
+
+const NOT_WALKED: [&str; 6] = [
+    ".git",
+    "target",
+    ".worktrees",
+    ".fiddle",
+    ".beans",
+    "node_modules",
+];
+
+fn repository_root() -> PathBuf {
+    workflows()
+        .join("..")
+        .canonicalize()
+        .expect("this test runs inside the repository whose files it reads")
+}
+
+fn one_line(text: &str) -> String {
+    text.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn sentences_of(text: &str) -> Vec<String> {
+    one_line(text)
+        .split(['.', '!', '?'])
+        .map(|sentence| sentence.trim().to_string())
+        .filter(|sentence| sentence.len() > A_SENTENCE_WORTH_LOOKING_FOR)
+        .collect()
+}
+
+fn every_file_under(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries = std::fs::read_dir(&directory).unwrap_or_else(|source| {
+            panic!(
+                "{} is a directory this run reads: {source}",
+                directory.display()
+            )
+        });
+        for entry in entries {
+            let path = entry.expect("an entry this run reads").path();
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if path.is_symlink() {
+                continue;
+            }
+            if path.is_dir() {
+                if !NOT_WALKED.contains(&name.as_str()) {
+                    pending.push(path);
+                }
+                continue;
+            }
+            found.push(path);
+        }
+    }
+    found
+}
+
+fn repeated_sentences_of(sentences: &[String], text: &str) -> usize {
+    let flattened = one_line(text);
+    sentences
+        .iter()
+        .filter(|sentence| flattened.contains(sentence.as_str()))
+        .count()
+}
+
+fn read_as_a_judging_prompt(sentences: &[String], text: &str) -> (usize, usize) {
+    (
+        repeated_sentences_of(sentences, text),
+        judging::obligations_of(text).len(),
+    )
+}
+
 #[test]
-fn the_evaluation_step_names_the_shared_prompt_and_no_toil_copy_of_it_exists() {
+fn the_evaluation_step_names_the_shared_prompt_and_no_copy_of_it_is_anywhere_this_walk_reaches() {
     assert!(
         named(&toil())
             .iter()
@@ -1152,36 +1232,81 @@ fn the_evaluation_step_names_the_shared_prompt_and_no_toil_copy_of_it_exists() {
     );
 
     let shared = shipped_prompt(CHANGE_EVALUATE);
-    let sentences: Vec<&str> = shared.lines().filter(|line| line.len() > 40).collect();
+    let sentences = sentences_of(&shared);
+    let judged = judging::JUDGING_OBLIGATIONS.len();
     assert!(
-        sentences.len() > 8,
-        "only {} lines of the shared prompt are long enough to look for elsewhere, so the \
-         search below searches for almost nothing",
+        sentences.len() > 8 && judged > 5,
+        "the shared prompt yields {} sentences over {A_SENTENCE_WORTH_LOOKING_FOR} characters \
+         and the judging reading carries {judged} obligations, so the two readings below \
+         search for almost nothing",
         sentences.len()
     );
 
-    let prompts =
-        std::fs::read_dir(shipped_prompts()).expect("this repository ships a prompt directory");
-    for entry in prompts {
-        let path = entry.expect("a prompt file").path();
-        if path.file_name().and_then(|name| name.to_str()) == Some(CHANGE_EVALUATE) {
+    assert_eq!(
+        read_as_a_judging_prompt(&sentences, &shared),
+        (sentences.len(), judged),
+        "the shared prompt read as a candidate repeats fewer than all {} of its own sentences \
+         or carries fewer than all {judged} judging obligations, so neither reading below can \
+         name a copy of it",
+        sentences.len()
+    );
+
+    let root = repository_root();
+    let prompts = shipped_prompts()
+        .canonicalize()
+        .expect("this repository ships a prompt directory");
+    let files = every_file_under(&root);
+    let elsewhere = files
+        .iter()
+        .filter(|path| path.parent() != Some(prompts.as_path()))
+        .count();
+    assert!(
+        elsewhere > 100,
+        "this walk read {} files in all and only {elsewhere} of them outside {}, so it reads \
+         one directory much as the check it replaced did. It walks the whole repository from \
+         {} and skips {NOT_WALKED:?}",
+        files.len(),
+        prompts.display(),
+        root.display()
+    );
+
+    for path in &files {
+        if path == &prompts.join(CHANGE_EVALUATE) {
             continue;
         }
-        let other = std::fs::read_to_string(&path).expect("a prompt file this run can read");
-        let shared_lines = sentences
-            .iter()
-            .filter(|line| other.contains(**line))
-            .count();
-        assert_eq!(
-            shared_lines,
-            0,
-            "{} repeats {shared_lines} lines of the shared evaluation prompt, and the toil \
-             document composes the shared one rather than a copy of it",
-            path.display()
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let (repeated, carried) = read_as_a_judging_prompt(&sentences, &text);
+        let named_here = path.strip_prefix(&root).unwrap_or(path).display();
+        assert!(
+            repeated * 2 <= sentences.len(),
+            "{named_here} repeats {repeated} of the shared evaluation prompt's {} sentences, \
+             which is most of it, and the toil document composes the shared prompt rather than \
+             a copy of it",
+            sentences.len()
+        );
+        assert!(
+            carried < judged,
+            "{named_here} carries all {judged} obligations of a judging prompt, so it is a \
+             second judge beside {CHANGE_EVALUATE} and the two drift apart"
         );
     }
-}
 
+    let paraphrase = judging::A_PARAPHRASE_WRITTEN_FROM_THE_PROMPT_ALONE.join("\n\n");
+    assert_eq!(
+        read_as_a_judging_prompt(&sentences, &paraphrase),
+        (0, 0),
+        "this is the bound of the two readings above, and it is measured here rather than \
+         claimed. A paraphrase written from {CHANGE_EVALUATE} alone keeps every obligation of \
+         it and trips neither reading, because one looks for the prompt's own sentences with \
+         whitespace collapsed and the other looks for the phrases the prompt spells. \
+         `this_reading_refuses_a_faithful_paraphrase_outside_the_words_it_lists` in \
+         workflow_capability.rs pins that as the ceiling of a substring reading. So this test \
+         names a copy, and a fork that keeps the wording, and not a fork rewritten in other \
+         words. It also skips {NOT_WALKED:?}, so a copy under one of those is unseen"
+    );
+}
 #[test]
 fn the_shipped_toil_prompt_carries_every_obligation_and_an_inversion_of_it_carries_none() {
     let shipped = shipped_prompt(TOIL_PROMPT);
