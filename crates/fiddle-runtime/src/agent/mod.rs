@@ -122,7 +122,7 @@ change, then report what you did.";
 const FENCE: char = '`';
 const SHORTEST_FENCE: usize = 3;
 
-fn fence_for(instruction: &str) -> String {
+pub(crate) fn fence_for(instruction: &str) -> String {
     let mut longest = 0;
     let mut run = 0;
     for character in instruction.chars() {
