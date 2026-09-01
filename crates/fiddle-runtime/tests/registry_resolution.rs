@@ -511,7 +511,7 @@ fn the_four_jira_names_resolve_and_jira_transition_still_does_not() {
          `the_shipped_document_is_admitted_and_a_document_naming_an_unknown_effect_is_not` \
          (`tests/toil_document.rs`) substitutes `jira.transition` into the shipped toil \
          document and asserts `WorkflowRefusal::Unperformable`, so a toil document naming \
-         this effect refuses at load. The file arrives with the bean, so a tree without \
+         this effect refuses at load. `fiddle-xc0u` adds that file, so a tree without \
          `tests/toil_document.rs` does not hold this case yet"
     );
 }
