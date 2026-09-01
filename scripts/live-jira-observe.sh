@@ -2,7 +2,7 @@
 set -euo pipefail
 
 LANE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PORT_SOURCE="$LANE_HOME/../crates/fiddle-runtime/src/jira/work_item.rs"
+PORT_SOURCE="${PORT_SOURCE:-$LANE_HOME/../crates/fiddle-runtime/src/jira/work_item.rs}"
 
 TMP=""
 RAW_LABELS=unread
@@ -281,7 +281,7 @@ $(cat "$TMP/inspect.err")"
   echo "--- the real issue as \`fields=status,updated\` returns it, recorded so M5b designs against a measurement ---"
   jq . <<<"$raw_issue"
 
-  note "PASS: $JIRA_SITE answered for $JIRA_ISSUE, both reads asked for \`$FIELDS\`, and the lines above record what came back for \`labels\`, \`description\` and \`comment\`"
+  note "PASS: $JIRA_SITE answered for $JIRA_ISSUE, the wide read and \`fiddle inspect\` both asked for \`$FIELDS\`, and the lines above record what came back for \`labels\`, \`description\` and \`comment\`"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

@@ -300,6 +300,26 @@ for field in labels description comment; do
 done
 
 printf 'const FIELDS: &str = "status,updated";\n' > "$FIXTURES/narrow.rs"
+ran "$OBSERVE" JIRA_USER_EMAIL=bot@example.invalid JIRA_API_TOKEN=not-a-real-token \
+  JIRA_SITE="$UNREACHABLE" JIRA_ISSUE=IDENT-1 FIDDLE_BIN=/bin/echo \
+  PORT_SOURCE="$FIXTURES/narrow.rs"
+[ "$CODE" -ne 0 ] || fail "the observe lane graded three fields against a port that asks for two and exited 0"
+case "$OUT" in
+  *"have drifted"*) ;;
+  *) fail "the observe lane refused a narrowed field list without saying the lane and the port have drifted: $OUT" ;;
+esac
+
+ran "$OBSERVE" JIRA_USER_EMAIL=bot@example.invalid JIRA_API_TOKEN=not-a-real-token \
+  JIRA_SITE="$UNREACHABLE" JIRA_ISSUE=IDENT-1 FIDDLE_BIN=/bin/echo
+[ "$CODE" -ne 0 ] || fail "the observe lane exited 0 against a site that answers nothing, so it reported a measurement it never took"
+case "$OUT" in
+  *"have drifted"*)
+    fail "the observe lane reported drift while reading the port source this repository ships, so the drift case above would pass for a lane that refuses every field list: $OUT"
+    ;;
+  *"would not answer a direct read"*) ;;
+  *) fail "the observe lane was given every variable and an unreachable site, and said neither: $OUT" ;;
+esac
+
 OUT=$(bash -c '. "$1"; PORT_SOURCE="$2"; fields_the_port_asks_for' _ "$OBSERVE" "$FIXTURES/narrow.rs" 2>&1)
 CODE=$?
 CHECKED=$((CHECKED + 1))
