@@ -122,6 +122,19 @@ impl Authorised {
     }
 }
 
+fn moved_since_qualifying(capability: &dyn Capability, view: &WorkStateView) -> Option<Published> {
+    let admitted = capability.qualification()?;
+    let reads_now = view
+        .work_item
+        .value()
+        .and_then(|work_item| work_item.revision.as_deref());
+    let refusal = crate::toil::recheck(admitted, reads_now).refused()?.clone();
+    Some(Published::of(format!(
+        "{}: {}",
+        refusal.found, refusal.remedy
+    )))
+}
+
 fn concluded(next_action: &NextAction, after: &WorkStateView) -> RunOutcome {
     match next_action {
         NextAction::Complete => RunOutcome::Completed,
@@ -161,6 +174,10 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
             NextAction::Execute { .. } => unreachable!("an Execute derivation always grants"),
         };
     };
+
+    if let Some(reason) = moved_since_qualifying(ctx.capability, &view) {
+        return RunReport::without_execution(RunOutcome::Retryable { reason }, derived, view);
+    }
 
     let authorised = match Authorised::recorded(ctx.journal, grant) {
         Ok(authorised) => authorised,
