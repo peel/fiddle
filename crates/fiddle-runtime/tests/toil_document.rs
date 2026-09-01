@@ -17,7 +17,7 @@ use fiddle_runtime::effect::{
     registry, EffectContext, EffectError, EffectTrace, ExecutionStep, Executor, ReadRetry,
     StepParams,
 };
-use fiddle_runtime::toil::Quoted;
+use fiddle_runtime::toil::{Quoted, Scope};
 use fiddle_runtime::workspace::{Workspace, WorkspaceCommand};
 use fiddle_runtime::{GhCli, GitCli, Redaction};
 use rig_core::completion::{CompletionModel, CompletionRequest, CompletionRequestBuilder, Message};
@@ -60,6 +60,8 @@ const AT_SEVEN: &str = "2026-08-26T07:00:00.000+0000";
 const PATIENT: Duration = Duration::from_secs(60);
 
 const TRACE: &str = "trace";
+
+const CHANGED: &str = "change";
 
 const TOIL_PROMPT: &str = "toil.md";
 
@@ -728,12 +730,16 @@ impl World {
     }
 
     fn ports<M>(&self, model: M) -> WorkflowPorts<M> {
+        self.ports_running(model, appending("agent"))
+    }
+
+    fn ports_running<M>(&self, model: M, check: WorkspaceCommand) -> WorkflowPorts<M> {
         WorkflowPorts {
             model,
             host: ToolHost {
                 workspace: Arc::clone(&self.workspace),
                 cancel: CancellationToken::new(),
-                check: appending("agent"),
+                check,
                 commands: Arc::new(Vec::new()),
                 command_timeout: PATIENT,
                 receipts: Arc::new(Mutex::new(ToolReceipts::default())),
@@ -820,6 +826,35 @@ fn appending(line: &str) -> WorkspaceCommand {
         args: vec!["-c".to_string(), format!("echo {line} >> {TRACE}")],
         timeout: PATIENT,
     }
+}
+
+fn writing(files: usize, lines: usize) -> WorkspaceCommand {
+    WorkspaceCommand {
+        program: "sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            format!(
+                "i=1; while [ $i -le {files} ]; do : > {CHANGED}_$i.txt; j=1; \
+                 while [ $j -le {lines} ]; do echo change >> {CHANGED}_$i.txt; \
+                 j=$((j+1)); done; i=$((i+1)); done"
+            ),
+        ],
+        timeout: PATIENT,
+    }
+}
+
+fn measured(world: &World) -> (usize, usize) {
+    (
+        world
+            .workspace
+            .changed_files()
+            .expect("the workspace answers what changed in it")
+            .len(),
+        world
+            .workspace
+            .changed_lines()
+            .expect("the workspace answers how many lines changed in it"),
+    )
 }
 
 fn executor<'a>(
@@ -999,6 +1034,38 @@ where
         world.ports(model),
     )
     .expect("this build admits the shipped toil document");
+    capability
+        .execute(ExecutionInput::observed(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+            observed,
+        ))
+        .await
+}
+
+async fn ran_bounded<M>(
+    world: &World,
+    model: M,
+    check: WorkspaceCommand,
+    scope: Scope,
+    observed: Option<&WorkItemState>,
+) -> Result<Executed, CapabilityError>
+where
+    M: CompletionModel + 'static,
+{
+    let ctx = world.context();
+    let deployment = allowing();
+    let capability = WorkflowCapability::new(
+        WORKFLOW,
+        STAGE,
+        toil(),
+        executor(world, &ctx, &deployment),
+        params(),
+        world.ports_running(model, check),
+    )
+    .expect("this build admits the shipped toil document")
+    .bounded_by(scope);
     capability
         .execute(ExecutionInput::observed(
             grant(),
@@ -1977,5 +2044,193 @@ async fn the_link_step_names_the_ticket_the_run_observed_and_refuses_without_one
         unobserved.issues_written_to().await,
         Vec::<String>::new(),
         "the link step wrote onto a ticket that no observation named"
+    );
+}
+
+fn a_long_line_of(prompt: &str) -> String {
+    shipped_prompt(prompt)
+        .lines()
+        .filter(|line| line.len() > 40 && !line.contains('"') && !line.contains('\\'))
+        .max_by_key(|line| line.len())
+        .expect("a shipped prompt carries one long line a request would repeat")
+        .to_string()
+}
+
+fn requests_carrying(model: &MockCompletionModel, text: &str) -> usize {
+    model
+        .requests()
+        .iter()
+        .filter(|request| {
+            serde_json::to_string(&request.chat_history)
+                .expect("the messages a model received serialize")
+                .contains(text)
+        })
+        .count()
+}
+
+fn briefed_to_change(model: &MockCompletionModel) -> usize {
+    requests_carrying(model, &a_long_line_of(TOIL_PROMPT))
+}
+
+fn briefed_to_judge(model: &MockCompletionModel) -> usize {
+    requests_carrying(model, &a_long_line_of(CHANGE_EVALUATE))
+}
+
+const THREE_FILES: usize = 3;
+
+const TEN_LINES_EACH: usize = 10;
+
+const WITHIN_BOTH: Scope = Scope {
+    max_files_changed: 10,
+    max_diff_lines: 500,
+};
+
+#[tokio::test]
+async fn a_change_beyond_the_bounds_stops_before_any_effect_and_each_bound_bites_on_its_own() {
+    for (scope, refusal, unbroken) in [
+        (
+            Scope {
+                max_files_changed: 2,
+                max_diff_lines: 500,
+            },
+            "the change exceeds max_files_changed: 3 files changed, and the bound is 2",
+            "max_diff_lines",
+        ),
+        (
+            Scope {
+                max_files_changed: 10,
+                max_diff_lines: 20,
+            },
+            "the change exceeds max_diff_lines: 30 lines changed, and the bound is 20",
+            "max_files_changed",
+        ),
+    ] {
+        let world = world();
+        let before = world.workspace_head();
+        let model = accepting();
+        let stopped = ran_bounded(
+            &world,
+            model.clone(),
+            writing(THREE_FILES, TEN_LINES_EACH),
+            scope,
+            Some(&observed_issue("Ready")),
+        )
+        .await
+        .expect_err("a change beyond a bound this run was given cannot earn the run");
+
+        let said = stopped.to_string();
+        assert_eq!(
+            said, refusal,
+            "the refusal must name the bound it broke, the measurement and the bound"
+        );
+        assert!(
+            !said.contains(unbroken),
+            "this change is inside `{unbroken}`, and the refusal names it anyway, so \
+             the guard is not reading the bounds one at a time: {said}"
+        );
+
+        assert!(
+            briefed_to_change(&model) > 0,
+            "the agent step ran, so the refusal above is the guard biting after the \
+             change and not before it"
+        );
+        assert!(
+            world.holds(&format!("{CHANGED}_1.txt")),
+            "the change the agent made is in the workspace, so the guard measured a \
+             change that exists"
+        );
+        assert_eq!(
+            measured(&world),
+            (THREE_FILES, THREE_FILES * TEN_LINES_EACH),
+            "the row's own premise: the agent left {THREE_FILES} files and \
+             {} lines behind it, and both rows above measure that one change",
+            THREE_FILES * TEN_LINES_EACH
+        );
+        assert_eq!(
+            briefed_to_judge(&model),
+            0,
+            "the guard bit before the evaluation, so no judging request was paid for"
+        );
+
+        assert_eq!(
+            world.effect_steps(),
+            Vec::new(),
+            "an oversized change reached an effect step"
+        );
+        assert_eq!(
+            world.calls(),
+            0,
+            "an oversized change opened a pull request"
+        );
+        assert_eq!(
+            world.published_sha(BRANCH),
+            None,
+            "an oversized change published a branch"
+        );
+        assert_eq!(
+            world.workspace_head(),
+            before,
+            "an oversized change was committed"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_change_inside_both_bounds_runs_to_the_effect_tail() {
+    let world = world_holding(ISSUE).await;
+    let model = accepting();
+    let earned = ran_bounded(
+        &world,
+        model.clone(),
+        writing(THREE_FILES, TEN_LINES_EACH),
+        WITHIN_BOTH,
+        Some(&observed_issue("Ready")),
+    )
+    .await
+    .expect("a change inside both bounds runs to the end of the shipped document");
+
+    assert!(
+        matches!(earned, Executed::Earned(_)),
+        "a change inside both bounds earns the run: {earned:?}"
+    );
+    assert!(
+        briefed_to_change(&model) > 0,
+        "the same agent step ran here as in the refused rows"
+    );
+    assert!(
+        briefed_to_judge(&model) > 0,
+        "and the evaluation the refused rows never paid for ran here, so the zero \
+         they count is the guard stopping the run"
+    );
+    assert_eq!(
+        files_committed_by(&world),
+        (1..=THREE_FILES)
+            .map(|file| format!("{CHANGED}_{file}.txt"))
+            .collect::<Vec<String>>(),
+        "the commit step committed the change the agent made"
+    );
+    assert_eq!(
+        effects_performed(&world),
+        [
+            ENSURE_BRANCH_PUBLISHED,
+            ENSURE_PULL_REQUEST,
+            JIRA_PULL_REQUEST_LINKED
+        ],
+        "the three effect steps of the shipped document ran, in the order it names \
+         them, so a guard that refused every change would fail here"
+    );
+    assert!(
+        world.calls() > 0,
+        "the run reached the forge, so the zero the refused rows count is not this \
+         world never reaching it"
+    );
+    assert!(
+        world.published_sha(BRANCH).is_some(),
+        "and the branch the refused rows never published is published here"
+    );
+    assert_eq!(
+        world.issues_written_to().await,
+        vec![ISSUE.to_string()],
+        "and the link step reached the ticket the run observed"
     );
 }

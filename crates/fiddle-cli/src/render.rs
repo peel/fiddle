@@ -149,8 +149,8 @@ pub fn config_check_json(config: &Config) -> String {
     if reports_toil(config) {
         body["orchestration"] = serde_json::json!({
             "toil": {
-                "max_files_changed": toil.max_files_changed,
-                "max_diff_lines": toil.max_diff_lines,
+                "max_files_changed": toil.scope.max_files_changed,
+                "max_diff_lines": toil.scope.max_diff_lines,
             },
         });
     }
@@ -408,7 +408,7 @@ pub fn config_check_human(config: &Config) -> String {
         out.push_str(&format!(
             "\n  orchestration.toil.max_files_changed = {}\
              \n  orchestration.toil.max_diff_lines = {}",
-            toil.max_files_changed, toil.max_diff_lines,
+            toil.scope.max_files_changed, toil.scope.max_diff_lines,
         ));
     }
     if let Some(cve) = config

@@ -872,8 +872,7 @@ const TOIL_SHORTEST_DESCRIPTION: usize = 20;
 
 pub struct ToilBounds {
     pub eligibility: fiddle_runtime::toil::Eligibility,
-    pub max_files_changed: usize,
-    pub max_diff_lines: usize,
+    pub scope: fiddle_runtime::toil::Scope,
 }
 
 pub fn toil_bounds(config: &Config) -> ToilBounds {
@@ -900,9 +899,11 @@ pub fn toil_bounds(config: &Config) -> ToilBounds {
                 .unwrap_or_default(),
             shortest_description: TOIL_SHORTEST_DESCRIPTION,
         },
-        max_files_changed: toil
-            .map_or_else(default_max_files_changed, |toil| toil.max_files_changed),
-        max_diff_lines: toil.map_or_else(default_max_diff_lines, |toil| toil.max_diff_lines),
+        scope: fiddle_runtime::toil::Scope {
+            max_files_changed: toil
+                .map_or_else(default_max_files_changed, |toil| toil.max_files_changed),
+            max_diff_lines: toil.map_or_else(default_max_diff_lines, |toil| toil.max_diff_lines),
+        },
     }
 }
 
@@ -2590,7 +2591,7 @@ token = { env = "JIRA_API_TOKEN" }
     fn an_absent_toil_table_resolves_to_the_documented_bounds() {
         let bounds = resolved(TOILING);
         assert_eq!(
-            (bounds.max_files_changed, bounds.max_diff_lines),
+            (bounds.scope.max_files_changed, bounds.scope.max_diff_lines),
             (10, 500),
             "a document that names no [orchestration.toil] table resolves to the \
              documented 10 files and 500 lines, and never to no bound at all"
@@ -2598,7 +2599,7 @@ token = { env = "JIRA_API_TOKEN" }
 
         let named = resolved(&format!("{TOILING}{NAMING_BOTH}"));
         assert_eq!(
-            (named.max_files_changed, named.max_diff_lines),
+            (named.scope.max_files_changed, named.scope.max_diff_lines),
             (3, 30),
             "and the same resolver returns the values a table does name, so the \
              defaults above are it reading an absent table rather than a constant \
@@ -2614,13 +2615,15 @@ token = { env = "JIRA_API_TOKEN" }
         );
         let bounds = resolved(&sweeping);
         assert_eq!(
-            (bounds.max_files_changed, bounds.max_diff_lines),
+            (bounds.scope.max_files_changed, bounds.scope.max_diff_lines),
             (10, 500),
             "[orchestration] is present and its toil table is not, which is the \
              case a resolver that stops at the first absent table gets wrong"
         );
         assert_eq!(
-            resolved(&format!("{sweeping}{NAMING_BOTH}")).max_files_changed,
+            resolved(&format!("{sweeping}{NAMING_BOTH}"))
+                .scope
+                .max_files_changed,
             3,
             "and a toil table beside a cve table is still read, so the case above \
              cannot be passing because [orchestration.cve] hides the toil table"
@@ -2635,7 +2638,7 @@ token = { env = "JIRA_API_TOKEN" }
         ] {
             let bounds = resolved(&format!("{TOILING}\n[orchestration.toil]\n{named}\n"));
             assert_eq!(
-                (bounds.max_files_changed, bounds.max_diff_lines),
+                (bounds.scope.max_files_changed, bounds.scope.max_diff_lines),
                 expected,
                 "`{named}` alone leaves the other bound at its default, and a \
                  resolver that reads only one key cannot satisfy both rows"
@@ -2789,7 +2792,7 @@ token = { env = "JIRA_API_TOKEN" }
             let config = toml::from_str::<Config>(&document).unwrap();
             let bounds = toil_bounds(&config);
             assert_eq!(
-                (bounds.max_files_changed, bounds.max_diff_lines),
+                (bounds.scope.max_files_changed, bounds.scope.max_diff_lines),
                 (files, lines),
                 "the row's own premise: the resolver returns what the document names"
             );
@@ -2805,6 +2808,57 @@ token = { env = "JIRA_API_TOKEN" }
                      {said}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn one_scope_bound_moves_both_the_reported_value_and_the_guard() {
+        let resolved_scope = |named: &str, value: usize| {
+            let config = toml::from_str::<Config>(&format!(
+                "{TOILING}\n[orchestration.toil]\n{named} = {value}\n"
+            ))
+            .unwrap();
+            let said = crate::render::config_check_human(&config);
+            let line = format!("orchestration.toil.{named} = {value}");
+            assert!(
+                said.contains(&line),
+                "the row's own premise: the command reports the bound it resolved, \
+                 and `{line}` is not in {said}"
+            );
+            toil_bounds(&config).scope
+        };
+
+        for (named, between) in [
+            (
+                "max_files_changed",
+                fiddle_runtime::toil::Change {
+                    files_changed: 4,
+                    diff_lines: 0,
+                },
+            ),
+            (
+                "max_diff_lines",
+                fiddle_runtime::toil::Change {
+                    files_changed: 1,
+                    diff_lines: 4,
+                },
+            ),
+        ] {
+            let refusal = resolved_scope(named, 3)
+                .admits(&between)
+                .expect_err("a change past the bound the document names is refused");
+            assert!(
+                refusal.to_string().contains(named),
+                "the guard the workflow runs is this scope, and its refusal must name \
+                 the bound the document moved: {refusal}"
+            );
+            assert_eq!(
+                resolved_scope(named, 5).admits(&between),
+                Ok(()),
+                "one number changed in the document, and the same change the tighter \
+                 bound refused is admitted, so the reported value and the enforced \
+                 value moved together"
+            );
         }
     }
 }
