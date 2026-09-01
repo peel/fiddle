@@ -24,6 +24,7 @@ pub use workflow::{
 
 use crate::human::validate::DecisionError;
 use crate::human::InteractionRef;
+use crate::toil::Eligible;
 use fiddle_core::{
     AttemptId, CapabilityId, DecisionRequestId, EvidenceRef, NextAction, Publication, Published,
     RunDisposition, TreeObservation, WorkItemState,
@@ -129,6 +130,10 @@ pub trait Capability: Send + Sync {
     }
 
     fn disposition(&self) -> Option<RunDisposition> {
+        None
+    }
+
+    fn qualification(&self) -> Option<&Eligible> {
         None
     }
 }

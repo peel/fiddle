@@ -2,6 +2,7 @@ use crate::agent::fence_for;
 use async_trait::async_trait;
 
 pub const READ_NAMES_AN_ISSUE_KEY: &str = "the read names a tracker issue key";
+pub const READ_CARRIES_THE_REVISION: &str = "the read carries the ticket's revision";
 pub const READ_CARRIES_LABELS: &str = "the read carries the ticket's labels";
 pub const TRIGGER_LABEL_PRESENT: &str = "the trigger label is present";
 pub const ISSUE_TYPE_IS_WORKED: &str = "the issue type is one the toil agent works";
@@ -12,9 +13,11 @@ pub const DESCRIPTION_STATES_THE_CHANGE: &str = "the ticket describes the change
 pub const REVIEW_ANSWERED: &str = "the ambiguity review answered";
 pub const JUDGEMENT_QUOTES_THE_TICKET: &str = "a judgement quotes the ticket text it rests on";
 pub const ASKS_FOR_A_CHANGE: &str = "the ticket asks for a change and not a product decision";
+pub const TICKET_HELD_ITS_REVISION: &str = "the ticket holds the revision it was qualified at";
 
-pub const RULES: [&str; 11] = [
+pub const RULES: [&str; 13] = [
     READ_NAMES_AN_ISSUE_KEY,
+    READ_CARRIES_THE_REVISION,
     READ_CARRIES_LABELS,
     TRIGGER_LABEL_PRESENT,
     ISSUE_TYPE_IS_WORKED,
@@ -25,6 +28,7 @@ pub const RULES: [&str; 11] = [
     REVIEW_ANSWERED,
     JUDGEMENT_QUOTES_THE_TICKET,
     ASKS_FOR_A_CHANGE,
+    TICKET_HELD_ITS_REVISION,
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,6 +42,7 @@ pub struct Eligibility {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TicketFacts {
     pub id: String,
+    pub revision: Option<String>,
     pub issue_type: String,
     pub labels: Option<Vec<String>>,
     pub repository: Option<String>,
@@ -210,6 +215,7 @@ impl Refusal {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Eligible {
     pub work_item: String,
+    pub revision: String,
     pub repository: String,
     pub quoted: Quoted,
     pub ledger: Vec<Standing>,
@@ -261,18 +267,25 @@ impl Ledger {
     }
 
     fn closed(&self, failed: &'static str, class: EvidenceClass) -> Vec<Standing> {
+        self.rows(Some((failed, class)))
+    }
+
+    fn admitted(&self) -> Vec<Standing> {
+        self.rows(None)
+    }
+
+    fn rows(&self, failed: Option<(&'static str, EvidenceClass)>) -> Vec<Standing> {
         RULES
             .iter()
             .map(
                 |rule| match self.held.iter().find(|standing| standing.rule == *rule) {
                     Some(standing) => *standing,
-                    None if *rule == failed => Standing {
-                        rule,
-                        state: RuleState::Failed(class),
-                    },
                     None => Standing {
                         rule,
-                        state: RuleState::NotReached,
+                        state: match failed {
+                            Some((named, class)) if named == *rule => RuleState::Failed(class),
+                            Some(_) | None => RuleState::NotReached,
+                        },
                     },
                 },
             )
@@ -315,6 +328,7 @@ fn names_an_issue_key(id: &str) -> bool {
 fn ticket_text(ticket: &TicketFacts) -> String {
     let TicketFacts {
         id: _,
+        revision: _,
         issue_type: _,
         labels: _,
         repository: _,
@@ -353,6 +367,32 @@ pub async fn qualify(
         );
     }
     ledger.holds(READ_NAMES_AN_ISSUE_KEY, EvidenceClass::Measured);
+
+    let Some(revision) = ticket
+        .revision
+        .as_deref()
+        .map(str::trim)
+        .filter(|revision| !revision.is_empty())
+    else {
+        return refuse(
+            ticket,
+            &ledger,
+            Fault {
+                rule: READ_CARRIES_THE_REVISION,
+                class: EvidenceClass::Measured,
+                found: format!(
+                    "the read of {key} carried no revision, so nothing records the state this \
+                     qualification rests on"
+                ),
+                remedy: format!(
+                    "the tracker read must request the `fields.updated` of {key} before it can be \
+                     qualified"
+                ),
+                quoted: None,
+            },
+        );
+    };
+    ledger.holds(READ_CARRIES_THE_REVISION, EvidenceClass::Measured);
 
     let Some(labels) = &ticket.labels else {
         return refuse(
@@ -572,8 +612,65 @@ pub async fn qualify(
 
     Qualification::Eligible(Eligible {
         work_item: ticket.id.clone(),
+        revision: revision.to_string(),
         repository: repository.clone(),
         quoted,
-        ledger: ledger.held,
+        ledger: ledger.admitted(),
+    })
+}
+
+fn resolving(ledger: &[Standing], state: RuleState) -> Vec<Standing> {
+    ledger
+        .iter()
+        .map(|standing| match standing.rule == TICKET_HELD_ITS_REVISION {
+            true => Standing {
+                rule: standing.rule,
+                state,
+            },
+            false => *standing,
+        })
+        .collect()
+}
+
+pub fn recheck(admitted: &Eligible, reads_now: Option<&str>) -> Qualification {
+    let key = &admitted.work_item;
+    let qualified_at = &admitted.revision;
+    let moved = |found: String, remedy: String| {
+        Qualification::Refused(Refusal {
+            work_item: key.clone(),
+            failed_rule: TICKET_HELD_ITS_REVISION,
+            evidence_class: EvidenceClass::Measured,
+            found,
+            remedy,
+            quoted: None,
+            ledger: resolving(&admitted.ledger, RuleState::Failed(EvidenceClass::Measured)),
+        })
+    };
+    let Some(reads_now) = reads_now
+        .map(str::trim)
+        .filter(|revision| !revision.is_empty())
+    else {
+        return moved(
+            format!(
+                "the read before acting on {key} carried no revision, so the revision it was \
+                 qualified at, `{qualified_at}`, was compared with nothing"
+            ),
+            format!(
+                "read {key} again with its `fields.updated` before acting on the qualification"
+            ),
+        );
+    };
+    if reads_now != qualified_at {
+        return moved(
+            format!(
+                "the ticket changed after it was qualified: {key} was qualified at revision \
+                 `{qualified_at}` and now reads revision `{reads_now}`"
+            ),
+            format!("qualify {key} again at revision `{reads_now}` before acting on it"),
+        );
+    }
+    Qualification::Eligible(Eligible {
+        ledger: resolving(&admitted.ledger, RuleState::Held(EvidenceClass::Measured)),
+        ..admitted.clone()
     })
 }
