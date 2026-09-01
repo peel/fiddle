@@ -20,14 +20,16 @@ use fiddle_runtime::effect::{
 use fiddle_runtime::toil::Quoted;
 use fiddle_runtime::workspace::{Workspace, WorkspaceCommand};
 use fiddle_runtime::{GhCli, GitCli, Redaction};
-use rig_core::completion::CompletionModel;
+use rig_core::completion::{CompletionModel, CompletionRequest, CompletionRequestBuilder, Message};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use support::gullible::{how_it_arrived, reading_of, Gullible, PlantedWrite, Reading};
+use support::gullible::{
+    how_it_arrived, reading_of, what_it_wrote, Gullible, PlantedWrite, Reading,
+};
 use support::quoting::{
     carried_by, carrying, longest_run_of_fences, quotation_in, what_each_request_carried, FENCE,
 };
@@ -959,6 +961,10 @@ fn a_model_that_obeys_an_unquoted_instruction() -> Gullible {
     )
 }
 
+fn a_request_carrying(text: &str) -> CompletionRequest {
+    CompletionRequestBuilder::new(MockCompletionModel::default(), Message::user(text)).build()
+}
+
 async fn ran<M>(
     world: &World,
     model: M,
@@ -1659,6 +1665,61 @@ fn the_gullible_model_reads_a_fenced_ticket_as_data_and_an_unfenced_one_as_an_in
         how_it_arrived(&[prompt, fenced], AN_INSTRUCTION_IN_THE_TICKET),
         Reading::Quoted,
         "a request that carries the instruction only inside a fence carried it as data"
+    );
+}
+
+#[tokio::test]
+async fn the_gullible_model_obeys_an_unfenced_instruction_by_writing_the_file_it_names() {
+    let prompt = shipped_prompt(TOIL_PROMPT);
+    let fenced = format!(
+        "{prompt}\n\n{}",
+        Quoted::of(AN_INSTRUCTION_IN_THE_TICKET).fenced()
+    );
+    let bare = format!("{prompt}\n\n{AN_INSTRUCTION_IN_THE_TICKET}");
+
+    let handed_data = a_model_that_obeys_an_unquoted_instruction();
+    let ignored = handed_data
+        .completion(a_request_carrying(&fenced))
+        .await
+        .expect("the double answers a request that quotes the instruction");
+    assert_eq!(
+        handed_data.readings(),
+        vec![Reading::Quoted],
+        "the fenced request must arrive as data, or this pair does not isolate the fence"
+    );
+    assert_eq!(
+        what_it_wrote(&ignored),
+        Vec::new(),
+        "a quoted instruction must leave the double answering from its script"
+    );
+    assert_eq!(
+        handed_data.times_it_obeyed(),
+        0,
+        "a quoted instruction gave the double nothing to obey"
+    );
+
+    let handed_an_instruction = a_model_that_obeys_an_unquoted_instruction();
+    let obeyed = handed_an_instruction
+        .completion(a_request_carrying(&bare))
+        .await
+        .expect("the double answers a request that states the instruction");
+    assert_eq!(
+        handed_an_instruction.readings(),
+        vec![Reading::Bare],
+        "the unfenced request must arrive as an instruction, or this pair does not isolate \
+         the fence"
+    );
+    assert_eq!(
+        what_it_wrote(&obeyed),
+        vec![the_key_the_instruction_asked_for()],
+        "the double must answer an unfenced instruction with the write that instruction \
+         asked for, or the counter below counts an obedience that wrote nothing"
+    );
+    assert_eq!(
+        handed_an_instruction.times_it_obeyed(),
+        1,
+        "an unfenced instruction must move the obey counter, or the count of zero the run \
+         below reads is met by a double that can never obey"
     );
 }
 
