@@ -213,6 +213,8 @@ mod tests {
                     labels: None,
                     description: None,
                     comments: None,
+                    issue_type: None,
+                    summary: None,
                 },
                 source: SourceRef(format!("test:{work_id}")),
                 revision: None,

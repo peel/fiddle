@@ -9,7 +9,7 @@ use crate::effect::{
     StepOutputs, StepParams,
 };
 use crate::gateway::Redaction;
-use crate::toil::{Change, Quoted, Scope};
+use crate::toil::{Change, Eligible, Quoted, Scope};
 use crate::workspace::WorkspaceCommand;
 use fiddle_core::{
     CapabilityId, EffectName, EvidenceRef, HumanDecisionRequirement, Published, WorkItemState,
@@ -168,6 +168,7 @@ pub struct WorkflowCapability<'a, M> {
     params: StepParams,
     ports: WorkflowPorts<M>,
     scope: Option<Scope>,
+    qualification: Option<Eligible>,
     receipts: Mutex<Vec<EvidenceRef>>,
     entered: Mutex<Vec<StepOutputs>>,
 }
@@ -298,6 +299,7 @@ where
             params,
             ports,
             scope: None,
+            qualification: None,
             receipts: Mutex::new(Vec::new()),
             entered: Mutex::new(Vec::new()),
         })
@@ -305,6 +307,11 @@ where
 
     pub fn bounded_by(mut self, scope: Scope) -> Self {
         self.scope = Some(scope);
+        self
+    }
+
+    pub fn qualified_by(mut self, admitted: Eligible) -> Self {
+        self.qualification = Some(admitted);
         self
     }
 
@@ -509,5 +516,9 @@ where
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    fn qualification(&self) -> Option<&Eligible> {
+        self.qualification.as_ref()
     }
 }

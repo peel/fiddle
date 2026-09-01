@@ -219,7 +219,7 @@ like a refusal and measures nothing.
 The lane holds no copy of the field list. `fields_the_port_asks_for` reads
 `const FIELDS` out of `crates/fiddle-runtime/src/jira/work_item.rs` and refuses
 when that list does not carry every field the lane grades. That drift is what
-this lane was corrected for: the port widened its read to five fields, the lane
+this lane was corrected for: the port widened its read, the lane
 kept recording three, and a green run said nothing about the two it had stopped
 grading.
 
@@ -274,18 +274,20 @@ printed to your terminal.
 The lane prints the issue its narrow `curl` read, and that call requests
 `fields=status,updated` and no other field, so no ticket prose can reach the
 terminal through it. The wide `curl` and `fiddle inspect` both request
-`status,updated,labels,description,comment`, because eligibility weighs the
-label, the summary text and the conversation
-(`crates/fiddle-runtime/src/jira/work_item.rs`). The lane writes both of those
+`status,updated,labels,description,comment,issuetype,summary`, because
+eligibility weighs the label, the issue type, the summary, the description and the
+conversation (`crates/fiddle-runtime/src/jira/work_item.rs`). The lane grades the
+first five of those and reads the list off `const FIELDS`, so a list that widens
+again does not stale this lane. The lane writes both of those
 answers to a temporary file and prints types, counts, byte sizes and character
 counts off them. No label's text, no description's prose and no comment's body
 reaches a line the lane prints.
 
-On the path that passes, none of either five-field answer is printed. The lane
+On the path that passes, none of either wide answer is printed. The lane
 reports the three values it read and the three shapes it graded, and
 `trap 'rm -rf "$TMP"' EXIT` removes the temporary directory when the run ends.
 
-Two paths do print an answer. When the site's five-field answer does not parse as
+Two paths do print an answer. When the site's wide answer does not parse as
 JSON, or when `fiddle`'s own answer does not, the lane fails and writes that whole
 answer to stderr, because a reader who cannot see what arrived cannot say why it
 did not parse. Those are the malformed-answer diagnostics, and they are the only

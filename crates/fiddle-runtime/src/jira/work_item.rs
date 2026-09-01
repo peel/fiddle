@@ -12,7 +12,7 @@ pub struct JiraWorkItemPort {
     site: String,
 }
 
-const FIELDS: &str = "status,updated,labels,description,comment";
+const FIELDS: &str = "status,updated,labels,description,comment,issuetype,summary";
 
 struct ReadIssue {
     status_id: String,
@@ -22,6 +22,8 @@ struct ReadIssue {
     labels: Option<Vec<String>>,
     description: Option<String>,
     comments: Option<Vec<WorkItemComment>>,
+    issue_type: Option<String>,
+    summary: Option<String>,
 }
 
 impl JiraWorkItemPort {
@@ -159,6 +161,8 @@ impl WorkItemPort for JiraWorkItemPort {
                 labels: issue.labels,
                 description: issue.description,
                 comments: issue.comments,
+                issue_type: issue.issue_type,
+                summary: issue.summary,
             },
             source,
             revision: Some(revision),
@@ -179,7 +183,23 @@ fn issue_from(work_id: &str, body: &serde_json::Value) -> Result<ReadIssue, Jira
         labels: labels_in(&body["fields"]["labels"])?,
         description: description_in(&body["fields"]["description"])?,
         comments: comments_in(work_id, body)?,
+        issue_type: text_in(
+            &body["fields"]["issuetype"]["name"],
+            "fields.issuetype.name",
+        )?,
+        summary: text_in(&body["fields"]["summary"], "fields.summary")?,
     })
+}
+
+fn text_in(held: &serde_json::Value, path: &str) -> Result<Option<String>, JiraError> {
+    match held {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(text) => Ok(Some(text.clone())),
+        other => Err(JiraError::Malformed(format!(
+            "`{path}` is {}, and text is what this port reads there",
+            shaped(other)
+        ))),
+    }
 }
 
 fn labels_in(held: &serde_json::Value) -> Result<Option<Vec<String>>, JiraError> {

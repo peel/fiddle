@@ -807,6 +807,8 @@ mod tests {
             labels: None,
             description: None,
             comments: None,
+            issue_type: None,
+            summary: None,
         }
     }
 
@@ -848,6 +850,8 @@ mod tests {
             labels: None,
             description: None,
             comments: None,
+            issue_type: None,
+            summary: None,
         });
 
         assert_eq!(

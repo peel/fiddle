@@ -15,6 +15,7 @@ use fiddle_runtime::capability::workflow::{
 use fiddle_runtime::effect::{EffectContext, Executor, StepParams};
 use fiddle_runtime::human::interpret::InterpretationBounds;
 use fiddle_runtime::ports::{ChangePort, WorkItemPort};
+use fiddle_runtime::toil::{Eligible, Refusal, TicketFacts};
 use fiddle_runtime::{
     Addressed, AgentBudget, AttemptContext, AttemptTrace, Capability, ConfiguredNames,
     DeclaredCommand, Extend, FixtureRepair, GatewayError, GhCli, GitCli, JiraError, JiraHttp,
@@ -102,6 +103,14 @@ enum CliError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     WorkflowUnrunnable(#[from] WorkflowUnrunnable),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Ineligible(#[from] Ineligible),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    TicketUnread(#[from] TicketUnread),
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
@@ -374,6 +383,7 @@ struct Resolved<'a> {
     forge: Option<&'a Forge>,
     transcripts: Option<&'a Transcripts>,
     workflow: Option<SelectedWorkflow>,
+    qualification: Option<Eligible>,
 }
 
 fn selected_workflow(
@@ -496,7 +506,9 @@ fn exit_code_for(termination: &Termination) -> u8 {
             | CliError::UnimplementedForm(_)
             | CliError::TranscriptSwitch(_)
             | CliError::WorkflowDocument(_)
-            | CliError::WorkflowUnrunnable(_),
+            | CliError::WorkflowUnrunnable(_)
+            | CliError::Ineligible(_)
+            | CliError::TicketUnread(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -533,11 +545,17 @@ fn jira_http(jira: &config::Jira, config_path: &Path) -> Result<JiraHttp, CliErr
     .map_err(|error| CliError::Jira(JiraUnusable(error, config_path.display().to_string())))
 }
 
-fn filing_client(
+fn tracker_client(
     config: &config::Config,
     config_path: &Path,
+    selection: Selection,
+    reference: &InvocationRef,
 ) -> Result<Option<JiraHttp>, CliError> {
-    match config.jira.as_ref().filter(|jira| jira.filing.is_some()) {
+    let wanted = config
+        .jira
+        .as_ref()
+        .filter(|jira| jira.filing.is_some() || qualifies_a_ticket(selection, reference));
+    match wanted {
         Some(jira) => Ok(Some(jira_http(jira, config_path)?)),
         None => Ok(None),
     }
@@ -591,6 +609,110 @@ async fn observe(
         cancel,
     )
     .await)
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("`{work_item}` is not work this build takes on: {failed_rule} — {found}")]
+#[diagnostic(code(fiddle::toil::ineligible), help("{remedy}"))]
+struct Ineligible {
+    work_item: String,
+    failed_rule: &'static str,
+    found: String,
+    remedy: String,
+}
+
+impl Ineligible {
+    fn of(refusal: &Refusal) -> Self {
+        Self {
+            work_item: refusal.work_item.clone(),
+            failed_rule: refusal.failed_rule,
+            found: refusal.found.clone(),
+            remedy: refusal.remedy.clone(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("`{work_item}` could not be read, so nothing was qualified: {reason}")]
+#[diagnostic(
+    code(fiddle::toil::ticket_unread),
+    help(
+        "a ticket this build cannot read is a ticket it cannot qualify; read the \
+          reason above and run it again"
+    )
+)]
+struct TicketUnread {
+    work_item: String,
+    reason: String,
+}
+
+fn qualifies_a_ticket(selection: Selection, reference: &InvocationRef) -> bool {
+    selection == Selection::Toil && reference.scheme() == InvocationScheme::Jira
+}
+
+fn facts_of(ticket: &fiddle_core::WorkItemState, config: &config::Config) -> TicketFacts {
+    TicketFacts {
+        id: ticket.id.clone(),
+        revision: ticket.revision.clone(),
+        issue_type: ticket.issue_type.clone().unwrap_or_default(),
+        labels: ticket.labels.clone(),
+        repository: config.github.as_ref().map(|github| github.repo.to_string()),
+        summary: ticket.summary.clone().unwrap_or_default(),
+        description: ticket.description.clone(),
+    }
+}
+
+async fn qualified(
+    config: &config::Config,
+    config_path: &Path,
+    selection: Selection,
+    reference: &InvocationRef,
+    work_items: &dyn WorkItemPort,
+    cancel: &CancellationToken,
+) -> Result<Option<Eligible>, CliError> {
+    if !qualifies_a_ticket(selection, reference) {
+        return Ok(None);
+    }
+    let agent = config.agent.as_ref().ok_or_else(|| Unconfigured {
+        capability: selection.id(),
+        missing: "[agent]",
+        path: config_path.display().to_string(),
+    })?;
+
+    let observed = work_items.observe(reference.value(), cancel).await;
+    let Some(ticket) = observed.value() else {
+        return Err(TicketUnread {
+            work_item: reference.value().to_string(),
+            reason: match &observed {
+                fiddle_core::Observation::Unavailable { source, reason } => {
+                    format!("{source} answered: {reason}")
+                }
+                other => format!("the tracker answered {other:?}"),
+            },
+        }
+        .into());
+    };
+
+    let gateway = model_client(agent)?;
+    let review = fiddle_runtime::toil::ModelReview::new(
+        gateway.model,
+        fiddle_runtime::toil::ReviewBounds {
+            max_tokens: agent.max_tokens,
+            deadline: agent.deadline.as_duration(),
+        },
+    );
+    match fiddle_runtime::toil::qualify(
+        &facts_of(ticket, config),
+        &config::toil_bounds(config).eligibility,
+        &review,
+    )
+    .await
+    {
+        fiddle_runtime::toil::Qualification::Eligible(admitted) => Ok(Some(admitted)),
+        fiddle_runtime::toil::Qualification::Refused(refusal) => {
+            Err(Ineligible::of(&refusal).into())
+        }
+    }
 }
 
 fn build_identity() -> FiddleBuild {
@@ -750,7 +872,7 @@ async fn resolve_forge(
     };
 
     let ctx = EffectContext::new(gh, git, work, cancel.clone());
-    let ctx = match filing_client(config, config_path)? {
+    let ctx = match tracker_client(config, config_path, selection, reference)? {
         Some(client) => ctx.with_jira(client),
         None => ctx,
     };
@@ -774,6 +896,7 @@ fn build_capability<'a>(
         forge,
         transcripts,
         workflow: selected,
+        qualification,
     } = resolved;
     let missing = |missing: &'static str| Unconfigured {
         capability: selection.id(),
@@ -1192,6 +1315,10 @@ fn build_capability<'a>(
                 reason: refusal.to_string(),
             })?
             .bounded_by(config::toil_bounds(config).scope);
+            let capability = match qualification {
+                Some(admitted) => capability.qualified_by(admitted),
+                None => capability,
+            };
 
             Ok(Box::new(capability))
         }
@@ -1319,6 +1446,15 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             let cancel = CancellationToken::new();
             cancel_on_interrupt(&cancel);
             let (work_items, changes) = ports(&config, &cli.config, &reference)?;
+            let qualification = qualified(
+                &config,
+                &cli.config,
+                selection,
+                &reference,
+                work_items.as_ref(),
+                &cancel,
+            )
+            .await?;
             let forge = match selection {
                 Selection::Publish | Selection::Propose | Selection::Mitigate | Selection::Toil => {
                     Some(resolve_forge(&config, &cli.config, &cancel, selection, &reference).await?)
@@ -1335,6 +1471,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                     forge: forge.as_ref(),
                     transcripts: recording.as_ref(),
                     workflow: document,
+                    qualification,
                 },
             )?;
             let record = fiddle_runtime::attempt(&AttemptContext {
@@ -1604,6 +1741,7 @@ mod tests {
                 forge: None,
                 transcripts: None,
                 workflow: None,
+                qualification: None,
             },
         ) else {
             panic!("nothing exports that variable, so no endpoint exists")
@@ -1692,6 +1830,7 @@ mod tests {
                 forge: None,
                 transcripts: None,
                 workflow: None,
+                qualification: None,
             },
         ) else {
             panic!("the deterministic capability needs nothing but the document")
@@ -1729,6 +1868,7 @@ mod tests {
                 forge: None,
                 transcripts: None,
                 workflow: None,
+                qualification: None,
             },
         ) else {
             panic!("no forge was supplied, so nothing can be built")
@@ -1776,6 +1916,7 @@ mod tests {
                 forge: None,
                 transcripts: None,
                 workflow: None,
+                qualification: None,
             },
         ) else {
             panic!("a publication needs a forge to publish to")
@@ -1939,6 +2080,7 @@ mod tests {
                 forge: None,
                 transcripts: None,
                 workflow: None,
+                qualification: None,
             },
         ) else {
             panic!("a repair needs a model and somewhere to work")
@@ -2037,6 +2179,10 @@ mod tests {
 
     fn a_jira_reference() -> InvocationRef {
         "jira:IDENT-1".parse().unwrap()
+    }
+
+    fn a_beans_reference() -> InvocationRef {
+        "beans:fiddle-1".parse().unwrap()
     }
 
     #[test]
@@ -2148,11 +2294,32 @@ mod tests {
         let config = config::load(&path).unwrap();
 
         assert!(
-            filing_client(&config, &path)
+            tracker_client(&config, &path, Selection::Mark, &a_beans_reference())
                 .expect("a deployment that files nowhere needs no client")
                 .is_none(),
             "nothing exports either variable, and a run that files nothing must not be \
              refused for a credential it never sends"
+        );
+    }
+
+    #[test]
+    fn a_tracker_that_files_nothing_still_holds_a_client_for_a_toil_run_over_a_ticket() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = a_tracker_document(dir.path(), "");
+        let config = config::load(&path).unwrap();
+
+        let Err(error) = tracker_client(&config, &path, Selection::Toil, &a_jira_reference())
+        else {
+            panic!(
+                "a toil run over a ticket links its pull request onto that ticket, so it \
+                 needs a tracker client whether or not the deployment files anything, and \
+                 without one the link step would refuse after the pull request is open"
+            )
+        };
+        assert!(
+            matches!(error, CliError::CredentialAbsent(_)),
+            "nothing exports the tracker credential here, so the refusal is the \
+             credential and not the absent filing table: {error:?}"
         );
     }
 
@@ -2165,7 +2332,8 @@ mod tests {
         );
         let config = config::load(&path).unwrap();
 
-        let Err(error) = filing_client(&config, &path) else {
+        let Err(error) = tracker_client(&config, &path, Selection::Mark, &a_beans_reference())
+        else {
             panic!(
                 "a deployment that asked to file and exported no credential would file \
                  nothing on every run and say so only in the filing report"
