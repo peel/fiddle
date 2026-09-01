@@ -9,8 +9,11 @@ use crate::effect::{
     StepOutputs, StepParams,
 };
 use crate::gateway::Redaction;
+use crate::toil::Quoted;
 use crate::workspace::WorkspaceCommand;
-use fiddle_core::{CapabilityId, EffectName, EvidenceRef, HumanDecisionRequirement, Published};
+use fiddle_core::{
+    CapabilityId, EffectName, EvidenceRef, HumanDecisionRequirement, Published, WorkItemState,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -177,6 +180,21 @@ fn task_in(prompt: &Path, prompts: &Path) -> Result<String, WorkflowRefusal> {
     match task.trim().is_empty() {
         true => Err(WorkflowRefusal::Taskless { path }),
         false => Ok(task),
+    }
+}
+
+fn quoted_ticket(work_item: Option<&WorkItemState>) -> Option<String> {
+    let described = work_item?.description.as_deref()?;
+    match described.trim().is_empty() {
+        true => None,
+        false => Some(Quoted::of(described).fenced()),
+    }
+}
+
+fn task_carrying(task: &str, quoted: Option<&String>) -> String {
+    match quoted {
+        Some(quoted) => format!("{task}\n\n{quoted}"),
+        None => task.to_string(),
     }
 }
 
@@ -422,6 +440,7 @@ where
                 asked: invocation_ref.to_string(),
             });
         }
+        let quoted = quoted_ticket(work_item);
         let mut params = StepParams {
             earned: StepOutputs::default(),
             ..self.params.clone()
@@ -433,9 +452,17 @@ where
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(params.earned.clone());
             match step {
-                Ready::Agent { task, max_turns } => self.attempt(task, *max_turns).await?,
+                Ready::Agent { task, max_turns } => {
+                    self.attempt(&task_carrying(task, quoted.as_ref()), *max_turns)
+                        .await?
+                }
                 Ready::Evaluate { task, max_turns } => {
-                    self.evaluate(task, *max_turns, &mut params).await?
+                    self.evaluate(
+                        &task_carrying(task, quoted.as_ref()),
+                        *max_turns,
+                        &mut params,
+                    )
+                    .await?
                 }
                 Ready::Check { command } => self.check(command).await?,
                 Ready::Commit => self.commit(&mut params).await?,

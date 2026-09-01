@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod cve;
+pub mod quoting;
 pub mod stub_jira;
 
 #[allow(unused_imports)]

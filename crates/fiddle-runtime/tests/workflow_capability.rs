@@ -24,6 +24,7 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use support::quoting::{carrying, quotation_in, what_each_request_carried};
 use support::stub_jira::{client_for, StubJira, WriteRoute};
 use support::{unreachable_git, Deployment, INVOCATION_REF, PROJECT};
 use tempfile::TempDir;
@@ -61,6 +62,8 @@ const CHANGE_EVALUATE: &str = "change_evaluate.md";
 
 const A_SIGNATURE: &str = "crates/fiddle-runtime/src/effect/mod.rs changes a public signature \
                            the ticket did not name";
+
+const A_PLANTED_VALUE: &str = "SUPPLIER-Zq7Velum4418";
 
 const A_SECOND_FAULT: &str = "crates/fiddle-runtime/src/jira/link.rs fixes a second fault, and \
                               the ticket asked only for the first";
@@ -385,6 +388,13 @@ fn observed_issue_at(updated: &str) -> WorkItemState {
     }
 }
 
+fn described_issue(description: &str) -> WorkItemState {
+    WorkItemState {
+        description: Some(description.to_string()),
+        ..observed_issue()
+    }
+}
+
 fn params_naming_a_stale_pull_request() -> StepParams {
     StepParams {
         pull_request: Some(STALE_PULL_REQUEST),
@@ -519,6 +529,34 @@ async fn ran_with(world: &World, steps: Vec<Step>, model: MockCompletionModel) -
 
 async fn concluded_by(world: &World, steps: Vec<Step>, model: MockCompletionModel) -> Executed {
     entered_and_concluded(world, steps, model).await.1
+}
+
+async fn concluded_observing(
+    world: &World,
+    steps: Vec<Step>,
+    model: MockCompletionModel,
+    observed: Option<&WorkItemState>,
+) -> Executed {
+    let ctx = world.context();
+    let deployment = allowing();
+    let capability = WorkflowCapability::new(
+        WORKFLOW,
+        STAGE,
+        workflow(steps),
+        executor(world, &ctx, &deployment),
+        params(),
+        world.ports(model),
+    )
+    .expect("a workflow this build can run");
+    capability
+        .execute(ExecutionInput::observed(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+            observed,
+        ))
+        .await
+        .expect("a workflow that ran to an end")
 }
 
 async fn refused_by(
@@ -1810,14 +1848,88 @@ fn an_answer_that_does_not_say_which_verdict_it_is_is_not_read_as_an_acceptance(
     );
 }
 
+fn shipped_evaluation_prompt() -> String {
+    std::fs::read_to_string(shipped_prompts().join(CHANGE_EVALUATE))
+        .expect("this repository ships the evaluation prompt as a file")
+}
+
+fn the_task_one_step_was_given(model: &MockCompletionModel) -> String {
+    let requests = what_each_request_carried(model);
+    assert_eq!(
+        requests.len(),
+        1,
+        "this run was expected to reach the model once and reached it {} times",
+        requests.len()
+    );
+    let heading = shipped_evaluation_prompt()
+        .lines()
+        .next()
+        .expect("the shipped evaluation prompt opens with a heading")
+        .to_string();
+    let tasks = carrying(&heading, &requests[0]);
+    assert_eq!(
+        tasks.len(),
+        1,
+        "one of the texts this step was sent is its task, and {} of them name the prompt's \
+         own heading: {:?}",
+        tasks.len(),
+        requests[0]
+    );
+    tasks[0].clone()
+}
+
+#[tokio::test]
+async fn a_step_is_given_the_ticket_text_only_when_the_run_observed_a_ticket() {
+    let described = format!(
+        "The reader answers the row count where its caller wants the rows. Make it answer the \
+         rows. The supplier reference on this order is {A_PLANTED_VALUE}."
+    );
+
+    let observing = world();
+    let told = accepting();
+    concluded_observing(
+        &observing,
+        vec![evaluate_step()],
+        told.clone(),
+        Some(&described_issue(&described)),
+    )
+    .await;
+    let carried = the_task_one_step_was_given(&told);
+    assert!(
+        carried.starts_with(&shipped_evaluation_prompt()),
+        "the task a step is given opens with the prompt this repository ships: {carried}"
+    );
+    assert_eq!(
+        quotation_in(&carried).inside,
+        described,
+        "the task did not carry the description the run observed, and nothing else, between \
+         its two fence lines"
+    );
+
+    let unobserving = world();
+    let untold = accepting();
+    concluded_observing(&unobserving, vec![evaluate_step()], untold.clone(), None).await;
+    let alone = the_task_one_step_was_given(&untold);
+    assert!(
+        !alone.contains(A_PLANTED_VALUE),
+        "a run that observed no work item was told the planted value anyway, so the value \
+         reached the model from somewhere other than the observation: {alone}"
+    );
+    assert_eq!(
+        alone,
+        shipped_evaluation_prompt(),
+        "a run that observed no work item was given something other than the prompt this \
+         repository ships"
+    );
+}
+
 #[tokio::test]
 async fn the_evaluation_step_sends_the_prompt_this_repository_ships() {
     let world = world();
     let model = accepting();
     ran_with(&world, vec![evaluate_step()], model.clone()).await;
 
-    let shipped = std::fs::read_to_string(shipped_prompts().join(CHANGE_EVALUATE))
-        .expect("this repository ships the evaluation prompt as a file");
+    let shipped = shipped_evaluation_prompt();
     let sent = serde_json::to_string(&model.requests()[0].chat_history)
         .expect("the messages the model received serialize");
     let mut compared = 0;
