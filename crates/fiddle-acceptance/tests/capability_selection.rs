@@ -854,16 +854,6 @@ fn squeezed(text: &str) -> String {
 fn refused_nothing_else_ran(scenario: &Scenario, out: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert_eq!(
-        out.status.code(),
-        Some(2),
-        "a document this build cannot run is invalid input; stderr = {stderr}"
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout).trim(),
-        "",
-        "a refused run reports no payload: {stderr}"
-    );
-    assert_eq!(
         scenario.read_change_marker(WORK_ID),
         None,
         "no built-in capability may run in the document's place, and `stub_mark` \
@@ -872,6 +862,16 @@ fn refused_nothing_else_ran(scenario: &Scenario, out: &std::process::Output) -> 
     assert!(
         !scenario.report_dir().exists(),
         "a refused run publishes no bundle: {stderr}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "",
+        "a refused run reports no payload: {stderr}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a document this build cannot run is invalid input; stderr = {stderr}"
     );
     stderr
 }
@@ -974,9 +974,19 @@ fn a_workflow_document_this_build_does_not_read_refuses_with_its_version() {
     let out = run_toil(&s);
 
     let stderr = refused_nothing_else_ran(&s, &out);
+    let said = squeezed(&stderr);
     assert!(
-        squeezed(&stderr).contains(&squeezed(&path.display().to_string())) && stderr.contains('2'),
-        "the refusal must name the document and the version it carries: {stderr}"
+        said.contains(&squeezed(&path.display().to_string())),
+        "the refusal must name the document: {stderr}"
+    );
+    assert!(
+        said.contains("readsworkflowversion1"),
+        "the refusal must say which version this build reads, so `2` alone \
+         cannot satisfy it: {stderr}"
+    );
+    assert!(
+        said.contains("thedocumentsays2"),
+        "and which version the document declares: {stderr}"
     );
 }
 
@@ -1008,12 +1018,19 @@ fn a_document_naming_another_stage_refuses_rather_than_filing_progress_under_a_t
     let out = run_toil(&s);
 
     let stderr = refused_nothing_else_ran(&s, &out);
+    let said = squeezed(&stderr);
     assert!(
-        squeezed(&stderr).contains(&squeezed(&path.display().to_string()))
-            && stderr.contains("triage")
-            && stderr.contains("toil"),
-        "the refusal must name the document, the stage it declares and the stage \
-         this build files a toil run under: {stderr}"
+        said.contains(&squeezed(&path.display().to_string())),
+        "the refusal must name the document: {stderr}"
+    );
+    assert!(
+        said.contains("filestherununderthestage`toil`"),
+        "the refusal must name the stage this build files a toil run under; \
+         `toil` on its own is already in the document path: {stderr}"
+    );
+    assert!(
+        said.contains("thedocumentnamesthestage`triage`"),
+        "and the stage the document declares, said of the document: {stderr}"
     );
 }
 
@@ -1157,8 +1174,16 @@ fn a_workflow_the_judge_rejects_exits_twelve_and_a_workflow_it_accepts_does_not(
         "the same document and the same steps, and only the verdict differs, so a \
          build that exits 12 whatever the judge said reds here: {accepted}"
     );
-    assert_ne!(
-        accepted_code, 12,
-        "an accepted run is not a rejected one: {accepted}"
+    assert_eq!(
+        accepted_code, 11,
+        "an accepted evaluation completes the capability and leaves the work item \
+         not started, which this build reports as retryable at 11; `!= 12` would \
+         pass on any of 0, 11 or 20: {accepted}"
+    );
+    assert_eq!(
+        accepted["outcome"]["retryable"]["reason"],
+        "toil executed and reported success, and the work is still not started \
+         afterwards",
+        "and 11 is that reason and no other: {accepted}"
     );
 }
