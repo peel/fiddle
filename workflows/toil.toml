@@ -1,0 +1,46 @@
+version = 1
+name = "toil"
+stage = "toil"
+
+# The eligible path of the toil implementer, RFC requirement 21.
+#
+# Eligibility is decided before this document is loaded. A run that reaches
+# these steps has already been qualified, so nothing here decides whether the
+# run should have started.
+
+# quickfix_change. The agent makes the bounded change the ticket asked for and
+# runs the check this project declares, through the `run_check` tool.
+[[steps]]
+kind = "agent"
+prompt = "toil.md"
+max_turns = 24
+
+# The shared change_evaluate. It reads the project and answers a typed verdict.
+# A rejection stops every step below and the run reports a refusal, which is the
+# RFC's `NoChange EvaluationRejected` arm.
+[[steps]]
+kind = "evaluate"
+prompt = "change_evaluate.md"
+max_turns = 12
+
+# Push the marked branch.
+[[steps]]
+kind = "effect"
+name = "ensure_branch_published"
+
+# Open the pull request on it.
+[[steps]]
+kind = "effect"
+name = "ensure_pull_request"
+
+# Link that pull request onto the ticket. The number comes from the step above,
+# and the issue key and revision come from the work item the run observed.
+[[steps]]
+kind = "effect"
+name = "jira.pull_request_linked"
+
+# The RFC also sets the ticket to In Review here, and this document does not.
+# `jira.issue_transitioned` is a registered name whose operation refuses every
+# set of step parameters, so a step naming it is admitted when the document
+# loads and fails when the run reaches it. A step that names it is worse than
+# an absent step, because the failure arrives after the pull request is open.
