@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Cites: JiraHttp, JiraHttp::api, JiraError::Unauthorized, JiraError::Forbidden, JiraError::Absent, JiraError::AbsentOrRefused, JiraWorkItemPort::read, JiraWorkItemPort, WorkItemPort, EnvRef, CREDENTIAL_MUST_BE_NAMED, CLAMP, REDACTED, port_kind_for, the_jira_client_can_be_neither_printed_nor_serialized, no_surface_a_reader_sees_carries_the_jira_credential, the_same_search_finds_the_credential_when_a_surface_does_carry_it, every_surface_searched_is_output_of_a_jira_read, a_written_jira_token_is_refused, a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts, JiraHttp::quoted, a_credential_planted_in_the_sites_error_body_is_redacted_before_a_reader_sees_it, no_workspace_crate_pulls_openssl_into_its_closure, crates/fiddle-runtime/src/jira/http.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_printable.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_serializable.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-acceptance/tests/jira_credential.rs, scripts/live-jira-observe.sh, scripts/live-jira-search-shape.sh, scripts/live-jira-write.sh, scripts/test-live-jira-lanes.sh, crates/fiddle-runtime/tests/jira_effect_credential.rs, a_body_that_parses_and_echoes_the_token_is_handed_to_the_caller_with_it_replaced, a_token_a_json_body_must_escape_is_replaced_in_the_value_the_caller_reads, a_workflow_name_that_carries_the_credential_reaches_no_diagnostic, a_revision_field_that_carries_the_credential_reaches_no_diagnostic, an_issue_key_that_carries_the_credential_reaches_no_receipt, a_credential_the_site_echoes_reaches_no_published_report_bundle, issue_from, read_instant, canonical_revision, ConfiguredNames, state_for, WorkState, ProjectedStatus, projected_status, assess, derive_next, no_projected_work_state_moves_the_assessment_or_the_next_action, crates/fiddle-core/src/assessment.rs, crates/fiddle-runtime/src/jira/work_item.rs, a_refused_credential_and_a_missing_issue_do_not_read_alike, the_stub_answers_a_refused_credential_the_way_the_measured_site_answers_it, a_read_the_site_answers_asks_the_site_nothing_further, a_status_other_than_404_names_its_own_cause_and_costs_no_credential_check, crates/fiddle-runtime/tests/jira_work_item.rs
+Cites: labels_in, description_in, comments_in, replies_in, fields_the_port_asks_for, JiraHttp, JiraHttp::api, JiraError::Unauthorized, JiraError::Forbidden, JiraError::Absent, JiraError::AbsentOrRefused, JiraWorkItemPort::read, JiraWorkItemPort, WorkItemPort, EnvRef, CREDENTIAL_MUST_BE_NAMED, CLAMP, REDACTED, port_kind_for, the_jira_client_can_be_neither_printed_nor_serialized, no_surface_a_reader_sees_carries_the_jira_credential, the_same_search_finds_the_credential_when_a_surface_does_carry_it, every_surface_searched_is_output_of_a_jira_read, a_written_jira_token_is_refused, a_payload_reaches_the_text_verbatim_so_its_construction_site_redacts, JiraHttp::quoted, a_credential_planted_in_the_sites_error_body_is_redacted_before_a_reader_sees_it, no_workspace_crate_pulls_openssl_into_its_closure, crates/fiddle-runtime/src/jira/http.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_printable.rs, crates/fiddle-runtime/tests/compile_fail/jira_http_is_not_serializable.rs, crates/fiddle-runtime/tests/support/stub_jira.rs, crates/fiddle-acceptance/tests/jira_credential.rs, scripts/live-jira-observe.sh, scripts/live-jira-search-shape.sh, scripts/live-jira-write.sh, scripts/test-live-jira-lanes.sh, crates/fiddle-runtime/tests/jira_effect_credential.rs, a_body_that_parses_and_echoes_the_token_is_handed_to_the_caller_with_it_replaced, a_token_a_json_body_must_escape_is_replaced_in_the_value_the_caller_reads, a_workflow_name_that_carries_the_credential_reaches_no_diagnostic, a_revision_field_that_carries_the_credential_reaches_no_diagnostic, an_issue_key_that_carries_the_credential_reaches_no_receipt, a_credential_the_site_echoes_reaches_no_published_report_bundle, issue_from, read_instant, canonical_revision, ConfiguredNames, state_for, WorkState, ProjectedStatus, projected_status, assess, derive_next, no_projected_work_state_moves_the_assessment_or_the_next_action, crates/fiddle-core/src/assessment.rs, crates/fiddle-runtime/src/jira/work_item.rs, a_refused_credential_and_a_missing_issue_do_not_read_alike, the_stub_answers_a_refused_credential_the_way_the_measured_site_answers_it, a_read_the_site_answers_asks_the_site_nothing_further, a_status_other_than_404_names_its_own_cause_and_costs_no_credential_check, crates/fiddle-runtime/tests/jira_work_item.rs
 
 ## Context
 
@@ -210,15 +210,18 @@ it cannot parse, and a body that arrives with no content length. `StubJira` in
 `crates/fiddle-acceptance/tests/jira_credential.rs` runs the public CLI against
 it and searches every surface a reader sees.
 
-One issue is verified against Atlassian.
+Two issues are verified against Atlassian.
 `scripts/live-jira-observe.sh` is the Jira counterpart to
-`scripts/live-github.sh`. It reads one issue two ways — a direct
-`/rest/api/3/issue/KEY?fields=status,updated` call beside
-`fiddle inspect jira:KEY --json` — and it refuses rather than skips when the
-site, the issue key, either half of the credential or the binary path is absent.
-It records evidence and does not gate. It read ISP-267 from
-`snplow.atlassian.net` on 2026-08-26, and `docs/technical/RUNBOOKS.md` records
-what came back.
+`scripts/live-github.sh`. It reads one issue three ways — a direct
+`/rest/api/3/issue/KEY?fields=status,updated` call, a second direct call carrying
+the field list `JiraWorkItemPort::read` sends, and `fiddle inspect jira:KEY
+--json` — and it refuses rather than skips when the site, the issue key, either
+half of the credential or the binary path is absent. It reads that field list out
+of `const FIELDS` rather than carrying its own copy, and
+`fields_the_port_asks_for` refuses when the port's list does not carry every
+field the lane grades. It records evidence and does not gate. It read ISP-267
+from `snplow.atlassian.net` on 2026-08-26, and ISP-239 and ISP-267 on
+2026-09-01. `docs/technical/RUNBOOKS.md` records what came back.
 
 When this record was first written, three things were arguments rather than
 measurements: the shapes Atlassian's `/rest/api/3/issue` returns, the
@@ -248,22 +251,43 @@ two and leaves the third.
   would answer the same state for three different situations. This is one project
   on one site: a second workflow is still unmeasured.
 
-The measurement is one issue on one site. A second project, a second workflow
-and a second issue type are unmeasured, and so is every failure arm but the 404
-the bad-credential paragraph below measures.
+The shape and format bullets above rest on one issue read on 2026-08-26; the
+paragraph below adds two issues read on 2026-09-01. Both sets are one project on
+one site. A second project, a second workflow and a second issue type are
+unmeasured, and so is every failure arm but the 404 the bad-credential paragraph
+below measures.
 
-**Not reached: what Atlassian returns for labels, description and comments.**
-`issue_from` also reads `fields.labels`, `fields.description` and
-`fields.comment`, because eligibility weighs the label, the summary text and the
-conversation. No live lane has read those three from Atlassian. On 2026-08-26
-both halves of the lane asked for two fields, because the port asked for two.
-Today `fiddle inspect` inside the lane asks for five, and the lane still records
-only a status, a projection and a revision off the answer. It prints the
-two-field `curl` result and nothing of the five-field one. A re-run therefore
-parses the three new paths and reports nothing about their shape. Every shape
-this port accepts for those three is measured against loopback stubs, and those
-stubs ignore the field list on an issue read. So the five-field shape is an
-argument, not a measurement. Grade it **not reached**.
+**Now a measurement, on two issues: what Atlassian returns for labels,
+description and comments.** `issue_from` also reads `fields.labels`,
+`fields.description` and `fields.comment`, because eligibility weighs the label,
+the summary text and the conversation. Until 2026-09-01 no live lane had read
+those three from Atlassian: on 2026-08-26 both halves of the lane asked for two
+fields because the port asked for two, and after the port widened to five the
+lane still recorded only a status, a projection and a revision. `fiddle-xkri`
+corrected the lane, and it read ISP-239 and ISP-267 from `snplow.atlassian.net`
+on 2026-09-01. On both issues the site accepted the port's own field list and
+answered `fields.labels` as a list of two strings, `fields.description` as a
+document of type `doc` version `1` — 3729 and 4376 bytes — and `fields.comment`
+as a container carrying `comments`, `total`, `maxResults` and `startAt`, with
+every comment carrying `id` and `author.accountId` and a body `written` flattened
+to text rather than to nothing. So `labels_in`, `description_in`, `comments_in`
+and `replies_in` are measured against the shapes a real tenant sends, and
+`description_in` never took its text arm: Jira Cloud's v3 issue read answered a
+document both times.
+
+Three things this does not settle. First, it is two issues in one project on one
+site, and both carried all three fields, so the absent arms of `labels_in`,
+`description_in` and `comments_in` remain measured against stubs alone. Second,
+`maxResults` equalled `total` in both reads, so the page an issue read returns is
+unmeasured, and `replies_in` refuses a `total` above the number of comments
+carried: an issue whose conversation exceeds one page would report `Unavailable`,
+and no such issue has been read. Third, the refused shapes are measured against
+fixtures and a loopback stub, not against a site: `scripts/test-live-jira-lanes.sh`
+breaks one field of a well-formed answer at a time and requires the lane to name
+that field, and a stub answering a `fields.labels` document, a
+`fields.description` list, a `fields.comment` string and a container carrying 1
+of 3 comments made `fiddle inspect` report the work item unavailable on all four.
+A site that sends one of those shapes is still an argument.
 
 **Now a measurement: what a bad credential returns.** Six probes ran against
 `snplow.atlassian.net` on 2026-08-27, with an operator's valid credential and
