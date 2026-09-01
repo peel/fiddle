@@ -1158,7 +1158,7 @@ async fn a_read_the_run_cancels_stops_before_the_sites_timeout() {
     );
 }
 
-const ASKED_FOR: &str = "status,updated,labels,description,comment";
+const ASKED_FOR: &str = "status,updated,labels,description,comment,issuetype,summary";
 
 const AUTHOR: &str = "70121:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
@@ -1224,9 +1224,12 @@ async fn a_work_item_read_asks_the_site_for_every_field_a_gate_weighs() {
 
     assert_eq!(
         server.requested_fields().await.as_deref(),
-        Some("status,updated,labels,description,comment"),
+        Some(ASKED_FOR),
         "the read asks the site for one exact list of fields; a list that carries more or \
-         fewer changes what a gate can weigh, so the list is pinned and not searched"
+         fewer changes what a gate can weigh, so the list is pinned and not searched. The \
+         list carries `issuetype` and `summary` because the eligibility gate weighs the \
+         issue type against the types this build works and quotes the summary with the \
+         description as the ticket text a judgement rests on"
     );
 }
 
@@ -1261,6 +1264,36 @@ async fn a_work_item_read_carries_the_labels_the_text_and_the_comments_a_gate_ne
             text: "the caller in workspace.rs also needs it".to_string(),
         }]),
         "a gate that cannot read the comments cannot see the question a person already asked"
+    );
+}
+
+#[tokio::test]
+async fn a_work_item_read_carries_the_issue_type_and_the_summary_a_gate_weighs() {
+    let observed = qualified_by(serde_json::json!({
+        "issuetype": {"id": "10002", "name": "Task"},
+        "summary": "Rename the deprecated helper",
+    }))
+    .await;
+
+    assert_eq!(
+        observed.issue_type.as_deref(),
+        Some("Task"),
+        "the gate weighs the issue type against the types this build works, so the read \
+         carries the name the site holds"
+    );
+    assert_eq!(
+        observed.summary.as_deref(),
+        Some("Rename the deprecated helper"),
+        "and it quotes the summary beside the description as the ticket text a judgement \
+         rests on"
+    );
+
+    let unread = qualified_by(serde_json::json!({})).await;
+    assert_eq!(
+        (unread.issue_type, unread.summary),
+        (None, None),
+        "a read that carried neither field says nothing about either, which is not the \
+         same as an issue whose type is absent"
     );
 }
 

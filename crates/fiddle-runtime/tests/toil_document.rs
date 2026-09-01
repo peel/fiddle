@@ -909,6 +909,8 @@ fn observed_issue(status: &str) -> WorkItemState {
         labels: None,
         description: None,
         comments: None,
+        issue_type: None,
+        summary: None,
     }
 }
 

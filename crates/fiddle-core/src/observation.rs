@@ -101,6 +101,10 @@ pub struct WorkItemState {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comments: Option<Vec<WorkItemComment>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -202,6 +206,8 @@ mod tests {
             labels: None,
             description: None,
             comments: None,
+            issue_type: None,
+            summary: None,
         }
     }
 
