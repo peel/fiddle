@@ -14,8 +14,9 @@ use fiddle_runtime::capability::workflow::{
 };
 use fiddle_runtime::effect::{EffectContext, Executor, StepParams};
 use fiddle_runtime::human::interpret::InterpretationBounds;
+use fiddle_runtime::jira::AddComment;
 use fiddle_runtime::ports::{ChangePort, WorkItemPort};
-use fiddle_runtime::toil::{Eligible, Refusal, TicketFacts};
+use fiddle_runtime::toil::{Eligible, Refusal, Source, TicketFacts};
 use fiddle_runtime::{
     Addressed, AgentBudget, AttemptContext, AttemptTrace, Capability, ConfiguredNames,
     DeclaredCommand, Extend, FixtureRepair, GatewayError, GhCli, GitCli, JiraError, JiraHttp,
@@ -710,7 +711,96 @@ async fn qualified(
     {
         fiddle_runtime::toil::Qualification::Eligible(admitted) => Ok(Some(admitted)),
         fiddle_runtime::toil::Qualification::Refused(refusal) => {
+            let told = match tracker_client(config, config_path, selection, reference)? {
+                Some(http) => {
+                    publish_refusal(
+                        &http,
+                        &config.project.name,
+                        reference,
+                        &refusal,
+                        ticket.revision.as_deref(),
+                        cancel,
+                    )
+                    .await
+                }
+                None => Err(JiraError::Unconfigured),
+            };
+            if let Err(reason) = told {
+                eprintln!(
+                    "{}",
+                    render::refusal_unpublished(&refusal.work_item, &reason)
+                );
+            }
             Err(Ineligible::of(&refusal).into())
+        }
+    }
+}
+
+fn refusal_note(refusal: &Refusal) -> String {
+    let mut told = vec![
+        format!(
+            "fiddle did not take `{}` on, and this comment is the whole reason.",
+            refusal.work_item
+        ),
+        format!("The rule that failed: {}", refusal.failed_rule),
+        format!("What the gate found: {}", refusal.found),
+        format!("What would change that: {}", refusal.remedy),
+    ];
+    if let Some(quoted) = refusal
+        .quoted
+        .as_ref()
+        .filter(|quoted| quoted.source() == Source::Ticket)
+    {
+        told.push(format!(
+            "The text on this issue that the rule read: {}",
+            quoted.text()
+        ));
+    }
+    told.join("\n")
+}
+
+async fn publish_refusal(
+    http: &JiraHttp,
+    project: &str,
+    reference: &InvocationRef,
+    refusal: &Refusal,
+    revision: Option<&str>,
+    cancel: &CancellationToken,
+) -> Result<(), JiraError> {
+    let revision = revision.ok_or_else(|| {
+        JiraError::Malformed(format!(
+            "the read of `{}` carried no revision, and this comment's identity is built from \
+             one, so the refusal reached no ticket",
+            refusal.work_item
+        ))
+    })?;
+    let note = refusal_note(refusal);
+    let comment = AddComment::new(
+        refusal.work_item.clone(),
+        revision,
+        note.clone(),
+        project,
+        &reference.as_str(),
+    )?;
+    let marker = comment.marker();
+    match fiddle_runtime::jira::comment::read_marked_comment(
+        http,
+        &refusal.work_item,
+        &marker,
+        cancel,
+    )
+    .await?
+    {
+        Some(_) => Ok(()),
+        None => {
+            fiddle_runtime::jira::comment::post_marked_comment(
+                http,
+                &refusal.work_item,
+                &note,
+                &marker,
+                cancel,
+            )
+            .await
         }
     }
 }
@@ -2346,5 +2436,64 @@ mod tests {
             }
             other => panic!("the missing variable is what a person fixes, got {other:?}"),
         }
+    }
+
+    const HOST_PROSE: &str = "an upstream detail the ticket never carried";
+
+    const REVIEW_ANSWERED: &str = "the ambiguity review answered";
+
+    const TICKET_PROSE: &str = "the helper is renamed in src/lib.rs";
+
+    fn a_refusal_quoting(quoted: fiddle_runtime::toil::Quoted) -> Refusal {
+        Refusal {
+            work_item: "ISP-42".to_string(),
+            failed_rule: REVIEW_ANSWERED,
+            evidence_class: fiddle_runtime::toil::EvidenceClass::Measured,
+            found: "the ambiguity review of ISP-42 did not answer".to_string(),
+            remedy: "run the qualification of ISP-42 again".to_string(),
+            quoted: Some(quoted),
+            ledger: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_rule_these_two_notes_are_built_from_is_one_this_build_gates_on() {
+        assert!(
+            fiddle_runtime::toil::RULES.contains(&REVIEW_ANSWERED),
+            "the fixture below names a rule the gate holds, and not a string written \
+             here to agree with itself: {:?}",
+            fiddle_runtime::toil::RULES
+        );
+    }
+
+    #[test]
+    fn a_refusal_note_quotes_the_ticket_back_onto_the_ticket_it_came_from() {
+        let note = refusal_note(&a_refusal_quoting(fiddle_runtime::toil::Quoted::of(
+            TICKET_PROSE,
+        )));
+
+        assert!(
+            note.contains(TICKET_PROSE),
+            "text the issue already holds is quoted back onto that issue, because a \
+             reader of the issue can already read it: {note}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_note_leaves_out_what_the_model_host_said() {
+        let note = refusal_note(&a_refusal_quoting(
+            fiddle_runtime::toil::Quoted::reported_by_the_model_host(HOST_PROSE),
+        ));
+
+        assert!(
+            !note.contains(HOST_PROSE),
+            "a model host's message is not text the issue holds, so publishing it onto \
+             the issue would disclose it and not restate it: {note}"
+        );
+        assert!(
+            note.contains(REVIEW_ANSWERED) && note.contains("did not answer"),
+            "and the note still names the rule that failed and what the gate found, so \
+             the line above is one omitted quote and not an empty note: {note}"
+        );
     }
 }

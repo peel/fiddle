@@ -49,6 +49,12 @@ const PULL_REQUEST_EFFECT: &str = "ensure_pull_request";
 
 const BRANCH_EFFECT: &str = "ensure_branch_published";
 
+const TRIGGER_LABEL_RULE: &str = "the trigger label is present";
+
+const ISSUE_TYPE_RULE: &str = "the issue type is one the toil agent works";
+
+const UNWORKED_ISSUE_TYPE: &str = "Bug";
+
 struct Posted {
     issue: String,
     body: String,
@@ -67,6 +73,7 @@ struct Recorded {
     ticket: Option<Held>,
     comments: Vec<Posted>,
     issue_reads: usize,
+    comments_refused: bool,
 }
 
 pub struct ToilJira {
@@ -83,6 +90,7 @@ impl ToilJira {
             ticket: None,
             comments: Vec::new(),
             issue_reads: 0,
+            comments_refused: false,
         }));
         let serving = Arc::clone(&state);
         std::thread::spawn(move || {
@@ -134,13 +142,48 @@ impl ToilJira {
             .labels = vec!["backend".to_string()];
     }
 
-    pub fn links_for(&self, key: &str) -> Vec<String> {
+    pub fn holds_a_ticket_of_an_unworked_type(&self, key: &str) {
+        self.holds_eligible_ticket(key);
+        self.held()
+            .ticket
+            .as_mut()
+            .expect("the ticket was just written")
+            .issue_type = UNWORKED_ISSUE_TYPE.to_string();
+    }
+
+    pub fn refuses_every_comment(&self) {
+        self.held().comments_refused = true;
+    }
+
+    pub fn last_comment_on(&self, key: &str) -> Option<String> {
         self.held()
             .comments
             .iter()
-            .filter(|posted| posted.issue == key && posted.body.contains(MARKER))
+            .rfind(|posted| posted.issue == key)
+            .map(|posted| posted.body.clone())
+    }
+
+    pub fn links_for(&self, key: &str) -> Vec<String> {
+        let names_a_pull_request = format!("https://github.com/{REPO}/pull/");
+        self.held()
+            .comments
+            .iter()
+            .filter(|posted| {
+                posted.issue == key
+                    && posted.body.contains(MARKER)
+                    && posted.body.contains(&names_a_pull_request)
+            })
             .map(|posted| posted.body.clone())
             .collect()
+    }
+
+    fn comment_posts(&self) -> usize {
+        self.request_lines()
+            .iter()
+            .filter(|line| {
+                line.starts_with("POST ") && line.contains(&format!("/issue/{TICKET}/comment"))
+            })
+            .count()
     }
 
     fn request_lines(&self) -> Vec<String> {
@@ -239,6 +282,7 @@ fn routed(line: &str, sent: &str, held: &mut Recorded) -> (u16, String) {
             }
             answered
         }
+        ("POST", path) if path == write && held.comments_refused => (403, comment_refused()),
         ("POST", path) if path == write => {
             held.comments.push(Posted {
                 issue: TICKET.to_string(),
@@ -251,6 +295,14 @@ fn routed(line: &str, sent: &str, held: &mut Recorded) -> (u16, String) {
         }
         _ => (404, unrouted()),
     }
+}
+
+fn comment_refused() -> String {
+    serde_json::json!({
+        "errorMessages": ["this caller may not comment on that issue"],
+        "errors": {},
+    })
+    .to_string()
 }
 
 fn unrouted() -> String {
@@ -367,6 +419,7 @@ fn reason(status: u16) -> &'static str {
         200 => "OK",
         201 => "Created",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         _ => "Unassigned",
     }
@@ -1048,4 +1101,216 @@ fn no_credential_this_lane_exports_reaches_a_surface_a_reader_of_the_run_reaches
             "{named}'s credential was written into the run's own report"
         );
     }
+}
+
+#[test]
+fn a_refused_ticket_is_told_why_on_its_own_issue() {
+    let world = ToilWorld::start();
+    world
+        .jira()
+        .holds_a_ticket_without_the_trigger_label(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+
+    assert_eq!(
+        world.jira().comment_posts(),
+        1,
+        "one comment request reached the tracker stub, so the ticket was written to and \
+         this is not a run that stopped before it published: {:?}",
+        world.jira().request_lines()
+    );
+    let comment = world
+        .jira()
+        .last_comment_on(TICKET)
+        .expect("the refusal was published");
+    assert!(
+        comment.contains(TRIGGER_LABEL_RULE),
+        "the refusal names the rule that failed: {comment}"
+    );
+    assert!(
+        comment.contains(TRIGGER_LABEL),
+        "and names the label the document asks for, which is the remedy a reader acts \
+         on: {comment}"
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(2),
+        "and the run itself refused, which this build reports as exit 2: {stderr}"
+    );
+    assert!(
+        world.github().pull_requests().is_empty(),
+        "no pull request was opened, counted from the requests the forge stub \
+         received: {stderr}"
+    );
+    assert!(
+        world.github().branches().is_empty(),
+        "and no branch was published: {stderr}"
+    );
+    assert!(
+        world.jira().links_for(TICKET).is_empty(),
+        "and the one comment the ticket received is a refusal and not a link to a pull \
+         request: {comment}"
+    );
+    assert_eq!(
+        world.model_calls(),
+        0,
+        "the gate refused before the ambiguity review, so the refusal cost no model \
+         call: {stderr}"
+    );
+}
+
+#[test]
+fn a_refusal_for_a_different_rule_names_that_rule_and_not_the_first() {
+    let world = ToilWorld::start();
+    world.jira().holds_a_ticket_of_an_unworked_type(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+
+    assert_eq!(
+        world.jira().comment_posts(),
+        1,
+        "the row's own premise: this ticket was refused on a later rule and told why \
+         once: {:?}",
+        world.jira().request_lines()
+    );
+    let comment = world
+        .jira()
+        .last_comment_on(TICKET)
+        .expect("the refusal was published");
+    assert!(
+        comment.contains(ISSUE_TYPE_RULE),
+        "the refusal names the rule this ticket failed: {comment}"
+    );
+    assert!(
+        comment.contains(UNWORKED_ISSUE_TYPE),
+        "and quotes the issue type it read, which is the finding the rule rests \
+         on: {comment}"
+    );
+    assert!(
+        !comment.contains(TRIGGER_LABEL_RULE),
+        "and it does not name the rule the other refusal named, so a refusal comment \
+         reads off the rule that failed and is not one constant string: {comment}"
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(2),
+        "and this ticket is refused too: {stderr}"
+    );
+    assert!(
+        world.github().pull_requests().is_empty(),
+        "and it opened no pull request either: {stderr}"
+    );
+}
+
+#[test]
+fn a_site_that_refuses_the_comment_still_refuses_the_ticket() {
+    let world = ToilWorld::start();
+    world
+        .jira()
+        .holds_a_ticket_without_the_trigger_label(TICKET);
+    world.jira().refuses_every_comment();
+
+    let run = world.run_toil(REFERENCE);
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+
+    assert_eq!(
+        world.jira().comment_posts(),
+        1,
+        "the row's own premise: the run asked the tracker to publish the refusal, so what \
+         follows is a comment the site answered and not a comment nobody sent: {:?}",
+        world.jira().request_lines()
+    );
+    assert_eq!(
+        world.jira().last_comment_on(TICKET),
+        None,
+        "and the site kept none of it, so this ticket was never told why: {:?}",
+        world.jira().request_lines()
+    );
+
+    assert_eq!(
+        run.status.code(),
+        Some(2),
+        "a ticket that could not be told why is still refused: {stderr}"
+    );
+    assert!(
+        stderr.contains(TRIGGER_LABEL_RULE),
+        "and the refusal still names the rule that failed: {stderr}"
+    );
+    assert_eq!(
+        world.model_calls(),
+        0,
+        "the refused comment bought no model call, so it did not turn the refusal into a \
+         run: {stderr}"
+    );
+    assert!(
+        world.github().pull_requests().is_empty(),
+        "and opened no pull request: {stderr}"
+    );
+    assert!(
+        world.github().branches().is_empty(),
+        "and published no branch: {stderr}"
+    );
+
+    assert!(
+        stderr.contains(TICKET) && stderr.contains("was not published"),
+        "and the operator is told the ticket was never reached, because a refusal nobody \
+         received is not a refusal delivered: {stderr}"
+    );
+    assert!(
+        !stderr.contains(JIRA_SENTINEL),
+        "the note about the refused comment carries no tracker credential: {stderr}"
+    );
+    assert!(
+        !stderr.contains(DESCRIPTION),
+        "and it quotes no ticket prose onto the terminal, which is the surface the \
+         refusal keeps prose off: {stderr}"
+    );
+}
+
+#[test]
+fn a_second_run_over_one_ineligible_ticket_adds_no_second_refusal() {
+    let world = ToilWorld::start();
+    world
+        .jira()
+        .holds_a_ticket_without_the_trigger_label(TICKET);
+
+    let first = world.run_toil(REFERENCE);
+    assert_eq!(
+        world.jira().comment_posts(),
+        1,
+        "the row's own premise: the first run told the ticket why once: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let told = world.jira().last_comment_on(TICKET);
+    let reads_after_one = world.jira().comment_reads();
+
+    let second = world.run_toil(REFERENCE);
+    let stderr = String::from_utf8_lossy(&second.stderr).to_string();
+
+    assert_eq!(
+        world.jira().comment_posts(),
+        1,
+        "the second run posted no second refusal, counted from the requests the tracker \
+         stub received: {:?}",
+        world.jira().request_lines()
+    );
+    assert!(
+        world.jira().comment_reads() > reads_after_one,
+        "and it read the ticket's comments again, so the comment it did not write is one \
+         it looked for and found: {:?}",
+        world.jira().request_lines()
+    );
+    assert_eq!(
+        world.jira().last_comment_on(TICKET),
+        told,
+        "and it left the refusal the first run published where the first run left \
+         it: {stderr}"
+    );
+    assert_eq!(
+        second.status.code(),
+        Some(2),
+        "and it refused the ticket a second time: {stderr}"
+    );
 }

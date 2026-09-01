@@ -746,6 +746,13 @@ fn observation_line<T>(observed: &Observation<T>, describe: impl Fn(&T) -> Strin
     }
 }
 
+pub fn refusal_unpublished(work_item: &str, cause: &dyn std::fmt::Display) -> String {
+    format!(
+        "error: the refusal below was not published on `{work_item}`, so the person who \
+         filed it has been told nothing\n  work_item   = {work_item}\n  cause       = {cause}"
+    )
+}
+
 pub fn diagnostic(error: &dyn miette::Diagnostic) -> String {
     let mut rendered = String::new();
     let handler = miette::GraphicalReportHandler::new()
