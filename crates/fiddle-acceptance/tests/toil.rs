@@ -589,6 +589,18 @@ impl ToilWorld {
     fn model_calls(&self) -> usize {
         self.gateway.served()
     }
+
+    fn published_files_holding(&self, secret: &str) -> Vec<String> {
+        support::walkdir_files(self.scenario.report_dir())
+            .into_iter()
+            .filter(|path| {
+                std::fs::read(path)
+                    .map(|bytes| String::from_utf8_lossy(&bytes).contains(secret))
+                    .unwrap_or(false)
+            })
+            .map(|path| path.display().to_string())
+            .collect()
+    }
 }
 
 fn ship_the_workflow(into: &Path) {
@@ -982,4 +994,46 @@ fn a_rerun_whose_branch_is_gone_finds_its_own_pull_request_and_its_own_link() {
         "both runs paid for a review, a write, a report and an evaluation, so neither \
          of the counts above is a run that refused before starting"
     );
+}
+
+#[test]
+fn no_credential_this_lane_exports_reaches_a_surface_a_reader_of_the_run_reaches() {
+    let world = ToilWorld::start();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let stdout = String::from_utf8_lossy(&run.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "the row's own premise: this run reached the forge and the tracker with all \
+         three credentials, so the surfaces below carried a whole run: {stderr}"
+    );
+    assert!(
+        !world.published_files_holding(TICKET).is_empty(),
+        "and the run published a bundle naming its ticket, so the search below reads \
+         files that exist"
+    );
+
+    for (named, secret) in [
+        ("the model", MODEL_SENTINEL),
+        ("the forge", FORGE_SENTINEL),
+        ("the tracker", JIRA_SENTINEL),
+    ] {
+        assert!(
+            !stdout.contains(secret),
+            "{named}'s credential reached stdout, which is the payload a caller reads"
+        );
+        assert!(
+            !stderr.contains(secret),
+            "{named}'s credential reached stderr, which is where a diagnostic goes"
+        );
+        assert_eq!(
+            world.published_files_holding(secret),
+            Vec::<String>::new(),
+            "{named}'s credential was written into the run's own report"
+        );
+    }
 }
