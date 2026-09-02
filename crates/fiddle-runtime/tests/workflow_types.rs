@@ -23,6 +23,7 @@ fn canonical() -> Workflow {
             Step::Commit {},
             Step::Effect {
                 name: EffectName::parse("ensure_pull_request").unwrap(),
+                reaching: None,
             },
         ],
     )

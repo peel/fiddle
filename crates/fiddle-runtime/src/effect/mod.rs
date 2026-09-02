@@ -279,6 +279,7 @@ pub struct StepParams {
     pub decision_request: Option<HumanDecisionRequest>,
     pub issue_key: Option<String>,
     pub issue_updated: Option<String>,
+    pub reaching: Option<String>,
     pub earned: StepOutputs,
 }
 
@@ -299,6 +300,7 @@ impl StepParams {
             decision_request: None,
             issue_key: None,
             issue_updated: None,
+            reaching: None,
             earned: StepOutputs::default(),
         }
     }

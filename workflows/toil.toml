@@ -42,8 +42,12 @@ name = "ensure_pull_request"
 kind = "effect"
 name = "jira.pull_request_linked"
 
-# The RFC also sets the ticket to In Review here, and this document does not.
-# `jira.issue_transitioned` is a registered name whose operation refuses every
-# set of step parameters, so a step naming it is admitted when the document
-# loads and fails when the run reaches it. A step that names it is worse than
-# an absent step, because the failure arrives after the pull request is open.
+# Set the ticket to In Review, which is where the RFC leaves it once the pull
+# request is open. `reaching` names the status this site calls that state; the
+# effect reads the issue first and writes nothing when it is already there. A
+# site whose workflow offers no route to that status fails this step, and the
+# run reports a failure rather than a completion that left the ticket behind.
+[[steps]]
+kind = "effect"
+name = "jira.issue_transitioned"
+reaching = "In Review"

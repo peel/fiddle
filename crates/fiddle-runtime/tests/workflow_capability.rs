@@ -367,6 +367,7 @@ fn evaluate_step() -> Step {
 fn effect_step(name: &str) -> Step {
     Step::Effect {
         name: EffectName::parse(name).unwrap(),
+        reaching: None,
     }
 }
 
@@ -1003,7 +1004,10 @@ fn only_the_effects_this_build_performs_without_a_person_are_admitted() {
         let built = WorkflowCapability::new(
             WORKFLOW,
             STAGE,
-            workflow(vec![Step::Effect { name: name.clone() }]),
+            workflow(vec![Step::Effect {
+                name: name.clone(),
+                reaching: None,
+            }]),
             executor(&world, &ctx, &deployment),
             params(),
             world.ports(silent()),
@@ -1108,7 +1112,10 @@ fn an_effect_this_build_does_not_perform_is_refused_when_the_workflow_is_built()
     let refusal = WorkflowCapability::new(
         WORKFLOW,
         STAGE,
-        workflow(vec![Step::Effect { name: name.clone() }]),
+        workflow(vec![Step::Effect {
+            name: name.clone(),
+            reaching: None,
+        }]),
         executor(&world, &ctx, &deployment),
         params(),
         world.ports(silent()),

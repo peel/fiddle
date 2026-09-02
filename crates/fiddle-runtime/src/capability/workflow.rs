@@ -40,6 +40,8 @@ pub enum Step {
     },
     Effect {
         name: EffectName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reaching: Option<String>,
     },
     Commit {},
 }
@@ -154,10 +156,21 @@ pub struct WorkflowPorts<M> {
 }
 
 enum Ready {
-    Agent { task: String, max_turns: usize },
-    Evaluate { task: String, max_turns: usize },
-    Check { command: WorkspaceCommand },
-    Effect { construct: Construct },
+    Agent {
+        task: String,
+        max_turns: usize,
+    },
+    Evaluate {
+        task: String,
+        max_turns: usize,
+    },
+    Check {
+        command: WorkspaceCommand,
+    },
+    Effect {
+        construct: Construct,
+        reaching: Option<String>,
+    },
     Commit,
 }
 
@@ -224,7 +237,7 @@ fn ready(step: &Step, prompts: &Path) -> Result<Ready, WorkflowRefusal> {
             },
         }),
         Step::Commit {} => Ok(Ready::Commit),
-        Step::Effect { name } => {
+        Step::Effect { name, reaching } => {
             let descriptor = registry::describe(name)
                 .ok_or_else(|| WorkflowRefusal::Unperformable { name: name.clone() })?;
             match descriptor.minimum {
@@ -234,6 +247,7 @@ fn ready(step: &Step, prompts: &Path) -> Result<Ready, WorkflowRefusal> {
                 HumanDecisionRequirement::Automatic => Ok(Ready::Effect {
                     construct: registry::resolve(name)
                         .ok_or_else(|| WorkflowRefusal::Unperformable { name: name.clone() })?,
+                    reaching: reaching.clone(),
                 }),
             }
         }
@@ -511,7 +525,13 @@ where
                 }
                 Ready::Check { command } => self.check(command).await?,
                 Ready::Commit => self.commit(&mut params).await?,
-                Ready::Effect { construct } => self.effect(*construct, &mut params).await?,
+                Ready::Effect {
+                    construct,
+                    reaching,
+                } => {
+                    params.reaching = reaching.clone();
+                    self.effect(*construct, &mut params).await?
+                }
             }
             if matches!(params.earned.verdict(), Some(Verdict::Rejected { .. })) {
                 break;

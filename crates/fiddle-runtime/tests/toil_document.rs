@@ -57,6 +57,12 @@ const ISSUE: &str = "IDENT-1";
 
 const AT_SEVEN: &str = "2026-08-26T07:00:00.000+0000";
 
+const READY: &str = "Ready";
+
+const IN_REVIEW: &str = "In Review";
+
+const A_ROUTE_TO_REVIEW: &str = "31";
+
 const PATIENT: Duration = Duration::from_secs(60);
 
 const TRACE: &str = "trace";
@@ -145,7 +151,14 @@ fn spelled(step: &Step) -> String {
         }
         Step::Check { program, .. } => format!("check:{program}"),
         Step::Commit {} => "commit".to_string(),
-        Step::Effect { name } => format!("effect:{}", name.as_str()),
+        Step::Effect {
+            name,
+            reaching: None,
+        } => format!("effect:{}", name.as_str()),
+        Step::Effect {
+            name,
+            reaching: Some(state),
+        } => format!("effect:{} reaching {state}", name.as_str()),
     }
 }
 
@@ -161,6 +174,7 @@ fn required_sequence() -> Vec<String> {
         format!("effect:{ENSURE_BRANCH_PUBLISHED}"),
         format!("effect:{ENSURE_PULL_REQUEST}"),
         format!("effect:{JIRA_PULL_REQUEST_LINKED}"),
+        format!("effect:{JIRA_ISSUE_TRANSITIONED} reaching {IN_REVIEW}"),
     ]
 }
 
@@ -678,7 +692,24 @@ fn world() -> World {
 
 async fn world_holding(issue: &str) -> World {
     let server = StubJira::start().await;
-    server.holds_issue_labelled(issue, &[]).await;
+    server
+        .holds_issue_in_status(issue, "10002", READY, "To Do")
+        .await;
+    server
+        .offers_transition(issue, A_ROUTE_TO_REVIEW, IN_REVIEW)
+        .await;
+    World {
+        jira: Some(server),
+        ..world()
+    }
+}
+
+async fn world_offering_no_route_to_review(issue: &str) -> World {
+    let server = StubJira::start().await;
+    server
+        .holds_issue_in_status(issue, "10002", READY, "To Do")
+        .await;
+    server.offers_transition(issue, "41", "Done").await;
     World {
         jira: Some(server),
         ..world()
@@ -809,6 +840,17 @@ impl World {
             .iter()
             .filter_map(|file| std::fs::read_to_string(file).ok())
             .collect()
+    }
+
+    async fn transition_requests(&self) -> usize {
+        self.jira().transition_requests().await
+    }
+
+    async fn status_of(&self, key: &str) -> String {
+        self.jira().get_issue(key).await.body["fields"]["status"]["name"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the stub holds {key} in a status it can name"))
+            .to_string()
     }
 
     async fn tracker_writes(&self) -> Vec<String> {
@@ -1095,7 +1137,7 @@ fn refusal_of(document: &str) -> WorkflowRefusal {
     .expect("this variant was expected to be refused when the workflow was built")
 }
 
-fn built_from_a_step(name: &str) -> Result<EffectName, EffectError> {
+fn built_from(name: &str, params: StepParams) -> Result<EffectName, EffectError> {
     let world = world();
     let ctx = world.context();
     let deployment = allowing();
@@ -1103,7 +1145,18 @@ fn built_from_a_step(name: &str) -> Result<EffectName, EffectError> {
     let named = EffectName::parse(name).expect("a name a document could spell");
     let construct = registry::resolve(&named)
         .unwrap_or_else(|| panic!("`{name}` is not a name this build registers"));
-    construct(&executor, &params()).map(|effect| effect.kind())
+    construct(&executor, &params).map(|effect| effect.kind())
+}
+
+fn built_from_a_step(name: &str) -> Result<EffectName, EffectError> {
+    built_from(name, params())
+}
+
+fn reaching_review() -> StepParams {
+    StepParams {
+        reaching: Some(IN_REVIEW.to_string()),
+        ..params().observing(Some(&observed_issue(READY)))
+    }
 }
 
 fn admitted(document: &str) -> bool {
@@ -1183,33 +1236,53 @@ fn the_shipped_document_is_admitted_and_a_document_naming_an_unknown_effect_is_n
     );
 
     assert!(
-        !shipped_document().contains(&format!("name = \"{JIRA_ISSUE_TRANSITIONED}\"")),
-        "the shipped document records that it omits `{JIRA_ISSUE_TRANSITIONED}` where the RFC \
-         sets the ticket to In Review, and it names it as a step"
-    );
-    let transitioned = shipped_document().replace(ENSURE_PULL_REQUEST, JIRA_ISSUE_TRANSITIONED);
-    assert!(
-        admitted(&transitioned),
-        "the document's reason for omitting `{JIRA_ISSUE_TRANSITIONED}` is that the name is \
-         admitted when the document loads, and this build refuses it at load instead, so the \
-         recorded reason names a failure that no longer arrives late"
+        shipped_document().contains(&format!("name = \"{JIRA_ISSUE_TRANSITIONED}\"")),
+        "the shipped document sets the ticket to In Review where the RFC does, and it names \
+         no step for it"
     );
     assert_eq!(
         built_from_a_step(ENSURE_PULL_REQUEST).ok(),
         Some(EffectName::parse(ENSURE_PULL_REQUEST).unwrap()),
-        "a step this document does name must build its operation from these parameters, or the \
-         refusal below is the refusal of every name and says nothing about this one"
+        "a step this document names must build its operation from these parameters, or the \
+         refusals below are the refusal of every name and say nothing about this one"
     );
-    let unbuildable = built_from_a_step(JIRA_ISSUE_TRANSITIONED)
-        .expect_err("the omitted effect is the one this build cannot build from a step");
+
+    let unobserved = built_from_a_step(JIRA_ISSUE_TRANSITIONED)
+        .expect_err("these parameters name no issue key, and no step alone names one");
     assert!(
         matches!(
-            &unbuildable,
-            EffectError::Unbuildable { kind, .. }
+            &unobserved,
+            EffectError::Unbuildable { kind, reason }
                 if kind == &EffectName::parse(JIRA_ISSUE_TRANSITIONED).unwrap()
+                    && reason.contains("issue key")
         ),
-        "the document omits `{JIRA_ISSUE_TRANSITIONED}` because its operation refuses every set \
-         of step parameters in its own name, and it answered {unbuildable:?}"
+        "ADR 078 builds this identity from a read of the issue, so a set of parameters \
+         naming no issue key must refuse in this effect's own name and say which fact it \
+         lacks, and it answered {unobserved:?}"
+    );
+
+    let stateless = built_from(
+        JIRA_ISSUE_TRANSITIONED,
+        params().observing(Some(&observed_issue(READY))),
+    )
+    .expect_err("an observed issue alone does not say which state the run asks it for");
+    assert!(
+        matches!(
+            &stateless,
+            EffectError::Unbuildable { kind, reason }
+                if kind == &EffectName::parse(JIRA_ISSUE_TRANSITIONED).unwrap()
+                    && reason.contains("reaching")
+        ),
+        "the state to reach is named by the step and never guessed, so an observation \
+         without one refuses in this effect's own name, and it answered {stateless:?}"
+    );
+
+    assert_eq!(
+        built_from(JIRA_ISSUE_TRANSITIONED, reaching_review()).ok(),
+        Some(EffectName::parse(JIRA_ISSUE_TRANSITIONED).unwrap()),
+        "and a set carrying both the observation and the state the step names builds the \
+         operation, so the two refusals above are this effect refusing what it lacks rather \
+         than refusing everything"
     );
 }
 
@@ -1526,6 +1599,116 @@ async fn the_agent_step_sends_the_prompt_this_repository_ships() {
         compared > 8,
         "only {compared} lines of the shipped prompt were long enough to compare, so this \
          test compared almost nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_run_that_opens_a_pull_request_reaches_in_review_and_a_run_that_opens_none_does_not() {
+    let opened = world_holding(ISSUE).await;
+    let earned = ran(&opened, accepting(), params(), Some(&observed_issue(READY)))
+        .await
+        .expect("an accepted change runs the shipped document to its end");
+    assert!(
+        matches!(earned, Executed::Earned(_)),
+        "an accepted change earns the run: {earned:?}"
+    );
+    assert!(
+        opened.calls() > 0,
+        "the row's own premise: this run reached the forge and opened a pull request, which \
+         is the condition the RFC puts the transition after"
+    );
+    assert_eq!(
+        opened.transition_requests().await,
+        1,
+        "the run sent one transition, counted from the requests the tracker stub received"
+    );
+    assert_eq!(
+        opened.status_of(ISSUE).await,
+        IN_REVIEW,
+        "and the ticket the stub holds is in the status the step named, so the count above \
+         is a write that landed and not a request the site threw away"
+    );
+
+    let rejected = world_holding(ISSUE).await;
+    let concluded = ran(
+        &rejected,
+        rejecting(),
+        params(),
+        Some(&observed_issue(READY)),
+    )
+    .await
+    .expect("a rejected evaluation ends the run rather than failing it");
+    assert!(
+        matches!(concluded, Executed::Rejected { .. }),
+        "a rejected evaluation reports a refusal: {concluded:?}"
+    );
+    assert_eq!(
+        rejected.calls(),
+        0,
+        "the row's own premise: this run opened no pull request"
+    );
+    assert_eq!(
+        rejected.transition_requests().await,
+        0,
+        "a run that opened no pull request sent no transition, so the one counted above is \
+         not a step that fires whatever the run did"
+    );
+    assert_eq!(
+        rejected.status_of(ISSUE).await,
+        READY,
+        "and the ticket is in the status the run found it in"
+    );
+}
+
+#[tokio::test]
+async fn a_site_that_offers_no_route_to_in_review_fails_the_run_the_pull_request_step_finished() {
+    let world = world_offering_no_route_to_review(ISSUE).await;
+    let refused = ran(&world, accepting(), params(), Some(&observed_issue(READY)))
+        .await
+        .expect_err(
+            "a document runs to an end or it fails, and a ticket left behind is not an end",
+        );
+
+    let reason = refused.to_string();
+    assert!(
+        reason.contains(JIRA_ISSUE_TRANSITIONED) && reason.contains(IN_REVIEW),
+        "the failure names the step that could not be taken and the state it asked for: \
+         {reason}"
+    );
+    assert!(
+        reason.contains("41 to `Done`"),
+        "and it names what this site's workflow does offer, so an operator is told what to \
+         change: {reason}"
+    );
+    assert_eq!(
+        effects_performed(&world),
+        [
+            ENSURE_BRANCH_PUBLISHED,
+            ENSURE_PULL_REQUEST,
+            JIRA_PULL_REQUEST_LINKED,
+            JIRA_ISSUE_TRANSITIONED
+        ],
+        "the pull request was opened and linked before the transition was tried, so this \
+         row measures a refusal after the work landed and not a run that stopped early"
+    );
+    assert_eq!(
+        world.transition_requests().await,
+        0,
+        "the route was resolved before the write, so the refusal left the site untouched"
+    );
+    assert_eq!(
+        world.status_of(ISSUE).await,
+        READY,
+        "and the ticket is in the status the run found it in"
+    );
+    assert!(
+        !world
+            .dir
+            .path()
+            .join(format!("stub-state/changes/{ISSUE}.json"))
+            .exists(),
+        "a run that failed records no correlation marker, so a rerun works the ticket again \
+         rather than reading this run as complete"
     );
 }
 
@@ -1974,12 +2157,13 @@ async fn a_model_that_obeys_an_unquoted_instruction_obeys_none_in_this_documents
             ENSURE_BRANCH_PUBLISHED.to_string(),
             ENSURE_PULL_REQUEST.to_string(),
             JIRA_PULL_REQUEST_LINKED.to_string(),
+            JIRA_ISSUE_TRANSITIONED.to_string(),
         ],
         "the run performed an effect the shipped document does not name"
     );
     assert_eq!(
         instructed.issues_written_to().await,
-        vec![ISSUE.to_string()],
+        vec![ISSUE.to_string(), ISSUE.to_string()],
         "the run wrote onto a ticket other than the one it observed"
     );
     assert_eq!(
@@ -2029,8 +2213,9 @@ async fn the_link_step_names_the_ticket_the_run_observed_and_refuses_without_one
     );
     assert_eq!(
         observed.issues_written_to().await,
-        vec![ISSUE.to_string()],
-        "the link step writes onto the ticket the run observed and onto no other"
+        vec![ISSUE.to_string(), ISSUE.to_string()],
+        "the link step and the transition step each write onto the ticket the run observed \
+         and onto no other"
     );
 
     let unobserved = world_holding(ISSUE).await;
@@ -2217,9 +2402,10 @@ async fn a_change_inside_both_bounds_runs_to_the_effect_tail() {
         [
             ENSURE_BRANCH_PUBLISHED,
             ENSURE_PULL_REQUEST,
-            JIRA_PULL_REQUEST_LINKED
+            JIRA_PULL_REQUEST_LINKED,
+            JIRA_ISSUE_TRANSITIONED
         ],
-        "the three effect steps of the shipped document ran, in the order it names \
+        "the four effect steps of the shipped document ran, in the order it names \
          them, so a guard that refused every change would fail here"
     );
     assert!(
@@ -2233,7 +2419,8 @@ async fn a_change_inside_both_bounds_runs_to_the_effect_tail() {
     );
     assert_eq!(
         world.issues_written_to().await,
-        vec![ISSUE.to_string()],
-        "and the link step reached the ticket the run observed"
+        vec![ISSUE.to_string(), ISSUE.to_string()],
+        "and the link step and the transition step each reached the ticket the run \
+         observed"
     );
 }
