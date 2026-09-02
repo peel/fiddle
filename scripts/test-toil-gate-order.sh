@@ -58,10 +58,16 @@ document() {
   } > "$WORK/tree/$DOCUMENT_REL"
 }
 
+EFFECT_LIST='`ensure_branch_published`, `ensure_pull_request`, `jira.pull_request_linked` and `jira.issue_transitioned`'
+
 system() {
   {
     printf '| toil gate | `fiddle-runtime/src/toil` | thirteen rules | the gate runs in Rust %s and before the workflow runs (ADR 083) |\n' "$ORDERING"
-    printf 'The shipped document names seven steps: an agent step, an evaluation, a commit, `ensure_branch_published`, `ensure_pull_request`, `jira.pull_request_linked` and `jira.issue_transitioned`.\n'
+    case "${1:-both}" in
+      both) printf 'The shipped document names seven steps: an agent step, an evaluation, a commit, and the four effect steps %s.\n' "$EFFECT_LIST" ;;
+      steps) printf 'The shipped document names seven steps: an agent step, an evaluation, a commit, %s.\n' "$EFFECT_LIST" ;;
+      effects) printf 'The shipped document names these steps: an agent step, an evaluation, a commit, and the four effect steps %s.\n' "$EFFECT_LIST" ;;
+    esac
   } > "$WORK/tree/$SYSTEM_REL"
 }
 
@@ -69,13 +75,31 @@ adr() {
   {
     printf '# 083\n\n'
     printf '`toil::qualify` runs in `qualified`, %s and before the workflow runs.\n' "$ORDERING"
-    printf 'A run reaches the four effect steps — `ensure_branch_published`, `ensure_pull_request`, `jira.pull_request_linked` and `jira.issue_transitioned` — in the order the shipped document names them.\n'
+    case "${1:-both}" in
+      both) printf 'The shipped document names seven steps. A run reaches the four effect steps — %s — in the order the document names them.\n' "$EFFECT_LIST" ;;
+      steps) printf 'The shipped document names seven steps. A run reaches them, the tail being %s, in the order the document names them.\n' "$EFFECT_LIST" ;;
+      effects) printf 'A run reaches the four effect steps — %s — in the order the shipped document names them.\n' "$EFFECT_LIST" ;;
+    esac
   } > "$WORK/tree/$ADR_REL"
 }
 
 commit_adr() {
-  printf '# 082\n\nThe shipped `workflows/toil.toml` names seven steps: agent, evaluate, commit, `ensure_branch_published`, `ensure_pull_request`, `jira.pull_request_linked` and `jira.issue_transitioned`.\n' \
-    > "$WORK/tree/$COMMIT_ADR_REL"
+  {
+    printf '# 082\n\n'
+    case "${1:-both}" in
+      both) printf 'The shipped `workflows/toil.toml` names seven steps: agent, evaluate, commit, and the four effect steps %s.\n' "$EFFECT_LIST" ;;
+      steps) printf 'The shipped `workflows/toil.toml` names seven steps: agent, evaluate, commit, %s.\n' "$EFFECT_LIST" ;;
+      effects) printf 'The shipped `workflows/toil.toml` names these steps: agent, evaluate, commit, and the four effect steps %s.\n' "$EFFECT_LIST" ;;
+    esac
+  } > "$WORK/tree/$COMMIT_ADR_REL"
+}
+
+record_path() {
+  case "$1" in
+    system) printf '%s' "$SYSTEM_REL" ;;
+    adr) printf '%s' "$ADR_REL" ;;
+    commit_adr) printf '%s' "$COMMIT_ADR_REL" ;;
+  esac
 }
 
 fresh() {
@@ -100,7 +124,7 @@ assert_contains "and it prints the denominators it derived" "names 7 steps and 4
 
 echo "the row asserting the retired ordering fails"
 fresh
-printf '| toil gate | `fiddle-runtime/src/toil` | thirteen rules | the gate runs in Rust before the document loads (ADR 083) |\nThe shipped document names seven steps: `ensure_branch_published`, `ensure_pull_request`, `jira.pull_request_linked` and `jira.issue_transitioned`.\n' \
+printf '| toil gate | `fiddle-runtime/src/toil` | thirteen rules | the gate runs in Rust before the document loads (ADR 083) |\nThe shipped document names seven steps, of which the four effect steps are %s.\n' "$EFFECT_LIST" \
   > "$WORK/tree/$SYSTEM_REL"
 OUT=$(run); RC=$?
 assert_exit "the row this bean found fails" 1 "$RC"
@@ -126,7 +150,7 @@ assert_contains "and it quotes the clause it found there" "Eligibility is decide
 
 echo "a row that states no ordering at all fails"
 fresh
-printf '| toil gate | `fiddle-runtime/src/toil` | thirteen rules | a refusal is published on the ticket (ADR 083) |\nThe shipped document names seven steps: `ensure_branch_published`, `ensure_pull_request`, `jira.pull_request_linked` and `jira.issue_transitioned`.\n' \
+printf '| toil gate | `fiddle-runtime/src/toil` | thirteen rules | a refusal is published on the ticket (ADR 083) |\nThe shipped document names seven steps, of which the four effect steps are %s.\n' "$EFFECT_LIST" \
   > "$WORK/tree/$SYSTEM_REL"
 OUT=$(run); RC=$?
 assert_exit "silence is not agreement" 1 "$RC"
@@ -134,7 +158,7 @@ assert_contains "and the reason names the ordering it wanted" "$ORDERING" "$OUT"
 
 echo "the ADR dropping the ordering fails, so the pair is pinned in both directions"
 fresh
-printf '# 083\n\nEligibility is an outer Rust gate.\nA run reaches the four effect steps — `ensure_branch_published`, `ensure_pull_request`, `jira.pull_request_linked` and `jira.issue_transitioned` — in order.\n' \
+printf '# 083\n\nEligibility is an outer Rust gate.\nThe shipped document names seven steps. A run reaches the four effect steps — %s — in order.\n' "$EFFECT_LIST" \
   > "$WORK/tree/$ADR_REL"
 OUT=$(run); RC=$?
 assert_exit "an ADR that no longer states the ordering fails" 1 "$RC"
@@ -195,7 +219,7 @@ assert_excludes "and the counts are not blamed, because neither moved" 'effect s
 
 echo "a record left on the old count fails, and the reason names that record"
 fresh
-printf '# 082\n\nThe shipped `workflows/toil.toml` names six steps: agent, evaluate, commit, `ensure_branch_published`, `ensure_pull_request` and `jira.pull_request_linked`.\n' \
+printf '# 082\n\nThe shipped `workflows/toil.toml` names six steps: agent, evaluate, commit, `ensure_branch_published`, `ensure_pull_request` and `jira.pull_request_linked`.\nIts four effect steps are %s.\n' "$EFFECT_LIST" \
   > "$WORK/tree/$COMMIT_ADR_REL"
 OUT=$(run); RC=$?
 assert_exit "the sentence fiddle-46a0 left behind fails" 1 "$RC"
@@ -203,7 +227,7 @@ assert_contains "and the reason quotes the stale count" '`six steps`' "$OUT"
 
 echo "a stale count reds even when it is not spelt \`names N steps\`, so the canonical form is not the whole pin"
 fresh
-printf '# 082\n\nThe shipped `workflows/toil.toml` names seven steps: agent, evaluate, commit, `ensure_branch_published`, `ensure_pull_request`, `jira.pull_request_linked` and `jira.issue_transitioned`.\nOf the six steps that document held before `fiddle-46a0`, the last was the link.\n' \
+printf '# 082\n\nThe shipped `workflows/toil.toml` names seven steps: agent, evaluate, commit, and the four effect steps %s.\nOf the six steps that document held before `fiddle-46a0`, the last was the link.\n' "$EFFECT_LIST" \
   > "$WORK/tree/$COMMIT_ADR_REL"
 OUT=$(run); RC=$?
 assert_exit "a record carrying both the right canonical form and a stale count fails" 1 "$RC"
@@ -211,11 +235,33 @@ assert_contains "and the reason quotes the stale count it found beside it" '`six
 
 echo "a record left on the old effect count fails"
 fresh
-printf '# 083\n\n`toil::qualify` runs in `qualified`, %s and before the workflow runs.\nIt reaches the three effect steps — `ensure_branch_published`, `ensure_pull_request`, `jira.pull_request_linked` and `jira.issue_transitioned` — in order.\n' "$ORDERING" \
+printf '# 083\n\n`toil::qualify` runs in `qualified`, %s and before the workflow runs.\nThe shipped document names seven steps. It reaches the three effect steps — %s — in order.\n' "$ORDERING" "$EFFECT_LIST" \
   > "$WORK/tree/$ADR_REL"
 OUT=$(run); RC=$?
 assert_exit "the sentence this bean found in ADR 083 fails" 1 "$RC"
 assert_contains "and the reason quotes the stale effect count" '`three effect steps`' "$OUT"
+
+echo "a record that states the step count and not the effect count fails, once per record"
+for RECORD in system adr commit_adr; do
+  fresh
+  "$RECORD" steps
+  OUT=$(run); RC=$?
+  assert_exit "$RECORD stating only the step count fails" 1 "$RC"
+  assert_contains "and the reason names the count it is missing" '`four effect steps`' "$OUT"
+  assert_contains "and the reason names the record missing it" "$(record_path "$RECORD")" "$OUT"
+  assert_excludes "and the step count it does state is not blamed" 'does not say `names seven steps`' "$OUT"
+done
+
+echo "a record that states the effect count and not the step count fails, once per record"
+for RECORD in system adr commit_adr; do
+  fresh
+  "$RECORD" effects
+  OUT=$(run); RC=$?
+  assert_exit "$RECORD stating only the effect count fails" 1 "$RC"
+  assert_contains "and the reason names the count it is missing" '`names seven steps`' "$OUT"
+  assert_contains "and the reason names the record missing it" "$(record_path "$RECORD")" "$OUT"
+  assert_excludes "and the effect count it does state is not blamed" 'does not say `four effect steps`' "$OUT"
+done
 
 echo "a precondition that cannot be read refuses rather than answering"
 fresh

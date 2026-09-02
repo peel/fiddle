@@ -113,9 +113,13 @@ for FILE in "$ADR" "$DOCUMENT"; do
   fi
 done
 
-for FILE in "$SYSTEM" "$COMMIT_ADR"; do
+for FILE in "$SYSTEM" "$ADR" "$COMMIT_ADR"; do
   if ! grep -qF "names $STEP_WORD steps" "$FILE"; then
     printf '{"error":"%s names %s steps and %s does not say `names %s steps`"}\n' "$DOCUMENT" "$STEPS" "$FILE" "$STEP_WORD" >&2
+    FAILED=1
+  fi
+  if ! grep -qF "$EFFECT_WORD effect steps" "$FILE"; then
+    printf '{"error":"%s names %s effect steps and %s does not say `%s effect steps`"}\n' "$DOCUMENT" "$EFFECTS" "$FILE" "$EFFECT_WORD" >&2
     FAILED=1
   fi
 done
@@ -132,11 +136,6 @@ for FILE in "$SYSTEM" "$ADR" "$COMMIT_ADR"; do
     fi
   done
 done
-
-if ! grep -qF "$EFFECT_WORD effect steps" "$ADR"; then
-  printf '{"error":"%s names %s effect steps and %s does not say `%s effect steps`"}\n' "$DOCUMENT" "$EFFECTS" "$ADR" "$EFFECT_WORD" >&2
-  FAILED=1
-fi
 
 for FILE in "$SYSTEM" "$ADR" "$COMMIT_ADR"; do
   if ! grep -qE "$ORDER_PATTERN" "$FILE"; then
@@ -163,5 +162,5 @@ if [ "$FAILED" -ne 0 ]; then
   exit 1
 fi
 
-printf 'TOIL GATE ORDER: ok (selected_workflow at %s, qualified at %s, and %s names %s steps and %s effect steps that four records state the same way)\n' "$LOADS" "$GATES" "$DOCUMENT" "$STEPS" "$EFFECTS"
+printf 'TOIL GATE ORDER: ok (selected_workflow at %s, qualified at %s, and the document, its gate row and ADR 083 state that ordering and no retired one; %s names %s steps and %s effect steps, and SYSTEM.md, ADR 082 and ADR 083 each state both counts, name those effect steps in the document order, and state no other count)\n' "$LOADS" "$GATES" "$DOCUMENT" "$STEPS" "$EFFECTS"
 exit 0
