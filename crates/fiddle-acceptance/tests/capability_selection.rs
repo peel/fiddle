@@ -644,6 +644,83 @@ fn advertised_capabilities() -> Vec<String> {
     ids
 }
 
+fn capability_help_of_the_binary() -> String {
+    let out = std::process::Command::new(support::fiddle_binary())
+        .args(["run", "--help"])
+        .output()
+        .expect("the compiled binary prints its own help");
+    let help = String::from_utf8_lossy(&out.stdout).to_string();
+    let (_, capability) = help.split_once("--capability").unwrap_or_else(|| {
+        panic!("`run --help` must document `--capability` for this lane to read it: {help}")
+    });
+    let (documented, _) = capability.split_once("--json").unwrap_or_else(|| {
+        panic!("`--capability`'s help is followed by the next flag's: {capability}")
+    });
+    documented
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ")
+}
+
+#[test]
+fn the_capability_help_names_the_default_the_binary_resolves_for_each_scheme_it_can_inspect() {
+    let help = capability_help_of_the_binary();
+
+    let scenario = Scenario::new();
+    scenario.write_work_item(WORK_ID, "open");
+    scenario.write_work_item("nightly", "open");
+    scenario.write_work_item("cve-2026-1", "open");
+    let resolved = [
+        ("beans", format!("beans:{WORK_ID}")),
+        ("scheduled", "scheduled:nightly".to_string()),
+        ("scanner", "scanner:cve-2026-1".to_string()),
+        ("cve", "cve".to_string()),
+    ];
+    let mut compared = 0;
+    for (scheme, reference) in resolved {
+        let payload = scenario.inspect_json(&reference);
+        let id = payload["next_action"]["execute"]["capability_id"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!(
+                    "this lane reads the default off the binary's own derivation, and \
+                     `{reference}` derived {}",
+                    payload["next_action"]
+                )
+            })
+            .to_string();
+        let row = format!("`{scheme}` -> `{id}`");
+        assert!(
+            help.contains(&row),
+            "the binary resolves {row} with no flag, and its own `--capability` help \
+             says: {help}"
+        );
+        compared += 1;
+    }
+    assert_eq!(
+        compared, 4,
+        "this lane compared {compared} schemes against the binary's derivation, and it \
+         is written to compare four"
+    );
+
+    assert!(
+        help.contains("`jira` -> `toil`"),
+        "the fifth scheme cannot be inspected offline, so this lane pins its row as a \
+         literal; `crates/fiddle-acceptance/tests/toil.rs` drives `run jira:KEY` with no \
+         flag and reaches the toil gate: {help}"
+    );
+    assert!(
+        !help.contains("every other scheme marks"),
+        "and the claim that stood here while the epic routed `jira` to `toil` is gone, so \
+         a reverted help text cannot pass: {help}"
+    );
+    assert!(
+        help.contains("pull request") && help.contains("In Review"),
+        "an operator is told what an unflagged `jira` reference does, which is more than \
+         marking a change set: {help}"
+    );
+}
+
 #[test]
 fn the_system_document_names_every_capability_this_build_registers() {
     let ids = advertised_capabilities();

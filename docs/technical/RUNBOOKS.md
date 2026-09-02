@@ -17,17 +17,38 @@ literal secret does not load.
 | `FIDDLE_CVE_TOKEN` | the host's CVE sweep | the host repository's secret; it needs `Checks: read`, which the two above do not carry |
 | `WIZ_CLIENT_ID` | the host's `setup-wiz` step | the host repository's secret; the Wiz service account the scan runs as |
 | `WIZ_CLIENT_SECRET` | the host's `setup-wiz` step | the host repository's secret; that account's secret |
-| `JIRA_USER_EMAIL` | the live Jira read lane | opt-in, reads one issue, writes nothing |
-| `JIRA_API_TOKEN` | the live Jira read lane | the same account's classic unscoped API token |
+| `JIRA_USER_EMAIL` | every live Jira lane, and the toil route | opt-in; the account the read or the write is performed as |
+| `JIRA_API_TOKEN` | every live Jira lane, and the toil route | the same account's classic unscoped API token |
+| `JIRA_SITE` | every live Jira lane | the site origin **with its scheme**, as in `https://snplow.atlassian.net`. Every live lane refuses a value that is not an `https://` origin, so a bare `snplow.atlassian.net` fails before it reaches the site |
+| `JIRA_ISSUE` | the live Jira read lane | the one issue it reads. Both write lanes refuse while it names `JIRA_WRITE_PROJECT`, so unset it for those |
+| `JIRA_SEARCH_PROJECT` | the live Jira search shape lane | read only; the project it searches and reads workflow statuses from |
+| `JIRA_WRITE_PROJECT` | the two live Jira write lanes | it CREATES an issue in this project and then CLOSES it, and never deletes |
+| `JIRA_LEDGER_ISSUE` | the two live Jira write lanes | an anchor issue in that project, of the same issue type, whose workflow the lane resolves the closing transition off |
 
 The two `WIZ_` variables are the only ones `fiddle.toml` never names. `setup-wiz`
 runs `wizcli auth --id --secret` with them, and fiddle passes the scanner no
 credential of its own (ADR 042). A caller who skips that step gets the scanner's
 own exit: `the scanner produced no report (exit 1)`, and exit 11.
 
+`.env.example` is the template and names every variable above that a local lane
+reads. Six of them are what the lanes in this file need to run at all:
+`LITELLM_API_KEY`, `FIDDLE_GITHUB_TOKEN`, `JIRA_USER_EMAIL`, `JIRA_API_TOKEN`,
+`JIRA_SITE` and `JIRA_ISSUE`. The three write-lane variables are named too, and
+this deployment sets none of them.
+
 A local lane reads its variable from `.env` in the worktree you run from.
-`.envrc` is tracked, so `dotenv_if_exists` resolves the `.env` beside it. `.env`
-is gitignored; `.env.example` is the template.
+`.envrc` is tracked, so `dotenv_if_exists` resolves the `.env` beside it. The
+tracked `.gitignore` carries `.env` and `.env.*` with a `!.env.example`
+negation, so the claim that a token in `.env` cannot be committed rests on a
+tracked file and not on one clone's `.git/info/exclude`. Check it rather than
+trust it:
+
+```sh
+git check-ignore -v .env .env.example
+```
+
+It must name `.gitignore` for `.env` and answer nothing for `.env.example`. A
+rule that resolves to `.git/info/exclude` holds on your clone and on no other.
 
 A repository secret is set with `gh secret set` and never appears in `.env`. The
 note above says which repository holds each one.
@@ -554,6 +575,160 @@ runs. The first publishes, the target's own `pull_request` workflow answers, and
 the second reads the check runs on the candidate commit. `[agent]
 max_capability_attempts` must be at least 2, because a bound of 1 stops the
 second run before it reads anything.
+
+## The toil route, which works one labelled Jira ticket
+
+`fiddle run jira:KEY` with no `--capability` flag selects `toil`. It is not a
+mark. An eligible ticket becomes one branch, one pull request, one link comment
+on the ticket and one transition to `In Review`. A ticket the gate refuses
+becomes one comment on that ticket and exit 2.
+
+Nothing in this section has been run against a real forge. One command line has
+reached the toil gate against the real Jira site, and it refused the ticket
+deterministically.
+
+### What a ticket needs
+
+| what | where it comes from | this deployment |
+| --- | --- | --- |
+| the trigger label | `[jira.labels] toil_trigger`, and an absent key resolves to the default | `fiddle/toil` |
+| the issue type | frozen in Rust, `TOIL_WORKED_ISSUE_TYPES` in `crates/fiddle-cli/src/config.rs` | `Task`, and nothing else |
+| the shortest description | frozen in Rust, `TOIL_SHORTEST_DESCRIPTION` in the same file | 20 characters after trimming |
+| the repository | `[github] repo`, which is both the repository the ticket is taken to name and the only one in bounds | one repository |
+
+The label and the repository are yours to set. The issue type list and the
+description floor are not configurable, and a deployment that wants either
+changed changes Rust. `fiddle config check` reports the label it resolved and
+both scope bounds below; it reports neither frozen value, so read them here or
+in that file.
+
+### The document, and where it is read from
+
+`workflows/toil.toml`, resolved **beside the deployment document**, so a
+`--config /srv/fiddle.toml` reads `/srv/workflows/toil.toml`. No other location
+is read, there is no search path, and a document whose `stage` is not `toil` is
+refused. The shipped copy is this repository's `workflows/toil.toml`; ship it
+beside `fiddle.toml` and ship `workflows/prompts/` with it.
+
+A malformed or absent document is refused **before** the ticket is qualified,
+because the command line loads the document first. The person who filed the
+ticket is told nothing in that case, so `config check` and one dry run over a
+ticket you own are worth doing before a document reaches a real board.
+
+### The two tables it needs
+
+```toml
+[agent]
+model = "..."
+base_url = "..."
+api_key = { env = "LITELLM_API_KEY" }
+
+[jira]
+site = "https://snplow.atlassian.net"
+project = "ISP"
+user = { env = "JIRA_USER_EMAIL" }
+token = { env = "JIRA_API_TOKEN" }
+
+[jira.labels]
+toil_trigger = "fiddle/toil"
+```
+
+`[jira]` is needed to read the ticket at all, so a run without it stops before
+the gate. `[agent]` is needed only once the nine deterministic rules have held:
+they read the tracker's own fields and reach no model, so a deployment that
+configured no model still answers a label-less ticket with a refusal on the
+ticket rather than with a configuration error. The credential each table names
+is resolved from the environment, and `fiddle.toml` holds the variable's name
+and never its value.
+
+### The four rows deployment policy has for it
+
+`fiddle config check` prints one `github.policy.<name>` row per registered
+effect. Four of them belong to this route.
+
+| the row `config check` prints | what it governs | denying it |
+| --- | --- | --- |
+| `github.policy.jira.comment_added` | the refusal comment, and the decision channel's question | a refused ticket is told nothing, and the run says so loudly and still exits 2 |
+| `github.policy.jira.pull_request_linked` | the link comment the sixth step writes | the run fails at that step with the pull request already open |
+| `github.policy.jira.issue_transitioned` | the move to `In Review`, the last step | the run fails at that step with the pull request open and linked |
+| `github.policy.jira.issue_filed` | filing a new issue, which this route never does | nothing on this route |
+
+In the document the key is quoted, because it carries dots.
+
+```toml
+[github.policy]
+"jira.comment_added" = "deny"
+```
+
+An absent row is `allow`. Deny the comment first if you want to watch the gate
+refuse without writing to a board.
+
+### The two bounds you can set, and the two you cannot
+
+```toml
+[orchestration.toil]
+max_files_changed = 10
+max_diff_lines = 500
+```
+
+Both are measured in the workspace after each agent step, and a change beyond
+either stops the run before any effect. An absent `[orchestration.toil]` table
+resolves to 10 and 500 rather than to no bound, and `config check` reports the
+resolved numbers, which is where you see a value you did not write. The frozen
+pair is the issue type list and the description floor in the table above.
+
+### What a refusal looks like on the ticket
+
+The comment is the whole reason, in four lines and the quoted text the rule
+read.
+
+```
+fiddle did not take `ISP-239` on, and this comment is the whole reason.
+The rule that failed: the trigger label is present
+What the gate found: ISP-239 carries 2 labels and none is the trigger label
+What would change that: add the label `fiddle/toil` to ISP-239
+The text on this issue that the rule read: ...
+```
+
+The command line states the same refusal and exits 2.
+
+```
+fiddle::toil::ineligible
+
+  × `ISP-239` is not work this build takes on. The rule that failed: the trigger label is present. What the gate found: ISP-239 carries 2 labels and none is the trigger label
+  help: add the label `fiddle/toil` to ISP-239
+```
+
+That sentence is wrapped to the terminal, with `│` continuing each line, so do
+not grep it as one string.
+
+A refusal names the one rule that failed. It does not name which of the other
+twelve were reached, nor on what evidence any of them stood.
+
+`fiddle inspect jira:KEY` reports the same refusal in `would_refuse`, before you
+run anything, for any of the nine deterministic rules. It resolves no model
+credential, so it costs nothing and writes nothing.
+
+### When the refusal itself cannot be published
+
+The run reports it loudly rather than swallowing it, and still exits 2.
+
+```
+error: the refusal below was not published on `ISP-239`, so the person who
+       filed it has been told nothing
+  work_item   = ISP-239
+  cause       = policy denied jira.comment_added: deployment policy denies this effect kind
+```
+
+Deployment policy and a site error both reach this line. Read the `cause`.
+
+### Working one ticket again
+
+A ticket the route completed carries the run's correlation marker, and the next
+run over the same reference reads that marker, judges the work done and executes
+nothing — whatever the ticket now says. Removing the trigger label and adding it
+again does not start a second round. Nothing on an operator surface clears a
+completion.
 
 ## Record what the model was sent and what it returned
 

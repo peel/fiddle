@@ -24,6 +24,7 @@ Paths are relative to the repository root. A skill path omits `/SKILL.md`.
 | using-fiddle | `skills/using-fiddle` | routes requests, maps tool vocabulary | one text serves every harness (ADR 008) |
 | hooks | `hooks/` | check binaries, guard archives, gate a verdict | exit 0, or exit 2 to reject with feedback |
 | validators | `scripts/audit-skills.sh`, `check-portability.sh`, `check-github-effects-lane.sh` | hold repository shape mechanically (ADR 009) | exit 2 with a JSON error array |
+| toil gate ordering | `scripts/check-toil-gate-order.sh` | the row above, ADR 083 and the call order in `crates/fiddle-cli/src/main.rs` state one ordering | exit 2 when the three disagree, or when a precondition for reading them fails |
 | ADR citations | `scripts/check-adr-cites.sh` | every `Cites:` symbol and path an ADR names still resolves | a retrofit floor at 021, and `Cites: none` is the deliberate answer |
 | `fiddle-core` | `crates/fiddle-core` | the pure domain: identity, assessment, outcome, report | reaches no process, file, socket, environment or clock (ADR 035) |
 | `fiddle-runtime` | `crates/fiddle-runtime` | every effect: ports, adapters, capabilities, journal | the only crate that imports Rig |
@@ -35,7 +36,7 @@ Paths are relative to the repository root. A skill path omits `/SKILL.md`.
 | retry | `fiddle-runtime/src/agent/retry.rs` | sends the same request again when the provider answers with no message and no tool call | two retries over the attempt, each one a transcript record (ADR 054) |
 | transcript | `fiddle-runtime/src/agent/transcript.rs` | records what the model was sent, what it returned, and when, off unless `FIDDLE_TRANSCRIPT=1` | every text passes through `Redaction`, and a run that wrote one says so (ADR 052) |
 | gateway | `fiddle-runtime/src/gateway.rs` | the one credential-carrying model, and the redaction of its credential | an OpenAI-compatible gateway, not Anthropic (ADR 012); a provider's body is quoted with the resolved credential replaced (ADR 050) |
-| toil gate | `fiddle-runtime/src/toil` | thirteen eligibility rules, the ambiguity review, the scope bound | the gate runs in Rust before the document loads, and a refusal is published on the ticket it refuses (ADR 083) |
+| toil gate | `fiddle-runtime/src/toil` | thirteen eligibility rules, the ambiguity review, the scope bound | the gate runs in Rust after `selected_workflow` loads the document and before the workflow runs; the nine deterministic rules resolve no model, and a refusal is published on the ticket it refuses (ADR 083) |
 | workflow | `fiddle-runtime/src/capability/workflow.rs` | reads a document of five step kinds and runs it in order | a file is read and never evaluated (ADR 074); a step earns the commit the branch step publishes (ADR 082) |
 | effect executor | `fiddle-runtime/src/effect` | the seven-step authorization order | no mutation without an `AuthorizedEffect` (ADR 033); a deployment may hold a tracker and no forge (ADR 084) |
 | forge adapter | `fiddle-runtime/src/{github,git}` | the one `gh`, the one `git fetch` and the one `git push` (ADR 046) | `gh api -i`, not a REST client (ADR 015) |
@@ -49,7 +50,11 @@ Six capabilities are registered: `stub_mark`, `fixture_repair`, `publish_change`
 
 `inspect` and `run` share one selection flag and one default, so the read-only
 command cannot name a capability the executing one would refuse. `inspect` takes the
-id as far as the derivation and builds nothing from it.
+id as far as the derivation and builds nothing from it. It also reports what a run
+would refuse before it started, in `would_refuse`, for the refusals a read can derive
+without resolving anything: a `jira` reference whose ticket fails one of the toil
+gate's nine deterministic rules. `docs/BACKLOG.md` records which half of that is
+still open.
 
 | outcome | exit | reached by |
 | --- | --- | --- |
