@@ -22,7 +22,7 @@ ARGUED, read off ADR 074 and off the source at `77b82f6`: the context above. No 
 
 **Eligibility is an outer Rust gate. It is not a step.**
 
-ARGUED, read off the source at `77b82f6`: `toil::qualify` runs in `crates/fiddle-cli/src/main.rs`, in `qualified`, before the document is loaded. `RULES` holds the thirteen rule names it applies. It answers `Qualification::Eligible` or `Qualification::Refused`, and a `Refusal` carries the rule that failed, what was found and the remedy that would change the answer.
+ARGUED, read off the source at `77b82f6`: `toil::qualify` runs in `crates/fiddle-cli/src/main.rs`, in `qualified`, after `selected_workflow` loads the document and before the workflow runs. `RULES` holds the thirteen rule names it applies. It answers `Qualification::Eligible` or `Qualification::Refused`, and a `Refusal` carries the rule that failed, what was found and the remedy that would change the answer. That order has a cost. ARGUED, read off the same source: a deployment whose toil document is malformed refuses before the ticket is qualified. So the ticket receives a document error rather than a refusal comment on its own issue, and the person who filed it is told nothing. No test drives a `jira:` toil run against a malformed document.
 
 Three reasons hold the gate outside the document. That placement, all three reasons, and the three paragraphs that state them are ARGUED, read off the source at `77b82f6` and off ADR 074, except where a sentence names its own measurement. ADR 074 gives the first. Eligibility is nothing but conditions, and a condition in a file means the capability belongs in Rust.
 
