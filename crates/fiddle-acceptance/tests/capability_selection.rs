@@ -1175,17 +1175,38 @@ fn a_workflow_the_judge_rejects_exits_twelve_and_a_workflow_it_accepts_does_not(
          build that exits 12 whatever the judge said reds here: {accepted}"
     );
     assert_eq!(
-        accepted_code, 11,
-        "an accepted evaluation completes the capability and leaves the work item \
-         not started, which this build reports as retryable at 11; `!= 12` would \
-         pass on any of 0, 11 or 20: {accepted}"
+        accepted_code, 0,
+        "an accepted evaluation runs the document to its end, records the \
+         correlation marker the post-run assessment reads, and completes; `!= 12` \
+         would pass on any of 0, 11 or 20: {accepted}"
     );
     assert_eq!(
-        accepted["outcome"]["retryable"]["reason"],
-        "toil executed and reported success, and the work is still not started \
-         afterwards",
-        "and 11 is that reason and no other: {accepted}"
+        accepted["outcome"], "completed",
+        "and 0 is that outcome and no other: {accepted}"
     );
+    assert_eq!(
+        accepted.pointer("/observations/changes/available/value/marker"),
+        Some(&serde_json::Value::String(
+            accepted_marker_of(&accepted).to_string()
+        )),
+        "which the run reports as the marker its own change set carries: {accepted}"
+    );
+    assert_eq!(
+        rejected.pointer("/observations/changes/available/value/marker"),
+        Some(&serde_json::Value::Null),
+        "and the rejected run records none, so the marker above is written by a run \
+         that finished and not by the harness: {rejected}"
+    );
+}
+
+fn accepted_marker_of(payload: &serde_json::Value) -> &str {
+    payload
+        .pointer("/progress/0/summary")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|summary| summary.strip_prefix("wrote correlation marker "))
+        .unwrap_or_else(|| {
+            panic!("an accepted run names the marker it wrote in its summary: {payload}")
+        })
 }
 
 const JIRA_USER: &str = "JIRA_USER_EMAIL";

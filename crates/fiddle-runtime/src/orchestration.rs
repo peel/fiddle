@@ -4,8 +4,9 @@ use crate::evidence::{mint_attempt_id, publish, EvidenceError};
 use crate::journal::{AttemptJournal, AttemptTrace, FileJournal};
 use crate::ports::{ChangePort, WorkItemPort};
 use fiddle_core::{
-    correlation_key, derive_next, CapabilityExecution, EvidenceRef, FiddleBuild, InvocationRef,
-    Mode, NextAction, ProgressEntry, Published, ReportBundle, RunOutcome, WorkRef, WorkStateView,
+    correlation_key, derive_next, CapabilityExecution, ChangeSetState, EvidenceRef, FiddleBuild,
+    InvocationRef, Mode, NextAction, Observation, ProgressEntry, Published, ReportBundle,
+    RunOutcome, WorkRef, WorkStateView,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -135,6 +136,41 @@ fn moved_since_qualifying(capability: &dyn Capability, view: &WorkStateView) -> 
     )))
 }
 
+fn marking(after: &WorkStateView, expected_marker: &str) -> Published {
+    Published::of(match &after.changes {
+        Observation::Available {
+            value: ChangeSetState {
+                marker: Some(marker),
+            },
+            ..
+        } if marker == expected_marker => format!("wrote correlation marker {marker}"),
+
+        Observation::Available {
+            value: ChangeSetState {
+                marker: Some(marker),
+            },
+            ..
+        } => format!(
+            "the change set carries correlation marker {marker}, and this invocation \
+             expects {expected_marker}, so the correlation post-condition is unsatisfied"
+        ),
+
+        Observation::Available {
+            value: ChangeSetState { marker: None },
+            source,
+            ..
+        } => format!("the change set at {source} carries no correlation marker"),
+
+        Observation::Unavailable { source, reason } => {
+            format!("the change set at {source} could not be read after the run: {reason}")
+        }
+
+        Observation::NotApplicable { reason } => {
+            format!("no change set was read after the run: {reason}")
+        }
+    })
+}
+
 fn concluded(next_action: &NextAction, after: &WorkStateView) -> RunOutcome {
     match next_action {
         NextAction::Complete => RunOutcome::Completed,
@@ -219,7 +255,7 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
                     capability_id,
                     ctx.capability.stage(),
                     "completed",
-                    Published::of(format!("wrote correlation marker {marker}")),
+                    marking(&after, &marker),
                     with_receipts(evidence, &observed),
                 )],
                 observations: after,
@@ -456,6 +492,30 @@ mod tests {
 
         fn events(&self) -> Vec<String> {
             self.0.lock().unwrap().clone()
+        }
+    }
+
+    struct Interloping {
+        root: PathBuf,
+    }
+
+    #[async_trait::async_trait]
+    impl Capability for Interloping {
+        fn id(&self) -> CapabilityId {
+            STUB_MARK
+        }
+
+        fn stage(&self) -> &'static str {
+            "interloping"
+        }
+
+        async fn execute(&self, _input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
+            std::fs::write(
+                self.root.join(format!("changes/{WORK_ID}.json")),
+                r#"{"marker":"a-marker-from-another-invocation"}"#,
+            )
+            .unwrap();
+            Ok(Executed::Earned(EvidenceRef("interloping".to_string())))
         }
     }
 
@@ -763,6 +823,102 @@ mod tests {
             log.events().is_empty(),
             "nothing was going to change the world, so nothing may be journaled: {:?}",
             log.events()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_summary_names_the_marker_the_change_set_carries_and_never_one_nobody_wrote() {
+        let expected = correlation_key(PROJECT, INVOCATION_REF);
+
+        let wrote = fixture_root();
+        let marking = StubMark::new(wrote.path(), PROJECT);
+        let after_writing = run(&context(
+            &marking,
+            &StubWorkItemPort::new(wrote.path()),
+            &StubChangePort::new(wrote.path()),
+            &SpyJournal::default(),
+            &attempt_id(),
+        ))
+        .await;
+
+        let unwritten = fixture_root();
+        let log = std::sync::Arc::<Log>::default();
+        let spy = Spy::watching(&log);
+        let after_earning_nothing = run(&context(
+            &spy,
+            &StubWorkItemPort::new(unwritten.path()),
+            &StubChangePort::new(unwritten.path()),
+            &SpyJournal::default(),
+            &attempt_id(),
+        ))
+        .await;
+
+        let foreign = fixture_root();
+        let other = Interloping {
+            root: foreign.path().to_path_buf(),
+        };
+        let after_finding_another = run(&context(
+            &other,
+            &StubWorkItemPort::new(foreign.path()),
+            &StubChangePort::new(foreign.path()),
+            &SpyJournal::default(),
+            &attempt_id(),
+        ))
+        .await;
+
+        assert_eq!(
+            spy.calls(),
+            1,
+            "the row's own premise: the capability that writes nothing still ran and \
+             earned its evidence"
+        );
+        let summaries: Vec<String> = [
+            &after_writing,
+            &after_earning_nothing,
+            &after_finding_another,
+        ]
+        .iter()
+        .map(|report| {
+            assert_eq!(report.progress.len(), 1, "each run reports one entry");
+            report.progress[0].summary.as_str().to_string()
+        })
+        .collect();
+
+        assert_eq!(
+            summaries[0],
+            format!("wrote correlation marker {expected}"),
+            "a run whose change set carries the marker it expects names that marker"
+        );
+        assert!(
+            !summaries[1].contains(&expected) && summaries[1].contains("no correlation marker"),
+            "a run that wrote none says so, and names no marker at all, because \
+             naming the expected one is the sentence that read like evidence: {}",
+            summaries[1]
+        );
+        assert!(
+            summaries[2].contains("a-marker-from-another-invocation")
+                && summaries[2].contains(&expected)
+                && summaries[2].contains("the correlation post-condition is unsatisfied"),
+            "and a run that found another invocation's marker names both and reports \
+             the mismatch: {}",
+            summaries[2]
+        );
+        let authorship = ["wrote", "write", "written", "authored"];
+        for claim in authorship {
+            assert!(
+                !summaries[2].contains(claim),
+                "the observation reads the change set after the run, so it can say which \
+                 marker is present and never who put it there; the fixture capability wrote \
+                 that marker during this very run, so both '{claim}' in the positive and in \
+                 the negative are unsupported: {}",
+                summaries[2]
+            );
+        }
+        assert!(
+            summaries[0].contains("wrote correlation marker")
+                && !summaries[1].contains("wrote correlation marker"),
+            "so only the run that carries its own expected marker says a marker was \
+             written: {summaries:?}"
         );
     }
 

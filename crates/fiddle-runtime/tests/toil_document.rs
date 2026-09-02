@@ -754,6 +754,7 @@ impl World {
             redaction: Redaction::of("sk-mock-must-not-appear-0d1e"),
             transcripts: None,
             prompts: shipped_prompts(),
+            stub_root: self.dir.path().join("stub-state"),
         }
     }
 

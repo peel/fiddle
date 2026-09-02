@@ -1099,6 +1099,93 @@ async fn reusing_a_pull_request_checks_out_its_remote_tip_and_records_both_revis
     );
 }
 
+const A_BASE_DATE: &str = "2021-02-03T04:05:06+02:00";
+
+fn dated_base_commit(repo: &Path, date: &str) {
+    let status = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "the base, at a date no clock will read again",
+        ])
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
+        .current_dir(repo)
+        .status()
+        .expect("git runs");
+    assert!(status.success(), "the fixture takes a dated base commit");
+}
+
+#[tokio::test]
+async fn the_same_bump_landed_twice_in_two_workspaces_is_the_same_commit() {
+    let forge = Forge::empty();
+    let world = remote_world(&forge.remote(), None, &[LANDED_CVE]);
+    dated_base_commit(world.tree.path(), A_BASE_DATE);
+    let cancel = CancellationToken::new();
+
+    let mut landed = Vec::new();
+    let mut roots = Vec::new();
+    for attempt in ["01JCVEDATE000000000000001", "01JCVEDATE000000000000002"] {
+        let root = TempDir::new().expect("a temporary directory for the worktree");
+        let workspace = Workspace::create_at(
+            world.tree.path(),
+            root.path(),
+            &AttemptId(attempt.to_string()),
+            "HEAD",
+            cancel.clone(),
+        )
+        .expect("a worktree at the revision the tree holds");
+        let changed = world.bump_into(workspace.root());
+        land(
+            &InWorktree::new(&workspace, PATIENT, &unreachable_git()),
+            &advisories_of(&world.findings),
+            &GroupStatus::Clean,
+            &changed,
+            None,
+        )
+        .await
+        .expect("a clean group over a tree that really changed");
+        landed.push(ask_git(workspace.root(), &["rev-parse", "HEAD"]));
+        roots.push(root);
+    }
+
+    assert_ne!(
+        landed[0],
+        ask_git(world.tree.path(), &["rev-parse", "HEAD"]),
+        "the row's own premise: landing wrote a commit rather than leaving the base"
+    );
+    assert_eq!(
+        landed[0], landed[1],
+        "the mitigating capability commits through the same workspace as the other \
+         two, so the same bump over the same base is the same commit and the branch \
+         guard can recognise it: {landed:?}"
+    );
+    assert_eq!(
+        ask_git(
+            world.tree.path(),
+            &["log", "-1", "--format=%cI", &landed[0]]
+        ),
+        A_BASE_DATE,
+        "and it carries the date of the revision it was built on, so the equality \
+         above is a property of the tree and not of the second both landings fell in"
+    );
+    assert_eq!(
+        ask_git(
+            world.tree.path(),
+            &["log", "-1", "--format=%aI", &landed[0]]
+        ),
+        A_BASE_DATE,
+        "the author date is stamped the same way, because git derives the sha from \
+         both"
+    );
+}
+
 #[tokio::test]
 async fn every_external_mutation_passes_the_effect_executor() {
     let forge = Forge::empty();

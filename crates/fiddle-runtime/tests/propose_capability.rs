@@ -882,6 +882,73 @@ async fn the_published_commit_is_what_the_attempt_left_behind() {
     assert_eq!(fixture::changed_files(&world.fixture), Vec::<String>::new());
 }
 
+const A_BASE_DATE: &str = "2021-02-03T04:05:06+02:00";
+
+fn dated_base_commit(repo: &Path, date: &str) {
+    let status = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "the base, at a date no clock will read again",
+        ])
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
+        .current_dir(repo)
+        .status()
+        .expect("git runs");
+    assert!(status.success(), "the fixture takes a dated base commit");
+}
+
+#[tokio::test]
+async fn a_second_attempt_over_the_same_tree_publishes_the_commit_the_first_published() {
+    let world = World::fresh();
+    dated_base_commit(&world.fixture, A_BASE_DATE);
+    let (first_outcome, _, _) = run(&world, repairs(), the_projects_own_check()).await;
+    assert!(
+        matches!(first_outcome, Err(CapabilityError::AwaitingDecision { .. })),
+        "the row's own premise: the first attempt published and then waited"
+    );
+    let published = world.published_sha();
+
+    let (second_outcome, _, _) =
+        continue_in_a_process_that_can_attempt(&world, MockCompletionModel::new(repairs())).await;
+
+    assert!(
+        matches!(
+            second_outcome,
+            Err(CapabilityError::AwaitingDecision { .. })
+        ),
+        "the second attempt reached the decision step, so it passed the branch guard \
+         rather than stopping at it: {second_outcome:?}"
+    );
+    assert_eq!(
+        world.published_sha(),
+        published,
+        "and it rebuilt the same tree as the same commit, because this capability \
+         commits through the same workspace as the workflow capability does"
+    );
+    assert_eq!(
+        world.git_says(&world.remote, &["log", "-1", "--format=%cI", &published]),
+        A_BASE_DATE,
+        "the published commit carries the date of the revision it was built on, so \
+         the sha above is a property of the tree and not of the second the run \
+         happened to fall in"
+    );
+    assert_eq!(
+        world.git_says(&world.remote, &["log", "-1", "--format=%aI", &published]),
+        A_BASE_DATE,
+        "and the author date is stamped the same way, because git derives the sha \
+         from both"
+    );
+    assert_eq!(world.branches(), [world.branch()]);
+}
+
 #[tokio::test]
 async fn an_attempt_whose_check_failed_publishes_nothing_and_asks_nothing() {
     let world = World::fresh();

@@ -133,6 +133,14 @@ impl ToilJira {
             .revisions = vec![REVISION_SENT.to_string(), REVISION_MOVED.to_string()];
     }
 
+    pub fn settles_at_the_revision_it_moved_to(&self) {
+        self.held()
+            .ticket
+            .as_mut()
+            .expect("a ticket this site holds is what settles")
+            .revisions = vec![REVISION_MOVED.to_string()];
+    }
+
     pub fn holds_a_ticket_without_the_trigger_label(&self, key: &str) {
         self.holds_eligible_ticket(key);
         self.held()
@@ -482,6 +490,14 @@ impl ToilForge {
         support::git_says(&self.remote, &["rev-parse", branch])
     }
 
+    fn file_at(&self, commit: &str, path: &str) -> String {
+        support::git_says(&self.remote, &["show", &format!("{commit}:{path}")])
+    }
+
+    fn date_of(&self, commit: &str) -> String {
+        support::git_says(&self.remote, &["log", "-1", "--format=%cI%n%aI", commit])
+    }
+
     fn delete_branch(&self, branch: &str) {
         support::git(
             &self.remote,
@@ -492,12 +508,16 @@ impl ToilForge {
 
 pub struct ToilWorld {
     scenario: Scenario,
+    fixture: PathBuf,
     forge: ToilForge,
     jira: ToilJira,
     gateway: StubGateway,
 }
 
 const REPAIRED: &str = support::REPAIRED_FIXTURE;
+
+const REPAIRED_ANOTHER_WAY: &str =
+    "pub fn last_index(len: usize) -> usize {\n    len.saturating_sub(1)\n}\n";
 
 fn a_review_that_reads_a_change() -> support::Reply {
     support::accepted(support::reports(serde_json::json!({
@@ -508,11 +528,15 @@ fn a_review_that_reads_a_change() -> support::Reply {
 }
 
 fn an_accepted_change() -> Vec<support::Reply> {
+    an_accepted_change_writing(REPAIRED)
+}
+
+fn an_accepted_change_writing(contents: &str) -> Vec<support::Reply> {
     vec![
         a_review_that_reads_a_change(),
         support::accepted(support::calls(
             "write_file",
-            serde_json::json!({ "path": "src/lib.rs", "contents": REPAIRED }),
+            serde_json::json!({ "path": "src/lib.rs", "contents": contents }),
         )),
         support::accepted(support::reports(serde_json::json!({
             "changed_files": ["src/lib.rs"],
@@ -530,6 +554,23 @@ impl ToilWorld {
         ToilWorld::serving(
             an_accepted_change()
                 .into_iter()
+                .chain(an_accepted_change())
+                .collect(),
+        )
+    }
+
+    pub fn start_writing_something_else_the_second_time(second: &str) -> Self {
+        ToilWorld::serving(
+            an_accepted_change()
+                .into_iter()
+                .chain(an_accepted_change_writing(second))
+                .collect(),
+        )
+    }
+
+    pub fn start_paying_for_a_qualification_that_earns_nothing() -> Self {
+        ToilWorld::serving(
+            std::iter::once(a_review_that_reads_a_change())
                 .chain(an_accepted_change())
                 .collect(),
         )
@@ -563,6 +604,7 @@ impl ToilWorld {
             jira,
             gateway,
             scenario,
+            fixture: fixture.clone(),
         };
         let tables = world.tables(&fixture, &stub);
         world.scenario.append_config(&tables);
@@ -625,8 +667,49 @@ impl ToilWorld {
         &self.jira
     }
 
+    pub fn expected_marker(&self) -> String {
+        self.scenario.expected_marker(REFERENCE)
+    }
+
+    fn completion_record(&self) -> PathBuf {
+        self.scenario
+            .stub_root()
+            .join(format!("changes/{TICKET}.json"))
+    }
+
+    pub fn recorded_marker(&self) -> Option<String> {
+        self.scenario.read_change_marker(TICKET)
+    }
+
+    pub fn forgets_that_the_work_was_completed(&self) {
+        let path = self.completion_record();
+        std::fs::remove_file(&path)
+            .unwrap_or_else(|error| panic!("could not remove {} ({error})", path.display()));
+    }
+
     pub fn github(&self) -> &ToilForge {
         &self.forge
+    }
+
+    pub fn stamps_its_base_revision(&self, date: &str) {
+        let status = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@invalid",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "the base, at a date no clock will read again",
+            ])
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_DATE", date)
+            .current_dir(&self.fixture)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "the fixture takes a dated base commit");
     }
 
     pub fn run_toil(&self, invocation_ref: &str) -> std::process::Output {
@@ -738,6 +821,7 @@ fn an_eligible_ticket_produces_one_pull_request_and_one_jira_link() {
         payload["capability_executions"][0]["status"], "completed",
         "the capability ran to the end of the shipped document: {payload}"
     );
+    let expected = world.expected_marker();
     let marker = payload
         .pointer("/observations/changes/available/value/marker")
         .unwrap_or_else(|| {
@@ -746,16 +830,36 @@ fn an_eligible_ticket_produces_one_pull_request_and_one_jira_link() {
                  a marker field, which is the only input the assessment reads: {payload}"
             )
         });
-    assert!(
-        marker.is_null(),
-        "the shipped document writes no correlation marker into the change set: {payload}"
+    assert_eq!(
+        marker.as_str(),
+        Some(expected.as_str()),
+        "the shipped document writes the correlation marker this invocation is judged \
+         by, and writes that one and no other: {payload}"
+    );
+    assert_eq!(
+        world.recorded_marker().as_deref(),
+        Some(expected.as_str()),
+        "and the marker the run reports is the marker a later reader finds on disk, so \
+         the observation above is a file this run wrote and not a value it carried: {payload}"
     );
     assert_eq!(
         run.status.code(),
-        Some(11),
-        "so the post-execution assessment reads a null marker, finds the work not \
-         started, and the run honestly reports a retry; 12 would be a rejected \
+        Some(0),
+        "so the post-execution assessment reads the marker it expects, finds the work \
+         accounted for, and the run reports success; 11 would be a retry, 12 a rejected \
          evaluation and 20 a failure: {payload}"
+    );
+    assert_eq!(
+        payload["outcome"], "completed",
+        "and the outcome the bundle carries is the same verdict: {payload}"
+    );
+    assert_eq!(
+        payload
+            .pointer("/progress/0/summary")
+            .and_then(|s| s.as_str()),
+        Some(format!("wrote correlation marker {expected}").as_str()),
+        "and the summary names the marker the change set carries afterwards, rather \
+         than the one the run expected: {payload}"
     );
 
     assert_eq!(
@@ -831,24 +935,38 @@ fn a_second_run_over_the_same_ticket_adds_no_second_pull_request_and_no_second_l
         1,
         "the row's own premise: the first run linked it once: {first}"
     );
+    assert_eq!(
+        world.recorded_marker(),
+        Some(world.expected_marker()),
+        "and the row's own premise: the first run recorded that this invocation is \
+         accounted for: {first}"
+    );
     let branch = world.github().only_branch();
     let published = world.github().head_of(&branch);
     let writes_after_one = world.jira().writes().len();
-    let ref_reads_after_one = world.github().reads_naming("git/ref/heads");
 
-    let second = payload_of(&world.run_toil(REFERENCE));
+    let rerun = world.run_toil(REFERENCE);
+    let second = payload_of(&rerun);
 
     assert_eq!(
-        world.model_calls(),
-        8,
-        "the second run paid for its own review, write, report and evaluation, so \
-         everything below is a run that did the work again and not one that refused \
-         before starting: {second}"
+        second["capability_executions"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default(),
+        0,
+        "the second run read the marker the first run recorded, found the work \
+         accounted for, and never executed the document: {second}"
     );
-    assert!(
-        world.github().reads_naming("git/ref/heads") > ref_reads_after_one,
-        "and it asked the forge for the branch its own identity names, so what it \
-         did not write is a write it looked for: {second}"
+    assert_eq!(
+        second["next_action"], "complete",
+        "which is the action the assessment derived, and not a step that ran and \
+         stopped: {second}"
+    );
+    assert_eq!(
+        world.model_calls(),
+        5,
+        "so it paid for the eligibility review alone, and for no agent turn, no \
+         report and no evaluation: {second}"
     );
 
     assert_eq!(
@@ -881,19 +999,274 @@ fn a_second_run_over_the_same_ticket_adds_no_second_pull_request_and_no_second_l
         "and it left the branch the first run published where the first run left it, \
          so nothing was overwritten either: {second}"
     );
+    assert_eq!(
+        effects_of(&second),
+        Vec::<String>::new(),
+        "so the second run earned no effect receipt at all: {second}"
+    );
+    assert_eq!(
+        rerun.status.code(),
+        Some(0),
+        "and it reports the work as done rather than as a retry: {second}"
+    );
+}
 
+#[test]
+fn a_run_reported_retryable_reaches_a_terminal_state_when_it_is_retried() {
+    let world = ToilWorld::start_paying_for_a_qualification_that_earns_nothing();
+    world.jira().holds_eligible_ticket(TICKET);
+    world.jira().moves_after_it_is_qualified();
+
+    let stopped = world.run_toil(REFERENCE);
+    let first = payload_of(&stopped);
+    assert_eq!(
+        stopped.status.code(),
+        Some(11),
+        "the row's own premise: the ticket moved between the qualification and the \
+         first effect, so this run reports a retry: {first}"
+    );
+    let reason = first["outcome"]["retryable"]["reason"]
+        .as_str()
+        .unwrap_or_else(|| panic!("and it says what it wants retried: {first}"));
+    assert!(
+        reason.contains("qualified at revision") && reason.contains("now reads revision"),
+        "which is the recheck refusing, and it names both revisions it compared: {reason}"
+    );
+    assert_eq!(
+        world.recorded_marker(),
+        None,
+        "a run that reports a retry records no completion, so the retry below runs \
+         the document rather than reading a marker: {first}"
+    );
+    assert!(
+        world.github().pull_requests().is_empty() && world.github().branches().is_empty(),
+        "and it published nothing, so the retry starts from a world this run did not \
+         move: {first}"
+    );
+
+    world.jira().settles_at_the_revision_it_moved_to();
+    let retried = world.run_toil(REFERENCE);
+    let second = payload_of(&retried);
+
+    assert_eq!(
+        retried.status.code(),
+        Some(0),
+        "the retry reached a terminal state rather than reporting a retry again: {second}"
+    );
+    assert_eq!(
+        second["outcome"], "completed",
+        "and the terminal state it reached is completion: {second}"
+    );
+    assert_eq!(
+        second["capability_executions"][0]["status"], "completed",
+        "which it reached by running the document to its end: {second}"
+    );
+    assert_eq!(
+        world.model_calls(),
+        5,
+        "the first run paid for its qualification alone and the retry paid for a \
+         qualification, a write, a report and an evaluation, so the retry did the \
+         work rather than reading a record of it: {second}"
+    );
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "so the retry opened the pull request the first run never opened: {second}"
+    );
+    assert_eq!(
+        world.jira().links_for(TICKET).len(),
+        1,
+        "and linked it on the ticket once: {:?}",
+        world.jira().request_lines()
+    );
+    assert_eq!(
+        world.recorded_marker(),
+        Some(world.expected_marker()),
+        "and recorded the completion the next run would read: {second}"
+    );
+}
+
+const A_BASE_DATE: &str = "2021-02-03T04:05:06+02:00";
+
+#[test]
+fn a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_tail() {
+    let world = ToilWorld::start();
+    world.jira().holds_eligible_ticket(TICKET);
+    world.stamps_its_base_revision(A_BASE_DATE);
+
+    let first = payload_of(&world.run_toil(REFERENCE));
+    let branch = world.github().only_branch();
+    let published = world.github().head_of(&branch);
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "the row's own premise: the first run published a branch and opened one pull \
+         request on it: {first}"
+    );
+
+    world.forgets_that_the_work_was_completed();
+    assert_eq!(
+        world.recorded_marker(),
+        None,
+        "and the row's second premise: no completion is recorded, which is the world a \
+         run that published a branch and then reported a retry leaves behind"
+    );
+    let ref_reads_after_one = world.github().reads_naming("git/ref/heads");
+
+    let retried = world.run_toil(REFERENCE);
+    let second = payload_of(&retried);
+
+    assert!(
+        world.github().reads_naming("git/ref/heads") > ref_reads_after_one,
+        "the retry asked the forge for the branch its own identity names, so what \
+         follows is a step that looked at the prior work: {second}"
+    );
+    assert_eq!(
+        world.model_calls(),
+        8,
+        "and it paid for its own review, write, report and evaluation, so it is a run \
+         that did the work again and not one that refused before starting: {second}"
+    );
+
+    assert_eq!(
+        retried.status.code(),
+        Some(0),
+        "the retry reached a terminal state over the branch the first run left \
+         standing: {second}"
+    );
+    assert_eq!(
+        second["outcome"], "completed",
+        "and the terminal state it reached is completion: {second}"
+    );
+    assert_eq!(
+        effects_of(&second)
+            .iter()
+            .map(|line| line.split(':').nth(1).unwrap_or_default().to_string())
+            .collect::<Vec<String>>(),
+        vec![BRANCH_EFFECT, PULL_REQUEST_EFFECT, LINK_EFFECT],
+        "so it reached the pull request and the link rather than stopping at the \
+         branch step: {second}"
+    );
+    assert_eq!(
+        external_ref_of(&effect_named(&second, BRANCH_EFFECT)),
+        published,
+        "the retry rebuilt the same tree and named the same commit, because the commit \
+         dates are stamped from the base revision rather than from the wall clock: \
+         {second}"
+    );
+    assert_eq!(
+        world.github().head_of(&branch),
+        published,
+        "and the branch still points there, so nothing was forced over it: {second}"
+    );
+    assert_eq!(
+        world.github().date_of(&format!("{published}^")),
+        format!("{A_BASE_DATE}\n{A_BASE_DATE}"),
+        "the row's own premise: the revision the workspace was cut at carries a date \
+         in 2021, which no wall clock in this run will read"
+    );
+    assert_eq!(
+        world.github().date_of(&published),
+        format!("{A_BASE_DATE}\n{A_BASE_DATE}"),
+        "and the commit the run published carries that same 2021 committer and author \
+         date rather than the second the run fell in, which is why the two runs agree \
+         on a sha at all; a clock-dated commit cannot match this by coincidence"
+    );
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "no second pull request was created: {second}"
+    );
+    assert_eq!(
+        world.jira().links_for(TICKET).len(),
+        1,
+        "and no second link comment reached the ticket: {:?}",
+        world.jira().request_lines()
+    );
+    assert_eq!(
+        world.recorded_marker(),
+        Some(world.expected_marker()),
+        "and the retry recorded the completion the next run would read, so a third \
+         run stops on the marker rather than on the branch: {second}"
+    );
+}
+
+#[test]
+fn a_rerun_whose_tree_changed_publishes_the_commit_that_tree_makes() {
+    let world = ToilWorld::start_writing_something_else_the_second_time(REPAIRED_ANOTHER_WAY);
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let first = payload_of(&world.run_toil(REFERENCE));
+    let branch = world.github().only_branch();
+    let published = world.github().head_of(&branch);
+    assert_eq!(
+        external_ref_of(&effect_named(&first, BRANCH_EFFECT)),
+        published,
+        "the row's own premise: the first run published the commit it built: {first}"
+    );
+
+    world.github().delete_branch(&branch);
+    world.forgets_that_the_work_was_completed();
+
+    let rerun = world.run_toil(REFERENCE);
+    let second = payload_of(&rerun);
+
+    assert_eq!(
+        rerun.status.code(),
+        Some(0),
+        "the second run reached a terminal state: {second}"
+    );
+    let republished = world.github().head_of(&branch);
+    assert_ne!(
+        republished, published,
+        "and it published a different commit, because its tree is a different tree; a \
+         stamp that froze the sha for every tree would fail here: {second}"
+    );
+    assert_eq!(
+        external_ref_of(&effect_named(&second, BRANCH_EFFECT)),
+        republished,
+        "the branch step names the commit the forge now holds: {second}"
+    );
+    assert_eq!(
+        world.github().file_at(&republished, "src/lib.rs"),
+        REPAIRED_ANOTHER_WAY.trim_end(),
+        "and that commit carries the second write rather than the first: {second}"
+    );
+}
+
+#[test]
+fn a_rerun_whose_tree_changed_is_not_forced_over_the_branch_the_first_run_published() {
+    let world = ToilWorld::start_writing_something_else_the_second_time(REPAIRED_ANOTHER_WAY);
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let first = payload_of(&world.run_toil(REFERENCE));
+    let branch = world.github().only_branch();
+    let published = world.github().head_of(&branch);
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "the row's own premise: the first run published a branch and opened one pull \
+         request on it: {first}"
+    );
+
+    world.forgets_that_the_work_was_completed();
+
+    let rerun = world.run_toil(REFERENCE);
+    let second = payload_of(&rerun);
+
+    assert_eq!(
+        rerun.status.code(),
+        Some(11),
+        "the second run built a tree the branch does not carry, so the guard refused \
+         it rather than overwriting work it does not recognise: {second}"
+    );
     let stopped = second["outcome"]["retryable"]["reason"]
         .as_str()
-        .unwrap_or_else(|| {
-            panic!(
-                "the second run over one ticket is a retry, and this build reports \
-                 where it stopped: {second}"
-            )
-        });
+        .unwrap_or_else(|| panic!("and this build reports where it stopped: {second}"));
     assert!(
         stopped.contains(BRANCH_EFFECT) && stopped.contains(&branch),
         "it stopped at the branch step, and the step names the branch the first run \
-         published, which is the prior work it found: {stopped}"
+         published: {stopped}"
     );
     assert!(
         stopped.contains("not an ancestor") && stopped.contains("not forced"),
@@ -906,9 +1279,26 @@ fn a_second_run_over_the_same_ticket_adds_no_second_pull_request_and_no_second_l
          reached, and neither was written a second time: {stopped}"
     );
     assert_eq!(
-        effects_of(&second),
-        Vec::<String>::new(),
-        "so the second run earned no effect receipt at all: {second}"
+        world.github().head_of(&branch),
+        published,
+        "and the branch still points where the first run left it: {second}"
+    );
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "no second pull request was created: {second}"
+    );
+    assert_eq!(
+        world.jira().links_for(TICKET).len(),
+        1,
+        "and no second link comment reached the ticket: {:?}",
+        world.jira().request_lines()
+    );
+    assert_eq!(
+        world.recorded_marker(),
+        None,
+        "so this run recorded no completion, which is what a run that reached no \
+         terminal state must leave behind: {second}"
     );
 }
 
@@ -1008,6 +1398,14 @@ fn a_rerun_whose_branch_is_gone_finds_its_own_pull_request_and_its_own_link() {
         world.github().branches().is_empty(),
         "the row's own premise: the branch the first run published is gone, so the \
          second run publishes a branch rather than refusing to overwrite one"
+    );
+    world.forgets_that_the_work_was_completed();
+    assert_eq!(
+        world.recorded_marker(),
+        None,
+        "and the row's second premise: the completion the first run recorded is gone \
+         too, so the second run works the ticket again rather than reading a marker \
+         and stopping"
     );
 
     let second = payload_of(&world.run_toil(REFERENCE));
