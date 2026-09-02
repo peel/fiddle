@@ -170,7 +170,7 @@ impl ToilJira {
         self.held().reads_refused_with = Some(status);
     }
 
-    fn issue_reads(&self) -> usize {
+    fn issue_read_requests(&self) -> usize {
         self.request_lines()
             .iter()
             .filter(|line| line.starts_with("GET ") && line.contains(&format!("/issue/{TICKET}")))
@@ -1826,7 +1826,7 @@ fn a_tracker_that_cannot_be_read_exits_on_the_obstacle_row_and_a_malformed_refer
     let obstructed_stderr = String::from_utf8_lossy(&obstructed.stderr).to_string();
 
     assert!(
-        unreadable.jira().issue_reads() > 0,
+        unreadable.jira().issue_read_requests() > 0,
         "the run has to have asked the tracker for the ticket, or this exit code is one \
          it reached without ever meeting the obstacle: {:?}",
         unreadable.jira().request_lines()
@@ -1865,7 +1865,7 @@ fn a_tracker_that_cannot_be_read_exits_on_the_obstacle_row_and_a_malformed_refer
     let rejected_stderr = String::from_utf8_lossy(&rejected.stderr).to_string();
 
     assert_eq!(
-        malformed.jira().issue_reads(),
+        malformed.jira().issue_read_requests(),
         0,
         "a reference this build cannot parse reaches no tracker, which is what makes it \
          a different failure from the one above: {:?}",
@@ -1902,7 +1902,7 @@ fn the_same_tracker_read_that_refuses_succeeds_when_the_site_answers() {
          rather than about the read: {stderr}"
     );
     assert!(
-        answering.jira().issue_reads() > 0,
+        answering.jira().issue_read_requests() > 0,
         "and it read the ticket over the same route the refusing site refused: {:?}",
         answering.jira().request_lines()
     );
