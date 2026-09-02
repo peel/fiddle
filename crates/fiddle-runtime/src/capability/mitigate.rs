@@ -298,11 +298,11 @@ where
             .findings
             .apply(projection.all().cloned().collect());
 
-        let mut said = self.conversation(&approved).await;
-        said.extend(self.conversation(&unproved).await);
-        let (mut asked, reviewed) = self.reviews(&approved).await;
+        let mut said = self.conversation(&approved).await?;
+        said.extend(self.conversation(&unproved).await?);
+        let (mut asked, reviewed) = self.reviews(&approved).await?;
         said.extend(reviewed);
-        let (also_asked, also_reviewed) = self.reviews(&unproved).await;
+        let (also_asked, also_reviewed) = self.reviews(&unproved).await?;
         asked.extend(also_asked);
         said.extend(also_reviewed);
 
@@ -558,13 +558,17 @@ where
         }
     }
 
-    async fn reviews(&self, approved: &Approved) -> (Vec<ChangesRequested>, Vec<HumanSaid>) {
+    pub async fn reviews(
+        &self,
+        approved: &Approved,
+    ) -> Result<(Vec<ChangesRequested>, Vec<HumanSaid>), CapabilityError> {
         let Some(number) = approved.reused() else {
-            return (Vec::new(), Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         };
         let head = approved.pr_head().unwrap_or_default().to_string();
-        let Ok(gh) = self.context.gh_client() else {
-            return (Vec::new(), Vec::new());
+        let gh = match self.context.gh_client() {
+            Ok(gh) => gh,
+            Err(absent) => return Err(CapabilityError::Forge(absent)),
         };
         let read = crate::github::read_reviews(
             gh,
@@ -575,7 +579,7 @@ where
         )
         .await;
         let Ok(reviews) = read else {
-            return (Vec::new(), Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         };
         let spoken: Vec<_> = reviews
             .into_iter()
@@ -606,15 +610,19 @@ where
                 entitled: crate::capability::entitled(&it.author_association),
             })
             .collect();
-        (asked, said)
+        Ok((asked, said))
     }
 
-    async fn conversation(&self, approved: &Approved) -> Vec<HumanSaid> {
+    pub async fn conversation(
+        &self,
+        approved: &Approved,
+    ) -> Result<Vec<HumanSaid>, CapabilityError> {
         let Some(number) = approved.reused() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        let Ok(gh) = self.context.gh_client() else {
-            return Vec::new();
+        let gh = match self.context.gh_client() {
+            Ok(gh) => gh,
+            Err(absent) => return Err(CapabilityError::Forge(absent)),
         };
         let read = crate::github::read_conversation(
             gh,
@@ -625,7 +633,7 @@ where
         )
         .await;
         match read {
-            Ok(conversation) => conversation
+            Ok(conversation) => Ok(conversation
                 .into_iter()
                 .filter(|it| !it.is_bot)
                 .map(|it| HumanSaid {
@@ -633,8 +641,8 @@ where
                     entitled: crate::capability::entitled(&it.author_association),
                     body: it.body,
                 })
-                .collect(),
-            Err(_) => Vec::new(),
+                .collect()),
+            Err(_) => Ok(Vec::new()),
         }
     }
 

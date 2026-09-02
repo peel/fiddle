@@ -74,6 +74,7 @@ struct Recorded {
     comments: Vec<Posted>,
     issue_reads: usize,
     comments_refused: bool,
+    reads_refused_with: Option<u16>,
 }
 
 pub struct ToilJira {
@@ -91,6 +92,7 @@ impl ToilJira {
             comments: Vec::new(),
             issue_reads: 0,
             comments_refused: false,
+            reads_refused_with: None,
         }));
         let serving = Arc::clone(&state);
         std::thread::spawn(move || {
@@ -161,6 +163,18 @@ impl ToilJira {
 
     pub fn refuses_every_comment(&self) {
         self.held().comments_refused = true;
+    }
+
+    pub fn answers_every_read_with(&self, status: u16, key: &str) {
+        self.holds_eligible_ticket(key);
+        self.held().reads_refused_with = Some(status);
+    }
+
+    fn issue_read_requests(&self) -> usize {
+        self.request_lines()
+            .iter()
+            .filter(|line| line.starts_with("GET ") && line.contains(&format!("/issue/{TICKET}")))
+            .count()
     }
 
     pub fn last_comment_on(&self, key: &str) -> Option<String> {
@@ -271,6 +285,10 @@ fn routed(line: &str, sent: &str, held: &mut Recorded) -> (u16, String) {
     let read = format!("/rest/api/3/issue/{TICKET}");
     let write = format!("/rest/api/3/issue/{TICKET}/comment");
     match (method, path) {
+        ("GET", path) if path == read && held.reads_refused_with.is_some() => {
+            let status = held.reads_refused_with.unwrap_or_default();
+            (status, site_unreachable(status))
+        }
         ("GET", path) if path == read => {
             let asked = asked_for(target);
             let comments = std::mem::take(&mut held.comments);
@@ -303,6 +321,14 @@ fn routed(line: &str, sent: &str, held: &mut Recorded) -> (u16, String) {
         }
         _ => (404, unrouted()),
     }
+}
+
+fn site_unreachable(status: u16) -> String {
+    serde_json::json!({
+        "errorMessages": [format!("the site is not serving reads right now ({status})")],
+        "errors": {},
+    })
+    .to_string()
 }
 
 fn comment_refused() -> String {
@@ -1778,5 +1804,106 @@ fn a_second_run_over_one_ineligible_ticket_adds_no_second_refusal() {
         second.status.code(),
         Some(2),
         "and it refused the ticket a second time: {stderr}"
+    );
+}
+
+const UNREADABLE_STATUS: u16 = 503;
+
+const A_MALFORMED_REFERENCE: &str = "jira:";
+
+const AN_OBSTACLE_EXIT: i32 = 11;
+
+const AN_INVALID_INPUT_EXIT: i32 = 2;
+
+#[test]
+fn a_tracker_that_cannot_be_read_exits_on_the_obstacle_row_and_a_malformed_reference_does_not() {
+    let unreadable = ToilWorld::start();
+    unreadable
+        .jira()
+        .answers_every_read_with(UNREADABLE_STATUS, TICKET);
+
+    let obstructed = unreadable.run_toil(REFERENCE);
+    let obstructed_stderr = String::from_utf8_lossy(&obstructed.stderr).to_string();
+
+    assert!(
+        unreadable.jira().issue_read_requests() > 0,
+        "the run has to have asked the tracker for the ticket, or this exit code is one \
+         it reached without ever meeting the obstacle: {:?}",
+        unreadable.jira().request_lines()
+    );
+    assert_eq!(
+        obstructed.status.code(),
+        Some(AN_OBSTACLE_EXIT),
+        "a tracker that answers {UNREADABLE_STATUS} is an obstacle in front of the \
+         request, and an orchestrator reads exit {AN_OBSTACLE_EXIT} as one it may send \
+         again: {obstructed_stderr}"
+    );
+    assert!(
+        obstructed_stderr.contains(TICKET),
+        "and the operator is told which ticket could not be read: {obstructed_stderr}"
+    );
+    assert!(
+        obstructed_stderr.contains("could not be read"),
+        "and that reading it is what failed: {obstructed_stderr}"
+    );
+    assert!(
+        obstructed_stderr.contains(&UNREADABLE_STATUS.to_string()),
+        "and the status the site answered, so the reason is the tracker's own and not a \
+         guess: {obstructed_stderr}"
+    );
+    assert_eq!(
+        unreadable.model_calls(),
+        0,
+        "the gate stopped at the unread ticket, so no model was paid to qualify \
+         nothing: {obstructed_stderr}"
+    );
+
+    let malformed = ToilWorld::start();
+    malformed.jira().holds_eligible_ticket(TICKET);
+
+    let rejected = malformed.run_toil(A_MALFORMED_REFERENCE);
+    let rejected_stderr = String::from_utf8_lossy(&rejected.stderr).to_string();
+
+    assert_eq!(
+        malformed.jira().issue_read_requests(),
+        0,
+        "a reference this build cannot parse reaches no tracker, which is what makes it \
+         a different failure from the one above: {:?}",
+        malformed.jira().request_lines()
+    );
+    assert_eq!(
+        rejected.status.code(),
+        Some(AN_INVALID_INPUT_EXIT),
+        "and `{A_MALFORMED_REFERENCE}` is invalid input before a run begins, which no \
+         retry corrects: {rejected_stderr}"
+    );
+    assert_ne!(
+        obstructed.status.code(),
+        rejected.status.code(),
+        "the two must not share an exit code, or an orchestrator retrying the transient \
+         one also retries the malformed one and an orchestrator abandoning the malformed \
+         one also abandons the transient one"
+    );
+}
+
+#[test]
+fn the_same_tracker_read_that_refuses_succeeds_when_the_site_answers() {
+    let answering = ToilWorld::start();
+    answering.jira().holds_eligible_ticket(TICKET);
+
+    let ran = answering.run_toil(REFERENCE);
+    let stderr = String::from_utf8_lossy(&ran.stderr).to_string();
+
+    assert_eq!(
+        ran.status.code(),
+        Some(0),
+        "this world differs from the unreadable one only in what the tracker answers, so \
+         a run that fails here would make the exit 11 above a fact about the harness \
+         rather than about the read: {stderr}"
+    );
+    assert!(
+        answering.jira().issue_read_requests() > 0,
+        "and it read the ticket over the same route the refusing site refused: {:?}",
+        answering.jira().request_lines()
     );
 }

@@ -1,7 +1,7 @@
 # 084 — A deployment may hold a tracker and no forge
 
 Status: accepted
-Cites: EffectContext, GhCli, GitCli, JiraHttp, GhError, GitError, JiraError, Executor, AuthorizedEffect, EffectReceipt, AdapterError, EffectOutcome, Recurrence, CapabilityError, DeploymentPolicy, PolicyTable, AddComment, publish_refusal, tracker_client, qualifies_a_ticket, crates/fiddle-runtime/src/effect/mod.rs, crates/fiddle-cli/src/main.rs, crates/fiddle-runtime/tests/jira_effect_credential.rs, crates/fiddle-acceptance/tests/toil.rs, a_tracker_only_deployment_comments_through_the_executor_and_reaches_no_forge, a_refused_ticket_is_told_why_on_its_own_issue, a_deployment_that_denies_the_comment_effect_publishes_nothing_and_still_refuses, a_site_that_refuses_the_comment_still_refuses_the_ticket
+Cites: EffectContext, GhCli, GitCli, JiraHttp, GhError, GitError, JiraError, Executor, AuthorizedEffect, EffectReceipt, AdapterError, EffectOutcome, Recurrence, CapabilityError, DeploymentPolicy, PolicyTable, AddComment, publish_refusal, tracker_client, qualifies_a_ticket, crates/fiddle-runtime/src/effect/mod.rs, crates/fiddle-cli/src/main.rs, crates/fiddle-runtime/tests/jira_effect_credential.rs, crates/fiddle-acceptance/tests/toil.rs, a_tracker_only_deployment_comments_through_the_executor_and_reaches_no_forge, a_refused_ticket_is_told_why_on_its_own_issue, a_deployment_that_denies_the_comment_effect_publishes_nothing_and_still_refuses, a_site_that_refuses_the_comment_still_refuses_the_ticket, CveMitigate, crates/fiddle-runtime/src/capability/mitigate.rs, crates/fiddle-runtime/tests/cve_direction_absent.rs, a_deployment_with_no_forge_refuses_the_direction_it_cannot_read, a_forge_that_answers_nothing_is_not_a_forge_that_is_absent
 
 ## Context
 
@@ -40,5 +40,34 @@ STILL NOT REACHED: no tracker-only deployment has written to a real Jira site. E
 **No type says which clients an effect needs.** ARGUED, read off the source at `77b82f6`: `EnsurePullRequest` asks for a forge client at the moment it runs, and nothing before that moment refuses a deployment that names a forge effect and holds no forge. The refusal is late and it is clear, but it is a runtime error rather than a load-time one. This is the same shape ADR 075 records for effect names, and it is closed by review.
 
 **The policy table a tracker-only deployment needs lives under `[github]`.** ARGUED, read off the source at `77b82f6`: `qualified` in `crates/fiddle-cli/src/main.rs` falls back to `config::PolicyTable::default()` when no `[github]` table exists, so such a deployment cannot strengthen the minimum on the one effect it performs. `fiddle-xhgd` carries that.
+
+**An accessor that refuses is only worth what its callers do with the refusal.** The
+decision above binds the three accessors. It does not bind a caller that catches the
+refusal and answers anyway. Two callers in `CveMitigate` did exactly that until
+`fiddle-lakx`: `reviews` and `conversation` read `gh_client` and, on an absent forge,
+returned empty vectors. An absent forge and a forge holding no review read the same.
+Both now return `CapabilityError::Forge(GhError::Unconfigured)`, and `sweep`
+propagates it.
+
+MEASURED: `crates/fiddle-runtime/tests/cve_direction_absent.rs`.
+`a_deployment_with_no_forge_refuses_the_direction_it_cannot_read` builds the context
+with `EffectContext::tracking` and requires both arms to refuse in the words
+`GhError::Unconfigured` uses.
+`a_forge_that_answers_nothing_is_not_a_forge_that_is_absent` gives the same two arms a
+forge stub that answers `[]` on both routes, requires them to answer, and requires the
+tracker-only run beside it to refuse, so the two worlds cannot be read as one.
+`the_same_routes_carry_direction_when_the_forge_holds_some` seeds one review and one
+comment over the same routes, so the empty answer is an empty forge and not a route the
+stub cannot serve.
+
+ARGUED, read off the source: no run path reaches either arm with an absent forge today,
+because `sweep` calls `gh_client()?` twice before it plans anything. The two arms were
+latent and the tests reach them directly.
+
+**A read that fails is still folded into an empty answer.** ARGUED, read off the source:
+`reviews` and `conversation` still map a `read_reviews` or `read_conversation` error to
+`Ok(Vec::new())`. That is the same absent-versus-empty confusion one level out, and it
+is not what `fiddle-lakx` was scoped to, because changing it makes a transient forge
+error end a whole sweep. `docs/BACKLOG.md` carries it.
 
 **An effect performed outside a run has nowhere to file its receipt.** ARGUED, read off the source at `77b82f6`: the eligibility gate runs before any bundle exists, so the `EvidenceRef` for the refusal comment lands in no report and the attempt trace at that moment has no journal behind it. The effect id is printed on the operator's line instead, which is durable in captured output and in nothing else. Every other effect this system performs leaves a receipt in a bundle. `fiddle-7jo5` carries that, and it is a consequence of this decision rather than of the refusal path.

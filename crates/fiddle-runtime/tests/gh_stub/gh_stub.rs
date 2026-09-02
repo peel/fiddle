@@ -692,6 +692,9 @@ fn comment_answer(dir: &Path, path: &str) -> Option<(u16, String, String)> {
         ["repos", _, _, "issues", "comments", id] => Some(comment_by_id(dir, id)),
         ["repos", _, _, "issues", _, "comments"] => Some(comment_page(dir, "issue-comments", path)),
         ["repos", _, _, "pulls", _, "comments"] => Some(comment_page(dir, "review-comments", path)),
+        ["repos", _, _, "pulls", _, "reviews"] if dir.join("reviews").is_dir() => {
+            Some(comment_page(dir, "reviews", path))
+        }
         _ => None,
     }
 }

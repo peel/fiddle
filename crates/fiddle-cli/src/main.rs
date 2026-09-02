@@ -35,6 +35,8 @@ use tokio_util::sync::CancellationToken;
 
 const EXIT_INVALID_INPUT: u8 = 2;
 
+const EXIT_RETRYABLE: u8 = 11;
+
 const EXIT_INTERRUPTED: i32 = 130;
 
 #[tokio::main]
@@ -495,9 +497,10 @@ fn exit_code_for(termination: &Termination) -> u8 {
     match termination {
         Termination::Ran(RunOutcome::Completed) => 0,
         Termination::Ran(RunOutcome::Suspended { .. }) => 10,
-        Termination::Ran(RunOutcome::Retryable { .. }) => 11,
+        Termination::Ran(RunOutcome::Retryable { .. }) => EXIT_RETRYABLE,
         Termination::Ran(RunOutcome::Rejected { .. }) => 12,
         Termination::Ran(RunOutcome::Failed { .. }) => 20,
+        Termination::Rejected(CliError::TicketUnread(_)) => EXIT_RETRYABLE,
         Termination::Rejected(
             CliError::Config(ConfigError::NotFound(_) | ConfigError::Invalid(_))
             | CliError::InvocationRef(_)
@@ -512,8 +515,7 @@ fn exit_code_for(termination: &Termination) -> u8 {
             | CliError::TranscriptSwitch(_)
             | CliError::WorkflowDocument(_)
             | CliError::WorkflowUnrunnable(_)
-            | CliError::Ineligible(_)
-            | CliError::TicketUnread(_),
+            | CliError::Ineligible(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -640,8 +642,9 @@ impl Ineligible {
 #[diagnostic(
     code(fiddle::toil::ticket_unread),
     help(
-        "a ticket this build cannot read is a ticket it cannot qualify; read the \
-          reason above and run it again"
+        "a ticket this build cannot read is a ticket it cannot qualify; the reference \
+          parsed and the obstacle is in front of the request, so the same command can \
+          be sent again"
     )
 )]
 struct TicketUnread {
@@ -1738,6 +1741,49 @@ mod tests {
             ))),
             EXIT_INVALID_INPUT,
             "a form this build cannot act on is invalid input, not a run that failed"
+        );
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(CliError::TicketUnread(
+                TicketUnread {
+                    work_item: "ISP-42".into(),
+                    reason: "the site could not be reached: HTTP 503".into(),
+                }
+            ))),
+            EXIT_RETRYABLE,
+            "a tracker this build could not read is an obstacle in front of the \
+             request, not a request it could not parse"
+        );
+    }
+
+    #[test]
+    fn a_ticket_that_could_not_be_read_and_a_reference_that_could_not_be_parsed_exit_apart() {
+        let unread = Termination::Rejected(CliError::TicketUnread(TicketUnread {
+            work_item: "ISP-42".into(),
+            reason: "the site could not be reached: HTTP 503".into(),
+        }));
+        let unparsed = Termination::Rejected(CliError::InvocationRef(InvalidInvocationRef(
+            InvocationRefError::EmptyValue { scheme: None },
+        )));
+
+        assert_eq!(
+            exit_code_for(&unread),
+            EXIT_RETRYABLE,
+            "exit {EXIT_RETRYABLE} is the row for an obstacle in front of the request, \
+             which is what a tracker that timed out, refused a credential or answered \
+             5xx is"
+        );
+        assert_eq!(
+            exit_code_for(&unparsed),
+            EXIT_INVALID_INPUT,
+            "and exit {EXIT_INVALID_INPUT} is the row for input this build could not \
+             use, which no retry corrects"
+        );
+        assert_ne!(
+            exit_code_for(&unread),
+            exit_code_for(&unparsed),
+            "a caller that retries reads both codes, so the two must not be one code; \
+             this assertion reds if `TicketUnread` is moved back beside the invalid \
+             input arm"
         );
     }
 
