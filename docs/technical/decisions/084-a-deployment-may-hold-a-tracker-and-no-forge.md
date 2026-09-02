@@ -11,17 +11,21 @@ ADR 083 made that a problem. The toil eligibility gate refuses an ineligible tic
 
 This is a decision about the effect executor and not about toil. It is recorded separately for that reason.
 
+This record grades each claim as ADR 083 does. MEASURED means a test in this repository observes the behaviour. ARGUED means the claim is read off the source and no test fails if it is wrong. STILL NOT REACHED means no run has done the thing.
+
+ARGUED, read off the history at `a5ca6f6` and the source at `77b82f6`: the two context paragraphs above, which state the shape `EffectContext` held and what that shape prevented.
+
 ## Decision
 
 **All three clients are optional, and an absent one is an adapter error.**
 
-`EffectContext` now holds `gh: Option<GhCli>`, `git: Option<GitCli>` and `jira: Option<JiraHttp>`. Three accessors replace the field reads: `gh_client`, `git_client` and `jira_client`. Each answers the client or the adapter's own `Unconfigured` error, whose text names the table the deployment did not write.
+ARGUED, read off the source at `77b82f6`: `EffectContext` now holds `gh: Option<GhCli>`, `git: Option<GitCli>` and `jira: Option<JiraHttp>`. Three accessors replace the field reads: `gh_client`, `git_client` and `jira_client`. Each answers the client or the adapter's own `Unconfigured` error, whose text names the table the deployment did not write.
 
-`EffectContext::new` still takes a forge and a local git, so a forge deployment is constructed exactly as before. `EffectContext::tracking` is the new constructor and takes a `JiraHttp` alone.
+ARGUED, read off the source at `77b82f6`: `EffectContext::new` still takes a forge and a local git, so a forge deployment is constructed exactly as before. `EffectContext::tracking` is the new constructor and takes a `JiraHttp` alone.
 
 **An absent client is permanent, not correctable.**
 
-`GhError::Unconfigured` and `GitError::Unconfigured` classify `EffectOutcome::NotCommitted` in both phases, because no request was sent. `CapabilityError::recurrence` maps both to `Recurrence::Permanent`: a missing table is a fact about the deployment document, and running the same command again cannot change it. `JiraError::Unconfigured` already worked this way. ADR 076 records the rule these three follow: the executor takes the outcome the adapter names, and an unclassified failure is `Unknown` rather than `NotCommitted`.
+ARGUED, read off the source at `77b82f6`: `GhError::Unconfigured` and `GitError::Unconfigured` classify `EffectOutcome::NotCommitted` in both phases, because no request was sent. `CapabilityError::recurrence` maps both to `Recurrence::Permanent`: a missing table is a fact about the deployment document, and running the same command again cannot change it. `JiraError::Unconfigured` already worked this way. ADR 076 records the rule these three follow: the executor takes the outcome the adapter names, and an unclassified failure is `Unknown` rather than `NotCommitted`.
 
 **A tracker-only write keeps the whole protocol.**
 
@@ -33,8 +37,8 @@ STILL NOT REACHED: no tracker-only deployment has written to a real Jira site. E
 
 ## Consequences
 
-**No type says which clients an effect needs.** `EnsurePullRequest` asks for a forge client at the moment it runs, and nothing before that moment refuses a deployment that names a forge effect and holds no forge. The refusal is late and it is clear, but it is a runtime error rather than a load-time one. This is the same shape ADR 075 records for effect names, and it is closed by review.
+**No type says which clients an effect needs.** ARGUED, read off the source at `77b82f6`: `EnsurePullRequest` asks for a forge client at the moment it runs, and nothing before that moment refuses a deployment that names a forge effect and holds no forge. The refusal is late and it is clear, but it is a runtime error rather than a load-time one. This is the same shape ADR 075 records for effect names, and it is closed by review.
 
-**The policy table a tracker-only deployment needs lives under `[github]`.** `qualified` in `crates/fiddle-cli/src/main.rs` falls back to `config::PolicyTable::default()` when no `[github]` table exists, so such a deployment cannot strengthen the minimum on the one effect it performs. `fiddle-xhgd` carries that.
+**The policy table a tracker-only deployment needs lives under `[github]`.** ARGUED, read off the source at `77b82f6`: `qualified` in `crates/fiddle-cli/src/main.rs` falls back to `config::PolicyTable::default()` when no `[github]` table exists, so such a deployment cannot strengthen the minimum on the one effect it performs. `fiddle-xhgd` carries that.
 
-**An effect performed outside a run has nowhere to file its receipt.** The eligibility gate runs before any bundle exists, so the `EvidenceRef` for the refusal comment lands in no report and the attempt trace at that moment has no journal behind it. The effect id is printed on the operator's line instead, which is durable in captured output and in nothing else. Every other effect this system performs leaves a receipt in a bundle. `fiddle-7jo5` carries that, and it is a consequence of this decision rather than of the refusal path.
+**An effect performed outside a run has nowhere to file its receipt.** ARGUED, read off the source at `77b82f6`: the eligibility gate runs before any bundle exists, so the `EvidenceRef` for the refusal comment lands in no report and the attempt trace at that moment has no journal behind it. The effect id is printed on the operator's line instead, which is durable in captured output and in nothing else. Every other effect this system performs leaves a receipt in a bundle. `fiddle-7jo5` carries that, and it is a consequence of this decision rather than of the refusal path.
