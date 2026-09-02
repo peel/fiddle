@@ -4,9 +4,9 @@ stage = "toil"
 
 # The eligible path of the toil implementer, RFC requirement 21.
 #
-# Eligibility is decided before this document is loaded. A run that reaches
-# these steps has already been qualified, so nothing here decides whether the
-# run should have started.
+# The gate runs in Rust after `selected_workflow` loads the document and before
+# the workflow runs. A run that reaches these steps has already been qualified,
+# so nothing here decides whether the run should have started.
 
 # quickfix_change. The agent makes the bounded change the ticket asked for and
 # runs the check this project declares, through the `run_check` tool.
