@@ -26,7 +26,7 @@ pub enum JiraError {
     #[error("the site could not be reached: {0}")]
     Unreachable(String),
 
-    #[error("this deployment holds no `[jira]` configuration, so no request was sent")]
+    #[error("no jira client is attached to this run's effect context, so no request was sent")]
     Unconfigured,
 
     #[error("{count} objects carry the marker `{marker}`, and this write acts on one or none")]
@@ -242,7 +242,7 @@ mod tests {
             ),
             (
                 JiraError::Unconfigured,
-                "this deployment holds no `[jira]` configuration, so no request was sent",
+                "no jira client is attached to this run's effect context, so no request was sent",
             ),
             (
                 JiraError::Ambiguous {

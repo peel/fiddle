@@ -2288,7 +2288,7 @@ fn a_context_built_from_four_arguments_holds_no_jira_client_and_refuses_in_these
         .expect("a context holding no client hands one to nobody");
     assert_eq!(
         format!("{refused}"),
-        "this deployment holds no `[jira]` configuration, so no request was sent",
+        "no jira client is attached to this run's effect context, so no request was sent",
         "every later jira operation reports this refusal, so its words are fixed here"
     );
     assert_eq!(

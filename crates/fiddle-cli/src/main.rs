@@ -17,6 +17,7 @@ use fiddle_runtime::effect::{
     StepParams,
 };
 use fiddle_runtime::human::interpret::InterpretationBounds;
+use fiddle_runtime::human::DecisionChannel;
 use fiddle_runtime::jira::{AddComment, MarkedComment};
 use fiddle_runtime::ports::{ChangePort, WorkItemPort};
 use fiddle_runtime::toil::{Eligible, Refusal, Source, TicketFacts};
@@ -552,13 +553,11 @@ fn jira_http(jira: &config::Jira, config_path: &Path) -> Result<JiraHttp, CliErr
 fn tracker_client(
     config: &config::Config,
     config_path: &Path,
-    selection: Selection,
     reference: &InvocationRef,
 ) -> Result<Option<JiraHttp>, CliError> {
-    let wanted = config
-        .jira
-        .as_ref()
-        .filter(|jira| jira.filing.is_some() || qualifies_a_ticket(selection, reference));
+    let wanted = config.jira.as_ref().filter(|jira| {
+        jira.filing.is_some() || DecisionChannel::carried_by_the_issue(reference.scheme())
+    });
     match wanted {
         Some(jira) => Ok(Some(jira_http(jira, config_path)?)),
         None => Ok(None),
@@ -714,7 +713,7 @@ async fn qualified(
     {
         fiddle_runtime::toil::Qualification::Eligible(admitted) => Ok(Some(admitted)),
         fiddle_runtime::toil::Qualification::Refused(refusal) => {
-            let tracker = tracker_client(config, config_path, selection, reference)?;
+            let tracker = tracker_client(config, config_path, reference)?;
             let unforged = config::PolicyTable::default();
             let untimed = config::ReadRetryTable::default();
             let trace = AttemptTrace::new();
@@ -994,7 +993,7 @@ async fn resolve_forge(
     };
 
     let ctx = EffectContext::new(gh, git, work, cancel.clone());
-    let ctx = match tracker_client(config, config_path, selection, reference)? {
+    let ctx = match tracker_client(config, config_path, reference)? {
         Some(client) => ctx.with_jira(client),
         None => ctx,
     };
@@ -2416,7 +2415,7 @@ mod tests {
         let config = config::load(&path).unwrap();
 
         assert!(
-            tracker_client(&config, &path, Selection::Mark, &a_beans_reference())
+            tracker_client(&config, &path, &a_beans_reference())
                 .expect("a deployment that files nowhere needs no client")
                 .is_none(),
             "nothing exports either variable, and a run that files nothing must not be \
@@ -2425,17 +2424,17 @@ mod tests {
     }
 
     #[test]
-    fn a_tracker_that_files_nothing_still_holds_a_client_for_a_toil_run_over_a_ticket() {
+    fn a_tracker_that_files_nothing_still_holds_a_client_for_a_run_over_a_ticket() {
         let dir = tempfile::tempdir().unwrap();
         let path = a_tracker_document(dir.path(), "");
         let config = config::load(&path).unwrap();
 
-        let Err(error) = tracker_client(&config, &path, Selection::Toil, &a_jira_reference())
-        else {
+        let Err(error) = tracker_client(&config, &path, &a_jira_reference()) else {
             panic!(
-                "a toil run over a ticket links its pull request onto that ticket, so it \
-                 needs a tracker client whether or not the deployment files anything, and \
-                 without one the link step would refuse after the pull request is open"
+                "a run over a ticket links its pull request onto that ticket and asks its \
+                 question there, so it needs a tracker client whether or not the deployment \
+                 files anything, and without one the link step would refuse after the pull \
+                 request is open"
             )
         };
         assert!(
@@ -2454,8 +2453,7 @@ mod tests {
         );
         let config = config::load(&path).unwrap();
 
-        let Err(error) = tracker_client(&config, &path, Selection::Mark, &a_beans_reference())
-        else {
+        let Err(error) = tracker_client(&config, &path, &a_beans_reference()) else {
             panic!(
                 "a deployment that asked to file and exported no credential would file \
                  nothing on every run and say so only in the filing report"
@@ -2468,6 +2466,153 @@ mod tests {
             }
             other => panic!("the missing variable is what a person fixes, got {other:?}"),
         }
+    }
+
+    const THE_CONTEXT_HOLDS_NO_CLIENT: &str =
+        "no jira client is attached to this run's effect context, so no request was sent";
+
+    fn a_reference_for(scheme: InvocationScheme) -> InvocationRef {
+        let spelled = match scheme {
+            InvocationScheme::Beans => "beans:fiddle-1",
+            InvocationScheme::Jira => "jira:IDENT-1",
+            InvocationScheme::Scheduled => "scheduled:nightly",
+            InvocationScheme::Scanner => "scanner:s-1",
+            InvocationScheme::Cve => "cve",
+        };
+        let parsed: InvocationRef = spelled.parse().unwrap_or_else(|error| {
+            panic!("`{spelled}` is a reference this build parses: {error:?}")
+        });
+        assert_eq!(
+            parsed.scheme(),
+            scheme,
+            "`{spelled}` is the reference for {scheme:?} and not for another scheme"
+        );
+        parsed
+    }
+
+    fn the_tracker_is_wanted(
+        config: &config::Config,
+        path: &Path,
+        reference: &InvocationRef,
+    ) -> bool {
+        match tracker_client(config, path, reference) {
+            Ok(client) => client.is_some(),
+            Err(CliError::CredentialAbsent(_)) => true,
+            Err(other) => panic!(
+                "this document holds a `[jira]` table whose credential nothing exports, so \
+                 the only refusal it can raise is the credential: {other:?}"
+            ),
+        }
+    }
+
+    fn an_observed_issue() -> fiddle_core::WorkItemState {
+        fiddle_core::WorkItemState {
+            id: "IDENT-1".to_string(),
+            status: "In Progress".to_string(),
+            projected_status: None,
+            revision: Some("2026-08-30T10:00:00.000+0000".to_string()),
+            labels: None,
+            description: None,
+            comments: None,
+            issue_type: None,
+            summary: None,
+        }
+    }
+
+    #[test]
+    fn the_tracker_attaches_for_exactly_the_schemes_whose_question_the_issue_carries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = a_tracker_document(dir.path(), "");
+        let config = config::load(&path).unwrap();
+        let observed = an_observed_issue();
+
+        let mut attaching: Vec<InvocationScheme> = Vec::new();
+        let mut asking_on_the_issue: Vec<InvocationScheme> = Vec::new();
+        for scheme in InvocationScheme::ALL {
+            let reference = a_reference_for(scheme);
+            if the_tracker_is_wanted(&config, &path, &reference) {
+                attaching.push(scheme);
+            }
+            let named = DecisionChannel::named_by(
+                &reference.as_str(),
+                Some(&observed),
+                Some(("acme/icecube", 7)),
+            );
+            if named
+                .iter()
+                .any(|channel| matches!(channel, DecisionChannel::JiraIssue { .. }))
+            {
+                asking_on_the_issue.push(scheme);
+            }
+        }
+
+        assert_eq!(
+            attaching, asking_on_the_issue,
+            "a deployment that files nothing attaches the tracker client for exactly the \
+             schemes whose question `DecisionChannel::named_by` sends to the issue. These \
+             two lists are read from the two conditions separately, so moving either one \
+             alone reds this row"
+        );
+        assert_eq!(
+            asking_on_the_issue,
+            vec![InvocationScheme::Jira],
+            "and the agreement is not the empty agreement of two conditions that never \
+             fire: one of the {} schemes asks on the issue and the rest do not",
+            InvocationScheme::ALL.len()
+        );
+    }
+
+    #[test]
+    fn a_context_with_no_client_names_the_context_although_the_document_holds_the_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = a_tracker_document(dir.path(), "");
+        let config = config::load(&path).unwrap();
+        assert!(
+            config.jira.is_some(),
+            "this document holds a `[jira]` table, which is what makes the refusal below \
+             a claim a reader can check rather than one they must take on trust"
+        );
+
+        let attached = tracker_client(&config, &path, &a_beans_reference())
+            .expect("a run that files nothing and asks on no issue needs no client");
+        assert!(
+            attached.is_none(),
+            "so the context this run builds holds no tracker client"
+        );
+
+        let timeout = std::time::Duration::from_secs(1);
+        let ctx = EffectContext::new(
+            GhCli::new(
+                PathBuf::from("gh"),
+                Vec::new(),
+                "a-forge-token".to_string(),
+                "FIDDLE_A_FORGE_TOKEN_NOTHING_EXPORTS",
+                dir.path().join("gh-config"),
+                timeout,
+            ),
+            GitCli::new(
+                PathBuf::from("git"),
+                "a-forge-token".to_string(),
+                "FIDDLE_A_FORGE_TOKEN_NOTHING_EXPORTS",
+                timeout,
+            ),
+            dir.path().to_path_buf(),
+            CancellationToken::new(),
+        );
+        let refused = ctx
+            .jira_client()
+            .err()
+            .expect("a context holding no client hands one to nobody");
+        let said = format!("{refused}");
+        assert_eq!(
+            said, THE_CONTEXT_HOLDS_NO_CLIENT,
+            "the refusal names the client this run's effect context does not hold"
+        );
+        assert!(
+            !said.contains("[jira]"),
+            "and it does not say the deployment holds no `[jira]` configuration, because \
+             this deployment does: {said}"
+        );
     }
 
     const HOST_PROSE: &str = "an upstream detail the ticket never carried";

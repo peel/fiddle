@@ -438,10 +438,6 @@ pub struct RestartWorld {
 
 impl RestartWorld {
     fn start() -> Self {
-        RestartWorld::deployed(true)
-    }
-
-    fn deployed(files_tickets: bool) -> Self {
         let scenario = Scenario::new();
         let fixture = scenario.write_fixture_repo();
 
@@ -465,12 +461,12 @@ impl RestartWorld {
             gateway: StubGateway::serving(support::a_suspension_and_its_approval(APPROVAL)),
             scenario,
         };
-        let tables = world.tables(&fixture, &stub, files_tickets);
+        let tables = world.tables(&fixture, &stub);
         world.scenario.append_config(&tables);
         world
     }
 
-    fn tables(&self, fixture: &Path, stub: &Path, files_tickets: bool) -> String {
+    fn tables(&self, fixture: &Path, stub: &Path) -> String {
         format!(
             "[github]\n\
              repo = \"{REPO}\"\n\
@@ -506,17 +502,7 @@ impl RestartWorld {
              timeout = \"30s\"\n\
              \n\
              [jira.decision]\n\
-             authorized = [\"{DECIDER_ACCOUNT}\"]\n\
-             {filing}",
-            filing = match files_tickets {
-                true => format!(
-                    "\n[jira.filing]\n\
-                     project = \"ISP\"\n\
-                     issue_type = \"{ISSUE_TYPE}\"\n\
-                     ledger_issue = \"ISP-1\"\n"
-                ),
-                false => String::new(),
-            },
+             authorized = [\"{DECIDER_ACCOUNT}\"]\n",
             gh = support::toml_string(support::gh_stub_binary()),
             stub = support::toml_string(stub),
             config_dir = support::toml_string(&stub.join("config")),
@@ -692,6 +678,11 @@ impl RestartWorld {
         }
     }
 
+    fn deployment_document(&self) -> String {
+        std::fs::read_to_string(self.scenario.config_path())
+            .expect("the document this world's runs are steered by")
+    }
+
     fn model_calls(&self) -> usize {
         self.gateway.served()
     }
@@ -747,49 +738,20 @@ fn number_of(pull_requests: &[serde_json::Value]) -> u64 {
 }
 
 #[test]
-fn a_run_steered_by_an_issue_reaches_the_tracker_only_where_the_document_also_files_tickets() {
-    let world = RestartWorld::deployed(false);
-    world.jira().holds_the_ticket(TICKET);
-
-    let refused = world.run();
-
-    assert_eq!(
-        refused.code,
-        Some(11),
-        "stdout={} stderr={}",
-        refused.stdout,
-        refused.stderr
-    );
-    let payload = refused.payload();
-    let reason = payload["outcome"]["retryable"]["reason"]
-        .as_str()
-        .unwrap_or_else(|| panic!("this build reports where the run stopped: {payload}"));
-    assert!(
-        reason.contains("the question reached no human"),
-        "the run published a branch and a pull request and then could not ask: {reason}"
-    );
-    assert!(
-        reason.contains("holds no `[jira]` configuration"),
-        "and the reason it gives is that the effect context holds no tracker client, \
-         although this document holds a `[jira]` table and a `[jira.decision]` table. \
-         `tracker_client` attaches a client when `jira.filing` is set or when the \
-         selection is toil, and `DecisionChannel::named_by` sends every `jira:` \
-         invocation's question to the issue, so a propose run steered by an issue names \
-         a channel it cannot reach. This row pins the gap rather than the behaviour: a \
-         change that attaches the client for every `jira:` reference must delete this \
-         row, and the row above then holds without `[jira.filing]`: {reason}"
-    );
-    assert!(
-        world.jira().questions_on(TICKET).is_empty(),
-        "and nothing was written onto the issue: {:?}",
-        world.jira().comment_posts()
-    );
-}
-
-#[test]
 fn a_second_process_reads_the_reply_the_first_asked_for() {
     let world = RestartWorld::start();
     world.jira().holds_the_ticket(TICKET);
+    let document = world.deployment_document();
+    assert!(
+        document.contains("[jira]"),
+        "this world holds a `[jira]` table: {document}"
+    );
+    assert!(
+        !document.contains("[jira.filing]"),
+        "and it files no tickets, so the question this run publishes below is carried by \
+         the issue because the invocation names one and not because the deployment asked \
+         for a filing client: {document}"
+    );
 
     let first = world.run();
     assert_eq!(
