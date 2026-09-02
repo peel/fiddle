@@ -16,8 +16,8 @@ use support::{unreachable_context, Deployment, INVOCATION_REF, PAYLOAD, PROJECT,
 const REACHED: &str = "jira.client_reached";
 
 const THROUGH_THE_EXECUTOR: &str = "adapter failure for jira.client_reached: \
-                                    this deployment holds no `[jira]` configuration, \
-                                    so no request was sent";
+                                    no jira client is attached to this run's effect \
+                                    context, so no request was sent";
 
 const INSTALLED: &[EffectDescriptor] = &[EffectDescriptor {
     name: REACHED,
@@ -178,7 +178,7 @@ fn refused_by(error: &EffectError) -> &JiraError {
 }
 
 #[tokio::test]
-async fn an_operation_reading_the_client_during_inspect_refuses_and_names_the_missing_table() {
+async fn an_operation_reading_the_client_during_inspect_refuses_and_names_the_missing_client() {
     let ctx = unreachable_context();
     let probe = Probe::default();
 

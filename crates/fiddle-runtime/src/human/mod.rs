@@ -73,6 +73,16 @@ impl DecisionChannel {
         }
     }
 
+    pub fn carried_by_the_issue(scheme: InvocationScheme) -> bool {
+        match scheme {
+            InvocationScheme::Jira => true,
+            InvocationScheme::Beans
+            | InvocationScheme::Scheduled
+            | InvocationScheme::Scanner
+            | InvocationScheme::Cve => false,
+        }
+    }
+
     pub fn named_by(
         invocation_ref: &str,
         work_item: Option<&WorkItemState>,
@@ -82,15 +92,9 @@ impl DecisionChannel {
             .parse::<InvocationRef>()
             .ok()
             .map(|reference| reference.scheme());
-        let named = match scheme {
-            Some(InvocationScheme::Jira) => work_item.and_then(DecisionChannel::for_issue),
-            Some(
-                InvocationScheme::Beans
-                | InvocationScheme::Scheduled
-                | InvocationScheme::Scanner
-                | InvocationScheme::Cve,
-            )
-            | None => pull_request.map(|(repo, pr)| DecisionChannel::GitHubPullRequest {
+        let named = match scheme.is_some_and(DecisionChannel::carried_by_the_issue) {
+            true => work_item.and_then(DecisionChannel::for_issue),
+            false => pull_request.map(|(repo, pr)| DecisionChannel::GitHubPullRequest {
                 repo: repo.to_string(),
                 pr,
             }),

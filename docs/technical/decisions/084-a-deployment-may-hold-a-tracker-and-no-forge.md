@@ -19,7 +19,7 @@ ARGUED, read off the history at `a5ca6f6` and the source at `77b82f6`: the two c
 
 **All three clients are optional, and an absent one is an adapter error.**
 
-ARGUED, read off the source at `77b82f6`: `EffectContext` now holds `gh: Option<GhCli>`, `git: Option<GitCli>` and `jira: Option<JiraHttp>`. Three accessors replace the field reads: `gh_client`, `git_client` and `jira_client`. Each answers the client or the adapter's own `Unconfigured` error, whose text names the table the deployment did not write.
+ARGUED, read off the source at `77b82f6`: `EffectContext` now holds `gh: Option<GhCli>`, `git: Option<GitCli>` and `jira: Option<JiraHttp>`. Three accessors replace the field reads: `gh_client`, `git_client` and `jira_client`. Each answers the client or the adapter's own `Unconfigured` error. `gh_client` and `git_client` name the table the deployment did not write. `jira_client` names the client the effect context does not hold, because a deployment may write a `[jira]` table and still build a context with no tracker client (`fiddle-v5jc`).
 
 ARGUED, read off the source at `77b82f6`: `EffectContext::new` still takes a forge and a local git, so a forge deployment is constructed exactly as before. `EffectContext::tracking` is the new constructor and takes a `JiraHttp` alone.
 
