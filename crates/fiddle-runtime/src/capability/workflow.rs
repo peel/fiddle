@@ -12,7 +12,8 @@ use crate::gateway::Redaction;
 use crate::toil::{Change, Eligible, Quoted, Scope};
 use crate::workspace::WorkspaceCommand;
 use fiddle_core::{
-    CapabilityId, EffectName, EvidenceRef, HumanDecisionRequirement, Published, WorkItemState,
+    correlation_key, CapabilityId, ChangeSetState, EffectName, EvidenceRef,
+    HumanDecisionRequirement, Published, WorkItemState,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -149,6 +150,7 @@ pub struct WorkflowPorts<M> {
     pub redaction: Redaction,
     pub transcripts: Option<Transcripts>,
     pub prompts: PathBuf,
+    pub stub_root: PathBuf,
 }
 
 enum Ready {
@@ -415,6 +417,21 @@ where
         Ok(())
     }
 
+    fn record_change_set(&self, work_id: &str) -> Result<String, CapabilityError> {
+        let marker = correlation_key(self.executor.project(), self.executor.invocation_ref());
+        let state = ChangeSetState {
+            marker: Some(marker.clone()),
+        };
+        let destination = self.ports.stub_root.join(format!("changes/{work_id}.json"));
+        super::stub::write_atomically(&destination, &state).map_err(|source| {
+            CapabilityError::Write {
+                path: destination.clone(),
+                source,
+            }
+        })?;
+        Ok(marker)
+    }
+
     async fn effect(
         &self,
         construct: Construct,
@@ -450,9 +467,9 @@ where
     async fn execute(&self, input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
         let ExecutionInput {
             grant,
+            work_id,
             invocation_ref,
             work_item,
-            ..
         } = input;
         if grant.capability_id() != self.id() {
             return Err(CapabilityError::NotAuthorised {
@@ -503,11 +520,14 @@ where
             Some(Verdict::Rejected { findings }) => Ok(Executed::Rejected {
                 findings: findings.iter().map(Published::of).collect(),
             }),
-            Some(Verdict::Accepted {}) | None => Ok(Executed::Earned(EvidenceRef(format!(
-                "workflow:{}:{}",
-                self.workflow.name(),
-                grant.attempt_id().0
-            )))),
+            Some(Verdict::Accepted {}) | None => {
+                self.record_change_set(work_id)?;
+                Ok(Executed::Earned(EvidenceRef(format!(
+                    "workflow:{}:{}",
+                    self.workflow.name(),
+                    grant.attempt_id().0
+                ))))
+            }
         }
     }
 

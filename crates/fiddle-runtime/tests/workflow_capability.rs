@@ -17,6 +17,7 @@ use fiddle_runtime::effect::{
     registry, EffectContext, EffectError, EffectOutcome, EffectTrace, ErasedReceipt, ExecutionStep,
     Executor, OutputRefusal, ReadRetry, Recurrence, StepOutputs, StepParams,
 };
+use fiddle_runtime::ports::ChangePort;
 use fiddle_runtime::workspace::{Workspace, WorkspaceCommand};
 use fiddle_runtime::{GhCli, GhError, Redaction};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
@@ -89,6 +90,7 @@ fn world() -> World {
     let dir = TempDir::new().unwrap();
     std::fs::create_dir_all(dir.path().join("config")).unwrap();
     std::fs::create_dir_all(dir.path().join("prompts")).unwrap();
+    std::fs::create_dir_all(dir.path().join("stub-state/changes")).unwrap();
     std::fs::write(
         dir.path().join("prompts/triage.md"),
         "Triage this project.\n",
@@ -256,6 +258,7 @@ impl World {
             redaction: Redaction::of("sk-mock-must-not-appear-0d1e"),
             transcripts: None,
             prompts: self.dir.path().join("prompts"),
+            stub_root: self.dir.path().join("stub-state"),
         }
     }
 
@@ -295,6 +298,16 @@ impl World {
 
     fn calls(&self) -> usize {
         self.requests().len()
+    }
+
+    async fn observed_marker(&self) -> Option<String> {
+        match fiddle_runtime::StubChangePort::new(self.dir.path().join("stub-state"))
+            .observe("fiddle-demo", &CancellationToken::new())
+            .await
+        {
+            fiddle_core::Observation::Available { value, .. } => value.marker,
+            other => panic!("the change set a workflow writes must be readable, got {other:?}"),
+        }
     }
 
     fn mutations(&self) -> usize {
@@ -2213,6 +2226,29 @@ async fn a_rejected_evaluation_opens_no_pull_request_and_stops_the_steps_after_i
         accepted.ran(),
         ["after"],
         "the same check step runs after an acceptance, so the reading above is not vacuous"
+    );
+}
+
+#[tokio::test]
+async fn the_marker_a_workflow_writes_is_the_marker_the_change_port_observes() {
+    let accepted = world();
+    concluded_by(&accepted, evaluate_then_open(), accepting()).await;
+
+    let refused = world();
+    concluded_by(&refused, evaluate_then_open(), rejecting()).await;
+
+    assert_eq!(
+        accepted.observed_marker().await.as_deref(),
+        Some(fiddle_core::correlation_key(PROJECT, INVOCATION_REF).as_str()),
+        "a workflow that runs to the end of its document records the correlation \
+         marker the post-run assessment reads, which is what makes its completion \
+         observable to the run that reports it"
+    );
+    assert_eq!(
+        refused.observed_marker().await,
+        None,
+        "and a run a judge rejected records none, so the marker above is written by a \
+         run that finished and not by the harness that set the world up"
     );
 }
 

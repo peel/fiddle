@@ -3137,6 +3137,7 @@ token = { env = "JIRA_API_TOKEN" }
                 redaction: fiddle_runtime::Redaction::of("sk-mock-must-not-appear-0d1e"),
                 transcripts: None,
                 prompts,
+                stub_root: dir.path().join("stub-state"),
             },
         )
         .expect("a one-step workflow this build reads");

@@ -1430,6 +1430,7 @@ fn build_capability<'a>(
                     redaction: gateway.redaction,
                     transcripts: transcripts.cloned(),
                     prompts: workflows_root(config_path).join(PROMPTS_DIR),
+                    stub_root: config.stub.root.clone(),
                 },
             )
             .map_err(|refusal| WorkflowUnrunnable {
