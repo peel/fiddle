@@ -496,6 +496,7 @@ pub fn inspect_json(
     observed: &WorkStateView,
     assessment: &CapabilityAssessment,
     next_action: &NextAction,
+    would_refuse: Option<&str>,
 ) -> String {
     payload(
         INSPECT_SCHEMA,
@@ -505,6 +506,7 @@ pub fn inspect_json(
             "observations": observed,
             "assessment": assessment,
             "next_action": next_action,
+            "would_refuse": would_refuse,
         }),
     )
 }
@@ -514,8 +516,9 @@ pub fn inspect_human(
     observed: &WorkStateView,
     assessment: &CapabilityAssessment,
     next_action: &NextAction,
+    would_refuse: Option<&str>,
 ) -> String {
-    format!(
+    let mut out = format!(
         "invocation {}\n  scheme      = {}\n  value       = {}\n  work item   = {}\n  changes     = {}\n  assessment  = {}\n  next action = {}",
         reference.as_str(),
         reference.scheme(),
@@ -527,7 +530,11 @@ pub fn inspect_human(
         }),
         assessment_line(assessment),
         next_action_line(next_action),
-    )
+    );
+    if let Some(refusal) = would_refuse {
+        out.push_str(&format!("\n  would refuse = {refusal}"));
+    }
+    out
 }
 
 pub fn run_json(bundle: &ReportBundle, published: Option<&Path>) -> String {
@@ -800,6 +807,7 @@ mod tests {
                 evidence: Vec::new(),
             },
             &NextAction::Complete,
+            None,
         );
         rendered
             .lines()

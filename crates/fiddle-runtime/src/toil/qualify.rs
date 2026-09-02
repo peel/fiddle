@@ -301,8 +301,8 @@ struct Fault {
     quoted: Option<Quoted>,
 }
 
-fn refuse(ticket: &TicketFacts, ledger: &Ledger, fault: Fault) -> Qualification {
-    Qualification::Refused(Refusal {
+fn refusal(ticket: &TicketFacts, ledger: &Ledger, fault: Fault) -> Refusal {
+    Refusal {
         work_item: ticket.id.clone(),
         failed_rule: fault.rule,
         evidence_class: fault.class,
@@ -310,7 +310,15 @@ fn refuse(ticket: &TicketFacts, ledger: &Ledger, fault: Fault) -> Qualification 
         remedy: fault.remedy,
         quoted: fault.quoted,
         ledger: ledger.closed(fault.rule, fault.class),
-    })
+    }
+}
+
+fn refused(ticket: &TicketFacts, ledger: &Ledger, fault: Fault) -> Deterministic {
+    Deterministic::Refused(refusal(ticket, ledger, fault))
+}
+
+fn refuse(ticket: &TicketFacts, ledger: &Ledger, fault: Fault) -> Qualification {
+    Qualification::Refused(refusal(ticket, ledger, fault))
 }
 
 fn names_an_issue_key(id: &str) -> bool {
@@ -325,7 +333,18 @@ fn names_an_issue_key(id: &str) -> bool {
         && number.chars().all(|character| character.is_ascii_digit())
 }
 
-fn ticket_text(ticket: &TicketFacts) -> String {
+pub fn ticket_text(summary: &str, description: Option<&str>) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if !summary.trim().is_empty() {
+        parts.push(summary);
+    }
+    if let Some(description) = description.filter(|stated| !stated.trim().is_empty()) {
+        parts.push(description);
+    }
+    parts.join("\n\n")
+}
+
+fn text_of(ticket: &TicketFacts) -> String {
     let TicketFacts {
         id: _,
         revision: _,
@@ -335,9 +354,34 @@ fn ticket_text(ticket: &TicketFacts) -> String {
         summary,
         description,
     } = ticket;
-    match description {
-        Some(description) => format!("{summary}\n\n{description}"),
-        None => summary.clone(),
+    ticket_text(summary, description.as_deref())
+}
+
+pub struct Reached {
+    ticket: TicketFacts,
+    ledger: Ledger,
+    revision: String,
+    repository: String,
+    quoted: Quoted,
+}
+
+impl Reached {
+    pub fn quoted(&self) -> &Quoted {
+        &self.quoted
+    }
+}
+
+pub enum Deterministic {
+    Refused(Refusal),
+    Reached(Reached),
+}
+
+impl Deterministic {
+    pub fn refused(&self) -> Option<&Refusal> {
+        match self {
+            Deterministic::Refused(refusal) => Some(refusal),
+            Deterministic::Reached(_) => None,
+        }
     }
 }
 
@@ -346,11 +390,18 @@ pub async fn qualify(
     bounds: &Eligibility,
     review: &dyn AmbiguityReview,
 ) -> Qualification {
+    match deterministic(ticket, bounds) {
+        Deterministic::Refused(refusal) => Qualification::Refused(refusal),
+        Deterministic::Reached(reached) => review_of(reached, review).await,
+    }
+}
+
+pub fn deterministic(ticket: &TicketFacts, bounds: &Eligibility) -> Deterministic {
     let mut ledger = Ledger::new();
     let key = &ticket.id;
 
     if !names_an_issue_key(key) {
-        return refuse(
+        return refused(
             ticket,
             &ledger,
             Fault {
@@ -374,7 +425,7 @@ pub async fn qualify(
         .map(str::trim)
         .filter(|revision| !revision.is_empty())
     else {
-        return refuse(
+        return refused(
             ticket,
             &ledger,
             Fault {
@@ -395,7 +446,7 @@ pub async fn qualify(
     ledger.holds(READ_CARRIES_THE_REVISION, EvidenceClass::Measured);
 
     let Some(labels) = &ticket.labels else {
-        return refuse(
+        return refused(
             ticket,
             &ledger,
             Fault {
@@ -416,7 +467,7 @@ pub async fn qualify(
             0 => format!("{key} carries no labels"),
             counted => format!("{key} carries {counted} labels and none is the trigger label"),
         };
-        return refuse(
+        return refused(
             ticket,
             &ledger,
             Fault {
@@ -431,7 +482,7 @@ pub async fn qualify(
     ledger.holds(TRIGGER_LABEL_PRESENT, EvidenceClass::Measured);
 
     if !bounds.worked_issue_types.contains(&ticket.issue_type) {
-        return refuse(
+        return refused(
             ticket,
             &ledger,
             Fault {
@@ -449,7 +500,7 @@ pub async fn qualify(
     ledger.holds(ISSUE_TYPE_IS_WORKED, EvidenceClass::Measured);
 
     let Some(repository) = &ticket.repository else {
-        return refuse(
+        return refused(
             ticket,
             &ledger,
             Fault {
@@ -467,7 +518,7 @@ pub async fn qualify(
     ledger.holds(TICKET_NAMES_A_REPOSITORY, EvidenceClass::Measured);
 
     if !bounds.bounded_repositories.contains(repository) {
-        return refuse(
+        return refused(
             ticket,
             &ledger,
             Fault {
@@ -485,7 +536,7 @@ pub async fn qualify(
     ledger.holds(FITS_REPOSITORY_BOUNDS, EvidenceClass::Measured);
 
     let Some(description) = &ticket.description else {
-        return refuse(
+        return refused(
             ticket,
             &ledger,
             Fault {
@@ -511,7 +562,7 @@ pub async fn qualify(
                 bounds.shortest_description
             ),
         };
-        return refuse(
+        return refused(
             ticket,
             &ledger,
             Fault {
@@ -528,7 +579,26 @@ pub async fn qualify(
     }
     ledger.holds(DESCRIPTION_STATES_THE_CHANGE, EvidenceClass::Measured);
 
-    let quoted = Quoted::of(&ticket_text(ticket));
+    Deterministic::Reached(Reached {
+        ticket: ticket.clone(),
+        ledger,
+        revision: revision.to_string(),
+        repository: repository.clone(),
+        quoted: Quoted::of(&text_of(ticket)),
+    })
+}
+
+pub async fn review_of(reached: Reached, review: &dyn AmbiguityReview) -> Qualification {
+    let Reached {
+        ticket,
+        ledger,
+        revision,
+        repository,
+        quoted,
+    } = reached;
+    let mut ledger = ledger;
+    let ticket = &ticket;
+    let key = &ticket.id;
     let judgement = match review.review(&quoted).await {
         Ok(judgement) => judgement,
         Err(ReviewError(why)) => {

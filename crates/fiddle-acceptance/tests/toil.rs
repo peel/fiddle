@@ -689,7 +689,15 @@ impl ToilWorld {
         )
     }
 
+    pub fn start_on_a_deployment_that_configured_no_model() -> Self {
+        ToilWorld::built(an_accepted_change(), false)
+    }
+
     fn serving(script: Vec<support::Reply>) -> Self {
+        ToilWorld::built(script, true)
+    }
+
+    fn built(script: Vec<support::Reply>, with_an_agent_table: bool) -> Self {
         let scenario = Scenario::new();
         let fixture = scenario.write_fixture_repo();
 
@@ -719,12 +727,12 @@ impl ToilWorld {
             scenario,
             fixture: fixture.clone(),
         };
-        let tables = world.tables(&fixture, &stub);
+        let tables = world.tables(&fixture, &stub, with_an_agent_table);
         world.scenario.append_config(&tables);
         world
     }
 
-    fn tables(&self, fixture: &Path, stub: &Path) -> String {
+    fn tables(&self, fixture: &Path, stub: &Path, with_an_agent_table: bool) -> String {
         format!(
             "[github]\n\
              repo = \"{REPO}\"\n\
@@ -735,16 +743,7 @@ impl ToilWorld {
              config_dir = {config_dir}\n\
              timeout = \"120s\"\n\
              \n\
-             [agent]\n\
-             model = \"a-model\"\n\
-             base_url = \"{base_url}\"\n\
-             api_key = {{ env = \"{MODEL_CREDENTIAL}\" }}\n\
-             max_turns = 4\n\
-             max_tokens = 512\n\
-             max_changed_files = 4\n\
-             deadline = \"300s\"\n\
-             tool_timeout = \"300s\"\n\
-             \n\
+             {agent}\
              [workspace]\n\
              root = {workspaces}\n\
              fixture = {fixture}\n\
@@ -764,7 +763,22 @@ impl ToilWorld {
             gh = support::toml_string(support::gh_stub_binary()),
             stub = support::toml_string(stub),
             config_dir = support::toml_string(&stub.join("config")),
-            base_url = self.gateway.base_url(),
+            agent = match with_an_agent_table {
+                false => String::new(),
+                true => format!(
+                    "[agent]\n\
+                     model = \"a-model\"\n\
+                     base_url = \"{base_url}\"\n\
+                     api_key = {{ env = \"{MODEL_CREDENTIAL}\" }}\n\
+                     max_turns = 4\n\
+                     max_tokens = 512\n\
+                     max_changed_files = 4\n\
+                     deadline = \"300s\"\n\
+                     tool_timeout = \"300s\"\n\
+                     \n",
+                    base_url = self.gateway.base_url(),
+                ),
+            },
             workspaces = support::toml_string(&self.scenario.dir().join("workspaces")),
             fixture = support::toml_string(fixture),
             jira = self.jira.base_url(),
@@ -840,6 +854,41 @@ impl ToilWorld {
             .unwrap()
     }
 
+    pub fn inspect_human(&self, invocation_ref: &str) -> String {
+        let out = self.inspecting(invocation_ref, &[]);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "stderr = {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    pub fn inspect_toil(&self, invocation_ref: &str) -> std::process::Output {
+        self.inspecting(invocation_ref, &["--json"])
+    }
+
+    fn inspecting(&self, invocation_ref: &str, extra: &[&str]) -> std::process::Output {
+        let mut command = std::process::Command::new(support::fiddle_binary());
+        command.args([
+            "inspect",
+            invocation_ref,
+            "--config",
+            self.scenario.config_path().to_str().unwrap(),
+        ]);
+        command.args(extra);
+        for name in support::CREDENTIAL_VARS {
+            command.env_remove(name);
+        }
+        command.env_remove(MODEL_CREDENTIAL);
+        command
+            .env(JIRA_USER, "nobody@example.com")
+            .env(JIRA_TOKEN, JIRA_SENTINEL)
+            .output()
+            .unwrap()
+    }
+
     fn model_calls(&self) -> usize {
         self.gateway.served()
     }
@@ -907,6 +956,13 @@ fn effect_named(payload: &serde_json::Value, kind: &str) -> String {
         "the run performed `{kind}` exactly once and its receipt is one line: {lines:?}"
     );
     matched[0].clone()
+}
+
+fn flattened(text: &str) -> String {
+    text.replace('\u{2502}', " ")
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ")
 }
 
 fn external_ref_of(evidence: &str) -> String {
@@ -1835,6 +1891,201 @@ fn a_refused_ticket_is_told_why_on_its_own_issue() {
         stderr.contains(&format!("effect_id   = {carried}")),
         "the run reports a receipt for the identity the published comment carries, so the \
          write was performed under an effect identity and not as a bare request: {stderr}"
+    );
+}
+
+#[test]
+fn a_ticket_the_deterministic_rules_refuse_is_refused_on_a_deployment_that_configured_no_model() {
+    let world = ToilWorld::start_on_a_deployment_that_configured_no_model();
+    world
+        .jira()
+        .holds_a_ticket_without_the_trigger_label(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+
+    assert!(
+        stderr.contains("fiddle::toil::ineligible"),
+        "the trigger label is read off the tracker's own labels array and needs no model, \
+         so a deployment that configured none still answers the ticket with a \
+         refusal: {stderr}"
+    );
+    assert!(
+        !stderr.contains("fiddle::config::capability_unconfigured"),
+        "and it is not told about the missing `[agent]` table, which is the answer this \
+         build used to give and which names a deployment fault the person who filed the \
+         ticket cannot act on: {stderr}"
+    );
+    assert!(
+        stderr.contains(TRIGGER_LABEL_RULE),
+        "and the refusal still names the rule that failed: {stderr}"
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(2),
+        "a refusal is exit 2 here as it is on a deployment that configured a model: {stderr}"
+    );
+    assert_eq!(
+        world.jira().comment_posts(),
+        1,
+        "and the person who filed the ticket was told on the ticket: {:?}",
+        world.jira().request_lines()
+    );
+    assert_eq!(
+        world.model_calls(),
+        0,
+        "the deterministic rules reached no model, which is what makes this \
+         deployment answerable at all: {stderr}"
+    );
+}
+
+#[test]
+fn a_ticket_the_deterministic_rules_admit_still_needs_the_agent_table() {
+    let world = ToilWorld::start_on_a_deployment_that_configured_no_model();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+
+    assert!(
+        stderr.contains("fiddle::config::capability_unconfigured") && stderr.contains("[agent]"),
+        "the nine deterministic rules held, so the ambiguity review is next and it needs \
+         a model; the row above is therefore about which rule failed and not about this \
+         build having stopped resolving `[agent]` at all: {stderr}"
+    );
+    assert_eq!(
+        world.jira().comment_posts(),
+        0,
+        "and a deployment fault is not published onto somebody's ticket: {:?}",
+        world.jira().request_lines()
+    );
+}
+
+#[test]
+fn inspect_reports_the_refusal_for_a_ticket_the_gate_refuses_and_previews_the_run_for_one_it_admits(
+) {
+    let refusing = ToilWorld::start();
+    refusing
+        .jira()
+        .holds_a_ticket_without_the_trigger_label(TICKET);
+
+    let out = refusing.inspect_toil(REFERENCE);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "inspect reads and reports, so it exits 0 over a ticket `run` would refuse, and \
+         it resolved no model credential because this invocation exported none: {stderr}"
+    );
+    let payload = payload_of(&out);
+    let reason = payload["would_refuse"].as_str().unwrap_or_else(|| {
+        panic!(
+            "inspect no longer previews a run the gate refuses in silence: {}",
+            payload["would_refuse"]
+        )
+    });
+    assert!(
+        reason.contains(TRIGGER_LABEL_RULE) && reason.contains(TICKET),
+        "and it names the rule the gate would fail and the ticket it read it off: {reason}"
+    );
+    assert_eq!(
+        payload["next_action"]["execute"]["capability_id"], "toil",
+        "and it still names the capability `run` selects, because what `run` refuses is \
+         this ticket and not the capability: {}",
+        payload["next_action"]
+    );
+    assert_eq!(
+        refusing.model_calls(),
+        0,
+        "inspect stays credential-free: it reached no model: {stderr}"
+    );
+    let human = refusing.inspect_human(REFERENCE);
+    assert!(
+        human.contains("would refuse =") && human.contains(TRIGGER_LABEL_RULE),
+        "and a reader of the human rendering is told the same thing: {human}"
+    );
+
+    let admitting = ToilWorld::start();
+    admitting.jira().holds_eligible_ticket(TICKET);
+
+    let out = admitting.inspect_toil(REFERENCE);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "and a labelled ticket is inspected the same way: {stderr}"
+    );
+    let payload = payload_of(&out);
+    assert_eq!(
+        payload["next_action"]["execute"]["capability_id"], "toil",
+        "a ticket the deterministic rules admit still previews the run: {}",
+        payload["next_action"]
+    );
+    assert_eq!(
+        payload["would_refuse"],
+        serde_json::Value::Null,
+        "and nothing says the run would refuse it, so the row above is not `inspect` \
+         reporting a refusal for every jira reference: {}",
+        payload["would_refuse"]
+    );
+    assert_eq!(
+        admitting.model_calls(),
+        0,
+        "and it too reached no model: {stderr}"
+    );
+    let human = admitting.inspect_human(REFERENCE);
+    assert!(
+        human.contains("next action = execute toil") && !human.contains("would refuse"),
+        "and the human rendering carries no refusal line at all: {human}"
+    );
+}
+
+#[test]
+fn the_command_line_and_the_ticket_comment_state_one_refusal_the_same_way() {
+    let world = ToilWorld::start();
+    world
+        .jira()
+        .holds_a_ticket_without_the_trigger_label(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+    let comment = world
+        .jira()
+        .last_comment_on(TICKET)
+        .expect("the refusal was published");
+
+    let printed = flattened(&stderr);
+    let published = flattened(&comment);
+    let stated = format!("The rule that failed: {TRIGGER_LABEL_RULE}");
+    assert!(
+        printed.contains(&stated),
+        "the command line frames the failed rule as the one that failed: {stderr}"
+    );
+    assert!(
+        published.contains(&stated),
+        "and the comment on the ticket says the same sentence, so the two surfaces cannot \
+         diverge again: {comment}"
+    );
+    assert!(
+        !printed.contains(&format!("takes on: {TRIGGER_LABEL_RULE} —")),
+        "and the rendering that spliced the failed rule into a bare failure sentence, so \
+         that every refusal asserted the rule it failed had held, is gone: {stderr}"
+    );
+    let found = format!("What the gate found: {TICKET} carries 1 labels");
+    assert!(
+        printed.contains(&found) && published.contains(&found),
+        "both surfaces name the finding the same way: {stderr} / {comment}"
+    );
+    assert!(
+        published.contains(&format!(
+            "What would change that: add the label `{TRIGGER_LABEL}`"
+        )),
+        "and the remedy the ticket is given is the one the command line prints as its \
+         help: {comment}"
+    );
+    assert!(
+        printed.contains(&format!("add the label `{TRIGGER_LABEL}` to {TICKET}")),
+        "which the command line prints too: {stderr}"
     );
 }
 

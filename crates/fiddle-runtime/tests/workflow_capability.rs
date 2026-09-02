@@ -416,6 +416,14 @@ fn described_issue(description: &str) -> WorkItemState {
     }
 }
 
+fn summarised_issue(summary: &str, description: Option<&str>) -> WorkItemState {
+    WorkItemState {
+        summary: Some(summary.to_string()),
+        description: description.map(str::to_string),
+        ..observed_issue()
+    }
+}
+
 fn params_naming_a_stale_pull_request() -> StepParams {
     StepParams {
         pull_request: Some(STALE_PULL_REQUEST),
@@ -1947,6 +1955,73 @@ async fn a_step_is_given_the_ticket_text_only_when_the_run_observed_a_ticket() {
         shipped_evaluation_prompt(),
         "a run that observed no work item was given something other than the prompt this \
          repository ships"
+    );
+}
+
+#[tokio::test]
+async fn a_step_is_given_the_text_the_gate_judged_and_not_the_description_alone() {
+    let summary = format!("Make the reader answer rows, not a count ({A_PLANTED_VALUE})");
+    let described = "The caller in workspace.rs wants the rows and is handed the row count.";
+
+    let carrying_both = world();
+    let both = accepting();
+    concluded_observing(
+        &carrying_both,
+        vec![evaluate_step()],
+        both.clone(),
+        Some(&summarised_issue(&summary, Some(described))),
+    )
+    .await;
+    let told_both = the_task_one_step_was_given(&both);
+    assert_eq!(
+        quotation_in(&told_both).inside,
+        fiddle_runtime::toil::ticket_text(&summary, Some(described)),
+        "the implementer is given the text the gate judged, which is the summary followed \
+         by the description and not the description alone"
+    );
+    assert!(
+        told_both.contains(A_PLANTED_VALUE),
+        "so the summary reaches the step: {told_both}"
+    );
+
+    let summary_only = world();
+    let alone = accepting();
+    concluded_observing(
+        &summary_only,
+        vec![evaluate_step()],
+        alone.clone(),
+        Some(&summarised_issue(&summary, None)),
+    )
+    .await;
+    let told_summary = the_task_one_step_was_given(&alone);
+    assert_eq!(
+        quotation_in(&told_summary).inside,
+        summary,
+        "a work item whose summary carries the whole request and whose description \
+         carries nothing is quoted as that summary; this build used to quote nothing \
+         at all"
+    );
+    assert!(
+        told_summary.contains(A_PLANTED_VALUE),
+        "so the asymmetry the epic shipped is observable rather than fixtured away with \
+         `summary: None`: {told_summary}"
+    );
+
+    let neither = world();
+    let untold = accepting();
+    concluded_observing(
+        &neither,
+        vec![evaluate_step()],
+        untold.clone(),
+        Some(&summarised_issue("   ", None)),
+    )
+    .await;
+    let told_nothing = the_task_one_step_was_given(&untold);
+    assert_eq!(
+        told_nothing,
+        shipped_evaluation_prompt(),
+        "and a work item that carries neither is quoted as nothing, so the row above is \
+         not this build quoting a blank fence onto every task"
     );
 }
 

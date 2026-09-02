@@ -616,22 +616,39 @@ async fn observe(
     .await)
 }
 
+fn rule_that_failed(rule: &str) -> String {
+    format!("The rule that failed: {rule}")
+}
+
+fn what_the_gate_found(found: &str) -> String {
+    format!("What the gate found: {found}")
+}
+
+fn would_change_that(remedy: &str) -> String {
+    format!("What would change that: {remedy}")
+}
+
+fn not_work_this_build_takes_on(refusal: &Refusal) -> String {
+    format!(
+        "`{}` is not work this build takes on. {}. {}",
+        refusal.work_item,
+        rule_that_failed(refusal.failed_rule),
+        what_the_gate_found(&refusal.found),
+    )
+}
+
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
-#[error("`{work_item}` is not work this build takes on: {failed_rule} — {found}")]
+#[error("{stated}")]
 #[diagnostic(code(fiddle::toil::ineligible), help("{remedy}"))]
 struct Ineligible {
-    work_item: String,
-    failed_rule: &'static str,
-    found: String,
+    stated: String,
     remedy: String,
 }
 
 impl Ineligible {
     fn of(refusal: &Refusal) -> Self {
         Self {
-            work_item: refusal.work_item.clone(),
-            failed_rule: refusal.failed_rule,
-            found: refusal.found.clone(),
+            stated: not_work_this_build_takes_on(refusal),
             remedy: refusal.remedy.clone(),
         }
     }
@@ -654,6 +671,24 @@ struct TicketUnread {
 
 fn qualifies_a_ticket(selection: Selection, reference: &InvocationRef) -> bool {
     selection == Selection::Toil && reference.scheme() == InvocationScheme::Jira
+}
+
+fn gate_refusal(
+    config: &config::Config,
+    selection: Selection,
+    reference: &InvocationRef,
+    observed: &WorkStateView,
+) -> Option<Refusal> {
+    if !qualifies_a_ticket(selection, reference) {
+        return None;
+    }
+    let ticket = observed.work_item.value()?;
+    fiddle_runtime::toil::deterministic(
+        &facts_of(ticket, config),
+        &config::toil_bounds(config).eligibility,
+    )
+    .refused()
+    .cloned()
 }
 
 fn facts_of(ticket: &fiddle_core::WorkItemState, config: &config::Config) -> TicketFacts {
@@ -679,11 +714,6 @@ async fn qualified(
     if !qualifies_a_ticket(selection, reference) {
         return Ok(None);
     }
-    let agent = config.agent.as_ref().ok_or_else(|| Unconfigured {
-        capability: selection.id(),
-        missing: "[agent]",
-        path: config_path.display().to_string(),
-    })?;
 
     let observed = work_items.observe(reference.value(), cancel).await;
     let Some(ticket) = observed.value() else {
@@ -699,21 +729,31 @@ async fn qualified(
         .into());
     };
 
-    let gateway = model_client(agent)?;
-    let review = fiddle_runtime::toil::ModelReview::new(
-        gateway.model,
-        fiddle_runtime::toil::ReviewBounds {
-            max_tokens: agent.max_tokens,
-            deadline: agent.deadline.as_duration(),
-        },
-    );
-    match fiddle_runtime::toil::qualify(
+    let qualification = match fiddle_runtime::toil::deterministic(
         &facts_of(ticket, config),
         &config::toil_bounds(config).eligibility,
-        &review,
-    )
-    .await
-    {
+    ) {
+        fiddle_runtime::toil::Deterministic::Refused(refusal) => {
+            fiddle_runtime::toil::Qualification::Refused(refusal)
+        }
+        fiddle_runtime::toil::Deterministic::Reached(reached) => {
+            let agent = config.agent.as_ref().ok_or_else(|| Unconfigured {
+                capability: selection.id(),
+                missing: "[agent]",
+                path: config_path.display().to_string(),
+            })?;
+            let gateway = model_client(agent)?;
+            let review = fiddle_runtime::toil::ModelReview::new(
+                gateway.model,
+                fiddle_runtime::toil::ReviewBounds {
+                    max_tokens: agent.max_tokens,
+                    deadline: agent.deadline.as_duration(),
+                },
+            );
+            fiddle_runtime::toil::review_of(reached, &review).await
+        }
+    };
+    match qualification {
         fiddle_runtime::toil::Qualification::Eligible(admitted) => Ok(Some(admitted)),
         fiddle_runtime::toil::Qualification::Refused(refusal) => {
             let tracker = tracker_client(config, config_path, reference)?;
@@ -783,9 +823,9 @@ fn refusal_note(refusal: &Refusal) -> String {
             "fiddle did not take `{}` on, and this comment is the whole reason.",
             refusal.work_item
         ),
-        format!("The rule that failed: {}", refusal.failed_rule),
-        format!("What the gate found: {}", refusal.found),
-        format!("What would change that: {}", refusal.remedy),
+        rule_that_failed(refusal.failed_rule),
+        what_the_gate_found(&refusal.found),
+        would_change_that(&refusal.remedy),
     ];
     if let Some(quoted) = refusal
         .quoted
@@ -1541,15 +1581,29 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 fiddle_core::correlation_key(&config.project.name, &reference.as_str());
             let assessment = fiddle_core::assess(&observed, &expected_marker);
             let next_action = fiddle_core::derive_next(&observed, &expected_marker, selection.id());
+            let would_refuse = gate_refusal(&config, selection, &reference, &observed)
+                .map(|refusal| not_work_this_build_takes_on(&refusal));
             if *json {
                 println!(
                     "{}",
-                    render::inspect_json(&reference, &observed, &assessment, &next_action)
+                    render::inspect_json(
+                        &reference,
+                        &observed,
+                        &assessment,
+                        &next_action,
+                        would_refuse.as_deref()
+                    )
                 );
             } else {
                 println!(
                     "{}",
-                    render::inspect_human(&reference, &observed, &assessment, &next_action)
+                    render::inspect_human(
+                        &reference,
+                        &observed,
+                        &assessment,
+                        &next_action,
+                        would_refuse.as_deref()
+                    )
                 );
             }
             Ok(RunOutcome::Completed)
@@ -2718,6 +2772,85 @@ mod tests {
             note.contains(REVIEW_ANSWERED) && note.contains("did not answer"),
             "and the note still names the rule that failed and what the gate found, so \
              the line above is one omitted quote and not an empty note: {note}"
+        );
+    }
+
+    fn capability_help() -> String {
+        let command = <cli::Cli as clap::CommandFactory>::command();
+        let run = command
+            .find_subcommand("run")
+            .expect("this build has a `run` subcommand");
+        let help = run
+            .get_arguments()
+            .find(|argument| argument.get_id() == "capability")
+            .and_then(clap::Arg::get_help)
+            .expect("`--capability` carries help text")
+            .to_string();
+        help.split_whitespace().collect::<Vec<&str>>().join(" ")
+    }
+
+    #[test]
+    fn the_capability_help_names_what_an_absent_flag_selects_for_every_scheme() {
+        let help = capability_help();
+        for scheme in InvocationScheme::ALL {
+            let row = format!(
+                "`{}` -> `{}`",
+                scheme.as_str(),
+                Selection::default_for(scheme).id()
+            );
+            assert!(
+                help.contains(&row),
+                "an operator reading `--capability` is told what an absent flag selects, \
+                 and this build resolves {row} while the help text says: {help}"
+            );
+        }
+        assert!(
+            !help.contains("every other scheme marks"),
+            "the retired claim is gone, so a reverted help text cannot pass this row by \
+             naming the jira default beside a sentence that contradicts it: {help}"
+        );
+    }
+
+    #[test]
+    fn the_help_rows_are_the_only_place_the_defaults_are_written_down() {
+        let help = capability_help();
+        let rows = InvocationScheme::ALL
+            .into_iter()
+            .filter(|scheme| help.contains(&format!("`{}` ->", scheme.as_str())))
+            .count();
+        assert_eq!(
+            rows,
+            InvocationScheme::ALL.len(),
+            "the row above passes by matching every scheme this build has, so a help \
+             text that names four of five must red: {help}"
+        );
+    }
+
+    #[test]
+    fn the_command_line_and_the_ticket_comment_state_one_refusal_the_same_way() {
+        let refusal = a_refusal_quoting(fiddle_runtime::toil::Quoted::of(TICKET_PROSE));
+
+        let printed = Ineligible::of(&refusal).to_string();
+        let published = refusal_note(&refusal);
+
+        assert!(
+            printed.contains(&rule_that_failed(REVIEW_ANSWERED)),
+            "the command line frames the rule as the one that failed rather than \
+             asserting it held: {printed}"
+        );
+        assert!(
+            published.contains(&rule_that_failed(REVIEW_ANSWERED)),
+            "and the comment on the ticket says the same sentence: {published}"
+        );
+        assert!(
+            printed.contains(&what_the_gate_found(&refusal.found))
+                && published.contains(&what_the_gate_found(&refusal.found)),
+            "both surfaces name the finding the same way: {printed} / {published}"
+        );
+        assert!(
+            !printed.contains(&format!(": {REVIEW_ANSWERED} — ")),
+            "and the old rendering, which spliced the failed rule into a bare failure \
+             sentence and so asserted the opposite of its own finding, is gone: {printed}"
         );
     }
 }

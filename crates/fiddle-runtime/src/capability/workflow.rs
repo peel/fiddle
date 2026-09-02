@@ -201,10 +201,14 @@ fn task_in(prompt: &Path, prompts: &Path) -> Result<String, WorkflowRefusal> {
 }
 
 fn quoted_ticket(work_item: Option<&WorkItemState>) -> Option<String> {
-    let described = work_item?.description.as_deref()?;
-    match described.trim().is_empty() {
+    let work_item = work_item?;
+    let text = crate::toil::ticket_text(
+        work_item.summary.as_deref().unwrap_or_default(),
+        work_item.description.as_deref(),
+    );
+    match text.is_empty() {
         true => None,
-        false => Some(Quoted::of(described).fenced()),
+        false => Some(Quoted::of(&text).fenced()),
     }
 }
 
